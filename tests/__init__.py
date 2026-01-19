@@ -1,0 +1,1 @@
+"""BindingMetrics test suite."""
