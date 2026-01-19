@@ -7,6 +7,13 @@ from openmm.app import Modeller, PDBFile, ForceField
 
 from binding_metrics.core.forcefields import get_forcefield
 
+# Optional pdbfixer for structure repair
+try:
+    from pdbfixer import PDBFixer
+    HAS_PDBFIXER = True
+except ImportError:
+    HAS_PDBFIXER = False
+
 
 def prepare_system(
     pdb: PDBFile,
@@ -16,6 +23,7 @@ def prepare_system(
     ionic_strength: float = 0.15,
     positive_ion: str = "Na+",
     negative_ion: str = "Cl-",
+    fix_structure: bool = True,
 ) -> Modeller:
     """Prepare a molecular system for simulation by adding solvent and ions.
 
@@ -27,6 +35,7 @@ def prepare_system(
         ionic_strength: Salt concentration in M (molar)
         positive_ion: Positive ion type for neutralization
         negative_ion: Negative ion type for neutralization
+        fix_structure: If True and pdbfixer is available, fix missing atoms
 
     Returns:
         Modeller object with solvated and ionized system
@@ -34,10 +43,24 @@ def prepare_system(
     if forcefield is None:
         forcefield = get_forcefield(forcefield_name)
 
-    modeller = Modeller(pdb.topology, pdb.positions)
+    topology = pdb.topology
+    positions = pdb.positions
 
-    # Add hydrogen atoms if missing
-    modeller.addHydrogens(forcefield)
+    # Use pdbfixer to repair structure if available and requested
+    if fix_structure and HAS_PDBFIXER:
+        fixer = PDBFixer(topology=topology, positions=positions)
+        fixer.findMissingResidues()
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(7.0)  # pH 7.0
+        topology = fixer.topology
+        positions = fixer.positions
+
+    modeller = Modeller(topology, positions)
+
+    # Add hydrogen atoms if missing (pdbfixer may have already added them)
+    if not (fix_structure and HAS_PDBFIXER):
+        modeller.addHydrogens(forcefield)
 
     # Add solvent with periodic box
     modeller.addSolvent(
