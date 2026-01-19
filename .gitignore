@@ -205,3 +205,14 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Ignore all data - push only code
+data/
+
+# Claude files and folders
+.claude/
+CLAUDE.md
+
+# VSCode Workspace Settings
+*.code-workspace
+.vscode/
