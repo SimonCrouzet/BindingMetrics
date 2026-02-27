@@ -48,13 +48,21 @@ def prepare_system(
 
     # Use pdbfixer to repair structure if available and requested
     if fix_structure and HAS_PDBFIXER:
-        fixer = PDBFixer(topology=topology, positions=positions)
-        fixer.findMissingResidues()
-        fixer.findMissingAtoms()
-        fixer.addMissingAtoms()
-        fixer.addMissingHydrogens(7.0)  # pH 7.0
-        topology = fixer.topology
-        positions = fixer.positions
+        import os
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".pdb", delete=False) as tmp:
+            PDBFile.writeFile(topology, positions, tmp)
+            tmp_path = tmp.name
+        try:
+            fixer = PDBFixer(filename=tmp_path)
+            fixer.findMissingResidues()
+            fixer.findMissingAtoms()
+            fixer.addMissingAtoms()
+            fixer.addMissingHydrogens(7.0)  # pH 7.0
+            topology = fixer.topology
+            positions = fixer.positions
+        finally:
+            os.unlink(tmp_path)
 
     modeller = Modeller(topology, positions)
 
