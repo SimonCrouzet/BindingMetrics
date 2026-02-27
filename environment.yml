@@ -1,25 +1,22 @@
 name: binding-metrics
+# Developer environment for BindingMetrics.
+# For GPU-accelerated OpenMM (CUDA support), conda-forge is the most reliable
+# source of pre-built binaries. All other dependencies are pip-installable.
+#
+# Usage:
+#   conda env create -f environment.yml
+#   conda activate binding-metrics
 channels:
   - conda-forge
   - defaults
 
 dependencies:
-  # Python
   - python>=3.11
 
-  # Core dependencies
-  - numpy>=1.24
+  # GPU-ready OpenMM from conda-forge (handles CUDA/OpenCL binaries)
   - openmm>=8.0
-  - mdtraj>=1.9
 
-  # Optional but recommended
-  - pdbfixer>=1.9
-
-  # Development
-  - pytest>=7.0
-  - ruff>=0.1
-
-  # Install the package in editable mode
+  # pip-installable extras (defined in pyproject.toml)
   - pip
   - pip:
-      - -e ".[dev]"
+      - -e ".[analysis,structure,biotite,dev]"
