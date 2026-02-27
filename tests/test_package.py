@@ -74,14 +74,30 @@ class TestPackageImports:
         import binding_metrics
 
         expected = {
+            # Core
             "ForceFieldConfig",
             "get_forcefield",
             "MDSimulation",
             "SimulationConfig",
             "run_simulation",
             "prepare_system",
+            # I/O
+            "load_structure",
+            "detect_chains",
+            "save_cif",
+            # Protocols
             "ProtocolResults",
             "PeptideBindingProtocol",
+            "ImplicitRelaxation",
+            "RelaxationConfig",
+            "RelaxationResult",
+            # Metrics
+            "compute_interaction_energy",
+            "compute_structure_rmsd",
+            "compute_hbonds",
+            "compute_saltbridges",
+            "compute_structure_interactions",
+            "compute_delta_sasa_static",
         }
 
         assert set(binding_metrics.__all__) == expected
