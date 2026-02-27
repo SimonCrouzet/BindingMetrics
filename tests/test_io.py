@@ -5,9 +5,12 @@ from pathlib import Path
 import pytest
 
 from binding_metrics.io.structures import (
+    detect_chains,
     get_chain_atom_indices,
     get_residue_info,
     load_complex,
+    load_structure,
+    save_cif,
 )
 
 
@@ -145,3 +148,75 @@ class TestGetResidueInfo:
         """Should find 3 residues total (2 ALA + 1 GLY)."""
         residues = get_residue_info(sample_pdb_path)
         assert len(residues) == 3
+
+
+class TestLoadStructure:
+    """Tests for the generalized load_structure function."""
+
+    @pytest.mark.integration
+    def test_load_pdb(self, sample_pdb_path: Path):
+        """Should load a PDB file and return (topology, positions)."""
+        topology, positions = load_structure(sample_pdb_path)
+        assert topology is not None
+        assert positions is not None
+
+    def test_load_nonexistent_raises(self, tmp_path: Path):
+        """Should raise FileNotFoundError for missing file."""
+        with pytest.raises(FileNotFoundError):
+            load_structure(tmp_path / "missing.cif")
+
+    def test_unsupported_format_raises(self, tmp_path: Path):
+        """Should raise ValueError for unsupported format."""
+        f = tmp_path / "structure.xyz"
+        f.write_text("dummy")
+        with pytest.raises(ValueError, match="Unsupported"):
+            load_structure(f)
+
+    @pytest.mark.integration
+    def test_load_cif(self):
+        """Should load a CIF file from test data."""
+        cif_path = Path("data/rank001_design_spec_457.cif")
+        if not cif_path.exists():
+            pytest.skip("Test CIF not available")
+        topology, positions = load_structure(cif_path)
+        assert topology is not None
+        assert len(list(topology.atoms())) > 0
+
+
+class TestDetectChains:
+    """Tests for detect_chains function."""
+
+    @pytest.mark.integration
+    def test_detect_two_chains(self, sample_pdb_path: Path):
+        """Should detect ligand (smallest) and receptor (largest) chains."""
+        topology, _ = load_structure(sample_pdb_path)
+        ligand, receptor = detect_chains(topology)
+        assert ligand is not None
+        assert receptor is not None
+        # Chain B (1 GLY) is smaller than chain A (2 ALA)
+        assert ligand == "B"
+        assert receptor == "A"
+
+    @pytest.mark.integration
+    def test_detect_chains_from_cif(self):
+        """Should detect chains from a CIF file."""
+        cif_path = Path("data/rank001_design_spec_457.cif")
+        if not cif_path.exists():
+            pytest.skip("Test CIF not available")
+        topology, _ = load_structure(cif_path)
+        ligand, receptor = detect_chains(topology)
+        assert ligand is not None
+        assert receptor is not None
+
+
+class TestSaveCif:
+    """Tests for save_cif function."""
+
+    @pytest.mark.integration
+    def test_save_cif_creates_file(self, sample_pdb_path: Path, tmp_path: Path):
+        """Should create a CIF file at the specified path."""
+        topology, positions = load_structure(sample_pdb_path)
+        out_path = tmp_path / "output.cif"
+        save_cif(topology, positions, out_path)
+        assert out_path.exists()
+        assert out_path.stat().st_size > 0
