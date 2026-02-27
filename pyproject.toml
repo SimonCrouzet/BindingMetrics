@@ -44,7 +44,7 @@ dev = ["pytest>=7.0", "ruff>=0.1"]
 [project.scripts]
 binding-metrics-relax = "binding_metrics.protocols.relaxation:main"
 binding-metrics-energy = "binding_metrics.metrics.energy:main"
-binding-metrics-hbonds = "binding_metrics.metrics.hbonds:main"
+binding-metrics-interface = "binding_metrics.metrics.interface:main"
 binding-metrics-compare = "binding_metrics.metrics.comparison:main"
 
 [project.urls]

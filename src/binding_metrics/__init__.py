@@ -6,7 +6,8 @@ from binding_metrics.core.system import prepare_system
 from binding_metrics.io.structures import detect_chains, load_structure, save_cif
 from binding_metrics.metrics.comparison import compute_structure_rmsd
 from binding_metrics.metrics.energy import compute_interaction_energy
-from binding_metrics.metrics.hbonds import compute_hbonds, compute_saltbridges, compute_structure_interactions
+from binding_metrics.metrics.hbonds import compute_hbonds, compute_saltbridges
+from binding_metrics.metrics.interface import compute_interface_metrics
 from binding_metrics.metrics.sasa import compute_delta_sasa_static
 from binding_metrics.protocols.base import ProtocolResults
 from binding_metrics.protocols.peptide import PeptideBindingProtocol
@@ -37,6 +38,6 @@ __all__ = [
     "compute_structure_rmsd",
     "compute_hbonds",
     "compute_saltbridges",
-    "compute_structure_interactions",
+    "compute_interface_metrics",
     "compute_delta_sasa_static",
 ]

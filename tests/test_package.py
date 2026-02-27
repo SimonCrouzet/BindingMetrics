@@ -96,7 +96,7 @@ class TestPackageImports:
             "compute_structure_rmsd",
             "compute_hbonds",
             "compute_saltbridges",
-            "compute_structure_interactions",
+            "compute_interface_metrics",
             "compute_delta_sasa_static",
         }
 
