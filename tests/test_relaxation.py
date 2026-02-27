@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import requires_cuda
 from binding_metrics.protocols.relaxation import (
     ImplicitRelaxation,
     RelaxationConfig,
@@ -96,11 +97,12 @@ class TestImplicitRelaxation:
 
     def test_init(self):
         """Should initialize with config."""
-        config = RelaxationConfig(device="cpu")
+        config = RelaxationConfig()
         relaxer = ImplicitRelaxation(config)
         assert relaxer.config is config
         assert not relaxer._openmm_imported
 
+    @requires_cuda
     @pytest.mark.integration
     def test_run_minimize_only_cif(self, tmp_path: Path):
         """Should successfully minimize a CIF structure (no MD)."""
@@ -108,7 +110,6 @@ class TestImplicitRelaxation:
             pytest.skip("Test CIF not available")
         config = RelaxationConfig(
             md_duration_ps=0.0,
-            device="cpu",
             min_steps_initial=10,
             min_steps_restrained=5,
             min_steps_final=10,
@@ -122,6 +123,7 @@ class TestImplicitRelaxation:
         assert Path(result.minimized_structure_path).exists()
         assert result.md_final_structure_path is None
 
+    @requires_cuda
     @pytest.mark.slow
     @pytest.mark.integration
     def test_run_with_md_cif(self, tmp_path: Path):
@@ -132,7 +134,6 @@ class TestImplicitRelaxation:
             md_duration_ps=2.0,
             md_save_interval_ps=1.0,
             md_timestep_fs=1.0,  # 1 fs for stability after clash resolution
-            device="cpu",
             min_steps_initial=200,
             min_steps_restrained=100,
             min_steps_final=200,
@@ -145,25 +146,43 @@ class TestImplicitRelaxation:
         assert result.rmsd_md_final is not None
         assert result.rmsd_md_final >= 0.0
 
+    @requires_cuda
     @pytest.mark.integration
     def test_run_missing_file_fails_gracefully(self, tmp_path: Path):
         """Should return failed result for missing input."""
-        config = RelaxationConfig(md_duration_ps=0.0, device="cpu")
+        config = RelaxationConfig(md_duration_ps=0.0)
         relaxer = ImplicitRelaxation(config)
         result = relaxer.run(tmp_path / "missing.pdb", tmp_path / "out")
         assert not result.success
         assert result.error_message is not None
 
+    @requires_cuda
     @pytest.mark.integration
     def test_sample_id_defaults_to_file_stem(self, tmp_path: Path):
         """sample_id should default to the input file stem."""
         if not EXAMPLE_CIF.exists():
             pytest.skip("Test CIF not available")
-        config = RelaxationConfig(md_duration_ps=0.0, device="cpu",
-                                   min_steps_initial=5, min_steps_restrained=5, min_steps_final=5)
+        config = RelaxationConfig(
+            md_duration_ps=0.0,
+            min_steps_initial=5, min_steps_restrained=5, min_steps_final=5,
+        )
         relaxer = ImplicitRelaxation(config)
         result = relaxer.run(EXAMPLE_CIF, tmp_path / "out")
         assert result.sample_id == EXAMPLE_CIF.stem
+
+    @pytest.mark.integration
+    def test_cpu_platform_available(self, tmp_path: Path):
+        """CPU platform should work as a fallback for non-GPU environments."""
+        if not EXAMPLE_CIF.exists():
+            pytest.skip("Test CIF not available")
+        config = RelaxationConfig(
+            md_duration_ps=0.0,
+            device="cpu",
+            min_steps_initial=5, min_steps_restrained=5, min_steps_final=5,
+        )
+        relaxer = ImplicitRelaxation(config)
+        result = relaxer.run(EXAMPLE_CIF, tmp_path / "out")
+        assert result.success, result.error_message
 
     @pytest.mark.integration
     def test_kabsch_rmsd_identical(self):

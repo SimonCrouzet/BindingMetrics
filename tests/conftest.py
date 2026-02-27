@@ -5,6 +5,19 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+# ---------------------------------------------------------------------------
+# GPU / CUDA availability
+# ---------------------------------------------------------------------------
+
+try:
+    import openmm as _openmm
+    _openmm.Platform.getPlatformByName("CUDA")
+    HAS_CUDA = True
+except Exception:
+    HAS_CUDA = False
+
+requires_cuda = pytest.mark.skipif(not HAS_CUDA, reason="CUDA GPU not available")
+
 
 # Path to real example PDB for integration tests
 EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example.pdb"
