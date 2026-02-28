@@ -20,6 +20,7 @@ Metrics span from fast static-structure analysis (SASA, H-bonds, PISA solvation 
 | Force-field energy | Raw / after minimization / after short MD modes | OpenMM |
 | Structure comparison | All-atom and backbone RMSD (Kabsch-aligned) | gemmi |
 | Trajectory analysis | Buried SASA, contacts, RMSD, RMSF per frame | MDTraj |
+| Structure prediction | avg_pLDDT, pTM, ipTM, gPDE, PAE, per-chain scores | OpenFold3 |
 
 ---
 
@@ -46,6 +47,13 @@ pip install "binding-metrics[biotite]"
 
 # Everything
 pip install "binding-metrics[all]"
+```
+
+OpenFold3 must be installed separately (GPU required, large model weights):
+
+```bash
+pip install openfold3
+setup_openfold   # downloads model weights
 ```
 
 Requires Python ≥ 3.11.
@@ -94,6 +102,45 @@ result = compute_structure_rmsd("initial.cif", "relaxed.cif", design_chain="A")
 print(f"RMSD (full):    {result['rmsd']:.3f} Å")
 print(f"BB RMSD:        {result['bb_rmsd']:.3f} Å")
 print(f"RMSD (design):  {result['rmsd_design']:.3f} Å")
+```
+
+### OpenFold3 confidence metrics
+
+Parse confidence scores from an existing OpenFold3 output directory:
+
+```python
+from binding_metrics import compute_openfold_metrics
+
+metrics = compute_openfold_metrics(
+    output_dir="./openfold_out",
+    query_name="my_complex",   # as specified in the input JSON
+    seed=1,
+    sample=1,
+)
+
+print(f"avg_pLDDT:        {metrics['avg_plddt']:.1f}")
+print(f"pTM:              {metrics['ptm']:.3f}")
+print(f"ipTM:             {metrics['iptm']:.3f}")
+print(f"gPDE:             {metrics['gpde']:.3f} Å")
+print(f"Max PAE:          {metrics['max_pae']:.1f} Å")
+print(f"Ranking score:    {metrics['sample_ranking_score']:.3f}")
+print(f"Per-chain pTM:    {metrics['chain_ptm']}")
+```
+
+To also run inference:
+
+```python
+from binding_metrics import run_openfold, compute_openfold_metrics
+
+run_openfold(
+    query_json="query.json",
+    output_dir="./openfold_out",
+    num_diffusion_samples=5,
+    num_model_seeds=1,
+    # Defaults: predict + pae_enabled + low_mem
+    model_presets=["predict", "pae_enabled", "low_mem"],
+)
+metrics = compute_openfold_metrics("./openfold_out", "my_complex")
 ```
 
 ### Batch scoring
@@ -205,6 +252,73 @@ Compute RMSD between two structures (e.g. initial vs. relaxed).
 binding-metrics-compare --initial initial.cif --processed relaxed.cif --design-chain A
 ```
 
+### `binding-metrics-openfold`
+
+Parse OpenFold3 confidence metrics from an output directory, or run inference then parse.
+
+**Parse existing output:**
+
+```bash
+binding-metrics-openfold parse \
+    --output-dir ./openfold_out \
+    --query-name my_complex \
+    --seed 1 --sample 1
+```
+
+```
+OpenFold3 confidence metrics (seed=1, sample=1):
+  Structure:             ./openfold_out/my_complex/seed_1/my_complex_seed_1_sample_1_model.cif
+  Atoms:                 1247
+  avg_pLDDT [0–100]:     87.4200
+  gPDE (Å):              1.2300
+  pTM [0–1]:             0.8800
+  ipTM [0–1]:            0.7600
+  Disorder:              0.1200
+  has_clash:             0.0000
+  Ranking score:         0.8200
+  Max PAE (Å):           4.1000
+
+  Per-chain pTM:
+    chain 1: 0.8800
+    chain 2: 0.8000
+
+  Chain-pair ipTM:
+    (1, 2): 0.7600
+
+Per-atom pLDDT summary:
+  Min:    61.2
+  Median: 89.5
+  Max:    98.3
+  Very high (≥90): 823 atoms
+  High    (70–90): 381 atoms
+  Low     (50–70):  43 atoms
+  Very low  (<50):   0 atoms
+```
+
+**Run inference then parse:**
+
+```bash
+binding-metrics-openfold run \
+    --query-json query.json \
+    --output-dir ./openfold_out \
+    --query-name my_complex \
+    --num-samples 5 --num-seeds 1
+```
+
+Options:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--seed` | 1 | Seed index to parse |
+| `--sample` | 1 | Sample index to parse |
+| `--include-matrices` | off | Include full PDE/PAE matrices in output |
+| `--num-samples` | 5 | Diffusion samples per query (run only) |
+| `--num-seeds` | 1 | Random seeds per query (run only) |
+| `--no-msa-server` | off | Disable ColabFold MSA server (run only) |
+| `--presets` | `predict pae_enabled low_mem` | Model config presets (run only) |
+| `--ckpt` | auto | Model checkpoint path (run only) |
+| `--runner-yaml` | none | Explicit YAML config; overrides `--presets` (run only) |
+
 ### `binding-metrics-relax`
 
 Run implicit-solvent energy minimization on a structure.
@@ -282,6 +396,68 @@ Count cross-chain salt bridges by distance between charged atoms (LYS/ARG/HIS �
 
 Lightweight SASA-only calculation (totals, no per-atom decomposition).
 
+### OpenFold3
+
+#### `compute_openfold_metrics(output_dir, query_name, seed=1, sample=1, include_matrices=False) → dict`
+
+Parse confidence metrics from an OpenFold3 output directory. Reads `*_confidences_aggregated.json` for scalar scores and `*_confidences.json` (or `.npz`) for per-atom arrays.
+
+**Returns:**
+
+```python
+{
+    "query_name": str,
+    "seed": int,
+    "sample": int,
+    "structure_path": str | None,   # path to the .cif/.pdb file
+
+    # Scalar confidence metrics (NaN if PAE head disabled or file absent)
+    "avg_plddt": float,             # mean pLDDT across all atoms [0–100]
+    "gpde": float,                  # global predicted distance error (Å)
+    "ptm": float,                   # predicted TM-score [0–1]
+    "iptm": float,                  # interface pTM [0–1] (NaN for monomers)
+    "disorder": float,              # avg relative SASA [0–1]
+    "has_clash": float,             # 1.0 if steric clashes detected
+    "sample_ranking_score": float,  # composite ranking score
+    "chain_ptm": dict,              # {chain_id: float}
+    "chain_pair_iptm": dict,        # {"(A, B)": float}
+    "bespoke_iptm": dict,           # {"(A, B)": float}
+
+    # Per-atom data
+    "plddt_per_atom": np.ndarray,   # shape (n_atoms,)
+    "n_atoms": int,
+    "pde": np.ndarray | None,       # (n_tokens, n_tokens) — only if include_matrices=True
+    "pae": np.ndarray | None,       # (n_tokens, n_tokens) — only if include_matrices=True
+    "max_pae": float,               # max PAE value (Å); computed regardless of include_matrices
+
+    "timing": dict,                 # from timing.json; empty if absent
+}
+```
+
+#### `run_openfold(query_json, output_dir, ...) → Path`
+
+Run OpenFold3 inference as a subprocess (`run_openfold predict`). Requires OpenFold3 installed and `setup_openfold` completed. Returns the output directory path.
+
+Key arguments:
+
+| Argument | Default | Description |
+|---|---|---|
+| `num_diffusion_samples` | 5 | Structures sampled per query |
+| `num_model_seeds` | 1 | Random seeds per query |
+| `use_msa_server` | True | Use ColabFold server for MSAs |
+| `model_presets` | `["predict", "pae_enabled", "low_mem"]` | Model configuration presets (see below) |
+| `runner_yaml` | None | Explicit YAML config; overrides `model_presets` |
+
+**Available model presets** (passed via auto-generated `runner_config.yaml`):
+
+| Preset | Effect |
+|---|---|
+| `"predict"` | Required base preset for inference |
+| `"pae_enabled"` | Enable PAE head — required for pTM, ipTM, disorder, chain scores, and by the official OpenFold3 weights |
+| `"low_mem"` | Memory-efficient mode: pairformer embeddings computed sequentially. Recommended for large complexes or limited GPU memory; note significant slowdown with many diffusion samples |
+
+The input JSON format is described in the [OpenFold3 documentation](https://openfold-3.readthedocs.io/en/latest/input_format.html).
+
 ### Force-field energy
 
 #### `compute_interaction_energy(input_path, peptide_chain=None, receptor_chain=None, solvent_model="obc2", device="cuda", modes=("raw", "relaxed", "after_md"), ...) → dict`
@@ -353,3 +529,4 @@ pytest -m "not gpu and not slow"
 - Krissinel, E. & Henrick, K. (2007). Inference of macromolecular assemblies from crystalline state. *J. Mol. Biol.* 372, 774–797. https://doi.org/10.1016/j.jmb.2007.05.022
 - Eisenberg, D. & McLachlan, A.D. (1986). Solvation energy in protein folding and binding. *Nature* 319, 199–203.
 - Eastman, P. et al. (2017). OpenMM 7: Rapid development of high performance algorithms for molecular dynamics. *PLOS Comput. Biol.* 13, e1005659.
+- Ahdritz, G. et al. (2024). OpenFold3: An open-source, trainable implementation of AlphaFold3. GitHub: https://github.com/aqlaboratory/openfold-3
