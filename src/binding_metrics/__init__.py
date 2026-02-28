@@ -8,6 +8,7 @@ from binding_metrics.metrics.comparison import compute_structure_rmsd
 from binding_metrics.metrics.energy import compute_interaction_energy
 from binding_metrics.metrics.hbonds import compute_hbonds, compute_saltbridges
 from binding_metrics.metrics.interface import compute_interface_metrics
+from binding_metrics.metrics.openfold import compute_openfold_metrics, run_openfold
 from binding_metrics.metrics.sasa import compute_delta_sasa_static
 from binding_metrics.protocols.base import ProtocolResults
 from binding_metrics.protocols.peptide import PeptideBindingProtocol
@@ -39,5 +40,7 @@ __all__ = [
     "compute_hbonds",
     "compute_saltbridges",
     "compute_interface_metrics",
+    "compute_openfold_metrics",
+    "run_openfold",
     "compute_delta_sasa_static",
 ]
