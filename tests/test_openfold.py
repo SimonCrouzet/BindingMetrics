@@ -343,9 +343,10 @@ class TestWriteRunnerYaml:
 
         yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled", "low_mem"])
         content = yaml_path.read_text()
-        # All three presets present
         for p in ("predict", "pae_enabled", "low_mem"):
             assert p in content
+
+    def test_chain_metrics(self, tmp_path):
         from binding_metrics.metrics.openfold import compute_openfold_metrics
 
         agg = _default_agg(n_chains=2)
@@ -355,3 +356,187 @@ class TestWriteRunnerYaml:
         assert "1" in metrics["chain_ptm"]
         assert "2" in metrics["chain_ptm"]
         assert "(1, 2)" in metrics["chain_pair_iptm"]
+
+
+# ---------------------------------------------------------------------------
+# Real-world integration tests using data/example.pdb
+# ---------------------------------------------------------------------------
+
+EXAMPLE_PDB = Path("data/example.pdb")
+requires_example_pdb = pytest.mark.skipif(
+    not EXAMPLE_PDB.exists(), reason="data/example.pdb not found"
+)
+
+
+def _count_pdb_atoms(pdb_path: Path) -> int:
+    return sum(
+        1 for l in pdb_path.read_text().splitlines()
+        if l.startswith(("ATOM  ", "HETATM"))
+    )
+
+
+def _count_pdb_residues(pdb_path: Path) -> int:
+    residues = set()
+    for l in pdb_path.read_text().splitlines():
+        if l.startswith(("ATOM  ", "HETATM")):
+            try:
+                residues.add((l[21], int(l[22:26])))
+            except ValueError:
+                pass
+    return len(residues)
+
+
+def _pdb_chains(pdb_path: Path) -> set:
+    return {
+        l[21] for l in pdb_path.read_text().splitlines()
+        if l.startswith(("ATOM  ", "HETATM"))
+    }
+
+
+def _make_openfold3_dir_from_pdb(
+    tmp_path: Path,
+    query_name: str,
+    pdb_src: Path,
+    seed: int = 1,
+    sample: int = 1,
+    agg: dict | None = None,
+    with_conf_json: bool = True,
+) -> Path:
+    """Create a realistic OpenFold3 output dir using a real PDB as structure."""
+    import shutil
+
+    seed_dir = tmp_path / query_name / f"seed_{seed}"
+    seed_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"{query_name}_seed_{seed}_sample_{sample}"
+
+    shutil.copy(pdb_src, seed_dir / f"{prefix}_model.pdb")
+
+    n_atoms = _count_pdb_atoms(pdb_src)
+    n_residues = _count_pdb_residues(pdb_src)
+
+    if agg is None:
+        chains = sorted(_pdb_chains(pdb_src))
+        agg = {
+            "avg_plddt": 82.5,
+            "gpde": 1.45,
+            "ptm": 0.86,
+            "iptm": 0.73,
+            "disorder": 0.08,
+            "has_clash": 0.0,
+            "sample_ranking_score": 0.79,
+            "chain_ptm": {c: 0.85 for c in chains},
+            "chain_pair_iptm": {f"({chains[0]}, {chains[1]})": 0.73} if len(chains) >= 2 else {},
+            "bespoke_iptm": {},
+        }
+    (seed_dir / f"{prefix}_confidences_aggregated.json").write_text(json.dumps(agg))
+
+    if with_conf_json:
+        rng = np.random.default_rng(42)
+        conf = {
+            "plddt": rng.uniform(50, 100, n_atoms).tolist(),
+            "pae": rng.uniform(0, 8, (n_residues, n_residues)).tolist(),
+            "gpde": 1.45,
+        }
+        (seed_dir / f"{prefix}_confidences.json").write_text(json.dumps(conf))
+
+    (seed_dir / "timing.json").write_text(json.dumps({"inference": 38.4}))
+    return tmp_path
+
+
+class TestRealWorldIntegration:
+    """Integration tests that parse outputs built around data/example.pdb."""
+
+    @requires_example_pdb
+    def test_parse_confidences_with_real_atom_count(self, tmp_path):
+        """_parse_confidences handles a per-atom array sized to the real PDB."""
+        from binding_metrics.metrics.openfold import _parse_confidences
+
+        n_atoms = _count_pdb_atoms(EXAMPLE_PDB)
+        n_residues = _count_pdb_residues(EXAMPLE_PDB)
+        rng = np.random.default_rng(0)
+        conf = {
+            "plddt": rng.uniform(50, 100, n_atoms).tolist(),
+            "pae": rng.uniform(0, 8, (n_residues, n_residues)).tolist(),
+            "gpde": 1.2,
+        }
+        path = tmp_path / "conf.json"
+        path.write_text(json.dumps(conf))
+
+        result = _parse_confidences(path)
+
+        assert result["plddt_per_atom"].shape == (n_atoms,)
+        assert result["pae"].shape == (n_residues, n_residues)
+        assert result["gpde"] == pytest.approx(1.2)
+
+    @requires_example_pdb
+    def test_find_prediction_files_locates_real_pdb(self, tmp_path):
+        """_find_prediction_files finds the PDB copied into the output structure."""
+        import shutil
+        from binding_metrics.metrics.openfold import _find_prediction_files
+
+        seed_dir = tmp_path / "example" / "seed_1"
+        seed_dir.mkdir(parents=True)
+        shutil.copy(EXAMPLE_PDB, seed_dir / "example_seed_1_sample_1_model.pdb")
+
+        files = _find_prediction_files(tmp_path, "example", seed=1, sample=1)
+        assert files["structure"] is not None
+        assert files["structure"].suffix == ".pdb"
+
+    @requires_example_pdb
+    def test_compute_openfold_metrics_full_pipeline(self, tmp_path):
+        """compute_openfold_metrics works end-to-end with a real PDB structure."""
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        n_atoms = _count_pdb_atoms(EXAMPLE_PDB)
+        out_dir = _make_openfold3_dir_from_pdb(tmp_path, "example", EXAMPLE_PDB)
+        metrics = compute_openfold_metrics(out_dir, "example")
+
+        assert metrics["structure_path"] is not None
+        assert metrics["structure_path"].endswith(".pdb")
+        assert metrics["n_atoms"] == n_atoms
+        assert metrics["avg_plddt"] == pytest.approx(82.5)
+        assert metrics["ptm"] == pytest.approx(0.86)
+        assert metrics["iptm"] == pytest.approx(0.73)
+        assert not np.isnan(metrics["max_pae"])
+        assert metrics["timing"]["inference"] == pytest.approx(38.4)
+
+    @requires_example_pdb
+    def test_per_atom_plddt_shape_matches_pdb(self, tmp_path):
+        """plddt_per_atom length equals the atom count in the real PDB."""
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        n_atoms = _count_pdb_atoms(EXAMPLE_PDB)
+        out_dir = _make_openfold3_dir_from_pdb(tmp_path, "example", EXAMPLE_PDB)
+        metrics = compute_openfold_metrics(out_dir, "example")
+
+        assert metrics["plddt_per_atom"] is not None
+        assert len(metrics["plddt_per_atom"]) == n_atoms
+
+    @requires_example_pdb
+    def test_no_conf_json_still_returns_agg_metrics(self, tmp_path):
+        """When no confidences.json, scalar metrics still come from aggregated JSON."""
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        out_dir = _make_openfold3_dir_from_pdb(
+            tmp_path, "example", EXAMPLE_PDB, with_conf_json=False
+        )
+        metrics = compute_openfold_metrics(out_dir, "example")
+
+        assert metrics["avg_plddt"] == pytest.approx(82.5)
+        assert metrics["ptm"] == pytest.approx(0.86)
+        assert metrics["plddt_per_atom"] is None
+        assert metrics["n_atoms"] == 0
+
+    @requires_example_pdb
+    def test_chain_scores_match_pdb_chains(self, tmp_path):
+        """chain_ptm keys match the actual chains present in the PDB."""
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        chains = sorted(_pdb_chains(EXAMPLE_PDB))
+        out_dir = _make_openfold3_dir_from_pdb(tmp_path, "example", EXAMPLE_PDB)
+        metrics = compute_openfold_metrics(out_dir, "example")
+
+        for c in chains:
+            assert c in metrics["chain_ptm"]
+        pair_key = f"({chains[0]}, {chains[1]})"
+        assert pair_key in metrics["chain_pair_iptm"]
