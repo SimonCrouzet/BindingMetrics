@@ -30,7 +30,7 @@ dependencies = [
 simulation = ["openmm>=8.0"]
 analysis   = ["mdtraj>=1.9"]
 structure  = ["pdbfixer>=1.9", "gemmi>=0.6"]
-biotite    = ["biotite>=0.41", "hydride"]
+biotite    = ["biotite>=0.41", "hydride", "scipy>=1.10"]
 openfold   = ["openfold"]
 all = [
     "openmm>=8.0",
@@ -48,6 +48,8 @@ binding-metrics-energy = "binding_metrics.metrics.energy:main"
 binding-metrics-interface = "binding_metrics.metrics.interface:main"
 binding-metrics-compare = "binding_metrics.metrics.comparison:main"
 binding-metrics-openfold = "binding_metrics.metrics.openfold:main"
+binding-metrics-electrostatics = "binding_metrics.metrics.electrostatics:main"
+binding-metrics-geometry = "binding_metrics.metrics.geometry:main"
 
 [project.urls]
 Homepage = "https://github.com/binding-metrics/binding-metrics"
