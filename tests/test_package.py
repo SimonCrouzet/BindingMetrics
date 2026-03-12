@@ -2,6 +2,8 @@
 
 import pytest
 
+from conftest import BEST_PLATFORM
+
 
 class TestPackageImports:
     """Test that all public API is importable."""
@@ -91,13 +93,22 @@ class TestPackageImports:
             "ImplicitRelaxation",
             "RelaxationConfig",
             "RelaxationResult",
-            # Metrics
+            # Metrics (existing)
             "compute_interaction_energy",
             "compute_structure_rmsd",
             "compute_hbonds",
             "compute_saltbridges",
             "compute_interface_metrics",
             "compute_delta_sasa_static",
+            "compute_openfold_metrics",
+            "run_openfold",
+            # Metrics (new)
+            "compute_coulomb_cross_chain",
+            "compute_ramachandran",
+            "compute_omega_planarity",
+            "compute_shape_complementarity",
+            "compute_buried_void_volume",
+            "compute_receptor_drift",
         }
 
         assert set(binding_metrics.__all__) == expected
@@ -177,7 +188,7 @@ class TestTypicalUsage:
         config = SimulationConfig(
             duration_ns=1.0,
             temperature=300.0,
-            platform="CPU",
+            platform=BEST_PLATFORM,
         )
 
         protocol = PeptideBindingProtocol(

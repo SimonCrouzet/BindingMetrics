@@ -1,9 +1,13 @@
 """Pytest configuration and shared fixtures."""
 
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+# Allow `from conftest import ...` in test files
+sys.path.insert(0, str(Path(__file__).parent))
 
 # ---------------------------------------------------------------------------
 # GPU / CUDA availability
@@ -17,6 +21,9 @@ except Exception:
     HAS_CUDA = False
 
 requires_cuda = pytest.mark.skipif(not HAS_CUDA, reason="CUDA GPU not available")
+
+# Best available OpenMM platform: CUDA if available, otherwise CPU
+BEST_PLATFORM = "CUDA" if HAS_CUDA else "CPU"
 
 
 # Path to real example PDB for integration tests

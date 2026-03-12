@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from conftest import BEST_PLATFORM
 from binding_metrics.core.simulation import SimulationConfig
 from binding_metrics.protocols.base import BaseProtocol, ProtocolResults
 from binding_metrics.protocols.peptide import PeptideBindingProtocol
@@ -156,7 +157,7 @@ class TestPeptideBindingProtocol:
 
     def test_init_with_custom_config(self, sample_pdb_path: Path):
         """Should accept custom simulation config."""
-        config = SimulationConfig(duration_ns=1.0, platform="CPU")
+        config = SimulationConfig(duration_ns=1.0, platform=BEST_PLATFORM)
         protocol = PeptideBindingProtocol(
             pdb_path=sample_pdb_path,
             ligand_chain="B",
@@ -165,7 +166,7 @@ class TestPeptideBindingProtocol:
         )
 
         assert protocol.simulation_config.duration_ns == 1.0
-        assert protocol.simulation_config.platform == "CPU"
+        assert protocol.simulation_config.platform == BEST_PLATFORM
 
     def test_init_with_charmm(self, sample_pdb_path: Path):
         """Should accept CHARMM force field."""
@@ -234,7 +235,7 @@ class TestPeptideBindingProtocol:
             duration_ns=0.0001,  # Very short for testing
             equilibration_ns=0.00001,
             save_interval_ps=0.01,
-            platform="CPU",
+            platform=BEST_PLATFORM,
         )
 
         protocol = PeptideBindingProtocol(
