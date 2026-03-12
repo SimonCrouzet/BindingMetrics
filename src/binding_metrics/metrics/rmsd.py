@@ -143,3 +143,110 @@ def calculate_ligand_rmsd(
         "ligand_rmsd": ligand_rmsd,
         "receptor_rmsd": receptor_rmsd,
     }
+
+
+def compute_receptor_drift(
+    trajectory_path: str | Path,
+    topology_path: str | Path,
+    receptor_chain: str,
+    reference_frame: int = 0,
+) -> dict:
+    """Compute receptor backbone drift over a trajectory.
+
+    Measures how much the receptor chain drifts from the reference frame,
+    both as aligned (conformational) drift and absolute (raw) drift.
+    Absolute drift is set to NaN when periodic boundary conditions are
+    detected, as PBC makes raw displacement physically meaningless.
+
+    Type: score
+
+    Args:
+        trajectory_path: Path to trajectory file
+        topology_path: Path to topology/PDB file
+        receptor_chain: Chain ID of the receptor (e.g. "A")
+        reference_frame: Frame index to use as reference (default 0)
+
+    Returns:
+        Dictionary with keys:
+
+        Scores:
+            drift_aligned_mean (float): Mean conformational drift in Å
+                (after superposition on receptor Cα atoms)
+            drift_aligned_max (float): Maximum conformational drift in Å
+            drift_raw_mean (float): Mean absolute drift in Å; NaN if PBC detected
+            drift_raw_max (float): Maximum absolute drift in Å; NaN if PBC detected
+            pbc_detected (bool): True if periodic boundary conditions found
+
+        Features:
+            drift_aligned_per_frame (np.ndarray): Per-frame aligned drift (n_frames,) in Å
+            drift_raw_per_frame (np.ndarray): Per-frame raw drift (n_frames,) in Å;
+                NaN array if PBC detected
+            n_receptor_ca (int): Number of receptor Cα atoms used
+            n_frames (int): Total number of frames in trajectory
+    """
+    if md is None:
+        raise ImportError(
+            "mdtraj is required for receptor drift calculations. "
+            "Install with: pip install binding-metrics[analysis]"
+        )
+
+    traj = md.load(str(trajectory_path), top=str(topology_path))
+
+    # Select receptor Cα atoms
+    ca_indices = []
+    for atom in traj.topology.atoms:
+        if atom.name != "CA":
+            continue
+        chain_id = getattr(atom.residue.chain, "chain_id", str(atom.residue.chain.index))
+        if chain_id == receptor_chain:
+            ca_indices.append(atom.index)
+
+    if len(ca_indices) == 0:
+        nan_arr = np.full(traj.n_frames, np.nan)
+        return {
+            "drift_aligned_mean": np.nan,
+            "drift_aligned_max": np.nan,
+            "drift_raw_mean": np.nan,
+            "drift_raw_max": np.nan,
+            "pbc_detected": traj.unitcell_lengths is not None,
+            "drift_aligned_per_frame": nan_arr,
+            "drift_raw_per_frame": nan_arr,
+            "n_receptor_ca": 0,
+            "n_frames": traj.n_frames,
+        }
+
+    ca_idx_arr = np.array(ca_indices)
+
+    # Aligned drift: MDTraj superpose on Cα and compute RMSD (nm → Å)
+    drift_aligned = md.rmsd(traj, traj, reference_frame, atom_indices=ca_idx_arr) * 10.0
+
+    # PBC detection
+    pbc_detected = traj.unitcell_lengths is not None
+
+    # Raw drift: per-frame RMSD of positions relative to reference frame (nm → Å)
+    if pbc_detected:
+        drift_raw = np.full(traj.n_frames, np.nan)
+        drift_raw_mean = np.nan
+        drift_raw_max = np.nan
+    else:
+        # xyz shape: (n_frames, n_atoms, 3) in nm
+        pos_all = traj.xyz[:, ca_idx_arr, :]  # (n_frames, n_ca, 3)
+        pos_ref = pos_all[reference_frame]     # (n_ca, 3)
+        diff = pos_all - pos_ref[np.newaxis, :, :]  # (n_frames, n_ca, 3)
+        drift_raw = np.sqrt(np.mean(np.sum(diff ** 2, axis=2), axis=1)) * 10.0
+        drift_raw_mean = float(np.mean(drift_raw))
+        drift_raw_max = float(np.max(drift_raw))
+
+    return {
+        # scores
+        "drift_aligned_mean": float(np.mean(drift_aligned)),
+        "drift_aligned_max": float(np.max(drift_aligned)),
+        "drift_raw_mean": drift_raw_mean if not pbc_detected else np.nan,
+        "drift_raw_max": drift_raw_max if not pbc_detected else np.nan,
+        "pbc_detected": pbc_detected,
+        # features
+        "drift_aligned_per_frame": drift_aligned,
+        "drift_raw_per_frame": drift_raw,
+        "n_receptor_ca": len(ca_indices),
+        "n_frames": traj.n_frames,
+    }
