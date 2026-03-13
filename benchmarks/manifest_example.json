@@ -1,0 +1,63 @@
+{
+  "_comment": "Example manifest for benchmarks/run.py. Copy to your dataset directory as manifest.json.",
+
+  "structures": [
+    {
+      "path": "small_8mer.pdb",
+      "label": "small (8-mer peptide)",
+      "design_chain": "B"
+    },
+    {
+      "path": "medium_20mer.cif",
+      "label": "medium (20-mer peptide)"
+    },
+    {
+      "path": "large_50mer.cif",
+      "label": "large (50-mer peptide)"
+    }
+  ],
+
+  "trajectories": [
+    {
+      "trajectory": "short_run.dcd",
+      "topology": "complex.pdb",
+      "label": "short MD (10 ns)",
+      "ligand_chain": "B",
+      "receptor_chain": "A"
+    },
+    {
+      "trajectory": "long_run.dcd",
+      "topology": "complex.cif",
+      "label": "long MD (100 ns)",
+      "ligand_chain": "B",
+      "receptor_chain": "A"
+    }
+  ],
+
+  "simulations": [
+    {
+      "path": "small_8mer.cif",
+      "label": "small MD",
+      "md": {
+        "md_duration_ps": 200,
+        "md_timestep_fs": 2.0,
+        "md_temperature_k": 300.0,
+        "md_friction": 1.0,
+        "md_save_interval_ps": 10.0,
+        "min_steps_initial": 1000,
+        "min_steps_restrained": 500,
+        "min_steps_final": 2000,
+        "solvent_model": "obc2",
+        "device": "cuda"
+      }
+    },
+    {
+      "path": "large_50mer.pdb",
+      "label": "large MD",
+      "md": {
+        "md_duration_ps": 200,
+        "device": "cuda"
+      }
+    }
+  ]
+}
