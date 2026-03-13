@@ -34,10 +34,11 @@ def _import_biotite():
     try:
         import biotite.structure as struc
         import biotite.structure.io.pdbx as pdbx
+        import biotite.structure.io.pdb as pdb_io
         from biotite.structure.sasa import sasa as biotite_sasa
         from biotite.structure.info import vdw_radius_single
 
-        return struc, pdbx, biotite_sasa, vdw_radius_single
+        return struc, pdbx, pdb_io, biotite_sasa, vdw_radius_single
     except ImportError:
         raise ImportError(
             "biotite is required for interface metrics. "
@@ -46,17 +47,25 @@ def _import_biotite():
 
 
 def load_biotite_structure(cif_path: str | Path):
-    """Load a CIF file as a biotite AtomArray.
+    """Load a PDB or CIF file as a biotite AtomArray.
 
     Args:
-        cif_path: Path to CIF file
+        cif_path: Path to CIF or PDB file
 
     Returns:
         biotite AtomArray
     """
-    _, pdbx, _, _ = _import_biotite()
-    pdbx_file = pdbx.CIFFile.read(str(cif_path))
-    return pdbx.get_structure(pdbx_file, model=1, extra_fields=["charge"])
+    _, pdbx, pdb_io, _, _ = _import_biotite()
+    path = Path(cif_path)
+    if path.suffix.lower() in (".cif", ".mmcif"):
+        pdbx_file = pdbx.CIFFile.read(str(path))
+        try:
+            return pdbx.get_structure(pdbx_file, model=1, extra_fields=["charge"])
+        except Exception:
+            return pdbx.get_structure(pdbx_file, model=1)
+    else:
+        pdb_file = pdb_io.PDBFile.read(str(path))
+        return pdb_io.get_structure(pdb_file, model=1)
 
 
 def detect_interface_chains(
@@ -243,11 +252,10 @@ def compute_interface_metrics(
     """
     from binding_metrics.metrics.hbonds import compute_hbonds, compute_saltbridges
 
-    _, pdbx, sasa_fn, vdw_fn = _import_biotite()
+    _, _, _, sasa_fn, vdw_fn = _import_biotite()
 
     cif_path = Path(cif_path)
-    pdbx_file = pdbx.CIFFile.read(str(cif_path))
-    atoms = pdbx.get_structure(pdbx_file, model=1, extra_fields=["charge"])
+    atoms = load_biotite_structure(cif_path)
 
     if design_chain is None or receptor_chain is None:
         auto_pep, auto_rec = detect_interface_chains(atoms, design_chain)

@@ -160,8 +160,14 @@ def compute_delta_sasa_static(
             "Install with: pip install binding-metrics[biotite]"
         )
 
-    pdbx_file = pdbx.CIFFile.read(str(cif_path))
-    atoms = pdbx.get_structure(pdbx_file, model=1)
+    path = Path(cif_path)
+    if path.suffix.lower() in (".cif", ".mmcif"):
+        pdbx_file = pdbx.CIFFile.read(str(path))
+        atoms = pdbx.get_structure(pdbx_file, model=1)
+    else:
+        import biotite.structure.io.pdb as pdb_io
+        pdb_file = pdb_io.PDBFile.read(str(path))
+        atoms = pdb_io.get_structure(pdb_file, model=1)
 
     peptide_mask = atoms.chain_id == peptide_chain
     receptor_mask = atoms.chain_id == receptor_chain

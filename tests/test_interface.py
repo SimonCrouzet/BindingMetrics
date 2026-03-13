@@ -234,3 +234,124 @@ class TestLoadBiotiteStructure:
         atoms = load_biotite_structure(EXAMPLE_CIF)
         assert isinstance(atoms, struc.AtomArray)
         assert len(atoms) > 0
+
+    @requires_biotite
+    def test_loads_pdb(self, sample_pdb_path):
+        import biotite.structure as struc
+        from binding_metrics.metrics.interface import load_biotite_structure
+
+        atoms = load_biotite_structure(sample_pdb_path)
+        assert isinstance(atoms, struc.AtomArray)
+        assert len(atoms) > 0
+
+    @requires_biotite
+    def test_pdb_chains_preserved(self, sample_pdb_path):
+        import numpy as np
+        from binding_metrics.metrics.interface import load_biotite_structure
+
+        atoms = load_biotite_structure(sample_pdb_path)
+        chains = set(np.unique(atoms.chain_id))
+        assert "A" in chains
+        assert "B" in chains
+
+
+class TestComputeInterfaceMetricsPDB:
+    """Verify compute_interface_metrics accepts PDB in addition to CIF."""
+
+    @requires_biotite
+    def test_runs_on_pdb(self, sample_pdb_path):
+        from binding_metrics.metrics.interface import compute_interface_metrics
+
+        result = compute_interface_metrics(
+            sample_pdb_path, design_chain="B", receptor_chain="A"
+        )
+        assert isinstance(result, dict)
+
+    @requires_biotite
+    def test_returns_expected_keys_pdb(self, sample_pdb_path):
+        from binding_metrics.metrics.interface import compute_interface_metrics
+
+        result = compute_interface_metrics(
+            sample_pdb_path, design_chain="B", receptor_chain="A"
+        )
+        expected_keys = {
+            "peptide_chain", "receptor_chain",
+            "delta_sasa", "sasa_peptide", "sasa_receptor", "sasa_complex",
+            "delta_g_int", "delta_g_int_kJ",
+            "polar_area", "apolar_area", "fraction_polar",
+            "n_interface_residues_peptide", "n_interface_residues_receptor",
+            "interface_residues_peptide", "interface_residues_receptor",
+            "per_residue", "hbonds", "saltbridges",
+        }
+        assert set(result.keys()) == expected_keys
+
+    @requires_biotite
+    def test_chain_ids_correct_pdb(self, sample_pdb_path):
+        from binding_metrics.metrics.interface import compute_interface_metrics
+
+        result = compute_interface_metrics(
+            sample_pdb_path, design_chain="B", receptor_chain="A"
+        )
+        assert result["peptide_chain"] == "B"
+        assert result["receptor_chain"] == "A"
+
+    @requires_biotite
+    def test_sasa_values_finite_pdb(self, sample_pdb_path):
+        from binding_metrics.metrics.interface import compute_interface_metrics
+
+        result = compute_interface_metrics(
+            sample_pdb_path, design_chain="B", receptor_chain="A"
+        )
+        assert np.isfinite(result["sasa_peptide"])
+        assert np.isfinite(result["sasa_receptor"])
+        assert np.isfinite(result["sasa_complex"])
+        assert result["sasa_peptide"] > 0
+        assert result["sasa_receptor"] > 0
+
+
+class TestComputeDeltaSasaStatic:
+    """Tests for compute_delta_sasa_static — CIF and PDB support."""
+
+    @requires_biotite
+    def test_runs_on_pdb(self, sample_pdb_path):
+        from binding_metrics.metrics.sasa import compute_delta_sasa_static
+
+        result = compute_delta_sasa_static(
+            sample_pdb_path, peptide_chain="B", receptor_chain="A"
+        )
+        assert isinstance(result, dict)
+
+    @requires_biotite
+    def test_returns_expected_keys_pdb(self, sample_pdb_path):
+        from binding_metrics.metrics.sasa import compute_delta_sasa_static
+
+        result = compute_delta_sasa_static(
+            sample_pdb_path, peptide_chain="B", receptor_chain="A"
+        )
+        assert set(result.keys()) == {
+            "delta_sasa", "sasa_peptide", "sasa_receptor", "sasa_complex"
+        }
+
+    @requires_biotite
+    def test_sasa_values_positive_pdb(self, sample_pdb_path):
+        from binding_metrics.metrics.sasa import compute_delta_sasa_static
+
+        result = compute_delta_sasa_static(
+            sample_pdb_path, peptide_chain="B", receptor_chain="A"
+        )
+        assert result["sasa_peptide"] > 0
+        assert result["sasa_receptor"] > 0
+        assert result["sasa_complex"] > 0
+
+    @requires_biotite
+    @pytest.mark.integration
+    def test_runs_on_cif(self):
+        from binding_metrics.metrics.sasa import compute_delta_sasa_static
+
+        if not EXAMPLE_CIF.exists():
+            pytest.skip("Test CIF not available")
+
+        result = compute_delta_sasa_static(
+            EXAMPLE_CIF, peptide_chain="A", receptor_chain="B"
+        )
+        assert np.isfinite(result["delta_sasa"])
