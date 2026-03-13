@@ -344,6 +344,7 @@ def _extract_chain(topology, positions, chain_id: str):
     from openmm.app import Topology
     new_topology = Topology()
     new_positions = []
+    old_to_new: dict[int, object] = {}
 
     for chain in topology.chains():
         if chain.id == chain_id:
@@ -351,8 +352,15 @@ def _extract_chain(topology, positions, chain_id: str):
             for residue in chain.residues():
                 new_residue = new_topology.addResidue(residue.name, new_chain)
                 for atom in residue.atoms():
-                    new_topology.addAtom(atom.name, atom.element, new_residue)
+                    new_atom = new_topology.addAtom(atom.name, atom.element, new_residue)
+                    old_to_new[atom.index] = new_atom
                     new_positions.append(positions[atom.index])
+
+    # Copy bonds that are entirely within the extracted chain
+    for bond in topology.bonds():
+        a1, a2 = bond.atom1, bond.atom2
+        if a1.index in old_to_new and a2.index in old_to_new:
+            new_topology.addBond(old_to_new[a1.index], old_to_new[a2.index])
 
     new_positions = unit.Quantity(
         np.array([[p.x, p.y, p.z] for p in new_positions]),
