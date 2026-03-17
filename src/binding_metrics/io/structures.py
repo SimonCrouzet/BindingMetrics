@@ -197,6 +197,38 @@ def save_cif(
         tmp_path.unlink(missing_ok=True)
 
 
+def save_structure(
+    topology,
+    positions,
+    output_path: str | Path,
+    source_path: Optional[str | Path] = None,
+) -> None:
+    """Save structure as PDB or CIF based on the output file extension.
+
+    Args:
+        topology: OpenMM Topology object
+        positions: OpenMM positions
+        output_path: Destination file (.pdb, .cif, or .mmcif)
+        source_path: Optional source file; if CIF, its metadata is preserved in output
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = output_path.suffix.lower()
+
+    if suffix in (".cif", ".mmcif"):
+        src = (
+            source_path
+            if source_path and Path(source_path).suffix.lower() in (".cif", ".mmcif")
+            else None
+        )
+        save_cif(topology, positions, output_path, source_cif_path=src)
+    elif suffix == ".pdb":
+        with open(output_path, "w") as f:
+            PDBFile.writeFile(topology, positions, f)
+    else:
+        raise ValueError(f"Unsupported output format: {suffix!r}. Use .pdb, .cif, or .mmcif")
+
+
 def get_residue_info(pdb_path: str | Path) -> list[dict]:
     """Get information about residues in the structure.
 
