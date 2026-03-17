@@ -40,6 +40,7 @@ pip install "binding-metrics[simulation]"   # OpenMM — force-field energy, MD
 pip install "binding-metrics[analysis]"     # MDTraj — trajectory metrics
 pip install "binding-metrics[structure]"    # PDBFixer + gemmi — structure repair, RMSD
 pip install "binding-metrics[biotite]"      # biotite + hydride + scipy — interface, geometry
+pip install "binding-metrics[report]"       # pandas + matplotlib — HTML report generation
 pip install "binding-metrics[all]"          # everything above
 ```
 
@@ -155,6 +156,22 @@ pd.DataFrame(rows).sort_values("relaxed_e_int").to_csv("scores.csv", index=False
 
 ## CLI Tools
 
+**Structure preparation**
+
+| Command | Description |
+|---|---|
+| `binding-metrics-prep` | Fix missing atoms/residues and add hydrogens (`--ph 7.4`) |
+| `binding-metrics-solvate` | Add explicit water box and ions for MD |
+
+These two commands are composable pipeline steps:
+
+```bash
+binding-metrics-prep    --input complex.cif --output cleaned.cif --ph 7.4
+binding-metrics-solvate --input cleaned.cif --output solvated.pdb
+```
+
+**Scoring**
+
 | Command | Description |
 |---|---|
 | `binding-metrics-interface` | PISA-inspired interface metrics |
@@ -165,7 +182,30 @@ pd.DataFrame(rows).sort_values("relaxed_e_int").to_csv("scores.csv", index=False
 | `binding-metrics-openfold` | Parse / run OpenFold3 confidence metrics |
 | `binding-metrics-relax` | Implicit-solvent energy minimization |
 
-All tools auto-detect peptide and receptor chains (smallest and largest protein chain). Pass `--design-chain` / `--receptor-chain` to override. See `--help` on each command for full options, or `METRICS.md` for detailed documentation.
+**Reporting**
+
+| Command | Description |
+|---|---|
+| `binding-metrics-report` | Generate a self-contained HTML report from a metrics CSV |
+
+```bash
+binding-metrics-report --input scores.csv --output report.html
+# With a custom config (overrides only the keys you specify):
+binding-metrics-report --input scores.csv --output report.html --config report.json
+```
+
+A minimal `report.json` example — only specify what you want to override:
+
+```json
+{
+  "title": "My Experiment",
+  "plots": ["delta_sasa_plot", "delta_g_int_plot", "hbonds_plot"],
+  "rank_by": "delta_g_int",
+  "top_n": 20
+}
+```
+
+All scoring tools auto-detect peptide and receptor chains (smallest and largest protein chain). Pass `--design-chain` / `--receptor-chain` to override. See `--help` on each command for full options, or `METRICS.md` for detailed documentation.
 
 ---
 
