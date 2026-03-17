@@ -39,8 +39,11 @@ all = [
     "gemmi>=0.6",
     "biotite>=0.41",
     "hydride",
+    "pandas>=1.5",
+    "matplotlib>=3.6",
 ]
-dev = ["pytest>=7.0", "ruff>=0.1"]
+report = ["pandas>=1.5", "matplotlib>=3.6"]
+dev    = ["pytest>=7.0", "ruff>=0.1"]
 
 [project.scripts]
 binding-metrics-relax = "binding_metrics.protocols.relaxation:main"
@@ -49,7 +52,10 @@ binding-metrics-interface = "binding_metrics.metrics.interface:main"
 binding-metrics-compare = "binding_metrics.metrics.comparison:main"
 binding-metrics-openfold = "binding_metrics.metrics.openfold:main"
 binding-metrics-electrostatics = "binding_metrics.metrics.electrostatics:main"
-binding-metrics-geometry = "binding_metrics.metrics.geometry:main"
+binding-metrics-geometry  = "binding_metrics.metrics.geometry:main"
+binding-metrics-prep      = "binding_metrics.protocols.prep:main"
+binding-metrics-solvate   = "binding_metrics.protocols.solvate:main"
+binding-metrics-report    = "binding_metrics.protocols.report:main"
 
 [project.urls]
 Homepage = "https://github.com/binding-metrics/binding-metrics"
