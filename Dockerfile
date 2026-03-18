@@ -1,7 +1,7 @@
 FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y wget && apt-get clean
+RUN apt-get update && apt-get install -y wget gcc && apt-get clean
 
 # Install Miniforge
 RUN wget -qO /tmp/miniforge.sh \
@@ -10,13 +10,9 @@ RUN wget -qO /tmp/miniforge.sh \
     rm /tmp/miniforge.sh
 ENV PATH=/opt/conda/bin:$PATH
 
-# Mirrors environment.yml: only conda-install what needs conda (GPU OpenMM + GAFF2)
-RUN mamba install -c conda-forge -y \
-    "python>=3.11" \
-    "openmm>=8.0" \
-    "openmmforcefields>=0.13" \
-    "openff-toolkit>=0.14" \
-    && conda clean -afy
-
 COPY . /opt/binding-metrics/
-RUN pip install "/opt/binding-metrics[all]"
+WORKDIR /opt/binding-metrics
+
+RUN mamba env create -f environment.yml && conda clean -afy
+
+ENV PATH=/opt/conda/envs/binding-metrics/bin:$PATH

@@ -16,7 +16,14 @@ dependencies:
   # GPU-ready OpenMM from conda-forge (handles CUDA/OpenCL binaries)
   - openmm>=8.0
 
+  # GAFF2/SMIRNOFF parameters for non-standard residues and small molecules
+  # (openmmforcefields bundles AmberTools atom-typers; conda-forge build is
+  #  preferred because it links the correct AmberTools native libs)
+  - openmmforcefields>=0.13
+  - openff-toolkit>=0.14
+
   # pip-installable extras (defined in pyproject.toml)
+  # For development, replace with: pip install -e ".[all,dev]"
   - pip
   - pip:
-      - -e ".[analysis,structure,biotite,dev]"
+      - ".[all]"
