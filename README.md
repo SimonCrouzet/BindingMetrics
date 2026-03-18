@@ -44,6 +44,34 @@ pip install "binding-metrics[report]"       # pandas + matplotlib — HTML repor
 pip install "binding-metrics[all]"          # everything above
 ```
 
+### Docker (GPU, recommended for production)
+
+A pre-built image is available on Docker Hub. It includes GPU-ready OpenMM (CUDA 12.2), all conda-forge dependencies, and the full `[all]` extras.
+
+```bash
+docker pull simoncrouzet/binding-metrics:latest
+```
+
+Run with GPU access (requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)):
+
+```bash
+docker run --gpus all --rm \
+    -v /path/to/your/structures:/data \
+    simoncrouzet/binding-metrics:latest \
+    binding-metrics-relax --input /data/complex.cif --output /data/relaxed.cif
+```
+
+To build the image locally from source:
+
+```bash
+docker build -t simoncrouzet/binding-metrics:latest .
+docker push simoncrouzet/binding-metrics:latest   # optional
+```
+
+The image is rebuilt and pushed to Docker Hub automatically on every push to `main` and on version tags (`v*`) via GitHub Actions.
+
+### OpenFold3
+
 OpenFold3 requires a separate install (GPU + model weights):
 
 ```bash
