@@ -10,20 +10,13 @@ RUN wget -qO /tmp/miniforge.sh \
     rm /tmp/miniforge.sh
 ENV PATH=/opt/conda/bin:$PATH
 
-RUN conda install -c conda-forge -y \
+# Mirrors environment.yml: only conda-install what needs conda (GPU OpenMM + GAFF2)
+RUN mamba install -c conda-forge -y \
+    "python>=3.11" \
     "openmm>=8.0" \
-    "pdbfixer>=1.9" \
-    "mdtraj>=1.9" \
-    "biotite>=0.41" \
-    hydride \
-    "gemmi>=0.6" \
-    "scipy>=1.10" \
-    numpy \
-    pandas \
-    matplotlib \
     "openmmforcefields>=0.13" \
     "openff-toolkit>=0.14" \
     && conda clean -afy
 
 COPY . /opt/binding-metrics/
-RUN pip install /opt/binding-metrics[all] --no-deps
+RUN pip install "/opt/binding-metrics[all]"
