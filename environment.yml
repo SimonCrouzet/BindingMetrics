@@ -1,11 +1,14 @@
 name: binding-metrics
 # Developer environment for BindingMetrics.
-# For GPU-accelerated OpenMM (CUDA support), conda-forge is the most reliable
-# source of pre-built binaries. All other dependencies are pip-installable.
+#
+# OpenMM is installed via pip (not conda-forge) to avoid CUDA PTX version
+# mismatches. pip's openmm[cuda12] is compiled against CUDA 12 which is
+# supported by all drivers >= 530. Use cuda13 if your driver supports it.
 #
 # Usage:
 #   conda env create -f environment.yml
 #   conda activate binding-metrics
+#   python -m openmm.testInstallation   # verify GPU is visible
 channels:
   - conda-forge
   - defaults
@@ -13,17 +16,15 @@ channels:
 dependencies:
   - python>=3.11
 
-  # GPU-ready OpenMM from conda-forge (handles CUDA/OpenCL binaries)
-  - openmm>=8.0
-
-  # GAFF2/SMIRNOFF parameters for non-standard residues and small molecules
-  # (openmmforcefields bundles AmberTools atom-typers; conda-forge build is
-  #  preferred because it links the correct AmberTools native libs)
+  # Select the CUDA 12 build of OpenMM explicitly via build string to avoid
+  # the CUDA_ERROR_UNSUPPORTED_PTX_VERSION that the default CUDA 13.2 build
+  # causes on drivers that only support up to CUDA 13.1.
+  - "openmm>=8.0 * *cuda12*"
+  - cuda-version=12*
   - openmmforcefields>=0.13
   - openff-toolkit>=0.14
 
   # pip-installable extras (defined in pyproject.toml)
-  # For development, replace with: pip install -e ".[all,dev]"
   - pip
   - pip:
-      - ".[all]"
+      - ".[all,dev]"

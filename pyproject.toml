@@ -27,11 +27,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-simulation = ["openmm>=8.0"]
+simulation = ["openmm>=8.0"]  # plain CPU build; for GPU use environment.yml
 analysis   = ["mdtraj>=1.9"]
 structure  = ["pdbfixer>=1.9", "gemmi>=0.6"]
 biotite    = ["biotite>=0.41", "hydride", "scipy>=1.10"]
 openfold   = ["openfold"]
+gaff       = []  # openmmforcefields + openff-toolkit are conda-forge only
 all = [
     "openmm>=8.0",
     "mdtraj>=1.9",
@@ -41,6 +42,7 @@ all = [
     "hydride",
     "pandas>=1.5",
     "matplotlib>=3.6",
+    # openmmforcefields + openff-toolkit are conda-forge only; install via environment.yml
 ]
 report = ["pandas>=1.5", "matplotlib>=3.6"]
 dev    = ["pytest>=7.0", "ruff>=0.1"]
