@@ -116,28 +116,21 @@ class RelaxationConfig:
     Default is ``"gaff-2.2.20"`` (latest stable at package release time).
     """
 
-    is_cyclic: bool = False
-    """Enable automatic cyclic peptide topology patching.
-
-    When True, the pipeline calls :func:`binding_metrics.core.cyclic.patch_cyclic_topology`
-    after PDBFixer heavy-atom repair but *before* hydrogen addition, so that
-    ``modeller.addHydrogens`` sees the correct internal-residue topology.
-
-    Supported cyclization types (auto-detected by inter-atom distance):
-        • head_to_tail  — backbone C(last)–N(first) amide
-        • disulfide     — CYS SG–SG (residues renamed CYX)
-        • lactam_n_asp  — ASP CG–N-terminus amide  (residue renamed ASPL)
-        • lactam_n_glu  — GLU CD–N-terminus amide  (residue renamed GLUL)
-        • lactam_c_lys  — LYS NZ–C-terminus amide  (residue renamed LYSL)
-
-    Unsupported types (hydrocarbon staples, thioethers, macrolactones, …)
-    raise a :class:`~binding_metrics.core.cyclic.CyclizationError` with
-    guidance on using ``custom_bond_handler`` with GAFF2/SMIRNOFF.
-
-    Ring-aware restraint protocol added when ``is_cyclic=True``:
-        Stage 0 — closure bond distance restraint (strong, before Stage 1)
-        Warmup MD — backbone φ/ψ dihedral restraints (10 ps, before production)
-    """
+    # Cyclization is always auto-detected; see patch_cyclic_topology.
+    # Supported types (detected by inter-atom distance):
+    #   • head_to_tail  — backbone C(last)–N(first) amide
+    #   • disulfide     — CYS SG–SG (residues renamed CYX)
+    #   • lactam_n_asp  — ASP CG–N-terminus amide  (residue renamed ASPL)
+    #   • lactam_n_glu  — GLU CD–N-terminus amide  (residue renamed GLUL)
+    #   • lactam_c_lys  — LYS NZ–C-terminus amide  (residue renamed LYSL)
+    #
+    # Unsupported types (hydrocarbon staples, thioethers, macrolactones, …)
+    # raise a CyclizationError with guidance on using custom_bond_handler
+    # with GAFF2/SMIRNOFF.
+    #
+    # Ring-aware restraint protocol (active when cyclization is detected):
+    #   Stage 0 — closure bond distance restraint (strong, before Stage 1)
+    #   Warmup MD — backbone φ/ψ dihedral restraints (10 ps, before production)
 
 
 @dataclass
@@ -476,51 +469,33 @@ class ImplicitRelaxation:
             load_nonstandard_xmls(ff, ns_info)
 
         # --- Cyclic peptide topology patching (before hydrogen addition) ---
-        # Must run here so addHydrogens sees internal-residue topology
-        # (no spurious terminal H/OXT, closure bond already present).
+        # Always auto-detect: linear peptides pass through unchanged.
+        # Must run here so addHydrogens sees the correct internal-residue topology.
         bond_info = []
-        if self.config.is_cyclic:
-            from binding_metrics.core.cyclic import (
-                CyclizationError,
-                patch_cyclic_topology,
-                load_extra_xmls,
-            )
-            print("  Patching cyclic peptide topology...")
-            topology, positions, bond_info = patch_cyclic_topology(
-                topology, positions, peptide_chain
-            )
-            if bond_info:
-                types = ", ".join(b.cyclic_type for b in bond_info)
-                print(f"  Detected cyclization(s): {types}")
-                load_extra_xmls(ff, bond_info)
-            else:
-                print("  Warning: is_cyclic=True but no cyclization detected. "
-                      "Proceeding as linear peptide.")
+        from binding_metrics.core.cyclic import (
+            CyclizationError,
+            patch_cyclic_topology,
+            load_extra_xmls,
+        )
+        topology, positions, bond_info = patch_cyclic_topology(
+            topology, positions, peptide_chain
+        )
+        if bond_info:
+            print(f"  Cyclic peptide detected — {len(bond_info)} bond(s):")
+            # Build a residue-name lookup: (chain_id, res_idx_in_chain) → res_name
+            res_name_map: dict = {}
+            for chain in topology.chains():
+                for i, res in enumerate(chain.residues()):
+                    res_name_map[(chain.id, i)] = res.name
+            for b in bond_info:
+                c1, r1, a1 = b.atom1_id
+                c2, r2, a2 = b.atom2_id
+                rname1 = res_name_map.get((c1, r1), "???")
+                rname2 = res_name_map.get((c2, r2), "???")
+                print(f"    {b.cyclic_type:<14}: {rname1}[{r1}].{a1} → {rname2}[{r2}].{a2}")
+            load_extra_xmls(ff, bond_info)
         else:
-            # Passive scan: warn if a cyclic peptide is passed without the flag
-            from binding_metrics.core.cyclic import _pos_nm, _AMIDE_BOND_THRESH, _DISULFIDE_THRESH
-            _pos = _pos_nm(positions)
-            _residues = list(topology.chains().__next__().residues()) \
-                if topology.getNumChains() > 0 else []
-            try:
-                _residues = [r for c in topology.chains() if c.id == peptide_chain
-                             for r in c.residues()]
-                if len(_residues) >= 2:
-                    from binding_metrics.core.cyclic import _find_atom
-                    _n  = _find_atom(_residues[0],  "N")
-                    _c  = _find_atom(_residues[-1], "C")
-                    if _n and _c:
-                        import numpy as _np
-                        _d = _np.linalg.norm(_pos[_n.index] - _pos[_c.index])
-                        if _d < _AMIDE_BOND_THRESH:
-                            print(
-                                f"  Warning: head-to-tail distance "
-                                f"N(first)–C(last) = {_d*10:.2f} Å suggests a "
-                                "cyclic peptide. Pass is_cyclic=True (or --cyclic) "
-                                "to enable proper topology patching."
-                            )
-            except Exception:
-                pass
+            print("  Linear peptide (no cyclization detected)")
 
         # --- GAFF2 for non-standard residues / small-molecule co-factors ---
         # Must be registered BEFORE addHydrogens so that addHydrogens can use
@@ -1045,16 +1020,6 @@ def main():
     parser.add_argument("--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)")
     parser.add_argument("--receptor-chain", type=str, default=None, help="Receptor chain ID (auto-detect if omitted)")
     parser.add_argument("--sample-id", type=str, default=None, help="Sample identifier (defaults to input file stem)")
-    parser.add_argument(
-        "--cyclic", action="store_true", default=False,
-        help=(
-            "Enable cyclic peptide topology patching. Detects head-to-tail, "
-            "disulfide, or lactam (ASP/GLU/LYS) cyclization from inter-atom "
-            "distances and patches the OpenMM topology before hydrogen addition. "
-            "Also activates ring-aware restraints (Stage 0 closure geometry + "
-            "10 ps backbone φ/ψ restrained MD warmup)."
-        ),
-    )
     args = parser.parse_args()
 
     config = RelaxationConfig(
@@ -1066,7 +1031,6 @@ def main():
         solvent_model=args.solvent_model,
         peptide_chain_id=args.peptide_chain,
         receptor_chain_id=args.receptor_chain,
-        is_cyclic=args.cyclic,
     )
 
     relaxer = ImplicitRelaxation(config)
