@@ -43,6 +43,7 @@ class RelaxationConfig:
         md_temperature_k: Simulation temperature in Kelvin
         md_friction: Langevin friction coefficient in 1/ps
         md_save_interval_ps: Interval between saved trajectory frames in ps
+        ph: pH for hydrogen addition (default 7.0)
         solvent_model: Implicit solvent model ('obc2', 'gbn2')
         device: Compute device ('cuda', 'cpu')
         peptide_chain_id: Peptide chain ID (auto-detect smallest chain if None)
@@ -51,6 +52,10 @@ class RelaxationConfig:
             Signature: (topology, positions, peptide_chain) -> (topology, positions, bond_info)
             where bond_info is a list of tuples passed back to the caller for
             post-processing (e.g. harmonic restraints for custom bonds).
+        small_molecules: List of non-standard residues to parameterize with GAFF2
+            (SMILES strings, openff.toolkit.Molecule, or RDKit Mol). Requires
+            openmmforcefields. See field docstring for details.
+        small_molecule_ff: GAFF2 version string (default 'gaff-2.2.20').
     """
     min_steps_initial: int = 1000
     min_steps_restrained: int = 500
@@ -64,6 +69,8 @@ class RelaxationConfig:
     md_friction: float = 1.0
     md_save_interval_ps: float = 10.0
 
+    ph: float = 7.0
+
     solvent_model: str = "obc2"
     device: str = "cuda"
 
@@ -71,6 +78,66 @@ class RelaxationConfig:
     receptor_chain_id: Optional[str] = None
 
     custom_bond_handler: Optional[Callable] = None
+
+    small_molecules: Optional[list] = None
+    """Non-standard residues / small-molecule co-factors to parameterize with GAFF2.
+
+    Two usage modes:
+
+    ``"auto"`` (recommended):
+        Automatically discovers all residues not covered by AMBER ff14SB and
+        builds GAFF2 parameters for them from the topology geometry. No SMILES
+        needed — the molecule graph is constructed directly from the atom
+        connectivity after hydrogen addition.
+
+        >>> config = RelaxationConfig(small_molecules="auto")
+
+    Explicit list:
+        Provide a list whose elements can be any of:
+            • SMILES strings (e.g. ``"CC(=O)Nc1ccc(O)cc1"``)
+            • ``openff.toolkit.Molecule`` objects
+            • RDKit ``Chem.Mol`` objects
+
+        >>> config = RelaxationConfig(small_molecules=["NC(CS)C(=O)O"])
+
+    In both cases, ``openmmforcefields`` must be installed:
+    ``conda install -c conda-forge openmmforcefields openff-toolkit``.
+
+    Residues not covered by ff14SB **and** not matched by GAFF2 will still
+    raise a ``ValueError`` from ``createSystem``.
+    """
+
+    small_molecule_ff: str = "gaff-2.2.20"
+    """GAFF2 force-field version used by :attr:`small_molecules`.
+
+    Passed as the ``forcefield`` argument to
+    ``GAFFTemplateGenerator``.  Run
+    ``GAFFTemplateGenerator.INSTALLED_FORCEFIELDS`` for available versions.
+    Default is ``"gaff-2.2.20"`` (latest stable at package release time).
+    """
+
+    is_cyclic: bool = False
+    """Enable automatic cyclic peptide topology patching.
+
+    When True, the pipeline calls :func:`binding_metrics.core.cyclic.patch_cyclic_topology`
+    after PDBFixer heavy-atom repair but *before* hydrogen addition, so that
+    ``modeller.addHydrogens`` sees the correct internal-residue topology.
+
+    Supported cyclization types (auto-detected by inter-atom distance):
+        • head_to_tail  — backbone C(last)–N(first) amide
+        • disulfide     — CYS SG–SG (residues renamed CYX)
+        • lactam_n_asp  — ASP CG–N-terminus amide  (residue renamed ASPL)
+        • lactam_n_glu  — GLU CD–N-terminus amide  (residue renamed GLUL)
+        • lactam_c_lys  — LYS NZ–C-terminus amide  (residue renamed LYSL)
+
+    Unsupported types (hydrocarbon staples, thioethers, macrolactones, …)
+    raise a :class:`~binding_metrics.core.cyclic.CyclizationError` with
+    guidance on using ``custom_bond_handler`` with GAFF2/SMIRNOFF.
+
+    Ring-aware restraint protocol added when ``is_cyclic=True``:
+        Stage 0 — closure bond distance restraint (strong, before Stage 1)
+        Warmup MD — backbone φ/ψ dihedral restraints (10 ps, before production)
+    """
 
 
 @dataclass
@@ -161,6 +228,105 @@ class ImplicitRelaxation:
         self.config = config
         self._openmm_imported = False
 
+    @staticmethod
+    def _coerce_molecules(molecules: list) -> list:
+        """Convert SMILES strings or RDKit mols to openff.toolkit.Molecule objects.
+
+        Accepts any mix of:
+            • ``str`` — interpreted as a SMILES string
+            • ``openff.toolkit.Molecule`` — passed through unchanged
+            • ``rdkit.Chem.Mol`` — converted via openff.toolkit
+
+        Returns a list of ``openff.toolkit.Molecule`` objects.
+        """
+        from openff.toolkit import Molecule
+
+        result = []
+        for m in molecules:
+            if isinstance(m, str):
+                result.append(Molecule.from_smiles(m, allow_undefined_stereo=True))
+            elif isinstance(m, Molecule):
+                result.append(m)
+            else:
+                result.append(Molecule.from_rdkit(m, allow_undefined_stereo=True))
+        return result
+
+    # Standard AMBER ff14SB residue names — these are handled by the base FF.
+    _AMBER_STANDARD = frozenset({
+        # Canonical amino acids + protonation variants
+        "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
+        "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
+        "TYR", "VAL",
+        "CYX", "HID", "HIE", "HIP", "HIN", "LYN", "ASH", "GLH",
+        # Our custom lactam residues
+        "ASPL", "GLUL", "LYSL",
+        # Common capping groups and ions
+        "ACE", "NME", "NMA", "FOR",
+        # Water / ions
+        "HOH", "WAT", "H2O", "NA", "CL", "K", "MG", "CA", "ZN",
+    })
+
+    @classmethod
+    def _discover_heterogens(cls, topology) -> list:
+        """Auto-discover non-standard residues and build GAFF-ready Molecule objects.
+
+        Any residue whose name is not in the AMBER ff14SB standard set is
+        treated as a heterogen. Each such residue is converted to an
+        ``openff.toolkit.Molecule`` by building its heavy-atom graph from the
+        OpenMM topology bonds, letting RDKit perceive bond orders via
+        sanitization (matching what ``GAFFTemplateGenerator`` does internally),
+        and then adding implicit H to satisfy valence.
+
+        Args:
+            topology: OpenMM Topology (after PDBFixer, before addHydrogens).
+                Molecules are built as heavy-atom-only here; GAFF/antechamber
+                adds H internally when generating parameters.
+
+        Returns:
+            List of unique ``openff.toolkit.Molecule`` objects (heavy atoms only),
+            one per unknown residue name.
+        """
+        from rdkit import Chem
+        from openff.toolkit import Molecule
+
+        seen: set = set()
+        result = []
+        for res in topology.residues():
+            if res.name in cls._AMBER_STANDARD or res.name in seen:
+                continue
+            seen.add(res.name)
+
+            # Build RDKit heavy-atom molecule from topology bonds (all single).
+            # We do NOT call Chem.AddHs: the molecule must match the topology
+            # residue at this stage (before addHydrogens), which has no H.
+            rwmol = Chem.RWMol()
+            idx_map: dict = {}
+            for atom in res.atoms():
+                if atom.element is None or atom.element.atomic_number == 1:
+                    continue
+                idx_map[atom.index] = rwmol.AddAtom(Chem.Atom(atom.element.atomic_number))
+            for bond in topology.bonds():
+                i1, i2 = bond.atom1.index, bond.atom2.index
+                if i1 in idx_map and i2 in idx_map:
+                    rwmol.AddBond(idx_map[i1], idx_map[i2], Chem.BondType.SINGLE)
+            try:
+                Chem.SanitizeMol(rwmol)   # perceives double bonds / aromaticity
+                # hydrogens_are_explicit=True prevents openff from adding
+                # implicit H — the molecule must match the topology at this
+                # stage (before addHydrogens), which has heavy atoms only.
+                mol = Molecule.from_rdkit(
+                    rwmol,
+                    allow_undefined_stereo=True,
+                    hydrogens_are_explicit=True,
+                )
+                result.append(mol)
+                print(f"  Auto-GAFF2: '{res.name}' ({mol.n_atoms} heavy atoms)")
+            except Exception as exc:
+                print(f"  Warning: could not build GAFF2 molecule for '{res.name}': "
+                      f"{exc}. Skipping (residue will be excluded from the system).")
+
+        return result
+
     def _import_openmm(self):
         if self._openmm_imported:
             return
@@ -183,11 +349,19 @@ class ImplicitRelaxation:
     def _identify_chains(self, topology) -> tuple[str, Optional[str]]:
         """Identify peptide (smallest) and receptor (largest) protein chains."""
         self._import_openmm()
-        standard_residues = set(app.PDBFile._standardResidues)
+        # Amino acids only — exclude water (HOH), nucleic acids (A/C/G/T/U/I/DA/…)
+        amino_acids = {
+            "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
+            "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
+            "TYR", "VAL",
+            # common non-standard variants also treated as protein
+            "CYX", "HID", "HIE", "HIP", "ASPL", "GLUL", "LYSL",
+            "NMG", "NMA", "MVA", "MLE",
+        }
 
         chain_sizes = []
         for chain in topology.chains():
-            n_protein = sum(1 for r in chain.residues() if r.name in standard_residues)
+            n_protein = sum(1 for r in chain.residues() if r.name in amino_acids)
             if n_protein > 0:
                 chain_sizes.append((chain.id, n_protein))
 
@@ -201,6 +375,75 @@ class ImplicitRelaxation:
             self.config.receptor_chain_id or (chain_sizes[-1][0] if len(chain_sizes) > 1 else None)
         )
         return peptide_chain, receptor_chain
+
+    def _strip_heterogens(self, topology, positions, peptide_chain: str, receptor_chain: Optional[str],
+                          warn_cutoff_ang: float = 8.0):
+        """Remove non-protein, non-water residues from the topology.
+
+        Any heterogen within ``warn_cutoff_ang`` Å of the peptide or receptor
+        is flagged with a warning before removal — it may be a catalytic ion or
+        cofactor that could influence the binding site.
+
+        Args:
+            topology: OpenMM Topology (post-PDBFixer).
+            positions: Atom positions (OpenMM Quantity, nm).
+            peptide_chain: Peptide chain ID (preserved).
+            receptor_chain: Receptor chain ID (preserved).
+            warn_cutoff_ang: Distance threshold in Å for the proximity warning.
+
+        Returns:
+            Tuple (topology, positions) with heterogens removed.
+        """
+        import numpy as np
+        standard_residues = set(app.PDBFile._standardResidues)
+        # Residues we never remove (protein + variants handled elsewhere)
+        keep_names = standard_residues | {"CYX", "ASPL", "GLUL", "LYSL",
+                                          "NMG", "NMA", "MVA", "MLE"}
+
+        # Collect protein atom coordinates for distance check
+        protein_chain_ids = {c for c in (peptide_chain, receptor_chain) if c}
+        protein_pos = np.array([
+            [p.x, p.y, p.z]
+            for a, p in zip(topology.atoms(), positions)
+            if a.residue.chain.id in protein_chain_ids
+        ]) * 10  # nm → Å
+
+        cutoff_nm = warn_cutoff_ang / 10.0
+        atoms_to_remove = []
+
+        for res in topology.residues():
+            if res.chain.id in protein_chain_ids:
+                continue
+            if res.name in keep_names:
+                continue
+            # Check proximity to protein
+            res_pos = np.array([
+                [positions[a.index].x, positions[a.index].y, positions[a.index].z]
+                for a in res.atoms()
+            ]) * 10  # nm → Å
+            if len(protein_pos) > 0 and len(res_pos) > 0:
+                dists = np.linalg.norm(
+                    res_pos[:, None, :] - protein_pos[None, :, :], axis=-1
+                )
+                min_dist = float(dists.min())
+                if min_dist < warn_cutoff_ang:
+                    print(f"  Warning: removing heterogen {res.name}{res.id} "
+                          f"(chain {res.chain.id}) which is {min_dist:.1f} Å from "
+                          f"the protein — it may be a functional cofactor or ion. "
+                          f"Parametrize it via custom_bond_handler to keep it.")
+                else:
+                    print(f"  Removing distant heterogen {res.name}{res.id} "
+                          f"(chain {res.chain.id}, {min_dist:.1f} Å from protein)")
+            else:
+                print(f"  Removing heterogen {res.name}{res.id} (chain {res.chain.id})")
+            atoms_to_remove.extend(res.atoms())
+
+        if atoms_to_remove:
+            modeller = app.Modeller(topology, positions)
+            modeller.delete(atoms_to_remove)
+            topology, positions = modeller.topology, modeller.positions
+
+        return topology, positions
 
     def _setup_system(self, input_path: Path):
         """Load structure, prepare topology, and create OpenMM system.
@@ -269,35 +512,139 @@ class ImplicitRelaxation:
         # --- Identify chains ---
         peptide_chain, receptor_chain = self._identify_chains(topology)
 
+        # --- Strip heterogens (non-protein residues outside the two chains) ---
+        topology, positions = self._strip_heterogens(
+            topology, positions, peptide_chain, receptor_chain
+        )
+
         # --- Force field setup ---
         gb_file = "implicit/gbn2.xml" if self.config.solvent_model == "gbn2" else "implicit/obc2.xml"
         base_xmls = ["amber14-all.xml", "amber14/tip3pfb.xml", gb_file]
         ff = app.ForceField(*base_xmls)
 
+        # --- Non-standard residue patching (D-AAs and NMe-AAs, before H addition) ---
+        from binding_metrics.core.nonstandard import (
+            detect_nonstandard,
+            patch_nonstandard,
+            load_nonstandard_xmls,
+        )
+        ns_info = detect_nonstandard(topology, peptide_chain)
+        if not ns_info.is_empty:
+            if ns_info.has_d_residues:
+                names = [e["original_name"] for e in ns_info.d_residues]
+                print(f"  D-amino acids: {names} → renamed to L counterparts for FF")
+            if ns_info.has_nmethyl:
+                names = [e["original_name"] for e in ns_info.nmethyl_residues]
+                print(f"  N-methylated residues: {names}")
+            topology, positions = patch_nonstandard(topology, positions, peptide_chain, ns_info)
+            load_nonstandard_xmls(ff, ns_info)
+
+        # --- Cyclic peptide topology patching (before hydrogen addition) ---
+        # Must run here so addHydrogens sees internal-residue topology
+        # (no spurious terminal H/OXT, closure bond already present).
+        bond_info = []
+        if self.config.is_cyclic:
+            from binding_metrics.core.cyclic import (
+                CyclizationError,
+                patch_cyclic_topology,
+                load_extra_xmls,
+            )
+            print("  Patching cyclic peptide topology...")
+            topology, positions, bond_info = patch_cyclic_topology(
+                topology, positions, peptide_chain
+            )
+            if bond_info:
+                types = ", ".join(b.cyclic_type for b in bond_info)
+                print(f"  Detected cyclization(s): {types}")
+                load_extra_xmls(ff, bond_info)
+            else:
+                print("  Warning: is_cyclic=True but no cyclization detected. "
+                      "Proceeding as linear peptide.")
+        else:
+            # Passive scan: warn if a cyclic peptide is passed without the flag
+            from binding_metrics.core.cyclic import _pos_nm, _AMIDE_BOND_THRESH, _DISULFIDE_THRESH
+            _pos = _pos_nm(positions)
+            _residues = list(topology.chains().__next__().residues()) \
+                if topology.getNumChains() > 0 else []
+            try:
+                _residues = [r for c in topology.chains() if c.id == peptide_chain
+                             for r in c.residues()]
+                if len(_residues) >= 2:
+                    from binding_metrics.core.cyclic import _find_atom
+                    _n  = _find_atom(_residues[0],  "N")
+                    _c  = _find_atom(_residues[-1], "C")
+                    if _n and _c:
+                        import numpy as _np
+                        _d = _np.linalg.norm(_pos[_n.index] - _pos[_c.index])
+                        if _d < _AMIDE_BOND_THRESH:
+                            print(
+                                f"  Warning: head-to-tail distance "
+                                f"N(first)–C(last) = {_d*10:.2f} Å suggests a "
+                                "cyclic peptide. Pass is_cyclic=True (or --cyclic) "
+                                "to enable proper topology patching."
+                            )
+            except Exception:
+                pass
+
+        # --- GAFF2 for non-standard residues / small-molecule co-factors ---
+        # Must be registered BEFORE addHydrogens so that addHydrogens can use
+        # the GAFF template to add H to non-standard residues.
+        # Molecules are built as heavy-atom-only here (matching the topology
+        # state before H addition). GAFF/antechamber adds H internally during
+        # parameterization.
+        if self.config.small_molecules:
+            try:
+                from openmmforcefields.generators import GAFFTemplateGenerator
+            except ImportError as exc:
+                raise ImportError(
+                    "openmmforcefields is required for small_molecules support. "
+                    "Install with: conda install -c conda-forge openmmforcefields openff-toolkit"
+                ) from exc
+            if self.config.small_molecules == "auto":
+                mols = self._discover_heterogens(topology)
+            else:
+                mols = self._coerce_molecules(self.config.small_molecules)
+            if mols:
+                gaff = GAFFTemplateGenerator(molecules=mols, forcefield=self.config.small_molecule_ff)
+                ff.registerTemplateGenerator(gaff.generator)
+                print(f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
+                      f"for {len(mols)} non-standard residue(s).")
+            else:
+                print("  Note: small_molecules='auto' found no non-standard residues.")
+
         # --- Add hydrogens ---
         print("  Adding hydrogens...")
         modeller = app.Modeller(topology, positions)
+
+        # For cyclic peptides, pass explicit variants so addHydrogens uses
+        # internal residue templates at the closure sites (not N/C-terminal).
+        addh_variants = None
+        if bond_info:
+            from binding_metrics.core.cyclic import get_addh_variants
+            addh_variants = get_addh_variants(modeller.topology, bond_info, peptide_chain)
+
         try:
-            modeller.addHydrogens(ff, pH=7.0)
+            modeller.addHydrogens(ff, pH=self.config.ph, variants=addh_variants)
         except Exception as e:
-            print(f"  Warning: addHydrogens(pH=7.0) failed ({e}), retrying without pH...")
+            print(f"  Warning: addHydrogens(ff, pH={self.config.ph}) failed ({e}), "
+                  "retrying without ForceField (approximate H positions)...")
             try:
-                modeller.addHydrogens(ff)
+                modeller.addHydrogens(pH=self.config.ph, variants=addh_variants)
             except Exception as e2:
                 print(f"  Warning: addHydrogens failed: {e2}")
         topology, positions = modeller.topology, modeller.positions
 
-        # --- Custom bond handler (plugin hook) ---
-        bond_info = []
+        # --- Custom bond handler (plugin hook, called after H addition) ---
         if self.config.custom_bond_handler is not None:
-            topology, positions, bond_info = self.config.custom_bond_handler(
+            topology, positions, user_bond_info = self.config.custom_bond_handler(
                 topology, positions, peptide_chain
             )
-            if bond_info:
-                # Allow handler to supply additional XML files via bond_info metadata
-                extra_xmls = getattr(bond_info, "extra_xmls", [])
+            if user_bond_info:
+                extra_xmls = getattr(user_bond_info, "extra_xmls", [])
                 if extra_xmls:
                     ff = app.ForceField(*base_xmls, *extra_xmls)
+                if not bond_info:
+                    bond_info = user_bond_info
 
         # --- Create system ---
         system = ff.createSystem(
@@ -390,16 +737,165 @@ class ImplicitRelaxation:
         mean_pos = all_pos.mean(axis=0)
         return np.sqrt(np.mean((all_pos - mean_pos) ** 2, axis=0).sum(axis=1))
 
+    def _run_cyclic_warmup(
+        self,
+        system,
+        simulation,
+        topology,
+        ref_positions,
+        peptide_chain: str,
+        omega_indices,
+        warmup_ps: float = 10.0,
+    ) -> None:
+        """Run short restrained MD to preserve ring conformation on velocity init.
+
+        Adds backbone φ/ψ dihedral restraints (cosine form) centred on the
+        minimised structure, runs ``warmup_ps`` picoseconds with a progressive
+        three-phase release, then removes all restraint forces before returning.
+
+        Args:
+            system: OpenMM System (modified in-place; forces are removed after warmup).
+            simulation: Active Simulation context.
+            topology: OpenMM Topology.
+            ref_positions: Reference positions (minimised) for measuring reference angles.
+            peptide_chain: Peptide chain ID.
+            omega_indices: 4-tuple of atom indices for the closure ω dihedral,
+                or None (ω restraint is skipped when None).
+            warmup_ps: Total warmup MD duration in picoseconds (default 10).
+        """
+        import math
+
+        # Collect backbone φ/ψ atom quads for each residue in the peptide chain
+        phi_quads = []
+        psi_quads = []
+
+        residues = []
+        for chain in topology.chains():
+            if chain.id == peptide_chain:
+                residues = list(chain.residues())
+                break
+
+        def _idx(res, name):
+            for atom in res.atoms():
+                if atom.name == name:
+                    return atom.index
+            return None
+
+        n = len(residues)
+        for i, res in enumerate(residues):
+            n_i  = _idx(res, "N")
+            ca_i = _idx(res, "CA")
+            c_i  = _idx(res, "C")
+            if n_i is None or ca_i is None or c_i is None:
+                continue
+            # φ(i): C(i-1)–N(i)–CA(i)–C(i)   [uses cyclic wrap for residue 0]
+            prev = residues[(i - 1) % n]
+            c_prev = _idx(prev, "C")
+            if c_prev is not None:
+                phi_quads.append((c_prev, n_i, ca_i, c_i))
+            # ψ(i): N(i)–CA(i)–C(i)–N(i+1)   [uses cyclic wrap for last residue]
+            nxt = residues[(i + 1) % n]
+            n_next = _idx(nxt, "N")
+            if n_next is not None:
+                psi_quads.append((n_i, ca_i, c_i, n_next))
+
+        if not phi_quads and not psi_quads:
+            return   # nothing to restrain
+
+        # Measure reference dihedrals from minimised positions
+        ref_pos = np.array([[p.x, p.y, p.z] for p in ref_positions])
+
+        def _dihedral_rad(p, i1, i2, i3, i4):
+            b1 = p[i2] - p[i1]
+            b2 = p[i3] - p[i2]
+            b3 = p[i4] - p[i3]
+            n1 = np.cross(b1, b2)
+            n2 = np.cross(b2, b3)
+            m1 = np.cross(n1, b2 / np.linalg.norm(b2))
+            x  = np.dot(n1, n2)
+            y  = np.dot(m1, n2)
+            return math.atan2(y, x)
+
+        # Build torsion force: V = k * (1 - cos(θ - θ0))  →  harmonic near θ0
+        torsion_force = openmm.CustomTorsionForce(
+            "k_phi * (1 - cos(theta - theta0))"
+        )
+        torsion_force.addGlobalParameter(
+            "k_phi",
+            50.0 * unit.kilojoules_per_mole,
+        )
+        torsion_force.addPerTorsionParameter("theta0")
+
+        for quad in phi_quads + psi_quads:
+            theta0 = _dihedral_rad(ref_pos, *quad)
+            torsion_force.addTorsion(*quad, [theta0])
+
+        # Add ω restraint for the closure bond (if available)
+        omega_force = None
+        if omega_indices is not None:
+            omega_force = openmm.CustomTorsionForce(
+                "k_omega * (1 - cos(theta - theta0_omega))"
+            )
+            omega_force.addGlobalParameter(
+                "k_omega",
+                100.0 * unit.kilojoules_per_mole,
+            )
+            omega_force.addPerTorsionParameter("theta0_omega")
+            theta0_omega = _dihedral_rad(ref_pos, *omega_indices)
+            omega_force.addTorsion(*omega_indices, [theta0_omega])
+            system.addForce(omega_force)
+
+        torsion_idx = system.addForce(torsion_force)
+        simulation.context.reinitialize(preserveState=True)
+
+        steps_per_ps = int(1000 / self.config.md_timestep_fs)
+        warmup_steps = int(warmup_ps * steps_per_ps)
+
+        # Phase 1: full restraint (first half)
+        simulation.step(warmup_steps // 2)
+
+        # Phase 2: reduce to 20 % (second quarter)
+        simulation.context.setParameter("k_phi", 10.0 * unit.kilojoules_per_mole)
+        if omega_force is not None:
+            simulation.context.setParameter(
+                "k_omega", 20.0 * unit.kilojoules_per_mole
+            )
+        simulation.step(warmup_steps // 4)
+
+        # Phase 3: near-zero (last quarter)
+        simulation.context.setParameter("k_phi", 1.0 * unit.kilojoules_per_mole)
+        if omega_force is not None:
+            simulation.context.setParameter(
+                "k_omega", 2.0 * unit.kilojoules_per_mole
+            )
+        simulation.step(warmup_steps - warmup_steps // 2 - warmup_steps // 4)
+
+        # Remove restraint forces so production MD is unrestrained.
+        # Track indices carefully: removeForce renumbers remaining forces.
+        if omega_force is not None:
+            # omega was added after torsion_force, so its index = torsion_idx + 1
+            omega_idx = torsion_idx + 1
+            # Remove higher index first to avoid renumbering the lower one
+            system.removeForce(omega_idx)
+        system.removeForce(torsion_idx)
+        simulation.context.reinitialize(preserveState=True)
+
     def _get_platform(self):
-        """Get the OpenMM compute platform."""
+        """Get the OpenMM compute platform, falling back to CPU if CUDA fails."""
         self._import_openmm()
         if self.config.device == "cuda":
             try:
                 platform = openmm.Platform.getPlatformByName("CUDA")
                 properties = {"CudaPrecision": "mixed"}
+                # Probe with a minimal context — catches driver/PTX version mismatches
+                # that only surface at context creation, not at platform lookup.
+                _sys = openmm.System()
+                _sys.addParticle(1.0)
+                _ctx = openmm.Context(_sys, openmm.VerletIntegrator(0.001), platform)
+                del _ctx, _sys
                 return platform, properties
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  Warning: CUDA unavailable ({e}), falling back to CPU.")
         return openmm.Platform.getPlatformByName("CPU"), {}
 
     def run(
@@ -446,9 +942,52 @@ class ImplicitRelaxation:
             simulation = app.Simulation(topology, system, integrator, platform, properties)
             simulation.context.setPositions(positions)
 
+            # --- Resolve cyclic closure atom indices (post-addHydrogens) ---
+            # closure_indices_list: list of (idx1, idx2) tuples, one per bond
+            # omega_indices: first non-None omega from the list (for warmup dihedral)
+            closure_indices_list = []
+            omega_indices = None
+            if bond_info:
+                from binding_metrics.core.cyclic import (
+                    resolve_closure_atoms,
+                    resolve_omega_atoms,
+                )
+                for bi in bond_info:
+                    try:
+                        ci = resolve_closure_atoms(topology, bi, peptide_chain)
+                        closure_indices_list.append(ci)
+                        if omega_indices is None:
+                            omega_indices = resolve_omega_atoms(topology, bi, peptide_chain)
+                    except Exception as e:
+                        print(f"[{sample_id}]   Warning: could not resolve closure atoms: {e}")
+
             # --- Multi-stage minimization ---
-            print(f"[{sample_id}] Minimizing (3 stages)...")
+            n_stages = "4" if closure_indices_list else "3"
+            print(f"[{sample_id}] Minimizing ({n_stages} stages)...")
             min_start = time.time()
+
+            # Stage 0 (cyclic only): relax all closure bond geometries before Stage 1.
+            # One CustomBondForce covers all closure bonds (monocyclic or bicyclic+).
+            if closure_indices_list:
+                print(f"[{sample_id}]   Stage 0: Closure bond geometry relaxation "
+                      f"({len(closure_indices_list)} bond(s))")
+                closure_force = openmm.CustomBondForce(
+                    "0.5 * k_closure * (r - r0_closure)^2"
+                )
+                closure_force.addGlobalParameter(
+                    "k_closure",
+                    1000.0 * unit.kilojoules_per_mole / unit.nanometer**2,
+                )
+                closure_force.addGlobalParameter(
+                    "r0_closure",
+                    0.1325 * unit.nanometers,  # ideal amide bond; S-S is 0.205 nm but
+                )                              # the force field enforces the correct length
+                for ci in closure_indices_list:
+                    closure_force.addBond(ci[0], ci[1], [])
+                system.addForce(closure_force)
+                simulation.context.reinitialize(preserveState=True)
+                simulation.minimizeEnergy(maxIterations=200)
+                simulation.context.setParameter("k_closure", 0.0)
 
             print(f"[{sample_id}]   Stage 1: Global relaxation")
             simulation.minimizeEnergy(
@@ -491,6 +1030,16 @@ class ImplicitRelaxation:
                 simulation.context.setVelocitiesToTemperature(
                     self.config.md_temperature_k * unit.kelvin
                 )
+
+                # Cyclic warmup: 10 ps backbone φ/ψ dihedral restraints to
+                # preserve ring conformation during velocity initialisation.
+                if closure_indices_list:
+                    print(f"[{sample_id}]   Cyclic warmup: 10 ps restrained MD "
+                          "(backbone φ/ψ restraints)...")
+                    self._run_cyclic_warmup(
+                        system, simulation, topology, minimized_positions,
+                        peptide_chain, omega_indices,
+                    )
 
                 steps_per_save = int(
                     self.config.md_save_interval_ps * 1000 / self.config.md_timestep_fs
@@ -553,20 +1102,33 @@ def main():
     parser.add_argument("--md-save-interval-ps", type=float, default=10.0, help="Frame save interval in ps")
     parser.add_argument("--temperature", type=float, default=300.0, help="Simulation temperature in K")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda", help="Compute device")
+    parser.add_argument("--ph", type=float, default=7.0, help="pH for hydrogen addition (default 7.0)")
     parser.add_argument("--solvent-model", choices=["obc2", "gbn2"], default="obc2", help="Implicit solvent model")
     parser.add_argument("--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)")
     parser.add_argument("--receptor-chain", type=str, default=None, help="Receptor chain ID (auto-detect if omitted)")
     parser.add_argument("--sample-id", type=str, default=None, help="Sample identifier (defaults to input file stem)")
+    parser.add_argument(
+        "--cyclic", action="store_true", default=False,
+        help=(
+            "Enable cyclic peptide topology patching. Detects head-to-tail, "
+            "disulfide, or lactam (ASP/GLU/LYS) cyclization from inter-atom "
+            "distances and patches the OpenMM topology before hydrogen addition. "
+            "Also activates ring-aware restraints (Stage 0 closure geometry + "
+            "10 ps backbone φ/ψ restrained MD warmup)."
+        ),
+    )
     args = parser.parse_args()
 
     config = RelaxationConfig(
         md_duration_ps=args.md_duration_ps,
         md_save_interval_ps=args.md_save_interval_ps,
         md_temperature_k=args.temperature,
+        ph=args.ph,
         device=args.device,
         solvent_model=args.solvent_model,
         peptide_chain_id=args.peptide_chain,
         receptor_chain_id=args.receptor_chain,
+        is_cyclic=args.cyclic,
     )
 
     relaxer = ImplicitRelaxation(config)
