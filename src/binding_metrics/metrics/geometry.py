@@ -98,18 +98,26 @@ def _get_vdw(element: str) -> float:
 # ---------------------------------------------------------------------------
 
 
-def _classify_ramachandran(phi: float, psi: float) -> Optional[str]:
-    """Classify a residue into Ramachandran region.
+def _classify_ramachandran(phi: float, psi: float, is_d: bool = False) -> Optional[str]:
+    """Classify a residue into a Ramachandran region.
+
+    For D-amino acids pass ``is_d=True``: φ/ψ are negated before region
+    lookup so that the mirrored Ramachandran plot maps correctly onto the
+    standard L-amino acid regions (D-α-helix φ≈+57°,ψ≈+47° → −57°,−47°).
 
     Args:
-        phi: Phi dihedral in degrees
-        psi: Psi dihedral in degrees
+        phi: Phi dihedral in degrees.
+        psi: Psi dihedral in degrees.
+        is_d: True for D-amino acids.
 
     Returns:
         'favoured', 'allowed', or 'outlier'; None at termini (NaN input).
     """
     if np.isnan(phi) or np.isnan(psi):
         return None  # terminus, skip
+
+    if is_d:
+        phi, psi = -phi, -psi
 
     # Favoured regions (covers ~98% of high-quality crystallographic residues)
     in_alpha = (-90 <= phi <= -30) and (-80 <= psi <= 10)
@@ -159,6 +167,8 @@ def compute_ramachandran(
             per_residue (list[dict]): Per-residue data with keys:
                 res_id, res_name, chain, phi, psi, region
     """
+    from binding_metrics.core.nonstandard import is_d_residue
+
     struc, _, _, _ = _import_biotite()
     cif_path = Path(cif_path)
     atoms = _load_structure(cif_path)
@@ -172,6 +182,7 @@ def compute_ramachandran(
             "ramachandran_outlier_pct": np.nan,
             "ramachandran_outlier_count": 0,
             "n_residues_evaluated": 0,
+            "n_d_residues": 0,
             "per_residue": [],
         }
 
@@ -187,22 +198,28 @@ def compute_ramachandran(
 
     per_residue = []
     counts = {"favoured": 0, "allowed": 0, "outlier": 0}
+    n_d = 0
 
     for i, ca in enumerate(ca_atoms):
         if i >= len(phi_deg):
             break
         phi = float(phi_deg[i])
         psi = float(psi_deg[i])
-        region = _classify_ramachandran(phi, psi)
+        res_name = str(ca.res_name).strip()
+        d_aa = is_d_residue(res_name)
+        region = _classify_ramachandran(phi, psi, is_d=d_aa)
         if region is None:
             continue
         counts[region] += 1
+        if d_aa:
+            n_d += 1
         per_residue.append({
             "res_id": int(ca.res_id),
-            "res_name": str(ca.res_name).strip(),
+            "res_name": res_name,
             "chain": str(ca.chain_id),
             "phi": phi,
             "psi": psi,
+            "is_d_aa": d_aa,
             "region": region,
         })
 
@@ -214,6 +231,7 @@ def compute_ramachandran(
             "ramachandran_outlier_pct": np.nan,
             "ramachandran_outlier_count": 0,
             "n_residues_evaluated": 0,
+            "n_d_residues": n_d,
             "per_residue": per_residue,
         }
 
@@ -223,6 +241,7 @@ def compute_ramachandran(
         "ramachandran_outlier_pct": 100.0 * counts["outlier"] / n_eval,
         "ramachandran_outlier_count": counts["outlier"],
         "n_residues_evaluated": n_eval,
+        "n_d_residues": n_d,
         "per_residue": per_residue,
     }
 
