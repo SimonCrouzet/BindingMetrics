@@ -378,72 +378,8 @@ class ImplicitRelaxation:
 
     def _strip_heterogens(self, topology, positions, peptide_chain: str, receptor_chain: Optional[str],
                           warn_cutoff_ang: float = 8.0):
-        """Remove non-protein, non-water residues from the topology.
-
-        Any heterogen within ``warn_cutoff_ang`` Å of the peptide or receptor
-        is flagged with a warning before removal — it may be a catalytic ion or
-        cofactor that could influence the binding site.
-
-        Args:
-            topology: OpenMM Topology (post-PDBFixer).
-            positions: Atom positions (OpenMM Quantity, nm).
-            peptide_chain: Peptide chain ID (preserved).
-            receptor_chain: Receptor chain ID (preserved).
-            warn_cutoff_ang: Distance threshold in Å for the proximity warning.
-
-        Returns:
-            Tuple (topology, positions) with heterogens removed.
-        """
-        import numpy as np
-        standard_residues = set(app.PDBFile._standardResidues)
-        # Residues we never remove (protein + variants handled elsewhere)
-        keep_names = standard_residues | {"CYX", "ASPL", "GLUL", "LYSL",
-                                          "NMG", "NMA", "MVA", "MLE"}
-
-        # Collect protein atom coordinates for distance check
-        protein_chain_ids = {c for c in (peptide_chain, receptor_chain) if c}
-        protein_pos = np.array([
-            [p.x, p.y, p.z]
-            for a, p in zip(topology.atoms(), positions)
-            if a.residue.chain.id in protein_chain_ids
-        ]) * 10  # nm → Å
-
-        cutoff_nm = warn_cutoff_ang / 10.0
-        atoms_to_remove = []
-
-        for res in topology.residues():
-            if res.chain.id in protein_chain_ids:
-                continue
-            if res.name in keep_names:
-                continue
-            # Check proximity to protein
-            res_pos = np.array([
-                [positions[a.index].x, positions[a.index].y, positions[a.index].z]
-                for a in res.atoms()
-            ]) * 10  # nm → Å
-            if len(protein_pos) > 0 and len(res_pos) > 0:
-                dists = np.linalg.norm(
-                    res_pos[:, None, :] - protein_pos[None, :, :], axis=-1
-                )
-                min_dist = float(dists.min())
-                if min_dist < warn_cutoff_ang:
-                    print(f"  Warning: removing heterogen {res.name}{res.id} "
-                          f"(chain {res.chain.id}) which is {min_dist:.1f} Å from "
-                          f"the protein — it may be a functional cofactor or ion. "
-                          f"Parametrize it via custom_bond_handler to keep it.")
-                else:
-                    print(f"  Removing distant heterogen {res.name}{res.id} "
-                          f"(chain {res.chain.id}, {min_dist:.1f} Å from protein)")
-            else:
-                print(f"  Removing heterogen {res.name}{res.id} (chain {res.chain.id})")
-            atoms_to_remove.extend(res.atoms())
-
-        if atoms_to_remove:
-            modeller = app.Modeller(topology, positions)
-            modeller.delete(atoms_to_remove)
-            topology, positions = modeller.topology, modeller.positions
-
-        return topology, positions
+        from binding_metrics.io.structures import strip_heterogens
+        return strip_heterogens(topology, positions, peptide_chain, receptor_chain, warn_cutoff_ang)
 
     def _setup_system(self, input_path: Path):
         """Load structure, prepare topology, and create OpenMM system.
@@ -893,9 +829,11 @@ class ImplicitRelaxation:
                 _sys.addParticle(1.0)
                 _ctx = openmm.Context(_sys, openmm.VerletIntegrator(0.001), platform)
                 del _ctx, _sys
+                print(f"  Platform: CUDA (mixed precision)")
                 return platform, properties
             except Exception as e:
                 print(f"  Warning: CUDA unavailable ({e}), falling back to CPU.")
+        print(f"  Platform: CPU")
         return openmm.Platform.getPlatformByName("CPU"), {}
 
     def run(
