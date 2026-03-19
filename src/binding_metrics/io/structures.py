@@ -105,11 +105,19 @@ def detect_chains(topology) -> tuple[Optional[str], Optional[str]]:
         Tuple of (ligand_chain_id, receptor_chain_id). Either may be None
         if no protein chains are found or only one chain exists.
     """
-    standard_residues = set(app.PDBFile._standardResidues)
+    # Amino acids only — exclude water (HOH) and nucleic acids which are also
+    # in app.PDBFile._standardResidues and would cause water chains to be ranked.
+    amino_acids = {
+        "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
+        "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
+        "TYR", "VAL",
+        "CYX", "HID", "HIE", "HIP", "ASPL", "GLUL", "LYSL",
+        "NMG", "NMA", "MVA", "MLE",
+    }
 
     chain_sizes = []
     for chain in topology.chains():
-        n_protein = sum(1 for r in chain.residues() if r.name in standard_residues)
+        n_protein = sum(1 for r in chain.residues() if r.name in amino_acids)
         if n_protein > 0:
             chain_sizes.append((chain.id, n_protein))
 
@@ -122,6 +130,85 @@ def detect_chains(topology) -> tuple[Optional[str], Optional[str]]:
         return chain_sizes[0][0], None
 
     return chain_sizes[0][0], chain_sizes[-1][0]
+
+
+def strip_heterogens(
+    topology,
+    positions,
+    peptide_chain: Optional[str],
+    receptor_chain: Optional[str],
+    warn_cutoff_ang: float = 8.0,
+):
+    """Remove non-protein residues from topology, warning if close to the interface.
+
+    Args:
+        topology: OpenMM Topology (post-PDBFixer).
+        positions: Atom positions (OpenMM Quantity, nm).
+        peptide_chain: Peptide chain ID to preserve.
+        receptor_chain: Receptor chain ID to preserve.
+        warn_cutoff_ang: Distance threshold in Å; heterogens within this distance
+            trigger a warning before removal.
+
+    Returns:
+        Tuple (topology, positions) with heterogens removed.
+    """
+    import numpy as np
+
+    amino_acids = {
+        "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
+        "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
+        "TYR", "VAL",
+        "CYX", "HID", "HIE", "HIP", "ASPL", "GLUL", "LYSL",
+        "NMG", "NMA", "MVA", "MLE",
+    }
+
+    protein_chain_ids = {c for c in (peptide_chain, receptor_chain) if c}
+    protein_pos = np.array([
+        [p.x, p.y, p.z]
+        for a, p in zip(topology.atoms(), positions)
+        if a.residue.chain.id in protein_chain_ids
+    ]) * 10  # nm → Å
+
+    _water_names = {"HOH", "WAT", "TIP", "TIP3", "SOL"}
+
+    atoms_to_remove = []
+    for res in topology.residues():
+        if res.chain.id in protein_chain_ids:
+            continue
+        if res.name in amino_acids:
+            continue
+        # Water: always remove silently
+        if res.name in _water_names:
+            atoms_to_remove.extend(res.atoms())
+            continue
+        # Other heterogens: warn if close to protein (may be a cofactor/ion)
+        res_pos = np.array([
+            [positions[a.index].x, positions[a.index].y, positions[a.index].z]
+            for a in res.atoms()
+        ]) * 10  # nm → Å
+        if len(protein_pos) > 0 and len(res_pos) > 0:
+            dists = np.linalg.norm(
+                res_pos[:, None, :] - protein_pos[None, :, :], axis=-1
+            )
+            min_dist = float(dists.min())
+            if min_dist < warn_cutoff_ang:
+                print(f"  Warning: removing heterogen {res.name}{res.id} "
+                      f"(chain {res.chain.id}) which is {min_dist:.1f} Å from "
+                      f"the protein — it may be a functional cofactor or ion. "
+                      f"Parametrize it via custom_bond_handler to keep it.")
+            else:
+                print(f"  Removing distant heterogen {res.name}{res.id} "
+                      f"(chain {res.chain.id}, {min_dist:.1f} Å from protein)")
+        else:
+            print(f"  Removing heterogen {res.name}{res.id} (chain {res.chain.id})")
+        atoms_to_remove.extend(res.atoms())
+
+    if atoms_to_remove:
+        modeller = app.Modeller(topology, positions)
+        modeller.delete(atoms_to_remove)
+        topology, positions = modeller.topology, modeller.positions
+
+    return topology, positions
 
 
 def save_cif(
