@@ -29,20 +29,48 @@ Metrics span from fast static-structure analysis (buried SASA, hydrogen bonds, s
 
 ## Installation
 
+### Recommended: conda (GPU-accelerated)
+
+MD simulations are computationally prohibitive on CPU. **A CUDA-capable GPU and
+the conda-forge OpenMM build are strongly recommended** for any workflow that
+involves energy minimization or MD (`binding-metrics-relax`, `compute_interaction_energy`
+with `mode="relaxed"` or `mode="md"`).
+
 ```bash
-pip install binding-metrics
+conda env create -f environment.yml   # creates the binding-metrics conda env
+conda activate binding-metrics
+```
+
+This installs:
+- GPU-ready OpenMM from conda-forge (CUDA/OpenCL binaries)
+- openmmforcefields + openff-toolkit for GAFF2 small-molecule parameterization
+- All other dependencies via pip
+
+### Alternative: pip (CPU only)
+
+> **Warning — MD on CPU is extremely slow.** Only use this path for static
+> metrics (interface geometry, electrostatics, RMSD) or for CI/testing with
+> `device="cpu"` and minimal minimization steps.
+
+```bash
+pip install binding-metrics            # core only
 ```
 
 Install optional dependency groups based on the metrics you need:
 
 ```bash
-pip install "binding-metrics[simulation]"   # OpenMM — force-field energy, MD
+pip install "binding-metrics[simulation]"   # OpenMM (CPU-only via PyPI)
 pip install "binding-metrics[analysis]"     # MDTraj — trajectory metrics
 pip install "binding-metrics[structure]"    # PDBFixer + gemmi — structure repair, RMSD
 pip install "binding-metrics[biotite]"      # biotite + hydride + scipy — interface, geometry
+pip install "binding-metrics[gaff]"         # openmmforcefields + openff-toolkit — GAFF2 for non-standard residues
 pip install "binding-metrics[report]"       # pandas + matplotlib — HTML report generation
-pip install "binding-metrics[all]"          # everything above
+pip install "binding-metrics[all]"          # everything above (OpenMM via PyPI = CPU only)
 ```
+
+> The PyPI `openmm` wheel has no CUDA support. `pip install binding-metrics[all]`
+> gives a functional install for testing, but MD runs will be orders of magnitude
+> slower than on GPU. For production use, always install OpenMM via conda-forge.
 
 ### Docker (GPU, recommended for production)
 
@@ -72,7 +100,7 @@ The image is rebuilt and pushed to Docker Hub automatically on every push to `ma
 
 ### OpenFold3
 
-OpenFold3 requires a separate install (GPU + model weights):
+Requires a separate install (GPU + model weights):
 
 ```bash
 pip install openfold3
