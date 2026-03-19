@@ -486,6 +486,10 @@ def compute_interaction_energy(
             peptide_chain = peptide_chain or auto_pep
             receptor_chain = receptor_chain or auto_rec
 
+        # Strip heterogens (non-protein residues) before system creation
+        from binding_metrics.io.structures import strip_heterogens
+        topology, positions = strip_heterogens(topology, positions, peptide_chain, receptor_chain)
+
         if peptide_chain is None or receptor_chain is None:
             raise ValueError("Could not identify two protein chains in structure")
 
