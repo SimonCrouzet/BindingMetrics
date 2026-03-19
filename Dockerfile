@@ -16,3 +16,7 @@ WORKDIR /opt/binding-metrics
 RUN mamba env create -f environment.yml && conda clean -afy
 
 ENV PATH=/opt/conda/envs/binding-metrics/bin:$PATH
+
+# GPU access is not available during build. After building, verify OpenMM GPU
+# support with:
+#   docker run --rm --gpus all binding-metrics python -m openmm.testInstallation

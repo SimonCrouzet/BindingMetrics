@@ -238,6 +238,24 @@ binding-metrics-solvate --input cleaned.cif --output solvated.pdb
 | `binding-metrics-openfold` | Parse / run OpenFold3 confidence metrics |
 | `binding-metrics-relax` | Implicit-solvent energy minimization |
 
+**Utilities**
+
+| Command | Description |
+|---|---|
+| `binding-metrics-check-env` | Verify that all runtime dependencies (GPU, OpenMM, …) are working |
+
+Run it after installation to confirm everything is set up correctly:
+
+```bash
+binding-metrics-check-env
+```
+
+Inside Docker (requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)):
+
+```bash
+docker run --rm --gpus all binding-metrics binding-metrics-check-env
+```
+
 **Reporting**
 
 | Command | Description |
