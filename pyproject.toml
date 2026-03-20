@@ -62,8 +62,8 @@ binding-metrics-solvate   = "binding_metrics.protocols.solvate:main"
 binding-metrics-report    = "binding_metrics.protocols.report:main"
 
 [project.urls]
-Homepage = "https://github.com/binding-metrics/binding-metrics"
-Repository = "https://github.com/binding-metrics/binding-metrics"
+Homepage = "https://github.com/SimonCrouzet/BindingMetrics"
+Repository = "https://github.com/SimonCrouzet/BindingMetrics"
 
 [tool.setuptools.packages.find]
 where = ["src"]
