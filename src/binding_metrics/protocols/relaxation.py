@@ -743,6 +743,7 @@ class ImplicitRelaxation:
 
         # Add ω restraint for the closure bond (if available)
         omega_force = None
+        omega_idx = None
         if omega_indices is not None:
             omega_force = openmm.CustomTorsionForce(
                 "k_omega * (1 - cos(theta - theta0_omega))"
@@ -754,7 +755,7 @@ class ImplicitRelaxation:
             omega_force.addPerTorsionParameter("theta0_omega")
             theta0_omega = _dihedral_rad(ref_pos, *omega_indices)
             omega_force.addTorsion(*omega_indices, [theta0_omega])
-            system.addForce(omega_force)
+            omega_idx = system.addForce(omega_force)
 
         torsion_idx = system.addForce(torsion_force)
         simulation.context.reinitialize(preserveState=True)
@@ -782,13 +783,12 @@ class ImplicitRelaxation:
         simulation.step(warmup_steps - warmup_steps // 2 - warmup_steps // 4)
 
         # Remove restraint forces so production MD is unrestrained.
-        # Track indices carefully: removeForce renumbers remaining forces.
-        if omega_force is not None:
-            # omega was added after torsion_force, so its index = torsion_idx + 1
-            omega_idx = torsion_idx + 1
-            # Remove higher index first to avoid renumbering the lower one
-            system.removeForce(omega_idx)
-        system.removeForce(torsion_idx)
+        # Remove in descending index order to avoid renumbering the lower one.
+        indices_to_remove = sorted(
+            [i for i in [torsion_idx, omega_idx] if i is not None], reverse=True
+        )
+        for i in indices_to_remove:
+            system.removeForce(i)
         simulation.context.reinitialize(preserveState=True)
 
     def _get_platform(self):
