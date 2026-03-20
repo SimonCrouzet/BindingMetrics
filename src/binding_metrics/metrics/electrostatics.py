@@ -25,7 +25,8 @@ _FORMAL_CHARGES: dict[tuple[str, str], float] = {
     ("GLU", "OE2"): -0.5,
 }
 
-# Coulomb constant: e²/(4πε₀) × N_A in kJ·Å/mol
+# Coulomb constant: e²/(4πε₀) × N_A = 1389.35 kJ·Å/mol·e²
+# Assumes distances in Ångströms; returns energy in kJ/mol.
 _COULOMB_KJ_ANG_MOL: float = 1389.35
 _KJ_TO_KCAL: float = 1.0 / 4.184
 
@@ -131,7 +132,7 @@ def compute_coulomb_cross_chain(
             key = (str(atom.res_name).strip(), str(atom.atom_name).strip())
             q = _FORMAL_CHARGES.get(key)
             if q is not None:
-                positions.append(atom.coord.tolist())
+                positions.append(atom.coord.tolist())  # biotite coords are in Å
                 charges.append(q)
                 info.append({
                     "residue": f"{str(atom.res_name).strip()}:{str(atom.chain_id)}:{atom.res_id}",
