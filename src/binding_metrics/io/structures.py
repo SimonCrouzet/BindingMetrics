@@ -1,6 +1,7 @@
 """Structure loading and manipulation utilities."""
 
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -251,7 +252,24 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
     existing = block.find(["_struct_conn.id"])
     n_existing = len(existing) if existing else 0
 
-    loop = block.find_loop("_struct_conn.id").get_loop()
+    _STRUCT_CONN_COLS = [
+        "_struct_conn.id",
+        "_struct_conn.conn_type_id",
+        "_struct_conn.ptnr1_auth_asym_id",
+        "_struct_conn.ptnr1_label_comp_id",
+        "_struct_conn.ptnr1_auth_seq_id",
+        "_struct_conn.ptnr1_label_atom_id",
+        "_struct_conn.ptnr2_auth_asym_id",
+        "_struct_conn.ptnr2_label_comp_id",
+        "_struct_conn.ptnr2_auth_seq_id",
+        "_struct_conn.ptnr2_label_atom_id",
+    ]
+    loop_ref = block.find_loop("_struct_conn.id")
+    if loop_ref:
+        loop = loop_ref.get_loop()
+    else:
+        loop = block.init_loop("_struct_conn.", [col.split(".")[1] for col in _STRUCT_CONN_COLS])
+
     for i, (a1, a2) in enumerate(custom_bonds):
         r1, r2 = a1.residue, a2.residue
         bond_id = f"covale{n_existing + i + 1}"
@@ -324,16 +342,35 @@ def save_cif(
                 key = (row[0], row[1], row[2])
                 update_coords[key] = (row[3], row[4], row[5])
 
-        # Update coordinates in source block
+        # Validate coordinate counts before merging
         source_table = source_block.find(
             "_atom_site.",
             ["auth_asym_id", "auth_seq_id", "label_atom_id", "Cartn_x", "Cartn_y", "Cartn_z"],
         )
         if source_table and update_coords:
+            n_source = len(source_table)
+            n_update = len(update_coords)
+            if n_source != n_update:
+                warnings.warn(
+                    f"save_cif: coordinate count mismatch — source CIF has {n_source} "
+                    f"_atom_site rows but OpenMM output has {n_update} atoms. "
+                    "Some coordinates may not be updated.",
+                    stacklevel=2,
+                )
+            used_keys: set = set()
             for row in source_table:
                 key = (row[0], row[1], row[2])
                 if key in update_coords:
                     row[3], row[4], row[5] = update_coords[key]
+                    used_keys.add(key)
+            unused_keys = set(update_coords.keys()) - used_keys
+            if unused_keys:
+                warnings.warn(
+                    f"save_cif: {len(unused_keys)} atom(s) from OpenMM output were not found "
+                    "in the source CIF _atom_site and were not merged. "
+                    f"Example unmatched key: {next(iter(unused_keys))}",
+                    stacklevel=2,
+                )
 
         source_doc.write_file(str(output_path))
     finally:
