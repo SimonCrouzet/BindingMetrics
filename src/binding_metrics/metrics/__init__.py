@@ -9,7 +9,12 @@ from binding_metrics.metrics.geometry import (
     compute_ramachandran,
     compute_shape_complementarity,
 )
-from binding_metrics.metrics.openfold import compute_openfold_metrics, run_openfold
+from binding_metrics.metrics.openfold import (
+    compute_openfold_metrics,
+    prepare_refolding_query,
+    run_openfold,
+    run_openfold_refolding,
+)
 from binding_metrics.metrics.rmsd import calculate_rmsd, compute_receptor_drift
 from binding_metrics.metrics.sasa import calculate_buried_sasa
 
@@ -25,5 +30,7 @@ __all__ = [
     "compute_ramachandran",
     "compute_receptor_drift",
     "compute_shape_complementarity",
+    "prepare_refolding_query",
     "run_openfold",
+    "run_openfold_refolding",
 ]
