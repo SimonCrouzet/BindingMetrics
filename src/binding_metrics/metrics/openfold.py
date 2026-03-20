@@ -931,6 +931,178 @@ def prepare_refolding_query(
     return query_json_path
 
 
+def prepare_scoring_query(
+    complex_structure_path: str | Path,
+    receptor_chain: str,
+    binder_chain: str,
+    query_name: str,
+    output_dir: str | Path,
+    template_cif_path: Optional[str | Path] = None,
+) -> Path:
+    """Prepare an OpenFold3 query JSON to score an existing complex structure.
+
+    **Mode 1 — structure scoring:**
+    Both receptor and binder chains are provided as structural templates so
+    that OF3 evaluates the known conformation rather than predicting de-novo.
+    OF3 outputs confidence scores (pLDDT, pTM, ipTM, etc.) reflecting how
+    self-consistent it finds that specific structure.
+
+    Files written under ``output_dir``:
+
+    .. code-block:: text
+
+        {output_dir}/
+          {query_name}_query.json
+          {query_name}_receptor_{chain}.a3m
+          {query_name}_binder_{chain}.a3m
+          templates/
+            {query_name}_receptor_{chain}.cif
+            {query_name}_binder_{chain}.cif
+
+    Args:
+        complex_structure_path: CIF or PDB file of the full complex.
+        receptor_chain: Chain ID of the receptor.
+        binder_chain: Chain ID of the binder.
+        query_name: Name for the prediction query.
+        output_dir: Directory to write query JSON and supporting files.
+        template_cif_path: Optional pre-prepared complex or receptor CIF
+            (e.g., after MD relaxation). When provided, both chain templates
+            are extracted from this file instead of ``complex_structure_path``.
+
+    Returns:
+        Path to the written query JSON file.
+    """
+    import gemmi
+
+    complex_structure_path = Path(complex_structure_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    templates_dir = output_dir / "templates"
+    templates_dir.mkdir(exist_ok=True)
+
+    # Source structure for sequences (always the original complex)
+    st = gemmi.read_structure(str(complex_structure_path))
+    receptor_seq = _extract_sequence_from_structure(st, receptor_chain)
+    binder_seq = _extract_sequence_from_structure(st, binder_chain)
+
+    # Template source: use template_cif_path if provided, else the complex
+    template_src = (
+        gemmi.read_structure(str(template_cif_path))
+        if template_cif_path is not None
+        else st
+    )
+
+    # Extract each chain as a monomer CIF template
+    receptor_template_id = f"{query_name}_receptor_{receptor_chain}"
+    binder_template_id = f"{query_name}_binder_{binder_chain}"
+
+    _extract_chain_to_cif(template_src, receptor_chain, templates_dir / f"{receptor_template_id}.cif")
+    _extract_chain_to_cif(template_src, binder_chain, templates_dir / f"{binder_template_id}.cif")
+
+    # A3M self-alignments for both chains
+    receptor_a3m = output_dir / f"{receptor_template_id}.a3m"
+    binder_a3m = output_dir / f"{binder_template_id}.a3m"
+    _write_a3m_self_alignment(receptor_seq, f"query_{receptor_chain}", receptor_template_id, receptor_a3m)
+    _write_a3m_self_alignment(binder_seq, f"query_{binder_chain}", binder_template_id, binder_a3m)
+
+    # Query JSON — both chains have template_alignment_file_path
+    query = {
+        "name": query_name,
+        "sequences": [
+            {
+                "protein": {
+                    "id": [receptor_chain],
+                    "sequence": receptor_seq,
+                    "template_alignment_file_path": str(receptor_a3m),
+                }
+            },
+            {
+                "protein": {
+                    "id": [binder_chain],
+                    "sequence": binder_seq,
+                    "template_alignment_file_path": str(binder_a3m),
+                }
+            },
+        ],
+    }
+    query_json_path = output_dir / f"{query_name}_query.json"
+    query_json_path.write_text(json.dumps(query, indent=2))
+    return query_json_path
+
+
+def run_openfold_scoring(
+    complex_structure_path: str | Path,
+    receptor_chain: str,
+    binder_chain: str,
+    query_name: str,
+    output_dir: str | Path,
+    template_cif_path: Optional[str | Path] = None,
+    inference_ckpt_path: Optional[str | Path] = None,
+    num_diffusion_samples: int = 5,
+    num_model_seeds: int = 1,
+    use_msa_server: bool = True,
+    model_presets: Optional[list[str]] = None,
+    runner_yaml: Optional[str | Path] = None,
+    extra_args: Optional[list[str]] = None,
+) -> Path:
+    """Run OpenFold3 scoring of an existing complex structure (Mode 1).
+
+    Both receptor and binder chains are provided as structural templates.
+    OF3 scores the known conformation and outputs confidence metrics.
+    Use :func:`compute_openfold_metrics` with ``binder_chain`` and
+    ``receptor_chain`` to extract per-chain scores after inference.
+
+    Args:
+        complex_structure_path: CIF/PDB of the full complex.
+        receptor_chain: Chain ID of the receptor.
+        binder_chain: Chain ID of the binder.
+        query_name: Prediction query name.
+        output_dir: Top-level output directory.
+        template_cif_path: Optional pre-prepared complex CIF (e.g., MD-relaxed).
+        inference_ckpt_path: Optional model checkpoint path.
+        num_diffusion_samples: Structure samples per query (default 5).
+        num_model_seeds: Random seeds per query (default 1).
+        use_msa_server: Use ColabFold MSA server (default True).
+        model_presets: Model configuration presets.
+        runner_yaml: Explicit runner YAML; overrides ``model_presets``.
+        extra_args: Additional CLI args for OF3.
+
+    Returns:
+        Path to the OF3 predictions output directory
+        (``{output_dir}/predictions/``).
+    """
+    output_dir = Path(output_dir)
+    query_dir = output_dir / "query"
+    predictions_dir = output_dir / "predictions"
+
+    query_json = prepare_scoring_query(
+        complex_structure_path=complex_structure_path,
+        receptor_chain=receptor_chain,
+        binder_chain=binder_chain,
+        query_name=query_name,
+        output_dir=query_dir,
+        template_cif_path=template_cif_path,
+    )
+
+    effective_extra: list[str] = list(extra_args or [])
+    template_dir_arg = f"--template_mmcif_dir={query_dir / 'templates'}"
+    if not any("template_mmcif_dir" in a for a in effective_extra):
+        effective_extra.append(template_dir_arg)
+
+    run_openfold(
+        query_json=query_json,
+        output_dir=predictions_dir,
+        inference_ckpt_path=inference_ckpt_path,
+        num_diffusion_samples=num_diffusion_samples,
+        num_model_seeds=num_model_seeds,
+        use_msa_server=use_msa_server,
+        model_presets=model_presets,
+        runner_yaml=runner_yaml,
+        extra_args=effective_extra,
+    )
+    return predictions_dir
+
+
 def run_openfold_refolding(
     complex_structure_path: str | Path,
     receptor_chain: str,
@@ -1020,7 +1192,7 @@ def run_openfold_refolding(
 # ---------------------------------------------------------------------------
 
 
-def _add_parse_args(p) -> None:
+def _add_parse_args(p, include_chain_args: bool = False) -> None:
     """Add common parse/metrics arguments to a subparser."""
     p.add_argument("--seed", type=int, default=1, help="Seed index (default: 1).")
     p.add_argument("--sample", type=int, default=1, help="Sample index (default: 1).")
@@ -1028,14 +1200,15 @@ def _add_parse_args(p) -> None:
         "--include-matrices", action="store_true",
         help="Include full PDE/PAE matrices in output (large).",
     )
-    p.add_argument(
-        "--binder-chain", type=str, default=None, metavar="CHAIN",
-        help="Chain ID of the binder. Enables per-residue pLDDT and binder RMSD.",
-    )
-    p.add_argument(
-        "--receptor-chain", type=str, default=None, metavar="CHAIN",
-        help="Chain ID of the receptor. Enables interface PAE and receptor-frame RMSD.",
-    )
+    if include_chain_args:
+        p.add_argument(
+            "--binder-chain", type=str, default=None, metavar="CHAIN",
+            help="Chain ID of the binder. Enables per-residue pLDDT and binder RMSD.",
+        )
+        p.add_argument(
+            "--receptor-chain", type=str, default=None, metavar="CHAIN",
+            help="Chain ID of the receptor. Enables interface PAE and receptor-frame RMSD.",
+        )
     p.add_argument(
         "--reference", type=Path, default=None, metavar="CIF",
         help="Reference structure CIF/PDB for binder Cα RMSD (requires --binder-chain).",
@@ -1128,7 +1301,7 @@ def main():
         "--query-name", "-n", type=str, required=True,
         help="Query name (as specified in the input JSON).",
     )
-    _add_parse_args(p_parse)
+    _add_parse_args(p_parse, include_chain_args=True)
 
     # --- run subcommand ---
     p_run = sub.add_parser(
@@ -1162,7 +1335,7 @@ def main():
     )
     p_run.add_argument("--runner-yaml", type=Path, default=None,
                        help="Explicit YAML config file; overrides --presets.")
-    _add_parse_args(p_run)
+    _add_parse_args(p_run, include_chain_args=True)
 
     # --- prepare-query subcommand ---
     p_prep = sub.add_parser(
@@ -1238,9 +1411,109 @@ def main():
     )
     p_refold.add_argument("--runner-yaml", type=Path, default=None,
                           help="Explicit YAML config; overrides --presets.")
-    _add_parse_args(p_refold)
+    _add_parse_args(p_refold, include_chain_args=False)
+
+    # --- prepare-scoring-query subcommand ---
+    p_prep_score = sub.add_parser(
+        "prepare-scoring-query",
+        help="Prepare OF3 query JSON to score an existing complex (both chains as templates).",
+    )
+    p_prep_score.add_argument("--complex", type=Path, required=True, metavar="CIF",
+                              help="Complex CIF/PDB file (receptor + binder).")
+    p_prep_score.add_argument("--receptor-chain", type=str, required=True, metavar="CHAIN",
+                              help="Chain ID of the receptor.")
+    p_prep_score.add_argument("--binder-chain", type=str, required=True, metavar="CHAIN",
+                              help="Chain ID of the binder.")
+    p_prep_score.add_argument("--query-name", "-n", type=str, required=True,
+                              help="Prediction query name.")
+    p_prep_score.add_argument("--output-dir", "-o", type=Path, required=True,
+                              help="Directory for query JSON and template files.")
+    p_prep_score.add_argument(
+        "--template-cif", type=Path, default=None, metavar="CIF",
+        help="Pre-prepared complex CIF (e.g., MD-relaxed). Both chains extracted from it.",
+    )
+
+    # --- score subcommand ---
+    p_score = sub.add_parser(
+        "score",
+        help="Run OF3 scoring of an existing complex (both chains as templates).",
+    )
+    p_score.add_argument("--complex", type=Path, required=True, metavar="CIF",
+                         help="Complex CIF/PDB file (receptor + binder).")
+    p_score.add_argument("--receptor-chain", type=str, required=True, metavar="CHAIN",
+                         help="Chain ID of the receptor.")
+    p_score.add_argument("--binder-chain", type=str, required=True, metavar="CHAIN",
+                         help="Chain ID of the binder.")
+    p_score.add_argument("--query-name", "-n", type=str, required=True,
+                         help="Prediction query name.")
+    p_score.add_argument("--output-dir", "-o", type=Path, required=True,
+                         help="Top-level output directory.")
+    p_score.add_argument(
+        "--template-cif", type=Path, default=None, metavar="CIF",
+        help="Pre-prepared complex CIF (e.g., MD-relaxed). Both chains extracted from it.",
+    )
+    p_score.add_argument("--ckpt", type=Path, default=None, help="Model checkpoint path.")
+    p_score.add_argument("--num-samples", type=int, default=5,
+                         help="Number of diffusion samples (default: 5).")
+    p_score.add_argument("--num-seeds", type=int, default=1,
+                         help="Number of random seeds (default: 1).")
+    p_score.add_argument("--no-msa-server", action="store_true",
+                         help="Disable ColabFold MSA server.")
+    p_score.add_argument(
+        "--presets", nargs="+", default=["predict", "pae_enabled", "low_mem"],
+        metavar="PRESET", help="Model configuration presets.",
+    )
+    p_score.add_argument("--runner-yaml", type=Path, default=None,
+                         help="Explicit YAML config; overrides --presets.")
+    _add_parse_args(p_score, include_chain_args=False)
 
     args = parser.parse_args()
+
+    # --- prepare-scoring-query ---
+    if args.command == "prepare-scoring-query":
+        path = prepare_scoring_query(
+            complex_structure_path=args.complex,
+            receptor_chain=args.receptor_chain,
+            binder_chain=args.binder_chain,
+            query_name=args.query_name,
+            output_dir=args.output_dir,
+            template_cif_path=args.template_cif,
+        )
+        print(f"Scoring query JSON written to: {path}")
+        return
+
+    # --- score ---
+    if args.command == "score":
+        print(f"Running OF3 structure scoring: {args.complex}")
+        print(f"  Receptor chain (template): {args.receptor_chain}")
+        print(f"  Binder chain  (template): {args.binder_chain}")
+        predictions_dir = run_openfold_scoring(
+            complex_structure_path=args.complex,
+            receptor_chain=args.receptor_chain,
+            binder_chain=args.binder_chain,
+            query_name=args.query_name,
+            output_dir=args.output_dir,
+            template_cif_path=args.template_cif,
+            inference_ckpt_path=args.ckpt,
+            num_diffusion_samples=args.num_samples,
+            num_model_seeds=args.num_seeds,
+            use_msa_server=not args.no_msa_server,
+            model_presets=args.presets,
+            runner_yaml=args.runner_yaml,
+        )
+        print(f"\nParsing scoring metrics from: {predictions_dir}")
+        metrics = compute_openfold_metrics(
+            output_dir=predictions_dir,
+            query_name=args.query_name,
+            seed=args.seed,
+            sample=args.sample,
+            include_matrices=args.include_matrices,
+            reference_structure_path=args.reference,
+            binder_chain=args.binder_chain,
+            receptor_chain=args.receptor_chain,
+        )
+        _print_metrics(metrics, args.seed, args.sample)
+        return
 
     # --- prepare-query ---
     if args.command == "prepare-query":

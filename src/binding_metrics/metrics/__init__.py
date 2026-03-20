@@ -12,8 +12,10 @@ from binding_metrics.metrics.geometry import (
 from binding_metrics.metrics.openfold import (
     compute_openfold_metrics,
     prepare_refolding_query,
+    prepare_scoring_query,
     run_openfold,
     run_openfold_refolding,
+    run_openfold_scoring,
 )
 from binding_metrics.metrics.rmsd import calculate_rmsd, compute_receptor_drift
 from binding_metrics.metrics.sasa import calculate_buried_sasa
@@ -31,6 +33,8 @@ __all__ = [
     "compute_receptor_drift",
     "compute_shape_complementarity",
     "prepare_refolding_query",
+    "prepare_scoring_query",
     "run_openfold",
     "run_openfold_refolding",
+    "run_openfold_scoring",
 ]
