@@ -7,7 +7,7 @@ name: binding-metrics
 # Usage:
 #   conda env create -f environment.yml
 #   conda activate binding-metrics
-#   python -m openmm.testInstallation   # verify GPU is visible
+#   binding-metrics-check-env           # verify GPU and all dependencies
 channels:
   - conda-forge
   - defaults
