@@ -219,3 +219,7 @@ CLAUDE.md
 
 # temp files
 temp/
+
+# data files
+*.zip
+structures/
