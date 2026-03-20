@@ -27,6 +27,7 @@ Usage (via RelaxationConfig):
 
 import os
 import tempfile
+import warnings
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -263,12 +264,6 @@ def _find_atom(residue, name: str):
     return None
 
 
-def _res_id(chain_id: str, residues: list, res) -> tuple:
-    """Return (chain_id, index_in_chain, atom_name) tuple for storing."""
-    idx = residues.index(res)
-    return (chain_id, idx)
-
-
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
@@ -305,6 +300,21 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
     n_first = _find_atom(first, "N")
     c_last  = _find_atom(last,  "C")
 
+    if n_first is None:
+        warnings.warn(
+            f"detect_cyclization: atom N not found on first residue "
+            f"{first.name}{first.id} (chain {chain_id}); "
+            "head-to-tail amide and N-terminal lactam bonds may not be detected.",
+            stacklevel=2,
+        )
+    if c_last is None:
+        warnings.warn(
+            f"detect_cyclization: atom C not found on last residue "
+            f"{last.name}{last.id} (chain {chain_id}); "
+            "head-to-tail amide and C-terminal lactam bonds may not be detected.",
+            stacklevel=2,
+        )
+
     # ---- 1. Head-to-tail amide: C(last) — N(first) ----
     if n_first is not None and c_last is not None:
         if _dist(pos, n_first.index, c_last.index) < _AMIDE_BOND_THRESH:
@@ -332,10 +342,22 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
     for i, (ri, res_i) in enumerate(cys_residues):
         sg_i = _find_atom(res_i, "SG")
         if sg_i is None:
+            warnings.warn(
+                f"detect_cyclization: atom SG not found on CYS residue "
+                f"{res_i.name}{res_i.id} (chain {chain_id}, index {ri}); "
+                "disulfide bond may not be detected.",
+                stacklevel=2,
+            )
             continue
         for rj, res_j in cys_residues[i + 1:]:
             sg_j = _find_atom(res_j, "SG")
             if sg_j is None:
+                warnings.warn(
+                    f"detect_cyclization: atom SG not found on CYS residue "
+                    f"{res_j.name}{res_j.id} (chain {chain_id}, index {rj}); "
+                    "disulfide bond may not be detected.",
+                    stacklevel=2,
+                )
                 continue
             if _dist(pos, sg_i.index, sg_j.index) < _DISULFIDE_THRESH:
                 results.append(CyclicBondInfo(
@@ -352,6 +374,13 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
         for i, res in enumerate(residues):
             if res.name == "ASP":
                 cg = _find_atom(res, "CG")
+                if cg is None:
+                    warnings.warn(
+                        f"detect_cyclization: atom CG not found on ASP residue "
+                        f"{res.name}{res.id} (chain {chain_id}, index {i}); "
+                        "lactam_n_asp bond may not be detected.",
+                        stacklevel=2,
+                    )
                 if cg and _dist(pos, cg.index, n_first.index) < _AMIDE_BOND_THRESH:
                     ca_res   = _find_atom(res,   "CA")
                     ca_first = _find_atom(first, "CA")
@@ -374,6 +403,13 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                     detected_pairs.add((n_first.index, cg.index))
             elif res.name == "GLU":
                 cd = _find_atom(res, "CD")
+                if cd is None:
+                    warnings.warn(
+                        f"detect_cyclization: atom CD not found on GLU residue "
+                        f"{res.name}{res.id} (chain {chain_id}, index {i}); "
+                        "lactam_n_glu bond may not be detected.",
+                        stacklevel=2,
+                    )
                 if cd and _dist(pos, cd.index, n_first.index) < _AMIDE_BOND_THRESH:
                     ca_res   = _find_atom(res,   "CA")
                     ca_first = _find_atom(first, "CA")
@@ -400,6 +436,13 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
         for i, res in enumerate(residues):
             if res.name == "LYS":
                 nz = _find_atom(res, "NZ")
+                if nz is None:
+                    warnings.warn(
+                        f"detect_cyclization: atom NZ not found on LYS residue "
+                        f"{res.name}{res.id} (chain {chain_id}, index {i}); "
+                        "lactam_c_lys bond may not be detected.",
+                        stacklevel=2,
+                    )
                 if nz and _dist(pos, nz.index, c_last.index) < _AMIDE_BOND_THRESH:
                     ca_last = _find_atom(last, "CA")
                     ca_res  = _find_atom(res,  "CA")
@@ -859,14 +902,13 @@ def load_extra_xmls(ff, bond_info_list: list) -> None:
             if xml_str in seen:
                 continue
             seen.add(xml_str)
-    for xml_str in seen:
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xml")
-        try:
-            with os.fdopen(tmp_fd, "w") as fh:
-                fh.write(xml_str)
-            ff.loadFile(tmp_path)
-        finally:
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xml")
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+                with os.fdopen(tmp_fd, "w") as fh:
+                    fh.write(xml_str)
+                ff.loadFile(tmp_path)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
