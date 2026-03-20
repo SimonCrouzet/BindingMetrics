@@ -284,8 +284,11 @@ def compute_interface_metrics(
     }
 
     if design_chain is None or receptor_chain is None:
-        print(f"  Warning: Could not identify peptide/receptor chains in {cif_path}")
-        return result
+        raise ValueError(
+            f"Chain auto-detection failed for {cif_path}: "
+            f"peptide_chain={design_chain!r}, receptor_chain={receptor_chain!r}. "
+            "Pass --design-chain / --receptor-chain explicitly."
+        )
 
     peptide_mask = atoms.chain_id == design_chain
     receptor_mask = atoms.chain_id == receptor_chain
