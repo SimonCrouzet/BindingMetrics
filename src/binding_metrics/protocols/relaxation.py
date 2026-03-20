@@ -932,7 +932,7 @@ class ImplicitRelaxation:
 
             # Save minimized structure
             min_path = output_dir / f"{sample_id}_minimized.cif"
-            save_cif(topology, minimized_positions, min_path, source_cif_path=input_path)
+            save_cif(topology, minimized_positions, min_path)
             result.minimized_structure_path = str(min_path)
             print(f"[{sample_id}] Minimized: {result.potential_energy_minimized:.1f} kJ/mol")
 
@@ -990,7 +990,7 @@ class ImplicitRelaxation:
 
                 # Save final MD structure
                 final_path = output_dir / f"{sample_id}_md_final.cif"
-                save_cif(topology, final_positions, final_path, source_cif_path=input_path)
+                save_cif(topology, final_positions, final_path)
                 result.md_final_structure_path = str(final_path)
 
             result.success = True
