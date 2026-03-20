@@ -211,6 +211,59 @@ def strip_heterogens(
     return topology, positions
 
 
+def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
+    """Add non-disulfide non-sequential intra-chain bonds to _struct_conn.
+
+    PDBxFile.writeFile only records disulfide bonds.  Custom covalent bonds
+    (head-to-tail amide, lactam, etc.) are silently omitted, so PDBxFile
+    cannot round-trip them.  This function reads the written CIF back with
+    gemmi and appends the missing covale rows.
+    """
+    try:
+        import gemmi
+    except ImportError:
+        return
+
+    # Map global residue index → local 1-based position within its chain
+    res_local: dict[int, int] = {}
+    for chain in topology.chains():
+        for local_idx, res in enumerate(chain.residues(), start=1):
+            res_local[res.index] = local_idx
+
+    custom_bonds = []
+    for bond in topology.bonds():
+        a1, a2 = bond.atom1, bond.atom2
+        r1, r2 = a1.residue, a2.residue
+        if r1.chain.id != r2.chain.id:
+            continue
+        if abs(r1.index - r2.index) <= 1:
+            continue
+        if a1.name == "SG" and a2.name == "SG":
+            continue  # disulfide, already in _struct_conn
+        custom_bonds.append((a1, a2))
+
+    if not custom_bonds:
+        return
+
+    doc = gemmi.cif.read(str(cif_path))
+    block = doc.sole_block()
+
+    existing = block.find(["_struct_conn.id"])
+    n_existing = len(existing) if existing else 0
+
+    loop = block.find_loop("_struct_conn.id").get_loop()
+    for i, (a1, a2) in enumerate(custom_bonds):
+        r1, r2 = a1.residue, a2.residue
+        bond_id = f"covale{n_existing + i + 1}"
+        loop.add_row([
+            bond_id, "covale",
+            r1.chain.id, r1.name, str(res_local[r1.index]), a1.name,
+            r2.chain.id, r2.name, str(res_local[r2.index]), a2.name,
+        ])
+
+    doc.write_file(str(cif_path))
+
+
 def save_cif(
     topology,
     positions,
@@ -237,6 +290,9 @@ def save_cif(
     if source_cif_path is None:
         with open(output_path, "w") as f:
             PDBxFile.writeFile(topology, positions, f)
+        # PDBxFile only writes disulfide bonds to _struct_conn; patch in any
+        # other non-sequential intra-chain covalent bonds (e.g. head-to-tail).
+        _patch_nonstd_bonds_in_cif(output_path, topology)
         return
 
     try:
