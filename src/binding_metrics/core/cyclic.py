@@ -422,7 +422,10 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                     detected_pairs.add((nz.index, c_last.index))
 
     # ---- 5. Catch unsupported cyclization: suspicious short contact not already detected ----
-    atom_list = [a for r in residues for a in r.atoms()]
+    # Only scan heavy atoms — H atoms are within H-bond distance of acceptors and
+    # would produce false-positive "unsupported cyclization" errors.
+    atom_list = [a for r in residues for a in r.atoms()
+                 if a.element is not None and a.element.symbol != "H"]
 
     # Build 1-2 (directly bonded) and 1-3 (angle) exclusion sets.
     # 1-3 contacts arise naturally at amide junctions (e.g. N···O=C), and must
