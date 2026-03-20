@@ -49,6 +49,7 @@ import argparse
 import json
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -199,6 +200,194 @@ def _parse_timing(path: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Structural analysis helpers (per-chain pLDDT, PAE slice, RMSD)
+# ---------------------------------------------------------------------------
+
+
+def _import_biotite_struc():
+    """Lazy import of biotite structure modules."""
+    try:
+        import biotite.structure as struc
+        import biotite.structure.io.pdbx as pdbx
+        return struc, pdbx
+    except ImportError:
+        raise ImportError(
+            "biotite is required for per-chain structural analysis. "
+            "Install with: pip install binding-metrics[biotite]"
+        )
+
+
+def _load_atoms(path: Path):
+    """Load an AtomArray from a CIF or PDB file using biotite (model 1)."""
+    _, pdbx = _import_biotite_struc()
+    path = Path(path)
+    if path.suffix.lower() in (".cif", ".mmcif"):
+        f = pdbx.CIFFile.read(str(path))
+        return pdbx.get_structure(f, model=1)
+    import biotite.structure.io.pdb as pdb_io
+    f = pdb_io.PDBFile.read(str(path))
+    return pdb_io.get_structure(f, model=1)
+
+
+def _chain_token_offsets(atoms) -> dict[str, tuple[int, int]]:
+    """Map chain IDs to [start, end) PAE token ranges (one token per residue).
+
+    Preserves the order chains first appear in the structure, which matches
+    the PAE matrix token ordering (same order as the query JSON chains).
+
+    Returns:
+        Dict ``{chain_id: (start, end)}`` where ``end = start + n_residues``.
+    """
+    seen: list[str] = []
+    for cid in atoms.chain_id:
+        if cid not in seen:
+            seen.append(cid)
+    offsets: dict[str, tuple[int, int]] = {}
+    offset = 0
+    for chain_id in seen:
+        n_res = int(np.unique(atoms.res_id[atoms.chain_id == chain_id]).size)
+        offsets[chain_id] = (offset, offset + n_res)
+        offset += n_res
+    return offsets
+
+
+def _binder_plddt_per_residue(
+    plddt_per_atom: np.ndarray,
+    atoms,
+    binder_chain: str,
+) -> np.ndarray:
+    """Mean pLDDT per residue for one chain.
+
+    Args:
+        plddt_per_atom: Per-atom pLDDT array from OpenFold3, shape (n_atoms,).
+            Must be in the same atom order as ``atoms``.
+        atoms: Biotite AtomArray from the predicted model CIF.
+        binder_chain: Chain ID to extract.
+
+    Returns:
+        Array of shape ``(n_residues,)`` with mean pLDDT per residue [0–100].
+
+    Raises:
+        ValueError: If ``len(plddt_per_atom) != atoms.array_length()``.
+    """
+    if len(plddt_per_atom) != atoms.array_length():
+        raise ValueError(
+            f"plddt_per_atom length ({len(plddt_per_atom)}) != "
+            f"atom count in structure ({atoms.array_length()}). "
+            "The pLDDT array and structure file must be from the same prediction."
+        )
+    mask = atoms.chain_id == binder_chain
+    chain_plddt = plddt_per_atom[mask]
+    chain_res_ids = atoms.res_id[mask]
+    if chain_res_ids.size == 0:
+        return np.array([], dtype=float)
+    unique_res = np.unique(chain_res_ids)
+    return np.array(
+        [chain_plddt[chain_res_ids == r].mean() for r in unique_res], dtype=float
+    )
+
+
+def _binder_ca_rmsd(
+    pred_atoms,
+    ref_atoms,
+    binder_chain: str,
+    receptor_chain: Optional[str] = None,
+) -> float:
+    """Binder Cα RMSD (Å) between predicted and reference structures.
+
+    If ``receptor_chain`` is supplied, the predicted structure is first
+    superposed onto the reference receptor Cα atoms before measuring the
+    binder RMSD. This gives the physically meaningful "receptor-frame" RMSD:
+    how much the predicted binder deviates from the reference binder pose
+    relative to the receptor.
+
+    Args:
+        pred_atoms: Biotite AtomArray of the predicted structure.
+        ref_atoms: Biotite AtomArray of the reference structure.
+        binder_chain: Chain ID of the binder.
+        receptor_chain: Chain ID of the receptor (used for superposition).
+            If None, superpose directly on binder Cα.
+
+    Returns:
+        Binder Cα RMSD in Å, or ``nan`` if there are no matching Cα atoms.
+
+    Raises:
+        ValueError: If binder Cα counts differ between prediction and reference.
+    """
+    struc, _ = _import_biotite_struc()
+
+    def _ca(atoms, chain):
+        return atoms[(atoms.chain_id == chain) & (atoms.atom_name == "CA")]
+
+    pred_binder_ca = _ca(pred_atoms, binder_chain)
+    ref_binder_ca = _ca(ref_atoms, binder_chain)
+
+    n_pred = pred_binder_ca.array_length()
+    n_ref = ref_binder_ca.array_length()
+    if n_pred != n_ref:
+        raise ValueError(
+            f"Binder Cα count mismatch (chain '{binder_chain}'): "
+            f"predicted {n_pred}, reference {n_ref}. "
+            "Structures may have different sequence lengths."
+        )
+    if n_pred == 0:
+        return float("nan")
+
+    if receptor_chain is not None:
+        pred_rec_ca = _ca(pred_atoms, receptor_chain)
+        ref_rec_ca = _ca(ref_atoms, receptor_chain)
+        if (
+            pred_rec_ca.array_length() == ref_rec_ca.array_length()
+            and pred_rec_ca.array_length() >= 3
+        ):
+            _, transform = struc.superimpose(ref_rec_ca, pred_rec_ca)
+            pred_binder_ca = struc.superimpose_apply(pred_binder_ca, transform)
+
+    return float(struc.rmsd(ref_binder_ca, pred_binder_ca))
+
+
+def _interface_pae_stats(
+    pae: np.ndarray,
+    atoms,
+    binder_chain: str,
+    receptor_chain: str,
+) -> dict:
+    """PAE statistics for the binder–receptor interface region.
+
+    Slices the full PAE matrix to the binder×receptor token sub-matrix and
+    returns summary statistics and (optionally) the raw slice.
+
+    Args:
+        pae: Full PAE matrix, shape ``(n_tokens, n_tokens)``.
+        atoms: Biotite AtomArray of the predicted structure.
+        binder_chain: Chain ID of the binder.
+        receptor_chain: Chain ID of the receptor.
+
+    Returns:
+        Dict with:
+            ``pae_interface`` (np.ndarray): Sub-matrix ``(n_binder_res, n_receptor_res)``.
+            ``mean_interface_pae`` (float): Mean PAE over the interface slice (Å).
+            ``max_interface_pae`` (float): Max PAE over the interface slice (Å).
+            ``n_binder_tokens`` (int): Binder residue token count.
+            ``n_receptor_tokens`` (int): Receptor residue token count.
+    """
+    offsets = _chain_token_offsets(atoms)
+    missing = [c for c in (binder_chain, receptor_chain) if c not in offsets]
+    if missing:
+        raise ValueError(f"Chains not found in structure: {missing}")
+    b0, b1 = offsets[binder_chain]
+    r0, r1 = offsets[receptor_chain]
+    sub = pae[b0:b1, r0:r1]
+    return {
+        "pae_interface": sub,
+        "mean_interface_pae": float(sub.mean()),
+        "max_interface_pae": float(sub.max()),
+        "n_binder_tokens": b1 - b0,
+        "n_receptor_tokens": r1 - r0,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main public function
 # ---------------------------------------------------------------------------
 
@@ -209,12 +398,24 @@ def compute_openfold_metrics(
     seed: int = 1,
     sample: int = 1,
     include_matrices: bool = False,
+    reference_structure_path: Optional[str | Path] = None,
+    binder_chain: Optional[str] = None,
+    receptor_chain: Optional[str] = None,
 ) -> dict:
     """Extract confidence metrics from OpenFold3 output files.
 
-    Parses the aggregated confidence JSON (scalar metrics) and the per-atom
-    confidence file (pLDDT array, PDE and PAE matrices) for the specified
-    seed/sample prediction.
+    **Mode 1 — confidence metrics only (no reference):**
+    Parse the aggregated and per-atom confidence files to get scalar metrics
+    (avg_plddt, ptm, iptm, chain scores) and optionally per-residue binder
+    pLDDT and interface PAE statistics. Pass ``binder_chain`` (and optionally
+    ``receptor_chain``) to enable per-chain analysis.
+
+    **Mode 1 with reference — refolding RMSD:**
+    Pass ``reference_structure_path`` together with ``binder_chain`` (and
+    ``receptor_chain`` for receptor-frame alignment) to additionally compute
+    the binder Cα RMSD between the OF3 prediction and a known reference
+    structure (e.g., crystal or MD-relaxed). This measures how faithfully OF3
+    recovers the bound binder conformation.
 
     Args:
         output_dir: Top-level OpenFold3 output directory.
@@ -224,6 +425,21 @@ def compute_openfold_metrics(
         sample: Sample index to parse (default 1).
         include_matrices: If True, include the full PDE and PAE matrices in
             the result (can be large). Default False.
+        reference_structure_path: Optional path to a reference CIF/PDB
+            (e.g., crystal structure). When supplied together with
+            ``binder_chain``, the binder Cα RMSD between the OF3 prediction
+            and this reference is computed and stored as ``binder_ca_rmsd``.
+        binder_chain: Chain ID of the binder/ligand in the predicted structure.
+            Enables per-residue pLDDT for the binder, interface PAE stats
+            (when ``receptor_chain`` is also given), and binder RMSD
+            (when ``reference_structure_path`` is also given).
+        receptor_chain: Chain ID of the receptor/target. When provided
+            alongside ``binder_chain``:
+              - Interface PAE statistics are computed (mean/max PAE for the
+                binder×receptor token block).
+              - Receptor Cα atoms are used as the superposition reference
+                when computing ``binder_ca_rmsd``, giving the
+                receptor-frame binder RMSD.
 
     Returns:
         Dictionary with keys:
@@ -253,6 +469,22 @@ def compute_openfold_metrics(
                 include_matrices=True
             max_pae (float): max PAE value (Å); NaN if PAE unavailable
 
+        Per-chain structural analysis [requires binder_chain]:
+            binder_plddt_per_residue (np.ndarray | None): mean pLDDT per
+                residue for the binder chain, shape (n_binder_res,)
+            binder_avg_plddt (float): mean pLDDT over all binder residues
+
+        Interface PAE [requires binder_chain + receptor_chain + PAE available]:
+            mean_interface_pae (float): mean PAE over binder×receptor tokens (Å)
+            max_interface_pae (float): max PAE over binder×receptor tokens (Å)
+            pae_interface (np.ndarray | None): raw PAE slice, shape
+                (n_binder_res, n_receptor_res); only if include_matrices=True
+
+        Refolding RMSD [requires binder_chain + reference_structure_path]:
+            binder_ca_rmsd (float): binder Cα RMSD vs. reference (Å).
+                Computed in the receptor frame if receptor_chain is given
+                (predicted structure superposed on receptor Cα first).
+
         Timing:
             timing (dict): runtime entries from timing.json, empty if absent
     """
@@ -281,6 +513,15 @@ def compute_openfold_metrics(
         "pde": None,
         "pae": None,
         "max_pae": float("nan"),
+        # Per-chain structural analysis (populated when binder_chain is given)
+        "binder_plddt_per_residue": None,
+        "binder_avg_plddt": float("nan"),
+        # Interface PAE (populated when binder_chain + receptor_chain are given)
+        "mean_interface_pae": float("nan"),
+        "max_interface_pae": float("nan"),
+        "pae_interface": None,
+        # Refolding RMSD (populated when binder_chain + reference_structure_path)
+        "binder_ca_rmsd": float("nan"),
         # Timing
         "timing": {},
     }
@@ -313,6 +554,56 @@ def compute_openfold_metrics(
     # --- Timing ---
     if files["timing"] is not None:
         result["timing"] = _parse_timing(files["timing"])
+
+    # --- Per-chain structural analysis ---
+    # Requires binder_chain; uses the predicted model CIF.
+    if binder_chain is not None and files["structure"] is not None:
+        try:
+            pred_atoms = _load_atoms(files["structure"])
+
+            # Per-residue binder pLDDT
+            if result["plddt_per_atom"] is not None:
+                try:
+                    per_res = _binder_plddt_per_residue(
+                        result["plddt_per_atom"], pred_atoms, binder_chain
+                    )
+                    result["binder_plddt_per_residue"] = per_res
+                    result["binder_avg_plddt"] = (
+                        float(per_res.mean()) if per_res.size > 0 else float("nan")
+                    )
+                except Exception as exc:
+                    warnings.warn(f"compute_openfold_metrics: per-residue binder pLDDT skipped: {exc}")
+
+            # Interface PAE statistics (binder × receptor token block)
+            if receptor_chain is not None:
+                pae_src = result.get("pae")
+                if pae_src is None and files["confidences"] is not None:
+                    # Load PAE even when include_matrices=False for stats only
+                    pae_src = _parse_confidences(files["confidences"]).get("pae")
+                if pae_src is not None:
+                    try:
+                        pae_stats = _interface_pae_stats(
+                            pae_src, pred_atoms, binder_chain, receptor_chain
+                        )
+                        result["mean_interface_pae"] = pae_stats["mean_interface_pae"]
+                        result["max_interface_pae"] = pae_stats["max_interface_pae"]
+                        if include_matrices:
+                            result["pae_interface"] = pae_stats["pae_interface"]
+                    except Exception as exc:
+                        warnings.warn(f"compute_openfold_metrics: interface PAE skipped: {exc}")
+
+            # Binder Cα RMSD vs. reference structure
+            if reference_structure_path is not None:
+                try:
+                    ref_atoms = _load_atoms(Path(reference_structure_path))
+                    result["binder_ca_rmsd"] = _binder_ca_rmsd(
+                        pred_atoms, ref_atoms, binder_chain, receptor_chain
+                    )
+                except Exception as exc:
+                    warnings.warn(f"compute_openfold_metrics: binder RMSD skipped: {exc}")
+
+        except Exception as exc:
+            warnings.warn(f"compute_openfold_metrics: structural analysis failed: {exc}")
 
     return result
 
