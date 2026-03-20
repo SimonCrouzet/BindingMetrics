@@ -3,6 +3,7 @@
 import argparse
 import sys
 import traceback
+import warnings
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -409,7 +410,9 @@ def compute_interaction_energy(
                   structures with severe clashes (useful as a clash indicator).
         relaxed:  Backbone-restrained minimization → full unrestrained minimization,
                   then evaluate. Resolves clashes while preserving backbone geometry.
-        after_md: From the relaxed geometry, run short MD and evaluate at final frame.
+        after_md: Perform an independent backbone-restrained + unrestrained minimization,
+                  then run a short MD and evaluate at the final frame. Does not
+                  require 'relaxed' to be in modes.
 
     Args:
         input_path: Path to CIF or PDB structure file
@@ -430,6 +433,8 @@ def compute_interaction_energy(
             sample_id, success, error_message, num_contacts, num_close_contacts,
             {mode}_interaction_energy, {mode}_e_complex, {mode}_e_peptide,
             {mode}_e_receptor  —  for each requested mode.
+            Negative values of {mode}_interaction_energy indicate a favorable
+            (stabilizing) interaction between peptide and receptor.
     """
     from binding_metrics.io.structures import detect_chains, load_structure
 
@@ -532,10 +537,22 @@ def compute_interaction_energy(
                 restraint.addPerParticleParameter("x0")
                 restraint.addPerParticleParameter("y0")
                 restraint.addPerParticleParameter("z0")
+                restrained_residues: set = set()
                 for atom in topo_h.atoms():
                     if atom.name in backbone_names:
                         pos = pos_h[atom.index]
                         restraint.addParticle(atom.index, [pos.x, pos.y, pos.z])
+                        restrained_residues.add(atom.residue.index)
+                for residue in topo_h.residues():
+                    if residue.index not in restrained_residues:
+                        warnings.warn(
+                            f"compute_interaction_energy: no backbone atoms "
+                            f"(N/CA/C/O) found for residue {residue.name}{residue.id} "
+                            f"(chain {residue.chain.id}); backbone restraint skipped "
+                            "for this residue.",
+                            stacklevel=2,
+                        )
+                restraint_index = sys_complex.getNumForces()
                 sys_complex.addForce(restraint)
                 simulation.context.reinitialize(preserveState=True)
 
@@ -545,6 +562,9 @@ def compute_interaction_energy(
 
                 state = simulation.context.getState(getPositions=True)
                 pos_relaxed = state.getPositions()
+
+                sys_complex.removeForce(restraint_index)
+                simulation.context.reinitialize(preserveState=True)
 
                 if "relaxed" in modes:
                     e_c, e_p, e_r = _evaluate_subsystem_energies(
