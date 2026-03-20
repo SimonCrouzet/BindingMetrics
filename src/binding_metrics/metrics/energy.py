@@ -224,58 +224,14 @@ def calculate_component_energies(
 # ---------------------------------------------------------------------------
 
 
-def _repair_structure(topology, positions):
-    """Repair a structure using PDBFixer if available.
 
-    Removes origin-placeholder atoms and rebuilds missing heavy atoms.
-    Falls back to the original topology/positions if PDBFixer is not installed.
-
-    Returns:
-        (topology, positions) — repaired if PDBFixer available, original otherwise.
-    """
-    try:
-        import tempfile
-        import os
-        from pdbfixer import PDBFixer
-        from openmm.app import Modeller
-
-        # Write to temp PDB so PDBFixer can read it
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".pdb", delete=False) as tmp:
-            PDBFile.writeFile(topology, positions, tmp)
-            tmp_path = tmp.name
-        try:
-            fixer = PDBFixer(filename=tmp_path)
-        finally:
-            os.unlink(tmp_path)
-
-        # Remove origin-placeholder atoms (structure prediction artefacts)
-        origin_indices = [
-            i for i, pos in enumerate(fixer.positions)
-            if abs(pos.x) < 1e-6 and abs(pos.y) < 1e-6 and abs(pos.z) < 1e-6
-        ]
-        if origin_indices:
-            all_atoms = list(fixer.topology.atoms())
-            modeller = Modeller(fixer.topology, fixer.positions)
-            modeller.delete([all_atoms[i] for i in origin_indices])
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".pdb", delete=False) as tmp:
-                PDBFile.writeFile(modeller.topology, modeller.positions, tmp)
-                tmp_path = tmp.name
-            try:
-                fixer = PDBFixer(filename=tmp_path)
-            finally:
-                os.unlink(tmp_path)
-
-        fixer.findMissingResidues()
-        fixer.findMissingAtoms()
-        fixer.addMissingAtoms()
-        return fixer.topology, fixer.positions
-
-    except ImportError:
-        return topology, positions
-
-
-def _create_implicit_system(topology, positions, solvent_model: str = "obc2"):
+def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
+                            peptide_chain: Optional[str] = None):
     """Create an OpenMM system with implicit solvent after adding hydrogens.
+
+    If peptide_chain is given, cyclic topology is detected and patched before
+    addHydrogens (renames cyclic residues, loads cyclic FF XML, suppresses
+    terminus-H addition at cyclic sites).
 
     Returns:
         Tuple of (system, topology_with_h, positions_with_h)
@@ -283,10 +239,27 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2"):
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
 
+    bond_info = []
+    if peptide_chain is not None:
+        from binding_metrics.core.cyclic import (
+            patch_cyclic_topology,
+            get_addh_variants,
+            load_extra_xmls,
+        )
+        topology, positions, bond_info = patch_cyclic_topology(
+            topology, positions, peptide_chain
+        )
+        if bond_info:
+            load_extra_xmls(ff, bond_info)
+
     from openmm.app import Modeller
     modeller = Modeller(topology, positions)
     try:
-        modeller.addHydrogens(ff, pH=7.0)
+        if bond_info:
+            addh_variants = get_addh_variants(modeller.topology, bond_info, peptide_chain)
+            modeller.addHydrogens(ff, pH=7.0, variants=addh_variants)
+        else:
+            modeller.addHydrogens(ff, pH=7.0)
     except Exception:
         modeller.addHydrogens(ff)
 
@@ -479,7 +452,11 @@ def compute_interaction_energy(
 
     try:
         topology, positions = load_structure(input_path)
-        topology, positions = _repair_structure(topology, positions)
+        # No structure repair here: callers are expected to pass a clean structure
+        # (raw input goes through PDBFixer in the relaxation step; MD output is
+        # already fully prepared). Running PDBFixer here would mangle cyclic
+        # peptides by adding spurious terminus atoms (OXT, H2/H3) after losing
+        # the closure bond in the PDB round-trip.
 
         if peptide_chain is None or receptor_chain is None:
             auto_pep, auto_rec = detect_chains(topology)
@@ -508,7 +485,9 @@ def compute_interaction_energy(
             result["num_close_contacts"] = int(np.sum(distances < 4.0))
 
         # Build complex system — adds hydrogens once, shared across all modes
-        sys_complex, topo_h, pos_h = _create_implicit_system(topology, positions, solvent_model)
+        sys_complex, topo_h, pos_h = _create_implicit_system(
+            topology, positions, solvent_model, peptide_chain=peptide_chain
+        )
         platform, props = _get_platform(device)
 
         # Single simulation object used for all modes (sequential: raw → relaxed → after_md)
