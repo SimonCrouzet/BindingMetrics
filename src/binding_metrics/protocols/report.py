@@ -164,8 +164,31 @@ def _md_header(results: dict) -> str:
     )
 
 
+def _is_skipped(section: dict | None) -> bool:
+    return isinstance(section, dict) and section.get("skipped") is True
+
+
+def _md_cyclic(relax: dict | None) -> str | None:
+    """Return a cyclic topology section, or None if linear."""
+    bonds = (relax or {}).get("cyclic_bonds")
+    if not bonds:
+        return None
+    lines = ["## Cyclic topology\n"]
+    lines.append(_md_table(
+        ["Bond type", "Atom 1", "Atom 2"],
+        [[b["type"], b["atom1"], b["atom2"]] for b in bonds],
+    ))
+    lines.append(
+        f"\n> ℹ️ {len(bonds)} closure bond(s) detected. "
+        "Ramachandran and ω outlier scores should be interpreted with this in mind."
+    )
+    return "\n".join(lines) + "\n"
+
+
 def _md_relax(relax: dict | None) -> str:
     lines = ["## Relaxation\n"]
+    if _is_skipped(relax):
+        return lines[0] + "_Skipped._\n"
     if not relax or not relax.get("success", False):
         return lines[0] + f"_Failed: {(relax or {}).get('error_message', 'missing')}_\n"
     lines.append(_md_table(
@@ -193,6 +216,8 @@ def _md_relax(relax: dict | None) -> str:
 
 def _md_energy(energy: dict | None) -> str:
     lines = ["## Interaction Energy\n"]
+    if _is_skipped(energy):
+        return lines[0] + "_Skipped._\n"
     if not energy or not energy.get("success", True):
         return lines[0] + f"_Failed: {(energy or {}).get('error_message', 'absent')}_\n"
     lines.append(_md_table(
@@ -211,6 +236,8 @@ def _md_energy(energy: dict | None) -> str:
 
 def _md_interface(iface: dict | None) -> str:
     lines = ["## Interface\n"]
+    if _is_skipped(iface):
+        return lines[0] + "_Skipped._\n"
     if not iface:
         return lines[0] + "_Absent._\n"
     lines.append(_md_table(
@@ -247,6 +274,8 @@ def _md_interface(iface: dict | None) -> str:
 
 def _md_geometry(geo: dict | None) -> str:
     lines = ["## Geometry\n"]
+    if _is_skipped(geo):
+        return lines[0] + "_Skipped._\n"
     if not geo:
         return lines[0] + "_Absent._\n"
     rama = geo.get("ramachandran") or {}
@@ -283,6 +312,8 @@ def _md_geometry(geo: dict | None) -> str:
 
 def _md_electrostatics(elec: dict | None) -> str:
     lines = ["## Electrostatics\n"]
+    if _is_skipped(elec):
+        return lines[0] + "_Skipped._\n"
     if not elec:
         return lines[0] + "_Absent._\n"
     lines.append(_md_table(
@@ -339,9 +370,11 @@ def _md_scorecard(results: dict) -> str:
 
 
 def _build_summary(results: dict) -> str:
+    cyclic = _md_cyclic(results.get("relax"))
     sections = [
         _md_header(results),
         _md_relax(results.get("relax")),
+        *([] if cyclic is None else [cyclic]),
         _md_energy(results.get("energy")),
         _md_interface(results.get("interface")),
         _md_geometry(results.get("geometry")),

@@ -172,6 +172,10 @@ class RelaxationResult:
     minimized_structure_path: Optional[str] = None
     md_final_structure_path: Optional[str] = None
 
+    # Cyclic bond metadata — populated when cyclization is detected.
+    # Each entry: {"type": str, "atom1": "chain:res_idx:atom", "atom2": ...}
+    cyclic_bonds: Optional[list] = None
+
     def to_dict(self) -> dict:
         """Convert result to a flat dictionary for CSV export."""
         d = {
@@ -188,6 +192,7 @@ class RelaxationResult:
             "md_time_s": self.md_time_s,
             "minimized_structure_path": self.minimized_structure_path,
             "md_final_structure_path": self.md_final_structure_path,
+            "cyclic_bonds": self.cyclic_bonds,
         }
         if self.peptide_rmsf_per_residue is not None:
             d["peptide_rmsf_per_residue"] = json.dumps(self.peptide_rmsf_per_residue)
@@ -841,6 +846,16 @@ class ImplicitRelaxation:
         try:
             print(f"[{sample_id}] Preparing system...")
             system, topology, positions, bond_info = self._setup_system(input_path)
+
+            if bond_info:
+                result.cyclic_bonds = [
+                    {
+                        "type": b.cyclic_type,
+                        "atom1": ":".join(str(x) for x in b.atom1_id),
+                        "atom2": ":".join(str(x) for x in b.atom2_id),
+                    }
+                    for b in bond_info
+                ]
 
             peptide_chain, receptor_chain = self._identify_chains(topology)
 
