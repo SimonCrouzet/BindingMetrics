@@ -1,295 +1,432 @@
-"""HTML report generation for binding metrics CSV outputs.
+"""Final pipeline step: write results to disk as JSON or CSV, with optional Markdown summary.
+
+Used internally by ``binding-metrics-run`` and as a standalone tool.
 
 Usage:
-    binding-metrics-report --input scores.csv --output report.html
-    binding-metrics-report --input scores.csv --output report.html --config my_report.json
-    binding-metrics-report --input scores.csv --output report.html --title "My Experiment" --top-n 20
+    binding-metrics-report --results path/to/*_results.json [--format json|csv] [--summary]
 """
 
+from __future__ import annotations
+
 import argparse
-import base64
+import csv
+import datetime
 import io
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 # ---------------------------------------------------------------------------
-# Default report configuration
+# Scorecard thresholds used by the Markdown summary.
+#
+# Each entry:
+#   key       : tuple of keys to traverse from the root results dict
+#   label     : display name
+#   unit      : appended to the value in the table
+#   direction : "lower" or "higher" (informational)
+#   green(v)  : callable → True for best band
+#   amber(v)  : callable → True for middle band; else RED
+#
+# Energies from OpenMM are in kJ/mol.
+# SASA-derived ΔG (interface module) is in kcal/mol.
 # ---------------------------------------------------------------------------
-
-_DEFAULT_CONFIG: dict = {
-    # Columns treated as metadata (excluded from histograms / summary stats)
-    "metadata_columns": [
-        "sample_id", "success", "error_message",
-        "peptide_chain", "receptor_chain", "design_chain",
-    ],
-    # Ordered list of report sections to render
-    "sections": ["summary", "success_rate", "histograms", "top_table"],
-    # Named plots from PLOT_REGISTRY to render; null = auto-detect all numeric columns
-    "plots": None,
-    # Top-N table: number of rows to show
-    "top_n": 10,
-    # Column to rank by for the top table; null = first numeric column
-    "rank_by": None,
-    # Whether lower is better (True) or higher is better (False) for rank_by
-    "rank_ascending": True,
-    # Report title (overridden by --title CLI flag if provided)
-    "title": "Binding Metrics Report",
-}
-
-
-def _merge_config(user_config: dict) -> dict:
-    """Deep-merge user config on top of defaults."""
-    cfg = dict(_DEFAULT_CONFIG)
-    cfg.update(user_config)
-    return cfg
-
-
-# ---------------------------------------------------------------------------
-# Plot helpers
-# ---------------------------------------------------------------------------
-
-def _fig_to_base64(fig) -> str:
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", dpi=120)
-    buf.seek(0)
-    return base64.b64encode(buf.read()).decode()
-
-
-def _make_histogram(series, spec) -> str:
-    """Render a histogram for *series* using *spec* and return a base64 PNG."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    data = series.dropna()
-    fig, ax = plt.subplots(figsize=(4.5, 3))
-    ax.hist(data, bins=spec.bins, color=spec.color, edgecolor="white", linewidth=0.5)
-    ax.set_title(spec.title, fontsize=11)
-    ax.set_xlabel(spec.x_label, fontsize=9)
-    ax.set_ylabel("Count", fontsize=9)
-    ax.tick_params(labelsize=8)
-    fig.tight_layout()
-    encoded = _fig_to_base64(fig)
-    plt.close(fig)
-    return encoded
+_THRESHOLDS: list[dict] = [
+    # MD RMSD (Å): < 2 excellent, 2–5 moderate, > 5 poor
+    dict(key=("relax", "rmsd_md_final"), label="MD RMSD", unit="Å", direction="lower",
+         green=lambda v: v < 2.0, amber=lambda v: v < 5.0),
+    # Peptide RMSF mean (Å): < 1 rigid, 1–2 moderate, > 2 flexible
+    dict(key=("relax", "peptide_rmsf_mean"), label="RMSF mean", unit="Å", direction="lower",
+         green=lambda v: v < 1.0, amber=lambda v: v < 2.0),
+    # OpenMM interaction energy (kJ/mol): < −40 strong, −40–0 moderate, > 0 repulsive
+    dict(key=("energy", "relaxed_interaction_energy"), label="E_int", unit="kJ/mol", direction="lower",
+         green=lambda v: v < -40.0, amber=lambda v: v < 0.0),
+    # ΔSASA (Å²): > 1000 well-buried, 500–1000 moderate, < 500 poor
+    dict(key=("interface", "delta_sasa"), label="ΔSASA", unit="Å²", direction="higher",
+         green=lambda v: v > 1000.0, amber=lambda v: v > 500.0),
+    # H-bond count: ≥ 5 good, 2–4 acceptable, < 2 poor
+    dict(key=("interface", "hbonds"), label="H-bonds", unit="", direction="higher",
+         green=lambda v: v >= 5, amber=lambda v: v >= 2),
+    # Salt bridges: ≥ 2 good, 1 acceptable, 0 poor
+    dict(key=("interface", "saltbridges"), label="Salt bridges", unit="", direction="higher",
+         green=lambda v: v >= 2, amber=lambda v: v >= 1),
+    # Ramachandran favoured %: > 95 excellent, 80–95 acceptable, < 80 poor
+    dict(key=("geometry", "ramachandran", "ramachandran_favoured_pct"),
+         label="Rama favoured", unit="%", direction="higher",
+         green=lambda v: v > 95.0, amber=lambda v: v > 80.0),
+    # ω outlier fraction: < 0.05 good, 0.05–0.20 acceptable, > 0.20 poor
+    dict(key=("geometry", "omega", "omega_outlier_fraction"),
+         label="ω outlier frac", unit="", direction="lower",
+         green=lambda v: v < 0.05, amber=lambda v: v < 0.20),
+    # Coulomb energy (kJ/mol): < −100 favourable, −100–0 moderate, > 0 poor
+    dict(key=("electrostatics", "coulomb_energy_kJ"), label="Coulomb E", unit="kJ/mol", direction="lower",
+         green=lambda v: v < -100.0, amber=lambda v: v < 0.0),
+]
 
 
 # ---------------------------------------------------------------------------
-# Section renderers
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _render_summary(df, meta_cols: set[str]) -> str:
-    import pandas as pd
-    numeric_cols = [c for c in df.select_dtypes(include="number").columns if c not in meta_cols]
-    if not numeric_cols:
-        return "<p>No numeric metric columns found.</p>"
-    stats = df[numeric_cols].describe().T[["count", "mean", "std", "min", "max"]]
-    stats = stats.round(4)
-    return stats.to_html(classes="metric-table", border=0)
+def _nested_get(d: dict, *keys) -> Any:
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict) or k not in cur:
+            return None
+        cur = cur[k]
+    return cur
 
 
-def _render_success_rate(df) -> str:
-    if "success" not in df.columns:
-        return "<p><em>No <code>success</code> column found.</em></p>"
-    total = len(df)
-    n_ok = int(df["success"].sum()) if df["success"].dtype == bool else int((df["success"] == True).sum())
-    n_fail = total - n_ok
-    pct = 100 * n_ok / total if total else 0
-    return (
-        f"<p><strong>Total samples:</strong> {total} &nbsp;|&nbsp; "
-        f"<strong>Success:</strong> {n_ok} ({pct:.1f}%) &nbsp;|&nbsp; "
-        f"<strong>Failed:</strong> {n_fail}</p>"
+def _fmt(v: Any, decimals: int = 3) -> str:
+    if v is None:
+        return "—"
+    if isinstance(v, float):
+        return f"{v:.{decimals}f}"
+    return str(v)
+
+
+def _rag(value: Any, spec: dict) -> str:
+    if value is None:
+        return "⬜"
+    try:
+        if spec["green"](value):
+            return "🟢"
+        if spec["amber"](value):
+            return "🟡"
+        return "🔴"
+    except Exception:
+        return "⬜"
+
+
+def _md_table(headers: list[str], rows: list[list[str]]) -> str:
+    widths = [
+        max(len(h), max((len(str(r[i])) for r in rows), default=0))
+        for i, h in enumerate(headers)
+    ]
+    sep = "| " + " | ".join("-" * w for w in widths) + " |"
+    head = "| " + " | ".join(h.ljust(widths[i]) for i, h in enumerate(headers)) + " |"
+    body = "\n".join(
+        "| " + " | ".join(str(c).ljust(widths[i]) for i, c in enumerate(row)) + " |"
+        for row in rows
     )
-
-
-def _render_histograms(df, cfg: dict, meta_cols: set[str]) -> str:
-    from binding_metrics.protocols.plots import PLOT_REGISTRY, PlotSpec
-
-    plot_names: list[str] | None = cfg.get("plots")
-
-    if plot_names is not None:
-        # Explicit list: resolve names through registry
-        specs: list[PlotSpec] = []
-        for name in plot_names:
-            if name not in PLOT_REGISTRY:
-                print(f"warning: unknown plot name {name!r}, skipping", file=sys.stderr)
-                continue
-            specs.append(PLOT_REGISTRY[name])
-    else:
-        # Auto-detect: use registry entries whose column is present, then fallback for the rest
-        numeric_cols = [c for c in df.select_dtypes(include="number").columns if c not in meta_cols]
-        registry_cols = {spec.column: spec for spec in PLOT_REGISTRY.values()}
-        specs = []
-        seen: set[str] = set()
-        for col in numeric_cols:
-            if col in registry_cols:
-                specs.append(registry_cols[col])
-            else:
-                specs.append(PlotSpec(column=col, title=col.replace("_", " ").title()))
-            seen.add(col)
-
-    imgs: list[str] = []
-    for spec in specs:
-        if spec.column not in df.columns:
-            continue
-        b64 = _make_histogram(df[spec.column], spec)
-        imgs.append(f'<div class="plot-card"><img src="data:image/png;base64,{b64}" alt="{spec.title}"></div>')
-
-    if not imgs:
-        return "<p>No numeric columns to plot.</p>"
-    return '<div class="plot-grid">' + "".join(imgs) + "</div>"
-
-
-def _render_top_table(df, cfg: dict, meta_cols: set[str]) -> str:
-    numeric_cols = [c for c in df.select_dtypes(include="number").columns if c not in meta_cols]
-    if not numeric_cols:
-        return "<p>No numeric columns available for ranking.</p>"
-
-    rank_by: str = cfg.get("rank_by") or numeric_cols[0]
-    if rank_by not in df.columns:
-        return f"<p>Column {rank_by!r} not found in data.</p>"
-
-    ascending: bool = cfg.get("rank_ascending", True)
-    top_n: int = int(cfg.get("top_n", 10))
-
-    id_cols = [c for c in ["sample_id"] if c in df.columns]
-    display_cols = id_cols + [c for c in numeric_cols if c not in id_cols]
-
-    top = (
-        df[display_cols + ([rank_by] if rank_by not in display_cols else [])]
-        .sort_values(rank_by, ascending=ascending)
-        .head(top_n)
-        .round(4)
-    )
-    return (
-        f"<p><em>Ranked by <code>{rank_by}</code> "
-        f"({'ascending' if ascending else 'descending'}), top {top_n}</em></p>"
-        + top.to_html(classes="metric-table", border=0, index=False)
-    )
+    return f"{head}\n{sep}\n{body}"
 
 
 # ---------------------------------------------------------------------------
-# HTML assembly
+# CSV flattening — extracts scalar leaf values from the nested results dict
 # ---------------------------------------------------------------------------
 
-_SECTION_TITLES = {
-    "summary": "Summary Statistics",
-    "success_rate": "Success Rate",
-    "histograms": "Metric Distributions",
-    "top_table": "Top Samples",
-}
+def _flatten(results: dict) -> dict[str, Any]:
+    """Return a flat {column: value} dict suitable for one CSV row."""
+    flat: dict[str, Any] = {
+        "sample_id": results.get("sample_id"),
+        "input": results.get("input"),
+        "total_elapsed_s": results.get("total_elapsed_s"),
+    }
 
-_CSS = """
-body { font-family: system-ui, sans-serif; max-width: 1300px; margin: 0 auto; padding: 24px; color: #222; }
-h1 { border-bottom: 2px solid #ddd; padding-bottom: 8px; }
-h2 { margin-top: 2em; color: #444; }
-table.metric-table { border-collapse: collapse; width: 100%; font-size: 0.85em; }
-table.metric-table th, table.metric-table td { border: 1px solid #ddd; padding: 6px 10px; text-align: right; }
-table.metric-table th { background: #f5f5f5; font-weight: 600; }
-table.metric-table tr:nth-child(even) { background: #fafafa; }
-.plot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; margin-top: 12px; }
-.plot-card img { width: 100%; border: 1px solid #eee; border-radius: 4px; }
-.meta { font-size: 0.8em; color: #888; margin-bottom: 1.5em; }
-"""
+    def _add(prefix: str, d: Any) -> None:
+        if not isinstance(d, dict):
+            return
+        for k, v in d.items():
+            if k in ("per_residue", "charged_atoms_peptide", "charged_atoms_receptor",
+                     "interface_residues_peptide", "interface_residues_receptor",
+                     "peptide_rmsf_per_residue"):
+                continue  # skip list fields
+            if isinstance(v, dict):
+                _add(f"{prefix}_{k}", v)
+            elif not isinstance(v, list):
+                flat[f"{prefix}_{k}"] = v
+
+    for section in ("relax", "energy", "interface", "geometry", "electrostatics", "openfold"):
+        if section in results:
+            _add(section, results[section])
+
+    return flat
 
 
-def _build_html(df, cfg: dict, meta_cols: set[str], source_path: str) -> str:
-    import datetime
+# ---------------------------------------------------------------------------
+# Markdown summary sections
+# ---------------------------------------------------------------------------
 
-    title = cfg.get("title", "Binding Metrics Report")
-    sections = cfg.get("sections", _DEFAULT_CONFIG["sections"])
-
-    section_html = ""
-    for sec in sections:
-        heading = _SECTION_TITLES.get(sec, sec.replace("_", " ").title())
-        if sec == "summary":
-            body = _render_summary(df, meta_cols)
-        elif sec == "success_rate":
-            body = _render_success_rate(df)
-        elif sec == "histograms":
-            body = _render_histograms(df, cfg, meta_cols)
-        elif sec == "top_table":
-            body = _render_top_table(df, cfg, meta_cols)
-        else:
-            body = f"<p><em>Unknown section: {sec!r}</em></p>"
-        section_html += f"<h2>{heading}</h2>\n{body}\n"
-
+def _md_header(results: dict) -> str:
+    sid = results.get("sample_id", "unknown")
+    inp = results.get("input", "—")
+    total = results.get("total_elapsed_s")
+    elapsed = f"{total:.1f} s" if total is not None else "—"
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>{title}</title>
-<style>{_CSS}</style>
-</head>
-<body>
-<h1>{title}</h1>
-<p class="meta">Source: {source_path} &nbsp;|&nbsp; {len(df)} samples &nbsp;|&nbsp; Generated: {now}</p>
-{section_html}
-</body>
-</html>
-"""
+    return (
+        f"# Binding Metrics Report\n\n"
+        f"| Field | Value |\n|---|---|\n"
+        f"| Sample ID | `{sid}` |\n"
+        f"| Input | `{inp}` |\n"
+        f"| Elapsed | {elapsed} |\n"
+        f"| Generated | {now} |\n"
+    )
+
+
+def _md_relax(relax: dict | None) -> str:
+    lines = ["## Relaxation\n"]
+    if not relax or not relax.get("success", False):
+        return lines[0] + f"_Failed: {(relax or {}).get('error_message', 'missing')}_\n"
+    lines.append(_md_table(
+        ["Metric", "Value", "Unit"],
+        [
+            ["Min. energy",   _fmt(relax.get("potential_energy_minimized")), "kJ/mol"],
+            ["MD avg energy", _fmt(relax.get("potential_energy_md_avg")),    "kJ/mol"],
+            ["MD energy std", _fmt(relax.get("potential_energy_md_std")),    "kJ/mol"],
+            ["RMSD (final)",  _fmt(relax.get("rmsd_md_final")),              "Å"],
+            ["RMSF mean",     _fmt(relax.get("peptide_rmsf_mean")),          "Å"],
+            ["RMSF max",      _fmt(relax.get("peptide_rmsf_max")),           "Å"],
+        ],
+    ))
+    rmsf_raw = relax.get("peptide_rmsf_per_residue")
+    if rmsf_raw:
+        try:
+            vals: list[float] = json.loads(rmsf_raw) if isinstance(rmsf_raw, str) else list(rmsf_raw)
+            flagged = [f"res{i+1}={v:.2f}" for i, v in enumerate(vals) if v > 1.5]
+            if flagged:
+                lines.append(f"\n⚠️ **High RMSF (> 1.5 Å):** {', '.join(flagged)}")
+        except Exception:
+            pass
+    return "\n".join(lines) + "\n"
+
+
+def _md_energy(energy: dict | None) -> str:
+    lines = ["## Interaction Energy\n"]
+    if not energy or not energy.get("success", True):
+        return lines[0] + f"_Failed: {(energy or {}).get('error_message', 'absent')}_\n"
+    lines.append(_md_table(
+        ["Metric", "Value", "Unit"],
+        [
+            ["E_int",          _fmt(energy.get("relaxed_interaction_energy")), "kJ/mol"],
+            ["E_complex",      _fmt(energy.get("relaxed_e_complex")),          "kJ/mol"],
+            ["E_peptide",      _fmt(energy.get("relaxed_e_peptide")),          "kJ/mol"],
+            ["E_receptor",     _fmt(energy.get("relaxed_e_receptor")),         "kJ/mol"],
+            ["Contacts",       _fmt(energy.get("num_contacts")),               ""],
+            ["Close contacts", _fmt(energy.get("num_close_contacts")),         ""],
+        ],
+    ))
+    return "\n".join(lines) + "\n"
+
+
+def _md_interface(iface: dict | None) -> str:
+    lines = ["## Interface\n"]
+    if not iface:
+        return lines[0] + "_Absent._\n"
+    lines.append(_md_table(
+        ["Metric", "Value", "Unit"],
+        [
+            ["ΔSASA",               _fmt(iface.get("delta_sasa")),              "Å²"],
+            ["ΔG_int",              _fmt(iface.get("delta_g_int")),             "kcal/mol"],
+            ["ΔG_int",              _fmt(iface.get("delta_g_int_kJ")),          "kJ/mol"],
+            ["Polar area",          _fmt(iface.get("polar_area")),              "Å²"],
+            ["Apolar area",         _fmt(iface.get("apolar_area")),             "Å²"],
+            ["Fraction polar",      _fmt(iface.get("fraction_polar"), 4),       ""],
+            ["H-bonds",             _fmt(iface.get("hbonds")),                  ""],
+            ["Salt bridges",        _fmt(iface.get("saltbridges")),             ""],
+            ["Interface res (pep)", _fmt(iface.get("n_interface_residues_peptide")),  ""],
+            ["Interface res (rec)", _fmt(iface.get("n_interface_residues_receptor")), ""],
+        ],
+    ))
+    # Per-residue buried SASA for peptide
+    peptide_chain = iface.get("peptide_chain", "B")
+    pep_res = sorted(
+        [r for r in (iface.get("per_residue") or []) if r.get("chain") == peptide_chain],
+        key=lambda r: r.get("res_id", 0),
+    )
+    if pep_res:
+        lines.append("\n**Per-residue buried SASA — peptide**\n")
+        lines.append(_md_table(
+            ["Residue", "Buried SASA (Å²)", "Polar (Å²)", "Apolar (Å²)", "ΔG_res (kcal/mol)"],
+            [[f"{r['res_name']}:{r['res_id']}", _fmt(r.get("buried_sasa"), 2),
+              _fmt(r.get("polar_area"), 2), _fmt(r.get("apolar_area"), 2),
+              _fmt(r.get("delta_g_res"), 4)] for r in pep_res],
+        ))
+    return "\n".join(lines) + "\n"
+
+
+def _md_geometry(geo: dict | None) -> str:
+    lines = ["## Geometry\n"]
+    if not geo:
+        return lines[0] + "_Absent._\n"
+    rama = geo.get("ramachandran") or {}
+    omega = geo.get("omega") or {}
+    lines.append("**Ramachandran**\n")
+    lines.append(_md_table(
+        ["Metric", "Value"],
+        [
+            ["Favoured", f"{_fmt(rama.get('ramachandran_favoured_pct'), 1)} %"],
+            ["Allowed",  f"{_fmt(rama.get('ramachandran_allowed_pct'),  1)} %"],
+            ["Outliers", f"{_fmt(rama.get('ramachandran_outlier_pct'),  1)} % "
+                         f"(n={rama.get('ramachandran_outlier_count', 0)})"],
+            ["Residues evaluated", _fmt(rama.get("n_residues_evaluated"))],
+        ],
+    ))
+    for r in [r for r in (rama.get("per_residue") or []) if r.get("region") == "outlier"]:
+        lines.append(f"\n⚠️ **Rama outlier:** {r['res_name']}{r['res_id']} "
+                     f"(φ={r['phi']:.1f}°, ψ={r['psi']:.1f}°)")
+    lines.append("\n**Peptide-bond planarity (ω)**\n")
+    lines.append(_md_table(
+        ["Metric", "Value"],
+        [
+            ["Mean deviation",   f"{_fmt(omega.get('omega_mean_dev'), 1)} °"],
+            ["Max deviation",    f"{_fmt(omega.get('omega_max_dev'),  1)} °"],
+            ["Outlier fraction", _fmt(omega.get("omega_outlier_fraction"), 3)],
+            ["Outlier count",    _fmt(omega.get("omega_outlier_count"))],
+        ],
+    ))
+    for r in [r for r in (omega.get("per_residue") or []) if r.get("is_outlier")]:
+        lines.append(f"\n⚠️ **ω outlier:** {r['res_name']}{r['res_id']} "
+                     f"(ω={r['omega']:.1f}°, dev={r['deviation']:.1f}°)")
+    return "\n".join(lines) + "\n"
+
+
+def _md_electrostatics(elec: dict | None) -> str:
+    lines = ["## Electrostatics\n"]
+    if not elec:
+        return lines[0] + "_Absent._\n"
+    lines.append(_md_table(
+        ["Metric", "Value", "Unit"],
+        [
+            ["Coulomb E",     _fmt(elec.get("coulomb_energy_kJ")),   "kJ/mol"],
+            ["Coulomb E",     _fmt(elec.get("coulomb_energy_kcal")), "kcal/mol"],
+            ["Charged pairs", _fmt(elec.get("n_charged_pairs")),     ""],
+            ["Attractive",    _fmt(elec.get("n_attractive")),        ""],
+            ["Repulsive",     _fmt(elec.get("n_repulsive")),         ""],
+        ],
+    ))
+    return "\n".join(lines) + "\n"
+
+
+def _md_openfold(of: dict | None) -> str:
+    lines = ["## OpenFold\n"]
+    if not of:
+        return lines[0] + "_Absent._\n"
+    lines.append(_md_table(
+        ["Metric", "Value"],
+        [
+            ["avg pLDDT",      _fmt(of.get("avg_pLDDT"), 2)],
+            ["pTM",            _fmt(of.get("pTM"), 3)],
+            ["ipTM",           _fmt(of.get("ipTM"), 3)],
+            ["Refolding RMSD", f"{_fmt(of.get('refolding_rmsd'), 2)} Å"],
+        ],
+    ))
+    low = [
+        f"{r.get('res_name','')}{r.get('res_id', i)} ({r.get('plddt', 0):.1f})"
+        for i, r in enumerate(of.get("per_residue_plddt") or [])
+        if r.get("plddt", 100) < 70
+    ]
+    if low:
+        lines.append(f"\n⚠️ **Low pLDDT (< 70):** {', '.join(low)}")
+    return "\n".join(lines) + "\n"
+
+
+def _md_scorecard(results: dict) -> str:
+    rows = []
+    for spec in _THRESHOLDS:
+        value = _nested_get(results, *spec["key"])
+        rows.append([
+            _rag(value, spec),
+            spec["label"],
+            _fmt(value),
+            spec["unit"],
+            "↓" if spec["direction"] == "lower" else "↑",
+        ])
+    lines = ["## Summary Scorecard\n"]
+    lines.append(_md_table(["", "Metric", "Value", "Unit", "Better"], rows))
+    lines.append("\n🟢 OK  🟡 AMBER  🔴 RED  ⬜ N/A")
+    return "\n".join(lines) + "\n"
+
+
+def _build_summary(results: dict) -> str:
+    sections = [
+        _md_header(results),
+        _md_relax(results.get("relax")),
+        _md_energy(results.get("energy")),
+        _md_interface(results.get("interface")),
+        _md_geometry(results.get("geometry")),
+        _md_electrostatics(results.get("electrostatics")),
+    ]
+    if "openfold" in results:
+        sections.append(_md_openfold(results["openfold"]))
+    sections.append(_md_scorecard(results))
+    return "\n".join(sections)
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# Public API
+# ---------------------------------------------------------------------------
+
+def write_report(
+    results: dict,
+    output_dir: Path,
+    sample_id: str,
+    fmt: str = "json",
+    summary: bool = False,
+) -> Path:
+    """Write pipeline results to *output_dir*.
+
+    Args:
+        results:    Aggregated results dict from the pipeline.
+        output_dir: Directory to write outputs into.
+        sample_id:  Used as the file name stem.
+        fmt:        Primary output format — ``"json"`` (default) or ``"csv"``.
+        summary:    If True, also write a human-readable ``*_report.md``.
+
+    Returns:
+        Path to the primary output file (JSON or CSV).
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if fmt == "csv":
+        out_path = output_dir / f"{sample_id}_results.csv"
+        flat = _flatten(results)
+        with open(out_path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(flat.keys()))
+            writer.writeheader()
+            writer.writerow(flat)
+    else:  # json (default)
+        out_path = output_dir / f"{sample_id}_results.json"
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(results, fh, indent=2, default=str)
+
+    if summary:
+        md_path = output_dir / f"{sample_id}_report.md"
+        md_path.write_text(_build_summary(results), encoding="utf-8")
+        print(f"  summary   → {md_path}")
+
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# CLI (standalone use)
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate an HTML report from a binding metrics CSV.",
+        description="Export binding-metrics results to JSON or CSV, with optional Markdown summary.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--input", "-i", type=Path, required=True, help="Input CSV file")
-    parser.add_argument("--output", "-o", type=Path, required=True, help="Output HTML file")
-    parser.add_argument("--config", "-c", type=Path, default=None, help="JSON config file (overrides defaults)")
-    parser.add_argument("--title", type=str, default=None, help="Report title")
-    parser.add_argument("--top-n", type=int, default=None, help="Number of rows in top table")
-    parser.add_argument("--rank-by", type=str, default=None, help="Column to rank top table by")
-    parser.add_argument("--rank-descending", action="store_true", help="Rank highest first (default: lowest first)")
+    parser.add_argument("--results", "-r", type=Path, required=True,
+                        help="Path to a *_results.json file")
+    parser.add_argument("--format", "-f", choices=["json", "csv"], default="json",
+                        dest="fmt", help="Output format")
+    parser.add_argument("--summary", "-s", action="store_true",
+                        help="Also write a human-readable *_report.md")
+    parser.add_argument("--output-dir", "-o", type=Path, default=None,
+                        help="Output directory (default: same directory as --results)")
     args = parser.parse_args()
 
-    try:
-        import pandas as pd
-        import matplotlib  # noqa: F401 — fail early if missing
-    except ImportError as e:
-        print(
-            f"error: {e}\nInstall report dependencies with: pip install binding-metrics[report]",
-            file=sys.stderr,
-        )
+    if not args.results.exists():
+        print(f"error: file not found: {args.results}", file=sys.stderr)
         sys.exit(1)
 
-    if not args.input.exists():
-        print(f"error: input file not found: {args.input}", file=sys.stderr)
-        sys.exit(1)
+    with open(args.results, encoding="utf-8") as fh:
+        results = json.load(fh)
 
-    # Load user config and merge with defaults
-    user_config: dict = {}
-    if args.config:
-        if not args.config.exists():
-            print(f"error: config file not found: {args.config}", file=sys.stderr)
-            sys.exit(1)
-        with open(args.config) as f:
-            user_config = json.load(f)
+    sample_id = results.get("sample_id") or args.results.stem.removesuffix("_results")
+    output_dir = args.output_dir or args.results.parent
 
-    cfg = _merge_config(user_config)
-
-    # CLI flags take precedence over config file
-    if args.title:
-        cfg["title"] = args.title
-    if args.top_n is not None:
-        cfg["top_n"] = args.top_n
-    if args.rank_by:
-        cfg["rank_by"] = args.rank_by
-    if args.rank_descending:
-        cfg["rank_ascending"] = False
-
-    df = pd.read_csv(args.input)
-    meta_cols: set[str] = set(cfg.get("metadata_columns", []))
-
-    html = _build_html(df, cfg, meta_cols, source_path=str(args.input))
-
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(html, encoding="utf-8")
-    print(f"report written to {args.output}  ({len(df)} samples)")
+    out = write_report(results, output_dir, sample_id, fmt=args.fmt, summary=args.summary)
+    print(f"  results   → {out}")
