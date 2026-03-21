@@ -216,6 +216,13 @@ def main():
     metrics_group.add_argument("--skip-electrostatics", action="store_true",
                                help="Skip electrostatics (Coulomb cross-chain)")
 
+    # Report
+    report_group = parser.add_argument_group("Report")
+    report_group.add_argument("--format", choices=["json", "csv"], default="json",
+                              dest="fmt", help="Results output format (default: json)")
+    report_group.add_argument("--summary", action="store_true",
+                              help="Also write a human-readable *_report.md")
+
     args = parser.parse_args()
 
     if not args.input.exists():
@@ -248,7 +255,8 @@ def main():
     results["total_elapsed_s"] = round(time.time() - t_total, 1)
 
     from binding_metrics.protocols.report import write_report
-    results_path = write_report(results, args.output_dir, sample_id)
+    results_path = write_report(results, args.output_dir, sample_id,
+                                fmt=args.fmt, summary=args.summary)
 
     print(f"\n{'#'*60}")
     print(f"  DONE in {results['total_elapsed_s']}s")
