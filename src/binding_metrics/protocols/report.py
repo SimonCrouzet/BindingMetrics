@@ -331,24 +331,32 @@ def _md_electrostatics(elec: dict | None) -> str:
 
 def _md_openfold(of: dict | None) -> str:
     lines = ["## OpenFold\n"]
+    if _is_skipped(of):
+        return lines[0] + "_Skipped._\n"
     if not of:
         return lines[0] + "_Absent._\n"
-    lines.append(_md_table(
-        ["Metric", "Value"],
-        [
-            ["avg pLDDT",      _fmt(of.get("avg_pLDDT"), 2)],
-            ["pTM",            _fmt(of.get("pTM"), 3)],
-            ["ipTM",           _fmt(of.get("ipTM"), 3)],
-            ["Refolding RMSD", f"{_fmt(of.get('refolding_rmsd'), 2)} Å"],
-        ],
-    ))
-    low = [
-        f"{r.get('res_name','')}{r.get('res_id', i)} ({r.get('plddt', 0):.1f})"
-        for i, r in enumerate(of.get("per_residue_plddt") or [])
-        if r.get("plddt", 100) < 70
+    rows = [
+        ["avg pLDDT",  _fmt(of.get("avg_plddt"), 2)],
+        ["pTM",        _fmt(of.get("ptm"), 3)],
+        ["ipTM",       _fmt(of.get("iptm"), 3)],
+        ["gPDE",       f"{_fmt(of.get('gpde'), 2)} Å"],
     ]
-    if low:
-        lines.append(f"\n⚠️ **Low pLDDT (< 70):** {', '.join(low)}")
+    refold_rmsd = of.get("binder_ca_rmsd")
+    if refold_rmsd is not None:
+        rows.append(["Refolding RMSD", f"{_fmt(refold_rmsd, 2)} Å"])
+    lines.append(_md_table(["Metric", "Value"], rows))
+    # per-residue low pLDDT warning
+    plddt_per_res = of.get("binder_plddt_per_residue")
+    if plddt_per_res is not None:
+        try:
+            import numpy as np
+            arr = np.asarray(plddt_per_res, dtype=float)
+            low_idx = [i for i, v in enumerate(arr) if v < 70]
+            if low_idx:
+                low_strs = [f"res{i+1} ({plddt_per_res[i]:.1f})" for i in low_idx]
+                lines.append(f"\n⚠️ **Low binder pLDDT (< 70):** {', '.join(low_strs)}")
+        except Exception:
+            pass
     return "\n".join(lines) + "\n"
 
 
