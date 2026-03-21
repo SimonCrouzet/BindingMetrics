@@ -12,7 +12,6 @@ Usage:
 """
 
 import argparse
-import json
 import sys
 import time
 import traceback
@@ -248,10 +247,8 @@ def main():
     )
     results["total_elapsed_s"] = round(time.time() - t_total, 1)
 
-    # Save combined results
-    results_path = args.output_dir / f"{sample_id}_results.json"
-    with open(results_path, "w") as f:
-        json.dump(results, f, indent=2, default=str)
+    from binding_metrics.protocols.report import write_report
+    results_path = write_report(results, args.output_dir, sample_id)
 
     print(f"\n{'#'*60}")
     print(f"  DONE in {results['total_elapsed_s']}s")
