@@ -64,7 +64,7 @@ pip install "binding-metrics[analysis]"     # MDTraj — trajectory metrics
 pip install "binding-metrics[structure]"    # PDBFixer + gemmi — structure repair, RMSD
 pip install "binding-metrics[biotite]"      # biotite + hydride + scipy — interface, geometry
 pip install "binding-metrics[gaff]"         # openmmforcefields + openff-toolkit — GAFF2 for non-standard residues
-pip install "binding-metrics[report]"       # pandas + matplotlib — HTML report generation
+pip install "binding-metrics[report]"       # no additional dependencies — JSON/CSV/Markdown output
 pip install "binding-metrics[all]"          # everything above (OpenMM via PyPI = CPU only)
 ```
 
@@ -226,7 +226,30 @@ binding-metrics-prep    --input complex.cif --output cleaned.cif --ph 7.4
 binding-metrics-solvate --input cleaned.cif --output solvated.pdb
 ```
 
-**Scoring**
+**Full pipeline**
+
+| Command | Description |
+|---|---|
+| `binding-metrics-run` | Run the complete pipeline (relax → energy → interface → geometry → electrostatics → OpenFold3) on a single structure |
+
+```bash
+binding-metrics-run \
+    --input complex.cif \
+    --output-dir results/ \
+    --peptide-chain B --receptor-chain A \
+    --summary                      # also write a human-readable *_report.md
+```
+
+All steps are enabled by default and can be toggled individually:
+
+```
+--skip-relax          --skip-energy         --skip-interface
+--skip-geometry       --skip-electrostatics --skip-openfold
+```
+
+OpenFold3 requires explicit `--peptide-chain` / `--receptor-chain` and optionally `--openfold-conda-env` for a separate conda environment. Use `--openfold-mode refold` to measure refolding RMSD (binder predicted freely, receptor fixed as template).
+
+**Scoring (individual steps)**
 
 | Command | Description |
 |---|---|
@@ -260,26 +283,17 @@ docker run --rm --gpus all binding-metrics binding-metrics-check-env
 
 | Command | Description |
 |---|---|
-| `binding-metrics-report` | Generate a self-contained HTML report from a metrics CSV |
+| `binding-metrics-report` | Re-export a `*_results.json` to JSON or CSV, with optional Markdown summary |
 
 ```bash
-binding-metrics-report --input scores.csv --output report.html
-# With a custom config (overrides only the keys you specify):
-binding-metrics-report --input scores.csv --output report.html --config report.json
+# Re-export to CSV and regenerate the Markdown summary:
+binding-metrics-report --results results/my_run/sample_results.json \
+    --format csv --summary
 ```
 
-A minimal `report.json` example — only specify what you want to override:
+The `--summary` flag (available on both `binding-metrics-run` and `binding-metrics-report`) writes a human-readable `*_report.md` alongside the JSON/CSV output. It includes a RAG scorecard (🟢/🟡/🔴) for the key metrics, cyclic topology metadata when present, and per-residue breakdowns for the interface and geometry sections. See [`docs/report_thresholds.md`](docs/report_thresholds.md) for the scorecard thresholds and their scientific rationale.
 
-```json
-{
-  "title": "My Experiment",
-  "plots": ["delta_sasa_plot", "delta_g_int_plot", "hbonds_plot"],
-  "rank_by": "delta_g_int",
-  "top_n": 20
-}
-```
-
-All scoring tools auto-detect peptide and receptor chains (smallest and largest protein chain). Pass `--design-chain` / `--receptor-chain` to override. See `--help` on each command for full options, or `METRICS.md` for detailed documentation.
+All scoring tools auto-detect peptide and receptor chains (smallest and largest protein chain). Pass `--peptide-chain` / `--receptor-chain` to override. See `--help` on each command for full options, or `METRICS.md` for detailed documentation.
 
 ---
 
