@@ -46,6 +46,10 @@ def run_pipeline(
     skip_interface: bool = False,
     skip_geometry: bool = False,
     skip_electrostatics: bool = False,
+    # openfold
+    skip_openfold: bool = False,
+    openfold_mode: str = "score",
+    openfold_conda_env: Optional[str] = None,
 ) -> dict:
     """Run the full pipeline and return a results dict."""
     if sample_id is None:
@@ -169,6 +173,62 @@ def run_pipeline(
     else:
         results["electrostatics"] = {"skipped": True}
 
+    # --------------------------------------------------------- OpenFold
+    if not skip_openfold:
+        _step("OpenFold3 confidence scoring")
+        try:
+            from binding_metrics.metrics.openfold import (
+                run_openfold_scoring,
+                run_openfold_refolding,
+                compute_openfold_metrics,
+            )
+
+            if not peptide_chain or not receptor_chain:
+                _warn(
+                    "OpenFold requires explicit --peptide-chain and --receptor-chain; skipping."
+                )
+                results["openfold"] = {"skipped": True}
+            else:
+                of_dir = output_dir / "openfold"
+                if openfold_mode == "refold":
+                    predictions_dir = run_openfold_refolding(
+                        complex_structure_path=relaxed_path,
+                        receptor_chain=receptor_chain,
+                        binder_chain=peptide_chain,
+                        query_name=sample_id,
+                        output_dir=of_dir,
+                        conda_env=openfold_conda_env,
+                    )
+                    of_metrics = compute_openfold_metrics(
+                        output_dir=predictions_dir,
+                        query_name=sample_id,
+                        binder_chain=peptide_chain,
+                        receptor_chain=receptor_chain,
+                        reference_structure_path=relaxed_path,
+                    )
+                else:  # score (default)
+                    predictions_dir = run_openfold_scoring(
+                        complex_structure_path=relaxed_path,
+                        receptor_chain=receptor_chain,
+                        binder_chain=peptide_chain,
+                        query_name=sample_id,
+                        output_dir=of_dir,
+                        conda_env=openfold_conda_env,
+                    )
+                    of_metrics = compute_openfold_metrics(
+                        output_dir=predictions_dir,
+                        query_name=sample_id,
+                        binder_chain=peptide_chain,
+                        receptor_chain=receptor_chain,
+                    )
+                results["openfold"] = of_metrics
+        except Exception as e:
+            _warn(f"OpenFold failed: {e}")
+            traceback.print_exc()
+            results["openfold"] = {"error": str(e)}
+    else:
+        results["openfold"] = {"skipped": True}
+
     return results
 
 
@@ -216,6 +276,17 @@ def main():
     metrics_group.add_argument("--skip-electrostatics", action="store_true",
                                help="Skip electrostatics (Coulomb cross-chain)")
 
+    # OpenFold
+    openfold_group = parser.add_argument_group("OpenFold")
+    openfold_group.add_argument("--skip-openfold", action="store_true",
+                                help="Skip OpenFold3 confidence scoring")
+    openfold_group.add_argument("--openfold-mode", choices=["score", "refold"], default="score",
+                                help="score: both chains as templates (confidence); "
+                                     "refold: binder predicted freely (refolding RMSD). "
+                                     "Default: score")
+    openfold_group.add_argument("--openfold-conda-env", type=str, default=None,
+                                help="Conda environment name where OpenFold3 is installed")
+
     # Report
     report_group = parser.add_argument_group("Report")
     report_group.add_argument("--format", choices=["json", "csv"], default="json",
@@ -251,6 +322,9 @@ def main():
         skip_interface=args.skip_interface,
         skip_geometry=args.skip_geometry,
         skip_electrostatics=args.skip_electrostatics,
+        skip_openfold=args.skip_openfold,
+        openfold_mode=args.openfold_mode,
+        openfold_conda_env=args.openfold_conda_env,
     )
     results["total_elapsed_s"] = round(time.time() - t_total, 1)
 
