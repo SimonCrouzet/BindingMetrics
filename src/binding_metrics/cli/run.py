@@ -7,6 +7,7 @@ Usage:
         --input complex.cif \\
         --output-dir results/ \\
         [--skip-relax] \\
+        [--metrics energy,interface,geometry,electrostatics,openfold] \\
         [--md-duration-ps 200] \\
         [--device cuda]
 """
@@ -17,6 +18,8 @@ import time
 import traceback
 from pathlib import Path
 from typing import Optional
+
+ALL_METRICS = frozenset({"energy", "interface", "geometry", "electrostatics", "openfold"})
 
 
 def _warn(msg: str) -> None:
@@ -39,15 +42,10 @@ def run_pipeline(
     device: str = "cuda",
     peptide_chain: Optional[str] = None,
     receptor_chain: Optional[str] = None,
-    # energy
-    skip_energy: bool = False,
-    energy_modes: tuple = ("relaxed",),
     # metrics
-    skip_interface: bool = False,
-    skip_geometry: bool = False,
-    skip_electrostatics: bool = False,
+    metrics: frozenset = ALL_METRICS,
+    energy_modes: tuple = ("relaxed",),
     # openfold
-    skip_openfold: bool = False,
     openfold_mode: str = "score",
     openfold_conda_env: Optional[str] = None,
 ) -> dict:
@@ -57,6 +55,19 @@ def run_pipeline(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     results: dict = {"sample_id": sample_id, "input": str(input_path)}
+
+    # ---------------------------------------------------------- Chain detection
+    from binding_metrics.io.structures import detect_chains_from_file
+
+    chain_info = detect_chains_from_file(
+        input_path,
+        peptide_chain=peptide_chain,
+        receptor_chain=receptor_chain,
+        verbose=True,
+    )
+    peptide_chain = chain_info["peptide_chain"]
+    receptor_chain = chain_info["receptor_chain"]
+    results["chains"] = chain_info
 
     # ------------------------------------------------------------------ Relax
     relaxed_path: Optional[Path] = None
@@ -95,7 +106,7 @@ def run_pipeline(
         results["relax"] = {"skipped": True}
 
     # ------------------------------------------------------------------ Energy
-    if not skip_energy:
+    if "energy" in metrics:
         _step("Interaction Energy")
         try:
             from binding_metrics.metrics.energy import compute_interaction_energy
@@ -117,7 +128,7 @@ def run_pipeline(
         results["energy"] = {"skipped": True}
 
     # --------------------------------------------------------------- Interface
-    if not skip_interface:
+    if "interface" in metrics:
         _step("Interface Metrics (SASA, H-bonds, salt bridges)")
         try:
             from binding_metrics.metrics.interface import compute_interface_metrics
@@ -136,7 +147,7 @@ def run_pipeline(
         results["interface"] = {"skipped": True}
 
     # --------------------------------------------------------------- Geometry
-    if not skip_geometry:
+    if "geometry" in metrics:
         _step("Geometry (Ramachandran + omega planarity)")
         try:
             from binding_metrics.metrics.geometry import (
@@ -155,7 +166,7 @@ def run_pipeline(
         results["geometry"] = {"skipped": True}
 
     # --------------------------------------------------------- Electrostatics
-    if not skip_electrostatics:
+    if "electrostatics" in metrics:
         _step("Electrostatics (Coulomb cross-chain)")
         try:
             from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
@@ -174,7 +185,7 @@ def run_pipeline(
         results["electrostatics"] = {"skipped": True}
 
     # --------------------------------------------------------- OpenFold
-    if not skip_openfold:
+    if "openfold" in metrics:
         _step("OpenFold3 confidence scoring")
         try:
             from binding_metrics.metrics.openfold import (
@@ -232,6 +243,17 @@ def run_pipeline(
     return results
 
 
+def _parse_metrics(value: str) -> frozenset:
+    names = {v.strip() for v in value.split(",")}
+    unknown = names - ALL_METRICS
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"Unknown metric(s): {', '.join(sorted(unknown))}. "
+            f"Valid choices: {', '.join(sorted(ALL_METRICS))}"
+        )
+    return frozenset(names)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run the full binding-metrics pipeline on a single structure.",
@@ -258,28 +280,26 @@ def main():
     relax_group.add_argument("--md-duration-ps", type=float, default=200.0,
                              help="MD duration in ps (0 = minimize only, default: 200)")
 
-    # Energy
-    energy_group = parser.add_argument_group("Energy")
-    energy_group.add_argument("--skip-energy", action="store_true",
-                              help="Skip interaction energy computation")
-    energy_group.add_argument("--energy-modes", nargs="+",
-                              choices=["raw", "relaxed", "after_md"],
-                              default=["relaxed"],
-                              help="Energy evaluation modes (default: relaxed)")
-
-    # Metrics toggles
+    # Metrics
     metrics_group = parser.add_argument_group("Metrics")
-    metrics_group.add_argument("--skip-interface", action="store_true",
-                               help="Skip interface metrics (SASA, H-bonds, salt bridges)")
-    metrics_group.add_argument("--skip-geometry", action="store_true",
-                               help="Skip geometry metrics (Ramachandran, omega)")
-    metrics_group.add_argument("--skip-electrostatics", action="store_true",
-                               help="Skip electrostatics (Coulomb cross-chain)")
+    metrics_group.add_argument(
+        "--metrics",
+        type=_parse_metrics,
+        default=ALL_METRICS,
+        metavar="METRICS",
+        help=(
+            "Comma-separated list of metrics to compute. "
+            f"Valid: {', '.join(sorted(ALL_METRICS))}. "
+            "Default: all."
+        ),
+    )
+    metrics_group.add_argument("--energy-modes", nargs="+",
+                               choices=["raw", "relaxed", "after_md"],
+                               default=["relaxed"],
+                               help="Energy evaluation modes (default: relaxed)")
 
     # OpenFold
     openfold_group = parser.add_argument_group("OpenFold")
-    openfold_group.add_argument("--skip-openfold", action="store_true",
-                                help="Skip OpenFold3 confidence scoring")
     openfold_group.add_argument("--openfold-mode", choices=["score", "refold"], default="score",
                                 help="score: both chains as templates (confidence); "
                                      "refold: binder predicted freely (refolding RMSD). "
@@ -317,12 +337,8 @@ def main():
         device=args.device,
         peptide_chain=args.peptide_chain,
         receptor_chain=args.receptor_chain,
-        skip_energy=args.skip_energy,
+        metrics=args.metrics,
         energy_modes=tuple(args.energy_modes),
-        skip_interface=args.skip_interface,
-        skip_geometry=args.skip_geometry,
-        skip_electrostatics=args.skip_electrostatics,
-        skip_openfold=args.skip_openfold,
         openfold_mode=args.openfold_mode,
         openfold_conda_env=args.openfold_conda_env,
     )
