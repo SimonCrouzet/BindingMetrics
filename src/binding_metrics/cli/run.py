@@ -65,8 +65,10 @@ def run_pipeline(
         receptor_chain=receptor_chain,
         verbose=True,
     )
-    peptide_chain = chain_info["peptide_chain"]
+    peptide_chain = chain_info["peptide_chain"]           # auth_asym_id (biotite)
     receptor_chain = chain_info["receptor_chain"]
+    peptide_chain_label = chain_info["peptide_chain_label"]   # label_asym_id (OpenMM)
+    receptor_chain_label = chain_info["receptor_chain_label"]
     results["chains"] = chain_info
 
     # ------------------------------------------------------------------ Relax
@@ -78,8 +80,8 @@ def run_pipeline(
         config = RelaxationConfig(
             md_duration_ps=md_duration_ps,
             device=device,
-            peptide_chain_id=peptide_chain,
-            receptor_chain_id=receptor_chain,
+            peptide_chain_id=peptide_chain_label,
+            receptor_chain_id=receptor_chain_label,
         )
         relaxer = ImplicitRelaxation(config)
         t0 = time.time()
@@ -93,6 +95,10 @@ def run_pipeline(
             print(f"\n[FAILED] Relaxation failed: {relax_result.error_message}")
             print("  Continuing with raw input for downstream steps...")
             relaxed_path = input_path
+            # Fallback: use auth IDs (biotite) for steps on the original file;
+            # OpenMM-based energy will also fall back to the original, so use label.
+            working_peptide = peptide_chain
+            working_receptor = receptor_chain
         else:
             # Prefer MD-final structure; fall back to minimized
             if relax_result.md_final_structure_path:
@@ -100,9 +106,15 @@ def run_pipeline(
             else:
                 relaxed_path = Path(relax_result.minimized_structure_path)
             print(f"\n  Relaxed structure: {relaxed_path}")
+            # OpenMM writes the relaxed CIF using label IDs as both auth and label,
+            # so all downstream steps should use the label IDs.
+            working_peptide = peptide_chain_label
+            working_receptor = receptor_chain_label
     else:
         print("\n  [skip] Relaxation skipped — using raw input for downstream steps.")
         relaxed_path = input_path
+        working_peptide = peptide_chain
+        working_receptor = receptor_chain
         results["relax"] = {"skipped": True}
 
     # ------------------------------------------------------------------ Energy
@@ -113,8 +125,8 @@ def run_pipeline(
 
             energy = compute_interaction_energy(
                 relaxed_path,
-                peptide_chain=peptide_chain,
-                receptor_chain=receptor_chain,
+                peptide_chain=peptide_chain_label,
+                receptor_chain=receptor_chain_label,
                 device=device,
                 sample_id=sample_id,
                 modes=energy_modes,
@@ -135,8 +147,8 @@ def run_pipeline(
 
             interface = compute_interface_metrics(
                 relaxed_path,
-                design_chain=peptide_chain,
-                receptor_chain=receptor_chain,
+                design_chain=working_peptide,
+                receptor_chain=working_receptor,
             )
             results["interface"] = interface
         except Exception as e:
@@ -155,8 +167,8 @@ def run_pipeline(
                 compute_omega_planarity,
             )
 
-            rama = compute_ramachandran(relaxed_path, chain=peptide_chain)
-            omega = compute_omega_planarity(relaxed_path, chain=peptide_chain)
+            rama = compute_ramachandran(relaxed_path, chain=working_peptide)
+            omega = compute_omega_planarity(relaxed_path, chain=working_peptide)
             results["geometry"] = {"ramachandran": rama, "omega": omega}
         except Exception as e:
             _warn(f"Geometry metrics failed: {e}")
@@ -173,8 +185,8 @@ def run_pipeline(
 
             elec = compute_coulomb_cross_chain(
                 relaxed_path,
-                peptide_chain=peptide_chain,
-                receptor_chain=receptor_chain,
+                peptide_chain=working_peptide,
+                receptor_chain=working_receptor,
             )
             results["electrostatics"] = elec
         except Exception as e:
@@ -194,9 +206,9 @@ def run_pipeline(
                 compute_openfold_metrics,
             )
 
-            if not peptide_chain or not receptor_chain:
+            if not working_peptide or not working_receptor:
                 _warn(
-                    "OpenFold requires explicit --peptide-chain and --receptor-chain; skipping."
+                    "OpenFold requires --peptide-chain and --receptor-chain (or auto-detect); skipping."
                 )
                 results["openfold"] = {"skipped": True}
             else:
@@ -204,8 +216,8 @@ def run_pipeline(
                 if openfold_mode == "refold":
                     predictions_dir = run_openfold_refolding(
                         complex_structure_path=relaxed_path,
-                        receptor_chain=receptor_chain,
-                        binder_chain=peptide_chain,
+                        receptor_chain=working_receptor,
+                        binder_chain=working_peptide,
                         query_name=sample_id,
                         output_dir=of_dir,
                         conda_env=openfold_conda_env,
@@ -213,15 +225,15 @@ def run_pipeline(
                     of_metrics = compute_openfold_metrics(
                         output_dir=predictions_dir,
                         query_name=sample_id,
-                        binder_chain=peptide_chain,
-                        receptor_chain=receptor_chain,
+                        binder_chain=working_peptide,
+                        receptor_chain=working_receptor,
                         reference_structure_path=relaxed_path,
                     )
                 else:  # score (default)
                     predictions_dir = run_openfold_scoring(
                         complex_structure_path=relaxed_path,
-                        receptor_chain=receptor_chain,
-                        binder_chain=peptide_chain,
+                        receptor_chain=working_receptor,
+                        binder_chain=working_peptide,
                         query_name=sample_id,
                         output_dir=of_dir,
                         conda_env=openfold_conda_env,
@@ -229,8 +241,8 @@ def run_pipeline(
                     of_metrics = compute_openfold_metrics(
                         output_dir=predictions_dir,
                         query_name=sample_id,
-                        binder_chain=peptide_chain,
-                        receptor_chain=receptor_chain,
+                        binder_chain=working_peptide,
+                        receptor_chain=working_receptor,
                     )
                 results["openfold"] = of_metrics
         except Exception as e:
