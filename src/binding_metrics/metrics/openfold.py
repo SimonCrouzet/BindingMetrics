@@ -809,13 +809,19 @@ def _extract_sequence_from_structure(structure, chain_id: str) -> str:
     raise ValueError(f"Chain '{chain_id}' not found in structure")
 
 
-def _extract_chain_to_cif(structure, chain_id: str, output_path: Path) -> None:
+def _extract_chain_to_cif(structure, chain_id: str, output_path: Path, sequence: str = "") -> None:
     """Write a single chain from a gemmi Structure to a CIF file.
+
+    Also patches the missing mmCIF metadata tables required by OF3's template
+    preprocessor (``_pdbx_audit_revision_history``, ``_entity_poly``,
+    ``_pdbx_poly_seq_scheme``).
 
     Args:
         structure: Source ``gemmi.Structure``.
         chain_id: Chain ID to extract (taken from the first model).
         output_path: Destination CIF file path.
+        sequence: One-letter amino acid sequence for this chain (used to
+            populate ``_entity_poly``). If empty, extracted from structure atoms.
     """
     import gemmi
 
@@ -829,6 +835,37 @@ def _extract_chain_to_cif(structure, chain_id: str, output_path: Path) -> None:
             break
     new_st.add_model(new_model)
     new_st.make_mmcif_document().write_file(str(output_path))
+
+    # OF3 template preprocessor requires metadata tables that OpenMM/gemmi
+    # do not write. Patch them in using gemmi's CIF API.
+    if not sequence:
+        sequence = _extract_sequence_from_structure(new_st, chain_id)
+
+    doc = gemmi.cif.read(str(output_path))
+    block = doc.sole_block()
+
+    # 1. Release date — OF3 requires this; use a sentinel far-past date so
+    #    no template release-date filter will discard it.
+    rdh = block.init_loop("_pdbx_audit_revision_history.", ["ordinal", "revision_date"])
+    rdh.add_row(["1", "1900-01-01"])
+
+    # 2. entity_poly — entity_id → canonical 1-letter sequence.
+    #    gemmi's make_mmcif_document() writes entity_id as "?" in struct_asym,
+    #    so we always use "1" (single-chain, single-entity template).
+    entity_id = "1"
+    ep = block.init_loop("_entity_poly.", ["entity_id", "pdbx_seq_one_letter_code_can"])
+    ep.add_row([entity_id, sequence])
+
+    # 3. pdbx_poly_seq_scheme — asym_id → entity_id.
+    #    Materialise struct_asym rows eagerly before init_loop (block.find()
+    #    returns a lazy view that is invalidated by subsequent init_loop calls).
+    sa = block.find(["_struct_asym.id"])
+    asym_ids = [row[0] for row in sa] if sa else [chain_id]
+    pss = block.init_loop("_pdbx_poly_seq_scheme.", ["asym_id", "entity_id"])
+    for asym_id in asym_ids:
+        pss.add_row([asym_id, entity_id])
+
+    doc.write_file(str(output_path))
 
 
 def _write_a3m_self_alignment(
@@ -939,12 +976,11 @@ def prepare_refolding_query(
     receptor_entry_id = "receptor"
     template_dest = templates_dir / f"{receptor_entry_id}.cif"
     if template_cif_path is not None:
-        import shutil
         # Extract only the receptor chain from the provided CIF
         template_src = gemmi.read_structure(str(template_cif_path))
-        _extract_chain_to_cif(template_src, receptor_chain, template_dest)
+        _extract_chain_to_cif(template_src, receptor_chain, template_dest, sequence=receptor_seq)
     else:
-        _extract_chain_to_cif(st, receptor_chain, template_dest)
+        _extract_chain_to_cif(st, receptor_chain, template_dest, sequence=receptor_seq)
 
     # A3M self-alignment for receptor — header: receptor_{chain}/{1}-{N}
     a3m_path = output_dir / f"{query_name}_receptor.a3m"
@@ -1045,8 +1081,8 @@ def prepare_scoring_query(
     receptor_entry_id = "receptor"
     binder_entry_id = "binder"
 
-    _extract_chain_to_cif(template_src, receptor_chain, templates_dir / f"{receptor_entry_id}.cif")
-    _extract_chain_to_cif(template_src, binder_chain, templates_dir / f"{binder_entry_id}.cif")
+    _extract_chain_to_cif(template_src, receptor_chain, templates_dir / f"{receptor_entry_id}.cif", sequence=receptor_seq)
+    _extract_chain_to_cif(template_src, binder_chain, templates_dir / f"{binder_entry_id}.cif", sequence=binder_seq)
 
     # A3M self-alignments — header: {entry_id}_{chain_id}/{1}-{N}
     receptor_a3m = output_dir / f"{query_name}_receptor.a3m"
