@@ -1,9 +1,9 @@
-"""Final pipeline step: write results to disk as JSON or CSV, with optional Markdown summary.
+"""Final pipeline step: write results to disk as JSON or CSV, with optional summary.
 
 Used internally by ``binding-metrics-run`` and as a standalone tool.
 
 Usage:
-    binding-metrics-report --results path/to/*_results.json [--format json|csv] [--summary]
+    binding-metrics-report --results path/to/*_results.json [--format json|csv] [--summary] [--summary-format md|html]
 """
 
 from __future__ import annotations
@@ -393,6 +393,42 @@ def _md_scorecard(results: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _build_html(results: dict) -> str:
+    """Convert the Markdown summary to a self-contained HTML page."""
+    try:
+        import markdown as _md
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError(
+            "HTML report requires the 'markdown' package: pip install 'binding-metrics[report]'"
+        ) from exc
+
+    md_text = _build_summary(results)
+    body = _md.markdown(md_text, extensions=["tables", "nl2br"])
+
+    sid = results.get("sample_id", "report")
+    css = """
+        body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto;
+               padding: 0 1rem; color: #1a1a1a; line-height: 1.5; }
+        h1 { border-bottom: 2px solid #0066cc; padding-bottom: .4rem; }
+        h2 { margin-top: 2rem; border-bottom: 1px solid #ccc; padding-bottom: .2rem; }
+        table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .9rem; }
+        th, td { border: 1px solid #ddd; padding: .4rem .7rem; text-align: left; }
+        th { background: #f0f4ff; font-weight: 600; }
+        tr:nth-child(even) { background: #fafafa; }
+        blockquote { border-left: 4px solid #0066cc; margin: 1rem 0; padding: .5rem 1rem;
+                     background: #f0f4ff; border-radius: 0 4px 4px 0; }
+        code { background: #f4f4f4; padding: .1rem .3rem; border-radius: 3px; font-size: .88em; }
+    """
+    return (
+        f"<!DOCTYPE html>\n<html lang='en'>\n<head>\n"
+        f"<meta charset='utf-8'>\n"
+        f"<meta name='viewport' content='width=device-width,initial-scale=1'>\n"
+        f"<title>Binding Metrics Report — {sid}</title>\n"
+        f"<style>{css}</style>\n</head>\n<body>\n"
+        f"{body}\n</body>\n</html>\n"
+    )
+
+
 def _build_summary(results: dict) -> str:
     cyclic = _md_cyclic(results.get("relax"))
     sections = [
@@ -420,15 +456,17 @@ def write_report(
     sample_id: str,
     fmt: str = "json",
     summary: bool = False,
+    summary_format: str = "md",
 ) -> Path:
     """Write pipeline results to *output_dir*.
 
     Args:
-        results:    Aggregated results dict from the pipeline.
-        output_dir: Directory to write outputs into.
-        sample_id:  Used as the file name stem.
-        fmt:        Primary output format — ``"json"`` (default) or ``"csv"``.
-        summary:    If True, also write a human-readable ``*_report.md``.
+        results:        Aggregated results dict from the pipeline.
+        output_dir:     Directory to write outputs into.
+        sample_id:      Used as the file name stem.
+        fmt:            Primary output format — ``"json"`` (default) or ``"csv"``.
+        summary:        If True, also write a human-readable summary file.
+        summary_format: Format of the summary — ``"md"`` (default) or ``"html"``.
 
     Returns:
         Path to the primary output file (JSON or CSV).
@@ -449,9 +487,13 @@ def write_report(
             json.dump(results, fh, indent=2, default=str)
 
     if summary:
-        md_path = output_dir / f"{sample_id}_report.md"
-        md_path.write_text(_build_summary(results), encoding="utf-8")
-        print(f"  summary   → {md_path}")
+        if summary_format == "html":
+            report_path = output_dir / f"{sample_id}_report.html"
+            report_path.write_text(_build_html(results), encoding="utf-8")
+        else:
+            report_path = output_dir / f"{sample_id}_report.md"
+            report_path.write_text(_build_summary(results), encoding="utf-8")
+        print(f"  summary   → {report_path}")
 
     return out_path
 
@@ -470,20 +512,39 @@ def main() -> None:
     parser.add_argument("--format", "-f", choices=["json", "csv"], default="json",
                         dest="fmt", help="Output format")
     parser.add_argument("--summary", "-s", action="store_true",
-                        help="Also write a human-readable *_report.md")
+                        help="Also write a human-readable summary (*_report.md or *_report.html)")
+    parser.add_argument("--summary-format", choices=["md", "html"], default="md",
+                        dest="summary_format", help="Summary format (default: md)")
     parser.add_argument("--output-dir", "-o", type=Path, default=None,
                         help="Output directory (default: same directory as --results)")
+    parser.add_argument("--log-file", type=Path, default=None, metavar="PATH",
+                        help="Redirect all output (stdout + stderr) to this file")
     args = parser.parse_args()
 
     if not args.results.exists():
         print(f"error: file not found: {args.results}", file=sys.stderr)
         sys.exit(1)
 
-    with open(args.results, encoding="utf-8") as fh:
-        results = json.load(fh)
+    log_fh = None
+    if args.log_file:
+        args.log_file.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = open(args.log_file, "w", encoding="utf-8", buffering=1)
+        sys.stdout = log_fh
+        sys.stderr = log_fh
 
-    sample_id = results.get("sample_id") or args.results.stem.removesuffix("_results")
-    output_dir = args.output_dir or args.results.parent
+    try:
+        with open(args.results, encoding="utf-8") as fh:
+            results = json.load(fh)
 
-    out = write_report(results, output_dir, sample_id, fmt=args.fmt, summary=args.summary)
-    print(f"  results   → {out}")
+        sample_id = results.get("sample_id") or args.results.stem.removesuffix("_results")
+        output_dir = args.output_dir or args.results.parent
+
+        out = write_report(results, output_dir, sample_id, fmt=args.fmt,
+                           summary=args.summary, summary_format=args.summary_format)
+        print(f"  results   → {out}")
+    finally:
+        if log_fh is not None:
+            log_fh.flush()
+            sys.stdout = sys.__stdout__
+            sys.stderr = sys.__stderr__
+            log_fh.close()

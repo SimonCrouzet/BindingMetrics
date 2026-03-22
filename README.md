@@ -294,9 +294,13 @@ docker run --rm --gpus all binding-metrics binding-metrics-check-env
 # Re-export to CSV and regenerate the Markdown summary:
 binding-metrics-report --results results/my_run/sample_results.json \
     --format csv --summary
+
+# Generate an HTML report instead:
+binding-metrics-report --results results/my_run/sample_results.json \
+    --summary --summary-format html
 ```
 
-The `--summary` flag (available on both `binding-metrics-run` and `binding-metrics-report`) writes a human-readable `*_report.md` alongside the JSON/CSV output. It includes a RAG scorecard (🟢/🟡/🔴) for the key metrics, cyclic topology metadata when present, and per-residue breakdowns for the interface and geometry sections. See [`docs/report_thresholds.md`](docs/report_thresholds.md) for the scorecard thresholds and their scientific rationale.
+The `--summary` flag (available on both `binding-metrics-run` and `binding-metrics-report`) writes a human-readable summary alongside the JSON/CSV output. Use `--summary-format md` (default) for Markdown or `--summary-format html` for a self-contained HTML page. It includes a RAG scorecard (🟢/🟡/🔴) for the key metrics, cyclic topology metadata when present, and per-residue breakdowns for the interface and geometry sections. See [`docs/report_thresholds.md`](docs/report_thresholds.md) for the scorecard thresholds and their scientific rationale.
 
 All scoring tools auto-detect peptide and receptor chains. Pass `--peptide-chain` / `--receptor-chain` to override. See `--help` on each command for full options, or `METRICS.md` for detailed documentation.
 

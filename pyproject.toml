@@ -42,9 +42,10 @@ all = [
     "hydride",
     "pandas>=1.5",
     "matplotlib>=3.6",
+    "markdown>=3.4",
     # openmmforcefields + openff-toolkit are conda-forge only; install via environment.yml
 ]
-report = ["pandas>=1.5", "matplotlib>=3.6"]
+report = ["pandas>=1.5", "matplotlib>=3.6", "markdown>=3.4"]
 dev    = ["pytest>=7.0", "ruff>=0.1"]
 
 [project.scripts]
