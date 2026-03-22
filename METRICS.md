@@ -516,6 +516,10 @@ Load a PDB or CIF file into OpenMM topology and positions.
 
 Auto-detect smallest and largest protein chain from an OpenMM topology.
 
+### `detect_chains_from_file(path, peptide_chain=None, receptor_chain=None, verbose=False) → dict`
+
+Biotite-based chain detection returning both `auth_asym_id` (biotite) and `label_asym_id` (OpenMM) for the peptide and receptor. For two protein chains: smaller = peptide, larger = receptor. For more than two chains: receptor is picked by Cα proximity (most contacts within 8 Å of the peptide) rather than by size.
+
 ### `save_cif(topology, positions, output_path, source_cif_path=None)`
 
 Save structure as CIF, optionally merging coordinates into the source CIF to preserve metadata.
