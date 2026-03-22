@@ -324,7 +324,11 @@ def main():
     report_group.add_argument("--format", choices=["json", "csv"], default="json",
                               dest="fmt", help="Results output format (default: json)")
     report_group.add_argument("--summary", action="store_true",
-                              help="Also write a human-readable *_report.md")
+                              help="Also write a human-readable summary (*_report.md or *_report.html)")
+    report_group.add_argument("--summary-format", choices=["md", "html"], default="md",
+                              dest="summary_format", help="Summary format (default: md)")
+    report_group.add_argument("--log-file", type=Path, default=None, metavar="PATH",
+                              help="Redirect all output (stdout + stderr) to this file")
 
     args = parser.parse_args()
 
@@ -332,38 +336,55 @@ def main():
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)
         sys.exit(1)
 
-    sample_id = args.sample_id or args.input.stem
-    print(f"\n{'#'*60}")
-    print(f"  binding-metrics-run: {sample_id}")
-    print(f"  Input:  {args.input}")
-    print(f"  Output: {args.output_dir}")
-    print(f"{'#'*60}")
+    log_fh = None
+    if args.log_file:
+        args.log_file.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = open(args.log_file, "w", encoding="utf-8", buffering=1)
+        sys.stdout = log_fh
+        sys.stderr = log_fh
 
-    t_total = time.time()
-    results = run_pipeline(
-        input_path=args.input,
-        output_dir=args.output_dir,
-        sample_id=sample_id,
-        skip_relax=args.skip_relax,
-        md_duration_ps=args.md_duration_ps,
-        device=args.device,
-        peptide_chain=args.peptide_chain,
-        receptor_chain=args.receptor_chain,
-        metrics=args.metrics,
-        energy_modes=tuple(args.energy_modes),
-        openfold_mode=args.openfold_mode,
-        openfold_conda_env=args.openfold_conda_env,
-    )
-    results["total_elapsed_s"] = round(time.time() - t_total, 1)
+    try:
+        sample_id = args.sample_id or args.input.stem
+        print(f"\n{'#'*60}")
+        print(f"  binding-metrics-run: {sample_id}")
+        print(f"  Input:  {args.input}")
+        print(f"  Output: {args.output_dir}")
+        if args.log_file:
+            print(f"  Log:    {args.log_file}")
+        print(f"{'#'*60}")
 
-    from binding_metrics.protocols.report import write_report
-    results_path = write_report(results, args.output_dir, sample_id,
-                                fmt=args.fmt, summary=args.summary)
+        t_total = time.time()
+        results = run_pipeline(
+            input_path=args.input,
+            output_dir=args.output_dir,
+            sample_id=sample_id,
+            skip_relax=args.skip_relax,
+            md_duration_ps=args.md_duration_ps,
+            device=args.device,
+            peptide_chain=args.peptide_chain,
+            receptor_chain=args.receptor_chain,
+            metrics=args.metrics,
+            energy_modes=tuple(args.energy_modes),
+            openfold_mode=args.openfold_mode,
+            openfold_conda_env=args.openfold_conda_env,
+        )
+        results["total_elapsed_s"] = round(time.time() - t_total, 1)
 
-    print(f"\n{'#'*60}")
-    print(f"  DONE in {results['total_elapsed_s']}s")
-    print(f"  Results: {results_path}")
-    print(f"{'#'*60}\n")
+        from binding_metrics.protocols.report import write_report
+        results_path = write_report(results, args.output_dir, sample_id,
+                                    fmt=args.fmt, summary=args.summary,
+                                    summary_format=args.summary_format)
+
+        print(f"\n{'#'*60}")
+        print(f"  DONE in {results['total_elapsed_s']}s")
+        print(f"  Results: {results_path}")
+        print(f"{'#'*60}\n")
+    finally:
+        if log_fh is not None:
+            log_fh.flush()
+            sys.stdout = sys.__stdout__
+            sys.stderr = sys.__stderr__
+            log_fh.close()
 
 
 if __name__ == "__main__":
