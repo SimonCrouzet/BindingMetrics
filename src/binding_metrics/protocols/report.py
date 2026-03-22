@@ -154,11 +154,22 @@ def _md_header(results: dict) -> str:
     total = results.get("total_elapsed_s")
     elapsed = f"{total:.1f} s" if total is not None else "—"
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    chains = results.get("chains") or {}
+    pep_chain = chains.get("peptide_chain", "—")
+    rec_chain = chains.get("receptor_chain", "—")
+    pep_n = chains.get("peptide_n_residues")
+    rec_n = chains.get("receptor_n_residues")
+    pep_str = f"`{pep_chain}`" + (f" ({pep_n} res)" if pep_n else "")
+    rec_str = f"`{rec_chain}`" + (f" ({rec_n} res)" if rec_n else "")
+
     return (
         f"# Binding Metrics Report\n\n"
         f"| Field | Value |\n|---|---|\n"
         f"| Sample ID | `{sid}` |\n"
         f"| Input | `{inp}` |\n"
+        f"| Peptide chain | {pep_str} |\n"
+        f"| Receptor chain | {rec_str} |\n"
         f"| Elapsed | {elapsed} |\n"
         f"| Generated | {now} |\n"
     )
@@ -342,7 +353,12 @@ def _md_openfold(of: dict | None) -> str:
         ["gPDE",       f"{_fmt(of.get('gpde'), 2)} Å"],
     ]
     refold_rmsd = of.get("binder_ca_rmsd")
-    if refold_rmsd is not None:
+    try:
+        import math
+        _show_rmsd = refold_rmsd is not None and not math.isnan(float(refold_rmsd))
+    except (TypeError, ValueError):
+        _show_rmsd = False
+    if _show_rmsd:
         rows.append(["Refolding RMSD", f"{_fmt(refold_rmsd, 2)} Å"])
     lines.append(_md_table(["Metric", "Value"], rows))
     # per-residue low pLDDT warning

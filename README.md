@@ -22,7 +22,7 @@ Metrics span from fast static-structure analysis (buried SASA, hydrogen bonds, s
 | Force-field energy | *E*_int = *E*_cpx − *E*_pep − *E*_rec (AMBER ff14SB); raw / relaxed / after MD | Score | OpenMM |
 | Structure comparison | All-atom and backbone RMSD (Kabsch-aligned) | Score | gemmi |
 | MD trajectory | Receptor backbone drift — aligned (conformational) and raw | Score | MDTraj |
-| Structure prediction | avg_pLDDT, pTM, ipTM, gPDE, PAE — OpenFold3 confidence | Score | OpenFold3 |
+| Structure prediction | avg_pLDDT, pTM, ipTM, gPDE — OpenFold3 confidence | Score | OpenFold3 |
 | All of the above | Per-residue breakdowns, per-atom arrays, per-frame series | Feature | — |
 
 ---
@@ -236,18 +236,23 @@ binding-metrics-solvate --input cleaned.cif --output solvated.pdb
 binding-metrics-run \
     --input complex.cif \
     --output-dir results/ \
-    --peptide-chain B --receptor-chain A \
     --summary                      # also write a human-readable *_report.md
 ```
 
-All steps are enabled by default and can be toggled individually:
+Peptide and receptor chains are **auto-detected** (smallest chain = peptide; when more than two chains are present, the one with the most Cα contacts to the peptide is the receptor). Override with `--peptide-chain` / `--receptor-chain`.
 
-```
---skip-relax          --skip-energy         --skip-interface
---skip-geometry       --skip-electrostatics --skip-openfold
+All metric steps are enabled by default. Skip relaxation with `--skip-relax`; select a subset of metrics with `--metrics`:
+
+```bash
+# MD + energy only:
+binding-metrics-run --input complex.cif --output-dir results/ \
+    --metrics energy
+# Everything except OpenFold:
+binding-metrics-run --input complex.cif --output-dir results/ \
+    --metrics energy,interface,geometry,electrostatics
 ```
 
-OpenFold3 requires explicit `--peptide-chain` / `--receptor-chain` and optionally `--openfold-conda-env` for a separate conda environment. Use `--openfold-mode refold` to measure refolding RMSD (binder predicted freely, receptor fixed as template).
+OpenFold3 optionally takes `--openfold-conda-env` to run in a separate conda environment. Use `--openfold-mode refold` to measure refolding RMSD (binder predicted freely, receptor fixed as template).
 
 **Scoring (individual steps)**
 
@@ -293,7 +298,7 @@ binding-metrics-report --results results/my_run/sample_results.json \
 
 The `--summary` flag (available on both `binding-metrics-run` and `binding-metrics-report`) writes a human-readable `*_report.md` alongside the JSON/CSV output. It includes a RAG scorecard (🟢/🟡/🔴) for the key metrics, cyclic topology metadata when present, and per-residue breakdowns for the interface and geometry sections. See [`docs/report_thresholds.md`](docs/report_thresholds.md) for the scorecard thresholds and their scientific rationale.
 
-All scoring tools auto-detect peptide and receptor chains (smallest and largest protein chain). Pass `--peptide-chain` / `--receptor-chain` to override. See `--help` on each command for full options, or `METRICS.md` for detailed documentation.
+All scoring tools auto-detect peptide and receptor chains. Pass `--peptide-chain` / `--receptor-chain` to override. See `--help` on each command for full options, or `METRICS.md` for detailed documentation.
 
 ---
 
