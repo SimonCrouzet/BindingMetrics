@@ -133,6 +133,153 @@ def detect_chains(topology) -> tuple[Optional[str], Optional[str]]:
     return chain_sizes[0][0], chain_sizes[-1][0]
 
 
+def detect_chains_from_file(
+    path,
+    peptide_chain: Optional[str] = None,
+    receptor_chain: Optional[str] = None,
+    verbose: bool = True,
+) -> dict:
+    """Detect or confirm peptide and receptor chain IDs from a structure file.
+
+    Uses biotite for fast chain analysis. When chain IDs are not provided,
+    the smallest protein chain is assigned as peptide and the largest as receptor.
+    When they are provided, the function just confirms and reports their properties.
+
+    Args:
+        path: Path to CIF or PDB file.
+        peptide_chain: Explicit peptide chain ID, or None to auto-detect.
+        receptor_chain: Explicit receptor chain ID, or None to auto-detect.
+        verbose: If True, print detected chain info to stdout.
+
+    Returns:
+        Dict with keys:
+            peptide_chain (str): resolved peptide chain ID
+            receptor_chain (str): resolved receptor chain ID
+            peptide_n_residues (int): number of residues in peptide chain
+            receptor_n_residues (int): number of residues in receptor chain
+            all_chains (list[dict]): all protein chains with id and n_residues
+    """
+    import biotite.structure as struc
+    import biotite.structure.io.pdbx as pdbx
+    import biotite.structure.io.pdb as pdb_io
+
+    path = Path(path)
+    suffix = path.suffix.lower()
+
+    # Build auth→label chain ID mapping for CIF files.
+    # biotite uses auth_asym_id by default; OpenMM uses label_asym_id.
+    # When they differ, OpenMM-based steps need the label ID.
+    # We restrict the mapping to CA atoms so that ligand/water label chains
+    # (which share the same auth chain as the protein) don't overwrite the
+    # protein label.
+    auth_to_label: dict[str, str] = {}
+    if suffix in (".cif", ".mmcif"):
+        f = pdbx.CIFFile.read(str(path))
+        atoms = pdbx.get_structure(f, model=1)
+        try:
+            atom_site = f.block["atom_site"]
+            auth_ids = atom_site["auth_asym_id"].as_array()
+            label_ids = atom_site["label_asym_id"].as_array()
+            atom_names = atom_site["auth_atom_id"].as_array()
+            for a, l, name in zip(auth_ids, label_ids, atom_names):
+                if str(name).strip() == "CA":   # protein Cα only
+                    a_str, l_str = str(a), str(l)
+                    if a_str not in auth_to_label:   # first occurrence wins
+                        auth_to_label[a_str] = l_str
+        except Exception:
+            pass  # not all CIF files have both columns; mapping stays empty
+    else:
+        f = pdb_io.PDBFile.read(str(path))
+        atoms = pdb_io.get_structure(f, model=1)
+
+    # Count standard amino-acid residues per chain
+    aa_filter = struc.filter_amino_acids(atoms)
+    aa_atoms = atoms[aa_filter]
+    chain_ids = sorted(set(aa_atoms.chain_id))
+
+    chain_info = []
+    for cid in chain_ids:
+        n_res = len(set(zip(
+            aa_atoms.chain_id[aa_atoms.chain_id == cid],
+            aa_atoms.res_id[aa_atoms.chain_id == cid],
+        )))
+        chain_info.append({"id": str(cid), "n_residues": int(n_res)})
+
+    chain_info.sort(key=lambda c: c["n_residues"])
+
+    if not chain_info:
+        raise ValueError(f"No protein chains found in {path}")
+
+    # Resolve IDs
+    if peptide_chain is None:
+        peptide_chain = chain_info[0]["id"]
+        pep_auto = True
+    else:
+        pep_auto = False
+
+    if receptor_chain is None and len(chain_info) > 1:
+        if len(chain_info) == 2:
+            receptor_chain = chain_info[1]["id"]
+        else:
+            # Multiple candidates — pick the one with the most Cα contacts
+            # to the peptide within 8 Å (interface-proximity criterion).
+            pep_ca = aa_atoms[
+                (aa_atoms.chain_id == peptide_chain) &
+                (aa_atoms.atom_name == "CA")
+            ]
+            best_chain, best_contacts = None, -1
+            for ci in chain_info:
+                if ci["id"] == peptide_chain:
+                    continue
+                cand_ca = aa_atoms[
+                    (aa_atoms.chain_id == ci["id"]) &
+                    (aa_atoms.atom_name == "CA")
+                ]
+                if len(pep_ca) == 0 or len(cand_ca) == 0:
+                    contacts = 0
+                else:
+                    from biotite.structure import distance
+                    import numpy as np
+                    dists = np.array([
+                        distance(pep_ca.coord, cand_ca.coord[j]).min()
+                        for j in range(len(cand_ca))
+                    ])
+                    contacts = int((dists < 8.0).sum())
+                if contacts > best_contacts:
+                    best_contacts, best_chain = contacts, ci["id"]
+            receptor_chain = best_chain
+        rec_auto = True
+    else:
+        rec_auto = receptor_chain is None
+
+    pep_info = next((c for c in chain_info if c["id"] == peptide_chain), None)
+    rec_info = next((c for c in chain_info if c["id"] == receptor_chain), None) if receptor_chain else None
+
+    if verbose:
+        print(f"  Chain detection ({path.name}):")
+        for c in chain_info:
+            tag = ""
+            if c["id"] == peptide_chain:
+                tag = "  ← peptide" + (" [auto]" if pep_auto else "")
+            elif c["id"] == receptor_chain:
+                tag = "  ← receptor" + (" [auto]" if rec_auto else "")
+            print(f"    chain {c['id']}: {c['n_residues']} residues{tag}")
+
+    pep_str = str(peptide_chain) if peptide_chain else None
+    rec_str = str(receptor_chain) if receptor_chain else None
+    return {
+        "peptide_chain": pep_str,
+        "receptor_chain": rec_str,
+        # label_asym_id equivalents for OpenMM-based steps (same as auth when
+        # both ID systems are identical, i.e. standard PDB structures)
+        "peptide_chain_label": auth_to_label.get(pep_str, pep_str) if pep_str else None,
+        "receptor_chain_label": auth_to_label.get(rec_str, rec_str) if rec_str else None,
+        "peptide_n_residues": pep_info["n_residues"] if pep_info else None,
+        "receptor_n_residues": rec_info["n_residues"] if rec_info else None,
+        "all_chains": chain_info,
+    }
+
+
 def strip_heterogens(
     topology,
     positions,
