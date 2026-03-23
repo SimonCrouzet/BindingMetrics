@@ -1561,7 +1561,12 @@ def main():
                          help="Conda env where OpenFold3 is installed (e.g. 'openfold3').")
     _add_parse_args(p_score, include_chain_args=False)
 
+    from binding_metrics.cli import add_log_file_arg
+    add_log_file_arg(parser)
     args = parser.parse_args()
+
+    from binding_metrics.cli import _apply_log_redirect
+    _apply_log_redirect(args.log_file)
 
     # --- prepare-scoring-query ---
     if args.command == "prepare-scoring-query":

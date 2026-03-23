@@ -202,22 +202,26 @@ def main():
     parser.add_argument("--initial", "-a", type=Path, required=True, help="Initial (reference) structure")
     parser.add_argument("--processed", "-b", type=Path, required=True, help="Processed (target) structure")
     parser.add_argument("--design-chain", type=str, default=None, help="Designed chain ID (auto-detect if omitted)")
+    from binding_metrics.cli import add_log_file_arg
+    add_log_file_arg(parser)
     args = parser.parse_args()
 
-    print(f"Comparing structures:")
-    print(f"  Initial:   {args.initial}")
-    print(f"  Processed: {args.processed}")
-    if args.design_chain:
-        print(f"  Design chain: {args.design_chain}")
+    from binding_metrics.cli import log_to_file
+    with log_to_file(args.log_file):
+        print(f"Comparing structures:")
+        print(f"  Initial:   {args.initial}")
+        print(f"  Processed: {args.processed}")
+        if args.design_chain:
+            print(f"  Design chain: {args.design_chain}")
 
-    result = compute_structure_rmsd(args.initial, args.processed, args.design_chain)
+        result = compute_structure_rmsd(args.initial, args.processed, args.design_chain)
 
-    print("\nResults:")
-    for key, val in result.items():
-        if val is not None:
-            print(f"  {key}: {val:.3f} Å")
-        else:
-            print(f"  {key}: N/A")
+        print("\nResults:")
+        for key, val in result.items():
+            if val is not None:
+                print(f"  {key}: {val:.3f} Å")
+            else:
+                print(f"  {key}: N/A")
 
 
 if __name__ == "__main__":

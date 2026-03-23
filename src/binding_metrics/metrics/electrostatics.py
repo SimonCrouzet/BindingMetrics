@@ -209,28 +209,32 @@ def main():
         "--cutoff", type=float, default=12.0,
         help="Distance cutoff in Å (default 12.0)",
     )
+    from binding_metrics.cli import add_log_file_arg
+    add_log_file_arg(parser)
     args = parser.parse_args()
 
-    print(f"Computing Coulomb cross-chain energy for: {args.input}")
-    metrics = compute_coulomb_cross_chain(
-        args.input,
-        peptide_chain=args.design_chain,
-        receptor_chain=args.receptor_chain,
-        dielectric=args.dielectric,
-        cutoff_ang=args.cutoff,
-    )
+    from binding_metrics.cli import log_to_file
+    with log_to_file(args.log_file):
+        print(f"Computing Coulomb cross-chain energy for: {args.input}")
+        metrics = compute_coulomb_cross_chain(
+            args.input,
+            peptide_chain=args.design_chain,
+            receptor_chain=args.receptor_chain,
+            dielectric=args.dielectric,
+            cutoff_ang=args.cutoff,
+        )
 
-    print("\nElectrostatics summary:")
-    scalar_keys = [
-        "coulomb_energy_kJ", "coulomb_energy_kcal",
-        "n_charged_pairs", "n_attractive", "n_repulsive",
-    ]
-    for key in scalar_keys:
-        val = metrics[key]
-        print(f"  {key}: {val:.4f}" if isinstance(val, float) else f"  {key}: {val}")
+        print("\nElectrostatics summary:")
+        scalar_keys = [
+            "coulomb_energy_kJ", "coulomb_energy_kcal",
+            "n_charged_pairs", "n_attractive", "n_repulsive",
+        ]
+        for key in scalar_keys:
+            val = metrics[key]
+            print(f"  {key}: {val:.4f}" if isinstance(val, float) else f"  {key}: {val}")
 
-    print(f"\n  Charged atoms peptide: {len(metrics['charged_atoms_peptide'])}")
-    print(f"  Charged atoms receptor: {len(metrics['charged_atoms_receptor'])}")
+        print(f"\n  Charged atoms peptide: {len(metrics['charged_atoms_peptide'])}")
+        print(f"  Charged atoms receptor: {len(metrics['charged_atoms_receptor'])}")
 
 
 if __name__ == "__main__":

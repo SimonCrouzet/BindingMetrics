@@ -647,41 +647,45 @@ def main():
     parser.add_argument("--after-md-duration-ps", type=float, default=10.0)
     parser.add_argument("--after-md-timestep-fs", type=float, default=2.0)
     parser.add_argument("--after-md-temperature-k", type=float, default=300.0)
+    from binding_metrics.cli import add_log_file_arg
+    add_log_file_arg(parser)
     args = parser.parse_args()
 
-    import pandas as pd
+    from binding_metrics.cli import log_to_file
+    with log_to_file(args.log_file):
+        import pandas as pd
 
-    if args.input:
-        input_files = [Path(args.input)]
-    elif args.input_dir:
-        input_files = sorted(Path(args.input_dir).glob(args.glob_pattern))
-    else:
-        parser.error("Must specify --input or --input-dir")
+        if args.input:
+            input_files = [Path(args.input)]
+        elif args.input_dir:
+            input_files = sorted(Path(args.input_dir).glob(args.glob_pattern))
+        else:
+            parser.error("Must specify --input or --input-dir")
 
-    results = []
-    for path in input_files:
-        r = compute_interaction_energy(
-            path,
-            peptide_chain=args.peptide_chain,
-            receptor_chain=args.receptor_chain,
-            solvent_model=args.solvent_model,
-            device=args.device,
-            modes=tuple(args.modes),
-            relaxed_min_steps_restrained=args.relaxed_min_steps_restrained,
-            relaxed_min_steps_full=args.relaxed_min_steps_full,
-            after_md_duration_ps=args.after_md_duration_ps,
-            after_md_timestep_fs=args.after_md_timestep_fs,
-            after_md_temperature_k=args.after_md_temperature_k,
-        )
-        results.append(r)
+        results = []
+        for path in input_files:
+            r = compute_interaction_energy(
+                path,
+                peptide_chain=args.peptide_chain,
+                receptor_chain=args.receptor_chain,
+                solvent_model=args.solvent_model,
+                device=args.device,
+                modes=tuple(args.modes),
+                relaxed_min_steps_restrained=args.relaxed_min_steps_restrained,
+                relaxed_min_steps_full=args.relaxed_min_steps_full,
+                after_md_duration_ps=args.after_md_duration_ps,
+                after_md_timestep_fs=args.after_md_timestep_fs,
+                after_md_temperature_k=args.after_md_temperature_k,
+            )
+            results.append(r)
 
-    df = pd.DataFrame(results)
-    if args.output:
-        df.to_csv(args.output, index=False, float_format="%.4f")
-        print(f"\nSaved to: {args.output}")
-    else:
-        print("\nResults:")
-        print(df.to_string())
+        df = pd.DataFrame(results)
+        if args.output:
+            df.to_csv(args.output, index=False, float_format="%.4f")
+            print(f"\nSaved to: {args.output}")
+        else:
+            print("\nResults:")
+            print(df.to_string())
 
 
 if __name__ == "__main__":

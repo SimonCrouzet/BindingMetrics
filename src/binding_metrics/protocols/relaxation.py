@@ -1035,31 +1035,35 @@ def main():
     parser.add_argument("--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)")
     parser.add_argument("--receptor-chain", type=str, default=None, help="Receptor chain ID (auto-detect if omitted)")
     parser.add_argument("--sample-id", type=str, default=None, help="Sample identifier (defaults to input file stem)")
+    from binding_metrics.cli import add_log_file_arg
+    add_log_file_arg(parser)
     args = parser.parse_args()
 
-    config = RelaxationConfig(
-        md_duration_ps=args.md_duration_ps,
-        md_save_interval_ps=args.md_save_interval_ps,
-        md_temperature_k=args.temperature,
-        ph=args.ph,
-        device=args.device,
-        solvent_model=args.solvent_model,
-        peptide_chain_id=args.peptide_chain,
-        receptor_chain_id=args.receptor_chain,
-    )
+    from binding_metrics.cli import log_to_file
+    with log_to_file(args.log_file):
+        config = RelaxationConfig(
+            md_duration_ps=args.md_duration_ps,
+            md_save_interval_ps=args.md_save_interval_ps,
+            md_temperature_k=args.temperature,
+            ph=args.ph,
+            device=args.device,
+            solvent_model=args.solvent_model,
+            peptide_chain_id=args.peptide_chain,
+            receptor_chain_id=args.receptor_chain,
+        )
 
-    relaxer = ImplicitRelaxation(config)
-    result = relaxer.run(args.input, args.output_dir, sample_id=args.sample_id)
+        relaxer = ImplicitRelaxation(config)
+        result = relaxer.run(args.input, args.output_dir, sample_id=args.sample_id)
 
-    if result.success:
-        print(f"\nSUCCESS")
-        if result.minimized_structure_path:
-            print(f"  Minimized: {result.minimized_structure_path}")
-        if result.md_final_structure_path:
-            print(f"  MD final:  {result.md_final_structure_path}")
-    else:
-        print(f"\nFAILED: {result.error_message}")
-        sys.exit(1)
+        if result.success:
+            print(f"\nSUCCESS")
+            if result.minimized_structure_path:
+                print(f"  Minimized: {result.minimized_structure_path}")
+            if result.md_final_structure_path:
+                print(f"  MD final:  {result.md_final_structure_path}")
+        else:
+            print(f"\nFAILED: {result.error_message}")
+            sys.exit(1)
 
 
 if __name__ == "__main__":

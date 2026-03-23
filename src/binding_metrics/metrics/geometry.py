@@ -781,54 +781,58 @@ def main():
     # Void parameters
     parser.add_argument("--grid-spacing", type=float, default=0.5, help="Grid spacing Å for void")
     parser.add_argument("--probe-radius", type=float, default=1.4, help="Probe radius Å for void")
+    from binding_metrics.cli import add_log_file_arg
+    add_log_file_arg(parser)
     args = parser.parse_args()
 
-    print(f"Computing '{args.metric}' metrics for: {args.input}")
+    from binding_metrics.cli import log_to_file
+    with log_to_file(args.log_file):
+        print(f"Computing '{args.metric}' metrics for: {args.input}")
 
-    if args.metric == "ramachandran":
-        result = compute_ramachandran(args.input, chain=args.chain)
-        scalar_keys = [
-            "ramachandran_favoured_pct", "ramachandran_allowed_pct",
-            "ramachandran_outlier_pct", "ramachandran_outlier_count",
-            "n_residues_evaluated",
-        ]
-    elif args.metric == "omega":
-        result = compute_omega_planarity(args.input, chain=args.chain)
-        scalar_keys = [
-            "omega_mean_dev", "omega_max_dev",
-            "omega_outlier_fraction", "omega_outlier_count", "n_bonds_evaluated",
-        ]
-    elif args.metric == "sc":
-        result = compute_shape_complementarity(
-            args.input,
-            peptide_chain=args.peptide_chain,
-            receptor_chain=args.receptor_chain,
-            n_dots=args.n_dots,
-            interface_cutoff=args.interface_cutoff,
-            sigma=args.sigma,
-        )
-        scalar_keys = ["sc", "sc_A_to_B", "sc_B_to_A", "n_surface_dots_A", "n_surface_dots_B"]
-    else:  # void
-        result = compute_buried_void_volume(
-            args.input,
-            peptide_chain=args.peptide_chain,
-            receptor_chain=args.receptor_chain,
-            grid_spacing=args.grid_spacing,
-            probe_radius=args.probe_radius,
-            interface_cutoff=args.interface_cutoff,
-        )
-        scalar_keys = [
-            "void_volume_A3", "void_grid_fraction",
-            "interface_box_volume_A3", "n_interface_atoms",
-        ]
+        if args.metric == "ramachandran":
+            result = compute_ramachandran(args.input, chain=args.chain)
+            scalar_keys = [
+                "ramachandran_favoured_pct", "ramachandran_allowed_pct",
+                "ramachandran_outlier_pct", "ramachandran_outlier_count",
+                "n_residues_evaluated",
+            ]
+        elif args.metric == "omega":
+            result = compute_omega_planarity(args.input, chain=args.chain)
+            scalar_keys = [
+                "omega_mean_dev", "omega_max_dev",
+                "omega_outlier_fraction", "omega_outlier_count", "n_bonds_evaluated",
+            ]
+        elif args.metric == "sc":
+            result = compute_shape_complementarity(
+                args.input,
+                peptide_chain=args.peptide_chain,
+                receptor_chain=args.receptor_chain,
+                n_dots=args.n_dots,
+                interface_cutoff=args.interface_cutoff,
+                sigma=args.sigma,
+            )
+            scalar_keys = ["sc", "sc_A_to_B", "sc_B_to_A", "n_surface_dots_A", "n_surface_dots_B"]
+        else:  # void
+            result = compute_buried_void_volume(
+                args.input,
+                peptide_chain=args.peptide_chain,
+                receptor_chain=args.receptor_chain,
+                grid_spacing=args.grid_spacing,
+                probe_radius=args.probe_radius,
+                interface_cutoff=args.interface_cutoff,
+            )
+            scalar_keys = [
+                "void_volume_A3", "void_grid_fraction",
+                "interface_box_volume_A3", "n_interface_atoms",
+            ]
 
-    print(f"\n{args.metric.capitalize()} summary:")
-    for key in scalar_keys:
-        val = result.get(key)
-        if isinstance(val, float):
-            print(f"  {key}: {val:.4f}")
-        else:
-            print(f"  {key}: {val}")
+        print(f"\n{args.metric.capitalize()} summary:")
+        for key in scalar_keys:
+            val = result.get(key)
+            if isinstance(val, float):
+                print(f"  {key}: {val:.4f}")
+            else:
+                print(f"  {key}: {val}")
 
 
 if __name__ == "__main__":

@@ -517,22 +517,16 @@ def main() -> None:
                         dest="summary_format", help="Summary format (default: md)")
     parser.add_argument("--output-dir", "-o", type=Path, default=None,
                         help="Output directory (default: same directory as --results)")
-    parser.add_argument("--log-file", type=Path, default=None, metavar="PATH",
-                        help="Redirect all output (stdout + stderr) to this file")
+    from binding_metrics.cli import add_log_file_arg
+    add_log_file_arg(parser)
     args = parser.parse_args()
 
     if not args.results.exists():
         print(f"error: file not found: {args.results}", file=sys.stderr)
         sys.exit(1)
 
-    log_fh = None
-    if args.log_file:
-        args.log_file.parent.mkdir(parents=True, exist_ok=True)
-        log_fh = open(args.log_file, "w", encoding="utf-8", buffering=1)
-        sys.stdout = log_fh
-        sys.stderr = log_fh
-
-    try:
+    from binding_metrics.cli import log_to_file
+    with log_to_file(args.log_file):
         with open(args.results, encoding="utf-8") as fh:
             results = json.load(fh)
 
@@ -542,9 +536,3 @@ def main() -> None:
         out = write_report(results, output_dir, sample_id, fmt=args.fmt,
                            summary=args.summary, summary_format=args.summary_format)
         print(f"  results   → {out}")
-    finally:
-        if log_fh is not None:
-            log_fh.flush()
-            sys.stdout = sys.__stdout__
-            sys.stderr = sys.__stderr__
-            log_fh.close()

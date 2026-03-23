@@ -327,8 +327,8 @@ def main():
                               help="Also write a human-readable summary (*_report.md or *_report.html)")
     report_group.add_argument("--summary-format", choices=["md", "html"], default="md",
                               dest="summary_format", help="Summary format (default: md)")
-    report_group.add_argument("--log-file", type=Path, default=None, metavar="PATH",
-                              help="Redirect all output (stdout + stderr) to this file")
+    from binding_metrics.cli import add_log_file_arg
+    add_log_file_arg(report_group)
 
     args = parser.parse_args()
 
@@ -336,14 +336,8 @@ def main():
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)
         sys.exit(1)
 
-    log_fh = None
-    if args.log_file:
-        args.log_file.parent.mkdir(parents=True, exist_ok=True)
-        log_fh = open(args.log_file, "w", encoding="utf-8", buffering=1)
-        sys.stdout = log_fh
-        sys.stderr = log_fh
-
-    try:
+    from binding_metrics.cli import log_to_file
+    with log_to_file(args.log_file):
         sample_id = args.sample_id or args.input.stem
         print(f"\n{'#'*60}")
         print(f"  binding-metrics-run: {sample_id}")
@@ -379,12 +373,6 @@ def main():
         print(f"  DONE in {results['total_elapsed_s']}s")
         print(f"  Results: {results_path}")
         print(f"{'#'*60}\n")
-    finally:
-        if log_fh is not None:
-            log_fh.flush()
-            sys.stdout = sys.__stdout__
-            sys.stderr = sys.__stderr__
-            log_fh.close()
 
 
 if __name__ == "__main__":

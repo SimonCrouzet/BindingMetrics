@@ -394,42 +394,46 @@ def main():
         "--threshold", type=float, default=0.5,
         help="Min buried SASA per residue to count as interface residue (Å², default 0.5)",
     )
+    from binding_metrics.cli import add_log_file_arg
+    add_log_file_arg(parser)
     args = parser.parse_args()
 
-    print(f"Computing interface metrics for: {args.input}")
-    metrics = compute_interface_metrics(
-        args.input,
-        design_chain=args.design_chain,
-        receptor_chain=args.receptor_chain,
-        probe_radius=args.probe_radius,
-        interface_threshold=args.threshold,
-    )
+    from binding_metrics.cli import log_to_file
+    with log_to_file(args.log_file):
+        print(f"Computing interface metrics for: {args.input}")
+        metrics = compute_interface_metrics(
+            args.input,
+            design_chain=args.design_chain,
+            receptor_chain=args.receptor_chain,
+            probe_radius=args.probe_radius,
+            interface_threshold=args.threshold,
+        )
 
-    print("\nInterface summary:")
-    scalar_keys = [
-        "peptide_chain", "receptor_chain",
-        "delta_sasa", "sasa_peptide", "sasa_receptor", "sasa_complex",
-        "delta_g_int", "delta_g_int_kJ",
-        "polar_area", "apolar_area", "fraction_polar",
-        "n_interface_residues_peptide", "n_interface_residues_receptor",
-        "hbonds", "saltbridges",
-    ]
-    for key in scalar_keys:
-        val = metrics[key]
-        print(f"  {key}: {val:.3f}" if isinstance(val, float) else f"  {key}: {val}")
+        print("\nInterface summary:")
+        scalar_keys = [
+            "peptide_chain", "receptor_chain",
+            "delta_sasa", "sasa_peptide", "sasa_receptor", "sasa_complex",
+            "delta_g_int", "delta_g_int_kJ",
+            "polar_area", "apolar_area", "fraction_polar",
+            "n_interface_residues_peptide", "n_interface_residues_receptor",
+            "hbonds", "saltbridges",
+        ]
+        for key in scalar_keys:
+            val = metrics[key]
+            print(f"  {key}: {val:.3f}" if isinstance(val, float) else f"  {key}: {val}")
 
-    print(f"\n  Interface residues (peptide): {metrics['interface_residues_peptide']}")
-    print(f"  Interface residues (receptor): {metrics['interface_residues_receptor']}")
+        print(f"\n  Interface residues (peptide): {metrics['interface_residues_peptide']}")
+        print(f"  Interface residues (receptor): {metrics['interface_residues_receptor']}")
 
-    if metrics["per_residue"]:
-        print("\nPer-residue contributions (sorted by buried SASA):")
-        sorted_res = sorted(metrics["per_residue"], key=lambda r: r["buried_sasa"], reverse=True)
-        print(f"  {'Residue':<20} {'BuriedSASA':>10} {'ΔG_res':>10} {'Polar':>8} {'Apolar':>8}")
-        for r in sorted_res:
-            print(
-                f"  {r['residue']:<20} {r['buried_sasa']:>10.2f} "
-                f"{r['delta_g_res']:>10.4f} {r['polar_area']:>8.2f} {r['apolar_area']:>8.2f}"
-            )
+        if metrics["per_residue"]:
+            print("\nPer-residue contributions (sorted by buried SASA):")
+            sorted_res = sorted(metrics["per_residue"], key=lambda r: r["buried_sasa"], reverse=True)
+            print(f"  {'Residue':<20} {'BuriedSASA':>10} {'ΔG_res':>10} {'Polar':>8} {'Apolar':>8}")
+            for r in sorted_res:
+                print(
+                    f"  {r['residue']:<20} {r['buried_sasa']:>10.2f} "
+                    f"{r['delta_g_res']:>10.4f} {r['polar_area']:>8.2f} {r['apolar_area']:>8.2f}"
+                )
 
 
 if __name__ == "__main__":
