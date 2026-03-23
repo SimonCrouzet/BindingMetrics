@@ -1,4 +1,4 @@
-"""Full binding-metrics pipeline: relax → energy → interface → geometry → electrostatics.
+"""Full binding-metrics pipeline: prep → relax → energy → interface → geometry → electrostatics.
 
 Runs every analysis step on a single structure and writes results to JSON.
 
@@ -6,7 +6,8 @@ Usage:
     binding-metrics-run \\
         --input complex.cif \\
         --output-dir results/ \\
-        [--skip-relax] \\
+        [--skip-prep] [--skip-relax] \\
+        [--ph 7.4] \\
         [--metrics energy,interface,geometry,electrostatics,openfold] \\
         [--md-duration-ps 200] \\
         [--device cuda]
@@ -36,6 +37,11 @@ def run_pipeline(
     input_path: Path,
     output_dir: Path,
     sample_id: Optional[str] = None,
+    # prep
+    skip_prep: bool = False,
+    ph: float = 7.4,
+    keep_water: bool = False,
+    canonicalize: bool = False,
     # relax
     skip_relax: bool = False,
     md_duration_ps: float = 200.0,
@@ -71,10 +77,56 @@ def run_pipeline(
     receptor_chain_label = chain_info["receptor_chain_label"]
     results["chains"] = chain_info
 
+    # ------------------------------------------------------------------- Prep
+    prepped_path = input_path
+    if not skip_prep:
+        _step("Structure Preparation (PDBFixer)")
+        try:
+            from binding_metrics.core.system import prep_structure, HAS_PDBFIXER
+            from binding_metrics.io.structures import load_structure, save_structure
+
+            if not HAS_PDBFIXER:
+                _warn("pdbfixer not available — skipping prep. Install with: pip install binding-metrics[structure]")
+            else:
+                topology, positions = load_structure(input_path)
+                topology, positions = prep_structure(
+                    topology, positions, ph=ph,
+                    keep_water=keep_water, canonicalize=canonicalize,
+                )
+                prepped_path = output_dir / f"{sample_id}_cleaned.cif"
+                save_structure(topology, positions, prepped_path, source_path=input_path)
+                print(f"  Prepped structure: {prepped_path}")
+                results["prep"] = {"output": str(prepped_path), "ph": ph, "keep_water": keep_water}
+                # save_cif preserves original auth IDs and aligns label IDs to match,
+                # so downstream OpenMM steps will see the original chain IDs.
+                # Re-detect from the cleaned file so peptide_chain_label is up-to-date.
+                prepped_chain_info = detect_chains_from_file(
+                    prepped_path,
+                    peptide_chain=peptide_chain,
+                    receptor_chain=receptor_chain,
+                )
+                peptide_chain_label  = prepped_chain_info["peptide_chain_label"]
+                receptor_chain_label = prepped_chain_info["receptor_chain_label"]
+        except Exception as e:
+            _warn(f"Prep failed: {e} — continuing with raw input")
+            traceback.print_exc()
+            prepped_path = input_path
+            results["prep"] = {"error": str(e)}
+    else:
+        print("\n  [skip] Prep skipped — using raw input.")
+        results["prep"] = {"skipped": True}
+
     # ------------------------------------------------------------------ Relax
     relaxed_path: Optional[Path] = None
     if not skip_relax:
         _step("Relaxation (implicit MD)")
+        if device == "cpu" and md_duration_ps > 0:
+            print(
+                "\n  *** WARNING: running MD on CPU is extremely slow and not recommended. ***\n"
+                "  *** For production use, run on a CUDA-capable GPU (--device cuda).   ***\n"
+                "  *** Use --md-duration-ps 0 to minimize only if GPU is unavailable.   ***\n",
+                flush=True,
+            )
         from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
 
         config = RelaxationConfig(
@@ -85,7 +137,7 @@ def run_pipeline(
         )
         relaxer = ImplicitRelaxation(config)
         t0 = time.time()
-        relax_result = relaxer.run(input_path, output_dir, sample_id=sample_id)
+        relax_result = relaxer.run(prepped_path, output_dir, sample_id=sample_id)
         elapsed = time.time() - t0
 
         results["relax"] = relax_result.to_dict()
@@ -285,6 +337,23 @@ def main():
     parser.add_argument("--receptor-chain", type=str, default=None,
                         help="Receptor chain ID (auto-detect if omitted)")
 
+    # Prep
+    prep_group = parser.add_argument_group("Preparation")
+    prep_group.add_argument("--skip-prep", action="store_true",
+                            help="Skip PDBFixer prep; run relax on raw input")
+    prep_group.add_argument("--ph", type=float, default=7.4,
+                            help="pH for hydrogen placement during prep (default: 7.4)")
+    prep_group.add_argument("--keep-water", action="store_true",
+                            help="Retain crystallographic water molecules during prep")
+    prep_group.add_argument(
+        "--canonicalize", action="store_true",
+        help=(
+            "Replace non-standard residues with standard equivalents during prep "
+            "(e.g. MSE→MET, SEP→SER). By default they are preserved for GAFF2 "
+            "parameterisation in relax (--small-molecules auto)."
+        ),
+    )
+
     # Relaxation
     relax_group = parser.add_argument_group("Relaxation")
     relax_group.add_argument("--skip-relax", action="store_true",
@@ -316,8 +385,10 @@ def main():
                                 help="score: both chains as templates (confidence); "
                                      "refold: binder predicted freely (refolding RMSD). "
                                      "Default: score")
-    openfold_group.add_argument("--openfold-conda-env", type=str, default=None,
-                                help="Conda environment name where OpenFold3 is installed")
+    openfold_group.add_argument("--openfold-conda-env", type=str, default="openfold3",
+                                help="Conda environment name where OpenFold3 is installed "
+                                     "(default: openfold3). Set to empty string to use "
+                                     "the current environment if openfold3 is installed there.")
 
     # Report
     report_group = parser.add_argument_group("Report")
@@ -352,6 +423,10 @@ def main():
             input_path=args.input,
             output_dir=args.output_dir,
             sample_id=sample_id,
+            skip_prep=args.skip_prep,
+            ph=args.ph,
+            keep_water=args.keep_water,
+            canonicalize=args.canonicalize,
             skip_relax=args.skip_relax,
             md_duration_ps=args.md_duration_ps,
             device=args.device,
