@@ -43,7 +43,7 @@ class RelaxationConfig:
         md_temperature_k: Simulation temperature in Kelvin
         md_friction: Langevin friction coefficient in 1/ps
         md_save_interval_ps: Interval between saved trajectory frames in ps
-        ph: pH for hydrogen addition (default 7.0)
+        ph: pH for hydrogen addition (default 7.4)
         solvent_model: Implicit solvent model ('obc2', 'gbn2')
         device: Compute device ('cuda', 'cpu')
         peptide_chain_id: Peptide chain ID (auto-detect smallest chain if None)
@@ -69,7 +69,7 @@ class RelaxationConfig:
     md_friction: float = 1.0
     md_save_interval_ps: float = 10.0
 
-    ph: float = 7.0
+    ph: float = 7.4
 
     solvent_model: str = "obc2"
     device: str = "cuda"
@@ -385,7 +385,7 @@ class ImplicitRelaxation:
         Steps:
             1. Remove atoms at the origin (placeholder atoms)
             2. Rebuild missing heavy atoms with PDBFixer
-            3. Add hydrogens at pH 7.0
+            3. Add hydrogens at pH 7.4
             4. Apply custom_bond_handler if configured
             5. Create OpenMM system with implicit solvent
 
@@ -396,52 +396,24 @@ class ImplicitRelaxation:
 
         self._import_openmm()
 
-        # --- Structure loading and repair ---
-        try:
-            from pdbfixer import PDBFixer
+        # --- Structure loading ---
+        # The input is expected to already be prepared (via binding-metrics-prep).
+        # No PDBFixer repair here — just load and strip any origin placeholders.
+        if input_path.suffix.lower() in (".cif", ".mmcif"):
+            struct = PDBxFile(str(input_path))
+        else:
+            struct = app.PDBFile(str(input_path))
+        topology, positions = struct.topology, struct.positions
 
-            fixer = PDBFixer(filename=str(input_path))
-
-            # Remove origin placeholder atoms
-            origin_indices = [
-                i for i, pos in enumerate(fixer.positions)
-                if abs(pos.x) < 1e-6 and abs(pos.y) < 1e-6 and abs(pos.z) < 1e-6
-            ]
-            if origin_indices:
-                print(f"  Removing {len(origin_indices)} origin-placeholder atoms...")
-                all_atoms = list(fixer.topology.atoms())
-                atoms_to_delete = [all_atoms[i] for i in origin_indices]
-                modeller = app.Modeller(fixer.topology, fixer.positions)
-                modeller.delete(atoms_to_delete)
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".pdb", delete=False) as tmp:
-                    app.PDBFile.writeFile(modeller.topology, modeller.positions, tmp)
-                    tmp_path = tmp.name
-                fixer = PDBFixer(filename=tmp_path)
-                Path(tmp_path).unlink(missing_ok=True)
-
-            fixer.findMissingResidues()
-            fixer.findMissingAtoms()
-            fixer.addMissingAtoms()
-            topology, positions = fixer.topology, fixer.positions
-
-        except ImportError:
-            print("  Note: PDBFixer not available, using basic loader")
-            if input_path.suffix.lower() in (".cif", ".mmcif"):
-                struct = PDBxFile(str(input_path))
-            else:
-                struct = app.PDBFile(str(input_path))
-            topology, positions = struct.topology, struct.positions
-
-            # Still remove origin atoms without PDBFixer
-            modeller = app.Modeller(topology, positions)
-            origin_atoms = [
-                a for a, pos in zip(topology.atoms(), positions)
-                if abs(pos.x) < 1e-6 and abs(pos.y) < 1e-6 and abs(pos.z) < 1e-6
-            ]
-            if origin_atoms:
-                print(f"  Removing {len(origin_atoms)} origin-placeholder atoms...")
-                modeller.delete(origin_atoms)
-                topology, positions = modeller.topology, modeller.positions
+        modeller = app.Modeller(topology, positions)
+        origin_atoms = [
+            a for a, pos in zip(topology.atoms(), positions)
+            if abs(pos.x) < 1e-6 and abs(pos.y) < 1e-6 and abs(pos.z) < 1e-6
+        ]
+        if origin_atoms:
+            print(f"  Removing {len(origin_atoms)} origin-placeholder atoms...")
+            modeller.delete(origin_atoms)
+            topology, positions = modeller.topology, modeller.positions
 
         # --- Identify chains ---
         peptide_chain, receptor_chain = self._identify_chains(topology)
@@ -508,6 +480,23 @@ class ImplicitRelaxation:
         # Molecules are built as heavy-atom-only here (matching the topology
         # state before H addition). GAFF/antechamber adds H internally during
         # parameterization.
+        #
+        # Note: GAFF2 is a general small-molecule force field. It works for
+        # small organic co-factors and modified amino acids (as a pragmatic
+        # approximation), but purpose-built parameters (e.g. CGENFF, RESP-fitted
+        # charges) give higher accuracy for MD production runs.
+        if not self.config.small_molecules:
+            nonstandard_names = [
+                res.name for res in topology.residues()
+                if res.name not in self._AMBER_STANDARD
+            ]
+            if nonstandard_names:
+                unique = sorted(set(nonstandard_names))
+                print(f"  [warning] Non-standard residues found: {', '.join(unique)}")
+                print("  These will likely cause 'No template found' errors.")
+                print("  → Run with --small-molecules auto to parameterise via GAFF2.")
+                print("  → Or run binding-metrics-prep --canonicalize to replace them first.")
+
         if self.config.small_molecules:
             try:
                 from openmmforcefields.generators import GAFFTemplateGenerator
@@ -848,11 +837,24 @@ class ImplicitRelaxation:
             system, topology, positions, bond_info = self._setup_system(input_path)
 
             if bond_info:
+                # atom1_id / atom2_id store (chain_id, res_idx_in_chain, atom_name)
+                # where res_idx_in_chain is a 0-based list index used internally.
+                # For display we want the actual residue number (auth_seq_id).
+                # Build a per-chain index→res_id lookup from the topology.
+                _chain_res_ids: dict[str, list[str]] = {}
+                for _chain in topology.chains():
+                    _chain_res_ids[_chain.id] = [r.id for r in _chain.residues()]
+
+                def _fmt_atom(aid: tuple) -> str:
+                    ch, idx, name = aid
+                    res_id = _chain_res_ids.get(ch, [None] * (idx + 1))[idx] if idx < len(_chain_res_ids.get(ch, [])) else idx
+                    return f"{ch}:{res_id}:{name}"
+
                 result.cyclic_bonds = [
                     {
                         "type": b.cyclic_type,
-                        "atom1": ":".join(str(x) for x in b.atom1_id),
-                        "atom2": ":".join(str(x) for x in b.atom2_id),
+                        "atom1": _fmt_atom(b.atom1_id),
+                        "atom2": _fmt_atom(b.atom2_id),
                     }
                     for b in bond_info
                 ]
@@ -945,9 +947,11 @@ class ImplicitRelaxation:
             minimized_positions = state.getPositions()
             result.minimization_time_s = time.time() - min_start
 
-            # Save minimized structure
+            # Save minimized structure — pass input as source so auth chain IDs
+            # and residue numbers from the (already-prepped) input are preserved.
             min_path = output_dir / f"{sample_id}_minimized.cif"
-            save_cif(topology, minimized_positions, min_path)
+            src = input_path if input_path.suffix.lower() in (".cif", ".mmcif") else None
+            save_cif(topology, minimized_positions, min_path, source_cif_path=src)
             result.minimized_structure_path = str(min_path)
             print(f"[{sample_id}] Minimized: {result.potential_energy_minimized:.1f} kJ/mol")
 
@@ -1003,9 +1007,9 @@ class ImplicitRelaxation:
                     result.peptide_rmsf_max = float(rmsf.max())
                     result.peptide_rmsf_per_residue = rmsf.tolist()
 
-                # Save final MD structure
+                # Save final MD structure — preserve auth IDs from input
                 final_path = output_dir / f"{sample_id}_md_final.cif"
-                save_cif(topology, final_positions, final_path)
+                save_cif(topology, final_positions, final_path, source_cif_path=src)
                 result.md_final_structure_path = str(final_path)
 
             result.success = True
@@ -1030,7 +1034,7 @@ def main():
     parser.add_argument("--md-save-interval-ps", type=float, default=10.0, help="Frame save interval in ps")
     parser.add_argument("--temperature", type=float, default=300.0, help="Simulation temperature in K")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda", help="Compute device")
-    parser.add_argument("--ph", type=float, default=7.0, help="pH for hydrogen addition (default 7.0)")
+    parser.add_argument("--ph", type=float, default=7.4, help="pH for hydrogen addition (default 7.4)")
     parser.add_argument("--solvent-model", choices=["obc2", "gbn2"], default="obc2", help="Implicit solvent model")
     parser.add_argument("--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)")
     parser.add_argument("--receptor-chain", type=str, default=None, help="Receptor chain ID (auto-detect if omitted)")
