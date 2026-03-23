@@ -500,7 +500,18 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                     bonded_13.add((atom.index, nb2))
                     bonded_13.add((nb2, atom.index))
 
-    excluded = bonded_12 | bonded_13 | detected_pairs
+    # 1-4 contacts (e.g. O···CA across a peptide bond: O=C–N–CA) are normal
+    # backbone geometry and must not be flagged as unsupported cyclizations.
+    bonded_14: set = set()
+    for atom in atom_list:
+        for nb1 in neighbors.get(atom.index, set()):
+            for nb2 in neighbors.get(nb1, set()):
+                for nb3 in neighbors.get(nb2, set()):
+                    if nb3 != atom.index:
+                        bonded_14.add((atom.index, nb3))
+                        bonded_14.add((nb3, atom.index))
+
+    excluded = bonded_12 | bonded_13 | bonded_14 | detected_pairs
 
     res_of = {a.index: a.residue for a in atom_list}
     for ii, ai in enumerate(atom_list):
