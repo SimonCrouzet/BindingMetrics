@@ -45,6 +45,91 @@ def _fail(title: str, cause: str, steps: list[str]) -> None:
 # Checks
 # ---------------------------------------------------------------------------
 
+_OPENFOLD_CONDA_ENV = "openfold3"
+
+
+def _check_openfold() -> bool:
+    print(f"\n{BOLD}[ OpenFold3 ]{RESET}")
+
+    def _run_openfold_available(python: str) -> bool:
+        """Return True if run_openfold binary is importable / on PATH."""
+        r = subprocess.run(
+            [python, "-c",
+             "import shutil, sys; sys.exit(0 if shutil.which('run_openfold') else 1)"],
+            capture_output=True,
+        )
+        return r.returncode == 0
+
+    def _of3_importable(python: str) -> bool:
+        r = subprocess.run(
+            [python, "-c", "import openfold3"],
+            capture_output=True,
+        )
+        return r.returncode == 0
+
+    # 1. Check current environment first
+    if _of3_importable(sys.executable) or _run_openfold_available(sys.executable):
+        _ok("openfold3 available in current environment")
+        return True
+
+    # 2. Check dedicated conda env — look for run_openfold binary directly
+    import shutil
+    conda = shutil.which("conda") or "conda"
+    result = subprocess.run(
+        [conda, "run", "-n", _OPENFOLD_CONDA_ENV,
+         "python", "-c", "import openfold3; import shutil; print(shutil.which('run_openfold') or 'ok')"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        _ok(
+            f"openfold3 available in conda env '{_OPENFOLD_CONDA_ENV}'\n"
+            f"     {DIM}(used automatically — default for --openfold-conda-env){RESET}"
+        )
+        return True
+
+    # 3. Check whether the conda env exists at all
+    env_check = subprocess.run(
+        [conda, "env", "list"],
+        capture_output=True, text=True,
+    )
+    env_exists = _OPENFOLD_CONDA_ENV in (env_check.stdout + env_check.stderr)
+
+    if env_exists:
+        _fail(
+            title=f"Conda env '{_OPENFOLD_CONDA_ENV}' exists but openfold3 is not importable",
+            cause="The env was found but 'import openfold3' failed — the package may not be "
+                  "installed or its dependencies are broken.",
+            steps=[
+                f"{BOLD}Step 1{RESET} — Check what's installed:",
+                f"          conda run -n {_OPENFOLD_CONDA_ENV} pip show openfold3",
+                "",
+                f"{BOLD}Step 2{RESET} — Reinstall if needed:",
+                f"          conda activate {_OPENFOLD_CONDA_ENV}",
+                "          pip install openfold3",
+                "          setup_openfold   # downloads model weights",
+            ],
+        )
+    else:
+        _fail(
+            title=f"OpenFold3 not found (checked current env and conda env '{_OPENFOLD_CONDA_ENV}')",
+            cause="OpenFold3 is an optional dependency used for confidence scoring. "
+                  "Binding metrics will still run without it.",
+            steps=[
+                f"{BOLD}To install OpenFold3:{RESET}",
+                f"  conda create -n {_OPENFOLD_CONDA_ENV} python=3.10",
+                f"  conda activate {_OPENFOLD_CONDA_ENV}",
+                "  pip install openfold3",
+                "  setup_openfold   # downloads model weights",
+                "",
+                f"{BOLD}Then pass to binding-metrics-run:{RESET}",
+                f"  --openfold-conda-env {_OPENFOLD_CONDA_ENV}",
+                "",
+                f"{DIM}(OpenFold is optional — all other metrics work without it){RESET}",
+            ],
+        )
+    return False
+
+
 def _check_openmm() -> bool:
     print(f"\n{BOLD}[ OpenMM ]{RESET}")
     print(f"  {DIM}Running openmm.testInstallation…{RESET}")
@@ -134,8 +219,8 @@ def _check_openmm() -> bool:
 # ---------------------------------------------------------------------------
 
 CHECKS: list[tuple[str, object]] = [
-    ("OpenMM", _check_openmm),
-    # ("RDKit",  _check_rdkit),
+    ("OpenMM",    _check_openmm),
+    ("OpenFold3", _check_openfold),
 ]
 
 
