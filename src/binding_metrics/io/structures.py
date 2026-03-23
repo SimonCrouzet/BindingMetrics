@@ -437,15 +437,24 @@ def save_cif(
 ) -> None:
     """Save structure as a CIF file.
 
-    If source_cif_path is provided, coordinates are merged into the source CIF
-    to preserve metadata (entity descriptions, sequence info, etc.).
-    Falls back to raw OpenMM CIF output if gemmi is not available.
+    Writes a fresh CIF from OpenMM (correct atoms, hydrogens, bonds), then
+    patches the auth_asym_id and auth_seq_id columns back to the original
+    values from source_cif_path so that chain IDs and residue numbers are
+    preserved.
+
+    OpenMM uses label_asym_id internally and resets auth_seq_id to 1-based
+    sequential integers.  A single source auth chain may also be split into
+    multiple label chains by OpenMM.  The patch step handles both by building
+    a label→auth mapping and a positional (auth_chain, res_idx) → auth_seq_id
+    table from the source CIF.
+
+    Falls back to raw OpenMM output if gemmi is not available or source is None.
 
     Args:
         topology: OpenMM Topology object
         positions: OpenMM positions
         output_path: Path to write the output CIF file
-        source_cif_path: Optional source CIF whose metadata will be preserved
+        source_cif_path: Optional source CIF used to restore original auth IDs
     """
     from openmm.app import PDBxFile
 
@@ -467,59 +476,101 @@ def save_cif(
             PDBxFile.writeFile(topology, positions, f)
         return
 
+    # Write fresh OpenMM CIF — correct atoms and H, but with label chain IDs
+    # and 1-based sequential auth_seq_id.
     with tempfile.NamedTemporaryFile(mode="w", suffix=".cif", delete=False) as tmp:
         tmp_path = Path(tmp.name)
         PDBxFile.writeFile(topology, positions, tmp)
 
     try:
-        source_doc = gemmi.cif.read(str(source_cif_path))
-        source_block = source_doc.sole_block()
+        source_block = gemmi.cif.read(str(source_cif_path)).sole_block()
+        output_doc   = gemmi.cif.read(str(tmp_path))
+        output_block = output_doc.sole_block()
 
-        update_doc = gemmi.cif.read(str(tmp_path))
-        update_block = update_doc.sole_block()
+        # ── Restore original chain IDs and residue numbers ───────────────────────
+        #
+        # PDBxFile.writeFile assigns sequential letters (A, B, C…) and resets
+        # residue numbers to 1-based, ignoring the topology's chain IDs.
+        # The topology carries the source label_asym_id as chain IDs (that's what
+        # PDBxFile sets when it reads a CIF).  So we need two things from the source:
+        #
+        #   label_to_auth : source label_asym_id → source auth_asym_id
+        #   seq_map       : (source_auth_chain, res_idx) → original auth_seq_id
+        #
+        # Then for each output chain (sequential letter[i]):
+        #   original chain = label_to_auth[ topology.chains()[i].id ]
+        #
+        # And residue numbers are restored by positional index within that auth chain.
 
-        # Build coordinate lookup from OpenMM output
-        update_coords: dict = {}
-        update_loop = update_block.find(
+        # source label → auth
+        label_to_auth: dict[str, str] = {}
+        # (source_auth_chain, heavy-atom res_idx) → original auth_seq_id
+        seq_map: dict[tuple, str] = {}
+        try:
+            src_table = source_block.find(
+                "_atom_site.",
+                ["label_asym_id", "auth_asym_id", "auth_seq_id", "auth_atom_id"],
+            )
+            s_prev_auth = ""
+            s_prev_seq  = ""
+            s_res_idx   = -1
+            for row in src_table:
+                label, auth, seq, atom = row[0], row[1], row[2], row[3]
+                if label not in label_to_auth:
+                    label_to_auth[label] = auth
+                if not str(atom).startswith("H"):
+                    if auth != s_prev_auth:
+                        s_prev_auth, s_prev_seq, s_res_idx = auth, seq, 0
+                    elif seq != s_prev_seq:
+                        s_prev_seq = seq
+                        s_res_idx += 1
+                    key = (auth, s_res_idx)
+                    if key not in seq_map:
+                        seq_map[key] = seq
+        except Exception:
+            pass
+
+        # output sequential letter → original auth chain ID
+        topo_chain_ids = [c.id for c in topology.chains()]
+        seen_out_chains: list[str] = []
+        try:
+            for row in output_block.find("_atom_site.", ["auth_asym_id"]):
+                ch = row[0]
+                if ch not in seen_out_chains:
+                    seen_out_chains.append(ch)
+        except Exception:
+            pass
+        out_to_auth: dict[str, str] = {
+            out_ch: label_to_auth.get(topo_ch, topo_ch)
+            for out_ch, topo_ch in zip(seen_out_chains, topo_chain_ids)
+        }
+
+        # ── Patch the output CIF ──────────────────────────────────────────────────
+        out_table = output_block.find(
             "_atom_site.",
-            ["auth_asym_id", "auth_seq_id", "auth_atom_id", "Cartn_x", "Cartn_y", "Cartn_z"],
+            ["auth_asym_id", "auth_seq_id", "auth_atom_id", "label_asym_id"],
         )
-        if update_loop:
-            for row in update_loop:
-                key = (row[0], row[1], row[2])
-                update_coords[key] = (row[3], row[4], row[5])
+        if out_table and out_to_auth:
+            o_res_idx:  dict[str, int]   = {}
+            o_prev_key: dict[str, tuple] = {}
+            for row in out_table:
+                out_ch, seq, atom = row[0], row[1], row[2]
+                auth_ch = out_to_auth.get(out_ch, out_ch)
+                res_key = (out_ch, seq)
+                if auth_ch not in o_res_idx:
+                    o_res_idx[auth_ch]  = 0
+                    o_prev_key[auth_ch] = res_key
+                elif res_key != o_prev_key[auth_ch]:
+                    o_res_idx[auth_ch] += 1
+                    o_prev_key[auth_ch] = res_key
+                row[0] = auth_ch   # auth_asym_id  → original auth
+                row[3] = auth_ch   # label_asym_id → same, for consistency
+                orig_seq = seq_map.get((auth_ch, o_res_idx[auth_ch]))
+                if orig_seq is not None:
+                    row[1] = orig_seq  # auth_seq_id → original residue number
 
-        # Validate coordinate counts before merging
-        source_table = source_block.find(
-            "_atom_site.",
-            ["auth_asym_id", "auth_seq_id", "label_atom_id", "Cartn_x", "Cartn_y", "Cartn_z"],
-        )
-        if source_table and update_coords:
-            n_source = len(source_table)
-            n_update = len(update_coords)
-            if n_source != n_update:
-                warnings.warn(
-                    f"save_cif: coordinate count mismatch — source CIF has {n_source} "
-                    f"_atom_site rows but OpenMM output has {n_update} atoms. "
-                    "Some coordinates may not be updated.",
-                    stacklevel=2,
-                )
-            used_keys: set = set()
-            for row in source_table:
-                key = (row[0], row[1], row[2])
-                if key in update_coords:
-                    row[3], row[4], row[5] = update_coords[key]
-                    used_keys.add(key)
-            unused_keys = set(update_coords.keys()) - used_keys
-            if unused_keys:
-                warnings.warn(
-                    f"save_cif: {len(unused_keys)} atom(s) from OpenMM output were not found "
-                    "in the source CIF _atom_site and were not merged. "
-                    f"Example unmatched key: {next(iter(unused_keys))}",
-                    stacklevel=2,
-                )
-
-        source_doc.write_file(str(output_path))
+        output_doc.write_file(str(output_path))
+        _patch_nonstd_bonds_in_cif(output_path, topology)
     finally:
         tmp_path.unlink(missing_ok=True)
 
