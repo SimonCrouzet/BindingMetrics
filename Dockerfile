@@ -13,7 +13,12 @@ ENV PATH=/opt/conda/bin:$PATH
 COPY . /opt/binding-metrics/
 WORKDIR /opt/binding-metrics
 
-RUN mamba env create -f environment.yml && conda clean -afy
+# OpenFold3 — installed in a dedicated conda env.
+# Run setup_openfold once inside the container to download model weights:
+#   docker run -it --gpus all binding-metrics conda run -n openfold3 setup_openfold
+RUN mamba env create -f environment.yml && \
+    mamba env create -f environment_openfold3.yml && \
+    conda clean -afy
 
 ENV PATH=/opt/conda/envs/binding-metrics/bin:$PATH
 

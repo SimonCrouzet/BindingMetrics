@@ -74,7 +74,14 @@ pip install "binding-metrics[all]"          # everything above (OpenMM via PyPI 
 
 ### Docker (GPU, recommended for production)
 
-A pre-built image is available on Docker Hub. It includes GPU-ready OpenMM (CUDA 12.2), all conda-forge dependencies, and the full `[all]` extras.
+A pre-built image is available on Docker Hub. It includes GPU-ready OpenMM (CUDA 12.2), all conda-forge dependencies, the full `[all]` extras, and a ready-to-use `openfold3` conda env.
+
+**One-time OpenFold3 setup** — run this once after pulling the image to download model weights into the container (see [OpenFold3 on GitHub](https://github.com/aqlaboratory/openfold-3/) for details):
+
+```bash
+docker run -it --gpus all simoncrouzet/binding-metrics:latest \
+    conda run -n openfold3 setup_openfold
+```
 
 ```bash
 docker pull simoncrouzet/binding-metrics:latest

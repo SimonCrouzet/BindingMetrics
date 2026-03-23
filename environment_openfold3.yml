@@ -1,0 +1,20 @@
+name: openfold3
+# Dedicated environment for OpenFold3-preview inference.
+#
+# Model weights are NOT included — download them once after creating this env:
+#   conda env create -f environment_openfold3.yml
+#   conda activate openfold3
+#   setup_openfold
+#
+# BindingMetrics invokes OpenFold3 via:
+#   --openfold-conda-env openfold3   (default)
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - cuda-version=12*
+  - pip
+  - pip:
+      - openfold3
