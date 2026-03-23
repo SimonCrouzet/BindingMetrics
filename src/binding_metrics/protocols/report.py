@@ -255,7 +255,6 @@ def _md_interface(iface: dict | None) -> str:
         ["Metric", "Value", "Unit"],
         [
             ["ΔSASA",               _fmt(iface.get("delta_sasa")),              "Å²"],
-            ["ΔG_int",              _fmt(iface.get("delta_g_int")),             "kcal/mol"],
             ["ΔG_int",              _fmt(iface.get("delta_g_int_kJ")),          "kJ/mol"],
             ["Polar area",          _fmt(iface.get("polar_area")),              "Å²"],
             ["Apolar area",         _fmt(iface.get("apolar_area")),             "Å²"],
@@ -331,7 +330,6 @@ def _md_electrostatics(elec: dict | None) -> str:
         ["Metric", "Value", "Unit"],
         [
             ["Coulomb E",     _fmt(elec.get("coulomb_energy_kJ")),   "kJ/mol"],
-            ["Coulomb E",     _fmt(elec.get("coulomb_energy_kcal")), "kcal/mol"],
             ["Charged pairs", _fmt(elec.get("n_charged_pairs")),     ""],
             ["Attractive",    _fmt(elec.get("n_attractive")),        ""],
             ["Repulsive",     _fmt(elec.get("n_repulsive")),         ""],
