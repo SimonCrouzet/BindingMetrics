@@ -98,16 +98,37 @@ docker push simoncrouzet/binding-metrics:latest   # optional
 
 The image is rebuilt and pushed to Docker Hub automatically on every push to `main` and on version tags (`v*`) via GitHub Actions.
 
-### OpenFold3
+### OpenFold3 (optional)
 
-Requires a separate install (GPU + model weights):
+OpenFold3 confidence scoring is optional — all other metrics work without it.
+It requires a GPU, model weights, and a compatible Python version, so we recommend
+installing it in a **dedicated conda environment** named `openfold3`:
 
 ```bash
+conda create -n openfold3 python=3.10
+conda activate openfold3
 pip install openfold3
 setup_openfold   # downloads model weights
 ```
 
-Requires Python ≥ 3.11.
+`binding-metrics-run` will automatically use the `openfold3` env via
+`--openfold-conda-env openfold3` (the default). You can point it at a
+different environment name if needed, or leave OpenFold out entirely:
+
+```bash
+# Uses openfold3 env by default — no flag needed if installed there
+binding-metrics-run --input complex.cif --output-dir results/
+
+# Explicit env name if you used a different name
+binding-metrics-run --input complex.cif --output-dir results/ \
+    --openfold-conda-env my_openfold_env
+
+# Skip OpenFold entirely
+binding-metrics-run --input complex.cif --output-dir results/ \
+    --metrics energy,interface,geometry,electrostatics
+```
+
+Run `binding-metrics-check-env` to verify whether OpenFold3 is correctly installed.
 
 ---
 
@@ -216,7 +237,7 @@ pd.DataFrame(rows).sort_values("relaxed_e_int").to_csv("scores.csv", index=False
 
 | Command | Description |
 |---|---|
-| `binding-metrics-prep` | Fix missing atoms/residues and add hydrogens (`--ph 7.4`) |
+| `binding-metrics-prep` | Fix missing atoms/residues, add hydrogens (`--ph 7.4`), optionally canonicalize non-standard residues (`--canonicalize`) |
 | `binding-metrics-solvate` | Add explicit water box and ions for MD |
 
 These two commands are composable pipeline steps:
@@ -230,7 +251,7 @@ binding-metrics-solvate --input cleaned.cif --output solvated.pdb
 
 | Command | Description |
 |---|---|
-| `binding-metrics-run` | Run the complete pipeline (relax → energy → interface → geometry → electrostatics → OpenFold3) on a single structure |
+| `binding-metrics-run` | Run the complete pipeline (prep → relax → energy → interface → geometry → electrostatics → OpenFold3) on a single structure |
 
 ```bash
 binding-metrics-run \
@@ -240,6 +261,16 @@ binding-metrics-run \
 ```
 
 Peptide and receptor chains are **auto-detected** (smallest chain = peptide; when more than two chains are present, the one with the most Cα contacts to the peptide is the receptor). Override with `--peptide-chain` / `--receptor-chain`.
+
+The pipeline always starts with a **prep step** (equivalent to `binding-metrics-prep`) that fixes missing atoms, adds hydrogens, and removes waters. Key prep flags:
+
+```bash
+binding-metrics-run --input complex.cif --output-dir results/ \
+    --ph 7.4           # protonation pH (default: 7.4)
+    --keep-water       # keep crystallographic waters
+    --canonicalize     # rename non-standard residues to their canonical equivalents
+    --skip-prep        # skip prep — use if the structure is already protonated
+```
 
 All metric steps are enabled by default. Skip relaxation with `--skip-relax`; select a subset of metrics with `--metrics`:
 
@@ -252,7 +283,7 @@ binding-metrics-run --input complex.cif --output-dir results/ \
     --metrics energy,interface,geometry,electrostatics
 ```
 
-OpenFold3 optionally takes `--openfold-conda-env` to run in a separate conda environment. Use `--openfold-mode refold` to measure refolding RMSD (binder predicted freely, receptor fixed as template).
+OpenFold3 runs in the `openfold3` conda env by default (see [OpenFold3 install](#openfold3-optional) above). Use `--openfold-mode refold` to measure refolding RMSD (binder predicted freely, receptor fixed as template).
 
 **Scoring (individual steps)**
 
@@ -319,6 +350,16 @@ Copyright © 2026 Simon J. Crouzet. Licensed under the **Apache License 2.0**.
 You may freely use, modify, and distribute this software — including for commercial purposes — provided that you preserve the copyright notice and license text in any distribution. See [`LICENSE`](LICENSE) for the full terms.
 
 If you use BindingMetrics in published work or a commercial product, crediting the original project is appreciated.
+
+---
+
+## About
+
+I'm Simon Crouzet, an independent researcher and consultant in AI/ML for molecular design and drug discovery. BindingMetrics grew out of my own need for principled, reproducible binding quality metrics in peptide design pipelines.
+
+If you find this useful, have ideas, or are working on something in the same space and want to exchange — feel free to reach out. I'm also available for project-based work in computational molecular design and ML workflow development.
+
+- **GitHub:** [@simoncrouzet](https://github.com/simoncrouzet)
 
 ---
 
