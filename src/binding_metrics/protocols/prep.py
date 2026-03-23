@@ -20,6 +20,14 @@ def main() -> None:
     parser.add_argument("--output", "-o", type=Path, required=True, help="Output structure (.pdb, .cif, .mmcif)")
     parser.add_argument("--ph", type=float, default=7.4, help="pH for hydrogen placement")
     parser.add_argument("--keep-water", action="store_true", help="Retain crystallographic water molecules")
+    parser.add_argument(
+        "--canonicalize", action="store_true",
+        help=(
+            "Replace non-standard residues with their nearest standard equivalents "
+            "(e.g. MSE→MET, SEP→SER). By default they are preserved so they can be "
+            "parameterised downstream with GAFF2 (--small-molecules auto in relax)."
+        ),
+    )
     from binding_metrics.cli import add_log_file_arg
     add_log_file_arg(parser)
     args = parser.parse_args()
@@ -48,7 +56,10 @@ def main() -> None:
         n_atoms_before = topology.getNumAtoms()
         n_residues_before = topology.getNumResidues()
 
-        topology, positions = prep_structure(topology, positions, ph=args.ph, keep_water=args.keep_water)
+        topology, positions = prep_structure(
+            topology, positions, ph=args.ph,
+            keep_water=args.keep_water, canonicalize=args.canonicalize,
+        )
 
         save_structure(topology, positions, args.output, source_path=args.input)
 

@@ -18,13 +18,18 @@ except ImportError:
 
 
 def _topology_to_fixer(topology, positions) -> "PDBFixer":
-    """Write topology+positions to a temp PDB and load with PDBFixer."""
+    """Write topology+positions to a temp CIF and load with PDBFixer.
+
+    CIF preserves residue numbers and chain IDs through the roundtrip;
+    PDB format truncates residue numbers and may lose chain information.
+    """
     if not HAS_PDBFIXER:
         raise ImportError(
             "pdbfixer is required. Install with: pip install binding-metrics[structure]"
         )
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".pdb", delete=False) as tmp:
-        PDBFile.writeFile(topology, positions, tmp)
+    from openmm.app import PDBxFile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".cif", delete=False) as tmp:
+        PDBxFile.writeFile(topology, positions, tmp)
         tmp_path = tmp.name
     try:
         fixer = PDBFixer(filename=tmp_path)
@@ -33,7 +38,36 @@ def _topology_to_fixer(topology, positions) -> "PDBFixer":
     return fixer
 
 
-def prep_structure(topology, positions, ph: float = 7.4, keep_water: bool = False) -> tuple:
+# Standard amino acids and nucleotides recognised by AMBER ff14SB.
+_STANDARD_RESIDUES = {
+    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
+    "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
+    "TYR", "VAL",
+    # protonation variants
+    "HIE", "HID", "HIP", "CYX", "ASH", "GLH", "LYN",
+    # nucleotides
+    "DA", "DC", "DG", "DT", "A", "C", "G", "T", "U",
+}
+
+# Common metal ions parameterised in standard force fields (no GAFF2 needed).
+_METAL_ELEMENTS = {
+    "Li", "Na", "K", "Rb", "Cs",
+    "Mg", "Ca", "Sr", "Ba",
+    "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+    "Mo", "Ru", "Rh", "Pd", "Ag", "Cd",
+    "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+}
+
+_WATER_NAMES = {"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"}
+
+
+def prep_structure(
+    topology,
+    positions,
+    ph: float = 7.4,
+    keep_water: bool = False,
+    canonicalize: bool = False,
+) -> tuple:
     """Fix missing residues/atoms and add hydrogens in one PDBFixer pass.
 
     Args:
@@ -41,6 +75,11 @@ def prep_structure(topology, positions, ph: float = 7.4, keep_water: bool = Fals
         positions: OpenMM positions
         ph: pH for hydrogen placement (default 7.4)
         keep_water: If True, retain crystallographic water molecules
+        canonicalize: If True, replace non-standard residues with their nearest
+            standard equivalents (e.g. MSE→MET, SEP→SER, acetyl-LYS→LYS).
+            If False (default), non-standard residues and non-canonical amino
+            acids are preserved so they can be parameterised downstream with
+            GAFF2 (``--small-molecules auto`` in binding-metrics-relax).
 
     Returns:
         Tuple of (topology, positions) with repaired and protonated structure
@@ -48,10 +87,77 @@ def prep_structure(topology, positions, ph: float = 7.4, keep_water: bool = Fals
     fixer = _topology_to_fixer(topology, positions)
     fixer.findMissingResidues()
     fixer.findNonstandardResidues()
-    fixer.replaceNonstandardResidues()
-    fixer.removeHeterogens(keepWater=keep_water)
+
+    if canonicalize:
+        fixer.replaceNonstandardResidues()
+        print("  --canonicalize: non-standard residues replaced with standard equivalents.")
+    else:
+        nonstandard = getattr(fixer, "nonstandardResidues", [])
+        if nonstandard:
+            names = ", ".join(f"{r.name}" for r, _ in nonstandard)
+            print(f"  Non-standard residues detected: {names}")
+            print("  These will be preserved. Use --small-molecules auto in relax to")
+            print("  parameterise them with GAFF2 (small organic molecules / modified AAs).")
+            print("  Use --canonicalize to replace them with standard equivalents instead.")
+
+    # Chain-aware heterogen filter — replaces PDBFixer's removeHeterogens():
+    #   • Standard AA / nucleotide          → always keep
+    #   • Metal ion (by element)            → always keep (ff14SB has parameters)
+    #   • Non-standard residue in a protein chain → keep (non-canonical AA)
+    #   • Water                             → keep if keep_water, else remove
+    #   • Everything else (free ligands, crystallographic additives, glycans
+    #     in their own chain …)             → remove
     fixer.findMissingAtoms()
     fixer.addMissingAtoms()
+
+    protein_chains: set = set()
+    for chain in fixer.topology.chains():
+        for res in chain.residues():
+            if res.name in _STANDARD_RESIDUES:
+                protein_chains.add(chain.id)
+                break
+
+    residues_to_remove = []
+    kept_nonstandard: list = []
+    removed_heterogens: list = []
+
+    for chain in fixer.topology.chains():
+        for res in chain.residues():
+            if res.name in _STANDARD_RESIDUES:
+                continue
+
+            elements = {
+                atom.element.symbol
+                for atom in res.atoms()
+                if atom.element is not None
+            }
+            if elements & _METAL_ELEMENTS:
+                kept_nonstandard.append(f"{res.name} (metal, chain {chain.id})")
+                continue
+
+            if res.name in _WATER_NAMES:
+                if not keep_water:
+                    residues_to_remove.append(res)
+                continue
+
+            if chain.id in protein_chains:
+                kept_nonstandard.append(f"{res.name} (chain {chain.id})")
+                continue
+
+            removed_heterogens.append(f"{res.name} (chain {chain.id})")
+            residues_to_remove.append(res)
+
+    if kept_nonstandard:
+        print(f"  Kept non-standard residues: {', '.join(kept_nonstandard)}")
+    if removed_heterogens:
+        print(f"  Removed heterogens: {', '.join(removed_heterogens)}")
+
+    if residues_to_remove:
+        modeller = Modeller(fixer.topology, fixer.positions)
+        modeller.delete(residues_to_remove)
+        fixer.topology = modeller.topology
+        fixer.positions = modeller.positions
+
     fixer.addMissingHydrogens(ph)
     return fixer.topology, fixer.positions
 
