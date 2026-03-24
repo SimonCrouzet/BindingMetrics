@@ -1,7 +1,15 @@
 .git
+.claude/
+.github/
+.vscode/
 *.zip
 structures/
 tests/
+build/
+archive/
+results/
+data/*/
+compiled_cache.db
 *.egg-info/
 __pycache__/
 .pytest_cache/
