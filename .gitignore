@@ -207,7 +207,7 @@ marimo/_lsp/
 __marimo__/
 
 # Ignore all data - push only code
-data/
+data/*/
 
 # Claude files and folders
 .claude/
