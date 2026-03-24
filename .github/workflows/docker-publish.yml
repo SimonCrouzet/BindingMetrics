@@ -20,8 +20,8 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
-        id: meta
+      - name: Extract metadata for base image
+        id: meta-base
         uses: docker/metadata-action@v5
         with:
           images: simoncrouzet/binding-metrics
@@ -31,10 +31,33 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push
+      - name: Extract metadata for full image
+        id: meta-full
+        uses: docker/metadata-action@v5
+        with:
+          images: simoncrouzet/binding-metrics
+          flavor: |
+            suffix=-full
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=full,enable={{is_default_branch}}
+
+      - name: Build and push base image
         uses: docker/build-push-action@v5
         with:
           context: .
+          target: base
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta-base.outputs.tags }}
+          labels: ${{ steps.meta-base.outputs.labels }}
+
+      - name: Build and push full image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: full
+          push: true
+          tags: ${{ steps.meta-full.outputs.tags }}
+          labels: ${{ steps.meta-full.outputs.labels }}
