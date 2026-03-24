@@ -1039,6 +1039,9 @@ def main():
     parser.add_argument("--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)")
     parser.add_argument("--receptor-chain", type=str, default=None, help="Receptor chain ID (auto-detect if omitted)")
     parser.add_argument("--sample-id", type=str, default=None, help="Sample identifier (defaults to input file stem)")
+    parser.add_argument("--results-json", type=Path, default=None,
+                        help="Path to write relax results JSON "
+                             "(default: <output-dir>/<sample-id>_relax_results.json)")
     from binding_metrics.cli import add_log_file_arg
     add_log_file_arg(parser)
     args = parser.parse_args()
@@ -1058,6 +1061,14 @@ def main():
 
         relaxer = ImplicitRelaxation(config)
         result = relaxer.run(args.input, args.output_dir, sample_id=args.sample_id)
+
+        results_path: Path = args.results_json or (
+            args.output_dir / f"{result.sample_id}_relax_results.json"
+        )
+        results_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(results_path, "w", encoding="utf-8") as _fh:
+            json.dump(result.to_dict(), _fh, indent=2, default=str)
+        print(f"  Results:   {results_path}")
 
         if result.success:
             print(f"\nSUCCESS")
