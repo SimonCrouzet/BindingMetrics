@@ -10,8 +10,10 @@ RUN wget -qO /tmp/miniforge.sh \
     rm /tmp/miniforge.sh
 ENV PATH=/opt/conda/bin:$PATH
 
-COPY . /opt/binding-metrics/
 WORKDIR /opt/binding-metrics
+
+# Copy env files first so conda layers are cached independently of code changes
+COPY environment.yml environment_openfold3.yml ./
 
 # OpenFold3 — installed in a dedicated conda env.
 # Run setup_openfold once inside the container to download model weights:
@@ -21,6 +23,8 @@ RUN mamba env create -f environment.yml && \
     conda clean -afy
 
 ENV PATH=/opt/conda/envs/binding-metrics/bin:$PATH
+
+COPY . /opt/binding-metrics/
 
 # GPU access is not available during build. After building, verify OpenMM GPU
 # support with:
