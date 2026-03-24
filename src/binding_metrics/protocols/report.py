@@ -39,7 +39,9 @@ _THRESHOLDS: list[dict] = [
     dict(key=("relax", "peptide_rmsf_mean"), label="RMSF mean", unit="Å", direction="lower",
          green=lambda v: v < 1.0, amber=lambda v: v < 2.0),
     # OpenMM interaction energy (kJ/mol): < −40 strong, −40–0 moderate, > 0 repulsive
-    dict(key=("energy", "relaxed_interaction_energy"), label="E_int", unit="kJ/mol", direction="lower",
+    # getter used instead of key so any energy mode (relaxed/after_md/raw) is accepted.
+    dict(getter=lambda r: _best_e_int(r.get("energy")),
+         label="E_int", unit="kJ/mol", direction="lower",
          green=lambda v: v < -40.0, amber=lambda v: v < 0.0),
     # ΔSASA (Å²): > 1000 well-buried, 500–1000 moderate, < 500 poor
     dict(key=("interface", "delta_sasa"), label="ΔSASA", unit="Å²", direction="higher",
@@ -75,6 +77,17 @@ def _nested_get(d: dict, *keys) -> Any:
             return None
         cur = cur[k]
     return cur
+
+
+def _best_e_int(energy: dict | None) -> Any:
+    """Return the best available interaction energy from any computed mode."""
+    if not isinstance(energy, dict):
+        return None
+    for mode in ("relaxed", "after_md", "raw"):
+        v = energy.get(f"{mode}_interaction_energy")
+        if v is not None:
+            return v
+    return None
 
 
 def _fmt(v: Any, decimals: int = 3) -> str:
@@ -231,15 +244,20 @@ def _md_energy(energy: dict | None) -> str:
         return lines[0] + "_Skipped._\n"
     if not energy or not energy.get("success", True):
         return lines[0] + f"_Failed: {(energy or {}).get('error_message', 'absent')}_\n"
+    mode = next(
+        (m for m in ("relaxed", "after_md", "raw")
+         if energy.get(f"{m}_interaction_energy") is not None),
+        "relaxed",
+    )
     lines.append(_md_table(
         ["Metric", "Value", "Unit"],
         [
-            ["E_int",          _fmt(energy.get("relaxed_interaction_energy")), "kJ/mol"],
-            ["E_complex",      _fmt(energy.get("relaxed_e_complex")),          "kJ/mol"],
-            ["E_peptide",      _fmt(energy.get("relaxed_e_peptide")),          "kJ/mol"],
-            ["E_receptor",     _fmt(energy.get("relaxed_e_receptor")),         "kJ/mol"],
-            ["Contacts",       _fmt(energy.get("num_contacts")),               ""],
-            ["Close contacts", _fmt(energy.get("num_close_contacts")),         ""],
+            [f"E_int ({mode})",   _fmt(_best_e_int(energy)),                      "kJ/mol"],
+            ["E_complex",         _fmt(energy.get(f"{mode}_e_complex")),           "kJ/mol"],
+            ["E_peptide",         _fmt(energy.get(f"{mode}_e_peptide")),           "kJ/mol"],
+            ["E_receptor",        _fmt(energy.get(f"{mode}_e_receptor")),          "kJ/mol"],
+            ["Contacts",          _fmt(energy.get("num_contacts")),                ""],
+            ["Close contacts",    _fmt(energy.get("num_close_contacts")),          ""],
         ],
     ))
     return "\n".join(lines) + "\n"
@@ -377,7 +395,10 @@ def _md_openfold(of: dict | None) -> str:
 def _md_scorecard(results: dict) -> str:
     rows = []
     for spec in _THRESHOLDS:
-        value = _nested_get(results, *spec["key"])
+        if "getter" in spec:
+            value = spec["getter"](results)
+        else:
+            value = _nested_get(results, *spec["key"])
         rows.append([
             _rag(value, spec),
             spec["label"],
