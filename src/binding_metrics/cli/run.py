@@ -296,7 +296,43 @@ def run_pipeline(
                         binder_chain=working_peptide,
                         receptor_chain=working_receptor,
                     )
+                # EvoBind metrics — no extra model calls, reuse OF3 outputs
+                of_structure = of_metrics.get("structure_path")
+                plddt = of_metrics.get("plddt_per_atom")
+                if of_structure:
+                    from binding_metrics.metrics.evobind import (
+                        compute_evobind_score,
+                        compute_evobind_adversarial_check,
+                    )
+                    # Primary score on the OF3 prediction
+                    try:
+                        of_metrics.update(compute_evobind_score(
+                            of_structure,
+                            plddt_per_atom=plddt,
+                            binder_chain=working_peptide,
+                            receptor_chain=working_receptor,
+                        ))
+                    except Exception as e:
+                        _warn(f"EvoBind score failed: {e}")
+                        of_metrics["evobind_error"] = str(e)
+
+                    # Adversarial check: does the OF3 prediction agree with the
+                    # input design pose? Large ΔCOM = OF3 places the binder
+                    # elsewhere → design pose not supported by the prediction.
+                    try:
+                        of_metrics.update(compute_evobind_adversarial_check(
+                            design_structure_path=input_path,
+                            afm_structure_path=of_structure,
+                            binder_chain=working_peptide,
+                            receptor_chain=working_receptor,
+                            afm_plddt_per_atom=plddt,
+                        ))
+                    except Exception as e:
+                        _warn(f"EvoBind adversarial check failed: {e}")
+                        of_metrics["adversarial_error"] = str(e)
+
                 results["openfold"] = of_metrics
+
         except Exception as e:
             _warn(f"OpenFold failed: {e}")
             traceback.print_exc()

@@ -394,6 +394,34 @@ def _interface_pde_stats(
     }
 
 
+def compute_interface_pae(
+    confidences_path,
+    structure_path,
+    binder_chain: str,
+    receptor_chain: str,
+) -> dict:
+    """Interface PAE slice from OpenFold3 output.
+
+    NOT IMPLEMENTED — waiting for OpenFold3 to write the full PAE matrix to
+    the confidences file.  As of v0.4.0 the ``_confidences.json/npz`` only
+    contains ``plddt`` and ``pde``; the n_tokens × n_tokens PAE array is not
+    persisted even when ``pae_enabled=True``.
+
+    Once PR #142 (openfold3 repo) is merged and released (or a local build is
+    used), add ``"pae": _arr("pae")`` to ``_parse_confidences`` and implement
+    this function using ``_interface_pae_stats``.
+
+    Raises:
+        NotImplementedError: Always, until the OF3 PAE matrix is written to disk.
+    """
+    raise NotImplementedError(
+        "Interface PAE requires OpenFold3 to write the full PAE matrix to "
+        "_confidences.json/npz, which is not yet done in the released v0.4.0. "
+        "Track https://github.com/aqlaboratory/openfold-3/pull/142 and rebuild "
+        "from source (pip install -e .) once merged."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main public function
 # ---------------------------------------------------------------------------

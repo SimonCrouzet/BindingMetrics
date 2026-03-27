@@ -5,6 +5,10 @@ from binding_metrics.core.simulation import MDSimulation, SimulationConfig, run_
 from binding_metrics.core.system import prepare_system
 from binding_metrics.io.structures import detect_chains, load_structure, save_cif
 from binding_metrics.metrics.comparison import compute_structure_rmsd
+from binding_metrics.metrics.evobind import (
+    compute_evobind_adversarial_check,
+    compute_evobind_score,
+)
 from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
 from binding_metrics.metrics.energy import compute_interaction_energy
 from binding_metrics.metrics.geometry import (
@@ -51,6 +55,9 @@ __all__ = [
     "compute_openfold_metrics",
     "run_openfold",
     "compute_delta_sasa_static",
+    # EvoBind metrics
+    "compute_evobind_score",
+    "compute_evobind_adversarial_check",
     # New metrics
     "compute_coulomb_cross_chain",
     "compute_ramachandran",

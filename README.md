@@ -23,6 +23,8 @@ Metrics span from fast static-structure analysis (buried SASA, hydrogen bonds, s
 | Structure comparison | All-atom and backbone RMSD (Kabsch-aligned) | Score | gemmi |
 | MD trajectory | Receptor backbone drift — aligned (conformational) and raw | Score | MDTraj |
 | Structure prediction | avg_pLDDT, pTM, ipTM, gPDE — OpenFold3 confidence | Score | OpenFold3 |
+| EvoBind scoring | Interface distance / pLDDT — confidence-weighted binding score (Å) | Score | biotite |
+| EvoBind adversarial check | Δ COM between design pose and OF3 prediction after receptor superposition — flags hallucinated poses | Score | biotite |
 | All of the above | Per-residue breakdowns, per-atom arrays, per-frame series | Feature | — |
 
 ---
@@ -213,6 +215,40 @@ from binding_metrics import compute_openfold_metrics
 metrics = compute_openfold_metrics("./openfold_out", query_name="my_complex", seed=1, sample=1)
 print(f"pLDDT: {metrics['avg_plddt']:.1f}  ipTM: {metrics['iptm']:.3f}  gPDE: {metrics['gpde']:.3f} Å")
 ```
+
+When the `openfold` metric is enabled in `binding-metrics-run`, EvoBind scores are automatically computed and merged into the OpenFold3 result dict — no additional model calls required.
+
+### EvoBind scoring
+
+```python
+from binding_metrics.metrics.evobind import (
+    compute_evobind_score,
+    compute_evobind_adversarial_check,
+)
+
+# Primary score on the OF3 prediction: interface distance / pLDDT (Å)
+# Lower is better — penalises both poor contact and low confidence.
+score = compute_evobind_score(
+    "of3_prediction.cif",
+    plddt_per_atom=metrics["plddt_per_atom"],
+    binder_chain="B",
+    receptor_chain="A",
+)
+print(f"EvoBind score: {score['evobind_score']:.2f} Å  (if_dist: {score['if_dist_pep_to_rec']:.2f} Å)")
+
+# Adversarial check: does the OF3 prediction agree with the input design pose?
+# Large Δ COM means OF3 places the binder elsewhere → hallucinated pose.
+check = compute_evobind_adversarial_check(
+    design_structure_path="input_design.cif",
+    afm_structure_path="of3_prediction.cif",
+    binder_chain="B",
+    receptor_chain="A",
+    afm_plddt_per_atom=metrics["plddt_per_atom"],
+)
+print(f"Δ COM: {check['delta_com_angstrom']:.2f} Å  adversarial score: {check['evobind_adversarial_score']:.1f}")
+```
+
+Both functions implement the losses from [Bryant et al. (2025) *EvoBind*, Communications Chemistry](https://doi.org/10.1038/s42004-025-01601-3). The primary score is `if_dist / (pLDDT/100)`; the adversarial score is `mean_if_dist × (100/pLDDT) × ΔCOM`.
 
 ### Batch scoring
 
