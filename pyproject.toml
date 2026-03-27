@@ -51,6 +51,7 @@ dev    = ["pytest>=7.0", "ruff>=0.1"]
 [project.scripts]
 binding-metrics-check-env = "binding_metrics.cli.check_env:main"
 binding-metrics-run      = "binding_metrics.cli.run:main"
+binding-metrics-batch    = "binding_metrics.cli.batch:main"
 binding-metrics-relax = "binding_metrics.protocols.relaxation:main"
 binding-metrics-energy = "binding_metrics.metrics.energy:main"
 binding-metrics-interface = "binding_metrics.metrics.interface:main"
