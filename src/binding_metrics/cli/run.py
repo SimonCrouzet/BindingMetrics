@@ -163,10 +163,12 @@ def run_pipeline(
             working_peptide = peptide_chain_label
             working_receptor = receptor_chain_label
     else:
-        print("\n  [skip] Relaxation skipped — using raw input for downstream steps.")
-        relaxed_path = input_path
-        working_peptide = peptide_chain
-        working_receptor = receptor_chain
+        # Prefer PDBFixer-prepped structure (proper termini, removed heterogens)
+        # over raw input; fall back to raw only if prep was skipped or failed.
+        relaxed_path = prepped_path if prepped_path != input_path else input_path
+        working_peptide = peptide_chain_label
+        working_receptor = receptor_chain_label
+        print(f"\n  [skip] Relaxation skipped — using {'prepped' if relaxed_path != input_path else 'raw'} input for downstream steps.")
         results["relax"] = {"skipped": True}
 
     # ------------------------------------------------------------------ Energy
