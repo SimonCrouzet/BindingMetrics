@@ -151,8 +151,22 @@ def _flatten(results: dict) -> dict[str, Any]:
                 flat[f"{prefix}_{k}"] = v
 
     for section in ("relax", "energy", "interface", "geometry", "electrostatics", "openfold"):
-        if section in results:
-            _add(section, results[section])
+        if section not in results:
+            continue
+        sec_data = results[section]
+        if section == "geometry" and isinstance(sec_data, dict):
+            # rama/omega functions already prefix their own keys ("ramachandran_*",
+            # "omega_*"), so nesting them under {"ramachandran": ..., "omega": ...}
+            # and then flattening naively would produce "geometry_ramachandran_
+            # ramachandran_*".  Skip the intermediate sub-key and flatten each
+            # sub-dict directly under "geometry_".
+            for sub in ("ramachandran", "omega"):
+                _add(section, sec_data.get(sub) or {})
+            for k in ("skipped", "error"):
+                if k in sec_data:
+                    flat[f"{section}_{k}"] = sec_data[k]
+        else:
+            _add(section, sec_data)
 
     return flat
 
