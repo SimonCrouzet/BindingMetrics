@@ -269,7 +269,14 @@ def _find_atom(residue, name: str):
 # ---------------------------------------------------------------------------
 
 def detect_cyclization(topology, positions, chain_id: str) -> list:
-    """Detect all cyclizations in the peptide chain by inter-atom distance.
+    """Detect all cyclizations in the peptide chain.
+
+    Uses two complementary strategies:
+    1. Topology bonds — bonds already encoded in the loaded structure file
+       (e.g. STRUCT_CONN records in CIF). Reliable even for strained/refold
+       geometries where atoms are far from ideal bond length.
+    2. Inter-atom distance — catches cyclic bonds that exist geometrically
+       but were not written to the file's bond table.
 
     Exhaustively scans for all supported cyclization patterns (a single peptide
     can have more than one, e.g. SFTI-1 is bicyclic: head-to-tail + disulfide).
@@ -291,6 +298,18 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
     residues = _peptide_residues(topology, chain_id)
     if len(residues) < 2:
         return []
+
+    # Pre-build set of existing topology bonds for fast membership tests.
+    existing_bonds: set = {
+        frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()
+    }
+
+    def _bonded(a, b) -> bool:
+        """True if atoms a and b are already bonded in the topology."""
+        return frozenset((a.index, b.index)) in existing_bonds
+
+    def _close_or_bonded(a, b, thresh: float) -> bool:
+        return _bonded(a, b) or _dist(pos, a.index, b.index) < thresh
 
     results: list = []
     # Track detected atom-index pairs so the unsupported scan ignores them.
@@ -317,7 +336,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
 
     # ---- 1. Head-to-tail amide: C(last) — N(first) ----
     if n_first is not None and c_last is not None:
-        if _dist(pos, n_first.index, c_last.index) < _AMIDE_BOND_THRESH:
+        if _close_or_bonded(n_first, c_last, _AMIDE_BOND_THRESH):
             ca_last  = _find_atom(last,  "CA")
             ca_first = _find_atom(first, "CA")
             omega = None
@@ -359,7 +378,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                     stacklevel=2,
                 )
                 continue
-            if _dist(pos, sg_i.index, sg_j.index) < _DISULFIDE_THRESH:
+            if _close_or_bonded(sg_i, sg_j, _DISULFIDE_THRESH):
                 results.append(CyclicBondInfo(
                     cyclic_type="disulfide",
                     atom1_id=(chain_id, ri, "SG"),
@@ -381,7 +400,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                         "lactam_n_asp bond may not be detected.",
                         stacklevel=2,
                     )
-                if cg and _dist(pos, cg.index, n_first.index) < _AMIDE_BOND_THRESH:
+                if cg and _close_or_bonded(cg, n_first, _AMIDE_BOND_THRESH):
                     ca_res   = _find_atom(res,   "CA")
                     ca_first = _find_atom(first, "CA")
                     omega = None
@@ -410,7 +429,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                         "lactam_n_glu bond may not be detected.",
                         stacklevel=2,
                     )
-                if cd and _dist(pos, cd.index, n_first.index) < _AMIDE_BOND_THRESH:
+                if cd and _close_or_bonded(cd, n_first, _AMIDE_BOND_THRESH):
                     ca_res   = _find_atom(res,   "CA")
                     ca_first = _find_atom(first, "CA")
                     omega = None
@@ -443,7 +462,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                         "lactam_c_lys bond may not be detected.",
                         stacklevel=2,
                     )
-                if nz and _dist(pos, nz.index, c_last.index) < _AMIDE_BOND_THRESH:
+                if nz and _close_or_bonded(nz, c_last, _AMIDE_BOND_THRESH):
                     ca_last = _find_atom(last, "CA")
                     ca_res  = _find_atom(res,  "CA")
                     omega = None
