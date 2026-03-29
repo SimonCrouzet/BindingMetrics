@@ -277,11 +277,16 @@ def _repair_orphaned_cys(topology, positions, solvent_model: str = "obc2",
     When the complex has a peptide–receptor disulfide, addHydrogens treats the
     bonded CYS as CYX (no HG). After _extract_chain drops the cross-chain SS bond,
     the residue has no HG and no SS partner — matching neither CYS nor CYX template.
-    Restores them to free-thiol CYS for isolated-chain energy evaluation.
-    """
-    from openmm.app import Modeller
 
-    orphans = []
+    Bypasses addHydrogens (which requires template matching before H placement)
+    and directly inserts HG into a rebuilt topology at a geometric position along
+    the CB→SG bond direction.
+    """
+    from openmm.app import Topology, Element
+
+    _SH_BOND_NM = 0.134  # S–H bond length
+
+    orphans: dict = {}  # res.index -> (sg_atom_index, cb_atom_index_or_None)
     for res in topology.residues():
         if res.name != "CYS":
             continue
@@ -294,29 +299,61 @@ def _repair_orphaned_cys(topology, positions, solvent_model: str = "obc2",
             for b in topology.bonds()
         )
         if not has_ss:
-            orphans.append(res)
+            cb = next((a for a in res.atoms() if a.name == "CB"), None)
+            orphans[res.index] = (sg.index, cb.index if cb else None)
 
     if not orphans:
         return topology, positions
 
-    names = [f"{r.name}{r.id}" for r in orphans]
+    names = [f"{r.name}{r.id}" for r in topology.residues() if r.index in orphans]
     prefix = f"[{label}] " if label else ""
     print(f"{prefix}  Repairing orphaned CYS (cross-chain disulfide severed): {names}")
 
-    gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
-    ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
-
-    # [] = skip (residue already has all its H); [("HG","SG")] = add only HG
-    variants = [[] for _ in range(topology.getNumResidues())]
-    for res in orphans:
-        variants[res.index] = [("HG", "SG")]
-
-    modeller = Modeller(topology, positions)
+    H_element = Element.getBySymbol("H")
     try:
-        modeller.addHydrogens(ff, variants=variants)
-    except Exception:
-        return topology, positions  # best-effort; let _build_subsystem surface the error
-    return modeller.topology, modeller.positions
+        pos_array = np.array([[p.x, p.y, p.z] for p in positions])
+    except AttributeError:
+        pos_array = np.asarray(positions)  # already a numpy array (from _extract_chain)
+
+    new_topo = Topology()
+    old_to_new: dict = {}
+    new_pos_list: list = []
+    sg_new_for_res: dict = {}   # res.index -> new SG Atom
+    hg_new_for_res: dict = {}   # res.index -> new HG Atom
+
+    for chain in topology.chains():
+        new_chain = new_topo.addChain(chain.id)
+        for res in chain.residues():
+            new_res = new_topo.addResidue(res.name, new_chain)
+            for atom in res.atoms():
+                new_atom = new_topo.addAtom(atom.name, atom.element, new_res)
+                old_to_new[atom.index] = new_atom
+                new_pos_list.append(pos_array[atom.index])
+                if atom.name == "SG":
+                    sg_new_for_res[res.index] = new_atom
+
+            if res.index in orphans:
+                sg_idx, cb_idx = orphans[res.index]
+                hg_atom = new_topo.addAtom("HG", H_element, new_res)
+                hg_new_for_res[res.index] = hg_atom
+                sg_pos = pos_array[sg_idx]
+                if cb_idx is not None:
+                    direction = sg_pos - pos_array[cb_idx]
+                    norm = float(np.linalg.norm(direction))
+                    direction = direction / norm if norm > 0 else np.array([0.0, 0.0, 1.0])
+                else:
+                    direction = np.array([0.0, 0.0, 1.0])
+                new_pos_list.append(sg_pos + _SH_BOND_NM * direction)
+
+    for bond in topology.bonds():
+        a1, a2 = bond.atom1, bond.atom2
+        if a1.index in old_to_new and a2.index in old_to_new:
+            new_topo.addBond(old_to_new[a1.index], old_to_new[a2.index])
+    for res_idx in orphans:
+        new_topo.addBond(sg_new_for_res[res_idx], hg_new_for_res[res_idx])
+
+    new_pos = unit.Quantity(np.array(new_pos_list), unit.nanometers)
+    return new_topo, new_pos
 
 
 def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None):
