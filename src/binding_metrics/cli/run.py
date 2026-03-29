@@ -160,12 +160,10 @@ def run_pipeline(
 
         if not relax_result.success:
             print(f"\n[FAILED] Relaxation failed: {relax_result.error_message}")
-            print("  Continuing with raw input for downstream steps...")
-            relaxed_path = input_path
-            # Fallback: use auth IDs (biotite) for steps on the original file;
-            # OpenMM-based energy will also fall back to the original, so use label.
-            working_peptide = peptide_chain
-            working_receptor = receptor_chain
+            print("  Continuing with prepped input for downstream steps...")
+            relaxed_path = prepped_path
+            working_peptide = peptide_chain_label
+            working_receptor = receptor_chain_label
         else:
             # Prefer MD-final structure; fall back to minimized
             if relax_result.md_final_structure_path:
