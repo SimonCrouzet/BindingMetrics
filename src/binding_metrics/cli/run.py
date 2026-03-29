@@ -117,6 +117,20 @@ def run_pipeline(
         results["prep"] = {"skipped": True}
 
     # ------------------------------------------------------------------ Relax
+    # Detect cyclic bonds from the original file before PDBFixer strips STRUCT_CONN.
+    # Passed as hints to relaxation so cyclization survives the prep round-trip.
+    cyclic_bond_hints = []
+    try:
+        from binding_metrics.io.structures import load_structure
+        from binding_metrics.core.cyclic import detect_cyclization
+        _orig_topo, _orig_pos = load_structure(input_path)
+        cyclic_bond_hints = detect_cyclization(_orig_topo, _orig_pos, peptide_chain_label)
+        if cyclic_bond_hints:
+            print(f"  Cyclic bond hints from original file: "
+                  f"{[b.cyclic_type for b in cyclic_bond_hints]}")
+    except Exception:
+        pass
+
     relaxed_path: Optional[Path] = None
     if not skip_relax:
         _step("Relaxation (implicit MD)")
@@ -134,6 +148,7 @@ def run_pipeline(
             device=device,
             peptide_chain_id=peptide_chain_label,
             receptor_chain_id=receptor_chain_label,
+            cyclic_bond_hints=cyclic_bond_hints or None,
         )
         relaxer = ImplicitRelaxation(config)
         t0 = time.time()

@@ -555,7 +555,8 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
 # Topology patching
 # ---------------------------------------------------------------------------
 
-def patch_cyclic_topology(topology, positions, chain_id: str):
+def patch_cyclic_topology(topology, positions, chain_id: str,
+                          hints: list = None):
     """Detect and patch all cyclizations in the peptide topology.
 
     Must be called AFTER PDBFixer heavy-atom repair and BEFORE
@@ -572,6 +573,10 @@ def patch_cyclic_topology(topology, positions, chain_id: str):
         topology: OpenMM Topology (heavy atoms only).
         positions: Atom positions (OpenMM Quantity, nm).
         chain_id: Peptide chain ID.
+        hints: Optional list of CyclicBondInfo detected from an earlier
+            version of the structure (e.g. before PDBFixer stripped STRUCT_CONN
+            records). Used as fallback when detection on the current topology
+            returns nothing (strained geometry + no topology bonds).
 
     Returns:
         Tuple ``(topology, positions, bond_info_list)`` where bond_info_list is
@@ -583,6 +588,8 @@ def patch_cyclic_topology(topology, positions, chain_id: str):
         raise ImportError("OpenMM is required for cyclic peptide patching.") from e
 
     info_list = detect_cyclization(topology, positions, chain_id)
+    if not info_list and hints:
+        info_list = hints
     if not info_list:
         return topology, positions, []
 

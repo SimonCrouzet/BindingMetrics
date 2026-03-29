@@ -77,6 +77,12 @@ class RelaxationConfig:
     peptide_chain_id: Optional[str] = None
     receptor_chain_id: Optional[str] = None
 
+    cyclic_bond_hints: Optional[list] = None
+    """CyclicBondInfo objects detected from the original structure file (before
+    PDBFixer prep). Used as fallback in patch_cyclic_topology when the prepped
+    file has lost STRUCT_CONN records and geometry is too strained for distance
+    detection."""
+
     custom_bond_handler: Optional[Callable] = None
 
     small_molecules: Optional[list] = None
@@ -455,7 +461,8 @@ class ImplicitRelaxation:
             load_extra_xmls,
         )
         topology, positions, bond_info = patch_cyclic_topology(
-            topology, positions, peptide_chain
+            topology, positions, peptide_chain,
+            hints=self.config.cyclic_bond_hints,
         )
         if bond_info:
             print(f"  Cyclic peptide detected — {len(bond_info)} bond(s):")
