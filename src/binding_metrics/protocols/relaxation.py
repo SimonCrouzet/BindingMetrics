@@ -458,12 +458,14 @@ class ImplicitRelaxation:
         from binding_metrics.core.cyclic import (
             CyclizationError,
             patch_cyclic_topology,
+            rename_disulfide_cys_to_cyx,
             load_extra_xmls,
         )
         topology, positions, bond_info = patch_cyclic_topology(
             topology, positions, peptide_chain,
             hints=self.config.cyclic_bond_hints,
         )
+        topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
         if bond_info:
             print(f"  Cyclic peptide detected — {len(bond_info)} bond(s):")
             # Build a residue-name lookup: (chain_id, res_idx_in_chain) → res_name

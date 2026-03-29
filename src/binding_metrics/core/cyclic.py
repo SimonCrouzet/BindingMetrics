@@ -555,6 +555,54 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
 # Topology patching
 # ---------------------------------------------------------------------------
 
+def rename_disulfide_cys_to_cyx(topology, positions):
+    """Rename CYS → CYX for any residue whose SG is already SS-bonded in the topology.
+
+    PDBFixer detects disulfides and uses the CYX template internally (so HG is
+    correctly omitted) but does NOT rename the residue in the topology.  The
+    saved CIF therefore has ``CYS`` entries with SS bonds in STRUCT_CONN.  When
+    that CIF is loaded back and ``createSystem`` / ``addHydrogens`` is called,
+    OpenMM cannot find a matching template (CYS expects HG; CYX is the right
+    template but the name doesn't match).
+
+    Must be called before ``addHydrogens``.  Works for both intra-chain and
+    cross-chain disulfides.  Returns (topology, positions) unchanged except for
+    residue name mutations and optional HG deletion.
+    """
+    try:
+        from openmm import app
+    except ImportError:
+        return topology, positions
+
+    ss_bonded_sg: set = set()
+    for b in topology.bonds():
+        if (b.atom1.element is not None and b.atom2.element is not None
+                and b.atom1.element.symbol == "S" and b.atom2.element.symbol == "S"):
+            ss_bonded_sg.add(b.atom1.index)
+            ss_bonded_sg.add(b.atom2.index)
+
+    if not ss_bonded_sg:
+        return topology, positions
+
+    to_remove_hg = []
+    for res in topology.residues():
+        if res.name != "CYS":
+            continue
+        sg = next((a for a in res.atoms() if a.name == "SG"), None)
+        if sg is not None and sg.index in ss_bonded_sg:
+            res.name = "CYX"
+            hg = next((a for a in res.atoms() if a.name == "HG"), None)
+            if hg:
+                to_remove_hg.append(hg)
+
+    if to_remove_hg:
+        modeller = app.Modeller(topology, positions)
+        modeller.delete(to_remove_hg)
+        topology, positions = modeller.topology, modeller.positions
+
+    return topology, positions
+
+
 def patch_cyclic_topology(topology, positions, chain_id: str,
                           hints: list = None):
     """Detect and patch all cyclizations in the peptide topology.
@@ -689,7 +737,7 @@ def _patch_disulfide(topology, positions, residues, ri: int, rj: int, app):
     chain_id = residues[0].chain.id
     residues = _peptide_residues(topology, chain_id)
     for idx in (ri, rj):
-        residues[idx]._name = "CYX"
+        residues[idx].name = "CYX"
 
     # Add SG–SG bond (only if not already present)
     sg_i = _find_atom(residues[ri], "SG")

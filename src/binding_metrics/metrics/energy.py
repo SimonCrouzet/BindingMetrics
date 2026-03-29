@@ -239,6 +239,7 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
     """
     from binding_metrics.core.cyclic import (
         patch_cyclic_topology,
+        rename_disulfide_cys_to_cyx,
         get_addh_variants,
         load_extra_xmls,
     )
@@ -249,6 +250,7 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
     topology, positions, bond_info = patch_cyclic_topology(
         topology, positions, peptide_chain
     )
+    topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
     if bond_info:
         load_extra_xmls(ff, bond_info)
 
