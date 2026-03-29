@@ -184,6 +184,7 @@ def run_pipeline(
                 device=device,
                 sample_id=sample_id,
                 modes=energy_modes,
+                ph=ph,
             )
             results["energy"] = energy
         except Exception as e:

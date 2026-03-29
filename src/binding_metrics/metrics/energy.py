@@ -227,7 +227,7 @@ def calculate_component_energies(
 
 
 def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
-                            peptide_chain: str = None):
+                            peptide_chain: str = None, ph: float = 7.4):
     """Create an OpenMM system with implicit solvent after adding hydrogens.
 
     Cyclic topology is always detected and patched before addHydrogens.
@@ -258,8 +258,9 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
     if bond_info:
         addh_variants = get_addh_variants(modeller.topology, bond_info, peptide_chain)
     try:
-        modeller.addHydrogens(ff, pH=7.0, variants=addh_variants)
-    except Exception:
+        modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
+    except Exception as e:
+        print(f"  Warning: addHydrogens with pH failed ({e}), retrying without pH")
         modeller.addHydrogens(ff, variants=addh_variants)
 
     system = ff.createSystem(
@@ -471,7 +472,10 @@ def _evaluate_subsystem_energies(
 
         return e_c, e_p, e_r
 
-    except Exception:
+    except Exception as e:
+        import traceback
+        print(f"  Warning: subsystem energy evaluation failed: {e}")
+        traceback.print_exc()
         return None, None, None
 
 
@@ -483,6 +487,7 @@ def compute_interaction_energy(
     device: str = "cuda",
     sample_id: Optional[str] = None,
     modes: tuple = ("raw", "relaxed", "after_md"),
+    ph: float = 7.4,
     relaxed_min_steps_restrained: int = 500,
     relaxed_min_steps_full: int = 2000,
     after_md_duration_ps: float = 10.0,
@@ -581,7 +586,7 @@ def compute_interaction_energy(
 
         # Build complex system — adds hydrogens once, shared across all modes
         sys_complex, topo_h, pos_h, bond_info = _create_implicit_system(
-            topology, positions, solvent_model, peptide_chain=peptide_chain
+            topology, positions, solvent_model, peptide_chain=peptide_chain, ph=ph
         )
         platform, props = _get_platform(device)
 
