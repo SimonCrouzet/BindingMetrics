@@ -270,6 +270,55 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
     return system, modeller.topology, modeller.positions, bond_info
 
 
+def _repair_orphaned_cys(topology, positions, solvent_model: str = "obc2",
+                         label: str = "") -> tuple:
+    """Add HG back to CYS residues whose cross-chain disulfide partner was severed.
+
+    When the complex has a peptide–receptor disulfide, addHydrogens treats the
+    bonded CYS as CYX (no HG). After _extract_chain drops the cross-chain SS bond,
+    the residue has no HG and no SS partner — matching neither CYS nor CYX template.
+    Restores them to free-thiol CYS for isolated-chain energy evaluation.
+    """
+    from openmm.app import Modeller
+
+    orphans = []
+    for res in topology.residues():
+        if res.name != "CYS":
+            continue
+        sg = next((a for a in res.atoms() if a.name == "SG"), None)
+        if sg is None or any(a.name == "HG" for a in res.atoms()):
+            continue
+        has_ss = any(
+            (b.atom1 is sg or b.atom2 is sg) and
+            (b.atom2 if b.atom1 is sg else b.atom1).element.symbol == "S"
+            for b in topology.bonds()
+        )
+        if not has_ss:
+            orphans.append(res)
+
+    if not orphans:
+        return topology, positions
+
+    names = [f"{r.name}{r.id}" for r in orphans]
+    prefix = f"[{label}] " if label else ""
+    print(f"{prefix}  Repairing orphaned CYS (cross-chain disulfide severed): {names}")
+
+    gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
+    ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
+
+    # [] = skip (residue already has all its H); [("HG","SG")] = add only HG
+    variants = [[] for _ in range(topology.getNumResidues())]
+    for res in orphans:
+        variants[res.index] = [("HG", "SG")]
+
+    modeller = Modeller(topology, positions)
+    try:
+        modeller.addHydrogens(ff, variants=variants)
+    except Exception:
+        return topology, positions  # best-effort; let _build_subsystem surface the error
+    return modeller.topology, modeller.positions
+
+
 def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None):
     """Build an OpenMM system for a topology that already contains hydrogens."""
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
@@ -371,10 +420,12 @@ def _evaluate_subsystem_energies(
             return None, None, None
 
         pep_topo, pep_pos = _extract_chain(topo_h, positions, peptide_chain)
+        pep_topo, pep_pos = _repair_orphaned_cys(pep_topo, pep_pos, solvent_model)
         sys_p = _build_subsystem(pep_topo, solvent_model, bond_info=bond_info)
         e_p = _evaluate_potential_energy(sys_p, pep_topo, pep_pos, device)
 
         rec_topo, rec_pos = _extract_chain(topo_h, positions, receptor_chain)
+        rec_topo, rec_pos = _repair_orphaned_cys(rec_topo, rec_pos, solvent_model)
         sys_r = _build_subsystem(rec_topo, solvent_model)
         e_r = _evaluate_potential_energy(sys_r, rec_topo, rec_pos, device)
 
