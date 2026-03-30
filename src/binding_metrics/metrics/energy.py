@@ -275,11 +275,15 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
 
 def _repair_orphaned_cys(topology, positions, solvent_model: str = "obc2",
                          label: str = "") -> tuple:
-    """Add HG back to CYS residues whose cross-chain disulfide partner was severed.
+    """Add HG back to CYS/CYX residues whose disulfide partner was severed.
 
     When the complex has a peptide–receptor disulfide, addHydrogens treats the
     bonded CYS as CYX (no HG). After _extract_chain drops the cross-chain SS bond,
     the residue has no HG and no SS partner — matching neither CYS nor CYX template.
+
+    Also handles CYX residues (already renamed from CYS) that lost their SS partner
+    during chain extraction: CYX with no SS bond needs to be renamed back to CYS and
+    have HG added so OpenMM can find the correct template.
 
     Bypasses addHydrogens (which requires template matching before H placement)
     and directly inserts HG into a rebuilt topology at a geometric position along
@@ -291,7 +295,7 @@ def _repair_orphaned_cys(topology, positions, solvent_model: str = "obc2",
 
     orphans: dict = {}  # res.index -> (sg_atom_index, cb_atom_index_or_None)
     for res in topology.residues():
-        if res.name != "CYS":
+        if res.name not in ("CYS", "CYX"):
             continue
         sg = next((a for a in res.atoms() if a.name == "SG"), None)
         if sg is None or any(a.name == "HG" for a in res.atoms()):
@@ -327,7 +331,9 @@ def _repair_orphaned_cys(topology, positions, solvent_model: str = "obc2",
     for chain in topology.chains():
         new_chain = new_topo.addChain(chain.id)
         for res in chain.residues():
-            new_res = new_topo.addResidue(res.name, new_chain)
+            # CYX with no SS bond (orphaned) needs to become CYS once HG is added
+            res_name = "CYS" if res.index in orphans and res.name == "CYX" else res.name
+            new_res = new_topo.addResidue(res_name, new_chain)
             for atom in res.atoms():
                 new_atom = new_topo.addAtom(atom.name, atom.element, new_res)
                 old_to_new[atom.index] = new_atom
