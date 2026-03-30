@@ -17,6 +17,56 @@ except ImportError:
     HAS_PDBFIXER = False
 
 
+def _extract_custom_bonds(topology) -> list:
+    """Capture non-sequential intra-chain bonds that PDBxFile.writeFile drops.
+
+    Returns a list of (chain_id, local_res_idx, atom_name,
+                        chain_id, local_res_idx, atom_name) tuples.
+    Disulfides (SG-SG) are excluded — PDBFixer handles those via STRUCT_CONN.
+    """
+    res_local: dict[int, tuple] = {}
+    for chain in topology.chains():
+        for local_idx, res in enumerate(chain.residues()):
+            res_local[res.index] = (chain.id, local_idx)
+
+    bonds = []
+    for bond in topology.bonds():
+        a1, a2 = bond.atom1, bond.atom2
+        r1, r2 = a1.residue, a2.residue
+        if r1.chain.id != r2.chain.id:
+            continue
+        if abs(r1.index - r2.index) <= 1:
+            continue
+        if a1.name == "SG" and a2.name == "SG":
+            continue  # disulfide — preserved by PDBFixer
+        bonds.append((
+            res_local[r1.index][0], res_local[r1.index][1], a1.name,
+            res_local[r2.index][0], res_local[r2.index][1], a2.name,
+        ))
+    return bonds
+
+
+def _readd_custom_bonds(topology, custom_bonds: list):
+    """Re-add custom bonds to a post-PDBFixer topology by position."""
+    if not custom_bonds:
+        return topology
+    lookup: dict[tuple, object] = {}
+    for chain in topology.chains():
+        for local_idx, res in enumerate(chain.residues()):
+            for atom in res.atoms():
+                lookup[(chain.id, local_idx, atom.name)] = atom
+
+    for (ch1, li1, an1, ch2, li2, an2) in custom_bonds:
+        a1 = lookup.get((ch1, li1, an1))
+        a2 = lookup.get((ch2, li2, an2))
+        if a1 and a2:
+            topology.addBond(a1, a2)
+        else:
+            print(f"  Warning: could not restore custom bond "
+                  f"{ch1}[{li1}].{an1} – {ch2}[{li2}].{an2} after prep")
+    return topology
+
+
 def _topology_to_fixer(topology, positions) -> "PDBFixer":
     """Write topology+positions to a temp CIF and load with PDBFixer.
 
@@ -84,6 +134,10 @@ def prep_structure(
     Returns:
         Tuple of (topology, positions) with repaired and protonated structure
     """
+    # Capture non-sequential intra-chain bonds (e.g. head-to-tail N→C) before
+    # the PDBFixer round-trip drops them (PDBxFile.writeFile only writes SS bonds).
+    custom_bonds = _extract_custom_bonds(topology)
+
     fixer = _topology_to_fixer(topology, positions)
     fixer.findMissingResidues()
     fixer.findNonstandardResidues()
@@ -159,7 +213,12 @@ def prep_structure(
         fixer.positions = modeller.positions
 
     fixer.addMissingHydrogens(ph)
-    return fixer.topology, fixer.positions
+
+    result_topo, result_pos = fixer.topology, fixer.positions
+    # Restore custom bonds dropped during PDBFixer CIF round-trip so they are
+    # preserved in the saved _cleaned.cif (via _patch_nonstd_bonds_in_cif).
+    _readd_custom_bonds(result_topo, custom_bonds)
+    return result_topo, result_pos
 
 
 def solvate(
