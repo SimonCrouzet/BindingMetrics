@@ -400,7 +400,7 @@ All scoring tools auto-detect peptide and receptor chains. Pass `--peptide-chain
 
 ## Documentation
 
-Full API reference, return value schemas, algorithm notes, and implementation details are in [`METRICS.md`](METRICS.md).
+Full API reference, return value schemas, algorithm notes, and implementation details are in [`docs/metrics.md`](docs/metrics.md).
 
 ---
 
