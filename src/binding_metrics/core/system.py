@@ -111,6 +111,48 @@ _METAL_ELEMENTS = {
 _WATER_NAMES = {"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"}
 
 
+def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) -> tuple:
+    """Add hydrogens to a topology that contains non-sequential cyclic bonds.
+
+    PDBFixer's addMissingHydrogens cannot handle cyclic peptides — it applies
+    standard N-terminal templates that try to place H2/H3 on the N atom, which
+    fails when the N is already bonded to the C-terminus carbon.  This function
+    uses the cyclic-aware ForceField templates instead.
+    """
+    from openmm.app import ForceField, Modeller
+    from binding_metrics.core.cyclic import (
+        patch_cyclic_topology,
+        get_addh_variants,
+        load_extra_xmls,
+        rename_disulfide_cys_to_cyx,
+    )
+
+    # custom bonds are intra-chain, so both ends share the same chain ID.
+    cyclic_chain = custom_bonds[0][0]
+
+    # patch_cyclic_topology detects the cyclic bond by distance (works even
+    # without the bond already in the topology), removes C-terminal OXT and
+    # terminal H atoms that PDBFixer added, and adds the N-C closure bond.
+    topology, positions, bond_info = patch_cyclic_topology(topology, positions, cyclic_chain)
+
+    if not bond_info:
+        # Shouldn't happen if custom_bonds is non-empty, but fall back gracefully.
+        modeller = Modeller(topology, positions)
+        modeller.addHydrogens(pH=ph)
+        return modeller.topology, modeller.positions
+
+    ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
+    load_extra_xmls(ff, bond_info)
+
+    # Rename SS-bonded CYS → CYX so addHydrogens uses the correct template.
+    topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
+
+    modeller = Modeller(topology, positions)
+    addh_variants = get_addh_variants(modeller.topology, bond_info, cyclic_chain)
+    modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
+    return modeller.topology, modeller.positions
+
+
 def prep_structure(
     topology,
     positions,
@@ -212,12 +254,18 @@ def prep_structure(
         fixer.topology = modeller.topology
         fixer.positions = modeller.positions
 
-    fixer.addMissingHydrogens(ph)
+    if custom_bonds:
+        # Use cyclic-aware H placement: patch_cyclic_topology (called inside)
+        # removes C-terminal OXT that PDBFixer added, adds the N-C closure bond,
+        # then uses cyclic FF templates for addHydrogens.  Do NOT restore bonds
+        # here — patch_cyclic_topology detects and adds the bond itself.
+        result_topo, result_pos = _add_hydrogens_cyclic(
+            fixer.topology, fixer.positions, custom_bonds, ph
+        )
+    else:
+        fixer.addMissingHydrogens(ph)
+        result_topo, result_pos = fixer.topology, fixer.positions
 
-    result_topo, result_pos = fixer.topology, fixer.positions
-    # Restore custom bonds dropped during PDBFixer CIF round-trip so they are
-    # preserved in the saved _cleaned.cif (via _patch_nonstd_bonds_in_cif).
-    _readd_custom_bonds(result_topo, custom_bonds)
     return result_topo, result_pos
 
 
