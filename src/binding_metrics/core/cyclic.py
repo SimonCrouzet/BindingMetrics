@@ -909,6 +909,10 @@ def _internal_h_list(res_name: str):
     from openmm.app.modeller import Modeller
     Modeller._loadStandardHydrogenDefinitions()
     if res_name not in Modeller._residueHydrogens:
+        # CYX is CYS without the SH proton; use CYS internal H list, drop HG.
+        if res_name == "CYX":
+            cys_list = _internal_h_list("CYS")
+            return [(n, p) for n, p in (cys_list or []) if n != "HG"]
         return None
     spec = Modeller._residueHydrogens[res_name]
     # Include H atoms that are applicable to internal residues:
