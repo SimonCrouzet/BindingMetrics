@@ -483,70 +483,30 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                     detected_pairs.add((c_last.index, nz.index))
                     detected_pairs.add((nz.index, c_last.index))
 
-    # ---- 5. Catch unsupported cyclization: suspicious short contact not already detected ----
-    # Only scan heavy atoms — H atoms are within H-bond distance of acceptors and
-    # would produce false-positive "unsupported cyclization" errors.
-    atom_list = [a for r in residues for a in r.atoms()
-                 if a.element is not None and a.element.symbol != "H"]
-
-    # Build 1-2 (directly bonded) and 1-3 (angle) exclusion sets.
-    # 1-3 contacts arise naturally at amide junctions (e.g. N···O=C), and must
-    # not be mistaken for unsupported cyclizations.
-    # Also include detected closure bonds in the neighbor graph: PDBFixer may
-    # have dropped them from the topology, but they are real covalent bonds and
-    # their 1-3 contacts (e.g. GLY1.N — ASP14.O through the head-to-tail amide)
-    # must be excluded from the unsupported scan.
-    bonded_12: set = set()
-    neighbors: dict = {}
+    # ---- 5. Catch unsupported cyclization: non-sequential intra-chain topology
+    #         bonds that were not recognised as a supported pattern ----
+    #
+    # We read from the topology (which reflects STRUCT_CONN covale entries from the
+    # CIF) rather than scanning atom-pair distances.  Distance scanning produces
+    # false positives for close but non-covalent contacts such as tight backbone
+    # geometry (e.g. THR1.N — PRO2.CB at 1.79 Å, five bonds apart) and is
+    # unreliable for structures with steric clashes or poor geometry.
     for bond in topology.bonds():
-        i, j = bond.atom1.index, bond.atom2.index
-        bonded_12.add((i, j))
-        bonded_12.add((j, i))
-        neighbors.setdefault(i, set()).add(j)
-        neighbors.setdefault(j, set()).add(i)
-    # Inject detected closure bonds into the graph
-    for (i, j) in detected_pairs:
-        bonded_12.add((i, j))
-        bonded_12.add((j, i))
-        neighbors.setdefault(i, set()).add(j)
-        neighbors.setdefault(j, set()).add(i)
-
-    bonded_13: set = set()
-    for atom in atom_list:
-        for nb1 in neighbors.get(atom.index, set()):
-            for nb2 in neighbors.get(nb1, set()):
-                if nb2 != atom.index:
-                    bonded_13.add((atom.index, nb2))
-                    bonded_13.add((nb2, atom.index))
-
-    # 1-4 contacts (e.g. O···CA across a peptide bond: O=C–N–CA) are normal
-    # backbone geometry and must not be flagged as unsupported cyclizations.
-    bonded_14: set = set()
-    for atom in atom_list:
-        for nb1 in neighbors.get(atom.index, set()):
-            for nb2 in neighbors.get(nb1, set()):
-                for nb3 in neighbors.get(nb2, set()):
-                    if nb3 != atom.index:
-                        bonded_14.add((atom.index, nb3))
-                        bonded_14.add((nb3, atom.index))
-
-    excluded = bonded_12 | bonded_13 | bonded_14 | detected_pairs
-
-    res_of = {a.index: a.residue for a in atom_list}
-    for ii, ai in enumerate(atom_list):
-        for aj in atom_list[ii + 1:]:
-            if res_of[ai.index] is res_of[aj.index]:
-                continue
-            if (ai.index, aj.index) in excluded:
-                continue
-            if _dist(pos, ai.index, aj.index) < _SUSPECT_THRESH:
-                raise CyclizationError(
-                    f"Potential unsupported cyclization detected: "
-                    f"{ai.residue.name}{ai.residue.id}.{ai.name} — "
-                    f"{aj.residue.name}{aj.residue.id}.{aj.name} "
-                    f"({_dist(pos, ai.index, aj.index)*10:.2f} Å).\n"
-                    + _UNSUPPORTED_MSG
-                )
+        ai, aj = bond.atom1, bond.atom2
+        ri, rj = ai.residue, aj.residue
+        if ri.chain.id != chain_id or rj.chain.id != chain_id:
+            continue  # not in the peptide chain
+        if abs(ri.index - rj.index) <= 1:
+            continue  # sequential backbone bond
+        if (ai.index, aj.index) in detected_pairs:
+            continue  # already handled as a supported pattern
+        raise CyclizationError(
+            f"Unsupported cyclization detected in topology: "
+            f"{ri.name}{ri.id}.{ai.name} — "
+            f"{rj.name}{rj.id}.{aj.name} "
+            f"({_dist(pos, ai.index, aj.index)*10:.2f} Å).\n"
+            + _UNSUPPORTED_MSG
+        )
 
     return results
 
