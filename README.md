@@ -6,6 +6,22 @@ Metrics span from fast static-structure analysis (buried SASA, hydrogen bonds, s
 
 ---
 
+## Cyclic peptide support
+
+BindingMetrics has first-class support for **cyclic peptides** — both head-to-tail (N→C amide) and sidechain-anchored (lactam, disulfide) ring closures.
+
+Cyclic connectivity is read from `_struct_conn` in the input CIF file (written by BoltzGen and other structure prediction pipelines that support cyclic designs). The pipeline:
+
+- **Auto-detects** the cyclic bond type (`head_to_tail`, `sidechain_to_sidechain`, etc.) and the atoms involved
+- **Propagates** the bond hint through PDBFixer prep — the N→C bond is written back into `_struct_conn` of the saved `_cleaned.cif`, so downstream runs on that file also detect the cyclic topology
+- **Applies cyclic AMBER templates** (NCYS/NCYX, C-terminal patches) during hydrogen placement and system creation so force-field template matching succeeds
+- **Handles cross-chain disulfides** (e.g. peptide CYS ↔ receptor CYS) alongside the cyclic closure: PDBFixer-detected SS bonds trigger a CYS→CYX rename in-memory before `addHydrogens`, and orphaned CYX residues (whose SS partner is on the other chain, severed during per-chain energy decomposition) are automatically converted back to CYS+HG
+- **Minimizes cyclic geometry** with a dedicated closure-bond relaxation stage before global minimization
+
+No flags needed — cyclic topology is detected and applied automatically whenever the input CIF contains the relevant `_struct_conn` entries.
+
+---
+
 ## Metrics at a glance
 
 **Scores** have a clear direction (higher or lower is better). **Features** are descriptors without an intrinsic quality direction, useful for analysis or as model inputs.
@@ -304,6 +320,8 @@ binding-metrics-run \
 ```
 
 Peptide and receptor chains are **auto-detected** (smallest chain = peptide; when more than two chains are present, the one with the most Cα contacts to the peptide is the receptor). Override with `--peptide-chain` / `--receptor-chain`.
+
+**Cyclic peptides** are handled automatically — cyclic connectivity is read from `_struct_conn` in the input CIF and propagated through prep, relaxation, and energy decomposition with no extra flags required. See [Cyclic peptide support](#cyclic-peptide-support) above.
 
 The pipeline always starts with a **prep step** (equivalent to `binding-metrics-prep`) that fixes missing atoms, adds hydrogens, and removes waters. Key prep flags:
 
