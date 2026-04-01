@@ -60,6 +60,10 @@ _THRESHOLDS: list[dict] = [
     dict(key=("geometry", "omega", "omega_outlier_fraction"),
          label="ω outlier frac", unit="", direction="lower",
          green=lambda v: v < 0.05, amber=lambda v: v < 0.20),
+    # Shape complementarity Sc: > 0.7 good, 0.5–0.7 acceptable, < 0.5 poor
+    dict(key=("geometry", "shape_complementarity", "sc"),
+         label="Sc", unit="", direction="higher",
+         green=lambda v: v > 0.7, amber=lambda v: v > 0.5),
     # Coulomb energy (kJ/mol): < −100 favourable, −100–0 moderate, > 0 poor
     dict(key=("electrostatics", "coulomb_energy_kJ"), label="Coulomb E", unit="kJ/mol", direction="lower",
          green=lambda v: v < -100.0, amber=lambda v: v < 0.0),
@@ -160,7 +164,7 @@ def _flatten(results: dict) -> dict[str, Any]:
             # and then flattening naively would produce "geometry_ramachandran_
             # ramachandran_*".  Skip the intermediate sub-key and flatten each
             # sub-dict directly under "geometry_".
-            for sub in ("ramachandran", "omega"):
+            for sub in ("ramachandran", "omega", "shape_complementarity"):
                 _add(section, sec_data.get(sub) or {})
             for k in ("skipped", "error"):
                 if k in sec_data:
@@ -349,6 +353,19 @@ def _md_geometry(geo: dict | None) -> str:
     for r in [r for r in (omega.get("per_residue") or []) if r.get("is_outlier")]:
         lines.append(f"\n⚠️ **ω outlier:** {r['res_name']}{r['res_id']} "
                      f"(ω={r['omega']:.1f}°, dev={r['deviation']:.1f}°)")
+    sc = geo.get("shape_complementarity") or {}
+    if sc:
+        lines.append("\n**Shape complementarity (Sc)**\n")
+        lines.append(_md_table(
+            ["Metric", "Value"],
+            [
+                ["Sc",          _fmt(sc.get("sc"), 3)],
+                ["Sc (pep→rec)", _fmt(sc.get("sc_A_to_B"), 3)],
+                ["Sc (rec→pep)", _fmt(sc.get("sc_B_to_A"), 3)],
+                ["Surface dots (pep)", _fmt(sc.get("n_surface_dots_A"))],
+                ["Surface dots (rec)", _fmt(sc.get("n_surface_dots_B"))],
+            ],
+        ))
     return "\n".join(lines) + "\n"
 
 

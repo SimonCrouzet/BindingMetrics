@@ -228,16 +228,22 @@ def run_pipeline(
 
     # --------------------------------------------------------------- Geometry
     if "geometry" in metrics:
-        _step("Geometry (Ramachandran + omega planarity)")
+        _step("Geometry (Ramachandran + omega planarity + shape complementarity)")
         try:
             from binding_metrics.metrics.geometry import (
                 compute_ramachandran,
                 compute_omega_planarity,
+                compute_shape_complementarity,
             )
 
             rama = compute_ramachandran(relaxed_path, chain=working_peptide)
             omega = compute_omega_planarity(relaxed_path, chain=working_peptide)
-            results["geometry"] = {"ramachandran": rama, "omega": omega}
+            sc = compute_shape_complementarity(
+                relaxed_path,
+                peptide_chain=working_peptide,
+                receptor_chain=working_receptor,
+            )
+            results["geometry"] = {"ramachandran": rama, "omega": omega, "shape_complementarity": sc}
         except Exception as e:
             _warn(f"Geometry metrics failed: {e}")
             traceback.print_exc()
