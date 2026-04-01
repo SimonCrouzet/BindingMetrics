@@ -1,11 +1,14 @@
 """System preparation utilities for MD simulations."""
 
+import logging
 import os
 import tempfile
 from typing import Literal
 
 import openmm.unit as unit
 from openmm.app import Modeller, PDBFile, ForceField
+
+log = logging.getLogger(__name__)
 
 from binding_metrics.core.forcefields import get_forcefield
 
@@ -62,8 +65,8 @@ def _readd_custom_bonds(topology, custom_bonds: list):
         if a1 and a2:
             topology.addBond(a1, a2)
         else:
-            print(f"  Warning: could not restore custom bond "
-                  f"{ch1}[{li1}].{an1} – {ch2}[{li2}].{an2} after prep")
+            log.warning("Could not restore custom bond %s[%d].%s – %s[%d].%s after prep",
+                        ch1, li1, an1, ch2, li2, an2)
     return topology
 
 
@@ -186,15 +189,14 @@ def prep_structure(
 
     if canonicalize:
         fixer.replaceNonstandardResidues()
-        print("  --canonicalize: non-standard residues replaced with standard equivalents.")
+        log.info("--canonicalize: non-standard residues replaced with standard equivalents.")
     else:
         nonstandard = getattr(fixer, "nonstandardResidues", [])
         if nonstandard:
             names = ", ".join(f"{r.name}" for r, _ in nonstandard)
-            print(f"  Non-standard residues detected: {names}")
-            print("  These will be preserved. Use --small-molecules auto in relax to")
-            print("  parameterise them with GAFF2 (small organic molecules / modified AAs).")
-            print("  Use --canonicalize to replace them with standard equivalents instead.")
+            log.info("Non-standard residues detected: %s", names)
+            log.info("These will be preserved. Use --small-molecules auto in relax to "
+                     "parameterise them with GAFF2, or --canonicalize to replace them.")
 
     # Chain-aware heterogen filter — replaces PDBFixer's removeHeterogens():
     #   • Standard AA / nucleotide          → always keep
@@ -244,9 +246,9 @@ def prep_structure(
             residues_to_remove.append(res)
 
     if kept_nonstandard:
-        print(f"  Kept non-standard residues: {', '.join(kept_nonstandard)}")
+        log.info("Kept non-standard residues: %s", ", ".join(kept_nonstandard))
     if removed_heterogens:
-        print(f"  Removed heterogens: {', '.join(removed_heterogens)}")
+        log.info("Removed heterogens: %s", ", ".join(removed_heterogens))
 
     if residues_to_remove:
         modeller = Modeller(fixer.topology, fixer.positions)
