@@ -70,6 +70,35 @@ def _readd_custom_bonds(topology, custom_bonds: list):
     return topology
 
 
+def _delete_zero_coord_atoms(fixer) -> "PDBFixer":
+    """Remove atoms placed at the origin (zero-coordinate placeholders from pipelines
+    that don't model all atoms) so PDBFixer can rebuild them via
+    findMissingAtoms() + addMissingAtoms().
+
+    Returns the original fixer unchanged if no zero-coordinate atoms are found.
+    """
+    from openmm.app import PDBxFile
+    atoms_at_origin = [
+        i for i, pos in enumerate(fixer.positions)
+        if abs(pos.x) < 1e-6 and abs(pos.y) < 1e-6 and abs(pos.z) < 1e-6
+    ]
+    if not atoms_at_origin:
+        return fixer
+
+    log.debug("Found %d zero-coordinate atoms — removing for rebuild", len(atoms_at_origin))
+    all_atoms = list(fixer.topology.atoms())
+    modeller = Modeller(fixer.topology, fixer.positions)
+    modeller.delete([all_atoms[i] for i in atoms_at_origin])
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".cif", delete=False) as tmp:
+        PDBxFile.writeFile(modeller.topology, modeller.positions, tmp)
+        tmp_path = tmp.name
+    try:
+        return PDBFixer(filename=tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+
 def _topology_to_fixer(topology, positions) -> "PDBFixer":
     """Write topology+positions to a temp CIF and load with PDBFixer.
 
@@ -162,6 +191,7 @@ def prep_structure(
     ph: float = 7.4,
     keep_water: bool = False,
     canonicalize: bool = False,
+    rebuild_zero_coord_atoms: bool = True,
 ) -> tuple:
     """Fix missing residues/atoms and add hydrogens in one PDBFixer pass.
 
@@ -175,6 +205,10 @@ def prep_structure(
             If False (default), non-standard residues and non-canonical amino
             acids are preserved so they can be parameterised downstream with
             GAFF2 (``--small-molecules auto`` in binding-metrics-relax).
+        rebuild_zero_coord_atoms: If True (default), detect atoms placed at the
+            origin (zero-coordinate placeholders from pipelines that skip atom
+            modelling) and let PDBFixer rebuild them via findMissingAtoms().
+            Set to False when the input is known to be fully modelled.
 
     Returns:
         Tuple of (topology, positions) with repaired and protonated structure
@@ -184,6 +218,10 @@ def prep_structure(
     custom_bonds = _extract_custom_bonds(topology)
 
     fixer = _topology_to_fixer(topology, positions)
+
+    if rebuild_zero_coord_atoms:
+        fixer = _delete_zero_coord_atoms(fixer)
+
     fixer.findMissingResidues()
     fixer.findNonstandardResidues()
 

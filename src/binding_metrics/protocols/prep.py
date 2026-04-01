@@ -28,6 +28,14 @@ def main() -> None:
             "parameterised downstream with GAFF2 (--small-molecules auto in relax)."
         ),
     )
+    parser.add_argument(
+        "--no-rebuild-zero-coord-atoms", action="store_true",
+        help=(
+            "Disable detection and rebuild of zero-coordinate placeholder atoms. "
+            "By default, atoms at the origin are removed and rebuilt by PDBFixer "
+            "(needed for pipelines that output placeholders instead of modelled atoms)."
+        ),
+    )
     from binding_metrics.cli import add_log_file_arg
     add_log_file_arg(parser)
     args = parser.parse_args()
@@ -59,6 +67,7 @@ def main() -> None:
         topology, positions = prep_structure(
             topology, positions, ph=args.ph,
             keep_water=args.keep_water, canonicalize=args.canonicalize,
+            rebuild_zero_coord_atoms=not args.no_rebuild_zero_coord_atoms,
         )
 
         save_structure(topology, positions, args.output, source_path=args.input)
