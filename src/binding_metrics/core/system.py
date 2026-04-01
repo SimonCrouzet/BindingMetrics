@@ -25,7 +25,8 @@ def _extract_custom_bonds(topology) -> list:
 
     Returns a list of (chain_id, local_res_idx, atom_name,
                         chain_id, local_res_idx, atom_name) tuples.
-    Disulfides (SG-SG) are excluded — PDBFixer handles those via STRUCT_CONN.
+    Disulfides (SG-SG) are excluded — detected from rebuilt geometry after
+    addMissingAtoms by rename_disulfide_cys_to_cyx.
     """
     res_local: dict[int, tuple] = {}
     for chain in topology.chains():
@@ -41,7 +42,7 @@ def _extract_custom_bonds(topology) -> list:
         if abs(r1.index - r2.index) <= 1:
             continue
         if a1.name == "SG" and a2.name == "SG":
-            continue  # disulfide — preserved by PDBFixer
+            continue  # disulfide — rebuilt from geometry after addMissingAtoms
         bonds.append((
             res_local[r1.index][0], res_local[r1.index][1], a1.name,
             res_local[r2.index][0], res_local[r2.index][1], a2.name,
@@ -59,15 +60,41 @@ def _readd_custom_bonds(topology, custom_bonds: list):
             for atom in res.atoms():
                 lookup[(chain.id, local_idx, atom.name)] = atom
 
+    existing: set = {
+        (min(b.atom1.index, b.atom2.index), max(b.atom1.index, b.atom2.index))
+        for b in topology.bonds()
+    }
+
     for (ch1, li1, an1, ch2, li2, an2) in custom_bonds:
         a1 = lookup.get((ch1, li1, an1))
         a2 = lookup.get((ch2, li2, an2))
         if a1 and a2:
-            topology.addBond(a1, a2)
+            key = (min(a1.index, a2.index), max(a1.index, a2.index))
+            if key not in existing:
+                topology.addBond(a1, a2)
+                existing.add(key)
         else:
             log.warning("Could not restore custom bond %s[%d].%s – %s[%d].%s after prep",
                         ch1, li1, an1, ch2, li2, an2)
     return topology
+
+
+def _rebuild_connect_records(fixer) -> None:
+    """Detect and register all non-standard covalent bonds from rebuilt geometry.
+
+    Called after addMissingAtoms so that atoms previously at the origin
+    (zero-coord placeholders) have been placed at correct positions.
+
+    Currently handles:
+      - Disulfide bonds: any SG–SG pair within _DISULFIDE_THRESH nm is bonded.
+        Residues are kept as CYS; renaming to CYX is deferred to createSystem
+        time (energy/MD) where the CYX template must be matched explicitly.
+
+    Cyclic closure bonds (head-to-tail, lactam) are handled separately by
+    patch_cyclic_topology (which uses custom_bonds as hints for strained geometry).
+    """
+    from binding_metrics.core.cyclic import register_ss_bonds
+    fixer.topology = register_ss_bonds(fixer.topology, fixer.positions)
 
 
 def _delete_zero_coord_atoms(fixer) -> "PDBFixer":
@@ -156,7 +183,6 @@ def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) ->
         patch_cyclic_topology,
         get_addh_variants,
         load_extra_xmls,
-        rename_disulfide_cys_to_cyx,
     )
 
     # custom bonds are intra-chain, so both ends share the same chain ID.
@@ -175,9 +201,6 @@ def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) ->
 
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
     load_extra_xmls(ff, bond_info)
-
-    # Rename SS-bonded CYS → CYX so addHydrogens uses the correct template.
-    topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
 
     modeller = Modeller(topology, positions)
     addh_variants = get_addh_variants(modeller.topology, bond_info, cyclic_chain)
@@ -215,6 +238,8 @@ def prep_structure(
     """
     # Capture non-sequential intra-chain bonds (e.g. head-to-tail N→C) before
     # the PDBFixer round-trip drops them (PDBxFile.writeFile only writes SS bonds).
+    # SS bonds are NOT captured here — they are re-detected from rebuilt geometry
+    # after addMissingAtoms via _rebuild_connect_records.
     custom_bonds = _extract_custom_bonds(topology)
 
     fixer = _topology_to_fixer(topology, positions)
@@ -245,6 +270,11 @@ def prep_structure(
     #     in their own chain …)             → remove
     fixer.findMissingAtoms()
     fixer.addMissingAtoms()
+
+    # Detect and register all non-standard bonds from the rebuilt geometry
+    # (SS bonds, CYS→CYX rename). Must run after addMissingAtoms so that
+    # zero-coord placeholder atoms are in their correct positions.
+    _rebuild_connect_records(fixer)
 
     protein_chains: set = set()
     for chain in fixer.topology.chains():

@@ -515,38 +515,71 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
 # Topology patching
 # ---------------------------------------------------------------------------
 
+def register_ss_bonds(topology, positions) -> object:
+    """Detect disulfide bonds by position and add any missing SG–SG bonds to the topology.
+
+    Uses position-based detection (_DISULFIDE_THRESH) so it works even when
+    topology bonds were not yet set (e.g. after addMissingAtoms rebuilt
+    zero-coord SG placeholders without STRUCT_CONN records).
+
+    Does NOT rename residues or remove atoms — residues stay as CYS.
+    Returns the (possibly mutated) topology.
+    """
+    sg_atoms = [
+        a for a in topology.atoms()
+        if a.name == "SG" and a.element is not None and a.element.symbol == "S"
+    ]
+    if not sg_atoms:
+        return topology
+
+    pos_nm = _pos_nm(positions)
+    existing_ss: set = {
+        (min(b.atom1.index, b.atom2.index), max(b.atom1.index, b.atom2.index))
+        for b in topology.bonds()
+        if b.atom1.name == "SG" and b.atom2.name == "SG"
+    }
+
+    for i, ai in enumerate(sg_atoms):
+        for aj in sg_atoms[i + 1:]:
+            if _dist(pos_nm, ai.index, aj.index) < _DISULFIDE_THRESH:
+                key = (min(ai.index, aj.index), max(ai.index, aj.index))
+                if key not in existing_ss:
+                    topology.addBond(ai, aj)
+                    existing_ss.add(key)
+
+    return topology
+
+
 def rename_disulfide_cys_to_cyx(topology, positions):
-    """Rename CYS → CYX for any residue whose SG is already SS-bonded in the topology.
+    """Rename SS-bonded CYS residues to CYX and remove their HG atoms.
 
-    PDBFixer detects disulfides and uses the CYX template internally (so HG is
-    correctly omitted) but does NOT rename the residue in the topology.  The
-    saved CIF therefore has ``CYS`` entries with SS bonds in STRUCT_CONN.  When
-    that CIF is loaded back and ``createSystem`` / ``addHydrogens`` is called,
-    OpenMM cannot find a matching template (CYS expects HG; CYX is the right
-    template but the name doesn't match).
+    For internal use only — call before createSystem when building a ForceField
+    system, because the CYX template (no HG, external SG bond) must be matched
+    explicitly.  Do not use for persistent structure output; prep keeps residues
+    as CYS with SS bonds written to STRUCT_CONN.
 
-    Must be called before ``addHydrogens``.  Works for both intra-chain and
-    cross-chain disulfides.  Returns (topology, positions) unchanged except for
-    residue name mutations and optional HG deletion.
+    Calls register_ss_bonds first so topology bonds are up to date even when
+    called on a freshly loaded structure without STRUCT_CONN records.
     """
     try:
         from openmm import app
     except ImportError:
         return topology, positions
 
-    ss_bonded_sg: set = set()
-    for b in topology.bonds():
-        if (b.atom1.element is not None and b.atom2.element is not None
-                and b.atom1.element.symbol == "S" and b.atom2.element.symbol == "S"):
-            ss_bonded_sg.add(b.atom1.index)
-            ss_bonded_sg.add(b.atom2.index)
+    topology = register_ss_bonds(topology, positions)
 
+    ss_bonded_sg: set = {
+        idx
+        for b in topology.bonds()
+        if b.atom1.name == "SG" and b.atom2.name == "SG"
+        for idx in (b.atom1.index, b.atom2.index)
+    }
     if not ss_bonded_sg:
         return topology, positions
 
     to_remove_hg = []
     for res in topology.residues():
-        if res.name != "CYS":
+        if res.name not in ("CYS", "CYX"):
             continue
         sg = next((a for a in res.atoms() if a.name == "SG"), None)
         if sg is not None and sg.index in ss_bonded_sg:
