@@ -22,6 +22,7 @@ from binding_metrics.metrics.openfold import (
     run_openfold_refolding,
     run_openfold_scoring,
 )
+from binding_metrics.metrics.receptor_quality import compute_receptor_quality
 from binding_metrics.metrics.rmsd import calculate_rmsd, compute_receptor_drift
 from binding_metrics.metrics.sasa import calculate_buried_sasa
 
@@ -39,6 +40,7 @@ __all__ = [
     "compute_openfold_metrics",
     "compute_ramachandran",
     "compute_receptor_drift",
+    "compute_receptor_quality",
     "compute_shape_complementarity",
     "prepare_refolding_query",
     "prepare_scoring_query",
