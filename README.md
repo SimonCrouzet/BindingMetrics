@@ -22,6 +22,49 @@ No flags needed — cyclic topology is detected and applied automatically whenev
 
 ---
 
+## Receptor quality assessment
+
+**`binding-metrics-receptor-quality`** is a standalone tool for evaluating receptor structural quality, independent of the main peptide-binding pipeline. It works on receptor-only files or complex structures (non-receptor chains are silently ignored), and scores all models in multi-model PDB/CIF files independently.
+
+Metrics follow the MolProbity convention (Chen et al. 2010):
+
+| Metric | Goal |
+|---|---|
+| Ramachandran favoured % | > 98% |
+| Ramachandran outliers % | < 0.05% |
+| Rotamer outliers % (χ1) | < 1% |
+| Cβ deviations > 0.25 Å | 0 |
+| Bad backbone bonds | 0% |
+| Bad backbone angles | < 0.1% |
+| Clashscore | < 1 (high-resolution crystal) |
+| MolProbity score | lower = better (resolution-like scale) |
+| Absolute AMBER ff14SB energy | lower = less strained |
+
+```python
+from binding_metrics import compute_receptor_quality
+
+# Works on receptor-only or complex structures; auto-detects largest chain
+result = compute_receptor_quality("receptor.pdb", device="cuda")
+s = result["summary"]
+print(f"MolProbity score : {s['molprobity_score']:.2f}")
+print(f"Ramachandran     : {s['ramachandran_favoured_pct']:.1f}% favoured, "
+      f"{s['ramachandran_outlier_pct']:.1f}% outliers")
+print(f"Clashscore       : {s['clashscore']:.2f}")
+print(f"Rotamer outliers : {s['rotamer_outlier_pct']:.1f}%")
+print(f"Cβ deviations    : {s['cb_deviation_count']:.0f}")
+print(f"Bad bonds/angles : {s['bad_bonds_pct']:.2f}% / {s['bad_angles_pct']:.2f}%")
+print(f"Energy           : {s['energy_kJ_mol']:.1f} kJ/mol")
+print(f"Best model       : {s['best_model_index']}")
+```
+
+```bash
+# CLI — output format auto-detected from extension (.csv or .json)
+binding-metrics-receptor-quality --input receptor.pdb --output quality.csv
+binding-metrics-receptor-quality --input ensemble.cif --receptor-chain A --device cpu
+```
+
+---
+
 ## Metrics at a glance
 
 **Scores** have a clear direction (higher or lower is better). **Features** are descriptors without an intrinsic quality direction, useful for analysis or as model inputs.
@@ -358,6 +401,12 @@ OpenFold3 runs in the `openfold3` conda env by default (see [OpenFold3 install](
 | `binding-metrics-openfold` | Parse / run OpenFold3 confidence metrics |
 | `binding-metrics-relax` | Implicit-solvent energy minimization |
 
+**Receptor quality (standalone)**
+
+| Command | Description |
+|---|---|
+| `binding-metrics-receptor-quality` | MolProbity-style quality assessment for receptor chains — Ramachandran, rotamer outliers, Cβ deviations, bad bonds/angles, clashscore, MolProbity score, B-factors, absolute AMBER energy. Works on receptor-only files or complexes; scores all models in multi-model files. Output to `.csv` or `.json`. |
+
 **Utilities**
 
 | Command | Description |
@@ -444,4 +493,6 @@ If you use BindingMetrics in your work, please acknowledge it and feel free to g
 - Eisenberg, D. & McLachlan, A.D. (1986). Solvation energy in protein folding and binding. *Nature* 319, 199–203.
 - Lawrence, M.C. & Colman, P.M. (1993). Shape complementarity at protein/protein interfaces. *J. Mol. Biol.* 234, 946–950.
 - Eastman, P. et al. (2017). OpenMM 7. *PLOS Comput. Biol.* 13, e1005659.
+- Chen, V.B. et al. (2010). MolProbity: all-atom structure validation for macromolecular crystallography. *Acta Cryst.* D66, 12–21.
+- Engh, R.A. & Huber, R. (1991). Accurate bond and angle parameters for X-ray protein structure refinement. *Acta Cryst.* A47, 392–400.
 - Ahdritz, G. et al. (2024). OpenFold3. https://github.com/aqlaboratory/openfold-3
