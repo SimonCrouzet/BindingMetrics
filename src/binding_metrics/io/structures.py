@@ -610,6 +610,183 @@ def save_structure(
         raise ValueError(f"Unsupported output format: {suffix!r}. Use .pdb, .cif, or .mmcif")
 
 
+def detect_models(path: str | Path) -> list[int]:
+    """Read pdbx_PDB_model_num from a CIF and return sorted model numbers.
+
+    Returns ``[1]`` for single-model CIFs (no ``pdbx_PDB_model_num`` column),
+    PDB files, or on any read error.
+
+    Args:
+        path: Path to the structure file.
+
+    Returns:
+        Sorted list of integer model numbers present in the file.
+    """
+    path = Path(path)
+    if path.suffix.lower() not in (".cif", ".mmcif"):
+        return [1]
+    try:
+        import biotite.structure.io.pdbx as pdbx
+
+        f = pdbx.CIFFile.read(str(path))
+        atom_site = f.block["atom_site"]
+        col = atom_site["pdbx_PDB_model_num"].as_array()
+        unique = sorted({int(v) for v in col})
+        return unique if unique else [1]
+    except (KeyError, Exception):
+        return [1]
+
+
+def extract_model_to_tempfile(path: Path, model_num: int) -> Path:
+    """Extract one model from a multi-model CIF into a temporary file.
+
+    Uses gemmi to filter ``_atom_site`` rows where
+    ``pdbx_PDB_model_num == model_num``.  All other CIF records (``_chem_comp``,
+    ``_struct_conn``, etc.) are left intact so OpenMM can still parse the result.
+
+    Returns the original *path* unchanged when:
+    - The file is not a CIF.
+    - The ``pdbx_PDB_model_num`` column is absent (already single-model).
+    - gemmi is not installed.
+
+    The caller is responsible for unlinking the returned temp file when it
+    differs from the input path.
+
+    Args:
+        path: Path to the (possibly multi-model) CIF file.
+        model_num: 1-based model number to extract.
+
+    Returns:
+        Path to a single-model temp CIF, or the original path if no extraction
+        was needed.
+
+    Raises:
+        ValueError: If *model_num* is not found in the file.
+    """
+    path = Path(path)
+    if path.suffix.lower() not in (".cif", ".mmcif"):
+        return path
+
+    try:
+        import gemmi
+    except ImportError:
+        return path
+
+    doc = gemmi.cif.read(str(path))
+    block = doc.sole_block()
+
+    loop_ref = block.find_loop("_atom_site.pdbx_PDB_model_num")
+    if not loop_ref:
+        return path  # single-model CIF
+
+    loop = loop_ref.get_loop()
+    n_cols = loop.width()
+    n_rows = loop.length()
+    tags = list(loop.tags)
+    try:
+        model_col = tags.index("_atom_site.pdbx_PDB_model_num")
+    except ValueError:
+        return path
+
+    # loop.values is a flat row-major list; set_all_values() takes column-major.
+    vals = list(loop.values)
+    keep_rows = [
+        i for i in range(n_rows)
+        if vals[i * n_cols + model_col].strip() == str(model_num)
+    ]
+    if not keep_rows:
+        raise ValueError(f"Model {model_num} not found in {path}")
+
+    columns = [
+        [vals[r * n_cols + c] for r in keep_rows]
+        for c in range(n_cols)
+    ]
+    loop.set_all_values(columns)
+
+    tmp = tempfile.NamedTemporaryFile(
+        suffix=".cif", delete=False, prefix=f"bm_model{model_num}_"
+    )
+    tmp.close()
+    tmp_path = Path(tmp.name)
+    doc.write_file(str(tmp_path))
+    return tmp_path
+
+
+def merge_cif_models(model_paths: list[tuple[int, Path]], output_path: Path) -> None:
+    """Merge single-model CIFs into one multi-model CIF.
+
+    Each input CIF contributes one model; ``pdbx_PDB_model_num`` in
+    ``_atom_site`` is updated to the supplied model number.  All other CIF
+    records (entity, chem_comp, struct_conn, …) are taken from the first model
+    — they are topology-level metadata and identical across models that share
+    the same sequence.
+
+    Args:
+        model_paths: Sequence of (model_num, path) pairs in desired order.
+        output_path: Destination multi-model CIF file.
+
+    Raises:
+        ValueError: If any input CIF lacks an ``_atom_site`` loop or the
+            ``pdbx_PDB_model_num`` column.
+    """
+    import gemmi
+
+    if not model_paths:
+        raise ValueError("No models to merge")
+
+    first_num, first_path = model_paths[0]
+    doc = gemmi.cif.read(str(first_path))
+    out_block = doc.sole_block()
+
+    loop_ref = out_block.find_loop("_atom_site.id")
+    if not loop_ref:
+        raise ValueError(f"No _atom_site loop in {first_path}")
+    loop = loop_ref.get_loop()
+    tags = list(loop.tags)
+    n_cols = loop.width()
+
+    model_tag = "_atom_site.pdbx_PDB_model_num"
+    if model_tag not in tags:
+        raise ValueError(f"{model_tag} column missing from {first_path}")
+    model_col = tags.index(model_tag)
+
+    # Build column-major layout for first model, stamp model number.
+    # loop.values is flat row-major; set_all_values() expects column-major.
+    first_vals = list(loop.values)
+    n_rows = len(first_vals) // n_cols
+    columns: list[list[str]] = [
+        [first_vals[r * n_cols + c] for r in range(n_rows)]
+        for c in range(n_cols)
+    ]
+    for r in range(n_rows):
+        columns[model_col][r] = str(first_num)
+
+    # Append subsequent models column by column
+    for model_num, path in model_paths[1:]:
+        other_doc = gemmi.cif.read(str(path))
+        other_block = other_doc.sole_block()
+        lr = other_block.find_loop("_atom_site.id")
+        if not lr:
+            raise ValueError(f"No _atom_site loop in {path}")
+        other_loop = lr.get_loop()
+        other_tags = list(other_loop.tags)
+        other_n_cols = other_loop.width()
+        if model_tag not in other_tags:
+            raise ValueError(f"{model_tag} column missing from {path}")
+        other_model_col = other_tags.index(model_tag)
+        other_vals = list(other_loop.values)
+        other_n_rows = len(other_vals) // other_n_cols
+        for c in range(n_cols):
+            col_vals = [other_vals[r * other_n_cols + c] for r in range(other_n_rows)]
+            if c == model_col:
+                col_vals = [str(model_num)] * other_n_rows
+            columns[c].extend(col_vals)
+
+    loop.set_all_values(columns)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_file(str(output_path))
+
+
 def get_residue_info(pdb_path: str | Path) -> list[dict]:
     """Get information about residues in the structure.
 

@@ -154,6 +154,8 @@ class RelaxationResult:
         peptide_rmsf_mean: Mean per-residue RMSF of peptide over MD (Angstroms)
         peptide_rmsf_max: Max per-residue RMSF of peptide over MD (Angstroms)
         peptide_rmsf_per_residue: Per-residue RMSF list (Angstroms)
+        receptor_rmsd_md_final: Receptor Cα RMSD of final MD frame vs minimized (Angstroms)
+        receptor_drift_mean: Mean receptor Cα RMSD across all MD frames vs minimized (Angstroms)
         minimization_time_s: Wall time for minimization in seconds
         md_time_s: Wall time for MD simulation in seconds
         minimized_structure_path: Path to saved minimized structure CIF
@@ -171,6 +173,8 @@ class RelaxationResult:
     peptide_rmsf_mean: Optional[float] = None
     peptide_rmsf_max: Optional[float] = None
     peptide_rmsf_per_residue: Optional[list] = None
+    receptor_rmsd_md_final: Optional[float] = None
+    receptor_drift_mean: Optional[float] = None
 
     minimization_time_s: Optional[float] = None
     md_time_s: Optional[float] = None
@@ -194,6 +198,8 @@ class RelaxationResult:
             "rmsd_md_final": self.rmsd_md_final,
             "peptide_rmsf_mean": self.peptide_rmsf_mean,
             "peptide_rmsf_max": self.peptide_rmsf_max,
+            "receptor_rmsd_md_final": self.receptor_rmsd_md_final,
+            "receptor_drift_mean": self.receptor_drift_mean,
             "minimization_time_s": self.minimization_time_s,
             "md_time_s": self.md_time_s,
             "minimized_structure_path": self.minimized_structure_path,
@@ -1016,6 +1022,22 @@ class ImplicitRelaxation:
                     result.peptide_rmsf_max = float(rmsf.max())
                     result.peptide_rmsf_per_residue = rmsf.tolist()
 
+                # Receptor Cα RMSD / drift
+                receptor_ca_indices = [
+                    a.index
+                    for a in topology.atoms()
+                    if a.residue.chain.id == receptor_chain and a.name == "CA"
+                ]
+                if receptor_ca_indices:
+                    result.receptor_rmsd_md_final = self._compute_rmsd(
+                        final_positions, minimized_positions, receptor_ca_indices
+                    )
+                    per_frame_rmsd = [
+                        self._compute_rmsd(frame, minimized_positions, receptor_ca_indices)
+                        for frame in trajectory_positions
+                    ]
+                    result.receptor_drift_mean = float(np.mean(per_frame_rmsd))
+
                 # Save final MD structure — preserve auth IDs from input
                 final_path = output_dir / f"{sample_id}_md_final.cif"
                 save_cif(topology, final_positions, final_path, source_cif_path=src)
@@ -1029,6 +1051,50 @@ class ImplicitRelaxation:
             traceback.print_exc()
 
         return result
+
+
+def _run_one(
+    relaxer: "ImplicitRelaxation",
+    input_path: Path,
+    output_dir: Path,
+    sample_id: Optional[str],
+    results_json: Optional[Path],
+    model_num: Optional[int],
+) -> "RelaxationResult":
+    """Extract one model (if needed), run relaxation, write JSON, return result."""
+    from binding_metrics.io.structures import extract_model_to_tempfile
+
+    tmp_path: Optional[Path] = None
+    if model_num is not None:
+        tmp_path = extract_model_to_tempfile(input_path, model_num)
+        if tmp_path != input_path:
+            print(f"  Extracted model {model_num} → {tmp_path}")
+            if sample_id is None:
+                sample_id = f"{input_path.stem}_model{model_num}"
+
+    try:
+        effective_input = tmp_path if tmp_path is not None else input_path
+        result = relaxer.run(effective_input, output_dir, sample_id=sample_id)
+    finally:
+        if tmp_path is not None and tmp_path != input_path:
+            tmp_path.unlink(missing_ok=True)
+
+    rp: Path = results_json or (output_dir / f"{result.sample_id}_relax_results.json")
+    rp.parent.mkdir(parents=True, exist_ok=True)
+    with open(rp, "w", encoding="utf-8") as _fh:
+        json.dump(result.to_dict(), _fh, indent=2, default=str)
+    print(f"  Results:   {rp}")
+
+    if result.success:
+        print(f"\nSUCCESS")
+        if result.minimized_structure_path:
+            print(f"  Minimized: {result.minimized_structure_path}")
+        if result.md_final_structure_path:
+            print(f"  MD final:  {result.md_final_structure_path}")
+    else:
+        print(f"\nFAILED: {result.error_message}")
+
+    return result
 
 
 def main():
@@ -1048,12 +1114,25 @@ def main():
     parser.add_argument("--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)")
     parser.add_argument("--receptor-chain", type=str, default=None, help="Receptor chain ID (auto-detect if omitted)")
     parser.add_argument("--sample-id", type=str, default=None, help="Sample identifier (defaults to input file stem)")
+
+    model_group = parser.add_mutually_exclusive_group()
+    model_group.add_argument("--model", type=int, default=None,
+                             help="Extract and relax a single model from a multi-model CIF (1-based)")
+    model_group.add_argument("--all-models", action="store_true",
+                             help="Relax every model in a multi-model CIF; "
+                                  "errors on single-model files if given explicitly. "
+                                  "sample-id is auto-set to <stem>_model<N> for each.")
+
     parser.add_argument("--results-json", type=Path, default=None,
                         help="Path to write relax results JSON "
-                             "(default: <output-dir>/<sample-id>_relax_results.json)")
+                             "(default: <output-dir>/<sample-id>_relax_results.json; "
+                             "ignored with --all-models)")
     from binding_metrics.cli import add_log_file_arg
     add_log_file_arg(parser)
     args = parser.parse_args()
+
+    if args.all_models and args.sample_id is not None:
+        parser.error("--sample-id cannot be used with --all-models (IDs are auto-generated)")
 
     from binding_metrics.cli import log_to_file
     with log_to_file(args.log_file):
@@ -1067,27 +1146,49 @@ def main():
             peptide_chain_id=args.peptide_chain,
             receptor_chain_id=args.receptor_chain,
         )
-
         relaxer = ImplicitRelaxation(config)
-        result = relaxer.run(args.input, args.output_dir, sample_id=args.sample_id)
 
-        results_path: Path = args.results_json or (
-            args.output_dir / f"{result.sample_id}_relax_results.json"
-        )
-        results_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(results_path, "w", encoding="utf-8") as _fh:
-            json.dump(result.to_dict(), _fh, indent=2, default=str)
-        print(f"  Results:   {results_path}")
+        if args.all_models:
+            from binding_metrics.io.structures import detect_models, merge_cif_models
+            models = detect_models(args.input)
+            if len(models) == 1:
+                print(f"  [warning] --all-models: only one model found ({models[0]}); "
+                      f"proceeding with model {models[0]}.")
+            failed: list[int] = []
+            minimized: list[tuple[int, Path]] = []
+            for m in models:
+                print(f"\n{'='*60}\n  Model {m}\n{'='*60}")
+                result = _run_one(
+                    relaxer, args.input, args.output_dir,
+                    sample_id=None, results_json=None, model_num=m,
+                )
+                if not result.success:
+                    failed.append(m)
+                else:
+                    out_cif = result.md_final_structure_path or result.minimized_structure_path
+                    if out_cif:
+                        minimized.append((m, Path(out_cif)))
 
-        if result.success:
-            print(f"\nSUCCESS")
-            if result.minimized_structure_path:
-                print(f"  Minimized: {result.minimized_structure_path}")
-            if result.md_final_structure_path:
-                print(f"  MD final:  {result.md_final_structure_path}")
+            # Merge all minimized models into a single multi-model CIF
+            if minimized:
+                merged_path = args.output_dir / f"{args.input.stem}_minimized.cif"
+                merge_cif_models(minimized, merged_path)
+                for _, p in minimized:
+                    p.unlink(missing_ok=True)
+                print(f"\n  Merged output ({len(minimized)} model(s)): {merged_path}")
+
+            if failed:
+                print(f"\nFAILED models: {failed}", file=sys.stderr)
+                sys.exit(1)
         else:
-            print(f"\nFAILED: {result.error_message}")
-            sys.exit(1)
+            result = _run_one(
+                relaxer, args.input, args.output_dir,
+                sample_id=args.sample_id,
+                results_json=args.results_json,
+                model_num=args.model,
+            )
+            if not result.success:
+                sys.exit(1)
 
 
 if __name__ == "__main__":

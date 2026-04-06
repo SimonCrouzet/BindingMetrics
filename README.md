@@ -399,7 +399,17 @@ OpenFold3 runs in the `openfold3` conda env by default (see [OpenFold3 install](
 | `binding-metrics-geometry` | Ramachandran, ω planarity, shape complementarity, void volume |
 | `binding-metrics-compare` | RMSD between two structures |
 | `binding-metrics-openfold` | Parse / run OpenFold3 confidence metrics |
-| `binding-metrics-relax` | Implicit-solvent energy minimization |
+| `binding-metrics-relax` | Implicit-solvent energy minimization; supports multi-model CIFs via `--model N` or `--all-models` |
+
+`binding-metrics-relax` can operate on **multi-model CIFs** (e.g. outputs from homology modelling pipelines):
+
+```bash
+# Minimize a single model from a multi-model CIF
+binding-metrics-relax --input models.cif --output-dir results/ --md-duration-ps 0 --model 3
+
+# Minimize every model — output is a single multi-model CIF <stem>_minimized.cif
+binding-metrics-relax --input models.cif --output-dir results/ --md-duration-ps 0 --all-models
+```
 
 **Receptor quality (standalone)**
 
