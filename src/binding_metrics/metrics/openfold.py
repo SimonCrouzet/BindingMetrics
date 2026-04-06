@@ -55,6 +55,8 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.utils import backfill_auth_columns
+
 
 # ---------------------------------------------------------------------------
 # Output file discovery
@@ -230,6 +232,7 @@ def _load_atoms(path: Path):
     path = Path(path)
     if path.suffix.lower() in (".cif", ".mmcif"):
         f = pdbx.CIFFile.read(str(path))
+        backfill_auth_columns(f)
         return pdbx.get_structure(f, model=1)
     import biotite.structure.io.pdb as pdb_io
     f = pdb_io.PDBFile.read(str(path))

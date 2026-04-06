@@ -16,6 +16,8 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.utils import backfill_auth_columns
+
 # Eisenberg-McLachlan atomic solvation parameters (kcal/mol/Å²).
 # Negative = apolar/hydrophobic (burial is favorable).
 # Positive = polar/hydrophilic (burial is unfavorable).
@@ -59,6 +61,7 @@ def load_biotite_structure(cif_path: str | Path):
     path = Path(cif_path)
     if path.suffix.lower() in (".cif", ".mmcif"):
         pdbx_file = pdbx.CIFFile.read(str(path))
+        backfill_auth_columns(pdbx_file)
         try:
             return pdbx.get_structure(pdbx_file, model=1, extra_fields=["charge"])
         except Exception:

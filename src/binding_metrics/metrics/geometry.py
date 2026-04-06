@@ -17,6 +17,8 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.utils import backfill_auth_columns
+
 
 # ---------------------------------------------------------------------------
 # Lazy imports
@@ -64,6 +66,7 @@ def _load_structure(path: Path):
     suffix = path.suffix.lower()
     if suffix in (".cif", ".mmcif"):
         pdbx_file = pdbx.CIFFile.read(str(path))
+        backfill_auth_columns(pdbx_file)
         return pdbx.get_structure(pdbx_file, model=1)
     else:
         pdb_file = pdb_io.PDBFile.read(str(path))

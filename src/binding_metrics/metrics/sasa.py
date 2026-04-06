@@ -5,6 +5,8 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.utils import backfill_auth_columns
+
 try:
     import mdtraj as md
 except ImportError:
@@ -163,6 +165,7 @@ def compute_delta_sasa_static(
     path = Path(cif_path)
     if path.suffix.lower() in (".cif", ".mmcif"):
         pdbx_file = pdbx.CIFFile.read(str(path))
+        backfill_auth_columns(pdbx_file)
         atoms = pdbx.get_structure(pdbx_file, model=1)
     else:
         import biotite.structure.io.pdb as pdb_io

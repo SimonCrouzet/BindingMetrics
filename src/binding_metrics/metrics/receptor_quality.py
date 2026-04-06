@@ -25,6 +25,8 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.utils import backfill_auth_columns
+
 
 # ---------------------------------------------------------------------------
 # Lazy imports
@@ -80,6 +82,7 @@ def _load_all_models(path: Path) -> list:
 
     if suffix in (".cif", ".mmcif"):
         f = pdbx.CIFFile.read(str(path))
+        backfill_auth_columns(f)
         structure = pdbx.get_structure(f)
     else:
         f = pdb_io.PDBFile.read(str(path))

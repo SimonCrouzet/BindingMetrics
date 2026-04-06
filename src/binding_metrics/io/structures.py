@@ -8,6 +8,8 @@ from typing import Optional
 from openmm import app
 from openmm.app import PDBFile
 
+from binding_metrics.utils import backfill_auth_columns
+
 
 def load_complex(pdb_path: str | Path) -> PDBFile:
     """Load a PDB file containing a molecular complex.
@@ -175,6 +177,7 @@ def detect_chains_from_file(
     auth_to_label: dict[str, str] = {}
     if suffix in (".cif", ".mmcif"):
         f = pdbx.CIFFile.read(str(path))
+        backfill_auth_columns(f)
         atoms = pdbx.get_structure(f, model=1)
         try:
             atom_site = f.block["atom_site"]
