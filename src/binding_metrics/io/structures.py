@@ -432,6 +432,29 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
     doc.write_file(str(cif_path))
 
 
+def _rename_cyx_to_cys_in_cif(cif_path: Path) -> None:
+    """Rename CYX residues back to CYS in the output CIF.
+
+    OpenMM renames disulfide-bonded CYS to CYX internally so it can match the
+    CYX forcefield template (no HG, external SG bond).  That internal name must
+    not leak into output files — downstream tools expect CYS.  The disulfide
+    bond geometry and _struct_conn records are unaffected by this rename.
+
+    Uses text replacement rather than gemmi mutation because gemmi Table views
+    from block.find() do not propagate edits back through doc.write_file().
+    CYX is a 3-letter residue code unique to the forcefield internals and safe
+    to replace as a whole-word token.
+    """
+    import re
+
+    content = cif_path.read_text()
+    if "CYX" not in content:
+        return
+    new_content = re.sub(r"\bCYX\b", "CYS", content)
+    if new_content != content:
+        cif_path.write_text(new_content)
+
+
 def save_cif(
     topology,
     positions,
@@ -470,6 +493,7 @@ def save_cif(
         # PDBxFile only writes disulfide bonds to _struct_conn; patch in any
         # other non-sequential intra-chain covalent bonds (e.g. head-to-tail).
         _patch_nonstd_bonds_in_cif(output_path, topology)
+        _rename_cyx_to_cys_in_cif(output_path)
         return
 
     try:
@@ -477,6 +501,7 @@ def save_cif(
     except ImportError:
         with open(output_path, "w") as f:
             PDBxFile.writeFile(topology, positions, f)
+        _rename_cyx_to_cys_in_cif(output_path)
         return
 
     # Write fresh OpenMM CIF — correct atoms and H, but with label chain IDs
@@ -574,6 +599,7 @@ def save_cif(
 
         output_doc.write_file(str(output_path))
         _patch_nonstd_bonds_in_cif(output_path, topology)
+        _rename_cyx_to_cys_in_cif(output_path)
     finally:
         tmp_path.unlink(missing_ok=True)
 
