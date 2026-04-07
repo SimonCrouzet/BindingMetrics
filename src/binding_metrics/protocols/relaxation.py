@@ -182,9 +182,9 @@ class RelaxationResult:
     minimized_structure_path: Optional[str] = None
     md_final_structure_path: Optional[str] = None
 
-    # Cyclic bond metadata — populated when cyclization is detected.
+    # Cyclic bond metadata — populated when cyclization is detected in the peptide.
     # Each entry: {"type": str, "atom1": "chain:res_idx:atom", "atom2": ...}
-    cyclic_bonds: Optional[list] = None
+    peptide_cyclic_bonds: Optional[list] = None
 
     def to_dict(self) -> dict:
         """Convert result to a flat dictionary for CSV export."""
@@ -204,7 +204,7 @@ class RelaxationResult:
             "md_time_s": self.md_time_s,
             "minimized_structure_path": self.minimized_structure_path,
             "md_final_structure_path": self.md_final_structure_path,
-            "cyclic_bonds": self.cyclic_bonds,
+            "peptide_cyclic_bonds": self.peptide_cyclic_bonds,
         }
         if self.peptide_rmsf_per_residue is not None:
             d["peptide_rmsf_per_residue"] = json.dumps(self.peptide_rmsf_per_residue)
@@ -865,7 +865,7 @@ class ImplicitRelaxation:
                     res_id = _chain_res_ids.get(ch, [None] * (idx + 1))[idx] if idx < len(_chain_res_ids.get(ch, [])) else idx
                     return f"{ch}:{res_id}:{name}"
 
-                result.cyclic_bonds = [
+                result.peptide_cyclic_bonds = [
                     {
                         "type": b.cyclic_type,
                         "atom1": _fmt_atom(b.atom1_id),
@@ -1079,11 +1079,12 @@ def _run_one(
         if tmp_path is not None and tmp_path != input_path:
             tmp_path.unlink(missing_ok=True)
 
-    rp: Path = results_json or (output_dir / f"{result.sample_id}_relax_results.json")
-    rp.parent.mkdir(parents=True, exist_ok=True)
-    with open(rp, "w", encoding="utf-8") as _fh:
-        json.dump(result.to_dict(), _fh, indent=2, default=str)
-    print(f"  Results:   {rp}")
+    if results_json is not None:
+        rp = Path(results_json)
+        rp.parent.mkdir(parents=True, exist_ok=True)
+        with open(rp, "w", encoding="utf-8") as _fh:
+            json.dump(result.to_dict(), _fh, indent=2, default=str)
+        print(f"  Results:   {rp}")
 
     if result.success:
         print(f"\nSUCCESS")
@@ -1124,9 +1125,8 @@ def main():
                                   "sample-id is auto-set to <stem>_model<N> for each.")
 
     parser.add_argument("--results-json", type=Path, default=None,
-                        help="Path to write relax results JSON "
-                             "(default: <output-dir>/<sample-id>_relax_results.json; "
-                             "ignored with --all-models)")
+                        help="Path to write relax results as JSON. "
+                             "Omit to skip JSON output (ignored with --all-models).")
     from binding_metrics.cli import add_log_file_arg
     add_log_file_arg(parser)
     args = parser.parse_args()
