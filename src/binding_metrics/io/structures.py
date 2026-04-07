@@ -597,6 +597,18 @@ def save_cif(
                 if orig_seq is not None:
                     row[1] = orig_seq  # auth_seq_id → original residue number
 
+        # Patch _struct_conn chain IDs (PDBxFile writes label_asym_id with
+        # sequential letters; auth_asym_id variants may also appear).
+        if out_to_auth:
+            for col in ("ptnr1_label_asym_id", "ptnr2_label_asym_id",
+                        "ptnr1_auth_asym_id",  "ptnr2_auth_asym_id"):
+                try:
+                    sc_table = output_block.find("_struct_conn.", [col])
+                    for row in sc_table:
+                        row[0] = out_to_auth.get(row[0], row[0])
+                except Exception:
+                    pass
+
         output_doc.write_file(str(output_path))
         _patch_nonstd_bonds_in_cif(output_path, topology)
         _rename_cyx_to_cys_in_cif(output_path)
