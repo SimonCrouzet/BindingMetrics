@@ -156,6 +156,8 @@ class RelaxationResult:
         peptide_rmsf_per_residue: Per-residue RMSF list (Angstroms)
         receptor_rmsd_md_final: Receptor Cα RMSD of final MD frame vs minimized (Angstroms)
         receptor_drift_mean: Mean receptor Cα RMSD across all MD frames vs minimized (Angstroms)
+        pep_rec_com_distance_delta: Change in peptide–receptor Cα COM distance from minimized
+            to final MD frame (Angstroms). Positive = separating.
         minimization_time_s: Wall time for minimization in seconds
         md_time_s: Wall time for MD simulation in seconds
         minimized_structure_path: Path to saved minimized structure CIF
@@ -175,6 +177,7 @@ class RelaxationResult:
     peptide_rmsf_per_residue: Optional[list] = None
     receptor_rmsd_md_final: Optional[float] = None
     receptor_drift_mean: Optional[float] = None
+    pep_rec_com_distance_delta: Optional[float] = None
 
     minimization_time_s: Optional[float] = None
     md_time_s: Optional[float] = None
@@ -200,6 +203,7 @@ class RelaxationResult:
             "peptide_rmsf_max": self.peptide_rmsf_max,
             "receptor_rmsd_md_final": self.receptor_rmsd_md_final,
             "receptor_drift_mean": self.receptor_drift_mean,
+            "pep_rec_com_distance_delta": self.pep_rec_com_distance_delta,
             "minimization_time_s": self.minimization_time_s,
             "md_time_s": self.md_time_s,
             "minimized_structure_path": self.minimized_structure_path,
@@ -657,6 +661,26 @@ class ImplicitRelaxation:
         mean_pos = all_pos.mean(axis=0)
         return np.sqrt(np.mean((all_pos - mean_pos) ** 2, axis=0).sum(axis=1))
 
+    @staticmethod
+    def _com_distance_delta(
+        positions_a,
+        positions_b,
+        peptide_indices: list[int],
+        receptor_indices: list[int],
+    ) -> float:
+        """Change in peptide–receptor Cα COM distance between two frames.
+
+        Returns:
+            Delta in Angstroms (positive = chains moved apart).
+        """
+        def _com_dist(positions):
+            pos = np.array([[p.x, p.y, p.z] for p in positions]) * 10  # nm → Å
+            pep_com = pos[peptide_indices].mean(axis=0)
+            rec_com = pos[receptor_indices].mean(axis=0)
+            return float(np.linalg.norm(pep_com - rec_com))
+
+        return _com_dist(positions_b) - _com_dist(positions_a)
+
     def _run_cyclic_warmup(
         self,
         system,
@@ -1037,6 +1061,15 @@ class ImplicitRelaxation:
                         for frame in trajectory_positions
                     ]
                     result.receptor_drift_mean = float(np.mean(per_frame_rmsd))
+
+                # Peptide–receptor Cα COM distance delta (minimized → final)
+                if peptide_ca_indices and receptor_ca_indices:
+                    result.pep_rec_com_distance_delta = self._com_distance_delta(
+                        minimized_positions,
+                        final_positions,
+                        peptide_ca_indices,
+                        receptor_ca_indices,
+                    )
 
                 # Save final MD structure — preserve auth IDs from input
                 final_path = output_dir / f"{sample_id}_md_final.cif"
