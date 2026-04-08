@@ -965,8 +965,20 @@ def get_addh_variants(topology, bond_info_list: list, chain_id: str) -> list:
             h_last = _internal_h_list(last.name)
             if h_last is not None:
                 variants[last.index] = h_last
-        # disulfide: CYX template is handled by the CYS→CYX rename + bond;
-        # addHydrogens auto-detects CYX via the disulfide bond check (line 146-147).
+        # disulfide: CYX residues need explicit variants — handled below.
+
+    # CYX residues in a cyclic chain require explicit H-specs because
+    # CYX is not in Modeller._residueHydrogens and OpenMM's auto-detection
+    # fails when the backbone connectivity is non-standard (cyclic closure).
+    # This covers CYX at any position: first/last (may already be set above
+    # from head_to_tail handling) and internal positions where variants is
+    # still None.  We only override None entries so head_to_tail first/last
+    # assignments are not disturbed if those residues happen to be CYX.
+    for res in chain_residues:
+        if res.name == "CYX" and variants[res.index] is None:
+            h_cyx = _internal_h_list("CYX")
+            if h_cyx is not None:
+                variants[res.index] = h_cyx
 
     return variants
 
