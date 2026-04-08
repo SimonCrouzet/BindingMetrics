@@ -130,6 +130,175 @@ def _run_one(
 
 
 # ---------------------------------------------------------------------------
+# Batched OpenFold (single subprocess for all samples)
+# ---------------------------------------------------------------------------
+
+def _run_batched_openfold(
+    rows: list[dict],
+    sid_to_input: dict[str, Path],
+    output_dir: Path,
+    openfold_mode: str,
+    openfold_conda_env: Optional[str],
+    peptide_chain: Optional[str],
+    receptor_chain: Optional[str],
+) -> None:
+    """Run OpenFold3 on all successful samples in a single subprocess.
+
+    Modifies *rows* in-place, merging OF3 and EvoBind metrics into each
+    sample's flat dict.  Also updates each sample's JSON report on disk.
+    """
+    from binding_metrics.io.structures import detect_chains_from_file
+    from binding_metrics.metrics.openfold import (
+        _BatchSample,
+        run_openfold_batched,
+        compute_openfold_metrics,
+    )
+    from binding_metrics.protocols.report import _flatten
+
+    # Build list of eligible samples (succeeded, have chain info)
+    samples: list[_BatchSample] = []
+    # Map query_name → row index for merging results back
+    sid_to_row_idx: dict[str, int] = {}
+    # Map query_name → chain info for metrics extraction
+    sid_to_chains: dict[str, dict] = {}
+
+    for i, row in enumerate(rows):
+        sid = row.get("sample_id")
+        if not sid or row.get("batch_status") == "error":
+            continue
+        input_path = sid_to_input.get(sid)
+        if input_path is None:
+            continue
+
+        # Detect chains from the input file (same logic as run_pipeline)
+        try:
+            chain_info = detect_chains_from_file(
+                input_path,
+                peptide_chain=peptide_chain,
+                receptor_chain=receptor_chain,
+            )
+        except Exception:
+            continue
+
+        pchain = chain_info.get("peptide_chain")
+        rchain = chain_info.get("receptor_chain")
+        if not pchain or not rchain:
+            continue
+
+        samples.append(_BatchSample(
+            query_name=sid,
+            complex_structure_path=input_path,
+            receptor_chain=rchain,
+            binder_chain=pchain,
+        ))
+        sid_to_row_idx[sid] = i
+        sid_to_chains[sid] = {"peptide": pchain, "receptor": rchain}
+
+    if not samples:
+        print("  [skip] No eligible samples for batched OpenFold.", flush=True)
+        return
+
+    print(f"\n{'='*60}", flush=True)
+    print(f"  Step: Batched OpenFold3 ({len(samples)} samples in one call)", flush=True)
+    print(f"{'='*60}", flush=True)
+
+    of_dir = output_dir / "_openfold_batch"
+    try:
+        predictions_dir = run_openfold_batched(
+            samples=samples,
+            output_dir=of_dir,
+            mode=openfold_mode,
+            conda_env=openfold_conda_env,
+        )
+    except Exception as e:
+        print(f"  [ERROR] Batched OpenFold failed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        for sid, idx in sid_to_row_idx.items():
+            rows[idx]["openfold_error"] = str(e)
+        return
+
+    # Extract per-sample metrics and merge into rows
+    for s in samples:
+        sid = s.query_name
+        idx = sid_to_row_idx[sid]
+        chains = sid_to_chains[sid]
+        pchain = chains["peptide"]
+        rchain = chains["receptor"]
+
+        try:
+            if openfold_mode == "refold":
+                of_metrics = compute_openfold_metrics(
+                    output_dir=predictions_dir,
+                    query_name=sid,
+                    binder_chain=pchain,
+                    receptor_chain=rchain,
+                    reference_structure_path=sid_to_input[sid],
+                )
+            else:
+                of_metrics = compute_openfold_metrics(
+                    output_dir=predictions_dir,
+                    query_name=sid,
+                    binder_chain=pchain,
+                    receptor_chain=rchain,
+                )
+
+            # EvoBind metrics — reuse OF3 outputs
+            of_structure = of_metrics.get("structure_path")
+            plddt = of_metrics.get("plddt_per_atom")
+            if of_structure:
+                try:
+                    from binding_metrics.metrics.evobind import (
+                        compute_evobind_score,
+                        compute_evobind_adversarial_check,
+                    )
+                    of_metrics.update(compute_evobind_score(
+                        of_structure,
+                        plddt_per_atom=plddt,
+                        binder_chain=pchain,
+                        receptor_chain=rchain,
+                    ))
+                    of_metrics.update(compute_evobind_adversarial_check(
+                        design_structure_path=sid_to_input[sid],
+                        afm_structure_path=of_structure,
+                        binder_chain=pchain,
+                        receptor_chain=rchain,
+                        afm_plddt_per_atom=plddt,
+                    ))
+                except Exception as e:
+                    of_metrics["evobind_error"] = str(e)
+
+            # Flatten OF3 metrics into the row
+            for k, v in _flatten({"openfold": of_metrics}).items():
+                if k.startswith("openfold_"):
+                    rows[idx][k] = v
+
+            # Update per-sample JSON report on disk
+            _update_sample_json(output_dir / sid, sid, of_metrics)
+
+            print(f"  {sid}: ipTM={of_metrics.get('iptm', '?')}, "
+                  f"pLDDT={of_metrics.get('avg_plddt', '?')}", flush=True)
+
+        except Exception as e:
+            print(f"  {sid}: OpenFold metrics failed: {e}", flush=True)
+            rows[idx]["openfold_error"] = str(e)
+
+
+def _update_sample_json(sample_dir: Path, sid: str, of_metrics: dict) -> None:
+    """Merge OpenFold results into an existing per-sample JSON report."""
+    import json
+    json_path = sample_dir / f"{sid}_results.json"
+    if not json_path.exists():
+        return
+    try:
+        data = json.loads(json_path.read_text())
+        data["openfold"] = of_metrics
+        json_path.write_text(json.dumps(data, indent=2, default=str))
+    except Exception:
+        pass  # non-critical — CSV has the data anyway
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -246,6 +415,11 @@ def main():
     print(f"{'#'*60}\n")
 
     # ------------------------------------------------------------------ Build kwargs
+    # Strip openfold from per-worker metrics — it will be run as a single
+    # batched subprocess after all other metrics finish.
+    want_openfold = "openfold" in args.metrics
+    worker_metrics = args.metrics - {"openfold"}
+
     common_kwargs = dict(
         output_dir=output_dir,
         sample_id=None,          # derived from file stem per sample
@@ -258,7 +432,7 @@ def main():
         device=args.device,
         peptide_chain=args.peptide_chain,
         receptor_chain=args.receptor_chain,
-        metrics=args.metrics,
+        metrics=worker_metrics,
         energy_modes=tuple(args.energy_modes),
         openfold_mode=args.openfold_mode,
         openfold_conda_env=args.openfold_conda_env,
@@ -268,6 +442,8 @@ def main():
     # ------------------------------------------------------------------ Run
     t_batch_start = time.time()
     rows: list[dict] = []
+    # Map sample_id → input_path for the batched OF3 call later
+    sid_to_input: dict[str, Path] = {}
     n_ok = 0
     n_err = 0
 
@@ -276,6 +452,7 @@ def main():
         # `rows` is appended only here in the main process; no concurrency.
         for i, input_path in enumerate(input_files, 1):
             sid = input_path.stem
+            sid_to_input[sid] = input_path
             print(f"[{i}/{len(input_files)}] Processing: {sid}", flush=True)
             flat = _run_one(input_path=input_path, **common_kwargs)
             rows.append(flat)
@@ -295,8 +472,10 @@ def main():
         futures = {}
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
             for input_path in input_files:
+                sid = input_path.stem
+                sid_to_input[sid] = input_path
                 fut = pool.submit(_run_one, input_path=input_path, **common_kwargs)
-                futures[fut] = input_path.stem
+                futures[fut] = sid
 
             done = 0
             for fut in as_completed(futures):
@@ -319,6 +498,18 @@ def main():
                     rows.append({"sample_id": sid, "batch_status": "error",
                                  "batch_error": f"{type(e).__name__}: {e}"})
                     print(f"[{done}/{len(input_files)}] {sid} -> FATAL: {e}", flush=True)
+
+    # -------------------------------------------------------- Batched OpenFold
+    if want_openfold:
+        _run_batched_openfold(
+            rows=rows,
+            sid_to_input=sid_to_input,
+            output_dir=output_dir,
+            openfold_mode=args.openfold_mode,
+            openfold_conda_env=args.openfold_conda_env,
+            peptide_chain=args.peptide_chain,
+            receptor_chain=args.receptor_chain,
+        )
 
     # ------------------------------------------------------------------ Write CSV
     # Written here, in the main process, after the ProcessPoolExecutor context

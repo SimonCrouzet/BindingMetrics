@@ -46,6 +46,7 @@ Usage (CLI):
 """
 
 import argparse
+import dataclasses
 import json
 import subprocess
 import sys
@@ -1289,6 +1290,211 @@ def run_openfold_refolding(
         output_dir=query_dir,
         template_cif_path=template_cif_path,
     )
+
+    run_openfold(
+        query_json=query_json,
+        output_dir=predictions_dir,
+        inference_ckpt_path=inference_ckpt_path,
+        num_diffusion_samples=num_diffusion_samples,
+        num_model_seeds=num_model_seeds,
+        use_msa_server=use_msa_server,
+        model_presets=model_presets,
+        runner_yaml=runner_yaml,
+        extra_args=extra_args,
+        conda_env=conda_env,
+        template_dir=query_dir / "templates",
+    )
+    return predictions_dir
+
+
+# ---------------------------------------------------------------------------
+# Batched inference (multiple queries in one OF3 subprocess)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class _BatchSample:
+    """Descriptor for one sample in a batched OF3 run."""
+    query_name: str
+    complex_structure_path: Path
+    receptor_chain: str
+    binder_chain: str
+
+
+def _safe_entry_id(sample_id: str, suffix: str) -> str:
+    """Return an OF3-safe entry ID (no underscores).
+
+    OF3 splits A3M template headers on ``_`` to get (entry_id, chain_id),
+    so entry_id must not contain underscores.
+    """
+    return sample_id.replace("_", "-") + suffix
+
+
+def prepare_batched_scoring_queries(
+    samples: list[_BatchSample],
+    output_dir: str | Path,
+) -> Path:
+    """Prepare a single OF3 query JSON that scores multiple complexes.
+
+    All template CIFs and A3M files are written into a shared directory
+    structure so that one ``run_openfold predict`` call processes every
+    sample.
+
+    Args:
+        samples: Per-sample descriptors.
+        output_dir: Directory to write query JSON and supporting files.
+
+    Returns:
+        Path to the combined query JSON file.
+    """
+    import gemmi
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    templates_dir = output_dir / "templates"
+    templates_dir.mkdir(exist_ok=True)
+
+    queries: dict = {}
+    for s in samples:
+        st = gemmi.read_structure(str(s.complex_structure_path))
+        receptor_seq = _extract_sequence_from_structure(st, s.receptor_chain)
+        binder_seq = _extract_sequence_from_structure(st, s.binder_chain)
+
+        rec_entry = _safe_entry_id(s.query_name, "rec")
+        bnd_entry = _safe_entry_id(s.query_name, "bnd")
+
+        _extract_chain_to_cif(st, s.receptor_chain, templates_dir / f"{rec_entry}.cif", sequence=receptor_seq)
+        _extract_chain_to_cif(st, s.binder_chain, templates_dir / f"{bnd_entry}.cif", sequence=binder_seq)
+
+        rec_a3m = output_dir / f"{s.query_name}_receptor.a3m"
+        bnd_a3m = output_dir / f"{s.query_name}_binder.a3m"
+        _write_a3m_self_alignment(receptor_seq, f"query_{s.receptor_chain}", rec_entry, s.receptor_chain, rec_a3m)
+        _write_a3m_self_alignment(binder_seq, f"query_{s.binder_chain}", bnd_entry, s.binder_chain, bnd_a3m)
+
+        queries[s.query_name] = {
+            "chains": [
+                {
+                    "molecule_type": "protein",
+                    "chain_ids": [s.receptor_chain],
+                    "sequence": receptor_seq,
+                    "template_alignment_file_path": str(rec_a3m),
+                },
+                {
+                    "molecule_type": "protein",
+                    "chain_ids": [s.binder_chain],
+                    "sequence": binder_seq,
+                    "template_alignment_file_path": str(bnd_a3m),
+                },
+            ],
+        }
+
+    query_json_path = output_dir / "batch_query.json"
+    query_json_path.write_text(json.dumps({"seeds": [42], "queries": queries}, indent=2))
+    return query_json_path
+
+
+def prepare_batched_refolding_queries(
+    samples: list[_BatchSample],
+    output_dir: str | Path,
+) -> Path:
+    """Prepare a single OF3 query JSON that refolds binders for multiple complexes.
+
+    Receptor chains are provided as structural templates; binder chains are
+    predicted from sequence only.
+
+    Args:
+        samples: Per-sample descriptors.
+        output_dir: Directory to write query JSON and supporting files.
+
+    Returns:
+        Path to the combined query JSON file.
+    """
+    import gemmi
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    templates_dir = output_dir / "templates"
+    templates_dir.mkdir(exist_ok=True)
+
+    queries: dict = {}
+    for s in samples:
+        st = gemmi.read_structure(str(s.complex_structure_path))
+        receptor_seq = _extract_sequence_from_structure(st, s.receptor_chain)
+        binder_seq = _extract_sequence_from_structure(st, s.binder_chain)
+
+        rec_entry = _safe_entry_id(s.query_name, "rec")
+
+        _extract_chain_to_cif(st, s.receptor_chain, templates_dir / f"{rec_entry}.cif", sequence=receptor_seq)
+
+        rec_a3m = output_dir / f"{s.query_name}_receptor.a3m"
+        _write_a3m_self_alignment(receptor_seq, f"query_{s.receptor_chain}", rec_entry, s.receptor_chain, rec_a3m)
+
+        queries[s.query_name] = {
+            "chains": [
+                {
+                    "molecule_type": "protein",
+                    "chain_ids": [s.receptor_chain],
+                    "sequence": receptor_seq,
+                    "template_alignment_file_path": str(rec_a3m),
+                },
+                {
+                    "molecule_type": "protein",
+                    "chain_ids": [s.binder_chain],
+                    "sequence": binder_seq,
+                },
+            ],
+        }
+
+    query_json_path = output_dir / "batch_query.json"
+    query_json_path.write_text(json.dumps({"seeds": [42], "queries": queries}, indent=2))
+    return query_json_path
+
+
+def run_openfold_batched(
+    samples: list[_BatchSample],
+    output_dir: str | Path,
+    mode: str = "score",
+    inference_ckpt_path: Optional[str | Path] = None,
+    num_diffusion_samples: int = 5,
+    num_model_seeds: int = 1,
+    use_msa_server: bool = True,
+    model_presets: Optional[list[str]] = None,
+    runner_yaml: Optional[str | Path] = None,
+    extra_args: Optional[list[str]] = None,
+    conda_env: Optional[str] = None,
+) -> Path:
+    """Run OpenFold3 inference on multiple samples in a single subprocess.
+
+    Prepares all queries into one combined JSON, calls ``run_openfold``
+    once (amortising model loading and CUDA initialisation), and returns
+    the predictions directory.  Use :func:`compute_openfold_metrics` with
+    each sample's ``query_name`` to extract per-sample results.
+
+    Args:
+        samples: Per-sample descriptors.
+        output_dir: Top-level output directory.
+        mode: ``"score"`` (both chains as templates) or ``"refold"``
+            (binder predicted from sequence only).
+        inference_ckpt_path: Optional model checkpoint path.
+        num_diffusion_samples: Structure samples per query (default 5).
+        num_model_seeds: Random seeds per query (default 1).
+        use_msa_server: Use ColabFold MSA server (default True).
+        model_presets: Model configuration presets.
+        runner_yaml: Explicit runner YAML; overrides ``model_presets``.
+        extra_args: Additional CLI args for OF3.
+        conda_env: Conda environment name (default None).
+
+    Returns:
+        Path to the OF3 predictions output directory.
+    """
+    output_dir = Path(output_dir)
+    query_dir = output_dir / "query"
+    predictions_dir = output_dir / "predictions"
+
+    if mode == "refold":
+        query_json = prepare_batched_refolding_queries(samples, query_dir)
+    else:
+        query_json = prepare_batched_scoring_queries(samples, query_dir)
 
     run_openfold(
         query_json=query_json,

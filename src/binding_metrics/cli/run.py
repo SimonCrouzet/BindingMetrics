@@ -280,7 +280,7 @@ def run_pipeline(
                 compute_openfold_metrics,
             )
 
-            if not working_peptide or not working_receptor:
+            if not peptide_chain or not receptor_chain:
                 _warn(
                     "OpenFold requires --peptide-chain and --receptor-chain (or auto-detect); skipping."
                 )
@@ -289,9 +289,9 @@ def run_pipeline(
                 of_dir = output_dir / "openfold"
                 if openfold_mode == "refold":
                     predictions_dir = run_openfold_refolding(
-                        complex_structure_path=relaxed_path,
-                        receptor_chain=working_receptor,
-                        binder_chain=working_peptide,
+                        complex_structure_path=input_path,
+                        receptor_chain=receptor_chain,
+                        binder_chain=peptide_chain,
                         query_name=sample_id,
                         output_dir=of_dir,
                         conda_env=openfold_conda_env,
@@ -299,15 +299,15 @@ def run_pipeline(
                     of_metrics = compute_openfold_metrics(
                         output_dir=predictions_dir,
                         query_name=sample_id,
-                        binder_chain=working_peptide,
-                        receptor_chain=working_receptor,
-                        reference_structure_path=relaxed_path,
+                        binder_chain=peptide_chain,
+                        receptor_chain=receptor_chain,
+                        reference_structure_path=input_path,
                     )
                 else:  # score (default)
                     predictions_dir = run_openfold_scoring(
-                        complex_structure_path=relaxed_path,
-                        receptor_chain=working_receptor,
-                        binder_chain=working_peptide,
+                        complex_structure_path=input_path,
+                        receptor_chain=receptor_chain,
+                        binder_chain=peptide_chain,
                         query_name=sample_id,
                         output_dir=of_dir,
                         conda_env=openfold_conda_env,
@@ -315,8 +315,8 @@ def run_pipeline(
                     of_metrics = compute_openfold_metrics(
                         output_dir=predictions_dir,
                         query_name=sample_id,
-                        binder_chain=working_peptide,
-                        receptor_chain=working_receptor,
+                        binder_chain=peptide_chain,
+                        receptor_chain=receptor_chain,
                     )
                 # EvoBind metrics — no extra model calls, reuse OF3 outputs
                 of_structure = of_metrics.get("structure_path")
@@ -331,8 +331,8 @@ def run_pipeline(
                         of_metrics.update(compute_evobind_score(
                             of_structure,
                             plddt_per_atom=plddt,
-                            binder_chain=working_peptide,
-                            receptor_chain=working_receptor,
+                            binder_chain=peptide_chain,
+                            receptor_chain=receptor_chain,
                         ))
                     except Exception as e:
                         _warn(f"EvoBind score failed: {e}")
@@ -345,8 +345,8 @@ def run_pipeline(
                         of_metrics.update(compute_evobind_adversarial_check(
                             design_structure_path=input_path,
                             afm_structure_path=of_structure,
-                            binder_chain=working_peptide,
-                            receptor_chain=working_receptor,
+                            binder_chain=peptide_chain,
+                            receptor_chain=receptor_chain,
                             afm_plddt_per_atom=plddt,
                         ))
                     except Exception as e:
