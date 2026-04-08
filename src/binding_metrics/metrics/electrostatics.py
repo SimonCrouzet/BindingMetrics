@@ -110,8 +110,8 @@ def compute_coulomb_cross_chain(
         receptor_chain = receptor_chain or auto_rec
 
     _default = {
-        "coulomb_energy_kJ": np.nan,
-        "coulomb_energy_kcal": np.nan,
+        "coulomb_energy_kJ": 0.0,
+        "coulomb_energy_kcal": 0.0,
         "n_charged_pairs": 0,
         "n_attractive": 0,
         "n_repulsive": 0,
