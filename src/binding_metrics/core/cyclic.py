@@ -967,14 +967,12 @@ def get_addh_variants(topology, bond_info_list: list, chain_id: str) -> list:
                 variants[last.index] = h_last
         # disulfide: CYX residues need explicit variants — handled below.
 
-    # CYX residues in a cyclic chain require explicit H-specs because
-    # CYX is not in Modeller._residueHydrogens and OpenMM's auto-detection
-    # fails when the backbone connectivity is non-standard (cyclic closure).
-    # This covers CYX at any position: first/last (may already be set above
-    # from head_to_tail handling) and internal positions where variants is
-    # still None.  We only override None entries so head_to_tail first/last
-    # assignments are not disturbed if those residues happen to be CYX.
-    for res in chain_residues:
+    # CYX residues require explicit H-specs because CYX is not in
+    # Modeller._residueHydrogens.  Scan ALL residues (not just the cyclic
+    # chain) so that inter-chain disulfide partners (e.g. receptor CYS
+    # renamed to CYX) are also covered.  We only override None entries so
+    # head_to_tail first/last assignments are not disturbed.
+    for res in topology.residues():
         if res.name == "CYX" and variants[res.index] is None:
             h_cyx = _internal_h_list("CYX")
             if h_cyx is not None:

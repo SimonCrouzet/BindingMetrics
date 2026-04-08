@@ -183,6 +183,7 @@ def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) ->
         patch_cyclic_topology,
         get_addh_variants,
         load_extra_xmls,
+        rename_disulfide_cys_to_cyx,
     )
 
     # custom bonds are intra-chain, so both ends share the same chain ID.
@@ -192,6 +193,11 @@ def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) ->
     # without the bond already in the topology), removes C-terminal OXT and
     # terminal H atoms that PDBFixer added, and adds the N-C closure bond.
     topology, positions, bond_info = patch_cyclic_topology(topology, positions, cyclic_chain)
+
+    # Rename any remaining SS-bonded CYS → CYX.  patch_cyclic_topology only
+    # handles intra-chain disulfides; this catches inter-chain ones (e.g.
+    # peptide–receptor SS bonds) that would otherwise fail in addHydrogens.
+    topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
 
     if not bond_info:
         # Shouldn't happen if custom_bonds is non-empty, but fall back gracefully.
