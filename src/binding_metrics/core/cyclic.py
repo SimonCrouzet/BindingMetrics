@@ -539,13 +539,31 @@ def register_ss_bonds(topology, positions) -> object:
         if b.atom1.name == "SG" and b.atom2.name == "SG"
     }
 
+    # Track which SG atoms are already claimed (each SG can form at most one
+    # disulfide bond).
+    claimed: set = set()
+    for pair in existing_ss:
+        claimed.update(pair)
+
+    # Build candidate pairs sorted by distance (shortest first) so the best
+    # geometric match wins when two SG atoms compete for the same partner.
+    candidates = []
     for i, ai in enumerate(sg_atoms):
         for aj in sg_atoms[i + 1:]:
-            if _dist(pos_nm, ai.index, aj.index) < _DISULFIDE_THRESH:
-                key = (min(ai.index, aj.index), max(ai.index, aj.index))
-                if key not in existing_ss:
-                    topology.addBond(ai, aj)
-                    existing_ss.add(key)
+            d = _dist(pos_nm, ai.index, aj.index)
+            if d < _DISULFIDE_THRESH:
+                candidates.append((d, ai, aj))
+    candidates.sort(key=lambda t: t[0])
+
+    for _d, ai, aj in candidates:
+        if ai.index in claimed or aj.index in claimed:
+            continue
+        key = (min(ai.index, aj.index), max(ai.index, aj.index))
+        if key not in existing_ss:
+            topology.addBond(ai, aj)
+            existing_ss.add(key)
+        claimed.add(ai.index)
+        claimed.add(aj.index)
 
     return topology
 
