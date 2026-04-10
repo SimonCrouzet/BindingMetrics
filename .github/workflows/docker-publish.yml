@@ -26,23 +26,20 @@ jobs:
         with:
           images: simoncrouzet/binding-metrics
           tags: |
-            type=ref,event=branch
+            type=raw,value=main,enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Extract metadata for full image
         id: meta-full
         uses: docker/metadata-action@v5
         with:
           images: simoncrouzet/binding-metrics
-          flavor: |
-            suffix=-full
           tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=raw,value=full,enable={{is_default_branch}}
+            type=semver,pattern={{version}},suffix=-full
+            type=semver,pattern={{major}}.{{minor}},suffix=-full
 
       - name: Build and push base image
         uses: docker/build-push-action@v5
