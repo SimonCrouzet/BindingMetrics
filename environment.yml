@@ -1,8 +1,8 @@
 name: binding-metrics
 # Developer environment for BindingMetrics.
 #
-# OpenMM is installed from conda-forge with cuda-version=12 pinned to avoid
-# CUDA PTX version mismatches on drivers that don't support CUDA 13.
+# OpenMM is installed from conda-forge with cuda-version=12.4 pinned to match
+# the Docker base image and avoid CUDA PTX version mismatches.
 #
 # Usage:
 #   conda env create -f environment.yml
@@ -15,10 +15,10 @@ channels:
 dependencies:
   - python>=3.11
 
-  # Pin cuda-version=12 so the solver picks a CUDA 12 build of OpenMM, avoiding
-  # CUDA_ERROR_UNSUPPORTED_PTX_VERSION on drivers that don't support CUDA 13.
+  # Pin cuda-version to match the Docker base image (cuda:12.4.0-runtime) so the
+  # conda solver doesn't pick a newer PTX version than the container runtime supports.
   - openmm>=8.0
-  - cuda-version=12*
+  - cuda-version=12.4*
   - openmmforcefields>=0.13
   - openff-toolkit>=0.14
 

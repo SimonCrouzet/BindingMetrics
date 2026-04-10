@@ -1,8 +1,8 @@
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS base
+FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
-        wget gcc cuda-nvcc-12-2 \
+        wget gcc cuda-nvcc-12-4 \
         libxrender1 libxext6 libsm6 libgl1-mesa-glx libglib2.0-0 \
     && apt-get clean
 
@@ -20,6 +20,8 @@ COPY . /opt/binding-metrics/
 RUN mamba env create -f environment.yml && conda clean -afy
 
 ENV PATH=/opt/conda/envs/binding-metrics/bin:$PATH
+# Auto-activate the binding-metrics env in interactive shells
+RUN echo "conda activate binding-metrics" >> /root/.bashrc
 
 # GPU access is not available during build. After building, verify OpenMM GPU
 # support with:
