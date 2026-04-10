@@ -18,6 +18,9 @@ WORKDIR /opt/binding-metrics
 # Full copy needed for pip install .[all,dev] in environment.yml
 COPY . /opt/binding-metrics/
 RUN mamba env create -f environment.yml && conda clean -afy
+# Force numpy<2 after env creation — OpenMM 8.2 (cuda-version=12.4) needs it,
+# but mdtraj's conda package can pull numpy 2.x as a hard dependency.
+RUN /opt/conda/envs/binding-metrics/bin/pip install "numpy<2"
 
 ENV PATH=/opt/conda/envs/binding-metrics/bin:$PATH
 # Auto-activate the binding-metrics env in interactive shells.

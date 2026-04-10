@@ -139,7 +139,7 @@ Pre-built images are available on Docker Hub (requires [NVIDIA Container Toolkit
 
 | Tag | Contents |
 |---|---|
-| `latest` / `main` | GPU-ready OpenMM (CUDA 12.2), all `[all]` extras |
+| `latest` / `main` | GPU-ready OpenMM (CUDA 12.4), all `[all]` extras |
 | `full` | Everything in `latest` + OpenFold3 conda env |
 
 ```bash
@@ -150,13 +150,17 @@ docker pull simoncrouzet/binding-metrics:latest
 docker pull simoncrouzet/binding-metrics:full
 ```
 
-**One-time OpenFold3 weight download** — model weights (~2 GB) are not included in the image. Use a named volume so they persist across container runs:
+**One-time OpenFold3 weight download** — model weights (~2 GB) are not included in the image. Use a named volume so they persist across container runs. The setup script is interactive, so start a shell first:
 
 ```bash
 docker run -it --gpus all \
     -v openfold3-weights:/root/.openfold3 \
-    simoncrouzet/binding-metrics:full \
-    conda run -n openfold3 setup_openfold
+    simoncrouzet/binding-metrics:full bash
+
+# Inside the container:
+source /opt/conda/etc/profile.d/conda.sh
+conda activate openfold3
+setup_openfold
 ```
 
 **Running the full image** — always mount the weights volume:
@@ -167,6 +171,8 @@ docker run -it --gpus all \
     -v /path/to/your/structures:/data \
     simoncrouzet/binding-metrics:full bash
 ```
+
+The `binding-metrics` conda env is activated automatically on shell start.
 
 **Running the base image:**
 
