@@ -18,7 +18,7 @@ dependencies:
   # Pin cuda-version to match the Docker base image (cuda:12.4.0-runtime) so the
   # conda solver doesn't pick a newer PTX version than the container runtime supports.
   - openmm>=8.0
-  - cuda-version=12.4*
+  - cuda-version=12.4
   - openmmforcefields>=0.13
   - openff-toolkit>=0.14
 

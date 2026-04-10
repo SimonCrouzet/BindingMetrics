@@ -14,7 +14,7 @@ channels:
 
 dependencies:
   - python=3.10
-  - cuda-version=12.4*
+  - cuda-version=12.4
   - pip
   - pip:
       - openfold3
