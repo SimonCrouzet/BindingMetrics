@@ -135,20 +135,40 @@ pip install "binding-metrics[all]"          # everything above (OpenMM via PyPI 
 
 ### Docker (GPU, recommended for production)
 
-A pre-built image is available on Docker Hub. It includes GPU-ready OpenMM (CUDA 12.2), all conda-forge dependencies, the full `[all]` extras, and a ready-to-use `openfold3` conda env.
+Pre-built images are available on Docker Hub (requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)):
 
-**One-time OpenFold3 setup** — run this once after pulling the image to download model weights into the container (see [OpenFold3 on GitHub](https://github.com/aqlaboratory/openfold-3/) for details):
+| Tag | Contents |
+|---|---|
+| `latest` / `main` | GPU-ready OpenMM (CUDA 12.2), all `[all]` extras |
+| `full` | Everything in `latest` + OpenFold3 conda env |
 
 ```bash
-docker run -it --gpus all simoncrouzet/binding-metrics:latest \
+# Base image (no OpenFold3)
+docker pull simoncrouzet/binding-metrics:latest
+
+# Full image (with OpenFold3)
+docker pull simoncrouzet/binding-metrics:full
+```
+
+**One-time OpenFold3 weight download** — model weights (~2 GB) are not included in the image. Use a named volume so they persist across container runs:
+
+```bash
+docker run -it --gpus all \
+    -v openfold3-weights:/root/.openfold3 \
+    simoncrouzet/binding-metrics:full \
     conda run -n openfold3 setup_openfold
 ```
 
+**Running the full image** — always mount the weights volume:
+
 ```bash
-docker pull simoncrouzet/binding-metrics:latest
+docker run -it --gpus all \
+    -v openfold3-weights:/root/.openfold3 \
+    -v /path/to/your/structures:/data \
+    simoncrouzet/binding-metrics:full bash
 ```
 
-Run with GPU access (requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)):
+**Running the base image:**
 
 ```bash
 docker run --gpus all --rm \
@@ -157,14 +177,14 @@ docker run --gpus all --rm \
     binding-metrics-relax --input /data/complex.cif --output /data/relaxed.cif
 ```
 
-To build the image locally from source:
+To build the images locally from source:
 
 ```bash
-docker build -t simoncrouzet/binding-metrics:latest .
-docker push simoncrouzet/binding-metrics:latest   # optional
+docker build --target base -t simoncrouzet/binding-metrics:latest .
+docker build --target full -t simoncrouzet/binding-metrics:full .
 ```
 
-The image is rebuilt and pushed to Docker Hub automatically on every push to `main` and on version tags (`v*`) via GitHub Actions.
+Images are rebuilt and pushed to Docker Hub automatically on every push to `main` and on version tags (`v*`) via GitHub Actions.
 
 ### OpenFold3 (optional)
 

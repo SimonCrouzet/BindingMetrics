@@ -1,7 +1,10 @@
 FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y wget gcc && apt-get clean
+RUN apt-get update && apt-get install -y \
+        wget gcc cuda-nvcc-12-2 \
+        libxrender1 libxext6 libsm6 libgl1-mesa-glx libglib2.0-0 \
+    && apt-get clean
 
 # Install Miniforge
 RUN wget -qO /tmp/miniforge.sh \
@@ -23,8 +26,19 @@ ENV PATH=/opt/conda/envs/binding-metrics/bin:$PATH
 #   docker run --rm --gpus all binding-metrics binding-metrics-check-env
 
 # Full image — adds the OpenFold3 env (~several GB of ML stack).
-# Model weights are NOT included; download them once after pulling:
-#   docker run -it --gpus all binding-metrics:full conda run -n openfold3 setup_openfold
+# Model weights are NOT included; download them once using a persistent volume:
+#
+#   docker run -it --gpus all \
+#       -v openfold3-weights:/root/.openfold3 \
+#       simoncrouzet/binding-metrics:full \
+#       conda run -n openfold3 setup_openfold
+#
+# The named volume "openfold3-weights" persists across container runs, so
+# weights only need to be downloaded once. For subsequent runs:
+#
+#   docker run -it --gpus all \
+#       -v openfold3-weights:/root/.openfold3 \
+#       simoncrouzet/binding-metrics:full bash
 FROM base AS full
 
 RUN mamba env create -f environment_openfold3.yml && conda clean -afy
