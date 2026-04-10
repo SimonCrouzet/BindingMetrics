@@ -83,7 +83,11 @@ def _check_openfold() -> bool:
     if result.returncode == 0:
         _ok(
             f"openfold3 available in conda env '{_OPENFOLD_CONDA_ENV}'\n"
-            f"     {DIM}(used automatically — default for --openfold-conda-env){RESET}"
+            f"     {DIM}(used automatically — default for --openfold-conda-env){RESET}\n"
+            f"     {DIM}Run integration tests with:{RESET}\n"
+            f"     {DIM}  conda run -n {_OPENFOLD_CONDA_ENV} pytest "
+            f"$(conda run -n {_OPENFOLD_CONDA_ENV} python -c "
+            f"\"import openfold3; print(openfold3.__path__[0])\")/tests/{RESET}"
         )
         return True
 
@@ -125,6 +129,57 @@ def _check_openfold() -> bool:
                 f"  --openfold-conda-env {_OPENFOLD_CONDA_ENV}",
                 "",
                 f"{DIM}(OpenFold is optional — all other metrics work without it){RESET}",
+            ],
+        )
+    return False
+
+
+def _check_mdtraj() -> bool:
+    print(f"\n{BOLD}[ MDTraj ]{RESET}")
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import mdtraj as md, numpy as np; "
+         "xyz = np.random.randn(10, 5, 3).astype(np.float32); "
+         "top = md.Topology(); chain = top.add_chain(); "
+         "res = top.add_residue('ALA', chain); "
+         "[top.add_atom(n, md.element.carbon, res) for n in ['N','CA','C','O','CB']]; "
+         "traj = md.Trajectory(xyz, top); "
+         "md.rmsd(traj, traj, 0); "
+         "md.compute_distances(traj, [[0,1]]); "
+         "md.shrake_rupley(traj); "
+         "print(md._version)"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        version = result.stdout.strip()
+        _ok(f"mdtraj {version} — trajectory ops OK")
+        return True
+
+    stderr = result.stderr
+    if "numpy" in stderr.lower():
+        _fail(
+            title="mdtraj failed — NumPy version mismatch",
+            cause="mdtraj was compiled against a different NumPy major version "
+                  "than what is currently installed.",
+            steps=[
+                f"{BOLD}Step 1{RESET} — Check installed versions:",
+                "          python -c \"import numpy; print(numpy.__version__)\"",
+                "          pip show mdtraj",
+                "",
+                f"{BOLD}Step 2{RESET} — Fix the mismatch:",
+                "          pip install --force-reinstall mdtraj",
+            ],
+        )
+    else:
+        _fail(
+            title="mdtraj import or computation failed",
+            cause="mdtraj may not be installed or has broken dependencies.",
+            steps=[
+                f"{BOLD}Step 1{RESET} — Check the raw error:",
+                "          python -c \"import mdtraj\"",
+                "",
+                f"{BOLD}Step 2{RESET} — Reinstall if needed:",
+                "          pip install mdtraj",
             ],
         )
     return False
@@ -220,6 +275,7 @@ def _check_openmm() -> bool:
 
 CHECKS: list[tuple[str, object]] = [
     ("OpenMM",    _check_openmm),
+    ("MDTraj",    _check_mdtraj),
     ("OpenFold3", _check_openfold),
 ]
 

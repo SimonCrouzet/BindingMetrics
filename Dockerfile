@@ -20,8 +20,10 @@ COPY . /opt/binding-metrics/
 RUN mamba env create -f environment.yml && conda clean -afy
 
 ENV PATH=/opt/conda/envs/binding-metrics/bin:$PATH
-# Auto-activate the binding-metrics env in interactive shells
-RUN conda init bash && echo "conda activate binding-metrics" >> /root/.bashrc
+# Auto-activate the binding-metrics env in interactive shells.
+# Source conda.sh first (conda init writes to .bashrc but Docker bash
+# may not read /etc/profile.d), then activate the default env.
+RUN echo '. /opt/conda/etc/profile.d/conda.sh && conda activate binding-metrics' >> /root/.bashrc
 
 # GPU access is not available during build. After building, verify OpenMM GPU
 # support with:
