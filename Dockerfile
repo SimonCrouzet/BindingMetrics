@@ -48,4 +48,11 @@ RUN echo '. /opt/conda/etc/profile.d/conda.sh && conda activate binding-metrics'
 #       simoncrouzet/binding-metrics:full bash
 FROM base AS full
 
+# Prevent getpass.getuser() from crashing when the container runs with
+# --user $(id -u):$(id -g) and the UID has no /etc/passwd entry.
+# Python checks LOGNAME / USER env vars before falling back to pwd.getpwuid().
+# TORCHINDUCTOR_CACHE_DIR avoids the same getuser() call in PyTorch's inductor.
+ENV USER=user
+ENV TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor_cache
+
 RUN mamba env create -f environment_openfold3.yml && conda clean -afy
