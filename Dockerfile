@@ -52,9 +52,10 @@ FROM base AS full
 # --user $(id -u):$(id -g) and the UID has no /etc/passwd entry.
 # Python checks LOGNAME / USER env vars before falling back to pwd.getpwuid().
 # Cache dirs default to $HOME which may be unwritable for non-root UIDs;
-# redirect them to /tmp. (Don't change HOME itself — OpenFold3 resolves
-# weights via ~/.openfold3 which must stay /root/.openfold3.)
+# redirect them to /tmp, and set HOME=/root so ~ resolves correctly
+# (OpenFold3 weights are mounted at /root/.openfold3).
 ENV USER=user
+ENV HOME=/root
 ENV TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor_cache
 ENV TRITON_CACHE_DIR=/tmp/triton_cache
 ENV XDG_CACHE_HOME=/tmp/.cache
