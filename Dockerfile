@@ -51,8 +51,13 @@ FROM base AS full
 # Prevent getpass.getuser() from crashing when the container runs with
 # --user $(id -u):$(id -g) and the UID has no /etc/passwd entry.
 # Python checks LOGNAME / USER env vars before falling back to pwd.getpwuid().
-# TORCHINDUCTOR_CACHE_DIR avoids the same getuser() call in PyTorch's inductor.
+# Cache dirs default to $HOME which may be unwritable for non-root UIDs;
+# redirect them to /tmp. (Don't change HOME itself — OpenFold3 resolves
+# weights via ~/.openfold3 which must stay /root/.openfold3.)
 ENV USER=user
 ENV TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor_cache
+ENV TRITON_CACHE_DIR=/tmp/triton_cache
+ENV XDG_CACHE_HOME=/tmp/.cache
+RUN chmod 777 /root
 
 RUN mamba env create -f environment_openfold3.yml && conda clean -afy
