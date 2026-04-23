@@ -62,3 +62,11 @@ ENV XDG_CACHE_HOME=/tmp/.cache
 RUN chmod 777 /root
 
 RUN mamba env create -f environment_openfold3.yml && conda clean -afy
+
+# Entrypoint auto-downloads OpenFold3 weights on first use of an empty
+# volume. Prints a clear error if upstream prompts drift. Opt out with
+# BINDING_METRICS_SKIP_WEIGHTS_CHECK=1.
+COPY docker/entrypoint.sh /usr/local/bin/binding-metrics-entrypoint
+RUN chmod +x /usr/local/bin/binding-metrics-entrypoint
+ENTRYPOINT ["/usr/local/bin/binding-metrics-entrypoint"]
+CMD ["bash"]

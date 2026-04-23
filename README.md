@@ -150,20 +150,7 @@ docker pull simoncrouzet/binding-metrics:latest
 docker pull simoncrouzet/binding-metrics:full
 ```
 
-**One-time OpenFold3 weight download** — model weights (~2 GB) are not included in the image. Use a named volume so they persist across container runs. The setup script is interactive, so start a shell first:
-
-```bash
-docker run -it --gpus all \
-    -v openfold3-weights:/root/.openfold3 \
-    simoncrouzet/binding-metrics:full bash
-
-# Inside the container:
-source /opt/conda/etc/profile.d/conda.sh
-conda activate openfold3
-setup_openfold
-```
-
-**Running the full image** — always mount the weights volume:
+**OpenFold3 weights** — model weights (~2.3 GB) are not included in the image. Mount a named volume so they persist across container runs; the entrypoint auto-downloads the default checkpoint on first use if the volume is empty:
 
 ```bash
 docker run -it --gpus all \
@@ -172,7 +159,18 @@ docker run -it --gpus all \
     simoncrouzet/binding-metrics:full bash
 ```
 
-The `binding-metrics` conda env is activated automatically on shell start.
+First run prints a banner and downloads the default checkpoint (`openfold3-p2-155k`). Subsequent runs skip the download. The `binding-metrics` conda env is activated automatically on shell start.
+
+**Advanced:**
+
+- `-e BINDING_METRICS_SKIP_WEIGHTS_CHECK=1` — skip the weights check and auto-download. Useful when you know the weights aren't needed (e.g. `binding-metrics-check-env` only verifies that the `openfold3` package is importable, not that weights are present).
+- To download a non-default checkpoint or run OpenFold3's integration tests, bypass the entrypoint and run `setup_openfold` interactively:
+  ```bash
+  docker run -it --rm --gpus all --entrypoint bash \
+      -v openfold3-weights:/root/.openfold3 \
+      simoncrouzet/binding-metrics:full \
+      -c 'conda run -n openfold3 --no-capture-output setup_openfold'
+  ```
 
 **Running the base image:**
 
