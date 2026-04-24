@@ -153,13 +153,15 @@ docker pull simoncrouzet/binding-metrics:full
 **OpenFold3 weights** — model weights (~2.3 GB) are not included in the image. Mount a named volume so they persist across container runs; the entrypoint auto-downloads the default checkpoint on first use if the volume is empty:
 
 ```bash
-docker run -it --gpus all \
+docker run -it --gpus all --shm-size=8g \
     -v openfold3-weights:/root/.openfold3 \
     -v /path/to/your/structures:/data \
     simoncrouzet/binding-metrics:full bash
 ```
 
 First run prints a banner and downloads the default checkpoint (`openfold3-p2-155k`). Subsequent runs skip the download. The `binding-metrics` conda env is activated automatically on shell start.
+
+**`--shm-size=8g` is required for OpenFold3.** Docker's default `/dev/shm` is 64 MB, which is too small for PyTorch DataLoader workers — OF3 will crash with `RuntimeError: unable to allocate shared memory`. Use `--ipc=host` instead if you prefer the host's IPC namespace (single-tenant only).
 
 **Advanced:**
 
