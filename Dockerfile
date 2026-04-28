@@ -63,6 +63,16 @@ RUN chmod 777 /root
 
 RUN mamba env create -f environment_openfold3.yml && conda clean -afy
 
+# DeepSpeed 0.18.x requires CUTLASS headers + ninja to JIT-build the
+# evoformer_attn op on first use. Without these, every OF3 inference that
+# hits the template pair stack fails with "Unable to JIT load the
+# evoformer_attn op". CUTLASS_PATH must be the env prefix (one level above
+# include/cutlass/). conda-forge currently ships CUTLASS 4.x; if the JIT
+# nvcc build breaks against it, pin to cutlass=3.5.*.
+RUN /opt/conda/bin/conda install -n openfold3 -c conda-forge -y cutlass ninja \
+    && /opt/conda/bin/conda clean -afy
+ENV CUTLASS_PATH=/opt/conda/envs/openfold3
+
 # Entrypoint auto-downloads OpenFold3 weights on first use of an empty
 # volume. Prints a clear error if upstream prompts drift. Opt out with
 # BINDING_METRICS_SKIP_WEIGHTS_CHECK=1.
