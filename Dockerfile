@@ -1,8 +1,12 @@
-FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04 AS base
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 AS base
 
+# Use the -devel base (not -runtime): DeepSpeed's evoformer_attn JIT-builds
+# CUDA extensions on first use, which requires CUDA dev headers like
+# cusparse.h that the runtime image does not ship. The devel image also
+# bundles nvcc, so cuda-nvcc-12-4 no longer needs separate installation.
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
-        wget gcc cuda-nvcc-12-4 \
+        wget gcc \
         libxrender1 libxext6 libsm6 libgl1-mesa-glx libglib2.0-0 \
     && apt-get clean
 
