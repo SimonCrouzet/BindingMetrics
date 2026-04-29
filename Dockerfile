@@ -37,19 +37,19 @@ RUN echo '. /opt/conda/etc/profile.d/conda.sh && conda activate binding-metrics'
 #   docker run --rm --gpus all binding-metrics binding-metrics-check-env
 
 # Full image — adds the OpenFold3 env (~several GB of ML stack).
-# Model weights are NOT included; download them once using a persistent volume:
+# Model weights are NOT included; the entrypoint auto-downloads them on
+# first use. Bind-mount a host directory so weights persist across runs
+# and host reboots (cloud / studio environments wipe Docker named volumes
+# on shutdown — bind mounts to ~ survive):
 #
-#   docker run -it --gpus all \
-#       -v openfold3-weights:/root/.openfold3 \
-#       simoncrouzet/binding-metrics:full \
-#       conda run -n openfold3 setup_openfold
-#
-# The named volume "openfold3-weights" persists across container runs, so
-# weights only need to be downloaded once. For subsequent runs:
-#
-#   docker run -it --gpus all \
-#       -v openfold3-weights:/root/.openfold3 \
+#   mkdir -p ~/.openfold-weights ~/.of3-jit-cache
+#   docker run -it --gpus all --shm-size=8g \
+#       -v ~/.openfold-weights:/root/.openfold3 \
+#       -v ~/.of3-jit-cache:/tmp/.cache/torch_extensions \
 #       simoncrouzet/binding-metrics:full bash
+#
+# The second mount caches the JIT-compiled DeepSpeed evoformer_attn kernel
+# so subsequent runs skip the 1–3 min nvcc rebuild.
 FROM base AS full
 
 # Prevent getpass.getuser() from crashing when the container runs with

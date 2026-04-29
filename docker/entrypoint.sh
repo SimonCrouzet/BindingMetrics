@@ -29,7 +29,7 @@ fail_prompt_drift() {
     echo "      docker run -it --rm --gpus all \\"
     echo "          -e BINDING_METRICS_SKIP_WEIGHTS_CHECK=1 \\"
     echo "          -e HOME=/root \\"
-    echo "          -v openfold3-weights:/root/.openfold3 \\"
+    echo "          -v ~/.openfold-weights:/root/.openfold3 \\"
     echo "          simoncrouzet/binding-metrics:full bash"
     echo "      # inside the container:"
     echo "      conda run -n openfold3 --no-capture-output setup_openfold"

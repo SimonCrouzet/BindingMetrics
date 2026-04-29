@@ -150,16 +150,21 @@ docker pull simoncrouzet/binding-metrics:latest
 docker pull simoncrouzet/binding-metrics:full
 ```
 
-**OpenFold3 weights** — model weights (~2.3 GB) are not included in the image. Mount a named volume so they persist across container runs; the entrypoint auto-downloads the default checkpoint on first use if the volume is empty:
+**OpenFold3 weights and JIT cache** — model weights (~2.3 GB) are not included in the image, and DeepSpeed's `evoformer_attn` kernel JIT-compiles on first use (~1–3 min via nvcc). Bind-mount both to host directories so they persist across container runs and host reboots:
 
 ```bash
+mkdir -p ~/.openfold-weights ~/.of3-jit-cache
+
 docker run -it --gpus all --shm-size=8g \
-    -v openfold3-weights:/root/.openfold3 \
+    -v ~/.openfold-weights:/root/.openfold3 \
+    -v ~/.of3-jit-cache:/tmp/.cache/torch_extensions \
     -v /path/to/your/structures:/data \
     simoncrouzet/binding-metrics:full bash
 ```
 
-First run prints a banner and downloads the default checkpoint (`openfold3-p2-155k`). Subsequent runs skip the download. The `binding-metrics` conda env is activated automatically on shell start.
+First run downloads the default checkpoint (`openfold3-p2-155k`) and JIT-builds the kernel. Subsequent runs skip the download and load the cached `.so` in milliseconds. The `binding-metrics` conda env is activated automatically on shell start.
+
+> **Bind mount vs. named volume.** Docker named volumes (`-v openfold3-weights:/root/.openfold3`) work too, but they live under `/var/lib/docker/volumes/` which is often on ephemeral storage in cloud / studio environments (RunPod, Lambda, etc.). Bind-mounting to `~/...` keeps the data in your persistent user home.
 
 **`--shm-size=8g` is required for OpenFold3.** Docker's default `/dev/shm` is 64 MB, which is too small for PyTorch DataLoader workers — OF3 will crash with `RuntimeError: unable to allocate shared memory`. Use `--ipc=host` instead if you prefer the host's IPC namespace (single-tenant only).
 
@@ -169,7 +174,7 @@ First run prints a banner and downloads the default checkpoint (`openfold3-p2-15
 - To download a non-default checkpoint or run OpenFold3's integration tests, bypass the entrypoint and run `setup_openfold` interactively:
   ```bash
   docker run -it --rm --gpus all --entrypoint bash \
-      -v openfold3-weights:/root/.openfold3 \
+      -v ~/.openfold-weights:/root/.openfold3 \
       simoncrouzet/binding-metrics:full \
       -c 'conda run -n openfold3 --no-capture-output setup_openfold'
   ```
