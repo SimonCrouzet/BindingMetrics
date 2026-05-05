@@ -17,7 +17,7 @@ from binding_metrics.metrics.geometry import (
     compute_ramachandran,
     compute_shape_complementarity,
 )
-from binding_metrics.metrics.hbonds import compute_hbonds, compute_saltbridges
+from binding_metrics.metrics.polar_contacts import compute_hbonds, compute_saltbridges
 from binding_metrics.metrics.interface import compute_interface_metrics
 from binding_metrics.metrics.openfold import compute_openfold_metrics, run_openfold
 from binding_metrics.metrics.rmsd import compute_receptor_drift

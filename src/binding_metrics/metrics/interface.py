@@ -253,7 +253,7 @@ def compute_interface_metrics(
             hbonds (int): cross-chain hydrogen bonds
             saltbridges (int): cross-chain salt bridges
     """
-    from binding_metrics.metrics.hbonds import compute_hbonds, compute_saltbridges
+    from binding_metrics.metrics.polar_contacts import compute_hbonds, compute_saltbridges
 
     _, _, _, sasa_fn, vdw_fn = _import_biotite()
 
@@ -283,7 +283,10 @@ def compute_interface_metrics(
         "interface_residues_receptor": [],
         "per_residue": [],
         "hbonds": 0,
+        "hbond_energy": 0.0,
         "saltbridges": 0,
+        "saltbridges_bidentate": 0,
+        "saltbridge_energy": 0.0,
     }
 
     if design_chain is None or receptor_chain is None:
@@ -347,12 +350,12 @@ def compute_interface_metrics(
 
     # H-bonds and salt bridges
     try:
-        hbonds = compute_hbonds(atoms, design_chain, receptor_chain)
-        saltbridges = compute_saltbridges(atoms, design_chain, receptor_chain)
+        hbond_result = compute_hbonds(atoms, design_chain, receptor_chain)
+        saltbridge_result = compute_saltbridges(atoms, design_chain, receptor_chain)
     except Exception as e:
         print(f"  Warning: H-bond/salt bridge computation failed: {e}")
-        hbonds = 0
-        saltbridges = 0
+        hbond_result = {"hbonds": 0, "hbond_energy": 0.0}
+        saltbridge_result = {"saltbridges": 0, "saltbridges_bidentate": 0, "saltbridge_energy": 0.0}
 
     result.update({
         "delta_sasa": delta_sasa,
@@ -369,8 +372,11 @@ def compute_interface_metrics(
         "interface_residues_peptide": [r["residue"] for r in per_res_pep],
         "interface_residues_receptor": [r["residue"] for r in per_res_rec],
         "per_residue": per_res_pep + per_res_rec,
-        "hbonds": hbonds,
-        "saltbridges": saltbridges,
+        "hbonds": hbond_result.get("hbonds", 0),
+        "hbond_energy": hbond_result.get("hbond_energy", 0.0),
+        "saltbridges": saltbridge_result.get("saltbridges", 0),
+        "saltbridges_bidentate": saltbridge_result.get("saltbridges_bidentate", 0),
+        "saltbridge_energy": saltbridge_result.get("saltbridge_energy", 0.0),
     })
 
     return result
@@ -419,7 +425,8 @@ def main():
             "delta_g_int", "delta_g_int_kJ",
             "polar_area", "apolar_area", "fraction_polar",
             "n_interface_residues_peptide", "n_interface_residues_receptor",
-            "hbonds", "saltbridges",
+            "hbonds", "hbond_energy",
+            "saltbridges", "saltbridges_bidentate", "saltbridge_energy",
         ]
         for key in scalar_keys:
             val = metrics[key]
