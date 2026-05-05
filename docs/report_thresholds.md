@@ -65,27 +65,29 @@ formation: SASA_peptide + SASA_receptor − SASA_complex.
 
 ## H-bonds
 
-Number of intermolecular hydrogen bonds at the interface (donor–acceptor
-distance < 3.5 Å, angle > 120°).
+Cross-chain H-bond count (Baker-Hubbard: H-acceptor ≤ 2.5 Å, D-H···A ≥ 120°), deduplicated to heavy-atom donor/acceptor pairs.
 
 | Band  | Value | Rationale |
 |-------|-------|-----------|
 | 🟢 OK    | ≥ 5   | Good polar complementarity |
 | 🟡 AMBER | 2–4   | Acceptable for hydrophobic-dominant binders |
-| 🔴 RED   | < 2   | Very few polar contacts; binding likely non-specific |
+| 🔴 RED   | < 2   | Very few polar contacts |
+
+`hbond_energy` (kcal/mol, ≤ 0): 🟢 ≤ −10, 🟡 ≤ −2, 🔴 > −2.
 
 ---
 
 ## Salt bridges
 
-Number of charge–charge pairs at the interface (oppositely charged heavy
-atoms within 4 Å).
+Cross-chain residue-pair count (positive: LYS/ARG/HIP, negative: ASP/GLU; 0.5–5.5 Å). Plain HIS is treated as neutral.
 
 | Band  | Value | Rationale |
 |-------|-------|-----------|
-| 🟢 OK    | ≥ 2   | Multiple ionic interactions; strong electrostatic contribution |
-| 🟡 AMBER | 1     | One salt bridge; minor electrostatic contribution |
+| 🟢 OK    | ≥ 2   | Multiple ionic contacts |
+| 🟡 AMBER | 1     | Single salt bridge |
 | 🔴 RED   | 0     | No ionic contacts |
+
+`saltbridge_energy` (kcal/mol at ε=4, ≤ 0): 🟢 ≤ −40, 🟡 ≤ −10, 🔴 > −10. `saltbridges_bidentate` is the subset with ≥ 2 atom-pair contacts.
 
 ---
 

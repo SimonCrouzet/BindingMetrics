@@ -74,8 +74,11 @@ Chain auto-detection: smallest protein chain = peptide, largest = receptor.
     "per_residue": list[dict],     # feature: buried_sasa, delta_g_res, polar_area, apolar_area
 
     # Interactions
-    "hbonds": int,                 # score (more = better)
-    "saltbridges": int,            # score (more = better)
+    "hbonds": int,                  # cross-chain heavy-atom H-bond pairs (deduped)
+    "hbond_energy": float,          # kcal/mol (≤ 0; lower = stronger)
+    "saltbridges": int,             # cross-chain residue-pair count
+    "saltbridges_bidentate": int,   # subset with ≥ 2 atom-pair contacts
+    "saltbridge_energy": float,     # kcal/mol at ε=4 (≤ 0; lower = stronger)
 }
 ```
 
@@ -83,15 +86,30 @@ Chain auto-detection: smallest protein chain = peptide, largest = receptor.
 - Δ*G*_int < −5 kcal/mol: likely stable, hydrophobically-driven interface.
 - Δ*G*_int > 0: polar burial dominates — may indicate a weak or crystal-packing contact.
 
-### `compute_hbonds(atoms, peptide_chain, receptor_chain) → int`
+### `compute_hbonds(atoms, peptide_chain, receptor_chain) → dict`
 
-Count cross-chain hydrogen bonds using biotite's H-bond detector. Adds explicit hydrogens with hydride if available.
+Detect cross-chain hydrogen bonds with biotite's Baker-Hubbard detector
+(d_HA ≤ 2.5 Å, θ_DHA ≥ 120°). If the structure has no explicit hydrogens,
+infers a BondList via `connect_via_residue_names()` and adds H's via
+`hydride.add_hydrogen()` (failure → warning, not silent). Triplets are
+deduplicated to unique cross-chain heavy-atom donor/acceptor pairs.
 
-### `compute_saltbridges(atoms, peptide_chain, receptor_chain, distance_min=0.5, distance_max=5.5) → int`
+Returns `{"hbonds": int, "hbond_energy": float}`. Energy =
+`-5.0 · cos²(180° - θ) / d_HA`, calibrated so an ideal H-bond ≈ −2.5 kcal/mol.
 
-Count cross-chain salt bridges by distance between oppositely-charged atoms:
-- Positive: LYS NZ, ARG NH1/NH2, HIS ND1/NE2
+### `compute_saltbridges(atoms, peptide_chain, receptor_chain, distance_min=0.5, distance_max=5.5) → dict`
+
+Detect cross-chain salt bridges by distance between oppositely-charged
+side-chain atoms, aggregated to residue-pair level:
+- Positive: LYS NZ, ARG NH1/NH2/NE, HIP ND1/NE2
 - Negative: ASP OD1/OD2, GLU OE1/OE2
+
+Plain HIS, HID and HIE are treated as **neutral**. See `docs/metrics.md` for
+the rationale.
+
+Returns `{"saltbridges": int, "saltbridges_bidentate": int, "saltbridge_energy": float}`.
+Energy is Coulomb at ε=4 over residue pairs using the closest atom-pair distance:
+`E_pair = -83.02 / r_min` kcal/mol per pair.
 
 ### `compute_delta_sasa_static(cif_path, peptide_chain, receptor_chain, probe_radius=1.4) → dict`
 

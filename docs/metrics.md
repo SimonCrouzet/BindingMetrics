@@ -51,8 +51,11 @@ PISA-inspired interface descriptors on a static structure. Uses biotite's Lee-Ri
 | `interface_residues_peptide` | list[str] | — | `"RES:CHAIN:NUM"` labels |
 | `interface_residues_receptor` | list[str] | — | `"RES:CHAIN:NUM"` labels |
 | `per_residue` | list[dict] | — | per interface residue: `residue`, `chain`, `res_name`, `res_id`, `buried_sasa` (Å²), `delta_g_res` (kcal/mol), `polar_area` (Å²), `apolar_area` (Å²) |
-| `hbonds` | int | — | cross-chain hydrogen bonds |
-| `saltbridges` | int | — | cross-chain salt bridges |
+| `hbonds` | int | — | cross-chain heavy-atom H-bond pairs (deduplicated) |
+| `hbond_energy` | float | kcal/mol | distance-/angle-weighted H-bond energy (≤ 0) |
+| `saltbridges` | int | — | cross-chain salt-bridge residue-pair count |
+| `saltbridges_bidentate` | int | — | subset with ≥ 2 atom-pair contacts |
+| `saltbridge_energy` | float | kcal/mol | Coulomb energy at ε=4 over residue pairs (≤ 0) |
 
 **solvation energy (Eisenberg-McLachlan 1986):** ΔG_int = Σᵢ γᵢ · ΔAᵢ
 
@@ -69,26 +72,28 @@ typical tight binders: ΔG_int −5 to −20 kcal/mol; ΔSASA > 1000 Å².
 
 ## 2. hydrogen bonds & salt bridges
 
-Called internally by `compute_interface_metrics`; also in `binding_metrics.metrics.hbonds`.
+`binding_metrics.metrics.polar_contacts`. Both report an energy (primary, kcal/mol) and a count (supplementary).
 
 **hydrogen bonds**
-- detector: biotite `struc.hbond()`, optional explicit H via `hydride`
-- criteria: donor–acceptor distance < 3.5 Å, D–H···A angle > 120°
-- cross-chain pairs only
+- detector: biotite `struc.hbond()` — Baker-Hubbard 1984, defaults: d_HA ≤ 2.5 Å, θ_DHA ≥ 120°, donor/acceptor elements ∈ {O, N, S}
+- if the structure has no explicit H's (e.g. raw AlphaFold/OpenFold predictions), a BondList is inferred via `connect_via_residue_names` and `hydride.add_hydrogen` is invoked; failures warn rather than silently zero out the count
+- biotite returns `(donor, H, acceptor)` triplets; we dedupe to unique cross-chain `(donor_heavy, acceptor_heavy)` pairs (keeping the shortest-H–A triplet per pair) so an ARG NH1 with two equivalent hydrogens contacting one acceptor counts as one H-bond, not two
+- energy per pair: `E = -5.0 · cos²(180° − θ) / d_HA`, calibrated so an ideal geometry (2.0 Å, 180°) ≈ −2.5 kcal/mol; bent geometries within the 120°-cutoff are smoothly down-weighted
 
 **salt bridges**
 
-| atom | charge |
-|------|--------|
-| LYS NZ | +1.0 |
-| ARG NH1 | +0.5 |
-| ARG NH2 | +0.5 |
-| ASP OD1 | −0.5 |
-| ASP OD2 | −0.5 |
-| GLU OE1 | −0.5 |
-| GLU OE2 | −0.5 |
+| residue | positive atoms | residue | negative atoms |
+|---------|----------------|---------|----------------|
+| LYS | NZ | ASP | OD1, OD2 |
+| ARG | NH1, NH2, NE | GLU | OE1, OE2 |
+| HIP | ND1, NE2 | | |
 
-distance criterion: 0.5 Å < r < 5.5 Å between opposite-charge atoms across chains.
+- distance window: `0.5 Å < r < 5.5 Å` between any positive and any negative atom on opposite chains; no angle filter (biotite has no native salt-bridge detector — the 5.5 Å cutoff is generous compared to the literature, biasing toward sensitivity)
+- `HIS`/`HID`/`HIE` are treated as **neutral**; only `HIP` (AMBER doubly-protonated form) contributes. At physiological pH most histidines are neutral, so the older "HIS as +" convention overcounts on average. Raw predicted CIFs only carry `HIS` → no histidine salt bridges; post-pdbfixer/OpenMM CIFs may have `HIP`/`HID`/`HIE` and so honor the assignment
+- atom-pair contacts are aggregated to residue-pair level: `saltbridges` = pair count, `saltbridges_bidentate` = pairs with ≥ 2 atom-pair contacts (e.g. a guanidinium-carboxylate ARG–GLU bridge). This avoids the prior behaviour where one bidentate ARG–GLU could contribute up to 3×2 = 6 to the count
+- energy per pair: Coulomb at ε=4 (interior protein dielectric, matching `compute_coulomb_cross_chain`), summed over residue pairs using the closest atom-pair distance: `E_pair = -83.02 / r_min` kcal/mol. Bidentate bridges score stronger automatically because `r_min` is the shorter of two contacts — no separate weighting needed
+
+These energies are crude electrostatic estimates — no solvent screening, no cooperativity, no burial weighting. Treat them as ranking signals, not free energies. For a fuller electrostatic score over all charged atoms, use `compute_coulomb_cross_chain` (§3).
 
 ---
 
