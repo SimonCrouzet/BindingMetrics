@@ -81,12 +81,26 @@ PLOT_REGISTRY: dict[str, PlotSpec] = {
         color="cornflowerblue",
         bins=20,
     ),
+    "hbond_energy_plot": PlotSpec(
+        column="hbond_energy",
+        title="H-bond Energy",
+        xlabel="kcal/mol",
+        color="cornflowerblue",
+        bins=20,
+    ),
     "saltbridges_plot": PlotSpec(
         column="saltbridges",
         title="Salt Bridges",
         xlabel="Count",
         color="goldenrod",
         bins=15,
+    ),
+    "saltbridge_energy_plot": PlotSpec(
+        column="saltbridge_energy",
+        title="Salt-bridge Energy",
+        xlabel="kcal/mol",
+        color="goldenrod",
+        bins=20,
     ),
     "n_interface_residues_peptide_plot": PlotSpec(
         column="n_interface_residues_peptide",

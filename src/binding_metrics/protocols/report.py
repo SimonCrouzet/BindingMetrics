@@ -49,9 +49,15 @@ _THRESHOLDS: list[dict] = [
     # H-bond count: ≥ 5 good, 2–4 acceptable, < 2 poor
     dict(key=("interface", "hbonds"), label="H-bonds", unit="", direction="higher",
          green=lambda v: v >= 5, amber=lambda v: v >= 2),
+    # H-bond energy (kcal/mol, ≤ 0): ≤ −10 strong, −10–−2 moderate, > −2 weak
+    dict(key=("interface", "hbond_energy"), label="H-bond E", unit="kcal/mol", direction="lower",
+         green=lambda v: v <= -10.0, amber=lambda v: v <= -2.0),
     # Salt bridges: ≥ 2 good, 1 acceptable, 0 poor
     dict(key=("interface", "saltbridges"), label="Salt bridges", unit="", direction="higher",
          green=lambda v: v >= 2, amber=lambda v: v >= 1),
+    # Salt-bridge energy (kcal/mol, ≤ 0): ≤ −40 strong, −40–−10 moderate, > −10 weak
+    dict(key=("interface", "saltbridge_energy"), label="Salt-bridge E", unit="kcal/mol", direction="lower",
+         green=lambda v: v <= -40.0, amber=lambda v: v <= -10.0),
     # Ramachandran favoured %: > 95 excellent, 80–95 acceptable, < 80 poor
     dict(key=("geometry", "ramachandran", "ramachandran_favoured_pct"),
          label="Rama favoured", unit="%", direction="higher",
@@ -296,7 +302,10 @@ def _md_interface(iface: dict | None) -> str:
             ["Apolar area",         _fmt(iface.get("apolar_area")),             "Å²"],
             ["Fraction polar",      _fmt(iface.get("fraction_polar"), 4),       ""],
             ["H-bonds",             _fmt(iface.get("hbonds")),                  ""],
+            ["H-bond energy",       _fmt(iface.get("hbond_energy")),            "kcal/mol"],
             ["Salt bridges",        _fmt(iface.get("saltbridges")),             ""],
+            ["Salt bridges (bi)",   _fmt(iface.get("saltbridges_bidentate")),   ""],
+            ["Salt-bridge energy",  _fmt(iface.get("saltbridge_energy")),       "kcal/mol"],
             ["Interface res (pep)", _fmt(iface.get("n_interface_residues_peptide")),  ""],
             ["Interface res (rec)", _fmt(iface.get("n_interface_residues_receptor")), ""],
         ],
