@@ -157,6 +157,9 @@ class TestMetricSpecLoad:
     def test_load_openfold(self):
         self._try_load(get_metric("openfold"))
 
+    def test_load_dockq(self):
+        self._try_load(get_metric("dockq"))
+
 
 class TestStaticStructureSpecs:
     """Spot-check chain mode / format metadata for static metrics."""
