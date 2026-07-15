@@ -48,6 +48,28 @@ from binding_metrics.cli.run import ALL_METRICS, _parse_metrics, run_pipeline
 _STRUCTURE_SUFFIXES = {".cif", ".pdb", ".mmcif"}
 
 
+def _build_reference_map(reference_dir: Path) -> dict[str, Path]:
+    """Map native structures in *reference_dir* by filename stem, for DockQ.
+
+    Each sample input is later matched to its reference by stem (e.g. an input
+    ``target1.cif`` pairs with a reference ``target1.pdb``). Only files with a
+    recognised structure suffix are included. If two references share a stem
+    (e.g. ``target1.pdb`` and ``target1.cif``), the first in sorted order wins,
+    so the mapping is deterministic.
+
+    Args:
+        reference_dir: Directory containing native/reference structures.
+
+    Returns:
+        Dict mapping filename stem → reference path.
+    """
+    refs: dict[str, Path] = {}
+    for p in sorted(reference_dir.iterdir()):
+        if p.is_file() and p.suffix.lower() in _STRUCTURE_SUFFIXES:
+            refs.setdefault(p.stem, p)
+    return refs
+
+
 # ---------------------------------------------------------------------------
 # Worker (must be module-level so it is picklable by multiprocessing)
 # ---------------------------------------------------------------------------
@@ -70,6 +92,7 @@ def _run_one(
     openfold_mode: str,
     openfold_conda_env: Optional[str],
     log_file: Optional[Path],
+    reference_path: Optional[Path] = None,
 ) -> dict:
     """Run the pipeline for a single structure and return a flat results dict."""
     from binding_metrics.cli import log_to_file
@@ -109,6 +132,7 @@ def _run_one(
                 receptor_chain=receptor_chain,
                 metrics=metrics,
                 energy_modes=energy_modes,
+                reference_path=reference_path,
                 openfold_mode=openfold_mode,
                 openfold_conda_env=openfold_conda_env,
             )
@@ -323,6 +347,12 @@ def main():
     parser.add_argument("--glob", type=str, default=None,
                         help="Optional glob pattern to filter files within --input-dir "
                              "(e.g. '*.cif'). Default: all .cif/.pdb/.mmcif files.")
+    parser.add_argument("--reference-dir", type=Path, default=None,
+                        help="Directory of native/reference structures for DockQ. "
+                             "Each sample is matched to a reference by filename stem "
+                             "(e.g. input 'target1.cif' → reference 'target1.pdb'). "
+                             "Supplying this auto-enables the 'dockq' metric. "
+                             "Requires: pip install DockQ")
 
     # Forwarded single-run options
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda",
@@ -414,11 +444,27 @@ def main():
     print(f"  Workers:    {args.workers}")
     print(f"{'#'*60}\n")
 
+    # ------------------------------------------------------------------ References
+    # Map each sample (by filename stem) to a native structure for DockQ.
+    # Supplying --reference-dir auto-enables the dockq metric.
+    reference_map: dict[str, Path] = {}
+    selected_metrics = args.metrics
+    if args.reference_dir is not None:
+        if not args.reference_dir.is_dir():
+            print(f"ERROR: --reference-dir is not a directory: {args.reference_dir}",
+                  file=sys.stderr)
+            sys.exit(1)
+        reference_map = _build_reference_map(args.reference_dir)
+        selected_metrics = selected_metrics | {"dockq"}
+        matched = sum(1 for f in input_files if f.stem in reference_map)
+        print(f"  References: {args.reference_dir}  "
+              f"({matched}/{len(input_files)} samples matched by stem)\n")
+
     # ------------------------------------------------------------------ Build kwargs
     # Strip openfold from per-worker metrics — it will be run as a single
     # batched subprocess after all other metrics finish.
-    want_openfold = "openfold" in args.metrics
-    worker_metrics = args.metrics - {"openfold"}
+    want_openfold = "openfold" in selected_metrics
+    worker_metrics = selected_metrics - {"openfold"}
 
     common_kwargs = dict(
         output_dir=output_dir,
@@ -454,7 +500,8 @@ def main():
             sid = input_path.stem
             sid_to_input[sid] = input_path
             print(f"[{i}/{len(input_files)}] Processing: {sid}", flush=True)
-            flat = _run_one(input_path=input_path, **common_kwargs)
+            flat = _run_one(input_path=input_path,
+                            reference_path=reference_map.get(sid), **common_kwargs)
             rows.append(flat)
             status = flat.get("batch_status", "ok")
             if status == "ok":
@@ -474,7 +521,8 @@ def main():
             for input_path in input_files:
                 sid = input_path.stem
                 sid_to_input[sid] = input_path
-                fut = pool.submit(_run_one, input_path=input_path, **common_kwargs)
+                fut = pool.submit(_run_one, input_path=input_path,
+                                  reference_path=reference_map.get(sid), **common_kwargs)
                 futures[fut] = sid
 
             done = 0
