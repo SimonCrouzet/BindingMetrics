@@ -5,6 +5,7 @@ from binding_metrics.core.simulation import MDSimulation, SimulationConfig, run_
 from binding_metrics.core.system import prepare_system
 from binding_metrics.io.structures import detect_chains, load_structure, save_cif
 from binding_metrics.metrics.comparison import compute_structure_rmsd
+from binding_metrics.metrics.dockq import compute_dockq_metrics
 from binding_metrics.metrics.evobind import (
     compute_evobind_adversarial_check,
     compute_evobind_score,
@@ -49,6 +50,7 @@ __all__ = [
     # Metrics
     "compute_interaction_energy",
     "compute_structure_rmsd",
+    "compute_dockq_metrics",
     "compute_hbonds",
     "compute_saltbridges",
     "compute_interface_metrics",
