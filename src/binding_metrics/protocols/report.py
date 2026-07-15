@@ -73,6 +73,10 @@ _THRESHOLDS: list[dict] = [
     # Coulomb energy (kJ/mol): < −100 favourable, −100–0 moderate, > 0 poor
     dict(key=("electrostatics", "coulomb_energy_kJ"), label="Coulomb E", unit="kJ/mol", direction="lower",
          green=lambda v: v < -100.0, amber=lambda v: v < 0.0),
+    # DockQ (reference-based): ≥ 0.80 High, 0.23–0.80 Acceptable/Medium, < 0.23 Incorrect
+    dict(getter=lambda r: _nested_get(r, "dockq", "dockq"),
+         label="DockQ", unit="", direction="higher",
+         green=lambda v: v >= 0.80, amber=lambda v: v >= 0.23),
 ]
 
 
@@ -160,11 +164,32 @@ def _flatten(results: dict) -> dict[str, Any]:
             elif not isinstance(v, list):
                 flat[f"{prefix}_{k}"] = v
 
-    for section in ("relax", "energy", "interface", "geometry", "electrostatics", "openfold"):
+    for section in ("relax", "energy", "interface", "geometry", "electrostatics",
+                    "openfold", "dockq"):
         if section not in results:
             continue
         sec_data = results[section]
-        if section == "geometry" and isinstance(sec_data, dict):
+        if section == "dockq" and isinstance(sec_data, dict):
+            # The per-interface breakdown is a list (kept in JSON only). Promote
+            # the aggregate score plus, for a single-interface complex (the
+            # typical 2-body case), that interface's CAPRI components as columns.
+            if sec_data.get("skipped"):
+                flat["dockq_skipped"] = True
+            elif sec_data.get("error"):
+                flat["dockq_error"] = sec_data["error"]
+            else:
+                flat["dockq_score"] = sec_data.get("dockq")
+                flat["dockq_capri_class"] = sec_data.get("capri_class")
+                flat["dockq_n_interfaces"] = sec_data.get("n_interfaces")
+                flat["dockq_mapping"] = sec_data.get("best_mapping")
+                ifaces = sec_data.get("interfaces") or []
+                if len(ifaces) == 1:
+                    f0 = ifaces[0]
+                    for src, col in (("fnat", "dockq_fnat"), ("fnonnat", "dockq_fnonnat"),
+                                     ("iRMSD", "dockq_irmsd"), ("LRMSD", "dockq_lrmsd"),
+                                     ("clashes", "dockq_clashes")):
+                        flat[col] = f0.get(src)
+        elif section == "geometry" and isinstance(sec_data, dict):
             # rama/omega functions already prefix their own keys ("ramachandran_*",
             # "omega_*"), so nesting them under {"ramachandran": ..., "omega": ...}
             # and then flattening naively would produce "geometry_ramachandran_
@@ -432,6 +457,45 @@ def _md_openfold(of: dict | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _md_dockq(dq: dict | None) -> str:
+    lines = ["## DockQ — reference-based CAPRI accuracy\n"]
+    if _is_skipped(dq):
+        return lines[0] + "_Skipped (no reference supplied)._\n"
+    if not dq:
+        return lines[0] + "_Absent._\n"
+    if dq.get("error"):
+        return lines[0] + f"_Failed: {dq['error']}_\n"
+    score = dq.get("dockq")
+    cls = dq.get("capri_class")
+    lines.append(_md_table(
+        ["Metric", "Value"],
+        [
+            ["DockQ", f"{_fmt(score, 3)} ({cls})" if cls else _fmt(score, 3)],
+            ["CAPRI class", cls or "—"],
+            ["Interfaces", _fmt(dq.get("n_interfaces"))],
+            ["Chain mapping", dq.get("best_mapping") or "—"],
+        ],
+    ))
+    ifaces = dq.get("interfaces") or []
+    if ifaces:
+        lines.append("\n**Per-interface**\n")
+        lines.append(_md_table(
+            ["Interface", "DockQ", "fnat", "fnonnat", "i-RMSD (Å)", "L-RMSD (Å)",
+             "Clashes", "Class"],
+            [[
+                i.get("chains", "—"),
+                _fmt(i.get("DockQ"), 3),
+                _fmt(i.get("fnat"), 3),
+                _fmt(i.get("fnonnat"), 3),
+                _fmt(i.get("iRMSD"), 2),
+                _fmt(i.get("LRMSD"), 2),
+                _fmt(i.get("clashes")),
+                i.get("capri_class", "—"),
+            ] for i in ifaces],
+        ))
+    return "\n".join(lines) + "\n"
+
+
 def _md_scorecard(results: dict) -> str:
     rows = []
     for spec in _THRESHOLDS:
@@ -501,6 +565,8 @@ def _build_summary(results: dict) -> str:
     ]
     if "openfold" in results:
         sections.append(_md_openfold(results["openfold"]))
+    if "dockq" in results:
+        sections.append(_md_dockq(results["dockq"]))
     sections.append(_md_scorecard(results))
     return "\n".join(sections)
 
