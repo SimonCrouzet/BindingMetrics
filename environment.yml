@@ -1,8 +1,18 @@
 name: binding-metrics
 # Developer environment for BindingMetrics.
 #
-# OpenMM is installed from conda-forge with cuda-version=12.4 pinned to match
-# the Docker base image and avoid CUDA PTX version mismatches.
+# IMPORTANT — one numpy ABI, one source per package.
+# Every compiled / numpy-ABI-sensitive dependency (numpy, mdtraj, openmm, rdkit,
+# ambertools, the openff stack, biotite, gemmi, pdbfixer) is installed from
+# conda-forge ONLY. They must never be reinstalled from PyPI on top of the conda
+# builds: a PyPI wheel built against a different numpy ABI silently mismatches the
+# conda numpy and segfaults the openff/AmberTools toolkit registry (and thus the
+# GAFF2 fallback used for non-standard residues). For that reason the package
+# itself is pip-installed with --no-deps: every runtime dependency is provided by
+# conda below.
+#
+# OpenMM is pinned to cuda-version=12.4 to match the Docker base image and avoid
+# CUDA PTX version mismatches.
 #
 # Usage:
 #   conda env create -f environment.yml
@@ -10,20 +20,56 @@ name: binding-metrics
 #   binding-metrics-check-env           # verify GPU and all dependencies
 channels:
   - conda-forge
-  - defaults
 
 dependencies:
-  - python>=3.11
+  # Python must be <=3.12: numpy<2 has NO conda-forge builds for Python 3.13
+  # (numpy 1.26 predates 3.13), so numpy<2 + py3.13 is unsolvable and forces an
+  # inconsistent pip numpy that segfaults the openff/GAFF2 native stack.
+  - python>=3.11,<3.13
+  - pip
 
-  # Pin cuda-version to match the Docker base image (cuda:12.4.0-runtime) so the
-  # conda solver doesn't pick a newer PTX version than the container runtime supports.
-  - openmm>=8.0
+  # setuptools<81 keeps pkg_resources, which pdbfixer still imports (removed in
+  # setuptools 81+).
+  - setuptools<81
+
+  # --- Core numerical stack (single numpy ABI) ---
   - numpy<2
+  - scipy>=1.10
+
+  # --- MD / force fields (GPU) ---
+  # openmm>=8.2: the cyclic/non-standard hydrogen machinery uses the list-format
+  # addHydrogens variant and Modeller._loadStandardHydrogenDefinitions, both added
+  # in 8.2. conda-forge ships numpy-1 builds of openmm 8.5.x (numpy<2 compatible).
+  - openmm>=8.2
   - cuda-version=12.4
+  - mdtraj>=1.9
   - openmmforcefields>=0.13
   - openff-toolkit>=0.14
+  - ambertools                 # antechamber / sqm — required by GAFF2 parameterisation
+  - rdkit                      # required by the openff toolkit registry
 
-  # pip-installable extras (defined in pyproject.toml)
-  - pip
+  # --- Structure I/O & analysis ---
+  - pdbfixer>=1.9
+  - gemmi>=0.6
+  - biotite>=0.41
+  - biopython>=1.80            # required by DockQ (reference-based CAPRI metrics)
+  - hydride
+
+  # --- Reporting / plotting ---
+  - pandas>=1.5
+  - matplotlib>=3.6
+  - markdown>=3.4
+
+  # --- Dev ---
+  - pytest>=7.0
+  - ruff>=0.1
+
+  # pip is used ONLY for the package itself (editable, dev) and the two pip-only
+  # packages that aren't on conda-forge (DockQ + its parallelbar dep). --no-deps
+  # keeps pip from pulling PyPI builds over the conda-forge natives above; DockQ's
+  # numpy/scipy/pandas/biopython deps are all provided by conda.
   - pip:
-      - ".[all,dev]"
+      - "--no-deps"
+      - "-e ."
+      - "DockQ>=2.0"
+      - "parallelbar"
