@@ -73,13 +73,17 @@ def _default_agg(n_chains=1) -> dict:
     return agg
 
 
-def _default_conf(n_atoms=10, n_tokens=5, with_pae=True) -> dict:
+def _default_conf(n_atoms=10, n_tokens=5, with_pde=True) -> dict:
+    # OpenFold3 (>= 0.4.1) persists the full per-token error matrices — both
+    # PDE (predicted distance error) and PAE (predicted aligned error) — to the
+    # confidences file alongside per-atom pLDDT. with_pde toggles both matrices
+    # (a monomer / no-error-head run writes neither).
     conf = {
         "plddt": np.random.uniform(70, 100, n_atoms),
-        "pde": np.random.uniform(0, 3, (n_tokens, n_tokens)),
         "gpde": 1.23,
     }
-    if with_pae:
+    if with_pde:
+        conf["pde"] = np.random.uniform(0, 3, (n_tokens, n_tokens))
         conf["pae"] = np.random.uniform(0, 5, (n_tokens, n_tokens))
     return conf
 
@@ -164,10 +168,10 @@ class TestParseConfidencesAggregated:
 
 
 class TestParseConfidences:
-    def test_json_with_pae(self, tmp_path):
+    def test_json_with_pde(self, tmp_path):
         from binding_metrics.metrics.openfold import _parse_confidences
 
-        conf = _default_conf(n_atoms=15, n_tokens=5, with_pae=True)
+        conf = _default_conf(n_atoms=15, n_tokens=5, with_pde=True)
         path = tmp_path / "conf.json"
         path.write_text(json.dumps({
             k: v.tolist() if isinstance(v, np.ndarray) else v
@@ -182,17 +186,18 @@ class TestParseConfidences:
         assert result["pae"] is not None
         assert result["pae"].shape == (5, 5)
 
-    def test_json_without_pae(self, tmp_path):
+    def test_json_without_pde(self, tmp_path):
         from binding_metrics.metrics.openfold import _parse_confidences
 
-        conf = _default_conf(with_pae=False)
-        path = tmp_path / "conf_nopae.json"
+        conf = _default_conf(with_pde=False)
+        path = tmp_path / "conf_nopde.json"
         path.write_text(json.dumps({
             k: v.tolist() if isinstance(v, np.ndarray) else v
             for k, v in conf.items()
         }))
         result = _parse_confidences(path)
 
+        assert result["pde"] is None
         assert result["pae"] is None
         assert result["plddt_per_atom"] is not None
 
@@ -219,7 +224,7 @@ class TestComputeOpenfoldMetrics:
 
         n_atoms, n_tokens = 20, 8
         agg = _default_agg(n_chains=2)
-        conf = _default_conf(n_atoms=n_atoms, n_tokens=n_tokens, with_pae=True)
+        conf = _default_conf(n_atoms=n_atoms, n_tokens=n_tokens, with_pde=True)
         timing = {"inference": 45.2, "msa": 12.3}
         _make_seed_dir(tmp_path, "prot", seed=1, sample=1,
                        agg=agg, conf=conf, timing=timing)
@@ -236,42 +241,48 @@ class TestComputeOpenfoldMetrics:
         assert metrics["n_atoms"] == n_atoms
         assert metrics["plddt_per_atom"] is not None
         assert metrics["plddt_per_atom"].shape == (n_atoms,)
+        assert not np.isnan(metrics["max_pde"])
         assert not np.isnan(metrics["max_pae"])
         assert metrics["timing"]["inference"] == pytest.approx(45.2)
 
     def test_matrices_excluded_by_default(self, tmp_path):
         from binding_metrics.metrics.openfold import compute_openfold_metrics
 
-        conf = _default_conf(with_pae=True)
+        conf = _default_conf(with_pde=True)
         _make_seed_dir(tmp_path, "q", conf=conf)
         metrics = compute_openfold_metrics(tmp_path, "q")
 
-        assert metrics["pde"] is None
+        assert metrics["pde"] is None  # full matrices withheld by default
         assert metrics["pae"] is None
-        assert not np.isnan(metrics["max_pae"])  # max_pae computed regardless
+        assert not np.isnan(metrics["max_pde"])  # scalars computed regardless
+        assert not np.isnan(metrics["max_pae"])
 
     def test_matrices_included_when_requested(self, tmp_path):
         from binding_metrics.metrics.openfold import compute_openfold_metrics
 
         n = 6
-        conf = _default_conf(n_tokens=n, with_pae=True)
+        conf = _default_conf(n_tokens=n, with_pde=True)
         _make_seed_dir(tmp_path, "q", conf=conf)
         metrics = compute_openfold_metrics(tmp_path, "q", include_matrices=True)
 
+        assert metrics["pde"] is not None
+        assert metrics["pde"].shape == (n, n)
         assert metrics["pae"] is not None
         assert metrics["pae"].shape == (n, n)
-        assert metrics["pde"] is not None
 
-    def test_no_pae_head(self, tmp_path):
+    def test_no_error_head(self, tmp_path):
         from binding_metrics.metrics.openfold import compute_openfold_metrics
 
+        # Monomer prediction: no ptm/iptm in the aggregated file and no PDE/PAE
+        # matrices persisted → interface error metrics are NaN.
         agg = {"avg_plddt": 80.0, "gpde": 1.5}
-        conf = _default_conf(with_pae=False)
+        conf = _default_conf(with_pde=False)
         _make_seed_dir(tmp_path, "monomer", agg=agg, conf=conf)
         metrics = compute_openfold_metrics(tmp_path, "monomer")
 
         assert np.isnan(metrics["ptm"])
         assert np.isnan(metrics["iptm"])
+        assert np.isnan(metrics["max_pde"])
         assert np.isnan(metrics["max_pae"])
         assert metrics["avg_plddt"] == pytest.approx(80.0)
 
@@ -309,6 +320,51 @@ class TestComputeOpenfoldMetrics:
 
         assert m1["avg_plddt"] == pytest.approx(70.0)
         assert m2["avg_plddt"] == pytest.approx(90.0)
+
+# ---------------------------------------------------------------------------
+# Tests: interface PAE / PDE slicing
+# ---------------------------------------------------------------------------
+
+
+class TestInterfacePaeStats:
+    def _two_chain_atoms(self, n_a=2, n_b=3):
+        """Minimal biotite AtomArray: one atom per residue, chains A then B."""
+        struc = pytest.importorskip("biotite.structure")
+        n = n_a + n_b
+        atoms = struc.AtomArray(n)
+        atoms.chain_id = np.array(["A"] * n_a + ["B"] * n_b)
+        atoms.res_id = np.array(list(range(1, n_a + 1)) + list(range(1, n_b + 1)))
+        atoms.res_name = np.array(["ALA"] * n)
+        atoms.atom_name = np.array(["CA"] * n)
+        atoms.element = np.array(["C"] * n)
+        atoms.coord = np.zeros((n, 3), dtype=float)
+        return atoms
+
+    def test_slices_binder_receptor_block(self):
+        from binding_metrics.metrics.openfold import _interface_pae_stats
+
+        n_a, n_b = 2, 3
+        atoms = self._two_chain_atoms(n_a, n_b)
+        # tokens ordered A(0,1) then B(2,3,4); make the B×A block deterministic
+        pae = np.zeros((5, 5), dtype=float)
+        pae[2:5, 0:2] = 4.0   # receptor→? here binder=B rows, receptor=A cols
+        pae[0:2, 2:5] = 2.0
+        stats = _interface_pae_stats(pae, atoms, binder_chain="B", receptor_chain="A")
+
+        assert stats["pae_interface"].shape == (n_b, n_a)
+        # mean averages both slice directions: (2.0 + 4.0) / 2
+        assert stats["mean_interface_pae"] == pytest.approx(3.0)
+        assert stats["max_interface_pae"] == pytest.approx(4.0)
+        assert stats["n_binder_tokens"] == n_b
+        assert stats["n_receptor_tokens"] == n_a
+
+    def test_missing_chain_raises(self):
+        from binding_metrics.metrics.openfold import _interface_pae_stats
+
+        atoms = self._two_chain_atoms()
+        with pytest.raises(ValueError, match="Chains not found"):
+            _interface_pae_stats(np.zeros((5, 5)), atoms, "B", "Z")
+
 
 # ---------------------------------------------------------------------------
 # Tests: _write_runner_yaml
@@ -434,7 +490,7 @@ def _make_openfold3_dir_from_pdb(
         rng = np.random.default_rng(42)
         conf = {
             "plddt": rng.uniform(50, 100, n_atoms).tolist(),
-            "pae": rng.uniform(0, 8, (n_residues, n_residues)).tolist(),
+            "pde": rng.uniform(0, 8, (n_residues, n_residues)).tolist(),
             "gpde": 1.45,
         }
         (seed_dir / f"{prefix}_confidences.json").write_text(json.dumps(conf))
@@ -456,7 +512,7 @@ class TestRealWorldIntegration:
         rng = np.random.default_rng(0)
         conf = {
             "plddt": rng.uniform(50, 100, n_atoms).tolist(),
-            "pae": rng.uniform(0, 8, (n_residues, n_residues)).tolist(),
+            "pde": rng.uniform(0, 8, (n_residues, n_residues)).tolist(),
             "gpde": 1.2,
         }
         path = tmp_path / "conf.json"
@@ -465,7 +521,7 @@ class TestRealWorldIntegration:
         result = _parse_confidences(path)
 
         assert result["plddt_per_atom"].shape == (n_atoms,)
-        assert result["pae"].shape == (n_residues, n_residues)
+        assert result["pde"].shape == (n_residues, n_residues)
         assert result["gpde"] == pytest.approx(1.2)
 
     @requires_example_pdb
@@ -497,7 +553,7 @@ class TestRealWorldIntegration:
         assert metrics["avg_plddt"] == pytest.approx(82.5)
         assert metrics["ptm"] == pytest.approx(0.86)
         assert metrics["iptm"] == pytest.approx(0.73)
-        assert not np.isnan(metrics["max_pae"])
+        assert not np.isnan(metrics["max_pde"])
         assert metrics["timing"]["inference"] == pytest.approx(38.4)
 
     @requires_example_pdb
