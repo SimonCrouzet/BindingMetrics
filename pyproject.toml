@@ -7,7 +7,7 @@ name = "binding-metrics"
 version = "0.1.0"
 description = "GPU-compatible Python package for evaluating biologics binding metrics through MD simulations"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
 authors = [
     {name = "BindingMetrics Contributors"}
@@ -15,7 +15,7 @@ authors = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
