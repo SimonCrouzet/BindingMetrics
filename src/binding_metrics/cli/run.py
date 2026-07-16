@@ -397,6 +397,27 @@ def run_pipeline(
     return results
 
 
+def _collect_failures(results: dict) -> list:
+    """Return ``(step, reason)`` for every metric step that did not complete.
+
+    A step counts as failed when its result dict carries an ``error`` key, or
+    when a step that reports a ``success`` flag (relaxation, energy) has
+    ``success is False``. Steps marked ``{"skipped": True}`` are not failures.
+    Used to make the pipeline exit non-zero instead of silently reporting
+    success when metrics could not be computed.
+    """
+    failures = []
+    for step, res in results.items():
+        if not isinstance(res, dict) or res.get("skipped"):
+            continue
+        if "error" in res:
+            failures.append((step, str(res["error"])[:200]))
+        elif res.get("success") is False:
+            reason = res.get("error_message") or "step reported success=False"
+            failures.append((step, str(reason)[:200]))
+    return failures
+
+
 def _parse_metrics(value: str) -> frozenset:
     names = {v.strip() for v in value.split(",")}
     unknown = names - KNOWN_METRICS
@@ -546,6 +567,17 @@ def main():
         results_path = write_report(results, args.output_dir, sample_id,
                                     fmt=args.fmt, summary=args.summary,
                                     summary_format=args.summary_format)
+
+        failures = _collect_failures(results)
+        if failures:
+            print(f"\n{'#'*60}")
+            print(f"  FAILED in {results['total_elapsed_s']}s — "
+                  f"{len(failures)} step(s) did not complete:")
+            for step, reason in failures:
+                print(f"    [x] {step}: {reason}")
+            print(f"  Partial results: {results_path}")
+            print(f"{'#'*60}\n")
+            sys.exit(1)
 
         print(f"\n{'#'*60}")
         print(f"  DONE in {results['total_elapsed_s']}s")
