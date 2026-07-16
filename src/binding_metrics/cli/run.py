@@ -280,7 +280,7 @@ def run_pipeline(
     if "dockq" in metrics:
         _step("DockQ CAPRI accuracy (vs reference)")
         if reference_path is None:
-            _warn("DockQ requested but no --reference supplied; skipping.")
+            _warn("DockQ requested but no reference structure was provided for this run; skipping.")
             results["dockq"] = {"skipped": True}
         else:
             try:

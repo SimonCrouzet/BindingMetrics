@@ -460,7 +460,7 @@ def _md_openfold(of: dict | None) -> str:
 def _md_dockq(dq: dict | None) -> str:
     lines = ["## DockQ — reference-based CAPRI accuracy\n"]
     if _is_skipped(dq):
-        return lines[0] + "_Skipped (no reference supplied)._\n"
+        return lines[0] + "_Skipped._\n"
     if not dq:
         return lines[0] + "_Absent._\n"
     if dq.get("error"):
