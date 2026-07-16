@@ -19,8 +19,8 @@ except ImportError:
 
 requires_gemmi = pytest.mark.skipif(not HAS_GEMMI, reason="gemmi not installed")
 
-EXAMPLE_CIF = Path("data/rank001_design_spec_457.cif")
-EXAMPLE_CIF2 = Path("data/rank002_design_spec_384.cif")
+EXAMPLE_CIF = Path("data/example_linearpeptide_1YCR.cif")
+EXAMPLE_CIF2 = Path("data/example_cyclicpeptide_3P8F.cif")
 
 
 class TestKabschRmsd:
@@ -81,6 +81,23 @@ class TestMatchedRmsd:
         assert result is not None
         assert result >= 0.0
 
+    def test_multiplicity_mismatch_does_not_raise(self):
+        """Keys shared with different multiplicity (e.g. altlocs / duplicated
+        keys) must not blow up Kabsch with mismatched index-list lengths.
+
+        Regression: previously the two selected index lists could differ in
+        length (3 vs 2 here), raising ``ValueError`` from the Kabsch matmul.
+        The fix pairs shared keys one-to-one up to the smaller count.
+        """
+        coords1 = np.zeros((3, 3))
+        keys1 = [("A", 1, "CA"), ("A", 1, "CA"), ("A", 2, "CA")]
+        coords2 = np.zeros((2, 3))
+        keys2 = [("A", 1, "CA"), ("A", 2, "CA")]
+        result = _matched_rmsd(coords1, keys1, coords2, keys2)
+        assert result is not None
+        assert np.isfinite(result)
+        assert isinstance(result, float)
+
 
 class TestComputeStructureRmsd:
     """Tests for compute_structure_rmsd function."""
@@ -118,6 +135,54 @@ class TestComputeStructureRmsd:
         result = compute_structure_rmsd(EXAMPLE_CIF, EXAMPLE_CIF, design_chain="A")
         assert result["rmsd_design"] is not None
         assert result["bb_rmsd_design"] is not None
+
+    @requires_gemmi
+    @pytest.mark.integration
+    def test_atom_matching_branch_on_real_files(self, prepped_example_cif):
+        """Exercise the len(coords1) != len(coords2) atom-matching branch.
+
+        ``test_same_structure_zero_rmsd`` compares a file to itself, so atom counts
+        are equal and the fast direct-Kabsch path is taken — the atom-matching
+        branch (match on (chain,res,atom) when counts differ) is never covered by
+        any test. Comparing raw 1YCR to its prepped variant (hydrogens added →
+        different atom count) drives that branch on real data and must return
+        finite, non-None RMSDs rather than erroring or silently yielding None.
+        """
+        if not EXAMPLE_CIF.exists():
+            pytest.skip("Test CIF not available")
+
+        result = compute_structure_rmsd(EXAMPLE_CIF, prepped_example_cif, design_chain="A")
+
+        assert result["rmsd"] is not None
+        assert result["bb_rmsd"] is not None
+        assert result["rmsd_design"] is not None
+        assert result["rmsd"] >= 0.0
+        assert result["bb_rmsd"] >= 0.0
+
+    @requires_gemmi
+    @pytest.mark.integration
+    def test_different_peptides_no_shape_mismatch(self):
+        """Comparing two different peptide structures with differing atom
+        counts and shared (chain, res, atom) keys of differing multiplicity
+        must not raise a Kabsch shape mismatch.
+
+        Regression for the matmul ValueError (553 vs 490 atoms): the
+        full-complex RMSDs must come back finite. Chain 'A' of the two
+        peptides shares no common atom keys, so the design-chain variants are
+        legitimately None — assert that graceful outcome rather than requiring
+        a value.
+        """
+        if not EXAMPLE_CIF.exists() or not EXAMPLE_CIF2.exists():
+            pytest.skip("Test CIFs not available")
+
+        result = compute_structure_rmsd(EXAMPLE_CIF, EXAMPLE_CIF2)
+
+        assert result["rmsd"] is not None
+        assert np.isfinite(result["rmsd"])
+        assert result["rmsd"] >= 0.0
+        assert result["bb_rmsd"] is not None
+        assert np.isfinite(result["bb_rmsd"])
+        assert result["bb_rmsd"] >= 0.0
 
     def test_missing_gemmi_raises(self, tmp_path: Path):
         """Should raise ImportError if gemmi is not installed."""

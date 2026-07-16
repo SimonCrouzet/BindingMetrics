@@ -106,10 +106,31 @@ def _matched_rmsd(
     if not common:
         return None
 
-    idx1 = sorted([(k, i) for i, k in enumerate(keys1) if k in common])
-    idx2 = sorted([(k, i) for i, k in enumerate(keys2) if k in common])
-    c1 = coords1[[i for _, i in idx1]]
-    c2 = coords2[[i for _, i in idx2]]
+    # Group atom indices by key so that keys appearing with different
+    # multiplicities in the two structures (e.g. altlocs, duplicated keys)
+    # are paired one-to-one up to the smaller count. This guarantees the two
+    # selected index lists have equal length, which Kabsch requires.
+    pos1: dict = {}
+    for i, k in enumerate(keys1):
+        if k in common:
+            pos1.setdefault(k, []).append(i)
+    pos2: dict = {}
+    for i, k in enumerate(keys2):
+        if k in common:
+            pos2.setdefault(k, []).append(i)
+
+    sel1: list[int] = []
+    sel2: list[int] = []
+    for k in sorted(common):
+        n = min(len(pos1[k]), len(pos2[k]))
+        sel1.extend(pos1[k][:n])
+        sel2.extend(pos2[k][:n])
+
+    if not sel1:
+        return None
+
+    c1 = coords1[sel1]
+    c2 = coords2[sel2]
     return _kabsch_rmsd(c1, c2)
 
 
