@@ -1086,6 +1086,53 @@ class ImplicitRelaxation:
         return result
 
 
+def run_implicit_relaxation(
+    input_path: Path,
+    output_dir: Optional[Path] = None,
+    *,
+    config: Optional["RelaxationConfig"] = None,
+    sample_id: Optional[str] = None,
+    **config_kwargs,
+) -> "RelaxationResult":
+    """Function wrapper around :class:`ImplicitRelaxation` for generic invocation.
+
+    ``ImplicitRelaxation`` takes its ``RelaxationConfig`` in ``__init__`` and the
+    structure path in ``.run()``, so it cannot be driven by a generic runner that
+    forwards ``input_path`` as a single keyword. This thin wrapper exposes the
+    interface the metric registry advertises: ``input_path`` (and ``output_dir``)
+    as call kwargs, with the config either passed explicitly or built from keyword
+    overrides taken from the manifest ``md`` block.
+
+    Args:
+        input_path: Path to input CIF or PDB structure file.
+        output_dir: Directory for output structures. Defaults to a temporary
+            directory when omitted (e.g. pure benchmark timing runs).
+        config: Optional pre-built RelaxationConfig. If omitted, one is created
+            from ``config_kwargs``.
+        sample_id: Identifier for this run (defaults to the input file stem).
+        **config_kwargs: Forwarded to ``RelaxationConfig`` when ``config`` is None.
+
+    Returns:
+        RelaxationResult with energies, RMSD/RMSF, timing, and output paths.
+    """
+    import tempfile
+
+    if config is None:
+        config = RelaxationConfig(**config_kwargs)
+    elif config_kwargs:
+        raise TypeError(
+            "run_implicit_relaxation: pass either `config` or config keyword "
+            "overrides, not both"
+        )
+
+    relaxer = ImplicitRelaxation(config)
+
+    if output_dir is None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            return relaxer.run(Path(input_path), Path(tmp_dir), sample_id=sample_id)
+    return relaxer.run(Path(input_path), Path(output_dir), sample_id=sample_id)
+
+
 def _run_one(
     relaxer: "ImplicitRelaxation",
     input_path: Path,

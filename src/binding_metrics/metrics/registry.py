@@ -308,7 +308,7 @@ METRICS: list[MetricSpec] = [
 
     MetricSpec(
         name="md_implicit",
-        import_path="binding_metrics.protocols.relaxation:ImplicitRelaxation",
+        import_path="binding_metrics.protocols.relaxation:run_implicit_relaxation",
         description=(
             "Implicit solvent MD relaxation (AMBER ff14SB + OBC2/GBn2): "
             "3-stage minimization + Langevin MD"
