@@ -11,8 +11,6 @@ from binding_metrics.metrics.energy import (
     compute_interaction_energy,
 )
 
-# Real CIF test data
-EXAMPLE_CIF = Path("data/rank001_design_spec_457.cif")
 
 
 class TestExtractChain:
@@ -46,34 +44,28 @@ class TestComputeInteractionEnergy:
 
     @requires_cuda
     @pytest.mark.integration
-    def test_returns_dict_with_base_keys(self):
+    def test_returns_dict_with_base_keys(self, prepped_example_cif):
         """Should return a dict with the base (non-mode) keys."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
-        result = compute_interaction_energy(EXAMPLE_CIF, modes=("raw",))
+        result = compute_interaction_energy(prepped_example_cif, modes=("raw",))
 
         base_keys = {"sample_id", "success", "error_message", "num_contacts", "num_close_contacts"}
         assert base_keys.issubset(result.keys())
 
     @requires_cuda
     @pytest.mark.integration
-    def test_raw_mode_keys(self):
+    def test_raw_mode_keys(self, prepped_example_cif):
         """raw mode should produce raw_* keys."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
-        result = compute_interaction_energy(EXAMPLE_CIF, modes=("raw",))
+        result = compute_interaction_energy(prepped_example_cif, modes=("raw",))
 
         raw_keys = {"raw_interaction_energy", "raw_e_complex", "raw_e_peptide", "raw_e_receptor"}
         assert raw_keys.issubset(result.keys())
 
     @requires_cuda
     @pytest.mark.integration
-    def test_relaxed_mode_keys(self):
+    def test_relaxed_mode_keys(self, prepped_example_cif):
         """relaxed mode should produce relaxed_* keys."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
         result = compute_interaction_energy(
-            EXAMPLE_CIF,
+            prepped_example_cif,
             modes=("relaxed",),
             relaxed_min_steps_restrained=20,
             relaxed_min_steps_full=50,
@@ -87,12 +79,10 @@ class TestComputeInteractionEnergy:
 
     @requires_cuda
     @pytest.mark.integration
-    def test_relaxed_succeeds_on_cif_structure(self):
+    def test_relaxed_succeeds_on_cif_structure(self, prepped_example_cif):
         """relaxed mode should successfully compute energies."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
         result = compute_interaction_energy(
-            EXAMPLE_CIF,
+            prepped_example_cif,
             modes=("relaxed",),
             relaxed_min_steps_restrained=20,
             relaxed_min_steps_full=50,
@@ -103,12 +93,10 @@ class TestComputeInteractionEnergy:
 
     @requires_cuda
     @pytest.mark.integration
-    def test_no_clash_keys_for_relaxed_mode(self):
+    def test_no_clash_keys_for_relaxed_mode(self, prepped_example_cif):
         """relaxed mode should NOT have per-mode clash counts (raw-only metrics)."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
         result = compute_interaction_energy(
-            EXAMPLE_CIF,
+            prepped_example_cif,
             modes=("relaxed",),
             relaxed_min_steps_restrained=20,
             relaxed_min_steps_full=50,
@@ -118,12 +106,10 @@ class TestComputeInteractionEnergy:
 
     @requires_cuda
     @pytest.mark.integration
-    def test_contact_counts_are_raw_only(self):
+    def test_contact_counts_are_raw_only(self, prepped_example_cif):
         """num_contacts and num_close_contacts reflect raw input structure."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
         result = compute_interaction_energy(
-            EXAMPLE_CIF,
+            prepped_example_cif,
             modes=("relaxed",),
             relaxed_min_steps_restrained=20,
             relaxed_min_steps_full=50,
@@ -136,26 +122,22 @@ class TestComputeInteractionEnergy:
 
     @requires_cuda
     @pytest.mark.integration
-    def test_sample_id_from_file_stem(self):
+    def test_sample_id_from_file_stem(self, prepped_example_cif):
         """sample_id should default to the input file stem."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
         result = compute_interaction_energy(
-            EXAMPLE_CIF,
+            prepped_example_cif,
             modes=("relaxed",),
             relaxed_min_steps_restrained=10,
             relaxed_min_steps_full=20,
         )
-        assert result["sample_id"] == EXAMPLE_CIF.stem
+        assert result["sample_id"] == prepped_example_cif.stem
 
     @requires_cuda
     @pytest.mark.integration
-    def test_custom_sample_id(self):
+    def test_custom_sample_id(self, prepped_example_cif):
         """Should use custom sample_id when provided."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
         result = compute_interaction_energy(
-            EXAMPLE_CIF,
+            prepped_example_cif,
             modes=("relaxed",),
             relaxed_min_steps_restrained=10,
             relaxed_min_steps_full=20,
@@ -171,12 +153,10 @@ class TestComputeInteractionEnergy:
         assert result["error_message"] is not None
 
     @pytest.mark.integration
-    def test_cpu_platform_available(self):
+    def test_cpu_platform_available(self, prepped_example_cif):
         """CPU platform should work as fallback for non-GPU environments."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
         result = compute_interaction_energy(
-            EXAMPLE_CIF,
+            prepped_example_cif,
             device="cpu",
             modes=("relaxed",),
             relaxed_min_steps_restrained=20,
@@ -187,12 +167,10 @@ class TestComputeInteractionEnergy:
     @requires_cuda
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_after_md_mode(self):
+    def test_after_md_mode(self, prepped_example_cif):
         """after_md mode should run MD and return finite energies."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
         result = compute_interaction_energy(
-            EXAMPLE_CIF,
+            prepped_example_cif,
             modes=("after_md",),
             relaxed_min_steps_restrained=50,
             relaxed_min_steps_full=100,

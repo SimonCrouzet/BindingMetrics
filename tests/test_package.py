@@ -109,9 +109,31 @@ class TestPackageImports:
             "compute_shape_complementarity",
             "compute_buried_void_volume",
             "compute_receptor_drift",
+            # EvoBind metrics
+            "compute_evobind_score",
+            "compute_evobind_adversarial_check",
+            # DockQ reference metric
+            "compute_dockq_metrics",
         }
 
         assert set(binding_metrics.__all__) == expected
+
+    def test_all_exports_are_bound_attributes(self):
+        """Every name in __all__ must actually resolve on the package.
+
+        The set-equality test above guards the *literal* list against drift, but a
+        name can be listed in __all__ and still not be bound (a typo, or an export
+        that was removed from the submodule but left in __all__). That only surfaces
+        as an AttributeError on ``from binding_metrics import *`` or ``getattr``.
+        This asserts each advertised export is effectively importable.
+        """
+        import binding_metrics
+
+        for name in binding_metrics.__all__:
+            assert hasattr(binding_metrics, name), (
+                f"__all__ lists {name!r} but it is not bound on the package"
+            )
+            assert getattr(binding_metrics, name) is not None
 
 
 class TestSubmoduleImports:

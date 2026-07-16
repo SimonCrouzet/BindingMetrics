@@ -175,7 +175,7 @@ class TestLoadStructure:
     @pytest.mark.integration
     def test_load_cif(self):
         """Should load a CIF file from test data."""
-        cif_path = Path("data/rank001_design_spec_457.cif")
+        cif_path = Path("data/example_linearpeptide_1YCR.cif")
         if not cif_path.exists():
             pytest.skip("Test CIF not available")
         topology, positions = load_structure(cif_path)
@@ -200,7 +200,7 @@ class TestDetectChains:
     @pytest.mark.integration
     def test_detect_chains_from_cif(self):
         """Should detect chains from a CIF file."""
-        cif_path = Path("data/rank001_design_spec_457.cif")
+        cif_path = Path("data/example_linearpeptide_1YCR.cif")
         if not cif_path.exists():
             pytest.skip("Test CIF not available")
         topology, _ = load_structure(cif_path)
@@ -220,3 +220,27 @@ class TestSaveCif:
         save_cif(topology, positions, out_path)
         assert out_path.exists()
         assert out_path.stat().st_size > 0
+
+    @pytest.mark.integration
+    def test_save_cif_roundtrips(self, sample_pdb_path: Path, tmp_path: Path):
+        """The saved CIF must be a real, reloadable structure — not just non-empty.
+
+        ``test_save_cif_creates_file`` only checks the file exists and has bytes, so
+        a bug that wrote a malformed/truncated CIF would still pass. Reading it back
+        with the same loader and comparing atom counts and chain IDs proves the
+        downstream consumer actually accepts what save_cif produced.
+        """
+        topology, positions = load_structure(sample_pdb_path)
+        out_path = tmp_path / "roundtrip.cif"
+        save_cif(topology, positions, out_path)
+
+        rt_topology, rt_positions = load_structure(out_path)
+
+        orig_atoms = list(topology.atoms())
+        rt_atoms = list(rt_topology.atoms())
+        assert len(rt_atoms) == len(orig_atoms)
+        assert len(rt_positions) == len(positions)
+
+        orig_chains = {c.id for c in topology.chains()}
+        rt_chains = {c.id for c in rt_topology.chains()}
+        assert rt_chains == orig_chains

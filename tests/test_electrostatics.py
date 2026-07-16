@@ -39,7 +39,7 @@ class TestCoulombCrossChain:
                 _import_biotite()
 
     def test_with_example_pdb(self):
-        """Should compute Coulomb energy for example.pdb chains M and R."""
+        """Should compute Coulomb energy for example.pdb chains B and A."""
         _skip_if_no_biotite()
         if not EXAMPLE_PDB_PATH.exists():
             pytest.skip(f"Example PDB not found: {EXAMPLE_PDB_PATH}")
@@ -48,8 +48,8 @@ class TestCoulombCrossChain:
 
         result = compute_coulomb_cross_chain(
             EXAMPLE_PDB_PATH,
-            peptide_chain="M",
-            receptor_chain="R",
+            peptide_chain="B",
+            receptor_chain="A",
         )
 
         expected_keys = {
@@ -69,8 +69,8 @@ class TestCoulombCrossChain:
 
         result = compute_coulomb_cross_chain(
             EXAMPLE_PDB_PATH,
-            peptide_chain="M",
-            receptor_chain="R",
+            peptide_chain="B",
+            receptor_chain="A",
         )
 
         assert np.isfinite(result["coulomb_energy_kJ"])
@@ -86,8 +86,8 @@ class TestCoulombCrossChain:
 
         result = compute_coulomb_cross_chain(
             EXAMPLE_PDB_PATH,
-            peptide_chain="M",
-            receptor_chain="R",
+            peptide_chain="B",
+            receptor_chain="A",
         )
 
         kJ = result["coulomb_energy_kJ"]
@@ -104,8 +104,8 @@ class TestCoulombCrossChain:
 
         result = compute_coulomb_cross_chain(
             EXAMPLE_PDB_PATH,
-            peptide_chain="M",
-            receptor_chain="R",
+            peptide_chain="B",
+            receptor_chain="A",
         )
 
         for info in result["charged_atoms_peptide"]:
@@ -125,8 +125,8 @@ class TestCoulombCrossChain:
 
         result = compute_coulomb_cross_chain(
             EXAMPLE_PDB_PATH,
-            peptide_chain="M",
-            receptor_chain="R",
+            peptide_chain="B",
+            receptor_chain="A",
         )
 
         assert result["n_attractive"] + result["n_repulsive"] <= result["n_charged_pairs"]
@@ -141,7 +141,7 @@ class TestCoulombCrossChain:
 
         result_auto = compute_coulomb_cross_chain(EXAMPLE_PDB_PATH)
         result_explicit = compute_coulomb_cross_chain(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R"
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A"
         )
 
         assert result_auto["coulomb_energy_kJ"] == pytest.approx(
@@ -157,10 +157,10 @@ class TestCoulombCrossChain:
         from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
 
         result_large = compute_coulomb_cross_chain(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R", cutoff_ang=20.0
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A", cutoff_ang=20.0
         )
         result_small = compute_coulomb_cross_chain(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R", cutoff_ang=5.0
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A", cutoff_ang=5.0
         )
 
         assert result_small["n_charged_pairs"] <= result_large["n_charged_pairs"]
@@ -174,10 +174,10 @@ class TestCoulombCrossChain:
         from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
 
         result_d4 = compute_coulomb_cross_chain(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R", dielectric=4.0
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A", dielectric=4.0
         )
         result_d8 = compute_coulomb_cross_chain(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R", dielectric=8.0
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A", dielectric=8.0
         )
 
         # Energy should be inversely proportional to dielectric
@@ -191,10 +191,10 @@ class TestCoulombCrossChain:
         _skip_if_no_biotite()
         # Build minimal PDB with one charged pair at ~5 Å distance
         pdb_content = """\
-ATOM      1  NZ  LYS M   1       0.000   0.000   0.000  1.00  0.00           N
-ATOM      2  CA  LYS M   1      -1.000   0.000   0.000  1.00  0.00           C
-ATOM      3  OD1 ASP R   1       4.000   0.000   0.000  1.00  0.00           O
-ATOM      4  CA  ASP R   1       5.000   0.000   0.000  1.00  0.00           C
+ATOM      1  NZ  LYS B   1       0.000   0.000   0.000  1.00  0.00           N
+ATOM      2  CA  LYS B   1      -1.000   0.000   0.000  1.00  0.00           C
+ATOM      3  OD1 ASP A   1       4.000   0.000   0.000  1.00  0.00           O
+ATOM      4  CA  ASP A   1       5.000   0.000   0.000  1.00  0.00           C
 END
 """
         pdb_path = tmp_path / "synthetic.pdb"
@@ -203,7 +203,7 @@ END
         from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
 
         result = compute_coulomb_cross_chain(
-            pdb_path, peptide_chain="M", receptor_chain="R", cutoff_ang=12.0
+            pdb_path, peptide_chain="B", receptor_chain="A", cutoff_ang=12.0
         )
 
         assert result["n_attractive"] >= 1
@@ -213,10 +213,10 @@ END
         """Synthetic structure: two LYS NZ groups should be repulsive."""
         _skip_if_no_biotite()
         pdb_content = """\
-ATOM      1  NZ  LYS M   1       0.000   0.000   0.000  1.00  0.00           N
-ATOM      2  CA  LYS M   1      -1.000   0.000   0.000  1.00  0.00           C
-ATOM      3  NZ  LYS R   1       4.000   0.000   0.000  1.00  0.00           N
-ATOM      4  CA  LYS R   1       5.000   0.000   0.000  1.00  0.00           C
+ATOM      1  NZ  LYS B   1       0.000   0.000   0.000  1.00  0.00           N
+ATOM      2  CA  LYS B   1      -1.000   0.000   0.000  1.00  0.00           C
+ATOM      3  NZ  LYS A   1       4.000   0.000   0.000  1.00  0.00           N
+ATOM      4  CA  LYS A   1       5.000   0.000   0.000  1.00  0.00           C
 END
 """
         pdb_path = tmp_path / "repulsive.pdb"
@@ -225,7 +225,7 @@ END
         from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
 
         result = compute_coulomb_cross_chain(
-            pdb_path, peptide_chain="M", receptor_chain="R", cutoff_ang=12.0
+            pdb_path, peptide_chain="B", receptor_chain="A", cutoff_ang=12.0
         )
 
         assert result["n_repulsive"] >= 1
