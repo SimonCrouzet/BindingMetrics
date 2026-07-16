@@ -21,6 +21,10 @@ from pathlib import Path
 from typing import Optional
 
 ALL_METRICS = frozenset({"energy", "interface", "geometry", "electrostatics", "openfold"})
+# Reference-based metrics require a native structure (--reference) and are not
+# part of the default set; they are auto-enabled when a reference is supplied.
+REFERENCE_METRICS = frozenset({"dockq"})
+KNOWN_METRICS = ALL_METRICS | REFERENCE_METRICS
 
 
 def _warn(msg: str) -> None:
@@ -51,6 +55,8 @@ def run_pipeline(
     # metrics
     metrics: frozenset = ALL_METRICS,
     energy_modes: tuple = ("relaxed",),
+    # reference-based (dockq)
+    reference_path: Optional[Path] = None,
     # openfold
     openfold_mode: str = "score",
     openfold_conda_env: Optional[str] = None,
@@ -270,6 +276,32 @@ def run_pipeline(
     else:
         results["electrostatics"] = {"skipped": True}
 
+    # ----------------------------------------------- DockQ (reference-based)
+    if "dockq" in metrics:
+        _step("DockQ CAPRI accuracy (vs reference)")
+        if reference_path is None:
+            _warn("DockQ requested but no reference structure was provided for this run; skipping.")
+            results["dockq"] = {"skipped": True}
+        else:
+            try:
+                from binding_metrics.metrics.dockq import compute_dockq_metrics
+
+                # Score the prediction *as submitted* (original input coordinates)
+                # against the reference: CAPRI evaluates the predicted coordinates,
+                # so we deliberately use input_path, not the prepped/relaxed pose
+                # (prep + MD would move atoms and confound the accuracy measure).
+                dockq = compute_dockq_metrics(input_path, reference_path)
+                results["dockq"] = dockq
+                score = dockq.get("dockq")
+                if score is not None:
+                    print(f"  DockQ: {score:.3f} ({dockq.get('capri_class')})")
+            except Exception as e:
+                _warn(f"DockQ failed: {e}")
+                traceback.print_exc()
+                results["dockq"] = {"error": str(e)}
+    else:
+        results["dockq"] = {"skipped": True}
+
     # --------------------------------------------------------- OpenFold
     if "openfold" in metrics:
         _step("OpenFold3 confidence scoring")
@@ -367,11 +399,11 @@ def run_pipeline(
 
 def _parse_metrics(value: str) -> frozenset:
     names = {v.strip() for v in value.split(",")}
-    unknown = names - ALL_METRICS
+    unknown = names - KNOWN_METRICS
     if unknown:
         raise argparse.ArgumentTypeError(
             f"Unknown metric(s): {', '.join(sorted(unknown))}. "
-            f"Valid choices: {', '.join(sorted(ALL_METRICS))}"
+            f"Valid choices: {', '.join(sorted(KNOWN_METRICS))}"
         )
     return frozenset(names)
 
@@ -394,6 +426,10 @@ def main():
                         help="Peptide chain ID (auto-detect if omitted)")
     parser.add_argument("--receptor-chain", type=str, default=None,
                         help="Receptor chain ID (auto-detect if omitted)")
+    parser.add_argument("--reference", "--native", dest="reference", type=Path, default=None,
+                        help="Reference/native complex for reference-based accuracy "
+                             "metrics (DockQ, fnat, i-RMSD, L-RMSD). Supplying this "
+                             "auto-enables the 'dockq' metric. Requires: pip install DockQ")
 
     # Prep
     prep_group = parser.add_argument_group("Preparation")
@@ -428,8 +464,8 @@ def main():
         metavar="METRICS",
         help=(
             "Comma-separated list of metrics to compute. "
-            f"Valid: {', '.join(sorted(ALL_METRICS))}. "
-            "Default: all."
+            f"Valid: {', '.join(sorted(KNOWN_METRICS))}. "
+            "Default: all reference-free metrics. 'dockq' also needs --reference."
         ),
     )
     metrics_group.add_argument("--energy-modes", nargs="+",
@@ -465,6 +501,14 @@ def main():
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)
         sys.exit(1)
 
+    # A reference auto-enables DockQ; validate it exists up front.
+    metrics = args.metrics
+    if args.reference is not None:
+        if not args.reference.exists():
+            print(f"ERROR: reference file not found: {args.reference}", file=sys.stderr)
+            sys.exit(1)
+        metrics = metrics | {"dockq"}
+
     from binding_metrics.cli import log_to_file
     with log_to_file(args.log_file):
         sample_id = args.sample_id or args.input.stem
@@ -490,8 +534,9 @@ def main():
             device=args.device,
             peptide_chain=args.peptide_chain,
             receptor_chain=args.receptor_chain,
-            metrics=args.metrics,
+            metrics=metrics,
             energy_modes=tuple(args.energy_modes),
+            reference_path=args.reference,
             openfold_mode=args.openfold_mode,
             openfold_conda_env=args.openfold_conda_env,
         )

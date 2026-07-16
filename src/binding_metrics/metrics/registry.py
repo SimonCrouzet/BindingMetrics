@@ -182,6 +182,23 @@ METRICS: list[MetricSpec] = [
         peptide_chain_arg="design_chain",
     ),
 
+    # --- Reference-based accuracy metrics -----------------------------------
+    # These require a *reference* (native) structure and only make sense for
+    # benchmarking / retrospective validation, not for scoring a design in
+    # isolation. path_arg = predicted model, secondary_path_arg = reference.
+    # DockQ performs its own automatic optimal chain-mapping search.
+
+    MetricSpec(
+        name="dockq",
+        import_path="binding_metrics.metrics.dockq:compute_dockq_metrics",
+        description="Reference-based CAPRI accuracy: DockQ, fnat, fnonnat, i-RMSD, L-RMSD",
+        input_type="static_structure",
+        chain_mode="interface_2paths",
+        formats=("pdb", "cif"),
+        path_arg="model_path",
+        secondary_path_arg="reference_path",
+    ),
+
     # --- Trajectory metrics -------------------------------------------------
     # All trajectory metrics receive topology_path from the manifest.
     # Chain arguments map to manifest fields resolved by the benchmark runner:

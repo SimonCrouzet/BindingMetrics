@@ -2,7 +2,7 @@
 
 **BindingMetrics** is a Python toolkit for evaluating biologics binding quality through physics-based metrics. It is designed for scoring peptide–protein complexes produced by structure prediction or computational design pipelines.
 
-Metrics span from fast static-structure analysis (buried SASA, hydrogen bonds, salt bridges, Ramachandran validation) to force-field interaction energies computed with optional energy minimization and short MD equilibration, to trajectory-level receptor drift and structure prediction confidence scores from OpenFold3.
+Metrics span from fast static-structure analysis (buried SASA, hydrogen bonds, salt bridges, Ramachandran validation) to force-field interaction energies computed with optional energy minimization and short MD equilibration, to trajectory-level receptor drift and structure prediction confidence scores from OpenFold3. When a native structure is available, it also computes **reference-based CAPRI accuracy** (DockQ, fnat, i-RMSD, L-RMSD) — useful for benchmarking predictions against ground truth (e.g. antibody–antigen complexes).
 
 ---
 
@@ -80,6 +80,7 @@ binding-metrics-receptor-quality --input ensemble.cif --receptor-chain A --devic
 | Interface packing | Buried void volume — large = loose packing | Score | biotite + scipy |
 | Force-field energy | *E*_int = *E*_cpx − *E*_pep − *E*_rec (AMBER ff14SB); raw / relaxed / after MD | Score | OpenMM |
 | Structure comparison | All-atom and backbone RMSD (Kabsch-aligned) | Score | gemmi |
+| Reference accuracy | DockQ, fnat, fnonnat, i-RMSD, L-RMSD + CAPRI class — requires a native reference | Score | DockQ |
 | MD trajectory | Receptor backbone drift — aligned (conformational) and raw | Score | MDTraj |
 | Structure prediction | avg_pLDDT, pTM, ipTM, gPDE — OpenFold3 confidence | Score | OpenFold3 |
 | EvoBind scoring | Interface distance / pLDDT — confidence-weighted binding score (Å) | Score | biotite |
@@ -126,6 +127,7 @@ pip install "binding-metrics[structure]"    # PDBFixer + gemmi — structure rep
 pip install "binding-metrics[biotite]"      # biotite + hydride + scipy — interface, geometry
 pip install "binding-metrics[gaff]"         # openmmforcefields + openff-toolkit — GAFF2 for non-standard residues
 pip install "binding-metrics[report]"       # no additional dependencies — JSON/CSV/Markdown output
+pip install "binding-metrics[dockq]"        # DockQ — reference-based CAPRI accuracy (DockQ, fnat, i-RMSD, L-RMSD)
 pip install "binding-metrics[all]"          # everything above (OpenMM via PyPI = CPU only)
 ```
 
@@ -304,6 +306,32 @@ from binding_metrics import compute_openfold_metrics
 
 metrics = compute_openfold_metrics("./openfold_out", query_name="my_complex", seed=1, sample=1)
 print(f"pLDDT: {metrics['avg_plddt']:.1f}  ipTM: {metrics['iptm']:.3f}  gPDE: {metrics['gpde']:.3f} Å")
+```
+
+### DockQ — reference-based CAPRI accuracy
+
+Score a predicted complex against a known native. Requires `pip install "binding-metrics[dockq]"`.
+DockQ performs its own optimal chain-mapping search, so antibody–antigen chains named or ordered
+differently between prediction and reference are matched automatically.
+
+```python
+from binding_metrics import compute_dockq_metrics
+
+result = compute_dockq_metrics("predicted.cif", "native.cif")   # (model, reference)
+print(f"DockQ: {result['dockq']:.3f}  ({result['capri_class']})")
+for iface in result["interfaces"]:
+    print(f"  {iface['chains']}: fnat={iface['fnat']:.2f}  "
+          f"i-RMSD={iface['iRMSD']:.2f} Å  L-RMSD={iface['LRMSD']:.2f} Å")
+```
+
+In the pipeline, pass `--reference` (single) or `--reference-dir` (batch) to auto-enable it:
+
+```bash
+# Single prediction against its native — auto-enables the dockq metric
+binding-metrics-run --input predicted.cif --output-dir results/ --reference native.cif
+
+# Batch: each input is matched to a native by filename stem (target1.cif → target1.pdb)
+binding-metrics-batch --input-dir preds/ --output-csv metrics.csv --reference-dir natives/
 ```
 
 When the `openfold` metric is enabled in `binding-metrics-run`, EvoBind scores are automatically computed and merged into the OpenFold3 result dict — no additional model calls required.
