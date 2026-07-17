@@ -494,17 +494,44 @@ class ImplicitRelaxation:
             print("  Linear peptide (no cyclization detected)")
 
         # --- GAFF2 for non-standard residues / small-molecule co-factors ---
-        # Must be registered BEFORE addHydrogens so that addHydrogens can use
-        # the GAFF template to add H to non-standard residues.
-        # Molecules are built as heavy-atom-only here (matching the topology
-        # state before H addition). GAFF/antechamber adds H internally during
-        # parameterization.
+        # Must run BEFORE addHydrogens so the generated residue templates (with
+        # <ExternalBond> tags) match the backbone-embedded NCAA residues and so
+        # their hydrogens are injected before createSystem.
         #
         # Note: GAFF2 is a general small-molecule force field. It works for
         # small organic co-factors and modified amino acids (as a pragmatic
         # approximation), but purpose-built parameters (e.g. CGENFF, RESP-fitted
         # charges) give higher accuracy for MD production runs.
-        if not self.config.small_molecules:
+        if self.config.small_molecules == "auto":
+            # Auto path: generate ExternalBond residue templates for every exotic
+            # NCAA (BMT, ABA, …) directly from the topology geometry. Residues
+            # covered by ff14SB or curated templates (NMG/MVA/MLE, lactams, CYX)
+            # are skipped. This rebuilds the topology to inject the NCAA hydrogens.
+            from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
+            topology, positions, ncaa_xmls = parameterize_ncaa_residues(
+                topology, positions, ff,
+                gaff_version=self.config.small_molecule_ff,
+            )
+            if ncaa_xmls:
+                print(f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
+                      f"ExternalBond templates for {len(ncaa_xmls)} NCAA residue(s).")
+        elif self.config.small_molecules:
+            # Explicit list: free small-molecule co-factors (no backbone bonds) via
+            # openmmforcefields' template generator.
+            try:
+                from openmmforcefields.generators import GAFFTemplateGenerator
+            except ImportError as exc:
+                raise ImportError(
+                    "openmmforcefields is required for small_molecules support. "
+                    "Install with: conda install -c conda-forge openmmforcefields openff-toolkit"
+                ) from exc
+            mols = self._coerce_molecules(self.config.small_molecules)
+            if mols:
+                gaff = GAFFTemplateGenerator(molecules=mols, forcefield=self.config.small_molecule_ff)
+                ff.registerTemplateGenerator(gaff.generator)
+                print(f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
+                      f"for {len(mols)} small-molecule(s).")
+        else:
             nonstandard_names = [
                 res.name for res in topology.residues()
                 if res.name not in self._AMBER_STANDARD
@@ -515,26 +542,6 @@ class ImplicitRelaxation:
                 print("  These will likely cause 'No template found' errors.")
                 print("  → Run with --small-molecules auto to parameterise via GAFF2.")
                 print("  → Or run binding-metrics-prep --canonicalize to replace them first.")
-
-        if self.config.small_molecules:
-            try:
-                from openmmforcefields.generators import GAFFTemplateGenerator
-            except ImportError as exc:
-                raise ImportError(
-                    "openmmforcefields is required for small_molecules support. "
-                    "Install with: conda install -c conda-forge openmmforcefields openff-toolkit"
-                ) from exc
-            if self.config.small_molecules == "auto":
-                mols = self._discover_heterogens(topology)
-            else:
-                mols = self._coerce_molecules(self.config.small_molecules)
-            if mols:
-                gaff = GAFFTemplateGenerator(molecules=mols, forcefield=self.config.small_molecule_ff)
-                ff.registerTemplateGenerator(gaff.generator)
-                print(f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
-                      f"for {len(mols)} non-standard residue(s).")
-            else:
-                print("  Note: small_molecules='auto' found no non-standard residues.")
 
         # --- Add hydrogens ---
         print("  Adding hydrogens...")
@@ -1195,6 +1202,10 @@ def main():
     parser.add_argument("--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)")
     parser.add_argument("--receptor-chain", type=str, default=None, help="Receptor chain ID (auto-detect if omitted)")
     parser.add_argument("--sample-id", type=str, default=None, help="Sample identifier (defaults to input file stem)")
+    parser.add_argument("--small-molecules", type=str, default="auto",
+                        help="Non-standard residue parameterisation. 'auto' (default) "
+                             "builds GAFF2 ExternalBond templates for every exotic NCAA; "
+                             "'none' disables it.")
 
     model_group = parser.add_mutually_exclusive_group()
     model_group.add_argument("--model", type=int, default=None,
@@ -1214,6 +1225,9 @@ def main():
     if args.all_models and args.sample_id is not None:
         parser.error("--sample-id cannot be used with --all-models (IDs are auto-generated)")
 
+    if args.small_molecules is not None and args.small_molecules.lower() == "none":
+        args.small_molecules = None
+
     from binding_metrics.cli import log_to_file
     with log_to_file(args.log_file):
         config = RelaxationConfig(
@@ -1225,6 +1239,7 @@ def main():
             solvent_model=args.solvent_model,
             peptide_chain_id=args.peptide_chain,
             receptor_chain_id=args.receptor_chain,
+            small_molecules=args.small_molecules,
         )
         relaxer = ImplicitRelaxation(config)
 

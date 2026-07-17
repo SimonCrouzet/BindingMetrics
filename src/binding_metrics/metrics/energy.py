@@ -235,7 +235,10 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
     upstream so all subsequent steps receive the same resolved chain ID).
 
     Returns:
-        Tuple of (system, topology_with_h, positions_with_h, bond_info)
+        Tuple of (system, topology_with_h, positions_with_h, bond_info, ncaa_xmls)
+        where ncaa_xmls is a list of GAFF2 residue-template XML strings generated
+        for non-canonical residues (empty when there are none). Callers that build
+        separate subsystem force fields must reload these XMLs.
     """
     from binding_metrics.core.cyclic import (
         patch_cyclic_topology,
@@ -243,9 +246,30 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
         get_addh_variants,
         load_extra_xmls,
     )
+    from binding_metrics.core.nonstandard import (
+        detect_nonstandard,
+        patch_nonstandard,
+        load_nonstandard_xmls,
+    )
+    from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
 
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
+
+    # Accumulate every extra residue-template XML used to build the complex so
+    # the peptide/receptor subsystems (which build their own force fields) can
+    # reload them: curated N-methyl templates + GAFF NCAA templates. (Lactam
+    # closure templates ride along in bond_info via load_extra_xmls.)
+    extra_xmls: list = []
+
+    # D-amino-acid / N-methyl rename (no-op if the structure was already prepped
+    # or relaxed, where these were renamed upstream).
+    if peptide_chain is not None:
+        ns_info = detect_nonstandard(topology, peptide_chain)
+        if not ns_info.is_empty:
+            topology, positions = patch_nonstandard(topology, positions, peptide_chain, ns_info)
+            load_nonstandard_xmls(ff, ns_info)
+            extra_xmls.extend(ns_info.extra_ff_xmls)
 
     topology, positions, bond_info = patch_cyclic_topology(
         topology, positions, peptide_chain
@@ -253,6 +277,11 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
     topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
     if bond_info:
         load_extra_xmls(ff, bond_info)
+
+    # GAFF2 ExternalBond templates for exotic NCAAs (BMT/ABA/…). Rebuilds the
+    # topology to inject their hydrogens; must run before addHydrogens.
+    topology, positions, ncaa_xmls = parameterize_ncaa_residues(topology, positions, ff)
+    extra_xmls.extend(ncaa_xmls)
 
     from openmm.app import Modeller
     modeller = Modeller(topology, positions)
@@ -270,7 +299,7 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
         nonbondedMethod=openmm.app.NoCutoff,
         constraints=openmm.app.HBonds,
     )
-    return system, modeller.topology, modeller.positions, bond_info
+    return system, modeller.topology, modeller.positions, bond_info, extra_xmls
 
 
 def _repair_orphaned_cys(topology, positions, solvent_model: str = "obc2",
@@ -365,13 +394,17 @@ def _repair_orphaned_cys(topology, positions, solvent_model: str = "obc2",
     return new_topo, new_pos
 
 
-def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None):
+def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None, ncaa_xmls=None):
     """Build an OpenMM system for a topology that already contains hydrogens."""
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
     if bond_info:
         from binding_metrics.core.cyclic import load_extra_xmls
         load_extra_xmls(ff, bond_info)
+    if ncaa_xmls:
+        from binding_metrics.core.gaff_ncaa import _load_ffxml
+        for xml_str in ncaa_xmls:
+            _load_ffxml(ff, xml_str)
     return ff.createSystem(
         topology,
         nonbondedMethod=openmm.app.NoCutoff,
@@ -448,6 +481,7 @@ def _evaluate_subsystem_energies(
     solvent_model: str,
     device: str,
     bond_info=None,
+    ncaa_xmls=None,
 ) -> tuple:
     """Evaluate E_complex, E_peptide, E_receptor at given positions.
 
@@ -467,12 +501,12 @@ def _evaluate_subsystem_energies(
 
         pep_topo, pep_pos = _extract_chain(topo_h, positions, peptide_chain)
         pep_topo, pep_pos = _repair_orphaned_cys(pep_topo, pep_pos, solvent_model)
-        sys_p = _build_subsystem(pep_topo, solvent_model, bond_info=bond_info)
+        sys_p = _build_subsystem(pep_topo, solvent_model, bond_info=bond_info, ncaa_xmls=ncaa_xmls)
         e_p = _evaluate_potential_energy(sys_p, pep_topo, pep_pos, device)
 
         rec_topo, rec_pos = _extract_chain(topo_h, positions, receptor_chain)
         rec_topo, rec_pos = _repair_orphaned_cys(rec_topo, rec_pos, solvent_model)
-        sys_r = _build_subsystem(rec_topo, solvent_model)
+        sys_r = _build_subsystem(rec_topo, solvent_model, ncaa_xmls=ncaa_xmls)
         e_r = _evaluate_potential_energy(sys_r, rec_topo, rec_pos, device)
 
         if not (np.isfinite(e_p) and np.isfinite(e_r)):
@@ -593,7 +627,7 @@ def compute_interaction_energy(
             result["num_close_contacts"] = int(np.sum(distances < 4.0))
 
         # Build complex system — adds hydrogens once, shared across all modes
-        sys_complex, topo_h, pos_h, bond_info = _create_implicit_system(
+        sys_complex, topo_h, pos_h, bond_info, extra_xmls = _create_implicit_system(
             topology, positions, solvent_model, peptide_chain=peptide_chain, ph=ph
         )
         platform, props = _get_platform(device)
@@ -614,7 +648,7 @@ def compute_interaction_energy(
             print(f"[{sample_id}] Raw mode...")
             e_c, e_p, e_r = _evaluate_subsystem_energies(
                 simulation, topo_h, pos_h, peptide_chain, receptor_chain, solvent_model, device,
-                bond_info=bond_info,
+                bond_info=bond_info, ncaa_xmls=extra_xmls,
             )
             if e_c is not None and e_p is not None and e_r is not None:
                 result["raw_e_complex"] = e_c
@@ -673,7 +707,7 @@ def compute_interaction_energy(
                 if "relaxed" in modes:
                     e_c, e_p, e_r = _evaluate_subsystem_energies(
                         simulation, topo_h, pos_relaxed, peptide_chain, receptor_chain,
-                        solvent_model, device, bond_info=bond_info,
+                        solvent_model, device, bond_info=bond_info, ncaa_xmls=extra_xmls,
                     )
                     if e_c is not None and e_p is not None and e_r is not None:
                         result["relaxed_e_complex"] = e_c
@@ -704,7 +738,7 @@ def compute_interaction_energy(
 
                 e_c, e_p, e_r = _evaluate_subsystem_energies(
                     simulation, topo_h, pos_md, peptide_chain, receptor_chain,
-                    solvent_model, device, bond_info=bond_info,
+                    solvent_model, device, bond_info=bond_info, ncaa_xmls=extra_xmls,
                 )
                 if e_c is not None and e_p is not None and e_r is not None:
                     result["after_md_e_complex"] = e_c

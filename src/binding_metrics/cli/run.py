@@ -155,6 +155,9 @@ def run_pipeline(
             peptide_chain_id=peptide_chain_label,
             receptor_chain_id=receptor_chain_label,
             cyclic_bond_hints=cyclic_bond_hints or None,
+            # Auto-parameterise any non-canonical residue (e.g. cyclosporin's
+            # BMT/ABA) with GAFF2 ExternalBond templates so relaxation builds.
+            small_molecules="auto",
         )
         relaxer = ImplicitRelaxation(config)
         t0 = time.time()

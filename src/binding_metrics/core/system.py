@@ -185,9 +185,24 @@ def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) ->
         load_extra_xmls,
         rename_disulfide_cys_to_cyx,
     )
+    from binding_metrics.core.nonstandard import (
+        detect_nonstandard,
+        patch_nonstandard,
+        load_nonstandard_xmls,
+    )
+    from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
 
     # custom bonds are intra-chain, so both ends share the same chain ID.
     cyclic_chain = custom_bonds[0][0]
+
+    ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
+
+    # D-amino-acid / N-methyl rename first (e.g. DAL→ALA, SAR→NMG) so their
+    # standard/curated templates match; must precede patch_cyclic_topology.
+    ns_info = detect_nonstandard(topology, cyclic_chain)
+    if not ns_info.is_empty:
+        topology, positions = patch_nonstandard(topology, positions, cyclic_chain, ns_info)
+        load_nonstandard_xmls(ff, ns_info)
 
     # patch_cyclic_topology detects the cyclic bond by distance (works even
     # without the bond already in the topology), removes C-terminal OXT and
@@ -199,17 +214,18 @@ def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) ->
     # peptide–receptor SS bonds) that would otherwise fail in addHydrogens.
     topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
 
-    if not bond_info:
-        # Shouldn't happen if custom_bonds is non-empty, but fall back gracefully.
-        modeller = Modeller(topology, positions)
-        modeller.addHydrogens(pH=ph)
-        return modeller.topology, modeller.positions
+    if bond_info:
+        load_extra_xmls(ff, bond_info)
 
-    ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
-    load_extra_xmls(ff, bond_info)
+    # GAFF2 ExternalBond templates for exotic NCAAs (BMT/ABA/…): generates and
+    # loads their templates and injects their hydrogens so addHydrogens (whose
+    # internal createSystem would otherwise fail on "No template") succeeds.
+    topology, positions, _ncaa_xmls = parameterize_ncaa_residues(topology, positions, ff)
 
     modeller = Modeller(topology, positions)
-    addh_variants = get_addh_variants(modeller.topology, bond_info, cyclic_chain)
+    addh_variants = (
+        get_addh_variants(modeller.topology, bond_info, cyclic_chain) if bond_info else None
+    )
     modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
     return modeller.topology, modeller.positions
 
