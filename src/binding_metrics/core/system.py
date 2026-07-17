@@ -1,5 +1,6 @@
 """System preparation utilities for MD simulations."""
 
+import contextlib
 import logging
 import os
 import tempfile
@@ -226,8 +227,61 @@ def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) ->
     addh_variants = (
         get_addh_variants(modeller.topology, bond_info, cyclic_chain) if bond_info else None
     )
-    modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
+    with deterministic_hydrogen_placement():
+        modeller.addHydrogens(
+            ff, pH=ph, variants=addh_variants,
+            platform=_hydrogen_placement_platform(),
+        )
     return modeller.topology, modeller.positions
+
+
+#: Seed used for hydrogen placement. Any fixed value makes prep reproducible;
+#: the specific number carries no meaning. Do not "tune" it to dodge a bad
+#: placement — repair_ca_hydrogen_chirality exists to fix those.
+HYDROGEN_PLACEMENT_SEED = 0
+
+
+def _hydrogen_placement_platform():
+    """The Reference platform: double-precision, single-threaded, deterministic.
+
+    ``addHydrogens`` runs a short energy minimization to settle the new
+    hydrogens. On a fast platform (CUDA/OpenCL) the reduction order is not
+    deterministic, so that minimization lands in a marginally different spot each
+    run — hydrogens on rotatable groups shift by up to ~0.25 Å, which is enough
+    to tip the downstream main minimization into a different basin and change the
+    reported energy by hundreds of kJ/mol. Running the tiny H minimization on the
+    Reference platform makes prep bit-reproducible regardless of installed
+    hardware; it is cheap (a few dozen steps on one small system).
+    """
+    from openmm import Platform
+
+    return Platform.getPlatformByName("Reference")
+
+
+@contextlib.contextmanager
+def deterministic_hydrogen_placement(seed: int = HYDROGEN_PLACEMENT_SEED):
+    """Make ``addHydrogens`` reproducible for the duration of the block.
+
+    ``Modeller.addHydrogens`` offsets every new hydrogen by
+    ``0.05 nm * Vec3(random(), random(), random())`` drawn from Python's global
+    ``random`` module, which nobody seeds. Identical input therefore yields a
+    slightly different structure on every run, and hence a different minimum:
+    1YCR has been observed anywhere between about -14.0k and -14.6k kJ/mol
+    across runs. For a tool whose output is a QC *measurement*, that
+    irreproducibility is a defect in its own right.
+
+    Seeding fixes the placement so the same input gives the same answer. The
+    previous RNG state is restored on exit, so seeding here never perturbs
+    randomness elsewhere in the caller's process.
+    """
+    import random
+
+    state = random.getstate()
+    random.seed(seed)
+    try:
+        yield
+    finally:
+        random.setstate(state)
 
 
 def repair_ca_hydrogen_chirality(topology, positions, verbose: bool = True):
@@ -342,7 +396,10 @@ def prep_structure(
     #   • Everything else (free ligands, crystallographic additives, glycans
     #     in their own chain …)             → remove
     fixer.findMissingAtoms()
-    fixer.addMissingAtoms()
+    # Seeded: addMissingAtoms minimizes rebuilt atoms with a stochastic
+    # integrator, so an unseeded call makes prep irreproducible for any
+    # structure with missing side-chain atoms.
+    fixer.addMissingAtoms(seed=HYDROGEN_PLACEMENT_SEED)
 
     # Detect and register all non-standard bonds from the rebuilt geometry
     # (SS bonds, CYS→CYX rename). Must run after addMissingAtoms so that
@@ -406,8 +463,13 @@ def prep_structure(
             fixer.topology, fixer.positions, custom_bonds, ph
         )
     else:
-        fixer.addMissingHydrogens(ph)
-        result_topo, result_pos = fixer.topology, fixer.positions
+        # Inline of PDBFixer.addMissingHydrogens so we can pin the H-placement
+        # minimization to the deterministic Reference platform (the method itself
+        # exposes no platform argument).
+        _h_modeller = Modeller(fixer.topology, fixer.positions)
+        with deterministic_hydrogen_placement():
+            _h_modeller.addHydrogens(pH=ph, platform=_hydrogen_placement_platform())
+        result_topo, result_pos = _h_modeller.topology, _h_modeller.positions
 
     # addHydrogens jitters new H randomly and relaxes them with the heavy atoms
     # frozen, which intermittently strands a Cα H on the wrong face; left in

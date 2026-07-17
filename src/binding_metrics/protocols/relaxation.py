@@ -554,13 +554,16 @@ class ImplicitRelaxation:
             from binding_metrics.core.cyclic import get_addh_variants
             addh_variants = get_addh_variants(modeller.topology, bond_info, peptide_chain)
 
+        from binding_metrics.core.system import deterministic_hydrogen_placement
         try:
-            modeller.addHydrogens(ff, pH=self.config.ph, variants=addh_variants)
+            with deterministic_hydrogen_placement():
+                modeller.addHydrogens(ff, pH=self.config.ph, variants=addh_variants)
         except Exception as e:
             print(f"  Warning: addHydrogens(ff, pH={self.config.ph}) failed ({e}), "
                   "retrying without ForceField (approximate H positions)...")
             try:
-                modeller.addHydrogens(pH=self.config.ph, variants=addh_variants)
+                with deterministic_hydrogen_placement():
+                    modeller.addHydrogens(pH=self.config.ph, variants=addh_variants)
             except Exception as e2:
                 print(f"  Warning: addHydrogens failed: {e2}")
         topology, positions = modeller.topology, modeller.positions

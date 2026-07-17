@@ -38,25 +38,25 @@ For each we run a short minimize-only relaxation on CUDA and then assert:
    heavy-atom count and the same per-residue heavy-atom composition as the
    input.
 
-Representative measured values (short 50/20/50-step minimizations)::
+Measured values (short 50/20/50-step minimizations)::
 
                  energy(min)   energy(pre)   heavy RMSD   min inter-res dist
-    1YCR        -14553 kJ/mol  +3477         0.487 Å      1.329 Å
-    3P8F        -33049 kJ/mol -27475         0.276 Å      1.329 Å
-    cyclosporin -21150 kJ/mol   n/a          0.207 Å      1.326 Å
+    1YCR        -14460 kJ/mol  +5082         0.409 Å      1.330 Å
+    3P8F        -33108 kJ/mol -27312         0.293 Å      1.329 Å
+    cyclosporin -21515 kJ/mol   n/a          0.297 Å      1.327 Å
 
                 min bond   max bond   Cα centers   heavy atoms
-    1YCR        1.219 Å    2.389 Å     94          819
-    3P8F        1.217 Å    2.249 Å    225          1970
-    cyclosporin 1.218 Å    1.958 Å    152          1351
+    1YCR        1.218 Å    2.391 Å     94          819
+    3P8F        1.217 Å    2.247 Å    225          1970
+    cyclosporin 1.219 Å    2.087 Å    152          1351
 
-These are *representative, not reproducible to the kJ*: ``addHydrogens`` places
-hydrogens with an unseeded random jitter, so each prep yields a slightly
-different starting structure and hence a slightly different minimum (1YCR has
-been seen between about -14.0k and -14.6k kJ/mol). Every bound below is
-therefore set with wide margin — each passes on any genuinely-relaxed structure
-while still failing on an exploded one. Do not tighten them to the numbers
-above.
+These are now reproducible run-to-run on a given machine: prep seeds hydrogen
+placement and pins its minimization to the deterministic Reference platform,
+and the CUDA main minimization is bit-deterministic from a fixed input (see
+``test_relaxation_energy_is_reproducible``). The absolute values can still shift
+across machines/GPU models and force-field versions, so the bounds below are
+kept wide with intent — each passes on any genuinely-relaxed structure while
+still failing on an exploded one. Do not tighten them to the numbers above.
 
 The chirality check (6) earned its place immediately: it caught a real prep bug
 in which ``addHydrogens`` stranded a Cα hydrogen on the wrong face, which then
@@ -477,6 +477,56 @@ def relaxed(request) -> RelaxedExample:
 # ---------------------------------------------------------------------------
 # QC tests
 # ---------------------------------------------------------------------------
+
+# Two identical prep+relax runs must agree far more tightly than this. The
+# defect it guards against (unseeded hydrogen placement) produced a spread of
+# hundreds of kJ/mol, so a 0.1 kJ/mol bound catches any regression by a wide
+# margin while tolerating any last-bit platform float noise.
+ENERGY_REPRODUCIBILITY_TOL_KJ = 0.1
+
+
+@requires_cuda
+@pytest.mark.integration
+@pytest.mark.gpu
+def test_relaxation_energy_is_reproducible(tmp_path_factory):
+    """The same input must give the same minimized energy on every run.
+
+    Regression guard for the whole prep+relax chain. Hydrogen placement used to
+    draw from an unseeded RNG and minimize hydrogens on a non-deterministic GPU
+    platform, so identical input yielded a different structure — and a different
+    minimized energy (1YCR was seen spanning ~600 kJ/mol) — on each run. That is
+    a defect in a tool whose output is a QC measurement. Prep is now seeded and
+    its hydrogen minimization pinned to the deterministic Reference platform, and
+    the CUDA main minimization is itself bit-deterministic from a fixed input, so
+    the end-to-end energy must now be stable.
+
+    Uses 1YCR, whose PDBFixer prep path was the one that drifted (the cyclic
+    path was already reproducible), and preps *independently* each iteration so
+    the hydrogen-placement RNG and platform are genuinely re-exercised.
+    """
+    raw = DATA_DIR / "example_linear_p53_1YCR.pdb"
+    if not raw.exists():
+        pytest.skip(f"bundled example not found: {raw}")
+
+    energies = []
+    for i in range(2):
+        work = tmp_path_factory.mktemp(f"qc_repro_{i}")
+        prepped = _prep_on_the_fly(raw, work / "prepped.cif")
+        result = ImplicitRelaxation(_small_config()).run(
+            prepped, work, sample_id=f"repro{i}"
+        )
+        assert result.success, f"run {i} failed: {result.error_message}"
+        assert result.potential_energy_minimized is not None
+        energies.append(float(result.potential_energy_minimized))
+
+    spread = abs(energies[0] - energies[1])
+    assert spread <= ENERGY_REPRODUCIBILITY_TOL_KJ, (
+        f"minimized energy is not reproducible: {energies[0]:.4f} vs "
+        f"{energies[1]:.4f} kJ/mol (spread {spread:.4f} > "
+        f"{ENERGY_REPRODUCIBILITY_TOL_KJ} kJ/mol) — hydrogen placement "
+        f"determinism has regressed"
+    )
+
 
 @requires_cuda
 @pytest.mark.integration

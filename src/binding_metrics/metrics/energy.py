@@ -288,11 +288,14 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
     addh_variants = None
     if bond_info:
         addh_variants = get_addh_variants(modeller.topology, bond_info, peptide_chain)
+    from binding_metrics.core.system import deterministic_hydrogen_placement
     try:
-        modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
+        with deterministic_hydrogen_placement():
+            modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
     except Exception as e:
         print(f"  Warning: addHydrogens with pH failed ({e}), retrying without pH")
-        modeller.addHydrogens(ff, variants=addh_variants)
+        with deterministic_hydrogen_placement():
+            modeller.addHydrogens(ff, variants=addh_variants)
 
     # A wrong-side Cα H (random jitter + frozen heavy atoms during H addition)
     # perturbs the energy decomposition. No-op on already-clean structures.
