@@ -415,12 +415,12 @@ class TestWriteRunnerYaml:
 
 
 # ---------------------------------------------------------------------------
-# Real-world integration tests using data/example.pdb
+# Real-world integration tests using data/example_linear_p53_1YCR.pdb
 # ---------------------------------------------------------------------------
 
-EXAMPLE_PDB = Path("data/example.pdb")
+EXAMPLE_PDB = Path("data/example_linear_p53_1YCR.pdb")
 requires_example_pdb = pytest.mark.skipif(
-    not EXAMPLE_PDB.exists(), reason="data/example.pdb not found"
+    not EXAMPLE_PDB.exists(), reason="data/example_linear_p53_1YCR.pdb not found"
 )
 
 
@@ -500,7 +500,7 @@ def _make_openfold3_dir_from_pdb(
 
 
 class TestRealWorldIntegration:
-    """Integration tests that parse outputs built around data/example.pdb."""
+    """Integration tests that parse outputs built around data/example_linear_p53_1YCR.pdb."""
 
     @requires_example_pdb
     def test_parse_confidences_with_real_atom_count(self, tmp_path):

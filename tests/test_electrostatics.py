@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example.pdb"
+EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
 
 requires_biotite = pytest.mark.skipif(
     not pytest.importorskip("biotite", reason="biotite not installed"),
@@ -39,7 +39,7 @@ class TestCoulombCrossChain:
                 _import_biotite()
 
     def test_with_example_pdb(self):
-        """Should compute Coulomb energy for example.pdb chains B and A."""
+        """Should compute Coulomb energy for example_linear_p53_1YCR.pdb chains B and A."""
         _skip_if_no_biotite()
         if not EXAMPLE_PDB_PATH.exists():
             pytest.skip(f"Example PDB not found: {EXAMPLE_PDB_PATH}")

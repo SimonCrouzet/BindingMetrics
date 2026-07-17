@@ -429,11 +429,11 @@ def _relaxed_1ycr(prepped_example_cif, tmp_path_factory) -> RelaxedExample:
 @pytest.fixture(scope="session")
 def _relaxed_3p8f(tmp_path_factory) -> RelaxedExample:
     """3P8F (cyclic peptide), prepped on the fly (needs H / capped termini)."""
-    raw = DATA_DIR / "example_cyclicpeptide_3P8F.cif"
+    raw = DATA_DIR / "example_bicyclic_sfti1_3P8F.cif"
     if not raw.exists():
         pytest.skip(f"bundled example not found: {raw}")
     prep_dir = tmp_path_factory.mktemp("qc_prep_3p8f")
-    prepped = _prep_on_the_fly(raw, prep_dir / "example_cyclicpeptide_3P8F_prepped.cif")
+    prepped = _prep_on_the_fly(raw, prep_dir / "example_bicyclic_sfti1_3P8F_prepped.cif")
     out = tmp_path_factory.mktemp("qc_relax_3p8f")
     return _relax(prepped, out, "3P8F")
 

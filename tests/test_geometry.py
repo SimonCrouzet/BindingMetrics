@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example.pdb"
+EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
 
 
 def _skip_if_no_biotite():

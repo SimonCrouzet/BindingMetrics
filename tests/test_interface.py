@@ -14,7 +14,7 @@ except ImportError:
 requires_biotite = pytest.mark.skipif(not HAS_BIOTITE, reason="biotite not installed")
 
 # CIF fixture shared with other integration tests
-EXAMPLE_CIF = Path("data/example_linearpeptide_1YCR.cif")
+EXAMPLE_CIF = Path("data/example_linear_p53_1YCR.pdb")
 
 
 class TestDetectInterfaceChains:

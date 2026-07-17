@@ -19,8 +19,8 @@ except ImportError:
 
 requires_gemmi = pytest.mark.skipif(not HAS_GEMMI, reason="gemmi not installed")
 
-EXAMPLE_CIF = Path("data/example_linearpeptide_1YCR.cif")
-EXAMPLE_CIF2 = Path("data/example_cyclicpeptide_3P8F.cif")
+EXAMPLE_CIF = Path("data/example_linear_p53_1YCR.pdb")
+EXAMPLE_CIF2 = Path("data/example_bicyclic_sfti1_3P8F.cif")
 
 
 class TestKabschRmsd:

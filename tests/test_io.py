@@ -175,7 +175,7 @@ class TestLoadStructure:
     @pytest.mark.integration
     def test_load_cif(self):
         """Should load a CIF file from test data."""
-        cif_path = Path("data/example_linearpeptide_1YCR.cif")
+        cif_path = Path("data/example_ncaa_cyclosporin_1CWA.cif")
         if not cif_path.exists():
             pytest.skip("Test CIF not available")
         topology, positions = load_structure(cif_path)
@@ -200,7 +200,7 @@ class TestDetectChains:
     @pytest.mark.integration
     def test_detect_chains_from_cif(self):
         """Should detect chains from a CIF file."""
-        cif_path = Path("data/example_linearpeptide_1YCR.cif")
+        cif_path = Path("data/example_ncaa_cyclosporin_1CWA.cif")
         if not cif_path.exists():
             pytest.skip("Test CIF not available")
         topology, _ = load_structure(cif_path)
