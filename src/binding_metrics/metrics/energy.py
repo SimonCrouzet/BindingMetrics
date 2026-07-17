@@ -294,6 +294,13 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
         print(f"  Warning: addHydrogens with pH failed ({e}), retrying without pH")
         modeller.addHydrogens(ff, variants=addh_variants)
 
+    # A wrong-side Cα H (random jitter + frozen heavy atoms during H addition)
+    # perturbs the energy decomposition. No-op on already-clean structures.
+    from binding_metrics.core.system import repair_ca_hydrogen_chirality
+    modeller.positions = repair_ca_hydrogen_chirality(
+        modeller.topology, modeller.positions
+    )
+
     system = ff.createSystem(
         modeller.topology,
         nonbondedMethod=openmm.app.NoCutoff,

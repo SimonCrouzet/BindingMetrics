@@ -565,6 +565,12 @@ class ImplicitRelaxation:
                 print(f"  Warning: addHydrogens failed: {e2}")
         topology, positions = modeller.topology, modeller.positions
 
+        # addHydrogens can strand a Cα H on the wrong face (random jitter +
+        # frozen heavy atoms); left in place, minimization inverts the
+        # stereocenter. No-op for inputs already repaired by prep_structure.
+        from binding_metrics.core.system import repair_ca_hydrogen_chirality
+        positions = repair_ca_hydrogen_chirality(topology, positions)
+
         # --- Custom bond handler (plugin hook, called after H addition) ---
         if self.config.custom_bond_handler is not None:
             topology, positions, user_bond_info = self.config.custom_bond_handler(

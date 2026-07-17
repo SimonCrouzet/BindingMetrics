@@ -230,6 +230,57 @@ def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) ->
     return modeller.topology, modeller.positions
 
 
+def repair_ca_hydrogen_chirality(topology, positions, verbose: bool = True):
+    """Move Cα hydrogens that hydrogen addition placed on the wrong face.
+
+    ``Modeller.addHydrogens`` seeds each new hydrogen at a 0.1 nm base vector
+    plus ``0.05 nm * Vec3(random(), random(), random())`` drawn from Python's
+    *unseeded* global ``random``, then relaxes the hydrogens with every heavy
+    atom frozen (``setParticleMass(i, 0)``). When the jitter pushes HA across
+    the N/CA/C plane, that frozen-heavy-atom relaxation cannot bring it back:
+    HA settles into the wrong-side minimum and prep emits a Cα whose HA and CB
+    share a face, which is chemically impossible.
+
+    Left alone, this silently inverts the stereocenter downstream: the bad HA
+    contributes almost all of the Cα's angle strain, ``constraints=HBonds``
+    fixes the CA-HA length so the minimizer cannot relieve it by moving HA, and
+    ff14SB has no improper on Cα — so the only path left is pushing CB through
+    the plane. Observed on roughly one prep in six of the 3P8F example.
+
+    For any tetrahedral Cα, CB and HA lie on opposite sides of the N/CA/C
+    plane. That holds for L- and D-amino acids alike, so this repair reads the
+    correct side off the actual CB position and is handedness-agnostic (safe for
+    D-residues). It is a no-op on correct structures.
+    """
+    import numpy as np
+    from openmm import Vec3, unit
+
+    pos = np.array(positions.value_in_unit(unit.nanometer))
+    repaired = []
+    for res in topology.residues():
+        idx = {a.name: a.index for a in res.atoms()}
+        if not {"N", "CA", "C", "CB", "HA"} <= set(idx):
+            continue  # e.g. GLY (no CB) has no Cα stereocenter
+        ca = pos[idx["CA"]]
+        n, c, cb, ha = (pos[idx[k]] for k in ("N", "C", "CB", "HA"))
+        v_cb = np.dot(n - ca, np.cross(c - ca, cb - ca))
+        v_ha = np.dot(n - ca, np.cross(c - ca, ha - ca))
+        if (v_cb > 0) != (v_ha > 0):
+            continue  # opposite faces — correct
+        u = sum((x - ca) / np.linalg.norm(x - ca) for x in (n, c, cb))
+        norm = np.linalg.norm(u)
+        if norm < 1e-6:
+            continue  # degenerate planar tripod
+        pos[idx["HA"]] = ca - u / norm * 0.109  # ideal 4th tetrahedral vertex
+        repaired.append(f"{res.name}{res.id}/{res.chain.id}")
+
+    if repaired and verbose:
+        print(f"  Repaired {len(repaired)} wrong-side Cα hydrogen(s): "
+              f"{', '.join(repaired)}")
+    # Vec3, not bare tuples: downstream consumers index positions as p.x/p.y/p.z.
+    return unit.Quantity([Vec3(*map(float, p)) for p in pos], unit.nanometer)
+
+
 def prep_structure(
     topology,
     positions,
@@ -357,6 +408,11 @@ def prep_structure(
     else:
         fixer.addMissingHydrogens(ph)
         result_topo, result_pos = fixer.topology, fixer.positions
+
+    # addHydrogens jitters new H randomly and relaxes them with the heavy atoms
+    # frozen, which intermittently strands a Cα H on the wrong face; left in
+    # place it inverts the stereocenter during minimization.
+    result_pos = repair_ca_hydrogen_chirality(result_topo, result_pos)
 
     return result_topo, result_pos
 
