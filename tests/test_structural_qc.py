@@ -7,10 +7,17 @@ assert ``result.success`` and ``energy is not None`` — they would *not* catch 
 structurally-broken result. This module adds a QC pass that verifies the
 relaxed structure is physically sound.
 
-For each bundled public example (1YCR linear peptide, 3P8F cyclic peptide, and
-cyclosporin — the cyclophilin A–CsA complex, an NCAA / head-to-tail macrocycle
-with D-amino acids, N-methylation and GAFF-auto-parameterized residues) we run a
-short minimize-only relaxation on CUDA and then assert:
+The three bundled examples are chosen to span the peptide feature space rather
+than to repeat it:
+
+    1YCR         p53 / MDM2            linear, all-standard residues
+    3P8F         SFTI-1 / matriptase   bicyclic: head-to-tail *and* disulfide
+    cyclosporin  CsA / cyclophilin A   head-to-tail macrocycle + D-alanine +
+                                       N-methylation (MLE/MVA/SAR) + exotic
+                                       residues auto-parameterized by GAFF
+                                       (BMT/ABA)
+
+For each we run a short minimize-only relaxation on CUDA and then assert:
 
 1. Energy is finite, within a sane range, and did not *increase* during
    minimization (minimization can only lower the energy — a higher final energy
@@ -31,35 +38,33 @@ short minimize-only relaxation on CUDA and then assert:
    heavy-atom count and the same per-residue heavy-atom composition as the
    input.
 
-The measured values on current code (short 50/20/50-step minimizations) are::
+Representative measured values (short 50/20/50-step minimizations)::
 
                  energy(min)   energy(pre)   heavy RMSD   min inter-res dist
-    1YCR        -13999 kJ/mol  +5130         0.327 Å      1.328 Å
-    3P8F        -33074 kJ/mol -27673         0.281 Å      1.329 Å
-    cyclosporin -21513 kJ/mol   n/a          0.313 Å      1.327 Å
+    1YCR        -14553 kJ/mol  +3477         0.487 Å      1.329 Å
+    3P8F        -33049 kJ/mol -27475         0.276 Å      1.329 Å
+    cyclosporin -21150 kJ/mol   n/a          0.207 Å      1.326 Å
 
                 min bond   max bond   Cα centers   heavy atoms
-    1YCR        1.219 Å    2.398 Å    94           819
-    3P8F        1.218 Å    2.250 Å    215          1970
-    cyclosporin 1.220 Å    2.098 Å    152          1351
+    1YCR        1.219 Å    2.389 Å     94          819
+    3P8F        1.217 Å    2.249 Å    225          1970
+    cyclosporin 1.218 Å    1.958 Å    152          1351
 
-so every bound below is set with wide margin and passes on a genuinely-relaxed
-structure while still failing on an exploded one.
+These are *representative, not reproducible to the kJ*: ``addHydrogens`` places
+hydrogens with an unseeded random jitter, so each prep yields a slightly
+different starting structure and hence a slightly different minimum (1YCR has
+been seen between about -14.0k and -14.6k kJ/mol). Every bound below is
+therefore set with wide margin — each passes on any genuinely-relaxed structure
+while still failing on an exploded one. Do not tighten them to the numbers
+above.
 
-Known issue — check 6 (chirality) currently fails on 3P8F in roughly one run in
-three, and this is a *real relaxation defect, not a test artifact*: the
-minimizer inverts the Cα stereocenter of A140 (PHE), whose signed volume goes
-from +2.54 Å³ in the input to about -1.77 Å³ in the minimized structure. Both
-values are clean, large-magnitude tetrahedra (so this is not sign noise on a
-near-planar centre), and A140's input geometry is entirely typical (improper
-52.2° against a 52.3° median over the 215 centres), so there is no principled
-basis for excluding it. The outcome is deterministic within a process but varies
-across processes (CUDA non-determinism tips which side of the improper barrier
-the minimizer lands on), which is what makes it intermittent. The check is
-deliberately left strict: weakening it to go green would defeat the very
-inversion it exists to catch. 1YCR and cyclosporin — including cyclosporin's
-D-alanine, whose Cα carries the opposite sign (-1.0) to every L-residue — show
-0 flips.
+The chirality check (6) earned its place immediately: it caught a real prep bug
+in which ``addHydrogens`` stranded a Cα hydrogen on the wrong face, which then
+forced the minimizer to invert that stereocenter. See
+``core.system.repair_ca_hydrogen_chirality`` for the mechanism. Keep this check
+strict — weakening it would defeat the very inversion it exists to catch.
+Cyclosporin's D-alanine Cα carries the opposite sign to every L-residue, and
+the check reads it correctly without being told it is D.
 
 Runs are guarded by ``requires_cuda`` and skip gracefully without a GPU. Systems
 are kept small (minimize-only, tiny step counts) to share an 8 GB GPU.
