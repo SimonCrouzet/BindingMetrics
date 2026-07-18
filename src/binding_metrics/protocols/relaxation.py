@@ -27,6 +27,8 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+
 
 @dataclass
 class RelaxationConfig:
@@ -73,6 +75,14 @@ class RelaxationConfig:
 
     solvent_model: str = "obc2"
     device: str = "cuda"
+
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED
+    """Seed for every stochastic step (hydrogen placement, MD initial velocities
+    and the Langevin thermostat). A fixed int (the default) makes a run
+    reproducible; ``None`` opts into fresh randomness, e.g. to generate
+    independent MD replicas. Note: minimization is reproducible regardless, but
+    GPU MD may still differ in the last digits across runs even with a fixed seed
+    because CUDA force reduction order is not deterministic."""
 
     peptide_chain_id: Optional[str] = None
     receptor_chain_id: Optional[str] = None
@@ -555,14 +565,15 @@ class ImplicitRelaxation:
             addh_variants = get_addh_variants(modeller.topology, bond_info, peptide_chain)
 
         from binding_metrics.core.system import deterministic_hydrogen_placement
+        seed = self.config.random_seed
         try:
-            with deterministic_hydrogen_placement():
+            with deterministic_hydrogen_placement(seed):
                 modeller.addHydrogens(ff, pH=self.config.ph, variants=addh_variants)
         except Exception as e:
             print(f"  Warning: addHydrogens(ff, pH={self.config.ph}) failed ({e}), "
                   "retrying without ForceField (approximate H positions)...")
             try:
-                with deterministic_hydrogen_placement():
+                with deterministic_hydrogen_placement(seed):
                     modeller.addHydrogens(pH=self.config.ph, variants=addh_variants)
             except Exception as e2:
                 print(f"  Warning: addHydrogens failed: {e2}")
@@ -916,12 +927,15 @@ class ImplicitRelaxation:
 
             peptide_chain, receptor_chain = self._identify_chains(topology)
 
-            # Integrator
+            # Integrator. Seed the Langevin noise stream for reproducibility
+            # (config.random_seed None => leave unseeded for fresh randomness).
             integrator = openmm.LangevinMiddleIntegrator(
                 self.config.md_temperature_k * unit.kelvin,
                 self.config.md_friction / unit.picosecond,
                 self.config.md_timestep_fs * unit.femtosecond,
             )
+            if self.config.random_seed is not None:
+                integrator.setRandomNumberSeed(self.config.random_seed)
 
             platform, properties = self._get_platform()
             simulation = app.Simulation(topology, system, integrator, platform, properties)
@@ -1014,9 +1028,17 @@ class ImplicitRelaxation:
             if self.config.md_duration_ps > 0:
                 print(f"[{sample_id}] Running MD ({self.config.md_duration_ps} ps)...")
                 md_start = time.time()
-                simulation.context.setVelocitiesToTemperature(
-                    self.config.md_temperature_k * unit.kelvin
-                )
+                # Seed the initial Maxwell-Boltzmann velocities too, else MD is
+                # nondeterministic even with a seeded integrator.
+                if self.config.random_seed is not None:
+                    simulation.context.setVelocitiesToTemperature(
+                        self.config.md_temperature_k * unit.kelvin,
+                        self.config.random_seed,
+                    )
+                else:
+                    simulation.context.setVelocitiesToTemperature(
+                        self.config.md_temperature_k * unit.kelvin
+                    )
 
                 # Cyclic warmup: 10 ps backbone φ/ψ dihedral restraints to
                 # preserve ring conformation during velocity initialisation.
@@ -1215,6 +1237,11 @@ def main():
                         help="Non-standard residue parameterisation. 'auto' (default) "
                              "builds GAFF2 ExternalBond templates for every exotic NCAA; "
                              "'none' disables it.")
+    parser.add_argument("--random-seed", type=str, default=str(DEFAULT_RANDOM_SEED),
+                        metavar="INT|none",
+                        help="Seed for stochastic steps (hydrogen placement, MD "
+                             f"velocities/thermostat). Default {DEFAULT_RANDOM_SEED} "
+                             "(reproducible); 'none' for fresh randomness each run.")
 
     model_group = parser.add_mutually_exclusive_group()
     model_group.add_argument("--model", type=int, default=None,
@@ -1237,6 +1264,11 @@ def main():
     if args.small_molecules is not None and args.small_molecules.lower() == "none":
         args.small_molecules = None
 
+    if args.random_seed.strip().lower() in ("none", "random", "off"):
+        seed = None
+    else:
+        seed = int(args.random_seed)
+
     from binding_metrics.cli import log_to_file
     with log_to_file(args.log_file):
         config = RelaxationConfig(
@@ -1249,6 +1281,7 @@ def main():
             peptide_chain_id=args.peptide_chain,
             receptor_chain_id=args.receptor_chain,
             small_molecules=args.small_molecules,
+            random_seed=seed,
         )
         relaxer = ImplicitRelaxation(config)
 

@@ -18,7 +18,7 @@ from openmm.app import (
 )
 
 from binding_metrics.core.forcefields import get_forcefield
-from binding_metrics.core.system import prepare_system
+from binding_metrics.core.system import DEFAULT_RANDOM_SEED, prepare_system
 
 
 @dataclass
@@ -48,6 +48,9 @@ class SimulationConfig:
     nonbonded_cutoff: float = 1.0
     constraints: Literal["none", "hbonds", "allbonds"] = "hbonds"
     platform: Literal["CUDA", "OpenCL", "CPU", "auto"] = "auto"
+    random_seed: int | None = DEFAULT_RANDOM_SEED
+    """Seed for the Langevin thermostat and initial velocities. A fixed int (the
+    default) makes the run reproducible; ``None`` opts into fresh randomness."""
 
 
 class MDSimulation:
@@ -98,20 +101,25 @@ class MDSimulation:
             constraints=constraint_map[config.constraints],
         )
 
-        # Add barostat for NPT
+        # Add barostat for NPT (its Monte Carlo moves are also stochastic).
         if config.pressure is not None:
             barostat = MonteCarloBarostat(
                 config.pressure * unit.bar,
                 config.temperature * unit.kelvin,
             )
+            if config.random_seed is not None:
+                barostat.setRandomNumberSeed(config.random_seed)
             self._system.addForce(barostat)
 
-        # Create integrator
+        # Create integrator. Seed the Langevin noise for reproducibility
+        # (random_seed None => leave unseeded for fresh randomness).
         integrator = LangevinMiddleIntegrator(
             config.temperature * unit.kelvin,
             config.friction / unit.picosecond,
             config.timestep * unit.femtosecond,
         )
+        if config.random_seed is not None:
+            integrator.setRandomNumberSeed(config.random_seed)
 
         # Select platform
         platform = self._get_platform()

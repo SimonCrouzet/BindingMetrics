@@ -19,6 +19,7 @@ import openmm.unit as unit
 from openmm.app import ForceField, PDBFile
 
 from binding_metrics.core.forcefields import get_forcefield
+from binding_metrics.core.system import DEFAULT_RANDOM_SEED
 
 
 def calculate_interaction_energy(
@@ -227,7 +228,8 @@ def calculate_component_energies(
 
 
 def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
-                            peptide_chain: str = None, ph: float = 7.4):
+                            peptide_chain: str = None, ph: float = 7.4,
+                            random_seed: Optional[int] = DEFAULT_RANDOM_SEED):
     """Create an OpenMM system with implicit solvent after adding hydrogens.
 
     Cyclic topology is always detected and patched before addHydrogens.
@@ -290,11 +292,11 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
         addh_variants = get_addh_variants(modeller.topology, bond_info, peptide_chain)
     from binding_metrics.core.system import deterministic_hydrogen_placement
     try:
-        with deterministic_hydrogen_placement():
+        with deterministic_hydrogen_placement(random_seed):
             modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
     except Exception as e:
         print(f"  Warning: addHydrogens with pH failed ({e}), retrying without pH")
-        with deterministic_hydrogen_placement():
+        with deterministic_hydrogen_placement(random_seed):
             modeller.addHydrogens(ff, variants=addh_variants)
 
     # A wrong-side Cα H (random jitter + frozen heavy atoms during H addition)
@@ -545,6 +547,7 @@ def compute_interaction_energy(
     after_md_duration_ps: float = 10.0,
     after_md_timestep_fs: float = 2.0,
     after_md_temperature_k: float = 300.0,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
     """Compute interaction energies via subsystem decomposition for multiple modes.
 
@@ -638,7 +641,8 @@ def compute_interaction_energy(
 
         # Build complex system — adds hydrogens once, shared across all modes
         sys_complex, topo_h, pos_h, bond_info, extra_xmls = _create_implicit_system(
-            topology, positions, solvent_model, peptide_chain=peptide_chain, ph=ph
+            topology, positions, solvent_model, peptide_chain=peptide_chain, ph=ph,
+            random_seed=random_seed,
         )
         platform, props = _get_platform(device)
 
@@ -648,6 +652,8 @@ def compute_interaction_energy(
             1.0 / unit.picosecond,
             after_md_timestep_fs * unit.femtosecond,
         )
+        if random_seed is not None:
+            integrator.setRandomNumberSeed(random_seed)
         simulation = openmm.app.Simulation(topo_h, sys_complex, integrator, platform, props)
         simulation.context.setPositions(pos_h)
 
@@ -737,9 +743,14 @@ def compute_interaction_energy(
             print(f"[{sample_id}] Running MD ({after_md_duration_ps} ps)...")
             try:
                 simulation.context.setPositions(pos_relaxed)
-                simulation.context.setVelocitiesToTemperature(
-                    after_md_temperature_k * unit.kelvin
-                )
+                if random_seed is not None:
+                    simulation.context.setVelocitiesToTemperature(
+                        after_md_temperature_k * unit.kelvin, random_seed
+                    )
+                else:
+                    simulation.context.setVelocitiesToTemperature(
+                        after_md_temperature_k * unit.kelvin
+                    )
                 n_steps = int(after_md_duration_ps * 1000 / after_md_timestep_fs)
                 simulation.step(n_steps)
 

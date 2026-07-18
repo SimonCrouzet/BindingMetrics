@@ -4,7 +4,7 @@ import contextlib
 import logging
 import os
 import tempfile
-from typing import Literal
+from typing import Literal, Optional
 
 import openmm.unit as unit
 from openmm.app import Modeller, PDBFile, ForceField
@@ -19,6 +19,17 @@ try:
     HAS_PDBFIXER = True
 except ImportError:
     HAS_PDBFIXER = False
+
+
+#: Default seed for every stochastic step (hydrogen placement, PDBFixer atom
+#: rebuild, MD velocities and Langevin noise) so the pipeline is reproducible by
+#: default. MUST be non-zero: OpenMM's ``setRandomNumberSeed(0)`` is the sentinel
+#: for "choose a fresh random seed at run time", so a 0 here would silently
+#: re-randomize the integrators it is fed to (e.g. PDBFixer.addMissingAtoms).
+#: The specific value carries no meaning; do not "tune" it to dodge a bad
+#: hydrogen placement — repair_ca_hydrogen_chirality exists to fix those. Pass
+#: ``random_seed=None`` through the configs to opt back into fresh randomness.
+DEFAULT_RANDOM_SEED = 1
 
 
 def _extract_custom_bonds(topology) -> list:
@@ -171,7 +182,10 @@ _METAL_ELEMENTS = {
 _WATER_NAMES = {"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"}
 
 
-def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) -> tuple:
+def _add_hydrogens_cyclic(
+    topology, positions, custom_bonds: list, ph: float,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+) -> tuple:
     """Add hydrogens to a topology that contains non-sequential cyclic bonds.
 
     PDBFixer's addMissingHydrogens cannot handle cyclic peptides — it applies
@@ -227,18 +241,12 @@ def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) ->
     addh_variants = (
         get_addh_variants(modeller.topology, bond_info, cyclic_chain) if bond_info else None
     )
-    with deterministic_hydrogen_placement():
+    with deterministic_hydrogen_placement(random_seed):
         modeller.addHydrogens(
             ff, pH=ph, variants=addh_variants,
             platform=_hydrogen_placement_platform(),
         )
     return modeller.topology, modeller.positions
-
-
-#: Seed used for hydrogen placement. Any fixed value makes prep reproducible;
-#: the specific number carries no meaning. Do not "tune" it to dodge a bad
-#: placement — repair_ca_hydrogen_chirality exists to fix those.
-HYDROGEN_PLACEMENT_SEED = 0
 
 
 def _hydrogen_placement_platform():
@@ -259,7 +267,7 @@ def _hydrogen_placement_platform():
 
 
 @contextlib.contextmanager
-def deterministic_hydrogen_placement(seed: int = HYDROGEN_PLACEMENT_SEED):
+def deterministic_hydrogen_placement(seed: Optional[int] = DEFAULT_RANDOM_SEED):
     """Make ``addHydrogens`` reproducible for the duration of the block.
 
     ``Modeller.addHydrogens`` offsets every new hydrogen by
@@ -272,8 +280,14 @@ def deterministic_hydrogen_placement(seed: int = HYDROGEN_PLACEMENT_SEED):
 
     Seeding fixes the placement so the same input gives the same answer. The
     previous RNG state is restored on exit, so seeding here never perturbs
-    randomness elsewhere in the caller's process.
+    randomness elsewhere in the caller's process. Pass ``seed=None`` to leave
+    the global RNG untouched and get fresh randomness (opt-in via the configs'
+    ``random_seed``).
     """
+    if seed is None:
+        yield
+        return
+
     import random
 
     state = random.getstate()
@@ -342,6 +356,7 @@ def prep_structure(
     keep_water: bool = False,
     canonicalize: bool = False,
     rebuild_zero_coord_atoms: bool = True,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> tuple:
     """Fix missing residues/atoms and add hydrogens in one PDBFixer pass.
 
@@ -359,6 +374,10 @@ def prep_structure(
             origin (zero-coordinate placeholders from pipelines that skip atom
             modelling) and let PDBFixer rebuild them via findMissingAtoms().
             Set to False when the input is known to be fully modelled.
+        random_seed: Seed for the stochastic steps of prep (hydrogen-placement
+            jitter and PDBFixer's atom-rebuild minimization). A fixed int (the
+            default) makes prep reproducible; ``None`` opts into fresh
+            randomness.
 
     Returns:
         Tuple of (topology, positions) with repaired and protonated structure
@@ -398,8 +417,9 @@ def prep_structure(
     fixer.findMissingAtoms()
     # Seeded: addMissingAtoms minimizes rebuilt atoms with a stochastic
     # integrator, so an unseeded call makes prep irreproducible for any
-    # structure with missing side-chain atoms.
-    fixer.addMissingAtoms(seed=HYDROGEN_PLACEMENT_SEED)
+    # structure with missing side-chain atoms. addMissingAtoms(seed=None) leaves
+    # the integrator unseeded (fresh randomness), matching random_seed=None.
+    fixer.addMissingAtoms(seed=random_seed)
 
     # Detect and register all non-standard bonds from the rebuilt geometry
     # (SS bonds, CYS→CYX rename). Must run after addMissingAtoms so that
@@ -460,14 +480,14 @@ def prep_structure(
         # then uses cyclic FF templates for addHydrogens.  Do NOT restore bonds
         # here — patch_cyclic_topology detects and adds the bond itself.
         result_topo, result_pos = _add_hydrogens_cyclic(
-            fixer.topology, fixer.positions, custom_bonds, ph
+            fixer.topology, fixer.positions, custom_bonds, ph, random_seed=random_seed
         )
     else:
         # Inline of PDBFixer.addMissingHydrogens so we can pin the H-placement
         # minimization to the deterministic Reference platform (the method itself
         # exposes no platform argument).
         _h_modeller = Modeller(fixer.topology, fixer.positions)
-        with deterministic_hydrogen_placement():
+        with deterministic_hydrogen_placement(random_seed):
             _h_modeller.addHydrogens(pH=ph, platform=_hydrogen_placement_platform())
         result_topo, result_pos = _h_modeller.topology, _h_modeller.positions
 

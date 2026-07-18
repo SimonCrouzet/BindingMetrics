@@ -201,6 +201,45 @@ class TestDeterministicHydrogenPlacement:
         assert draws(0) == draws(0)
         assert draws(0) != draws(1)
 
+    def test_none_seed_does_not_seed(self):
+        """seed=None must leave the global RNG untouched (fresh randomness)."""
+        import random
+
+        random.seed(42)
+        expected = [random.random() for _ in range(3)]
+        random.seed(42)
+        with deterministic_hydrogen_placement(None):
+            pass
+        # If the block had seeded, these would diverge from `expected`.
+        assert [random.random() for _ in range(3)] == expected
+
+
+class TestRandomSeedConfig:
+    """The deterministic-by-default seed wiring on the public configs."""
+
+    def test_default_seed_is_nonzero(self):
+        """MUST be non-zero: OpenMM treats setRandomNumberSeed(0) as 'randomize'."""
+        from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+
+        assert DEFAULT_RANDOM_SEED != 0
+
+    def test_configs_default_to_deterministic(self):
+        """RelaxationConfig and SimulationConfig seed everything by default."""
+        from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+        from binding_metrics.protocols.relaxation import RelaxationConfig
+        from binding_metrics.core.simulation import SimulationConfig
+
+        assert RelaxationConfig().random_seed == DEFAULT_RANDOM_SEED
+        assert SimulationConfig().random_seed == DEFAULT_RANDOM_SEED
+
+    def test_random_seed_can_be_disabled(self):
+        """None is a valid opt-out on the configs."""
+        from binding_metrics.protocols.relaxation import RelaxationConfig
+        from binding_metrics.core.simulation import SimulationConfig
+
+        assert RelaxationConfig(random_seed=None).random_seed is None
+        assert SimulationConfig(random_seed=None).random_seed is None
+
 
 @pytest.mark.integration
 class TestPrepDeterminism:

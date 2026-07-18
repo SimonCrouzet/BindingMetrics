@@ -531,6 +531,49 @@ def test_relaxation_energy_is_reproducible(tmp_path_factory):
 @requires_cuda
 @pytest.mark.integration
 @pytest.mark.gpu
+def test_md_is_reproducible_by_default_and_random_when_opted_out(prepped_example_cif,
+                                                                 tmp_path_factory):
+    """MD is deterministic with the default seed and stochastic with seed=None.
+
+    Guards the seeding of the two MD randomness sources the minimize-only path
+    never touches: the Langevin thermostat (``integrator.setRandomNumberSeed``)
+    and the initial Maxwell–Boltzmann velocities (``setVelocitiesToTemperature``).
+    Both were unseeded, so the default (MD-on) pipeline was nondeterministic.
+
+    With ``random_seed`` fixed, two short MD runs from the same input must land
+    in the same place; with ``random_seed=None`` they must be free to diverge
+    (that is the whole point of the opt-out). The divergence assertion uses a
+    loose floor so it is not flaky — independent 2 ps Langevin trajectories from
+    freshly drawn velocities separate by far more than this.
+    """
+    def md_run(seed):
+        cfg = RelaxationConfig(
+            min_steps_initial=50, min_steps_restrained=20, min_steps_final=50,
+            md_duration_ps=2.0, md_save_interval_ps=2.0,
+            device="cuda", small_molecules=None, random_seed=seed,
+        )
+        out = tmp_path_factory.mktemp("qc_md")
+        result = ImplicitRelaxation(cfg).run(Path(prepped_example_cif), out, sample_id="md")
+        assert result.success, f"MD run failed: {result.error_message}"
+        assert result.rmsd_md_final is not None
+        return float(result.rmsd_md_final)
+
+    seeded = [md_run(1), md_run(1)]
+    assert abs(seeded[0] - seeded[1]) <= 1e-4, (
+        f"MD is not reproducible with a fixed seed: {seeded[0]:.6f} vs "
+        f"{seeded[1]:.6f} Å — Langevin/velocity seeding has regressed"
+    )
+
+    unseeded = [md_run(None), md_run(None)]
+    assert abs(unseeded[0] - unseeded[1]) > 1e-3, (
+        f"random_seed=None did not restore stochastic MD: {unseeded[0]:.6f} vs "
+        f"{unseeded[1]:.6f} Å — the opt-out is not wired through"
+    )
+
+
+@requires_cuda
+@pytest.mark.integration
+@pytest.mark.gpu
 def test_energy_finite_and_did_not_increase(relaxed: RelaxedExample):
     """Check 1: minimized energy is finite, sane, and not higher than pre-min."""
     e = relaxed.energy_min
