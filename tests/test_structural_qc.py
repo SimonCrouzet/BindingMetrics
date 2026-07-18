@@ -468,7 +468,38 @@ def _relaxed_cyclosporin(tmp_path_factory) -> RelaxedExample:
     )
 
 
-@pytest.fixture(params=["1YCR", "3P8F", "cyclosporin"])
+@pytest.fixture(scope="session")
+def _relaxed_somatostatin(tmp_path_factory) -> RelaxedExample:
+    """1XY4 somatostatin analog — a peptide-only LACTAM example.
+
+    The one bundled structure that exercises the side-chain Lys–Glu lactam
+    closure (``lactam_sc_lys_glu``), together with a disulfide, a D-amino acid
+    (D-Trp), and GAFF auto-parameterization of a non-canonical residue (IAM). It
+    is peptide-only (no receptor), so it covers the relaxation and
+    structural-QC path — not interface metrics.
+
+    It also guards the lactam residue-name round-trip: prep renames the closing
+    residues to the lactam templates GLUL/LYSL, and ``save_cif`` must rename them
+    back to GLU/LYS on output. Without that rename-back the prepped file's
+    closure is not re-detected and relaxation raises a spurious CyclizationError,
+    so this fixture reaching ``success`` is itself the regression check.
+    """
+    raw = DATA_DIR / "example_lactam_somatostatin_1XY4.cif"
+    if not raw.exists():
+        pytest.skip(f"bundled example not found: {raw}")
+    prep_dir = tmp_path_factory.mktemp("qc_prep_somatostatin")
+    prepped = _prep_on_the_fly(
+        raw, prep_dir / "example_lactam_somatostatin_1XY4_prepped.cif"
+    )
+    out = tmp_path_factory.mktemp("qc_relax_somatostatin")
+    return _relax(
+        prepped, out, "somatostatin",
+        config=_small_config_gaff(),
+        capture_premin=False,
+    )
+
+
+@pytest.fixture(params=["1YCR", "3P8F", "cyclosporin", "somatostatin"])
 def relaxed(request) -> RelaxedExample:
     """Parametrized access to each relaxed example."""
     return request.getfixturevalue(f"_relaxed_{request.param.lower()}")
@@ -721,4 +752,168 @@ def test_no_missing_heavy_atoms(relaxed: RelaxedExample):
     assert not mismatched, (
         f"{relaxed.name}: per-residue heavy-atom composition changed for "
         f"{len(mismatched)} residue(s): {sorted(mismatched)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MD-path structural QC
+#
+# The checks above are all minimize-only (md_duration_ps=0). MD is a distinct
+# code path — a Langevin integrator, initial velocities, and for cyclic peptides
+# a dihedral-restrained warmup — none of which minimization exercises. These
+# tests run a short MD on each example and assert the final frame is physically
+# sound. Unlike minimization, MD legitimately samples away from the input, so we
+# do NOT bound RMSD-to-input here (a free peptide can drift several Å in a few
+# ps); instead "did it blow up" is caught by finite energy/coords, no fused
+# atoms, no broken bonds, and no stereocenter inversion.
+# ---------------------------------------------------------------------------
+
+#: Short MD used for the QC pass. Long enough to exercise the integrator, the
+#: velocity initialisation and (for cyclic peptides) the dihedral warmup; short
+#: enough to keep the GPU cost bounded.
+MD_DURATION_PS = 5.0
+
+#: name -> (bundled filename, small_molecules mode) for the MD-path examples.
+_MD_EXAMPLES = {
+    "1YCR": ("example_linear_p53_1YCR.pdb", None),
+    "3P8F": ("example_bicyclic_sfti1_3P8F.cif", None),
+    "cyclosporin": ("example_ncaa_cyclosporin_1CWA.cif", "auto"),
+    "somatostatin": ("example_lactam_somatostatin_1XY4.cif", "auto"),
+}
+
+
+@dataclass
+class MDRelaxedExample:
+    """Everything the MD-path assertions need for one example."""
+    name: str
+    minimized_path: Path      # pre-MD (minimized) frame — the sanity baseline
+    md_final_path: Path       # final MD frame
+    energy_md_avg: float      # mean potential energy over the MD trajectory
+
+
+def _md_config(small_molecules: Optional[str]) -> RelaxationConfig:
+    """Minimize + short-MD config (GPU-friendly step counts)."""
+    return RelaxationConfig(
+        md_duration_ps=MD_DURATION_PS,
+        md_save_interval_ps=MD_DURATION_PS,
+        md_temperature_k=300.0,
+        min_steps_initial=50,
+        min_steps_restrained=20,
+        min_steps_final=50,
+        device="cuda",
+        small_molecules=small_molecules,
+    )
+
+
+@pytest.fixture(scope="session", params=list(_MD_EXAMPLES))
+def md_relaxed(request, tmp_path_factory) -> MDRelaxedExample:
+    """Prep + minimize + short MD for each example (once per session)."""
+    name = request.param
+    filename, small_molecules = _MD_EXAMPLES[name]
+    raw = DATA_DIR / filename
+    if not raw.exists():
+        pytest.skip(f"bundled example not found: {raw}")
+
+    prep_dir = tmp_path_factory.mktemp(f"qc_md_prep_{name}")
+    prepped = _prep_on_the_fly(raw, prep_dir / f"{name}_prepped.cif")
+    out = tmp_path_factory.mktemp(f"qc_md_relax_{name}")
+
+    result = ImplicitRelaxation(_md_config(small_molecules)).run(prepped, out, sample_id=name)
+    assert result.success, f"{name} MD relaxation failed: {result.error_message}"
+    assert result.md_final_structure_path is not None, f"{name}: no MD frame written"
+    assert result.minimized_structure_path is not None
+    assert result.potential_energy_md_avg is not None, f"{name}: no MD energy"
+    return MDRelaxedExample(
+        name=name,
+        minimized_path=Path(result.minimized_structure_path),
+        md_final_path=Path(result.md_final_structure_path),
+        energy_md_avg=float(result.potential_energy_md_avg),
+    )
+
+
+@requires_cuda
+@pytest.mark.integration
+@pytest.mark.gpu
+def test_md_energy_finite_and_sane(md_relaxed: MDRelaxedExample):
+    """MD check 1: mean trajectory energy is finite and in the sane range."""
+    e = md_relaxed.energy_md_avg
+    assert math.isfinite(e), f"{md_relaxed.name}: non-finite MD energy {e}"
+    assert ENERGY_MIN_KJ < e < ENERGY_MAX_KJ, (
+        f"{md_relaxed.name}: MD mean energy {e:.1f} kJ/mol out of sane range "
+        f"— trajectory likely blew up"
+    )
+
+
+@requires_cuda
+@pytest.mark.integration
+@pytest.mark.gpu
+def test_md_coordinates_finite(md_relaxed: MDRelaxedExample):
+    """MD check 2: no NaN/inf coordinates in the final MD frame."""
+    assert _all_coords_finite(md_relaxed.md_final_path), (
+        f"{md_relaxed.name}: MD final frame contains non-finite coordinates"
+    )
+
+
+@requires_cuda
+@pytest.mark.integration
+@pytest.mark.gpu
+def test_md_no_egregious_clashes(md_relaxed: MDRelaxedExample):
+    """MD check 3: no fused atoms (closest inter-residue heavy pair > 0.8 Å)."""
+    min_dist, n_heavy = _min_interresidue_heavy_distance(md_relaxed.md_final_path)
+    assert n_heavy > 0, f"{md_relaxed.name}: no heavy atoms in MD frame"
+    assert math.isfinite(min_dist), f"{md_relaxed.name}: non-finite MD min distance"
+    assert min_dist > MIN_HEAVY_DIST_ANG, (
+        f"{md_relaxed.name}: MD final frame has fused atoms — closest "
+        f"inter-residue heavy pair is {min_dist:.3f} Å (<= {MIN_HEAVY_DIST_ANG})"
+    )
+
+
+@requires_cuda
+@pytest.mark.integration
+@pytest.mark.gpu
+def test_md_bonds_not_broken(md_relaxed: MDRelaxedExample):
+    """MD check 4: covalent bonds stay intact (perceived from the minimized frame)."""
+    pin = _heavy_atom_positions(md_relaxed.minimized_path)
+    pmd = _heavy_atom_positions(md_relaxed.md_final_path)
+    stretched = []
+    for a, b in _perceive_heavy_bonds(pin):
+        if a in pmd and b in pmd:
+            d = float(np.linalg.norm(pmd[a] - pmd[b]))
+            if not (BOND_LENGTH_MIN_ANG <= d <= BOND_LENGTH_MAX_ANG):
+                stretched.append((a, b, d))
+    assert not stretched, (
+        f"{md_relaxed.name}: {len(stretched)} bond(s) stretched/broken during MD, "
+        f"e.g. {stretched[0][0]}–{stretched[0][1]} = {stretched[0][2]:.2f} Å"
+    )
+
+
+@requires_cuda
+@pytest.mark.integration
+@pytest.mark.gpu
+def test_md_no_chirality_inversion(md_relaxed: MDRelaxedExample):
+    """MD check 5: no Cα stereocenter inverts during MD (critical for D-residues)."""
+    pre = _ca_signed_volumes(md_relaxed.minimized_path)
+    post = _ca_signed_volumes(md_relaxed.md_final_path)
+    flipped = [
+        k for k in set(pre) & set(post)
+        if (pre[k] > 0) != (post[k] > 0)
+        and abs(pre[k]) >= CHIRALITY_MIN_VOLUME_A3
+        and abs(post[k]) >= CHIRALITY_MIN_VOLUME_A3
+    ]
+    assert not flipped, (
+        f"{md_relaxed.name}: {len(flipped)} Cα stereocenter(s) inverted during MD: "
+        f"{sorted(flipped)}"
+    )
+
+
+@requires_cuda
+@pytest.mark.integration
+@pytest.mark.gpu
+def test_md_no_missing_heavy_atoms(md_relaxed: MDRelaxedExample):
+    """MD check 6: MD neither drops nor adds atoms."""
+    pre_total, _ = _heavy_atom_composition(md_relaxed.minimized_path)
+    post_total, _ = _heavy_atom_composition(md_relaxed.md_final_path)
+    assert pre_total == post_total, (
+        f"{md_relaxed.name}: heavy-atom count changed during MD "
+        f"({pre_total} → {post_total})"
     )
