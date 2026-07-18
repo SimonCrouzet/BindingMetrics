@@ -130,11 +130,15 @@ def _perceive_bond_orders(mol):
 def _build_capped_molecule(res, topology, pos_A):
     """Build an RDKit molecule for ``res`` with carbon caps at every external bond.
 
-    Returns ``(mol, rd_res_names, cap_indices, ext_atom_names)`` where:
+    Returns ``(mol, rd_res_names, cap_indices, ext_atom_names, cap_partner)`` where:
         mol           : RWMol (single bonds, 3D conformer set, no H yet)
         rd_res_names  : {rdkit_idx: topology_atom_name} for the residue heavy atoms
         cap_indices   : set of rdkit indices that are cap atoms
         ext_atom_names: ordered list of residue atom names that carry an external bond
+        cap_partner   : {cap_rdkit_idx: external_partner_atom_name} — the *real*
+                        neighbouring-residue atom the cap stands in for (e.g. the
+                        previous residue's ``C`` or the next residue's ``N``), used
+                        to give the junction its ff14SB atom class.
     """
     from rdkit import Chem
     from rdkit.Geometry import Point3D
@@ -163,6 +167,7 @@ def _build_capped_molecule(res, topology, pos_A):
 
     cap_indices: set = set()
     ext_atom_names: list = []
+    cap_partner: dict = {}
     for bond in topology.bonds():
         a1, a2 = bond.atom1, bond.atom2
         in1, in2 = a1.index in res_atom_indices, a2.index in res_atom_indices
@@ -176,6 +181,7 @@ def _build_capped_molecule(res, topology, pos_A):
         rw.AddBond(rd_idx[inner.index], cap, Chem.BondType.SINGLE)
         coords.append(pos_A[outer.index])
         cap_indices.add(cap)
+        cap_partner[cap] = outer.name
         if inner.name not in ext_atom_names:
             ext_atom_names.append(inner.name)
 
@@ -184,7 +190,7 @@ def _build_capped_molecule(res, topology, pos_A):
     for i, xyz in enumerate(coords):
         conf.SetAtomPosition(i, Point3D(float(xyz[0]), float(xyz[1]), float(xyz[2])))
     mol.AddConformer(conf)
-    return mol, rd_res_names, cap_indices, ext_atom_names
+    return mol, rd_res_names, cap_indices, ext_atom_names, cap_partner
 
 
 def _hydrogen_names(keep_h, rd_res_names) -> dict:
@@ -209,8 +215,102 @@ def _hydrogen_names(keep_h, rd_res_names) -> dict:
     return names
 
 
-def _generate_residue_template(res, topology, pos_A, gaff_version: str):
-    """Build one GAFF ExternalBond template for ``res``.
+# Protein-backbone atom names whose GAFF types we override with ff14SB types.
+_BACKBONE_HEAVY = frozenset({"N", "CA", "C", "O"})
+# Map an external-partner atom name to its ff14SB atom *class*, so a junction that
+# crosses into the neighbouring residue (peptide C(i)–N(i+1), head-to-tail closure)
+# is keyed to amber classes on both sides.  Extendable for exotic linkages.
+_PARTNER_CLASS = {"C": "C", "N": "N", "CA": "CX", "O": "O", "SG": "S"}
+
+
+def _amber_backbone_types(ff) -> Optional[dict]:
+    """Read the canonical ff14SB backbone ``<Type>`` names/classes from ALA.
+
+    Returns ``{atom_name: (type_name, class_name)}`` for N, H, CA, HA, C, O by
+    parsing a loaded standard amino-acid residue template (rather than hardcoding
+    the ff14SB type strings), or ``None`` if no template is available.
+    """
+    template = None
+    for name in ("ALA", "LEU", "VAL", "SER"):
+        template = getattr(ff, "_templates", {}).get(name)
+        if template is not None:
+            break
+    if template is None:
+        return None
+    name_to_type = {a.name: a.type for a in template.atoms}
+    result: dict = {}
+    for nm in ("N", "H", "CA", "HA", "C", "O"):
+        t = name_to_type.get(nm)
+        if t is None:
+            continue
+        atype = ff._atomTypes.get(t)
+        cls = atype.atomClass if atype is not None else None
+        result[nm] = (t, cls)
+    # Require the full protein backbone set for a usable retyping.
+    if not _BACKBONE_HEAVY <= set(result) or "H" not in result or "HA" not in result:
+        return None
+    return result
+
+
+def _parse_gaff_forces(root):
+    """Index the GAFF-generated bonded parameters by atom class.
+
+    Returns ``(bonds, angles, propers)``:
+        bonds   : {frozenset({c1, c2}): {'length':…, 'k':…}}
+        angles  : list of (c1, c2, c3, attrib_dict)  [c2 is the vertex]
+        propers : list of (('c1','c2','c3','c4'), attrib_dict)
+    """
+    bonds: dict = {}
+    bf = root.find("HarmonicBondForce")
+    if bf is not None:
+        for b in bf.findall("Bond"):
+            key = frozenset({b.get("class1"), b.get("class2")})
+            bonds[key] = {"length": b.get("length"), "k": b.get("k")}
+    angles: list = []
+    af = root.find("HarmonicAngleForce")
+    if af is not None:
+        for a in af.findall("Angle"):
+            angles.append((a.get("class1"), a.get("class2"), a.get("class3"), a.attrib))
+    propers: list = []
+    tf = root.find("PeriodicTorsionForce")
+    if tf is not None:
+        for p in tf.findall("Proper"):
+            propers.append(
+                ((p.get("class1"), p.get("class2"), p.get("class3"), p.get("class4")),
+                 p.attrib)
+            )
+    return bonds, angles, propers
+
+
+def _lookup_gaff_angle(angles, middle, ends):
+    """First GAFF angle whose vertex class is ``middle`` and end classes == ``ends``."""
+    ends = frozenset(ends)
+    for c1, c2, c3, attrib in angles:
+        if c2 == middle and frozenset({c1, c3}) == ends:
+            return attrib
+    return None
+
+
+def _lookup_gaff_proper(propers, classes):
+    """First GAFF proper matching the ordered class quartet (either direction)."""
+    rev = tuple(reversed(classes))
+    for cls, attrib in propers:
+        if cls == classes or cls == rev:
+            return attrib
+    return None
+
+
+def _generate_residue_template(res, topology, pos_A, gaff_version: str,
+                               backbone_amber: Optional[dict] = None):
+    """Build one hybrid amber-backbone / GAFF-sidechain ExternalBond template.
+
+    The protein backbone atoms (N, H, CA, HA, C, O) are typed with standard
+    ff14SB protein atom types so every inter-residue junction (the peptide C–N
+    bond, its angles and the ω/φ/ψ torsions) matches ff14SB natively; the
+    sidechain keeps its GAFF2 types.  The boundary terms that straddle the two
+    (the CA–CB bond, N-methyl N–C bond, and every angle/torsion mixing an amber
+    backbone class with a GAFF sidechain class) are emitted explicitly with the
+    GAFF force constants so nothing is silently dropped by ``createSystem``.
 
     Returns ``(ffxml_string, h_inject)`` where ``h_inject`` is a list of
     ``(h_name, parent_atom_name, position_nm_ndarray)`` for the hydrogens that must
@@ -220,7 +320,7 @@ def _generate_residue_template(res, topology, pos_A, gaff_version: str):
     from openff.toolkit import Molecule
     from openmmforcefields.generators import GAFFTemplateGenerator
 
-    mol, rd_res_names, cap_indices, ext_atom_names = _build_capped_molecule(
+    mol, rd_res_names, cap_indices, ext_atom_names, cap_partner = _build_capped_molecule(
         res, topology, pos_A
     )
     mol = _perceive_bond_orders(mol)
@@ -252,6 +352,29 @@ def _generate_residue_template(res, topology, pos_A, gaff_version: str):
         # Template atom order must equal the RDKit atom order for the index map.
         return None
 
+    # --- Identify backbone atoms and drop spurious backbone-carbonyl hydrogens ---
+    # The carbon cap hides the C=O double bond, so GAFF perceives the backbone
+    # carbonyl as an sp3 alcohol and adds a spurious H on C and an -OH on O. Those
+    # hydrogens have no place on a real peptide carbonyl: drop them and let the
+    # amber C/O types (and the ff14SB C–O bond + carbonyl improper) describe it.
+    retype = backbone_amber or {}
+    bb_heavy = {j for j, nm in rd_res_names.items()
+                if nm in _BACKBONE_HEAVY and nm in retype}
+    amide_h: set = set()
+    alpha_h: set = set()
+    spurious_h: set = set()
+    for h_idx, parent in keep_h:
+        pname = rd_res_names.get(parent)
+        if parent not in bb_heavy:
+            continue
+        if pname == "N":
+            amide_h.add(h_idx)
+        elif pname == "CA":
+            alpha_h.add(h_idx)
+        elif pname in ("C", "O"):
+            spurious_h.add(h_idx)
+    keep_h = [(h, p) for (h, p) in keep_h if h not in spurious_h]
+
     # Name every template atom by its RDKit index.
     h_names = _hydrogen_names(keep_h, rd_res_names)
     new_name: dict = {}
@@ -260,24 +383,60 @@ def _generate_residue_template(res, topology, pos_A, gaff_version: str):
     for h_idx, _parent in keep_h:
         new_name[h_idx] = h_names[h_idx]
 
-    dropped = set(cap_indices) | drop_h
+    dropped = set(cap_indices) | drop_h | spurious_h
     keep_idx = [i for i in range(len(tatoms)) if i not in dropped]
 
-    # Redistribute dropped cap/cap-H charge so the residue template is net-neutral.
+    # --- New atom type per kept atom: amber for backbone, GAFF for sidechain ---
+    orig_class = {i: tatoms[i].get("type") for i in range(len(tatoms))}
+    new_type: dict = {}
+    new_class: dict = {}
+    is_amber: dict = {}   # atom carries an ff14SB (protein) class
+    for i in keep_idx:
+        nm = rd_res_names.get(i)
+        if i in bb_heavy:
+            t, c = retype[nm]
+            new_type[i], new_class[i], is_amber[i] = t, c, True
+        elif i in amide_h and "H" in retype:
+            t, c = retype["H"]
+            new_type[i], new_class[i], is_amber[i] = t, c, True
+        elif i in alpha_h and "HA" in retype:
+            t, c = retype["HA"]
+            new_type[i], new_class[i], is_amber[i] = t, c, True
+        else:
+            new_type[i] = orig_class[i]
+            new_class[i] = orig_class[i]
+            is_amber[i] = False
+    # Cap atoms stand in for the real neighbouring-residue atom: give them the
+    # partner's ff14SB class so every junction term is keyed to amber on that side.
+    for cap in cap_indices:
+        pc = _PARTNER_CLASS.get(cap_partner.get(cap))
+        if pc is not None:
+            new_class[cap] = pc
+            is_amber[cap] = True
+        else:
+            new_class[cap] = orig_class[cap]
+            is_amber[cap] = False
+    changed = {i: new_class[i] != orig_class[i] for i in new_class}
+
+    # Redistribute dropped cap/cap-H/spurious-H charge so the template is neutral.
+    # The integer target is taken from the set *before* dropping the spurious
+    # carbonyl hydrogens (i.e. the true residue charge, normally 0); the dropped
+    # H charge is then absorbed into the redistribution so the net stays integer.
+    pre_drop = [i for i in range(len(tatoms)) if i not in (set(cap_indices) | drop_h)]
+    target = round(sum(float(tatoms[i].get("charge")) for i in pre_drop))
     kept_charge = {i: float(tatoms[i].get("charge")) for i in keep_idx}
     total = sum(kept_charge.values())
-    target = round(total)  # neutral NCAAs → 0
     delta = (target - total) / len(keep_idx)
     for i in keep_idx:
         kept_charge[i] += delta
 
-    # Rewrite the <Residue> block.
+    # --- Rewrite the <Residue> block with the mixed types ---
     for el in list(resel):
         resel.remove(el)
     for i in keep_idx:
         a = ET.SubElement(resel, "Atom")
         a.set("name", new_name[i])
-        a.set("type", tatoms[i].get("type"))
+        a.set("type", new_type[i])
         a.set("charge", f"{kept_charge[i]:.6f}")
     keep_set = set(keep_idx)
     for bond in mh.GetBonds():
@@ -291,6 +450,11 @@ def _generate_residue_template(res, topology, pos_A, gaff_version: str):
         eb.set("atomName", nm)
     resel.set("name", res.name)
 
+    # --- Emit explicit boundary parameters (amber-class ⟷ GAFF-class terms) ---
+    _inject_boundary_terms(
+        root, mh, keep_set, cap_indices, orig_class, new_class, is_amber, changed
+    )
+
     ffxml_out = ET.tostring(root, encoding="unicode")
 
     h_inject = []
@@ -301,6 +465,135 @@ def _generate_residue_template(res, topology, pos_A, gaff_version: str):
              np.array([p.x, p.y, p.z]) / 10.0)  # Å → nm
         )
     return ffxml_out, h_inject
+
+
+def _inject_boundary_terms(root, mh, keep_set, cap_indices, orig_class,
+                           new_class, is_amber, changed):
+    """Add explicit Bond/Angle/Proper entries for every backbone↔sidechain term.
+
+    After retyping the backbone to amber and keeping the sidechain on GAFF, any
+    bonded term that mixes an amber protein class with a GAFF class matches
+    neither ff14SB nor the GAFF template and would be *silently omitted* by
+    ``createSystem``.  We therefore re-key the GAFF force constant for each such
+    term to the new mixed classes.  Terms that are purely amber (handled by
+    ff14SB, incl. its wildcard backbone torsions) or purely GAFF sidechain
+    (already in the template) are left untouched — injecting them would
+    double-count.
+
+    Rules per term:
+        bond  (i, j):        skip if both amber (ff14SB) or neither changed
+                             (pure sidechain); else inject GAFF value.
+        angle (i, j, k):     skip if all three amber, or none changed; else inject.
+        proper(a, b, c, d):  skip if the central bond (b, c) is amber–amber
+                             (ff14SB wildcard torsions cover it) or no atom
+                             changed; else inject the GAFF value if one exists.
+    """
+    bonds, angles, propers = _parse_gaff_forces(root)
+
+    node = keep_set | set(cap_indices)
+    adj: dict = {i: [] for i in node}
+    for bond in mh.GetBonds():
+        i1, i2 = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        if i1 in node and i2 in node:
+            adj[i1].append(i2)
+            adj[i2].append(i1)
+
+    bf = root.find("HarmonicBondForce")
+    if bf is None:
+        bf = ET.SubElement(root, "HarmonicBondForce")
+    af = root.find("HarmonicAngleForce")
+    if af is None:
+        af = ET.SubElement(root, "HarmonicAngleForce")
+    tf = root.find("PeriodicTorsionForce")
+    if tf is None:
+        tf = ET.SubElement(root, "PeriodicTorsionForce")
+
+    seen_b: set = set()
+    seen_a: set = set()
+    seen_p: set = set()
+
+    # Bonds ----------------------------------------------------------------
+    for i in node:
+        for j in adj[i]:
+            if j <= i:
+                continue
+            if is_amber[i] and is_amber[j]:
+                continue
+            if not (changed[i] or changed[j]):
+                continue
+            val = bonds.get(frozenset({orig_class[i], orig_class[j]}))
+            if val is None:
+                continue
+            key = frozenset({new_class[i], new_class[j]})
+            if key in seen_b:
+                continue
+            seen_b.add(key)
+            e = ET.SubElement(bf, "Bond")
+            e.set("class1", new_class[i])
+            e.set("class2", new_class[j])
+            e.set("length", val["length"])
+            e.set("k", val["k"])
+
+    # Angles ---------------------------------------------------------------
+    for j in node:
+        nb = adj[j]
+        for m in range(len(nb)):
+            for n in range(m + 1, len(nb)):
+                i, k = nb[m], nb[n]
+                if is_amber[i] and is_amber[j] and is_amber[k]:
+                    continue
+                if not (changed[i] or changed[j] or changed[k]):
+                    continue
+                attrib = _lookup_gaff_angle(
+                    angles, orig_class[j], (orig_class[i], orig_class[k])
+                )
+                if attrib is None:
+                    continue
+                key = (new_class[j], frozenset({new_class[i], new_class[k]}))
+                if key in seen_a:
+                    continue
+                seen_a.add(key)
+                e = ET.SubElement(af, "Angle")
+                e.set("class1", new_class[i])
+                e.set("class2", new_class[j])
+                e.set("class3", new_class[k])
+                e.set("angle", attrib["angle"])
+                e.set("k", attrib["k"])
+
+    # Propers --------------------------------------------------------------
+    for b in node:
+        for c in adj[b]:
+            if c <= b:
+                continue
+            if is_amber[b] and is_amber[c]:
+                continue  # amber central bond → ff14SB (wildcard) torsions cover it
+            for a in adj[b]:
+                if a == c:
+                    continue
+                for d in adj[c]:
+                    if d == b or d == a:
+                        continue
+                    if not (changed[a] or changed[b] or changed[c] or changed[d]):
+                        continue
+                    attrib = _lookup_gaff_proper(
+                        propers,
+                        (orig_class[a], orig_class[b], orig_class[c], orig_class[d]),
+                    )
+                    if attrib is None:
+                        continue  # GAFF has no torsion here (k=0) → nothing to add
+                    quartet = (new_class[a], new_class[b], new_class[c], new_class[d])
+                    canon = min(quartet, tuple(reversed(quartet)))
+                    if canon in seen_p:
+                        continue
+                    seen_p.add(canon)
+                    e = ET.SubElement(tf, "Proper")
+                    e.set("class1", new_class[a])
+                    e.set("class2", new_class[b])
+                    e.set("class3", new_class[c])
+                    e.set("class4", new_class[d])
+                    for ak, av in attrib.items():
+                        if ak.startswith(("periodicity", "phase", "k")):
+                            e.set(ak, av)
 
 
 def _load_ffxml(ff, ffxml_string: str) -> None:
@@ -403,6 +696,13 @@ def parameterize_ncaa_residues(topology, positions, ff, *,
     pos_A = _pos_to_angstrom(positions)
     pos_nm = pos_A / 10.0
 
+    # Canonical ff14SB backbone types (read from a standard residue template, not
+    # hardcoded) used to retype the NCAA protein backbone so junctions match ff14SB.
+    backbone_amber = _amber_backbone_types(ff)
+    if backbone_amber is None and verbose:
+        print("  [warning] could not read ff14SB backbone types; "
+              "NCAA backbones stay on GAFF (junctions may be under-parameterised).")
+
     loaded_names: set = set()
     ncaa_ffxmls: list = []
     h_by_res: dict = {}
@@ -410,7 +710,9 @@ def parameterize_ncaa_residues(topology, positions, ff, *,
 
     for res in ncaa_residues:
         try:
-            result = _generate_residue_template(res, topology, pos_A, gaff_version)
+            result = _generate_residue_template(
+                res, topology, pos_A, gaff_version, backbone_amber
+            )
         except Exception as exc:
             if verbose:
                 print(f"  [warning] GAFF NCAA template failed for '{res.name}': {exc}")
