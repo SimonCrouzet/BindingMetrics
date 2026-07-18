@@ -451,25 +451,43 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
     doc.write_file(str(cif_path))
 
 
-def _rename_cyx_to_cys_in_cif(cif_path: Path) -> None:
-    """Rename CYX residues back to CYS in the output CIF.
+#: Force-field-internal residue names that prep introduces to match specialised
+#: templates, mapped back to the standard code they must be restored to on
+#: output. CYX = disulfide-bonded CYS; ASPL/GLUL/LYSL = the lactam-closing
+#: Asp/Glu/Lys templates.
+_FF_INTERNAL_RESIDUE_RENAMES = (
+    ("CYX", "CYS"),
+    ("ASPL", "ASP"),
+    ("GLUL", "GLU"),
+    ("LYSL", "LYS"),
+)
 
-    OpenMM renames disulfide-bonded CYS to CYX internally so it can match the
-    CYX forcefield template (no HG, external SG bond).  That internal name must
-    not leak into output files — downstream tools expect CYS.  The disulfide
-    bond geometry and _struct_conn records are unaffected by this rename.
 
-    Uses text replacement rather than gemmi mutation because gemmi Table views
-    from block.find() do not propagate edits back through doc.write_file().
-    CYX is a 3-letter residue code unique to the forcefield internals and safe
-    to replace as a whole-word token.
+def _rename_internal_residues_to_standard(cif_path: Path) -> None:
+    """Restore force-field-internal residue names to standard codes on output.
+
+    Prep renames residues internally so they match specialised force-field
+    templates — disulfide CYS→CYX, and lactam-closing ASP/GLU/LYS→ASPL/GLUL/LYSL.
+    Those internal names must not leak into output files: downstream tools, and
+    binding-metrics' own ``detect_cyclization`` (which matches the standard
+    residue name plus the ``_struct_conn`` closure bond), expect CYS/ASP/GLU/LYS.
+    The bond geometry and ``_struct_conn`` records are untouched, so re-detection
+    recovers the closure from the bond on reload. Without this, a saved lactam
+    structure carries GLUL/LYSL names and fails re-detection, raising a spurious
+    CyclizationError when the prepped file is relaxed.
+
+    Uses whole-word text replacement rather than gemmi mutation because gemmi
+    Table views from ``block.find()`` do not propagate edits back through
+    ``doc.write_file()``. Each code is a 3–4-letter token unique to the
+    force-field internals and safe to replace as a whole word.
     """
     import re
 
     content = cif_path.read_text()
-    if "CYX" not in content:
-        return
-    new_content = re.sub(r"\bCYX\b", "CYS", content)
+    new_content = content
+    for internal, standard in _FF_INTERNAL_RESIDUE_RENAMES:
+        if internal in new_content:
+            new_content = re.sub(rf"\b{internal}\b", standard, new_content)
     if new_content != content:
         cif_path.write_text(new_content)
 
@@ -512,7 +530,7 @@ def save_cif(
         # PDBxFile only writes disulfide bonds to _struct_conn; patch in any
         # other non-sequential intra-chain covalent bonds (e.g. head-to-tail).
         _patch_nonstd_bonds_in_cif(output_path, topology)
-        _rename_cyx_to_cys_in_cif(output_path)
+        _rename_internal_residues_to_standard(output_path)
         return
 
     try:
@@ -520,7 +538,7 @@ def save_cif(
     except ImportError:
         with open(output_path, "w") as f:
             PDBxFile.writeFile(topology, positions, f)
-        _rename_cyx_to_cys_in_cif(output_path)
+        _rename_internal_residues_to_standard(output_path)
         return
 
     # Write fresh OpenMM CIF — correct atoms and H, but with label chain IDs
@@ -630,7 +648,7 @@ def save_cif(
 
         output_doc.write_file(str(output_path))
         _patch_nonstd_bonds_in_cif(output_path, topology)
-        _rename_cyx_to_cys_in_cif(output_path)
+        _rename_internal_residues_to_standard(output_path)
     finally:
         tmp_path.unlink(missing_ok=True)
 

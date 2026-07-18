@@ -29,6 +29,40 @@ def _require(path: Path) -> Path:
     return path
 
 
+class TestInternalResidueRenameBack:
+    """save_cif must restore force-field-internal residue names on output."""
+
+    def test_lactam_and_disulfide_names_restored(self, tmp_path: Path):
+        """GLUL/LYSL/ASPL/CYX in a written CIF are renamed back to GLU/LYS/ASP/CYS.
+
+        Regression: prep renames closing residues to the lactam templates
+        (GLUL/LYSL/ASPL) and disulfide CYS to CYX. If those internal names leak
+        into the saved file, detect_cyclization no longer recognises the closure
+        on reload and relaxation raises a spurious CyclizationError. The disulfide
+        rename was handled; the lactam ones were not, until this guard.
+        """
+        from binding_metrics.io.structures import _rename_internal_residues_to_standard
+
+        cif = tmp_path / "internal.cif"
+        # Minimal fragment carrying each internal residue code as a whole word,
+        # plus a standard GLU/LYS/ASP that must NOT be touched.
+        cif.write_text(
+            "data_test\n"
+            "_struct_conn.ptnr1_label_comp_id GLUL\n"
+            "_struct_conn.ptnr2_label_comp_id LYSL\n"
+            "ATOM 1 N N . CYX A 1 ?\n"
+            "ATOM 2 N N . ASPL A 2 ?\n"
+            "ATOM 3 N N . GLU A 3 ?\n"
+        )
+        _rename_internal_residues_to_standard(cif)
+        out = cif.read_text()
+
+        for internal in ("CYX", "GLUL", "LYSL", "ASPL"):
+            assert internal not in out, f"{internal} leaked into output"
+        for standard in ("CYS", "GLU", "LYS", "ASP"):
+            assert standard in out, f"{standard} missing after rename-back"
+
+
 def _coords_nm(positions):
     """Return atom positions as an (N, 3) numpy array in nanometers."""
     import numpy as np
