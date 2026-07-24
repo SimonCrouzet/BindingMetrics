@@ -79,6 +79,17 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
+# N806/N803/N815 fight established scientific notation. Atom, residue and
+# matrix names are read against the literature (CA, CB, OD2, dG, dSASA, R_gyr),
+# and lower-casing them to satisfy pep8-naming makes the code harder to check
+# against the papers it implements.
+ignore = ["N806", "N803", "N815"]
+
+[tool.ruff.lint.per-file-ignores]
+# Re-exports: the public surface is defined by what __init__ imports.
+"src/binding_metrics/**/__init__.py" = ["F401"]
+# Frozen snapshots of superseded code, kept for provenance, not maintained.
+"archive/**" = ["ALL"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
