@@ -89,8 +89,8 @@ _MD_PARAM_KEYS = (
 def _load_biotite_atoms(path: Path):
     """Load PDB or CIF as a biotite AtomArray. Returns None on import error."""
     try:
-        import biotite.structure.io.pdbx as pdbx
         import biotite.structure.io.pdb as pdb_io
+        import biotite.structure.io.pdbx as pdbx
     except ImportError:
         return None
 

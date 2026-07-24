@@ -35,10 +35,10 @@ def _import_biotite():
     """Lazy import of required biotite modules."""
     try:
         import biotite.structure as struc
-        import biotite.structure.io.pdbx as pdbx
         import biotite.structure.io.pdb as pdb_io
-        from biotite.structure.sasa import sasa as biotite_sasa
+        import biotite.structure.io.pdbx as pdbx
         from biotite.structure.info import vdw_radius_single
+        from biotite.structure.sasa import sasa as biotite_sasa
 
         return struc, pdbx, pdb_io, biotite_sasa, vdw_radius_single
     except ImportError:

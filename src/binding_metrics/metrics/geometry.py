@@ -19,7 +19,6 @@ import numpy as np
 
 from binding_metrics.utils import backfill_auth_columns
 
-
 # ---------------------------------------------------------------------------
 # Lazy imports
 # ---------------------------------------------------------------------------
@@ -29,8 +28,8 @@ def _import_biotite():
     """Lazy import of required biotite modules."""
     try:
         import biotite.structure as struc
-        import biotite.structure.io.pdbx as pdbx
         import biotite.structure.io.pdb as pdb_io
+        import biotite.structure.io.pdbx as pdbx
         from biotite.structure.info import vdw_radius_single
 
         return struc, pdbx, pdb_io, vdw_radius_single
@@ -44,8 +43,8 @@ def _import_biotite():
 def _import_scipy():
     """Lazy import of scipy spatial."""
     try:
-        from scipy.spatial import cKDTree
         from scipy.ndimage import label
+        from scipy.spatial import cKDTree
 
         return cKDTree, label
     except ImportError:

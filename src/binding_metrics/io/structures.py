@@ -1,7 +1,6 @@
 """Structure loading and manipulation utilities."""
 
 import tempfile
-import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -162,8 +161,8 @@ def detect_chains_from_file(
             all_chains (list[dict]): all protein chains with id and n_residues
     """
     import biotite.structure as struc
-    import biotite.structure.io.pdbx as pdbx
     import biotite.structure.io.pdb as pdb_io
+    import biotite.structure.io.pdbx as pdbx
 
     path = Path(path)
     suffix = path.suffix.lower()
@@ -241,8 +240,8 @@ def detect_chains_from_file(
                 if len(pep_ca) == 0 or len(cand_ca) == 0:
                     contacts = 0
                 else:
-                    from biotite.structure import distance
                     import numpy as np
+                    from biotite.structure import distance
                     dists = np.array([
                         distance(pep_ca.coord, cand_ca.coord[j]).min()
                         for j in range(len(cand_ca))

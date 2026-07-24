@@ -29,9 +29,8 @@ interface_2paths
 from __future__ import annotations
 
 import importlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Literal, Optional
-
 
 InputType = Literal["static_structure", "trajectory", "md_simulation", "openfold_json"]
 ChainMode = Literal["none", "single", "interface", "interface_2paths"]

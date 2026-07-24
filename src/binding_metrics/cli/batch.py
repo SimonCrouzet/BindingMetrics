@@ -96,7 +96,7 @@ def _run_one(
 ) -> dict:
     """Run the pipeline for a single structure and return a flat results dict."""
     from binding_metrics.cli import log_to_file
-    from binding_metrics.protocols.report import write_report, _flatten
+    from binding_metrics.protocols.report import _flatten, write_report
 
     sid = sample_id or input_path.stem
     sample_output_dir = output_dir / sid
@@ -174,8 +174,8 @@ def _run_batched_openfold(
     from binding_metrics.io.structures import detect_chains_from_file
     from binding_metrics.metrics.openfold import (
         _BatchSample,
-        run_openfold_batched,
         compute_openfold_metrics,
+        run_openfold_batched,
     )
     from binding_metrics.protocols.report import _flatten
 
@@ -273,8 +273,8 @@ def _run_batched_openfold(
             if of_structure:
                 try:
                     from binding_metrics.metrics.evobind import (
-                        compute_evobind_score,
                         compute_evobind_adversarial_check,
+                        compute_evobind_score,
                     )
                     of_metrics.update(compute_evobind_score(
                         of_structure,
@@ -437,7 +437,7 @@ def main():
         sys.exit(1)
 
     print(f"\n{'#'*60}")
-    print(f"  binding-metrics-batch")
+    print("  binding-metrics-batch")
     print(f"  Input dir:  {args.input_dir}  ({len(input_files)} structures)")
     print(f"  Output dir: {output_dir}")
     print(f"  Output CSV: {args.output_csv}")

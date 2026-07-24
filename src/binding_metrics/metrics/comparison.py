@@ -229,7 +229,7 @@ def main():
 
     from binding_metrics.cli import log_to_file
     with log_to_file(args.log_file):
-        print(f"Comparing structures:")
+        print("Comparing structures:")
         print(f"  Initial:   {args.initial}")
         print(f"  Processed: {args.processed}")
         if args.design_chain:

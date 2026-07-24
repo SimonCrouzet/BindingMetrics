@@ -49,7 +49,6 @@ import argparse
 import dataclasses
 import json
 import subprocess
-import sys
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -57,7 +56,6 @@ from typing import Optional
 import numpy as np
 
 from binding_metrics.utils import backfill_auth_columns
-
 
 # ---------------------------------------------------------------------------
 # Output file discovery

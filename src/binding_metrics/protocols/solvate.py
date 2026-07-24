@@ -30,8 +30,7 @@ def main() -> None:
     from binding_metrics.cli import log_to_file
     with log_to_file(args.log_file):
         try:
-            from binding_metrics.core.system import solvate
-            from binding_metrics.core.system import get_system_info
+            from binding_metrics.core.system import get_system_info, solvate
             from binding_metrics.io.structures import load_structure, save_structure
         except ImportError as e:
             print(f"error: {e}", file=sys.stderr)

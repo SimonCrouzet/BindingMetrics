@@ -27,7 +27,6 @@ import numpy as np
 
 from binding_metrics.utils import backfill_auth_columns
 
-
 # ---------------------------------------------------------------------------
 # Lazy imports
 # ---------------------------------------------------------------------------
@@ -36,8 +35,8 @@ from binding_metrics.utils import backfill_auth_columns
 def _import_biotite():
     try:
         import biotite.structure as struc
-        import biotite.structure.io.pdbx as pdbx
         import biotite.structure.io.pdb as pdb_io
+        import biotite.structure.io.pdbx as pdbx
         return struc, pdbx, pdb_io
     except ImportError:
         raise ImportError(
@@ -161,8 +160,8 @@ def _vdw(element: str) -> float:
 
 def _ramachandran(chain_atoms) -> dict:
     """Compute Ramachandran backbone dihedral quality for a single AtomArray."""
-    from binding_metrics.metrics.geometry import _classify_ramachandran
     from binding_metrics.core.nonstandard import is_d_residue
+    from binding_metrics.metrics.geometry import _classify_ramachandran
 
     struc, _, _ = _import_biotite()
     _empty = {

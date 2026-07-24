@@ -49,7 +49,6 @@ from typing import Optional
 
 import numpy as np
 
-
 # Residue names handled by ff14SB directly or by curated XML templates elsewhere.
 # Anything NOT in this set (and with >1 heavy atom, non-metal) is treated as an
 # exotic NCAA and parameterised with GAFF2.
@@ -316,9 +315,9 @@ def _generate_residue_template(res, topology, pos_A, gaff_version: str,
     ``(h_name, parent_atom_name, position_nm_ndarray)`` for the hydrogens that must
     be injected into the topology residue, or ``None`` on failure.
     """
-    from rdkit import Chem
     from openff.toolkit import Molecule
     from openmmforcefields.generators import GAFFTemplateGenerator
+    from rdkit import Chem
 
     mol, rd_res_names, cap_indices, ext_atom_names, cap_partner = _build_capped_molecule(
         res, topology, pos_A
@@ -616,9 +615,9 @@ def _rebuild_topology_with_injected_h(topology, pos_nm, h_by_res: dict):
     passes stay consistent); every other atom is copied unchanged.  ``h_by_res``
     maps ``res.index`` → list of ``(h_name, parent_name, pos_nm)``.
     """
+    from openmm import unit
     from openmm.app import Topology
     from openmm.app import element as elem
-    from openmm import unit
 
     new_top = Topology()
     old_to_new: dict = {}

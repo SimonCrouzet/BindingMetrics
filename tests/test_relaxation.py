@@ -5,14 +5,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from conftest import requires_cuda
+
 from binding_metrics.protocols.relaxation import (
     ImplicitRelaxation,
     RelaxationConfig,
     RelaxationResult,
 )
-
 
 
 class TestRelaxationConfig:
@@ -180,8 +179,8 @@ class TestImplicitRelaxation:
         config = RelaxationConfig()
         relaxer = ImplicitRelaxation(config)
 
-        from openmm import Vec3
         import openmm.unit as unit
+        from openmm import Vec3
 
         pos = [Vec3(float(i) * 0.1 + 0.1, 0.0, 0.0) for i in range(5)] * unit.nanometers
         rmsd = relaxer._compute_rmsd(pos, pos)
@@ -193,8 +192,8 @@ class TestImplicitRelaxation:
         config = RelaxationConfig()
         relaxer = ImplicitRelaxation(config)
 
-        from openmm import Vec3
         import openmm.unit as unit
+        from openmm import Vec3
 
         pos = [Vec3(float(i) * 0.1 + 0.1, 0.0, 0.0) for i in range(5)] * unit.nanometers
         trajectory = [pos, pos, pos]

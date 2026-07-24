@@ -7,7 +7,7 @@ import tempfile
 from typing import Literal, Optional
 
 import openmm.unit as unit
-from openmm.app import Modeller, PDBFile, ForceField
+from openmm.app import ForceField, Modeller, PDBFile
 
 log = logging.getLogger(__name__)
 
@@ -194,18 +194,19 @@ def _add_hydrogens_cyclic(
     uses the cyclic-aware ForceField templates instead.
     """
     from openmm.app import ForceField, Modeller
+
     from binding_metrics.core.cyclic import (
-        patch_cyclic_topology,
         get_addh_variants,
         load_extra_xmls,
+        patch_cyclic_topology,
         rename_disulfide_cys_to_cyx,
     )
+    from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
     from binding_metrics.core.nonstandard import (
         detect_nonstandard,
-        patch_nonstandard,
         load_nonstandard_xmls,
+        patch_nonstandard,
     )
-    from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
 
     # custom bonds are intra-chain, so both ends share the same chain ID.
     cyclic_chain = custom_bonds[0][0]

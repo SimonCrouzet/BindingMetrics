@@ -113,13 +113,18 @@ def cyclosporin_ncaa_result():
 
     Returns ``(topology, positions, ff, ncaa_xmls, peptide_chain)``.
     """
-    from pdbfixer import PDBFixer
     import openmm.app as app
-    from binding_metrics.core.nonstandard import (
-        detect_nonstandard, patch_nonstandard, load_nonstandard_xmls,
-    )
+    from pdbfixer import PDBFixer
+
     from binding_metrics.core.cyclic import (
-        patch_cyclic_topology, rename_disulfide_cys_to_cyx, load_extra_xmls,
+        load_extra_xmls,
+        patch_cyclic_topology,
+        rename_disulfide_cys_to_cyx,
+    )
+    from binding_metrics.core.nonstandard import (
+        detect_nonstandard,
+        load_nonstandard_xmls,
+        patch_nonstandard,
     )
 
     fixer = PDBFixer(filename=str(CYCLOSPORIN_CIF))
@@ -194,6 +199,7 @@ class TestGaffTemplateGeneration:
     def test_templates_load_and_build_system(self, cyclosporin_ncaa_result):
         """The generated templates must let ff14SB createSystem succeed."""
         import openmm.app as app
+
         from binding_metrics.core.cyclic import get_addh_variants
 
         topology, positions, ff, _, peptide_chain, bond_info = cyclosporin_ncaa_result
@@ -230,7 +236,8 @@ class TestCyclosporinRelaxSanity:
         from binding_metrics.core.system import prep_structure
         from binding_metrics.io.structures import load_structure, save_structure
         from binding_metrics.protocols.relaxation import (
-            ImplicitRelaxation, RelaxationConfig,
+            ImplicitRelaxation,
+            RelaxationConfig,
         )
 
         out = tmp_path_factory.mktemp("cyclo")

@@ -4,13 +4,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from conftest import requires_cuda
+
 from binding_metrics.metrics.energy import (
     _extract_chain,
     compute_interaction_energy,
 )
-
 
 
 class TestExtractChain:

@@ -46,8 +46,6 @@ Supported NMe PDB codes (input → canonical template name):
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
-
 
 # ---------------------------------------------------------------------------
 # D-amino acid registry  (PDB CCD 3-letter code → L counterpart residue name)

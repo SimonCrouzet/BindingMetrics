@@ -225,17 +225,17 @@ class TestRandomSeedConfig:
 
     def test_configs_default_to_deterministic(self):
         """RelaxationConfig and SimulationConfig seed everything by default."""
+        from binding_metrics.core.simulation import SimulationConfig
         from binding_metrics.core.system import DEFAULT_RANDOM_SEED
         from binding_metrics.protocols.relaxation import RelaxationConfig
-        from binding_metrics.core.simulation import SimulationConfig
 
         assert RelaxationConfig().random_seed == DEFAULT_RANDOM_SEED
         assert SimulationConfig().random_seed == DEFAULT_RANDOM_SEED
 
     def test_random_seed_can_be_disabled(self):
         """None is a valid opt-out on the configs."""
-        from binding_metrics.protocols.relaxation import RelaxationConfig
         from binding_metrics.core.simulation import SimulationConfig
+        from binding_metrics.protocols.relaxation import RelaxationConfig
 
         assert RelaxationConfig(random_seed=None).random_seed is None
         assert SimulationConfig(random_seed=None).random_seed is None

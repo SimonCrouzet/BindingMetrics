@@ -9,7 +9,6 @@ import warnings
 
 import numpy as np
 
-
 # Coulomb constant in kcal/mol when distance is in Å and charges in e
 _COULOMB_K = 332.0637133
 
@@ -26,8 +25,8 @@ def _import_biotite():
     try:
         import biotite.structure as structure
         import biotite.structure.io.pdbx as pdbx
-        from biotite.structure.sasa import sasa
         from biotite.structure.info import vdw_radius_single
+        from biotite.structure.sasa import sasa
 
         return structure, pdbx, sasa, vdw_radius_single
     except ImportError:

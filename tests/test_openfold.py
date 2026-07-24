@@ -1,12 +1,10 @@
 """Tests for OpenFold3 metrics parsing."""
 
 import json
-import tempfile
 from pathlib import Path
 
 import numpy as np
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers: synthetic OpenFold3 output fixtures
@@ -528,6 +526,7 @@ class TestRealWorldIntegration:
     def test_find_prediction_files_locates_real_pdb(self, tmp_path):
         """_find_prediction_files finds the PDB copied into the output structure."""
         import shutil
+
         from binding_metrics.metrics.openfold import _find_prediction_files
 
         seed_dir = tmp_path / "example" / "seed_1"

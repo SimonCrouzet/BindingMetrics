@@ -1,7 +1,7 @@
 """Tests for the metrics module."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -24,7 +24,6 @@ class TestSASA:
         """Should raise ImportError if mdtraj not available."""
         with patch.dict("sys.modules", {"mdtraj": None}):
             # Force reimport to trigger the ImportError path
-            import importlib
             from binding_metrics.metrics import sasa
 
             # Manually set md to None to simulate missing mdtraj

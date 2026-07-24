@@ -77,11 +77,10 @@ from typing import Optional
 
 import numpy as np
 import pytest
-
 from conftest import requires_cuda
 
-from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
 from binding_metrics.metrics.comparison import compute_structure_rmsd
+from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
@@ -399,8 +398,9 @@ def _heavy_atom_composition(
     Waters and hydrogens are excluded. The per-residue Counter lets us assert
     that minimization dropped/added/renamed no heavy atom in any residue.
     """
-    import gemmi
     from collections import Counter
+
+    import gemmi
 
     structure = gemmi.read_structure(str(cif_path))
     model = structure[0]

@@ -21,7 +21,7 @@ import json
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -310,8 +310,8 @@ class ImplicitRelaxation:
             List of unique ``openff.toolkit.Molecule`` objects (heavy atoms only),
             one per unknown residue name.
         """
-        from rdkit import Chem
         from openff.toolkit import Molecule
+        from rdkit import Chem
 
         seen: set = set()
         result = []
@@ -418,7 +418,6 @@ class ImplicitRelaxation:
         Returns:
             Tuple of (system, topology, positions, bond_info)
         """
-        import tempfile
 
         self._import_openmm()
 
@@ -457,8 +456,8 @@ class ImplicitRelaxation:
         # --- Non-standard residue patching (D-AAs and NMe-AAs, before H addition) ---
         from binding_metrics.core.nonstandard import (
             detect_nonstandard,
-            patch_nonstandard,
             load_nonstandard_xmls,
+            patch_nonstandard,
         )
         ns_info = detect_nonstandard(topology, peptide_chain)
         if not ns_info.is_empty:
@@ -476,10 +475,9 @@ class ImplicitRelaxation:
         # Must run here so addHydrogens sees the correct internal-residue topology.
         bond_info = []
         from binding_metrics.core.cyclic import (
-            CyclizationError,
+            load_extra_xmls,
             patch_cyclic_topology,
             rename_disulfide_cys_to_cyx,
-            load_extra_xmls,
         )
         topology, positions, bond_info = patch_cyclic_topology(
             topology, positions, peptide_chain,
@@ -864,11 +862,11 @@ class ImplicitRelaxation:
                 _sys.addParticle(1.0)
                 _ctx = openmm.Context(_sys, openmm.VerletIntegrator(0.001), platform)
                 del _ctx, _sys
-                print(f"  Platform: CUDA (mixed precision)")
+                print("  Platform: CUDA (mixed precision)")
                 return platform, properties
             except Exception as e:
                 print(f"  Warning: CUDA unavailable ({e}), falling back to CPU.")
-        print(f"  Platform: CPU")
+        print("  Platform: CPU")
         return openmm.Platform.getPlatformByName("CPU"), {}
 
     def run(
@@ -1205,7 +1203,7 @@ def _run_one(
         print(f"  Results:   {rp}")
 
     if result.success:
-        print(f"\nSUCCESS")
+        print("\nSUCCESS")
         if result.minimized_structure_path:
             print(f"  Minimized: {result.minimized_structure_path}")
         if result.md_final_structure_path:

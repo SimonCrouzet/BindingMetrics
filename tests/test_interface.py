@@ -22,7 +22,10 @@ class TestDetectInterfaceChains:
 
     @requires_biotite
     def test_returns_tuple(self):
-        from binding_metrics.metrics.interface import detect_interface_chains, load_biotite_structure
+        from binding_metrics.metrics.interface import (
+            detect_interface_chains,
+            load_biotite_structure,
+        )
 
         if not EXAMPLE_CIF.exists():
             pytest.skip("Test CIF not available")
@@ -35,7 +38,10 @@ class TestDetectInterfaceChains:
 
     @requires_biotite
     def test_explicit_design_chain(self):
-        from binding_metrics.metrics.interface import detect_interface_chains, load_biotite_structure
+        from binding_metrics.metrics.interface import (
+            detect_interface_chains,
+            load_biotite_structure,
+        )
 
         if not EXAMPLE_CIF.exists():
             pytest.skip("Test CIF not available")
@@ -52,6 +58,7 @@ class TestDetectInterfaceChains:
     @requires_biotite
     def test_empty_structure_returns_none(self):
         import biotite.structure as struc
+
         from binding_metrics.metrics.interface import detect_interface_chains
 
         empty = struc.AtomArray(0)
@@ -315,8 +322,9 @@ class TestPolarContacts:
 
         with mock.patch.dict(sys.modules, {"biotite": None, "biotite.structure": None}):
             with pytest.raises(ImportError, match="biotite"):
-                from binding_metrics.metrics import interface as iface_mod
                 import importlib
+
+                from binding_metrics.metrics import interface as iface_mod
                 importlib.reload(iface_mod)
                 iface_mod.compute_interface_metrics(dummy_cif)
 
@@ -328,6 +336,7 @@ class TestLoadBiotiteStructure:
     @pytest.mark.integration
     def test_loads_atomarray(self):
         import biotite.structure as struc
+
         from binding_metrics.metrics.interface import load_biotite_structure
 
         if not EXAMPLE_CIF.exists():
@@ -340,6 +349,7 @@ class TestLoadBiotiteStructure:
     @requires_biotite
     def test_loads_pdb(self, sample_pdb_path):
         import biotite.structure as struc
+
         from binding_metrics.metrics.interface import load_biotite_structure
 
         atoms = load_biotite_structure(sample_pdb_path)
@@ -349,6 +359,7 @@ class TestLoadBiotiteStructure:
     @requires_biotite
     def test_pdb_chains_preserved(self, sample_pdb_path):
         import numpy as np
+
         from binding_metrics.metrics.interface import load_biotite_structure
 
         atoms = load_biotite_structure(sample_pdb_path)

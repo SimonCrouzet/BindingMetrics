@@ -1,7 +1,6 @@
 """Solvent accessible surface area calculations."""
 
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -154,8 +153,8 @@ def compute_delta_sasa_static(
     try:
         import biotite.structure as structure
         import biotite.structure.io.pdbx as pdbx
-        from biotite.structure.sasa import sasa as biotite_sasa
         from biotite.structure.info import vdw_radius_single
+        from biotite.structure.sasa import sasa as biotite_sasa
     except ImportError:
         raise ImportError(
             "biotite is required for static SASA. "

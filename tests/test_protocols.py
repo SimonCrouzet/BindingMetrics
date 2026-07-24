@@ -1,12 +1,11 @@
 """Tests for the protocol module."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-
 from conftest import BEST_PLATFORM
+
 from binding_metrics.core.simulation import SimulationConfig
 from binding_metrics.protocols.base import BaseProtocol, ProtocolResults
 from binding_metrics.protocols.peptide import PeptideBindingProtocol

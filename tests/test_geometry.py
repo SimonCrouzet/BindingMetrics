@@ -455,8 +455,10 @@ class TestShapeComplementarity:
         """
         _skip_if_no_biotite()
         import tempfile
+
         import biotite.structure as struc
         import biotite.structure.io.pdb as pdb_io
+
         from binding_metrics.metrics.geometry import compute_shape_complementarity
 
         spacing = 3.4  # ~vdW contact for carbon

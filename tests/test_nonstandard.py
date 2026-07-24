@@ -9,18 +9,17 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from binding_metrics.core.nonstandard import (
+    _XML_MLE,
+    _XML_MVA,
+    _XML_NMA,
+    _XML_NMG,
     D_AA_MAP,
     NME_AA_MAP,
     NonstandardInfo,
-    _XML_NMG,
-    _XML_NMA,
-    _XML_MVA,
-    _XML_MLE,
     detect_nonstandard,
     is_d_residue,
     patch_nonstandard,
 )
-
 
 # ---------------------------------------------------------------------------
 # D-AA registry
@@ -294,8 +293,8 @@ class TestPatchNonstandardApplies:
     """
 
     def _positions(self, topology):
-        from openmm import Vec3
         import openmm.unit as unit
+        from openmm import Vec3
         n = topology.getNumAtoms()
         return unit.Quantity([Vec3(i, 0.0, 0.0) for i in range(n)], unit.nanometer)
 
@@ -341,7 +340,7 @@ class TestRamachandranDAA:
         assert _classify_ramachandran(120, -120, is_d=True) == "favoured"
 
     def test_nan_returns_none(self):
+
         from binding_metrics.metrics.geometry import _classify_ramachandran
-        import math
         assert _classify_ramachandran(float("nan"), 0.0) is None
         assert _classify_ramachandran(0.0, float("nan"), is_d=True) is None

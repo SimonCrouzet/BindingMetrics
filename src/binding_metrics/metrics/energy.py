@@ -1,7 +1,6 @@
 """Interaction energy calculations."""
 
 import argparse
-import sys
 import traceback
 import warnings
 from pathlib import Path
@@ -243,17 +242,17 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
         separate subsystem force fields must reload these XMLs.
     """
     from binding_metrics.core.cyclic import (
-        patch_cyclic_topology,
-        rename_disulfide_cys_to_cyx,
         get_addh_variants,
         load_extra_xmls,
-    )
-    from binding_metrics.core.nonstandard import (
-        detect_nonstandard,
-        patch_nonstandard,
-        load_nonstandard_xmls,
+        patch_cyclic_topology,
+        rename_disulfide_cys_to_cyx,
     )
     from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
+    from binding_metrics.core.nonstandard import (
+        detect_nonstandard,
+        load_nonstandard_xmls,
+        patch_nonstandard,
+    )
 
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
@@ -330,7 +329,7 @@ def _repair_orphaned_cys(topology, positions, solvent_model: str = "obc2",
     and directly inserts HG into a rebuilt topology at a geometric position along
     the CB→SG bond direction.
     """
-    from openmm.app import Topology, Element
+    from openmm.app import Element, Topology
 
     _SH_BOND_NM = 0.134  # S–H bond length
 

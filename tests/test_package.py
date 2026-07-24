@@ -1,6 +1,5 @@
 """Tests for package-level imports and exports."""
 
-import pytest
 
 from conftest import BEST_PLATFORM
 

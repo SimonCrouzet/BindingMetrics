@@ -4,20 +4,16 @@ All tests run without OpenMM (pure-Python or lightweight) except those that
 build a real topology, which are marked @pytest.mark.integration.
 """
 
-import math
-import pytest
 import numpy as np
+import pytest
 
 from binding_metrics.core.cyclic import (
-    CyclicBondInfo,
-    CyclizationError,
     _XML_ASPL,
     _XML_GLUL,
     _XML_LYSL,
-    _AMIDE_BOND_THRESH,
-    _DISULFIDE_THRESH,
+    CyclicBondInfo,
+    CyclizationError,
 )
-
 
 # ---------------------------------------------------------------------------
 # CyclicBondInfo
@@ -375,7 +371,6 @@ class TestGetAddhVariants:
         from binding_metrics.core.cyclic import (
             CyclicBondInfo,
             get_addh_variants,
-            _internal_h_list,
         )
         topology, positions = self._make_sfti_like_topology()
         bond_info = [CyclicBondInfo(
@@ -401,12 +396,12 @@ class TestGetAddhVariants:
         Uses a minimal synthetic topology — the call may fail for other reasons
         (incomplete residue geometry), but must NOT fail with 'Illegal variant'.
         """
-        from openmm import app, Vec3
-        from openmm.unit import nanometers
+        from openmm import Vec3, app
+
         from binding_metrics.core.cyclic import (
             get_addh_variants,
-            patch_cyclic_topology,
             load_extra_xmls,
+            patch_cyclic_topology,
         )
         topology, positions = self._make_sfti_like_topology()
         # Pass positions WITHOUT units so _CellList comparisons stay in plain floats
@@ -545,8 +540,8 @@ class TestSidechainLactamEndToEnd:
         import tempfile
         pytest.importorskip("openmm", reason="OpenMM required")
         chem = pytest.importorskip("rdkit.Chem", reason="RDKit required")
+        from openmm.app import Modeller, PDBFile
         from rdkit.Chem import AllChem
-        from openmm.app import PDBFile, Modeller
 
         mol = chem.MolFromSequence(seq)
         mol = chem.AddHs(mol)
@@ -564,9 +559,12 @@ class TestSidechainLactamEndToEnd:
         return modeller.topology, modeller.positions, chain_id
 
     def _run(self, seq, lys_idx, acid_idx, acid_atom, expect_name):
-        from openmm.app import ForceField, Modeller, NoCutoff, HBonds
+        from openmm.app import ForceField, HBonds, Modeller, NoCutoff
+
         from binding_metrics.core.cyclic import (
-            patch_cyclic_topology, get_addh_variants, load_extra_xmls,
+            get_addh_variants,
+            load_extra_xmls,
+            patch_cyclic_topology,
             resolve_closure_atoms,
         )
         top, pos, chain_id = self._heavy_atom_peptide(seq)
@@ -652,10 +650,9 @@ def _make_bondless_ala_chain():
     ALA) arrives: correct atoms/coordinates, zero intra-residue bonds.
     """
     pytest.importorskip("openmm", reason="OpenMM required")
-    from openmm import app
-    from openmm.app import element as elem
     import openmm.unit as unit
-    from openmm import Vec3
+    from openmm import Vec3, app
+    from openmm.app import element as elem
 
     top = app.Topology()
     chain = top.addChain(id="B")
@@ -729,11 +726,11 @@ class TestDResidueBondRestore:
     """
 
     def test_dal_rename_restores_bonds(self):
-        from binding_metrics.core.nonstandard import detect_nonstandard, patch_nonstandard
-        from openmm import app
-        from openmm.app import element as elem
         import openmm.unit as unit
-        from openmm import Vec3
+        from openmm import Vec3, app
+        from openmm.app import element as elem
+
+        from binding_metrics.core.nonstandard import detect_nonstandard, patch_nonstandard
 
         top = app.Topology()
         chain = top.addChain(id="B")

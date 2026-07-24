@@ -37,8 +37,8 @@ def _import_biotite():
     """Lazy import of required biotite modules."""
     try:
         import biotite.structure as struc
-        import biotite.structure.io.pdbx as pdbx
         import biotite.structure.io.pdb as pdb_io
+        import biotite.structure.io.pdbx as pdbx
 
         return struc, pdbx, pdb_io
     except ImportError:

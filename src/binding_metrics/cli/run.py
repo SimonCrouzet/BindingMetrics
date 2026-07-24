@@ -99,7 +99,7 @@ def run_pipeline(
     if not skip_prep:
         _step("Structure Preparation (PDBFixer)")
         try:
-            from binding_metrics.core.system import prep_structure, HAS_PDBFIXER
+            from binding_metrics.core.system import HAS_PDBFIXER, prep_structure
             from binding_metrics.io.structures import load_structure, save_structure
 
             if not HAS_PDBFIXER:
@@ -139,8 +139,8 @@ def run_pipeline(
     # Passed as hints to relaxation so cyclization survives the prep round-trip.
     cyclic_bond_hints = []
     try:
-        from binding_metrics.io.structures import load_structure
         from binding_metrics.core.cyclic import detect_cyclization
+        from binding_metrics.io.structures import load_structure
         _orig_topo, _orig_pos = load_structure(input_path)
         cyclic_bond_hints = detect_cyclization(_orig_topo, _orig_pos, peptide_chain_label)
         if cyclic_bond_hints:
@@ -254,8 +254,8 @@ def run_pipeline(
         _step("Geometry (Ramachandran + omega planarity + shape complementarity)")
         try:
             from binding_metrics.metrics.geometry import (
-                compute_ramachandran,
                 compute_omega_planarity,
+                compute_ramachandran,
                 compute_shape_complementarity,
             )
 
@@ -324,9 +324,9 @@ def run_pipeline(
         _step("OpenFold3 confidence scoring")
         try:
             from binding_metrics.metrics.openfold import (
-                run_openfold_scoring,
-                run_openfold_refolding,
                 compute_openfold_metrics,
+                run_openfold_refolding,
+                run_openfold_scoring,
             )
 
             if not peptide_chain or not receptor_chain:
@@ -372,8 +372,8 @@ def run_pipeline(
                 plddt = of_metrics.get("plddt_per_atom")
                 if of_structure:
                     from binding_metrics.metrics.evobind import (
-                        compute_evobind_score,
                         compute_evobind_adversarial_check,
+                        compute_evobind_score,
                     )
                     # Primary score on the OF3 prediction
                     try:

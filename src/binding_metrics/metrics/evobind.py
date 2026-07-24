@@ -49,7 +49,6 @@ import numpy as np
 
 from binding_metrics.utils import backfill_auth_columns
 
-
 # ---------------------------------------------------------------------------
 # Internal helpers: coordinate extraction
 # ---------------------------------------------------------------------------

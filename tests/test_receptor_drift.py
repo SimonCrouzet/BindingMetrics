@@ -1,7 +1,6 @@
 """Tests for compute_receptor_drift in metrics/rmsd.py."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest

@@ -43,7 +43,7 @@ def main() -> None:
     from binding_metrics.cli import log_to_file
     with log_to_file(args.log_file):
         try:
-            from binding_metrics.core.system import prep_structure, HAS_PDBFIXER
+            from binding_metrics.core.system import HAS_PDBFIXER, prep_structure
             from binding_metrics.io.structures import load_structure, save_structure
         except ImportError as e:
             print(f"error: {e}", file=sys.stderr)

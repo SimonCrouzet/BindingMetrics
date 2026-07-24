@@ -1,12 +1,12 @@
 """Binding metrics calculations."""
 
+from binding_metrics.metrics.contacts import calculate_contacts
+from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
+from binding_metrics.metrics.energy import calculate_interaction_energy
 from binding_metrics.metrics.evobind import (
     compute_evobind_adversarial_check,
     compute_evobind_score,
 )
-from binding_metrics.metrics.contacts import calculate_contacts
-from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
-from binding_metrics.metrics.energy import calculate_interaction_energy
 from binding_metrics.metrics.geometry import (
     compute_buried_void_volume,
     compute_omega_planarity,

@@ -7,7 +7,7 @@ To add a new plot: append a PlotSpec to PLOT_REGISTRY and reference its name
 in a report config under "plots".
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

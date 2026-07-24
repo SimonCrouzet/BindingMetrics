@@ -301,7 +301,7 @@ def main() -> None:
         print(f"{GREEN}{BOLD}  All {passed} check(s) passed — good, ready to go.{RESET}")
     else:
         print(f"{RED}{BOLD}  {passed} passed, {failed} failed.{RESET}")
-        print(f"  Please fix the issues above before running BindingMetrics.")
+        print("  Please fix the issues above before running BindingMetrics.")
     print(f"{BOLD}{'=' * 56}{RESET}\n")
 
     sys.exit(0 if failed == 0 else 1)
