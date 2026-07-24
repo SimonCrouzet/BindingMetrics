@@ -200,9 +200,7 @@ class MDSimulation:
         save_interval = int(config.save_interval_ps * 1000 / config.timestep)
 
         # Add reporters
-        self.simulation.reporters.append(
-            DCDReporter(str(traj_path), save_interval)
-        )
+        self.simulation.reporters.append(DCDReporter(str(traj_path), save_interval))
         self.simulation.reporters.append(
             StateDataReporter(
                 str(state_path),

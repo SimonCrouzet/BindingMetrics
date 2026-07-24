@@ -37,6 +37,7 @@ def _import_biotite():
         import biotite.structure as struc
         import biotite.structure.io.pdb as pdb_io
         import biotite.structure.io.pdbx as pdbx
+
         return struc, pdbx, pdb_io
     except ImportError:
         raise ImportError(
@@ -48,6 +49,7 @@ def _import_biotite():
 def _import_scipy():
     try:
         from scipy.spatial import cKDTree
+
         return cKDTree
     except ImportError:
         raise ImportError(
@@ -61,6 +63,7 @@ def _import_openmm():
         import openmm
         import openmm.unit as unit
         from openmm.app import ForceField, Modeller, PDBFile, Simulation
+
         return openmm, unit, ForceField, Modeller, PDBFile, Simulation
     except ImportError:
         raise ImportError(
@@ -110,10 +113,14 @@ def _detect_receptor_chain(atoms) -> Optional[str]:
     best_chain, best_count = None, 0
     for cid in chain_ids:
         cid_mask = aa_atoms.chain_id == cid
-        n_res = len(set(zip(
-            aa_atoms.chain_id[cid_mask],
-            aa_atoms.res_id[cid_mask],
-        )))
+        n_res = len(
+            set(
+                zip(
+                    aa_atoms.chain_id[cid_mask],
+                    aa_atoms.res_id[cid_mask],
+                )
+            )
+        )
         if n_res > best_count:
             best_count, best_chain = n_res, cid
     return best_chain
@@ -144,8 +151,16 @@ def _iter_residues(atoms):
 # ---------------------------------------------------------------------------
 
 _VDW_RADII: dict[str, float] = {
-    "C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80, "P": 1.80,
-    "SE": 1.90, "F": 1.47, "CL": 1.75, "BR": 1.85, "I": 1.98,
+    "C": 1.70,
+    "N": 1.55,
+    "O": 1.52,
+    "S": 1.80,
+    "P": 1.80,
+    "SE": 1.90,
+    "F": 1.47,
+    "CL": 1.75,
+    "BR": 1.85,
+    "I": 1.98,
 }
 
 
@@ -165,8 +180,13 @@ def _ramachandran(chain_atoms) -> dict:
 
     struc, _, _ = _import_biotite()
     _empty = {
-        "favoured_pct": np.nan, "allowed_pct": np.nan, "outlier_pct": np.nan,
-        "outlier_count": 0, "favoured_count": 0, "allowed_count": 0, "n_evaluated": 0,
+        "favoured_pct": np.nan,
+        "allowed_pct": np.nan,
+        "outlier_pct": np.nan,
+        "outlier_count": 0,
+        "favoured_count": 0,
+        "allowed_count": 0,
+        "n_evaluated": 0,
     }
 
     try:
@@ -195,11 +215,11 @@ def _ramachandran(chain_atoms) -> dict:
 
     return {
         "favoured_pct": 100.0 * counts["favoured"] / n_eval,
-        "allowed_pct":  100.0 * counts["allowed"]  / n_eval,
-        "outlier_pct":  100.0 * counts["outlier"]  / n_eval,
+        "allowed_pct": 100.0 * counts["allowed"] / n_eval,
+        "outlier_pct": 100.0 * counts["outlier"] / n_eval,
         "favoured_count": counts["favoured"],
-        "allowed_count":  counts["allowed"],
-        "outlier_count":  counts["outlier"],
+        "allowed_count": counts["allowed"],
+        "outlier_count": counts["outlier"],
         "n_evaluated": n_eval,
     }
 
@@ -271,9 +291,9 @@ def _bfactor_stats(chain_atoms) -> dict:
     return {
         "available": True,
         "mean_b_factor": float(np.mean(ca_b)),
-        "max_b_factor":  float(np.max(ca_b)),
-        "min_b_factor":  float(np.min(ca_b)),
-        "std_b_factor":  float(np.std(ca_b)),
+        "max_b_factor": float(np.max(ca_b)),
+        "min_b_factor": float(np.min(ca_b)),
+        "std_b_factor": float(np.std(ca_b)),
         "n_high_b_residues": int(np.sum(ca_b > _HIGH_B_THRESHOLD)),
     }
 
@@ -284,14 +304,25 @@ def _bfactor_stats(chain_atoms) -> dict:
 
 # Last atom of the χ1 dihedral (N-CA-CB-X) by residue name
 _CHI1_TERMINAL: dict[str, str] = {
-    "ARG": "CG",  "ASN": "CG",  "ASP": "CG",
-    "GLN": "CG",  "GLU": "CG",
-    "HIS": "CG",  "HID": "CG",  "HIE": "CG",  "HIP": "CG",
+    "ARG": "CG",
+    "ASN": "CG",
+    "ASP": "CG",
+    "GLN": "CG",
+    "GLU": "CG",
+    "HIS": "CG",
+    "HID": "CG",
+    "HIE": "CG",
+    "HIP": "CG",
     "ILE": "CG1",
-    "LEU": "CG",  "LYS": "CG",  "MET": "CG",
-    "PHE": "CG",  "PRO": "CG",
-    "TRP": "CG",  "TYR": "CG",
-    "CYS": "SG",  "CYX": "SG",
+    "LEU": "CG",
+    "LYS": "CG",
+    "MET": "CG",
+    "PHE": "CG",
+    "PRO": "CG",
+    "TRP": "CG",
+    "TYR": "CG",
+    "CYS": "SG",
+    "CYX": "SG",
     "SER": "OG",
     "THR": "OG1",
     "VAL": "CG1",
@@ -333,9 +364,14 @@ def _rotamer_quality(chain_atoms) -> dict:
 
         # Dihedral N-CA-CB-X
         try:
-            chi1_rad = float(struc.dihedral(
-                atoms["N"], atoms["CA"], atoms["CB"], atoms[terminal],
-            ))
+            chi1_rad = float(
+                struc.dihedral(
+                    atoms["N"],
+                    atoms["CA"],
+                    atoms["CB"],
+                    atoms[terminal],
+                )
+            )
         except Exception:
             continue
 
@@ -349,8 +385,8 @@ def _rotamer_quality(chain_atoms) -> dict:
 
     return {
         "outlier_count": n_outliers,
-        "outlier_pct":   100.0 * n_outliers / n_evaluated,
-        "n_evaluated":   n_evaluated,
+        "outlier_pct": 100.0 * n_outliers / n_evaluated,
+        "n_evaluated": n_evaluated,
     }
 
 
@@ -418,8 +454,8 @@ def _cbeta_deviations(chain_atoms, threshold: float = 0.25) -> dict:
 
     return {
         "cb_deviation_count": n_deviating,
-        "cb_n_evaluated":     n_evaluated,
-        "cb_deviation_pct":   100.0 * n_deviating / n_evaluated if n_evaluated > 0 else np.nan,
+        "cb_n_evaluated": n_evaluated,
+        "cb_deviation_pct": 100.0 * n_deviating / n_evaluated if n_evaluated > 0 else np.nan,
     }
 
 
@@ -430,19 +466,19 @@ def _cbeta_deviations(chain_atoms, threshold: float = 0.25) -> dict:
 # Engh & Huber (1991) ideal values: (mean, 4σ threshold)
 # Bond lengths in Å, angles in degrees.
 _INTRA_BONDS: dict[tuple, tuple] = {
-    ("N",  "CA"): (1.458, 4 * 0.019),
-    ("CA", "C"):  (1.525, 4 * 0.021),
-    ("C",  "O"):  (1.229, 4 * 0.019),
+    ("N", "CA"): (1.458, 4 * 0.019),
+    ("CA", "C"): (1.525, 4 * 0.021),
+    ("C", "O"): (1.229, 4 * 0.019),
 }
 _INTER_BOND: tuple = (1.336, 4 * 0.023)  # peptide C→N
 
 _INTRA_ANGLES: dict[tuple, tuple] = {
-    ("N",  "CA", "C"):  (111.2, 4 * 2.77),
-    ("CA", "C",  "O"):  (120.8, 4 * 1.67),
+    ("N", "CA", "C"): (111.2, 4 * 2.77),
+    ("CA", "C", "O"): (120.8, 4 * 1.67),
 }
 _INTER_ANGLES: dict[tuple, tuple] = {
-    ("CA", "C", "N"):   (116.2, 4 * 2.01),  # angle spanning two residues
-    ("C",  "N", "CA"):  (121.7, 4 * 1.80),
+    ("CA", "C", "N"): (116.2, 4 * 2.01),  # angle spanning two residues
+    ("C", "N", "CA"): (121.7, 4 * 1.80),
 }
 
 _PEPTIDE_BOND_MAX = 2.5  # Å — skip inter-residue pairs farther than this (chain break)
@@ -470,9 +506,9 @@ def _backbone_geometry(chain_atoms) -> dict:
     for res_name, atoms in _iter_residues(chain_atoms):
         residues.append(atoms)
 
-    bad_bonds   = 0
+    bad_bonds = 0
     total_bonds = 0
-    bad_angles   = 0
+    bad_angles = 0
     total_angles = 0
 
     for i, r in enumerate(residues):
@@ -529,10 +565,10 @@ def _backbone_geometry(chain_atoms) -> dict:
                             bad_angles += 1
 
     return {
-        "bad_bonds":    bad_bonds,
-        "total_bonds":  total_bonds,
+        "bad_bonds": bad_bonds,
+        "total_bonds": total_bonds,
         "bad_bonds_pct": 100.0 * bad_bonds / total_bonds if total_bonds > 0 else np.nan,
-        "bad_angles":   bad_angles,
+        "bad_angles": bad_angles,
         "total_angles": total_angles,
         "bad_angles_pct": 100.0 * bad_angles / total_angles if total_angles > 0 else np.nan,
     }
@@ -584,8 +620,12 @@ def _receptor_energy(
     adds hydrogens, builds an AMBER ff14SB + implicit solvent system, and
     evaluates potential energy at the input geometry (no minimization).
     """
-    _nan = {"energy_kJ_mol": np.nan, "energy_per_residue_kJ_mol": np.nan,
-            "n_atoms_with_h": None, "error": None}
+    _nan = {
+        "energy_kJ_mol": np.nan,
+        "energy_per_residue_kJ_mol": np.nan,
+        "n_atoms_with_h": None,
+        "error": None,
+    }
 
     try:
         openmm, unit, ForceField, Modeller, PDBFile, Simulation = _import_openmm()
@@ -594,6 +634,7 @@ def _receptor_energy(
 
     try:
         from pdbfixer import PDBFixer
+
         has_pdbfixer = True
     except ImportError:
         has_pdbfixer = False
@@ -697,11 +738,21 @@ def _score_model(
 
     if len(rec_atoms) == 0:
         return {
-            "model_index": model_index, "n_residues": 0, "n_heavy_atoms": 0,
-            "ramachandran": {}, "clashes": {}, "rotamers": {}, "cbeta": {},
-            "backbone_geometry": {}, "b_factors": {"available": False},
-            "energy": {"energy_kJ_mol": np.nan, "energy_per_residue_kJ_mol": np.nan,
-                       "n_atoms_with_h": None, "error": "no receptor atoms found"},
+            "model_index": model_index,
+            "n_residues": 0,
+            "n_heavy_atoms": 0,
+            "ramachandran": {},
+            "clashes": {},
+            "rotamers": {},
+            "cbeta": {},
+            "backbone_geometry": {},
+            "b_factors": {"available": False},
+            "energy": {
+                "energy_kJ_mol": np.nan,
+                "energy_per_residue_kJ_mol": np.nan,
+                "n_atoms_with_h": None,
+                "error": "no receptor atoms found",
+            },
             "molprobity_score": np.nan,
         }
 
@@ -709,12 +760,12 @@ def _score_model(
     elements = np.array([str(a.element).strip().upper() for a in rec_atoms])
     n_heavy = int(np.sum(~np.isin(elements, ["H", "D", ""])))
 
-    rama   = _ramachandran(rec_atoms)
-    clash  = _clashscore(rec_atoms, clash_cutoff)
-    rota   = _rotamer_quality(rec_atoms)
-    cbeta  = _cbeta_deviations(rec_atoms)
+    rama = _ramachandran(rec_atoms)
+    clash = _clashscore(rec_atoms, clash_cutoff)
+    rota = _rotamer_quality(rec_atoms)
+    cbeta = _cbeta_deviations(rec_atoms)
     bbgeom = _backbone_geometry(rec_atoms)
-    bfact  = _bfactor_stats(rec_atoms)
+    bfact = _bfactor_stats(rec_atoms)
     energy = _receptor_energy(rec_atoms, solvent_model=solvent_model, device=device)
 
     mp_score = _molprobity_score(
@@ -724,17 +775,17 @@ def _score_model(
     )
 
     return {
-        "model_index":       model_index,
-        "n_residues":        n_res,
-        "n_heavy_atoms":     n_heavy,
-        "ramachandran":      rama,
-        "clashes":           clash,
-        "rotamers":          rota,
-        "cbeta":             cbeta,
+        "model_index": model_index,
+        "n_residues": n_res,
+        "n_heavy_atoms": n_heavy,
+        "ramachandran": rama,
+        "clashes": clash,
+        "rotamers": rota,
+        "cbeta": cbeta,
         "backbone_geometry": bbgeom,
-        "b_factors":         bfact,
-        "energy":            energy,
-        "molprobity_score":  mp_score,
+        "b_factors": bfact,
+        "energy": energy,
+        "molprobity_score": mp_score,
     }
 
 
@@ -791,7 +842,10 @@ def compute_receptor_quality(
         receptor_chain = _detect_receptor_chain(all_models[0])
     if receptor_chain is None:
         return {
-            "receptor_chain": None, "n_models": 0, "models": [], "summary": {},
+            "receptor_chain": None,
+            "n_models": 0,
+            "models": [],
+            "summary": {},
             "error": "No protein chains found in structure.",
         }
 
@@ -802,9 +856,9 @@ def compute_receptor_quality(
 
     return {
         "receptor_chain": str(receptor_chain),
-        "n_models":       len(model_results),
-        "models":         model_results,
-        "summary":        _aggregate_summary(model_results),
+        "n_models": len(model_results),
+        "models": model_results,
+        "summary": _aggregate_summary(model_results),
     }
 
 
@@ -824,18 +878,18 @@ def _aggregate_summary(model_results: list) -> dict:
         return float(np.mean(vals)) if vals else np.nan
 
     summary = {
-        "ramachandran_favoured_pct":  _mean("ramachandran.favoured_pct"),
-        "ramachandran_outlier_pct":   _mean("ramachandran.outlier_pct"),
+        "ramachandran_favoured_pct": _mean("ramachandran.favoured_pct"),
+        "ramachandran_outlier_pct": _mean("ramachandran.outlier_pct"),
         "ramachandran_outlier_count": _mean("ramachandran.outlier_count"),
-        "clashscore":                 _mean("clashes.clashscore"),
-        "rotamer_outlier_pct":        _mean("rotamers.outlier_pct"),
-        "rotamer_outlier_count":      _mean("rotamers.outlier_count"),
-        "cb_deviation_count":         _mean("cbeta.cb_deviation_count"),
-        "bad_bonds_pct":              _mean("backbone_geometry.bad_bonds_pct"),
-        "bad_angles_pct":             _mean("backbone_geometry.bad_angles_pct"),
-        "molprobity_score":           _mean("molprobity_score"),
-        "energy_kJ_mol":              _mean("energy.energy_kJ_mol"),
-        "energy_per_residue_kJ_mol":  _mean("energy.energy_per_residue_kJ_mol"),
+        "clashscore": _mean("clashes.clashscore"),
+        "rotamer_outlier_pct": _mean("rotamers.outlier_pct"),
+        "rotamer_outlier_count": _mean("rotamers.outlier_count"),
+        "cb_deviation_count": _mean("cbeta.cb_deviation_count"),
+        "bad_bonds_pct": _mean("backbone_geometry.bad_bonds_pct"),
+        "bad_angles_pct": _mean("backbone_geometry.bad_angles_pct"),
+        "molprobity_score": _mean("molprobity_score"),
+        "energy_kJ_mol": _mean("energy.energy_kJ_mol"),
+        "energy_per_residue_kJ_mol": _mean("energy.energy_per_residue_kJ_mol"),
     }
 
     # Best model: lowest MolProbity score
@@ -856,54 +910,54 @@ def _aggregate_summary(model_results: list) -> dict:
 
 def _model_to_csv_row(filename: str, receptor_chain: str, m: dict) -> dict:
     """Flatten one model result into a flat dict suitable for CSV."""
-    r  = m.get("ramachandran", {})
-    c  = m.get("clashes", {})
+    r = m.get("ramachandran", {})
+    c = m.get("clashes", {})
     ro = m.get("rotamers", {})
     cb = m.get("cbeta", {})
     bg = m.get("backbone_geometry", {})
-    b  = m.get("b_factors", {})
-    e  = m.get("energy", {})
+    b = m.get("b_factors", {})
+    e = m.get("energy", {})
     return {
-        "filename":                    filename,
-        "receptor_chain":              receptor_chain,
-        "model_index":                 m.get("model_index"),
-        "n_residues":                  m.get("n_residues"),
-        "n_heavy_atoms":               m.get("n_heavy_atoms"),
+        "filename": filename,
+        "receptor_chain": receptor_chain,
+        "model_index": m.get("model_index"),
+        "n_residues": m.get("n_residues"),
+        "n_heavy_atoms": m.get("n_heavy_atoms"),
         # Ramachandran
-        "rama_favoured_pct":           r.get("favoured_pct"),
-        "rama_allowed_pct":            r.get("allowed_pct"),
-        "rama_outlier_pct":            r.get("outlier_pct"),
-        "rama_outlier_count":          r.get("outlier_count"),
-        "rama_favoured_count":         r.get("favoured_count"),
-        "rama_n_evaluated":            r.get("n_evaluated"),
+        "rama_favoured_pct": r.get("favoured_pct"),
+        "rama_allowed_pct": r.get("allowed_pct"),
+        "rama_outlier_pct": r.get("outlier_pct"),
+        "rama_outlier_count": r.get("outlier_count"),
+        "rama_favoured_count": r.get("favoured_count"),
+        "rama_n_evaluated": r.get("n_evaluated"),
         # Clashscore
-        "clashscore":                  c.get("clashscore"),
-        "n_clashes":                   c.get("n_clashes"),
+        "clashscore": c.get("clashscore"),
+        "n_clashes": c.get("n_clashes"),
         # Rotamers
-        "rotamer_outlier_count":       ro.get("outlier_count"),
-        "rotamer_outlier_pct":         ro.get("outlier_pct"),
-        "rotamer_n_evaluated":         ro.get("n_evaluated"),
+        "rotamer_outlier_count": ro.get("outlier_count"),
+        "rotamer_outlier_pct": ro.get("outlier_pct"),
+        "rotamer_n_evaluated": ro.get("n_evaluated"),
         # Cβ deviations
-        "cbeta_dev_count":             cb.get("cb_deviation_count"),
-        "cbeta_n_evaluated":           cb.get("cb_n_evaluated"),
-        "cbeta_dev_pct":               cb.get("cb_deviation_pct"),
+        "cbeta_dev_count": cb.get("cb_deviation_count"),
+        "cbeta_n_evaluated": cb.get("cb_n_evaluated"),
+        "cbeta_dev_pct": cb.get("cb_deviation_pct"),
         # Backbone geometry
-        "bad_bonds":                   bg.get("bad_bonds"),
-        "total_bonds":                 bg.get("total_bonds"),
-        "bad_bonds_pct":               bg.get("bad_bonds_pct"),
-        "bad_angles":                  bg.get("bad_angles"),
-        "total_angles":                bg.get("total_angles"),
-        "bad_angles_pct":              bg.get("bad_angles_pct"),
+        "bad_bonds": bg.get("bad_bonds"),
+        "total_bonds": bg.get("total_bonds"),
+        "bad_bonds_pct": bg.get("bad_bonds_pct"),
+        "bad_angles": bg.get("bad_angles"),
+        "total_angles": bg.get("total_angles"),
+        "bad_angles_pct": bg.get("bad_angles_pct"),
         # MolProbity
-        "molprobity_score":            m.get("molprobity_score"),
+        "molprobity_score": m.get("molprobity_score"),
         # Energy
-        "energy_kJ_mol":               e.get("energy_kJ_mol"),
-        "energy_per_residue_kJ_mol":   e.get("energy_per_residue_kJ_mol"),
+        "energy_kJ_mol": e.get("energy_kJ_mol"),
+        "energy_per_residue_kJ_mol": e.get("energy_per_residue_kJ_mol"),
         # B-factors
-        "b_factor_mean":               b.get("mean_b_factor"),
-        "b_factor_max":                b.get("max_b_factor"),
-        "b_factor_std":                b.get("std_b_factor"),
-        "n_high_b_residues":           b.get("n_high_b_residues"),
+        "b_factor_mean": b.get("mean_b_factor"),
+        "b_factor_max": b.get("max_b_factor"),
+        "b_factor_std": b.get("std_b_factor"),
+        "n_high_b_residues": b.get("n_high_b_residues"),
     }
 
 
@@ -934,23 +988,38 @@ def main():
             "B-factors, and AMBER ff14SB potential energy."
         )
     )
-    parser.add_argument("--input", "-i", type=Path, required=True,
-                        help="Input CIF or PDB file (receptor-only or complex)")
-    parser.add_argument("--receptor-chain", type=str, default=None,
-                        help="Receptor chain ID (auto-detects largest chain if omitted)")
-    parser.add_argument("--clash-cutoff", type=float, default=0.4,
-                        help="VDW overlap threshold in Å (default 0.4)")
+    parser.add_argument(
+        "--input",
+        "-i",
+        type=Path,
+        required=True,
+        help="Input CIF or PDB file (receptor-only or complex)",
+    )
+    parser.add_argument(
+        "--receptor-chain",
+        type=str,
+        default=None,
+        help="Receptor chain ID (auto-detects largest chain if omitted)",
+    )
+    parser.add_argument(
+        "--clash-cutoff", type=float, default=0.4, help="VDW overlap threshold in Å (default 0.4)"
+    )
     parser.add_argument("--solvent-model", choices=["obc2", "gbn2"], default="obc2")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument(
-        "--output", "-o", type=Path, default=None,
+        "--output",
+        "-o",
+        type=Path,
+        default=None,
         help="Write results to file. Extension determines format: .csv or .json",
     )
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(parser)
     args = parser.parse_args()
 
     from binding_metrics.cli import log_to_file
+
     with log_to_file(args.log_file):
         print(f"Receptor quality assessment: {args.input}")
 
@@ -976,8 +1045,10 @@ def main():
 
             r = m["ramachandran"]
             if r.get("n_evaluated", 0) > 0:
-                print(f"    Ramachandran  favoured={r['favoured_pct']:.1f}%  "
-                      f"outliers={r['outlier_pct']:.1f}% ({r['outlier_count']})")
+                print(
+                    f"    Ramachandran  favoured={r['favoured_pct']:.1f}%  "
+                    f"outliers={r['outlier_pct']:.1f}% ({r['outlier_count']})"
+                )
 
             c = m["clashes"]
             if np.isfinite(c.get("clashscore", np.nan)):
@@ -985,8 +1056,10 @@ def main():
 
             ro = m["rotamers"]
             if ro.get("n_evaluated", 0) > 0:
-                print(f"    Rotamers      outliers={ro['outlier_pct']:.1f}% "
-                      f"({ro['outlier_count']}/{ro['n_evaluated']})")
+                print(
+                    f"    Rotamers      outliers={ro['outlier_pct']:.1f}% "
+                    f"({ro['outlier_count']}/{ro['n_evaluated']})"
+                )
 
             cb = m["cbeta"]
             if cb.get("cb_n_evaluated", 0) > 0:
@@ -994,10 +1067,14 @@ def main():
 
             bg = m["backbone_geometry"]
             if bg.get("total_bonds", 0) > 0:
-                print(f"    Bonds         {bg['bad_bonds']} / {bg['total_bonds']} bad "
-                      f"({bg['bad_bonds_pct']:.2f}%)")
-                print(f"    Angles        {bg['bad_angles']} / {bg['total_angles']} bad "
-                      f"({bg['bad_angles_pct']:.2f}%)")
+                print(
+                    f"    Bonds         {bg['bad_bonds']} / {bg['total_bonds']} bad "
+                    f"({bg['bad_bonds_pct']:.2f}%)"
+                )
+                print(
+                    f"    Angles        {bg['bad_angles']} / {bg['total_angles']} bad "
+                    f"({bg['bad_angles_pct']:.2f}%)"
+                )
 
             mp = m.get("molprobity_score", np.nan)
             if np.isfinite(mp):
@@ -1007,19 +1084,25 @@ def main():
             if e.get("error"):
                 print(f"    Energy        failed: {e['error']}")
             elif np.isfinite(e.get("energy_kJ_mol", np.nan)):
-                print(f"    Energy        {e['energy_kJ_mol']:.1f} kJ/mol  "
-                      f"({e['energy_per_residue_kJ_mol']:.1f} kJ/mol/residue)")
+                print(
+                    f"    Energy        {e['energy_kJ_mol']:.1f} kJ/mol  "
+                    f"({e['energy_per_residue_kJ_mol']:.1f} kJ/mol/residue)"
+                )
 
             b = m["b_factors"]
             if b.get("available"):
-                print(f"    B-factors     mean={b['mean_b_factor']:.1f}  "
-                      f"max={b['max_b_factor']:.1f}  high-B={b['n_high_b_residues']}")
+                print(
+                    f"    B-factors     mean={b['mean_b_factor']:.1f}  "
+                    f"max={b['max_b_factor']:.1f}  high-B={b['n_high_b_residues']}"
+                )
 
         if result["n_models"] > 1:
             s = result["summary"]
             print(f"\n  Summary (mean over {result['n_models']} models):")
+
             def _sfmt(k):
                 return f"{s[k]:.2f}" if np.isfinite(s.get(k, np.nan)) else "N/A"
+
             print(f"    Ramachandran favoured : {_sfmt('ramachandran_favoured_pct')}%")
             print(f"    Ramachandran outliers : {_sfmt('ramachandran_outlier_pct')}%")
             print(f"    Clashscore            : {_sfmt('clashscore')}")

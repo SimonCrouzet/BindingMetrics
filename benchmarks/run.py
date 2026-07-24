@@ -132,17 +132,14 @@ def compute_structure_properties(path: Path, design_chain: Optional[str] = None)
 
     try:
         from binding_metrics.metrics.interface import detect_interface_chains
+
         pep, rec = detect_interface_chains(atoms, design_chain)
         props["peptide_chain"] = pep
         props["receptor_chain"] = rec
         if pep is not None:
-            props["n_residues_peptide"] = int(
-                len(np.unique(atoms[atoms.chain_id == pep].res_id))
-            )
+            props["n_residues_peptide"] = int(len(np.unique(atoms[atoms.chain_id == pep].res_id)))
         if rec is not None:
-            props["n_residues_receptor"] = int(
-                len(np.unique(atoms[atoms.chain_id == rec].res_id))
-            )
+            props["n_residues_receptor"] = int(len(np.unique(atoms[atoms.chain_id == rec].res_id)))
     except Exception:
         pass
 
@@ -161,6 +158,7 @@ def compute_trajectory_properties(traj_path: Path, top_path: Path, entry: dict) 
     }
     try:
         import mdtraj as md
+
         traj = md.load(str(traj_path), top=str(top_path))
         props["n_frames"] = traj.n_frames
         props["n_atoms"] = traj.n_atoms
@@ -168,15 +166,13 @@ def compute_trajectory_properties(traj_path: Path, top_path: Path, entry: dict) 
         # Auto-resolve atom indices from chain IDs if not provided explicitly
         if props["ligand_indices"] is None and props["ligand_chain"]:
             sel = traj.topology.select(
-                f"chainid {_chain_index(traj.topology, props['ligand_chain'])} "
-                "and not type H"
+                f"chainid {_chain_index(traj.topology, props['ligand_chain'])} and not type H"
             )
             props["ligand_indices"] = sel.tolist()
 
         if props["receptor_indices"] is None and props["receptor_chain"]:
             sel = traj.topology.select(
-                f"chainid {_chain_index(traj.topology, props['receptor_chain'])} "
-                "and not type H"
+                f"chainid {_chain_index(traj.topology, props['receptor_chain'])} and not type H"
             )
             props["receptor_indices"] = sel.tolist()
 
@@ -281,6 +277,7 @@ def _build_trajectory_kwargs(
 def _fn_argnames(spec: MetricSpec) -> set[str]:
     """Return the set of parameter names of the metric function."""
     import inspect
+
     try:
         fn = spec.load()
         return set(inspect.signature(fn).parameters)
@@ -288,9 +285,7 @@ def _fn_argnames(spec: MetricSpec) -> set[str]:
         return set()
 
 
-def bench_static_metric(
-    spec: MetricSpec, path: Path, props: dict, n_runs: int
-) -> dict:
+def bench_static_metric(spec: MetricSpec, path: Path, props: dict, n_runs: int) -> dict:
     kwargs = _build_static_kwargs(spec, path, props)
     if kwargs is None:
         return {"skipped": f"n/a ({'/'.join(spec.formats)} only)"}
@@ -379,9 +374,7 @@ def load_manifest(dataset_dir: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def run_static_benchmarks(
-    entries: list[dict], specs: list[MetricSpec], n_runs: int
-) -> list[dict]:
+def run_static_benchmarks(entries: list[dict], specs: list[MetricSpec], n_runs: int) -> list[dict]:
     results = []
     for entry in entries:
         path = Path(entry["path"])
@@ -490,7 +483,9 @@ def run_md_benchmarks(entries: list[dict], output_dir: Path) -> list[dict]:
         else:
             min_s = timing.get("minimization_time_s") or 0
             md_s = timing.get("md_time_s") or 0
-            print(f"min={min_s*1000:.0f} ms  md={md_s*1000:.0f} ms  total={timing['total_time_s']*1000:.0f} ms")
+            print(
+                f"min={min_s * 1000:.0f} ms  md={md_s * 1000:.0f} ms  total={timing['total_time_s'] * 1000:.0f} ms"
+            )
 
         results.append(record)
     return results
@@ -500,9 +495,7 @@ def run_md_benchmarks(entries: list[dict], output_dir: Path) -> list[dict]:
 # Output formatting
 # ---------------------------------------------------------------------------
 
-_STATIC_PROP_COLS = [
-    "n_atoms", "n_residues_total", "n_residues_peptide", "n_residues_receptor"
-]
+_STATIC_PROP_COLS = ["n_atoms", "n_residues_total", "n_residues_peptide", "n_residues_receptor"]
 _TRAJ_PROP_COLS = ["n_frames", "n_atoms"]
 _MD_PROP_COLS = ["n_atoms", "n_residues_total"]
 
@@ -516,15 +509,13 @@ def _fmt_timing(t: dict) -> str:
     if "total_time_s" in t:
         min_s = t.get("minimization_time_s") or 0
         md_s = t.get("md_time_s") or 0
-        return f"min={min_s*1000:.0f}ms md={md_s*1000:.0f}ms"
+        return f"min={min_s * 1000:.0f}ms md={md_s * 1000:.0f}ms"
     if "mean_s" in t:
         return f"{t['mean_s'] * 1000:.1f} ± {t['std_s'] * 1000:.1f} ms"
     return "—"
 
 
-def _markdown_table(
-    results: list[dict], prop_cols: list[str], metric_names: list[str]
-) -> str:
+def _markdown_table(results: list[dict], prop_cols: list[str], metric_names: list[str]) -> str:
     cols = ["input"] + prop_cols + metric_names
     rows = [
         "| " + " | ".join(cols) + " |",
@@ -552,24 +543,21 @@ def format_report(
     parts = []
     if static_results:
         parts.append("## Static structure metrics\n")
-        parts.append(_markdown_table(
-            static_results, _STATIC_PROP_COLS, [s.name for s in static_specs]
-        ))
+        parts.append(
+            _markdown_table(static_results, _STATIC_PROP_COLS, [s.name for s in static_specs])
+        )
     if traj_results:
         parts.append("\n\n## Trajectory metrics\n")
-        parts.append(_markdown_table(
-            traj_results, _TRAJ_PROP_COLS, [s.name for s in traj_specs]
-        ))
+        parts.append(_markdown_table(traj_results, _TRAJ_PROP_COLS, [s.name for s in traj_specs]))
     if md_results:
         parts.append("\n\n## MD simulation (ImplicitRelaxation)\n")
-        parts.append(_markdown_table(
-            md_results, _MD_PROP_COLS, ["md_implicit"]
-        ))
+        parts.append(_markdown_table(md_results, _MD_PROP_COLS, ["md_implicit"]))
     return "\n".join(parts)
 
 
 def _json_default(obj):
     import numpy as np
+
     if isinstance(obj, np.ndarray):
         return obj.tolist()
     if isinstance(obj, np.integer):
@@ -625,32 +613,38 @@ def main():
         epilog=__doc__,
     )
     parser.add_argument(
-        "--dataset", type=Path, required=True,
+        "--dataset",
+        type=Path,
+        required=True,
         help="Directory containing a manifest.json and the benchmark inputs",
     )
     parser.add_argument(
-        "--n-runs", type=int, default=10,
+        "--n-runs",
+        type=int,
+        default=10,
         help="Number of timed runs per metric per input (default: 10)",
     )
     parser.add_argument(
-        "--output", type=Path, default=Path("benchmarks/results"),
+        "--output",
+        type=Path,
+        default=Path("benchmarks/results"),
         help="Directory for result files (default: benchmarks/results)",
     )
     parser.add_argument(
-        "--input-types", nargs="+",
+        "--input-types",
+        nargs="+",
         default=["static_structure", "trajectory", "md_simulation"],
         choices=["static_structure", "trajectory", "md_simulation"],
         metavar="TYPE",
         help="Input types to benchmark (default: all three)",
     )
     parser.add_argument(
-        "--metrics", nargs="+", default=None,
+        "--metrics",
+        nargs="+",
+        default=None,
         choices=_ALL_METRIC_NAMES,
         metavar="METRIC",
-        help=(
-            "Restrict to specific metrics. "
-            f"All available: {', '.join(_ALL_METRIC_NAMES)}"
-        ),
+        help=(f"Restrict to specific metrics. All available: {', '.join(_ALL_METRIC_NAMES)}"),
     )
     args = parser.parse_args()
 

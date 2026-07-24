@@ -32,56 +32,130 @@ from typing import Any
 # ---------------------------------------------------------------------------
 _THRESHOLDS: list[dict] = [
     # MD RMSD (Å): < 2 excellent, 2–5 moderate, > 5 poor
-    dict(key=("relax", "rmsd_md_final"), label="MD RMSD", unit="Å", direction="lower",
-         green=lambda v: v < 2.0, amber=lambda v: v < 5.0),
+    dict(
+        key=("relax", "rmsd_md_final"),
+        label="MD RMSD",
+        unit="Å",
+        direction="lower",
+        green=lambda v: v < 2.0,
+        amber=lambda v: v < 5.0,
+    ),
     # Peptide RMSF mean (Å): < 1 rigid, 1–2 moderate, > 2 flexible
-    dict(key=("relax", "peptide_rmsf_mean"), label="RMSF mean", unit="Å", direction="lower",
-         green=lambda v: v < 1.0, amber=lambda v: v < 2.0),
+    dict(
+        key=("relax", "peptide_rmsf_mean"),
+        label="RMSF mean",
+        unit="Å",
+        direction="lower",
+        green=lambda v: v < 1.0,
+        amber=lambda v: v < 2.0,
+    ),
     # OpenMM interaction energy (kJ/mol): < −40 strong, −40–0 moderate, > 0 repulsive
     # getter used instead of key so any energy mode (relaxed/after_md/raw) is accepted.
-    dict(getter=lambda r: _best_e_int(r.get("energy")),
-         label="E_int", unit="kJ/mol", direction="lower",
-         green=lambda v: v < -40.0, amber=lambda v: v < 0.0),
+    dict(
+        getter=lambda r: _best_e_int(r.get("energy")),
+        label="E_int",
+        unit="kJ/mol",
+        direction="lower",
+        green=lambda v: v < -40.0,
+        amber=lambda v: v < 0.0,
+    ),
     # ΔSASA (Å²): > 1000 well-buried, 500–1000 moderate, < 500 poor
-    dict(key=("interface", "delta_sasa"), label="ΔSASA", unit="Å²", direction="higher",
-         green=lambda v: v > 1000.0, amber=lambda v: v > 500.0),
+    dict(
+        key=("interface", "delta_sasa"),
+        label="ΔSASA",
+        unit="Å²",
+        direction="higher",
+        green=lambda v: v > 1000.0,
+        amber=lambda v: v > 500.0,
+    ),
     # H-bond count: ≥ 5 good, 2–4 acceptable, < 2 poor
-    dict(key=("interface", "hbonds"), label="H-bonds", unit="", direction="higher",
-         green=lambda v: v >= 5, amber=lambda v: v >= 2),
+    dict(
+        key=("interface", "hbonds"),
+        label="H-bonds",
+        unit="",
+        direction="higher",
+        green=lambda v: v >= 5,
+        amber=lambda v: v >= 2,
+    ),
     # H-bond energy (kcal/mol, ≤ 0): ≤ −10 strong, −10–−2 moderate, > −2 weak
-    dict(key=("interface", "hbond_energy"), label="H-bond E", unit="kcal/mol", direction="lower",
-         green=lambda v: v <= -10.0, amber=lambda v: v <= -2.0),
+    dict(
+        key=("interface", "hbond_energy"),
+        label="H-bond E",
+        unit="kcal/mol",
+        direction="lower",
+        green=lambda v: v <= -10.0,
+        amber=lambda v: v <= -2.0,
+    ),
     # Salt bridges: ≥ 2 good, 1 acceptable, 0 poor
-    dict(key=("interface", "saltbridges"), label="Salt bridges", unit="", direction="higher",
-         green=lambda v: v >= 2, amber=lambda v: v >= 1),
+    dict(
+        key=("interface", "saltbridges"),
+        label="Salt bridges",
+        unit="",
+        direction="higher",
+        green=lambda v: v >= 2,
+        amber=lambda v: v >= 1,
+    ),
     # Salt-bridge energy (kcal/mol, ≤ 0): ≤ −40 strong, −40–−10 moderate, > −10 weak
-    dict(key=("interface", "saltbridge_energy"), label="Salt-bridge E", unit="kcal/mol", direction="lower",
-         green=lambda v: v <= -40.0, amber=lambda v: v <= -10.0),
+    dict(
+        key=("interface", "saltbridge_energy"),
+        label="Salt-bridge E",
+        unit="kcal/mol",
+        direction="lower",
+        green=lambda v: v <= -40.0,
+        amber=lambda v: v <= -10.0,
+    ),
     # Ramachandran favoured %: > 95 excellent, 80–95 acceptable, < 80 poor
-    dict(key=("geometry", "ramachandran", "ramachandran_favoured_pct"),
-         label="Rama favoured", unit="%", direction="higher",
-         green=lambda v: v > 95.0, amber=lambda v: v > 80.0),
+    dict(
+        key=("geometry", "ramachandran", "ramachandran_favoured_pct"),
+        label="Rama favoured",
+        unit="%",
+        direction="higher",
+        green=lambda v: v > 95.0,
+        amber=lambda v: v > 80.0,
+    ),
     # ω outlier fraction: < 0.05 good, 0.05–0.20 acceptable, > 0.20 poor
-    dict(key=("geometry", "omega", "omega_outlier_fraction"),
-         label="ω outlier frac", unit="", direction="lower",
-         green=lambda v: v < 0.05, amber=lambda v: v < 0.20),
+    dict(
+        key=("geometry", "omega", "omega_outlier_fraction"),
+        label="ω outlier frac",
+        unit="",
+        direction="lower",
+        green=lambda v: v < 0.05,
+        amber=lambda v: v < 0.20,
+    ),
     # Shape complementarity Sc: > 0.7 good, 0.5–0.7 acceptable, < 0.5 poor
-    dict(key=("geometry", "shape_complementarity", "sc"),
-         label="Sc", unit="", direction="higher",
-         green=lambda v: v > 0.7, amber=lambda v: v > 0.5),
+    dict(
+        key=("geometry", "shape_complementarity", "sc"),
+        label="Sc",
+        unit="",
+        direction="higher",
+        green=lambda v: v > 0.7,
+        amber=lambda v: v > 0.5,
+    ),
     # Coulomb energy (kJ/mol): < −100 favourable, −100–0 moderate, > 0 poor
-    dict(key=("electrostatics", "coulomb_energy_kJ"), label="Coulomb E", unit="kJ/mol", direction="lower",
-         green=lambda v: v < -100.0, amber=lambda v: v < 0.0),
+    dict(
+        key=("electrostatics", "coulomb_energy_kJ"),
+        label="Coulomb E",
+        unit="kJ/mol",
+        direction="lower",
+        green=lambda v: v < -100.0,
+        amber=lambda v: v < 0.0,
+    ),
     # DockQ (reference-based): ≥ 0.80 High, 0.23–0.80 Acceptable/Medium, < 0.23 Incorrect
-    dict(getter=lambda r: _nested_get(r, "dockq", "dockq"),
-         label="DockQ", unit="", direction="higher",
-         green=lambda v: v >= 0.80, amber=lambda v: v >= 0.23),
+    dict(
+        getter=lambda r: _nested_get(r, "dockq", "dockq"),
+        label="DockQ",
+        unit="",
+        direction="higher",
+        green=lambda v: v >= 0.80,
+        amber=lambda v: v >= 0.23,
+    ),
 ]
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _nested_get(d: dict, *keys) -> Any:
     cur = d
@@ -126,14 +200,12 @@ def _rag(value: Any, spec: dict) -> str:
 
 def _md_table(headers: list[str], rows: list[list[str]]) -> str:
     widths = [
-        max(len(h), max((len(str(r[i])) for r in rows), default=0))
-        for i, h in enumerate(headers)
+        max(len(h), max((len(str(r[i])) for r in rows), default=0)) for i, h in enumerate(headers)
     ]
     sep = "| " + " | ".join("-" * w for w in widths) + " |"
     head = "| " + " | ".join(h.ljust(widths[i]) for i, h in enumerate(headers)) + " |"
     body = "\n".join(
-        "| " + " | ".join(str(c).ljust(widths[i]) for i, c in enumerate(row)) + " |"
-        for row in rows
+        "| " + " | ".join(str(c).ljust(widths[i]) for i, c in enumerate(row)) + " |" for row in rows
     )
     return f"{head}\n{sep}\n{body}"
 
@@ -141,6 +213,7 @@ def _md_table(headers: list[str], rows: list[list[str]]) -> str:
 # ---------------------------------------------------------------------------
 # CSV flattening — extracts scalar leaf values from the nested results dict
 # ---------------------------------------------------------------------------
+
 
 def _flatten(results: dict) -> dict[str, Any]:
     """Return a flat {column: value} dict suitable for one CSV row."""
@@ -154,17 +227,29 @@ def _flatten(results: dict) -> dict[str, Any]:
         if not isinstance(d, dict):
             return
         for k, v in d.items():
-            if k in ("per_residue", "charged_atoms_peptide", "charged_atoms_receptor",
-                     "interface_residues_peptide", "interface_residues_receptor",
-                     "peptide_rmsf_per_residue"):
+            if k in (
+                "per_residue",
+                "charged_atoms_peptide",
+                "charged_atoms_receptor",
+                "interface_residues_peptide",
+                "interface_residues_receptor",
+                "peptide_rmsf_per_residue",
+            ):
                 continue  # skip list fields
             if isinstance(v, dict):
                 _add(f"{prefix}_{k}", v)
             elif not isinstance(v, list):
                 flat[f"{prefix}_{k}"] = v
 
-    for section in ("relax", "energy", "interface", "geometry", "electrostatics",
-                    "openfold", "dockq"):
+    for section in (
+        "relax",
+        "energy",
+        "interface",
+        "geometry",
+        "electrostatics",
+        "openfold",
+        "dockq",
+    ):
         if section not in results:
             continue
         sec_data = results[section]
@@ -184,9 +269,13 @@ def _flatten(results: dict) -> dict[str, Any]:
                 ifaces = sec_data.get("interfaces") or []
                 if len(ifaces) == 1:
                     f0 = ifaces[0]
-                    for src, col in (("fnat", "dockq_fnat"), ("fnonnat", "dockq_fnonnat"),
-                                     ("iRMSD", "dockq_irmsd"), ("LRMSD", "dockq_lrmsd"),
-                                     ("clashes", "dockq_clashes")):
+                    for src, col in (
+                        ("fnat", "dockq_fnat"),
+                        ("fnonnat", "dockq_fnonnat"),
+                        ("iRMSD", "dockq_irmsd"),
+                        ("LRMSD", "dockq_lrmsd"),
+                        ("clashes", "dockq_clashes"),
+                    ):
                         flat[col] = f0.get(src)
         elif section == "geometry" and isinstance(sec_data, dict):
             # rama/omega functions already prefix their own keys ("ramachandran_*",
@@ -208,6 +297,7 @@ def _flatten(results: dict) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Markdown summary sections
 # ---------------------------------------------------------------------------
+
 
 def _md_header(results: dict) -> str:
     sid = results.get("sample_id", "unknown")
@@ -246,10 +336,12 @@ def _md_cyclic(relax: dict | None) -> str | None:
     if not bonds:
         return None
     lines = ["## Cyclic topology\n"]
-    lines.append(_md_table(
-        ["Bond type", "Atom 1", "Atom 2"],
-        [[b["type"], b["atom1"], b["atom2"]] for b in bonds],
-    ))
+    lines.append(
+        _md_table(
+            ["Bond type", "Atom 1", "Atom 2"],
+            [[b["type"], b["atom1"], b["atom2"]] for b in bonds],
+        )
+    )
     lines.append(
         f"\n> ℹ️ {len(bonds)} closure bond(s) detected. "
         "Ramachandran and ω outlier scores should be interpreted with this in mind."
@@ -263,22 +355,26 @@ def _md_relax(relax: dict | None) -> str:
         return lines[0] + "_Skipped._\n"
     if not relax or not relax.get("success", False):
         return lines[0] + f"_Failed: {(relax or {}).get('error_message', 'missing')}_\n"
-    lines.append(_md_table(
-        ["Metric", "Value", "Unit"],
-        [
-            ["Min. energy",   _fmt(relax.get("potential_energy_minimized")), "kJ/mol"],
-            ["MD avg energy", _fmt(relax.get("potential_energy_md_avg")),    "kJ/mol"],
-            ["MD energy std", _fmt(relax.get("potential_energy_md_std")),    "kJ/mol"],
-            ["RMSD (final)",  _fmt(relax.get("rmsd_md_final")),              "Å"],
-            ["RMSF mean",     _fmt(relax.get("peptide_rmsf_mean")),          "Å"],
-            ["RMSF max",      _fmt(relax.get("peptide_rmsf_max")),           "Å"],
-        ],
-    ))
+    lines.append(
+        _md_table(
+            ["Metric", "Value", "Unit"],
+            [
+                ["Min. energy", _fmt(relax.get("potential_energy_minimized")), "kJ/mol"],
+                ["MD avg energy", _fmt(relax.get("potential_energy_md_avg")), "kJ/mol"],
+                ["MD energy std", _fmt(relax.get("potential_energy_md_std")), "kJ/mol"],
+                ["RMSD (final)", _fmt(relax.get("rmsd_md_final")), "Å"],
+                ["RMSF mean", _fmt(relax.get("peptide_rmsf_mean")), "Å"],
+                ["RMSF max", _fmt(relax.get("peptide_rmsf_max")), "Å"],
+            ],
+        )
+    )
     rmsf_raw = relax.get("peptide_rmsf_per_residue")
     if rmsf_raw:
         try:
-            vals: list[float] = json.loads(rmsf_raw) if isinstance(rmsf_raw, str) else list(rmsf_raw)
-            flagged = [f"res{i+1}={v:.2f}" for i, v in enumerate(vals) if v > 1.5]
+            vals: list[float] = (
+                json.loads(rmsf_raw) if isinstance(rmsf_raw, str) else list(rmsf_raw)
+            )
+            flagged = [f"res{i + 1}={v:.2f}" for i, v in enumerate(vals) if v > 1.5]
             if flagged:
                 lines.append(f"\n⚠️ **High RMSF (> 1.5 Å):** {', '.join(flagged)}")
         except Exception:
@@ -293,21 +389,26 @@ def _md_energy(energy: dict | None) -> str:
     if not energy or not energy.get("success", True):
         return lines[0] + f"_Failed: {(energy or {}).get('error_message', 'absent')}_\n"
     mode = next(
-        (m for m in ("relaxed", "after_md", "raw")
-         if energy.get(f"{m}_interaction_energy") is not None),
+        (
+            m
+            for m in ("relaxed", "after_md", "raw")
+            if energy.get(f"{m}_interaction_energy") is not None
+        ),
         "relaxed",
     )
-    lines.append(_md_table(
-        ["Metric", "Value", "Unit"],
-        [
-            [f"E_int ({mode})",   _fmt(_best_e_int(energy)),                      "kJ/mol"],
-            ["E_complex",         _fmt(energy.get(f"{mode}_e_complex")),           "kJ/mol"],
-            ["E_peptide",         _fmt(energy.get(f"{mode}_e_peptide")),           "kJ/mol"],
-            ["E_receptor",        _fmt(energy.get(f"{mode}_e_receptor")),          "kJ/mol"],
-            ["Contacts",          _fmt(energy.get("num_contacts")),                ""],
-            ["Close contacts",    _fmt(energy.get("num_close_contacts")),          ""],
-        ],
-    ))
+    lines.append(
+        _md_table(
+            ["Metric", "Value", "Unit"],
+            [
+                [f"E_int ({mode})", _fmt(_best_e_int(energy)), "kJ/mol"],
+                ["E_complex", _fmt(energy.get(f"{mode}_e_complex")), "kJ/mol"],
+                ["E_peptide", _fmt(energy.get(f"{mode}_e_peptide")), "kJ/mol"],
+                ["E_receptor", _fmt(energy.get(f"{mode}_e_receptor")), "kJ/mol"],
+                ["Contacts", _fmt(energy.get("num_contacts")), ""],
+                ["Close contacts", _fmt(energy.get("num_close_contacts")), ""],
+            ],
+        )
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -317,23 +418,25 @@ def _md_interface(iface: dict | None) -> str:
         return lines[0] + "_Skipped._\n"
     if not iface:
         return lines[0] + "_Absent._\n"
-    lines.append(_md_table(
-        ["Metric", "Value", "Unit"],
-        [
-            ["ΔSASA",               _fmt(iface.get("delta_sasa")),              "Å²"],
-            ["ΔG_int",              _fmt(iface.get("delta_g_int_kJ")),          "kJ/mol"],
-            ["Polar area",          _fmt(iface.get("polar_area")),              "Å²"],
-            ["Apolar area",         _fmt(iface.get("apolar_area")),             "Å²"],
-            ["Fraction polar",      _fmt(iface.get("fraction_polar"), 4),       ""],
-            ["H-bonds",             _fmt(iface.get("hbonds")),                  ""],
-            ["H-bond energy",       _fmt(iface.get("hbond_energy")),            "kcal/mol"],
-            ["Salt bridges",        _fmt(iface.get("saltbridges")),             ""],
-            ["Salt bridges (bi)",   _fmt(iface.get("saltbridges_bidentate")),   ""],
-            ["Salt-bridge energy",  _fmt(iface.get("saltbridge_energy")),       "kcal/mol"],
-            ["Interface res (pep)", _fmt(iface.get("n_interface_residues_peptide")),  ""],
-            ["Interface res (rec)", _fmt(iface.get("n_interface_residues_receptor")), ""],
-        ],
-    ))
+    lines.append(
+        _md_table(
+            ["Metric", "Value", "Unit"],
+            [
+                ["ΔSASA", _fmt(iface.get("delta_sasa")), "Å²"],
+                ["ΔG_int", _fmt(iface.get("delta_g_int_kJ")), "kJ/mol"],
+                ["Polar area", _fmt(iface.get("polar_area")), "Å²"],
+                ["Apolar area", _fmt(iface.get("apolar_area")), "Å²"],
+                ["Fraction polar", _fmt(iface.get("fraction_polar"), 4), ""],
+                ["H-bonds", _fmt(iface.get("hbonds")), ""],
+                ["H-bond energy", _fmt(iface.get("hbond_energy")), "kcal/mol"],
+                ["Salt bridges", _fmt(iface.get("saltbridges")), ""],
+                ["Salt bridges (bi)", _fmt(iface.get("saltbridges_bidentate")), ""],
+                ["Salt-bridge energy", _fmt(iface.get("saltbridge_energy")), "kcal/mol"],
+                ["Interface res (pep)", _fmt(iface.get("n_interface_residues_peptide")), ""],
+                ["Interface res (rec)", _fmt(iface.get("n_interface_residues_receptor")), ""],
+            ],
+        )
+    )
     # Per-residue buried SASA for peptide
     peptide_chain = iface.get("peptide_chain", "B")
     pep_res = sorted(
@@ -342,12 +445,21 @@ def _md_interface(iface: dict | None) -> str:
     )
     if pep_res:
         lines.append("\n**Per-residue buried SASA — peptide**\n")
-        lines.append(_md_table(
-            ["Residue", "Buried SASA (Å²)", "Polar (Å²)", "Apolar (Å²)", "ΔG_res (kcal/mol)"],
-            [[f"{r['res_name']}:{r['res_id']}", _fmt(r.get("buried_sasa"), 2),
-              _fmt(r.get("polar_area"), 2), _fmt(r.get("apolar_area"), 2),
-              _fmt(r.get("delta_g_res"), 4)] for r in pep_res],
-        ))
+        lines.append(
+            _md_table(
+                ["Residue", "Buried SASA (Å²)", "Polar (Å²)", "Apolar (Å²)", "ΔG_res (kcal/mol)"],
+                [
+                    [
+                        f"{r['res_name']}:{r['res_id']}",
+                        _fmt(r.get("buried_sasa"), 2),
+                        _fmt(r.get("polar_area"), 2),
+                        _fmt(r.get("apolar_area"), 2),
+                        _fmt(r.get("delta_g_res"), 4),
+                    ]
+                    for r in pep_res
+                ],
+            )
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -360,45 +472,58 @@ def _md_geometry(geo: dict | None) -> str:
     rama = geo.get("ramachandran") or {}
     omega = geo.get("omega") or {}
     lines.append("**Ramachandran**\n")
-    lines.append(_md_table(
-        ["Metric", "Value"],
-        [
-            ["Favoured", f"{_fmt(rama.get('ramachandran_favoured_pct'), 1)} %"],
-            ["Allowed",  f"{_fmt(rama.get('ramachandran_allowed_pct'),  1)} %"],
-            ["Outliers", f"{_fmt(rama.get('ramachandran_outlier_pct'),  1)} % "
-                         f"(n={rama.get('ramachandran_outlier_count', 0)})"],
-            ["Residues evaluated", _fmt(rama.get("n_residues_evaluated"))],
-        ],
-    ))
+    lines.append(
+        _md_table(
+            ["Metric", "Value"],
+            [
+                ["Favoured", f"{_fmt(rama.get('ramachandran_favoured_pct'), 1)} %"],
+                ["Allowed", f"{_fmt(rama.get('ramachandran_allowed_pct'), 1)} %"],
+                [
+                    "Outliers",
+                    f"{_fmt(rama.get('ramachandran_outlier_pct'), 1)} % "
+                    f"(n={rama.get('ramachandran_outlier_count', 0)})",
+                ],
+                ["Residues evaluated", _fmt(rama.get("n_residues_evaluated"))],
+            ],
+        )
+    )
     for r in [r for r in (rama.get("per_residue") or []) if r.get("region") == "outlier"]:
-        lines.append(f"\n⚠️ **Rama outlier:** {r['res_name']}{r['res_id']} "
-                     f"(φ={r['phi']:.1f}°, ψ={r['psi']:.1f}°)")
+        lines.append(
+            f"\n⚠️ **Rama outlier:** {r['res_name']}{r['res_id']} "
+            f"(φ={r['phi']:.1f}°, ψ={r['psi']:.1f}°)"
+        )
     lines.append("\n**Peptide-bond planarity (ω)**\n")
-    lines.append(_md_table(
-        ["Metric", "Value"],
-        [
-            ["Mean deviation",   f"{_fmt(omega.get('omega_mean_dev'), 1)} °"],
-            ["Max deviation",    f"{_fmt(omega.get('omega_max_dev'),  1)} °"],
-            ["Outlier fraction", _fmt(omega.get("omega_outlier_fraction"), 3)],
-            ["Outlier count",    _fmt(omega.get("omega_outlier_count"))],
-        ],
-    ))
+    lines.append(
+        _md_table(
+            ["Metric", "Value"],
+            [
+                ["Mean deviation", f"{_fmt(omega.get('omega_mean_dev'), 1)} °"],
+                ["Max deviation", f"{_fmt(omega.get('omega_max_dev'), 1)} °"],
+                ["Outlier fraction", _fmt(omega.get("omega_outlier_fraction"), 3)],
+                ["Outlier count", _fmt(omega.get("omega_outlier_count"))],
+            ],
+        )
+    )
     for r in [r for r in (omega.get("per_residue") or []) if r.get("is_outlier")]:
-        lines.append(f"\n⚠️ **ω outlier:** {r['res_name']}{r['res_id']} "
-                     f"(ω={r['omega']:.1f}°, dev={r['deviation']:.1f}°)")
+        lines.append(
+            f"\n⚠️ **ω outlier:** {r['res_name']}{r['res_id']} "
+            f"(ω={r['omega']:.1f}°, dev={r['deviation']:.1f}°)"
+        )
     sc = geo.get("shape_complementarity") or {}
     if sc:
         lines.append("\n**Shape complementarity (Sc)**\n")
-        lines.append(_md_table(
-            ["Metric", "Value"],
-            [
-                ["Sc",          _fmt(sc.get("sc"), 3)],
-                ["Sc (pep→rec)", _fmt(sc.get("sc_A_to_B"), 3)],
-                ["Sc (rec→pep)", _fmt(sc.get("sc_B_to_A"), 3)],
-                ["Surface dots (pep)", _fmt(sc.get("n_surface_dots_A"))],
-                ["Surface dots (rec)", _fmt(sc.get("n_surface_dots_B"))],
-            ],
-        ))
+        lines.append(
+            _md_table(
+                ["Metric", "Value"],
+                [
+                    ["Sc", _fmt(sc.get("sc"), 3)],
+                    ["Sc (pep→rec)", _fmt(sc.get("sc_A_to_B"), 3)],
+                    ["Sc (rec→pep)", _fmt(sc.get("sc_B_to_A"), 3)],
+                    ["Surface dots (pep)", _fmt(sc.get("n_surface_dots_A"))],
+                    ["Surface dots (rec)", _fmt(sc.get("n_surface_dots_B"))],
+                ],
+            )
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -408,15 +533,17 @@ def _md_electrostatics(elec: dict | None) -> str:
         return lines[0] + "_Skipped._\n"
     if not elec:
         return lines[0] + "_Absent._\n"
-    lines.append(_md_table(
-        ["Metric", "Value", "Unit"],
-        [
-            ["Coulomb E",     _fmt(elec.get("coulomb_energy_kJ")),   "kJ/mol"],
-            ["Charged pairs", _fmt(elec.get("n_charged_pairs")),     ""],
-            ["Attractive",    _fmt(elec.get("n_attractive")),        ""],
-            ["Repulsive",     _fmt(elec.get("n_repulsive")),         ""],
-        ],
-    ))
+    lines.append(
+        _md_table(
+            ["Metric", "Value", "Unit"],
+            [
+                ["Coulomb E", _fmt(elec.get("coulomb_energy_kJ")), "kJ/mol"],
+                ["Charged pairs", _fmt(elec.get("n_charged_pairs")), ""],
+                ["Attractive", _fmt(elec.get("n_attractive")), ""],
+                ["Repulsive", _fmt(elec.get("n_repulsive")), ""],
+            ],
+        )
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -427,14 +554,15 @@ def _md_openfold(of: dict | None) -> str:
     if not of:
         return lines[0] + "_Absent._\n"
     rows = [
-        ["avg pLDDT",  _fmt(of.get("avg_plddt"), 2)],
-        ["pTM",        _fmt(of.get("ptm"), 3)],
-        ["ipTM",       _fmt(of.get("iptm"), 3)],
-        ["gPDE",       f"{_fmt(of.get('gpde'), 2)} Å"],
+        ["avg pLDDT", _fmt(of.get("avg_plddt"), 2)],
+        ["pTM", _fmt(of.get("ptm"), 3)],
+        ["ipTM", _fmt(of.get("iptm"), 3)],
+        ["gPDE", f"{_fmt(of.get('gpde'), 2)} Å"],
     ]
     refold_rmsd = of.get("binder_ca_rmsd")
     try:
         import math
+
         _show_rmsd = refold_rmsd is not None and not math.isnan(float(refold_rmsd))
     except (TypeError, ValueError):
         _show_rmsd = False
@@ -446,10 +574,11 @@ def _md_openfold(of: dict | None) -> str:
     if plddt_per_res is not None:
         try:
             import numpy as np
+
             arr = np.asarray(plddt_per_res, dtype=float)
             low_idx = [i for i, v in enumerate(arr) if v < 70]
             if low_idx:
-                low_strs = [f"res{i+1} ({plddt_per_res[i]:.1f})" for i in low_idx]
+                low_strs = [f"res{i + 1} ({plddt_per_res[i]:.1f})" for i in low_idx]
                 lines.append(f"\n⚠️ **Low binder pLDDT (< 70):** {', '.join(low_strs)}")
         except Exception:
             pass
@@ -466,32 +595,47 @@ def _md_dockq(dq: dict | None) -> str:
         return lines[0] + f"_Failed: {dq['error']}_\n"
     score = dq.get("dockq")
     cls = dq.get("capri_class")
-    lines.append(_md_table(
-        ["Metric", "Value"],
-        [
-            ["DockQ", f"{_fmt(score, 3)} ({cls})" if cls else _fmt(score, 3)],
-            ["CAPRI class", cls or "—"],
-            ["Interfaces", _fmt(dq.get("n_interfaces"))],
-            ["Chain mapping", dq.get("best_mapping") or "—"],
-        ],
-    ))
+    lines.append(
+        _md_table(
+            ["Metric", "Value"],
+            [
+                ["DockQ", f"{_fmt(score, 3)} ({cls})" if cls else _fmt(score, 3)],
+                ["CAPRI class", cls or "—"],
+                ["Interfaces", _fmt(dq.get("n_interfaces"))],
+                ["Chain mapping", dq.get("best_mapping") or "—"],
+            ],
+        )
+    )
     ifaces = dq.get("interfaces") or []
     if ifaces:
         lines.append("\n**Per-interface**\n")
-        lines.append(_md_table(
-            ["Interface", "DockQ", "fnat", "fnonnat", "i-RMSD (Å)", "L-RMSD (Å)",
-             "Clashes", "Class"],
-            [[
-                i.get("chains", "—"),
-                _fmt(i.get("DockQ"), 3),
-                _fmt(i.get("fnat"), 3),
-                _fmt(i.get("fnonnat"), 3),
-                _fmt(i.get("iRMSD"), 2),
-                _fmt(i.get("LRMSD"), 2),
-                _fmt(i.get("clashes")),
-                i.get("capri_class", "—"),
-            ] for i in ifaces],
-        ))
+        lines.append(
+            _md_table(
+                [
+                    "Interface",
+                    "DockQ",
+                    "fnat",
+                    "fnonnat",
+                    "i-RMSD (Å)",
+                    "L-RMSD (Å)",
+                    "Clashes",
+                    "Class",
+                ],
+                [
+                    [
+                        i.get("chains", "—"),
+                        _fmt(i.get("DockQ"), 3),
+                        _fmt(i.get("fnat"), 3),
+                        _fmt(i.get("fnonnat"), 3),
+                        _fmt(i.get("iRMSD"), 2),
+                        _fmt(i.get("LRMSD"), 2),
+                        _fmt(i.get("clashes")),
+                        i.get("capri_class", "—"),
+                    ]
+                    for i in ifaces
+                ],
+            )
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -502,13 +646,15 @@ def _md_scorecard(results: dict) -> str:
             value = spec["getter"](results)
         else:
             value = _nested_get(results, *spec["key"])
-        rows.append([
-            _rag(value, spec),
-            spec["label"],
-            _fmt(value),
-            spec["unit"],
-            "↓" if spec["direction"] == "lower" else "↑",
-        ])
+        rows.append(
+            [
+                _rag(value, spec),
+                spec["label"],
+                _fmt(value),
+                spec["unit"],
+                "↓" if spec["direction"] == "lower" else "↑",
+            ]
+        )
     lines = ["## Summary Scorecard\n"]
     lines.append(_md_table(["", "Metric", "Value", "Unit", "Better"], rows))
     lines.append("\n🟢 OK  🟡 AMBER  🔴 RED  ⬜ N/A")
@@ -574,6 +720,7 @@ def _build_summary(results: dict) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def write_report(
     results: dict,
     output_dir: Path,
@@ -626,22 +773,40 @@ def write_report(
 # CLI (standalone use)
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Export binding-metrics results to JSON or CSV, with optional Markdown summary.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--results", "-r", type=Path, required=True,
-                        help="Path to a *_results.json file")
-    parser.add_argument("--format", "-f", choices=["json", "csv"], default="json",
-                        dest="fmt", help="Output format")
-    parser.add_argument("--summary", "-s", action="store_true",
-                        help="Also write a human-readable summary (*_report.md or *_report.html)")
-    parser.add_argument("--summary-format", choices=["md", "html"], default="md",
-                        dest="summary_format", help="Summary format (default: md)")
-    parser.add_argument("--output-dir", "-o", type=Path, default=None,
-                        help="Output directory (default: same directory as --results)")
+    parser.add_argument(
+        "--results", "-r", type=Path, required=True, help="Path to a *_results.json file"
+    )
+    parser.add_argument(
+        "--format", "-f", choices=["json", "csv"], default="json", dest="fmt", help="Output format"
+    )
+    parser.add_argument(
+        "--summary",
+        "-s",
+        action="store_true",
+        help="Also write a human-readable summary (*_report.md or *_report.html)",
+    )
+    parser.add_argument(
+        "--summary-format",
+        choices=["md", "html"],
+        default="md",
+        dest="summary_format",
+        help="Summary format (default: md)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        "-o",
+        type=Path,
+        default=None,
+        help="Output directory (default: same directory as --results)",
+    )
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(parser)
     args = parser.parse_args()
 
@@ -650,6 +815,7 @@ def main() -> None:
         sys.exit(1)
 
     from binding_metrics.cli import log_to_file
+
     with log_to_file(args.log_file):
         with open(args.results, encoding="utf-8") as fh:
             results = json.load(fh)
@@ -657,6 +823,12 @@ def main() -> None:
         sample_id = results.get("sample_id") or args.results.stem.removesuffix("_results")
         output_dir = args.output_dir or args.results.parent
 
-        out = write_report(results, output_dir, sample_id, fmt=args.fmt,
-                           summary=args.summary, summary_format=args.summary_format)
+        out = write_report(
+            results,
+            output_dir,
+            sample_id,
+            fmt=args.fmt,
+            summary=args.summary,
+            summary_format=args.summary_format,
+        )
         print(f"  results   → {out}")

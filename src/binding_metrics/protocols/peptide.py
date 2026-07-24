@@ -123,7 +123,9 @@ class PeptideBindingProtocol(BaseProtocol):
         """
         traj_path = trajectory_path or self._trajectory_path
         if traj_path is None:
-            raise RuntimeError("No trajectory available. Call run() first or provide trajectory_path.")
+            raise RuntimeError(
+                "No trajectory available. Call run() first or provide trajectory_path."
+            )
 
         topology_path = self._topology_path
         if topology_path is None:

@@ -54,25 +54,25 @@ from dataclasses import dataclass, field
 #: All standard D-amino acid PDB CCD codes and their L counterparts.
 #: Glycine is achiral and has no D form.
 D_AA_MAP: dict[str, str] = {
-    "DAL": "ALA",   # D-alanine
-    "DAS": "ASP",   # D-aspartic acid
-    "DSG": "ASN",   # D-asparagine
-    "DCY": "CYS",   # D-cysteine
-    "DGL": "GLU",   # D-glutamic acid
-    "DGN": "GLN",   # D-glutamine
-    "DHI": "HIS",   # D-histidine
-    "DIL": "ILE",   # D-isoleucine
-    "DLE": "LEU",   # D-leucine
-    "DLY": "LYS",   # D-lysine
-    "DME": "MET",   # D-methionine
-    "DPN": "PHE",   # D-phenylalanine
-    "DPR": "PRO",   # D-proline
-    "DSN": "SER",   # D-serine
-    "DTH": "THR",   # D-threonine
-    "DTR": "TRP",   # D-tryptophan
-    "DTY": "TYR",   # D-tyrosine
-    "DVA": "VAL",   # D-valine
-    "DAR": "ARG",   # D-arginine
+    "DAL": "ALA",  # D-alanine
+    "DAS": "ASP",  # D-aspartic acid
+    "DSG": "ASN",  # D-asparagine
+    "DCY": "CYS",  # D-cysteine
+    "DGL": "GLU",  # D-glutamic acid
+    "DGN": "GLN",  # D-glutamine
+    "DHI": "HIS",  # D-histidine
+    "DIL": "ILE",  # D-isoleucine
+    "DLE": "LEU",  # D-leucine
+    "DLY": "LYS",  # D-lysine
+    "DME": "MET",  # D-methionine
+    "DPN": "PHE",  # D-phenylalanine
+    "DPR": "PRO",  # D-proline
+    "DSN": "SER",  # D-serine
+    "DTH": "THR",  # D-threonine
+    "DTR": "TRP",  # D-tryptophan
+    "DTY": "TYR",  # D-tyrosine
+    "DVA": "VAL",  # D-valine
+    "DAR": "ARG",  # D-arginine
 }
 
 
@@ -83,12 +83,12 @@ D_AA_MAP: dict[str, str] = {
 #: Maps known PDB CCD codes for N-methylated amino acids to the canonical
 #: template name used in our custom XML definitions below.
 NME_AA_MAP: dict[str, str] = {
-    "SAR": "NMG",   # sarcosine (most common code in PDB)
-    "NMG": "NMG",   # explicit N-methyl-glycine
-    "NMA": "NMA",   # N-methyl-alanine
-    "MAA": "NMA",   # alternate code
-    "MVA": "MVA",   # N-methyl-valine
-    "MLE": "MLE",   # N-methyl-leucine
+    "SAR": "NMG",  # sarcosine (most common code in PDB)
+    "NMG": "NMG",  # explicit N-methyl-glycine
+    "NMA": "NMA",  # N-methyl-alanine
+    "MAA": "NMA",  # alternate code
+    "MVA": "MVA",  # N-methyl-valine
+    "MLE": "MLE",  # N-methyl-leucine
 }
 
 #: Atom names of the N-methyl group atoms to *remove* if PDBFixer added them
@@ -298,6 +298,7 @@ _NME_XMLS: dict[str, str] = {
 # Data class
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class NonstandardInfo:
     """Records non-standard residues found in a peptide chain.
@@ -314,6 +315,7 @@ class NonstandardInfo:
         extra_ff_xmls: AMBER XML strings to load into ForceField before
             ``createSystem`` — one per unique NMe template in use.
     """
+
     d_residues: list = field(default_factory=list)
     nmethyl_residues: list = field(default_factory=list)
     extra_ff_xmls: list = field(default_factory=list)
@@ -334,6 +336,7 @@ class NonstandardInfo:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _peptide_residues(topology, chain_id: str) -> list:
     for chain in topology.chains():
@@ -384,9 +387,7 @@ def _add_standard_intraresidue_bonds(topology, residue) -> None:
         return
 
     atom_by_name = {a.name: a for a in residue.atoms()}
-    existing = {
-        frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()
-    }
+    existing = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
     for bond in std_bonds:
         a_name, b_name = bond[0], bond[1]
         # Skip inter-residue references (handled elsewhere / already present).
@@ -406,6 +407,7 @@ def _add_standard_intraresidue_bonds(topology, residue) -> None:
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
+
 
 def detect_nonstandard(topology, chain_id: str) -> NonstandardInfo:
     """Scan a chain for D-amino acids and N-methylated residue codes.
@@ -429,18 +431,22 @@ def detect_nonstandard(topology, chain_id: str) -> NonstandardInfo:
     for idx, res in enumerate(residues):
         name = res.name
         if name in D_AA_MAP:
-            d_list.append({
-                "res_idx": idx,
-                "original_name": name,
-                "l_name": D_AA_MAP[name],
-            })
+            d_list.append(
+                {
+                    "res_idx": idx,
+                    "original_name": name,
+                    "l_name": D_AA_MAP[name],
+                }
+            )
         elif name in NME_AA_MAP:
             tmpl = NME_AA_MAP[name]
-            nme_list.append({
-                "res_idx": idx,
-                "original_name": name,
-                "template_name": tmpl,
-            })
+            nme_list.append(
+                {
+                    "res_idx": idx,
+                    "original_name": name,
+                    "template_name": tmpl,
+                }
+            )
             if tmpl not in seen_templates:
                 seen_templates.add(tmpl)
                 xmls.append(_NME_XMLS[tmpl])
@@ -455,6 +461,7 @@ def detect_nonstandard(topology, chain_id: str) -> NonstandardInfo:
 # ---------------------------------------------------------------------------
 # Topology patching
 # ---------------------------------------------------------------------------
+
 
 def patch_nonstandard(topology, positions, chain_id: str, info: NonstandardInfo):
     """Rename non-standard residues in the OpenMM topology for FF compatibility.
@@ -520,8 +527,8 @@ def patch_nonstandard(topology, positions, chain_id: str, info: NonstandardInfo)
                 n_atom = _find_atom(res, "N")
                 if n_atom is not None:
                     bonded_to_n = any(
-                        (b.atom1.index == n_atom.index and b.atom2.index == atom.index) or
-                        (b.atom2.index == n_atom.index and b.atom1.index == atom.index)
+                        (b.atom1.index == n_atom.index and b.atom2.index == atom.index)
+                        or (b.atom2.index == n_atom.index and b.atom1.index == atom.index)
                         for b in topology.bonds()
                     )
                     if bonded_to_n:
@@ -561,6 +568,7 @@ def load_nonstandard_xmls(ff, info: NonstandardInfo) -> None:
 # ---------------------------------------------------------------------------
 # Ramachandran helper
 # ---------------------------------------------------------------------------
+
 
 def is_d_residue(res_name: str) -> bool:
     """Return True if ``res_name`` is a D-amino acid PDB CCD code."""

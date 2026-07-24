@@ -19,9 +19,9 @@ from binding_metrics.io.structures import (
 # Bundled example structures used by the round-trip / bond-preservation tests.
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(__file__).parent.parent / "data"
-SFTI_CIF = DATA_DIR / "example_bicyclic_sfti1_3P8F.cif"        # head_to_tail + disulfide
+SFTI_CIF = DATA_DIR / "example_bicyclic_sfti1_3P8F.cif"  # head_to_tail + disulfide
 CYCLOSPORIN_CIF = DATA_DIR / "example_ncaa_cyclosporin_1CWA.cif"  # NCAA ring (BMT/ABA/...)
-LINEAR_PDB = DATA_DIR / "example_linear_p53_1YCR.pdb"          # linear, all-standard control
+LINEAR_PDB = DATA_DIR / "example_linear_p53_1YCR.pdb"  # linear, all-standard control
 
 
 def _require(path: Path) -> Path:
@@ -86,10 +86,12 @@ def _nonseq_intra_bonds(topology):
         r1, r2 = bond.atom1.residue, bond.atom2.residue
         if r1.chain.id == r2.chain.id and abs(r1.index - r2.index) > 1:
             out.append(
-                frozenset((
-                    (r1.name, bond.atom1.name),
-                    (r2.name, bond.atom2.name),
-                ))
+                frozenset(
+                    (
+                        (r1.name, bond.atom1.name),
+                        (r2.name, bond.atom2.name),
+                    )
+                )
             )
     return out
 
@@ -114,9 +116,7 @@ def _has_ring_closure(topology):
 
 
 def _n_disulfides(topology):
-    return sum(
-        1 for b in topology.bonds() if b.atom1.name == "SG" and b.atom2.name == "SG"
-    )
+    return sum(1 for b in topology.bonds() if b.atom1.name == "SG" and b.atom2.name == "SG")
 
 
 _WATER_NAMES = {"HOH", "WAT", "TIP", "TIP3", "SOL"}
@@ -124,11 +124,7 @@ _WATER_NAMES = {"HOH", "WAT", "TIP", "TIP3", "SOL"}
 
 def _residue_sequence(topology, exclude_water=False):
     """Flat list of residue names in topology order (structure fingerprint)."""
-    return [
-        r.name
-        for r in topology.residues()
-        if not (exclude_water and r.name in _WATER_NAMES)
-    ]
+    return [r.name for r in topology.residues() if not (exclude_water and r.name in _WATER_NAMES)]
 
 
 def _n_water_residues(topology):
@@ -477,9 +473,7 @@ class TestRoundTripBonds:
         out = tmp_path / "rt.cif"
         save_structure(topo, pos, out, source_path=src)
         rt_topo, _ = load_structure(out)
-        assert _has_ring_closure(rt_topo), (
-            "cyclosporin NCAA ring closure lost on CIF round-trip"
-        )
+        assert _has_ring_closure(rt_topo), "cyclosporin NCAA ring closure lost on CIF round-trip"
 
     @pytest.mark.integration
     def test_pdb_preserves_ncaa_ring(self, tmp_path):
@@ -489,9 +483,7 @@ class TestRoundTripBonds:
         out = tmp_path / "rt.pdb"
         save_structure(topo, pos, out, source_path=src)
         rt_topo, _ = load_structure(out)
-        assert _has_ring_closure(rt_topo), (
-            "cyclosporin NCAA ring closure lost on PDB round-trip"
-        )
+        assert _has_ring_closure(rt_topo), "cyclosporin NCAA ring closure lost on PDB round-trip"
 
     @pytest.mark.integration
     def test_pdb_preserves_disulfide(self, tmp_path):
@@ -532,9 +524,7 @@ class TestRoundTripBonds:
         out = tmp_path / "rt.cif"
         save_structure(topo, pos, out, source_path=src)
         rt_topo, _ = load_structure(out)
-        assert _has_ring_closure(rt_topo), (
-            "SFTI-1 head-to-tail closure lost on CIF round-trip"
-        )
+        assert _has_ring_closure(rt_topo), "SFTI-1 head-to-tail closure lost on CIF round-trip"
 
     @pytest.mark.integration
     @pytest.mark.xfail(
@@ -553,9 +543,7 @@ class TestRoundTripBonds:
         out = tmp_path / "rt.pdb"
         save_structure(topo, pos, out, source_path=src)
         rt_topo, _ = load_structure(out)
-        assert _has_ring_closure(rt_topo), (
-            "SFTI-1 head-to-tail closure lost on PDB round-trip"
-        )
+        assert _has_ring_closure(rt_topo), "SFTI-1 head-to-tail closure lost on PDB round-trip"
 
 
 class TestCrossFormat:
@@ -579,9 +567,7 @@ class TestCrossFormat:
         pdb_topo, pdb_pos = load_structure(out)
 
         assert pdb_topo.getNumAtoms() == cif_topo.getNumAtoms()
-        assert [a.element for a in pdb_topo.atoms()] == [
-            a.element for a in cif_topo.atoms()
-        ]
+        assert [a.element for a in pdb_topo.atoms()] == [a.element for a in cif_topo.atoms()]
         dev = np.abs(_coords_nm(pdb_pos) - _coords_nm(cif_pos)).max()
         assert dev < 2e-4, f"cross-format coord deviation {dev:.2e} nm too large"
 
@@ -627,8 +613,7 @@ class TestStructConnLandmine:
 
         # And the macrocycle must be closed (DAL1.N–ALA11.C).
         assert _has_ring_closure(topo), (
-            "cyclosporin macrocycle not closed after load — struct_conn heuristic "
-            "may have flipped."
+            "cyclosporin macrocycle not closed after load — struct_conn heuristic may have flipped."
         )
 
 
@@ -670,13 +655,9 @@ class TestMergeCifModels:
 
         model_a = tmp_path / "m1.cif"
         model_b = tmp_path / "m2.cif"
-        self._write_single_model_cif(
-            model_a, tags_a, [["1", "C", "1.000", "2.000", "3.000", "1"]]
-        )
+        self._write_single_model_cif(model_a, tags_a, [["1", "C", "1.000", "2.000", "3.000", "1"]])
         # Written in tags_b order, this row still means x=4, y=5, z=6.
-        self._write_single_model_cif(
-            model_b, tags_b, [["1", "C", "6.000", "4.000", "5.000", "1"]]
-        )
+        self._write_single_model_cif(model_b, tags_b, [["1", "C", "6.000", "4.000", "5.000", "1"]])
 
         out = tmp_path / "merged.cif"
         merge_cif_models([(1, model_a), (2, model_b)], out)
@@ -688,10 +669,14 @@ class TestMergeCifModels:
             return row[tags.index(f"_atom_site.{tag}")]
 
         assert [field(rows[0], t) for t in ("Cartn_x", "Cartn_y", "Cartn_z")] == [
-            "1.000", "2.000", "3.000",
+            "1.000",
+            "2.000",
+            "3.000",
         ]
         assert [field(rows[1], t) for t in ("Cartn_x", "Cartn_y", "Cartn_z")] == [
-            "4.000", "5.000", "6.000",
+            "4.000",
+            "5.000",
+            "6.000",
         ], "model 2 coordinates were read positionally instead of by column tag"
 
         assert field(rows[0], "pdbx_PDB_model_num") == "1"
@@ -705,9 +690,7 @@ class TestMergeCifModels:
 
         model_a = tmp_path / "m1.cif"
         model_b = tmp_path / "m2.cif"
-        self._write_single_model_cif(
-            model_a, tags_a, [["1", "C", "1.000", "2.000", "3.000", "1"]]
-        )
+        self._write_single_model_cif(model_a, tags_a, [["1", "C", "1.000", "2.000", "3.000", "1"]])
         self._write_single_model_cif(model_b, tags_b, [["1", "4.000", "5.000", "6.000", "1"]])
 
         with pytest.raises(ValueError, match="type_symbol"):

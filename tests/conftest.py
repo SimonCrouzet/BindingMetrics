@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 try:
     import openmm as _openmm
+
     _openmm.Platform.getPlatformByName("CUDA")
     HAS_CUDA = True
 except Exception:
@@ -178,6 +179,4 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: marks tests requiring OpenMM/MDTraj installation"
     )
-    config.addinivalue_line(
-        "markers", "gpu: marks tests requiring GPU acceleration"
-    )
+    config.addinivalue_line("markers", "gpu: marks tests requiring GPU acceleration")

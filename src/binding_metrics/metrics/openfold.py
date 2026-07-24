@@ -85,7 +85,7 @@ def _find_prediction_files(
     seed_dirs = sorted(query_dir.glob("seed_*")) if query_dir.exists() else []
     if seed_dirs and 1 <= seed <= len(seed_dirs):
         seed_dir = seed_dirs[seed - 1]
-        actual_seed = seed_dir.name[len("seed_"):]
+        actual_seed = seed_dir.name[len("seed_") :]
     else:
         actual_seed = str(seed)
         seed_dir = query_dir / f"seed_{seed}"
@@ -218,6 +218,7 @@ def _import_biotite_struc():
     try:
         import biotite.structure as struc
         import biotite.structure.io.pdbx as pdbx
+
         return struc, pdbx
     except ImportError:
         raise ImportError(
@@ -235,6 +236,7 @@ def _load_atoms(path: Path):
         backfill_auth_columns(f)
         return pdbx.get_structure(f, model=1)
     import biotite.structure.io.pdb as pdb_io
+
     f = pdb_io.PDBFile.read(str(path))
     return pdb_io.get_structure(f, model=1)
 
@@ -292,9 +294,7 @@ def _binder_plddt_per_residue(
     if chain_res_ids.size == 0:
         return np.array([], dtype=float)
     unique_res = np.unique(chain_res_ids)
-    return np.array(
-        [chain_plddt[chain_res_ids == r].mean() for r in unique_res], dtype=float
-    )
+    return np.array([chain_plddt[chain_res_ids == r].mean() for r in unique_res], dtype=float)
 
 
 def _binder_ca_rmsd(
@@ -683,7 +683,9 @@ def compute_openfold_metrics(
                         float(per_res.mean()) if per_res.size > 0 else float("nan")
                     )
                 except Exception as exc:
-                    warnings.warn(f"compute_openfold_metrics: per-residue binder pLDDT skipped: {exc}")
+                    warnings.warn(
+                        f"compute_openfold_metrics: per-residue binder pLDDT skipped: {exc}"
+                    )
 
             # Interface PDE statistics (binder × receptor token block)
             if receptor_chain is not None:
@@ -768,6 +770,7 @@ def _write_runner_yaml(
 
     try:
         import yaml
+
         content = yaml.dump(cfg, default_flow_style=False)
     except ImportError:
         # Fallback: write YAML manually
@@ -861,16 +864,22 @@ def run_openfold(
     if runner_yaml is not None:
         effective_yaml = Path(runner_yaml)
     else:
-        presets = list(model_presets) if model_presets is not None else ["predict", "pae_enabled", "low_mem"]
+        presets = (
+            list(model_presets)
+            if model_presets is not None
+            else ["predict", "pae_enabled", "low_mem"]
+        )
         if "predict" not in presets:
             presets.insert(0, "predict")
         effective_yaml = _write_runner_yaml(
-            output_dir, presets,
+            output_dir,
+            presets,
             template_dir=Path(template_dir) if template_dir is not None else None,
         )
 
     of3_cmd = [
-        "run_openfold", "predict",
+        "run_openfold",
+        "predict",
         f"--query_json={query_json}",
         f"--output_dir={output_dir}",
         f"--num_diffusion_samples={num_diffusion_samples}",
@@ -927,9 +936,7 @@ def _extract_sequence_from_structure(structure, chain_id: str) -> str:
                     continue
                 seq.append(tbl.one_letter_code or "X")
             if not seq:
-                raise ValueError(
-                    f"Chain '{chain_id}' found but contains no amino acid residues"
-                )
+                raise ValueError(f"Chain '{chain_id}' found but contains no amino acid residues")
             return "".join(seq)
     raise ValueError(f"Chain '{chain_id}' not found in structure")
 
@@ -1020,10 +1027,7 @@ def _write_a3m_self_alignment(
     """
     n = len(sequence)
     template_header = f"{entry_id}_{chain_id}/{1}-{n}"
-    output_path.write_text(
-        f">{query_id}/1-{n}\n{sequence}\n"
-        f">{template_header}\n{sequence}\n"
-    )
+    output_path.write_text(f">{query_id}/1-{n}\n{sequence}\n>{template_header}\n{sequence}\n")
 
 
 def prepare_refolding_query(
@@ -1110,8 +1114,11 @@ def prepare_refolding_query(
     # A3M self-alignment for receptor — header: receptor_{chain}/{1}-{N}
     a3m_path = output_dir / f"{query_name}_receptor.a3m"
     _write_a3m_self_alignment(
-        receptor_seq, f"query_{receptor_chain}",
-        receptor_entry_id, receptor_chain, a3m_path,
+        receptor_seq,
+        f"query_{receptor_chain}",
+        receptor_entry_id,
+        receptor_chain,
+        a3m_path,
     )
 
     # Query JSON — receptor has template, binder is free (sequence only)
@@ -1196,9 +1203,7 @@ def prepare_scoring_query(
 
     # Template source: use template_cif_path if provided, else the complex
     template_src = (
-        gemmi.read_structure(str(template_cif_path))
-        if template_cif_path is not None
-        else st
+        gemmi.read_structure(str(template_cif_path)) if template_cif_path is not None else st
     )
 
     # Template CIF files — named {entry_id}.cif so OF3 can find them.
@@ -1206,19 +1211,32 @@ def prepare_scoring_query(
     receptor_entry_id = "receptor"
     binder_entry_id = "binder"
 
-    _extract_chain_to_cif(template_src, receptor_chain, templates_dir / f"{receptor_entry_id}.cif", sequence=receptor_seq)
-    _extract_chain_to_cif(template_src, binder_chain, templates_dir / f"{binder_entry_id}.cif", sequence=binder_seq)
+    _extract_chain_to_cif(
+        template_src,
+        receptor_chain,
+        templates_dir / f"{receptor_entry_id}.cif",
+        sequence=receptor_seq,
+    )
+    _extract_chain_to_cif(
+        template_src, binder_chain, templates_dir / f"{binder_entry_id}.cif", sequence=binder_seq
+    )
 
     # A3M self-alignments — header: {entry_id}_{chain_id}/{1}-{N}
     receptor_a3m = output_dir / f"{query_name}_receptor.a3m"
     binder_a3m = output_dir / f"{query_name}_binder.a3m"
     _write_a3m_self_alignment(
-        receptor_seq, f"query_{receptor_chain}",
-        receptor_entry_id, receptor_chain, receptor_a3m,
+        receptor_seq,
+        f"query_{receptor_chain}",
+        receptor_entry_id,
+        receptor_chain,
+        receptor_a3m,
     )
     _write_a3m_self_alignment(
-        binder_seq, f"query_{binder_chain}",
-        binder_entry_id, binder_chain, binder_a3m,
+        binder_seq,
+        f"query_{binder_chain}",
+        binder_entry_id,
+        binder_chain,
+        binder_a3m,
     )
 
     # Query JSON — OF3 format: {"seeds": [...], "queries": {"name": {"chains": [...]}}}
@@ -1408,6 +1426,7 @@ def run_openfold_refolding(
 @dataclasses.dataclass
 class _BatchSample:
     """Descriptor for one sample in a batched OF3 run."""
+
     query_name: str
     complex_structure_path: Path
     receptor_chain: str
@@ -1456,13 +1475,21 @@ def prepare_batched_scoring_queries(
         rec_entry = _safe_entry_id(s.query_name, "rec")
         bnd_entry = _safe_entry_id(s.query_name, "bnd")
 
-        _extract_chain_to_cif(st, s.receptor_chain, templates_dir / f"{rec_entry}.cif", sequence=receptor_seq)
-        _extract_chain_to_cif(st, s.binder_chain, templates_dir / f"{bnd_entry}.cif", sequence=binder_seq)
+        _extract_chain_to_cif(
+            st, s.receptor_chain, templates_dir / f"{rec_entry}.cif", sequence=receptor_seq
+        )
+        _extract_chain_to_cif(
+            st, s.binder_chain, templates_dir / f"{bnd_entry}.cif", sequence=binder_seq
+        )
 
         rec_a3m = output_dir / f"{s.query_name}_receptor.a3m"
         bnd_a3m = output_dir / f"{s.query_name}_binder.a3m"
-        _write_a3m_self_alignment(receptor_seq, f"query_{s.receptor_chain}", rec_entry, s.receptor_chain, rec_a3m)
-        _write_a3m_self_alignment(binder_seq, f"query_{s.binder_chain}", bnd_entry, s.binder_chain, bnd_a3m)
+        _write_a3m_self_alignment(
+            receptor_seq, f"query_{s.receptor_chain}", rec_entry, s.receptor_chain, rec_a3m
+        )
+        _write_a3m_self_alignment(
+            binder_seq, f"query_{s.binder_chain}", bnd_entry, s.binder_chain, bnd_a3m
+        )
 
         queries[s.query_name] = {
             "chains": [
@@ -1517,10 +1544,14 @@ def prepare_batched_refolding_queries(
 
         rec_entry = _safe_entry_id(s.query_name, "rec")
 
-        _extract_chain_to_cif(st, s.receptor_chain, templates_dir / f"{rec_entry}.cif", sequence=receptor_seq)
+        _extract_chain_to_cif(
+            st, s.receptor_chain, templates_dir / f"{rec_entry}.cif", sequence=receptor_seq
+        )
 
         rec_a3m = output_dir / f"{s.query_name}_receptor.a3m"
-        _write_a3m_self_alignment(receptor_seq, f"query_{s.receptor_chain}", rec_entry, s.receptor_chain, rec_a3m)
+        _write_a3m_self_alignment(
+            receptor_seq, f"query_{s.receptor_chain}", rec_entry, s.receptor_chain, rec_a3m
+        )
 
         queries[s.query_name] = {
             "chains": [
@@ -1615,20 +1646,30 @@ def _add_parse_args(p, include_chain_args: bool = False) -> None:
     p.add_argument("--seed", type=int, default=1, help="Seed index (default: 1).")
     p.add_argument("--sample", type=int, default=1, help="Sample index (default: 1).")
     p.add_argument(
-        "--include-matrices", action="store_true",
+        "--include-matrices",
+        action="store_true",
         help="Include full PDE matrix in output (large).",
     )
     if include_chain_args:
         p.add_argument(
-            "--binder-chain", type=str, default=None, metavar="CHAIN",
+            "--binder-chain",
+            type=str,
+            default=None,
+            metavar="CHAIN",
             help="Chain ID of the binder. Enables per-residue pLDDT and binder RMSD.",
         )
         p.add_argument(
-            "--receptor-chain", type=str, default=None, metavar="CHAIN",
+            "--receptor-chain",
+            type=str,
+            default=None,
+            metavar="CHAIN",
             help="Chain ID of the receptor. Enables interface PAE and receptor-frame RMSD.",
         )
     p.add_argument(
-        "--reference", type=Path, default=None, metavar="CIF",
+        "--reference",
+        type=Path,
+        default=None,
+        metavar="CIF",
         help="Reference structure CIF/PDB for binder Cα RMSD (requires --binder-chain).",
     )
 
@@ -1676,8 +1717,10 @@ def _print_metrics(metrics: dict, seed: int, sample: int) -> None:
         arr = metrics["binder_plddt_per_residue"]
         print(f"\n  Binder per-residue pLDDT ({len(arr)} residues):")
         print(f"    Min: {arr.min():.1f}  Median: {np.median(arr):.1f}  Max: {arr.max():.1f}")
-        print(f"    ≥90: {int((arr >= 90).sum())}  70–89: {int(((arr >= 70) & (arr < 90)).sum())}"
-              f"  50–69: {int(((arr >= 50) & (arr < 70)).sum())}  <50: {int((arr < 50).sum())}")
+        print(
+            f"    ≥90: {int((arr >= 90).sum())}  70–89: {int(((arr >= 70) & (arr < 90)).sum())}"
+            f"  50–69: {int(((arr >= 50) & (arr < 70)).sum())}  <50: {int((arr < 50).sum())}"
+        )
 
     if metrics.get("timing"):
         print("\nTiming:")
@@ -1688,8 +1731,10 @@ def _print_metrics(metrics: dict, seed: int, sample: int) -> None:
         arr = metrics["plddt_per_atom"]
         print(f"\nPer-atom pLDDT summary ({len(arr)} atoms):")
         print(f"  Min: {arr.min():.1f}  Median: {np.median(arr):.1f}  Max: {arr.max():.1f}")
-        print(f"  ≥90: {int((arr >= 90).sum())}  70–89: {int(((arr >= 70) & (arr < 90)).sum())}"
-              f"  50–69: {int(((arr >= 50) & (arr < 70)).sum())}  <50: {int((arr < 50).sum())}")
+        print(
+            f"  ≥90: {int((arr >= 90).sum())}  70–89: {int(((arr >= 70) & (arr < 90)).sum())}"
+            f"  50–69: {int(((arr >= 50) & (arr < 70)).sum())}  <50: {int((arr < 50).sum())}"
+        )
 
 
 def main():
@@ -1712,11 +1757,17 @@ def main():
         help="Parse metrics from an existing OpenFold3 output directory.",
     )
     p_parse.add_argument(
-        "--output-dir", "-o", type=Path, required=True,
+        "--output-dir",
+        "-o",
+        type=Path,
+        required=True,
         help="OpenFold3 output directory.",
     )
     p_parse.add_argument(
-        "--query-name", "-n", type=str, required=True,
+        "--query-name",
+        "-n",
+        type=str,
+        required=True,
         help="Query name (as specified in the input JSON).",
     )
     _add_parse_args(p_parse, include_chain_args=True)
@@ -1727,34 +1778,59 @@ def main():
         help="Run OpenFold3 inference, then parse and print metrics.",
     )
     p_run.add_argument(
-        "--query-json", type=Path, required=True,
+        "--query-json",
+        type=Path,
+        required=True,
         help="Input JSON file describing the prediction query.",
     )
     p_run.add_argument(
-        "--output-dir", "-o", type=Path, required=True,
+        "--output-dir",
+        "-o",
+        type=Path,
+        required=True,
         help="Output directory.",
     )
     p_run.add_argument(
-        "--query-name", "-n", type=str, required=True,
+        "--query-name",
+        "-n",
+        type=str,
+        required=True,
         help="Query name to parse after inference.",
     )
-    p_run.add_argument("--ckpt", type=Path, default=None,
-                       help="Model checkpoint path (uses default if omitted).")
-    p_run.add_argument("--num-samples", type=int, default=5,
-                       help="Number of diffusion samples (default: 5).")
-    p_run.add_argument("--num-seeds", type=int, default=1,
-                       help="Number of random seeds (default: 1).")
-    p_run.add_argument("--no-msa-server", action="store_true",
-                       help="Disable ColabFold MSA server (use pre-computed MSAs).")
     p_run.add_argument(
-        "--presets", nargs="+", default=["predict", "pae_enabled", "low_mem"],
+        "--ckpt", type=Path, default=None, help="Model checkpoint path (uses default if omitted)."
+    )
+    p_run.add_argument(
+        "--num-samples", type=int, default=5, help="Number of diffusion samples (default: 5)."
+    )
+    p_run.add_argument(
+        "--num-seeds", type=int, default=1, help="Number of random seeds (default: 1)."
+    )
+    p_run.add_argument(
+        "--no-msa-server",
+        action="store_true",
+        help="Disable ColabFold MSA server (use pre-computed MSAs).",
+    )
+    p_run.add_argument(
+        "--presets",
+        nargs="+",
+        default=["predict", "pae_enabled", "low_mem"],
         metavar="PRESET",
         help="Model configuration presets (default: predict pae_enabled low_mem).",
     )
-    p_run.add_argument("--runner-yaml", type=Path, default=None,
-                       help="Explicit YAML config file; overrides --presets.")
-    p_run.add_argument("--conda-env", type=str, default=None, metavar="ENV",
-                       help="Conda env where OpenFold3 is installed (e.g. 'openfold3').")
+    p_run.add_argument(
+        "--runner-yaml",
+        type=Path,
+        default=None,
+        help="Explicit YAML config file; overrides --presets.",
+    )
+    p_run.add_argument(
+        "--conda-env",
+        type=str,
+        default=None,
+        metavar="ENV",
+        help="Conda env where OpenFold3 is installed (e.g. 'openfold3').",
+    )
     _add_parse_args(p_run, include_chain_args=True)
 
     # --- prepare-query subcommand ---
@@ -1763,29 +1839,47 @@ def main():
         help="Prepare OF3 query JSON for binder refolding (receptor as template).",
     )
     p_prep.add_argument(
-        "--complex", type=Path, required=True, metavar="CIF",
+        "--complex",
+        type=Path,
+        required=True,
+        metavar="CIF",
         help="Complex CIF/PDB file (receptor + binder).",
     )
     p_prep.add_argument(
-        "--receptor-chain", type=str, required=True, metavar="CHAIN",
+        "--receptor-chain",
+        type=str,
+        required=True,
+        metavar="CHAIN",
         help="Chain ID of the receptor/target (fixed as template).",
     )
     p_prep.add_argument(
-        "--binder-chain", type=str, required=True, metavar="CHAIN",
+        "--binder-chain",
+        type=str,
+        required=True,
+        metavar="CHAIN",
         help="Chain ID of the binder (refolded from sequence only).",
     )
     p_prep.add_argument(
-        "--query-name", "-n", type=str, required=True,
+        "--query-name",
+        "-n",
+        type=str,
+        required=True,
         help="Prediction query name.",
     )
     p_prep.add_argument(
-        "--output-dir", "-o", type=Path, required=True,
+        "--output-dir",
+        "-o",
+        type=Path,
+        required=True,
         help="Directory for query JSON and template files.",
     )
     p_prep.add_argument(
-        "--template-cif", type=Path, default=None, metavar="CIF",
+        "--template-cif",
+        type=Path,
+        default=None,
+        metavar="CIF",
         help="Pre-prepared receptor CIF (e.g., after MD relaxation). "
-             "If omitted, receptor chain is extracted from --complex.",
+        "If omitted, receptor chain is extracted from --complex.",
     )
 
     # --- refold subcommand ---
@@ -1794,45 +1888,74 @@ def main():
         help="Run OF3 binder refolding: receptor fixed as template, binder predicted freely.",
     )
     p_refold.add_argument(
-        "--complex", type=Path, required=True, metavar="CIF",
+        "--complex",
+        type=Path,
+        required=True,
+        metavar="CIF",
         help="Complex CIF/PDB file (receptor + binder).",
     )
     p_refold.add_argument(
-        "--receptor-chain", type=str, required=True, metavar="CHAIN",
+        "--receptor-chain",
+        type=str,
+        required=True,
+        metavar="CHAIN",
         help="Chain ID of the receptor/target (fixed as template).",
     )
     p_refold.add_argument(
-        "--binder-chain", type=str, required=True, metavar="CHAIN",
+        "--binder-chain",
+        type=str,
+        required=True,
+        metavar="CHAIN",
         help="Chain ID of the binder (refolded from sequence only).",
     )
     p_refold.add_argument(
-        "--query-name", "-n", type=str, required=True,
+        "--query-name",
+        "-n",
+        type=str,
+        required=True,
         help="Prediction query name.",
     )
     p_refold.add_argument(
-        "--output-dir", "-o", type=Path, required=True,
+        "--output-dir",
+        "-o",
+        type=Path,
+        required=True,
         help="Top-level output directory (query/ and predictions/ written here).",
     )
     p_refold.add_argument(
-        "--template-cif", type=Path, default=None, metavar="CIF",
+        "--template-cif",
+        type=Path,
+        default=None,
+        metavar="CIF",
         help="Pre-prepared receptor CIF (e.g., after MD relaxation).",
     )
-    p_refold.add_argument("--ckpt", type=Path, default=None,
-                          help="Model checkpoint path.")
-    p_refold.add_argument("--num-samples", type=int, default=5,
-                          help="Number of diffusion samples (default: 5).")
-    p_refold.add_argument("--num-seeds", type=int, default=1,
-                          help="Number of random seeds (default: 1).")
-    p_refold.add_argument("--no-msa-server", action="store_true",
-                          help="Disable ColabFold MSA server.")
+    p_refold.add_argument("--ckpt", type=Path, default=None, help="Model checkpoint path.")
     p_refold.add_argument(
-        "--presets", nargs="+", default=["predict", "pae_enabled", "low_mem"],
-        metavar="PRESET", help="Model configuration presets.",
+        "--num-samples", type=int, default=5, help="Number of diffusion samples (default: 5)."
     )
-    p_refold.add_argument("--runner-yaml", type=Path, default=None,
-                          help="Explicit YAML config; overrides --presets.")
-    p_refold.add_argument("--conda-env", type=str, default=None, metavar="ENV",
-                          help="Conda env where OpenFold3 is installed (e.g. 'openfold3').")
+    p_refold.add_argument(
+        "--num-seeds", type=int, default=1, help="Number of random seeds (default: 1)."
+    )
+    p_refold.add_argument(
+        "--no-msa-server", action="store_true", help="Disable ColabFold MSA server."
+    )
+    p_refold.add_argument(
+        "--presets",
+        nargs="+",
+        default=["predict", "pae_enabled", "low_mem"],
+        metavar="PRESET",
+        help="Model configuration presets.",
+    )
+    p_refold.add_argument(
+        "--runner-yaml", type=Path, default=None, help="Explicit YAML config; overrides --presets."
+    )
+    p_refold.add_argument(
+        "--conda-env",
+        type=str,
+        default=None,
+        metavar="ENV",
+        help="Conda env where OpenFold3 is installed (e.g. 'openfold3').",
+    )
     _add_parse_args(p_refold, include_chain_args=False)
 
     # --- prepare-scoring-query subcommand ---
@@ -1840,18 +1963,38 @@ def main():
         "prepare-scoring-query",
         help="Prepare OF3 query JSON to score an existing complex (both chains as templates).",
     )
-    p_prep_score.add_argument("--complex", type=Path, required=True, metavar="CIF",
-                              help="Complex CIF/PDB file (receptor + binder).")
-    p_prep_score.add_argument("--receptor-chain", type=str, required=True, metavar="CHAIN",
-                              help="Chain ID of the receptor.")
-    p_prep_score.add_argument("--binder-chain", type=str, required=True, metavar="CHAIN",
-                              help="Chain ID of the binder.")
-    p_prep_score.add_argument("--query-name", "-n", type=str, required=True,
-                              help="Prediction query name.")
-    p_prep_score.add_argument("--output-dir", "-o", type=Path, required=True,
-                              help="Directory for query JSON and template files.")
     p_prep_score.add_argument(
-        "--template-cif", type=Path, default=None, metavar="CIF",
+        "--complex",
+        type=Path,
+        required=True,
+        metavar="CIF",
+        help="Complex CIF/PDB file (receptor + binder).",
+    )
+    p_prep_score.add_argument(
+        "--receptor-chain",
+        type=str,
+        required=True,
+        metavar="CHAIN",
+        help="Chain ID of the receptor.",
+    )
+    p_prep_score.add_argument(
+        "--binder-chain", type=str, required=True, metavar="CHAIN", help="Chain ID of the binder."
+    )
+    p_prep_score.add_argument(
+        "--query-name", "-n", type=str, required=True, help="Prediction query name."
+    )
+    p_prep_score.add_argument(
+        "--output-dir",
+        "-o",
+        type=Path,
+        required=True,
+        help="Directory for query JSON and template files.",
+    )
+    p_prep_score.add_argument(
+        "--template-cif",
+        type=Path,
+        default=None,
+        metavar="CIF",
         help="Pre-prepared complex CIF (e.g., MD-relaxed). Both chains extracted from it.",
     )
 
@@ -1860,42 +2003,72 @@ def main():
         "score",
         help="Run OF3 scoring of an existing complex (both chains as templates).",
     )
-    p_score.add_argument("--complex", type=Path, required=True, metavar="CIF",
-                         help="Complex CIF/PDB file (receptor + binder).")
-    p_score.add_argument("--receptor-chain", type=str, required=True, metavar="CHAIN",
-                         help="Chain ID of the receptor.")
-    p_score.add_argument("--binder-chain", type=str, required=True, metavar="CHAIN",
-                         help="Chain ID of the binder.")
-    p_score.add_argument("--query-name", "-n", type=str, required=True,
-                         help="Prediction query name.")
-    p_score.add_argument("--output-dir", "-o", type=Path, required=True,
-                         help="Top-level output directory.")
     p_score.add_argument(
-        "--template-cif", type=Path, default=None, metavar="CIF",
+        "--complex",
+        type=Path,
+        required=True,
+        metavar="CIF",
+        help="Complex CIF/PDB file (receptor + binder).",
+    )
+    p_score.add_argument(
+        "--receptor-chain",
+        type=str,
+        required=True,
+        metavar="CHAIN",
+        help="Chain ID of the receptor.",
+    )
+    p_score.add_argument(
+        "--binder-chain", type=str, required=True, metavar="CHAIN", help="Chain ID of the binder."
+    )
+    p_score.add_argument(
+        "--query-name", "-n", type=str, required=True, help="Prediction query name."
+    )
+    p_score.add_argument(
+        "--output-dir", "-o", type=Path, required=True, help="Top-level output directory."
+    )
+    p_score.add_argument(
+        "--template-cif",
+        type=Path,
+        default=None,
+        metavar="CIF",
         help="Pre-prepared complex CIF (e.g., MD-relaxed). Both chains extracted from it.",
     )
     p_score.add_argument("--ckpt", type=Path, default=None, help="Model checkpoint path.")
-    p_score.add_argument("--num-samples", type=int, default=5,
-                         help="Number of diffusion samples (default: 5).")
-    p_score.add_argument("--num-seeds", type=int, default=1,
-                         help="Number of random seeds (default: 1).")
-    p_score.add_argument("--no-msa-server", action="store_true",
-                         help="Disable ColabFold MSA server.")
     p_score.add_argument(
-        "--presets", nargs="+", default=["predict", "pae_enabled", "low_mem"],
-        metavar="PRESET", help="Model configuration presets.",
+        "--num-samples", type=int, default=5, help="Number of diffusion samples (default: 5)."
     )
-    p_score.add_argument("--runner-yaml", type=Path, default=None,
-                         help="Explicit YAML config; overrides --presets.")
-    p_score.add_argument("--conda-env", type=str, default=None, metavar="ENV",
-                         help="Conda env where OpenFold3 is installed (e.g. 'openfold3').")
+    p_score.add_argument(
+        "--num-seeds", type=int, default=1, help="Number of random seeds (default: 1)."
+    )
+    p_score.add_argument(
+        "--no-msa-server", action="store_true", help="Disable ColabFold MSA server."
+    )
+    p_score.add_argument(
+        "--presets",
+        nargs="+",
+        default=["predict", "pae_enabled", "low_mem"],
+        metavar="PRESET",
+        help="Model configuration presets.",
+    )
+    p_score.add_argument(
+        "--runner-yaml", type=Path, default=None, help="Explicit YAML config; overrides --presets."
+    )
+    p_score.add_argument(
+        "--conda-env",
+        type=str,
+        default=None,
+        metavar="ENV",
+        help="Conda env where OpenFold3 is installed (e.g. 'openfold3').",
+    )
     _add_parse_args(p_score, include_chain_args=False)
 
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(parser)
     args = parser.parse_args()
 
     from binding_metrics.cli import _apply_log_redirect
+
     _apply_log_redirect(args.log_file)
 
     # --- prepare-scoring-query ---

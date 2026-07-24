@@ -78,15 +78,27 @@ class TestComputeInterfaceMetrics:
         result = compute_interface_metrics(EXAMPLE_CIF)
 
         expected_keys = {
-            "peptide_chain", "receptor_chain",
-            "delta_sasa", "sasa_peptide", "sasa_receptor", "sasa_complex",
-            "delta_g_int", "delta_g_int_kJ",
-            "polar_area", "apolar_area", "fraction_polar",
-            "n_interface_residues_peptide", "n_interface_residues_receptor",
-            "interface_residues_peptide", "interface_residues_receptor",
+            "peptide_chain",
+            "receptor_chain",
+            "delta_sasa",
+            "sasa_peptide",
+            "sasa_receptor",
+            "sasa_complex",
+            "delta_g_int",
+            "delta_g_int_kJ",
+            "polar_area",
+            "apolar_area",
+            "fraction_polar",
+            "n_interface_residues_peptide",
+            "n_interface_residues_receptor",
+            "interface_residues_peptide",
+            "interface_residues_receptor",
             "per_residue",
-            "hbonds", "hbond_energy",
-            "saltbridges", "saltbridges_bidentate", "saltbridge_energy",
+            "hbonds",
+            "hbond_energy",
+            "saltbridges",
+            "saltbridges_bidentate",
+            "saltbridge_energy",
         }
         assert set(result.keys()) == expected_keys
 
@@ -218,14 +230,15 @@ class TestComputeInterfaceMetrics:
 def _make_atom_array(records):
     """Build an AtomArray from (chain, res_id, res_name, atom_name, element, xyz) tuples."""
     import biotite.structure as struc
+
     n = len(records)
     arr = struc.AtomArray(n)
-    arr.chain_id  = np.array([r[0] for r in records])
-    arr.res_id    = np.array([r[1] for r in records], dtype=int)
-    arr.res_name  = np.array([r[2] for r in records])
+    arr.chain_id = np.array([r[0] for r in records])
+    arr.res_id = np.array([r[1] for r in records], dtype=int)
+    arr.res_name = np.array([r[2] for r in records])
     arr.atom_name = np.array([r[3] for r in records])
-    arr.element   = np.array([r[4] for r in records])
-    arr.coord     = np.array([r[5] for r in records], dtype=float)
+    arr.element = np.array([r[4] for r in records])
+    arr.coord = np.array([r[5] for r in records], dtype=float)
     return arr
 
 
@@ -238,34 +251,36 @@ class TestPolarContacts:
         HIS-as-neutral, HIP-as-positive, intra-chain ignored, far pair excluded."""
         from binding_metrics.metrics.polar_contacts import compute_saltbridges
 
-        atoms = _make_atom_array([
-            # ARG res 1 on A — bidentate target for GLU on B
-            ("A", 1, "ARG", "NH1", "N", (0.0, 0.0, 0.0)),
-            ("A", 1, "ARG", "NH2", "N", (0.0, 1.5, 0.0)),
-            ("A", 1, "ARG", "NE",  "N", (0.0, -1.5, 0.0)),
-            # HIS res 2 on A — must be treated as neutral
-            ("A", 2, "HIS", "ND1", "N", (10.0, 0.0, 0.0)),
-            ("A", 2, "HIS", "NE2", "N", (10.0, 1.5, 0.0)),
-            # HIP res 3 on A — positive; NE2 placed far so HIP-ASP is monodentate
-            ("A", 3, "HIP", "ND1", "N", (20.0, 0.0, 0.0)),
-            ("A", 3, "HIP", "NE2", "N", (20.0, 5.0, 0.0)),
-            # LYS res 4 on A — monodentate to ASP res 2 on B
-            ("A", 4, "LYS", "NZ", "N", (30.0, 0.0, 0.0)),
-            # Intra-chain ASP res 5 on A — must NOT count against LYS-A4
-            ("A", 5, "ASP", "OD1", "O", (32.0, 0.0, 0.0)),
-            # GLU res 1 on B — bidentate partner of ARG-A1
-            ("B", 1, "GLU", "OE1", "O", (2.8, 0.0, 0.0)),
-            ("B", 1, "GLU", "OE2", "O", (3.0, 1.5, 0.0)),
-            # ASP res 2 on B — monodentate to LYS-A4
-            ("B", 2, "ASP", "OD1", "O", (33.0, 0.0, 0.0)),
-            ("B", 2, "ASP", "OD2", "O", (38.0, 0.0, 0.0)),  # far → not bidentate
-            # ASP res 3 on B — close to HIS-A2 (neutral, must be ignored)
-            ("B", 3, "ASP", "OD1", "O", (13.0, 0.0, 0.0)),
-            # ASP res 4 on B — close to HIP-A3 (must form salt bridge)
-            ("B", 4, "ASP", "OD1", "O", (23.0, 0.0, 0.0)),
-            # ASP res 5 on B — far from everything
-            ("B", 5, "ASP", "OD1", "O", (100.0, 0.0, 0.0)),
-        ])
+        atoms = _make_atom_array(
+            [
+                # ARG res 1 on A — bidentate target for GLU on B
+                ("A", 1, "ARG", "NH1", "N", (0.0, 0.0, 0.0)),
+                ("A", 1, "ARG", "NH2", "N", (0.0, 1.5, 0.0)),
+                ("A", 1, "ARG", "NE", "N", (0.0, -1.5, 0.0)),
+                # HIS res 2 on A — must be treated as neutral
+                ("A", 2, "HIS", "ND1", "N", (10.0, 0.0, 0.0)),
+                ("A", 2, "HIS", "NE2", "N", (10.0, 1.5, 0.0)),
+                # HIP res 3 on A — positive; NE2 placed far so HIP-ASP is monodentate
+                ("A", 3, "HIP", "ND1", "N", (20.0, 0.0, 0.0)),
+                ("A", 3, "HIP", "NE2", "N", (20.0, 5.0, 0.0)),
+                # LYS res 4 on A — monodentate to ASP res 2 on B
+                ("A", 4, "LYS", "NZ", "N", (30.0, 0.0, 0.0)),
+                # Intra-chain ASP res 5 on A — must NOT count against LYS-A4
+                ("A", 5, "ASP", "OD1", "O", (32.0, 0.0, 0.0)),
+                # GLU res 1 on B — bidentate partner of ARG-A1
+                ("B", 1, "GLU", "OE1", "O", (2.8, 0.0, 0.0)),
+                ("B", 1, "GLU", "OE2", "O", (3.0, 1.5, 0.0)),
+                # ASP res 2 on B — monodentate to LYS-A4
+                ("B", 2, "ASP", "OD1", "O", (33.0, 0.0, 0.0)),
+                ("B", 2, "ASP", "OD2", "O", (38.0, 0.0, 0.0)),  # far → not bidentate
+                # ASP res 3 on B — close to HIS-A2 (neutral, must be ignored)
+                ("B", 3, "ASP", "OD1", "O", (13.0, 0.0, 0.0)),
+                # ASP res 4 on B — close to HIP-A3 (must form salt bridge)
+                ("B", 4, "ASP", "OD1", "O", (23.0, 0.0, 0.0)),
+                # ASP res 5 on B — far from everything
+                ("B", 5, "ASP", "OD1", "O", (100.0, 0.0, 0.0)),
+            ]
+        )
 
         r = compute_saltbridges(atoms, "A", "B")
 
@@ -322,6 +337,7 @@ class TestPolarContacts:
                 import importlib
 
                 from binding_metrics.metrics import interface as iface_mod
+
                 importlib.reload(iface_mod)
                 iface_mod.compute_interface_metrics(dummy_cif)
 
@@ -372,28 +388,36 @@ class TestComputeInterfaceMetricsPDB:
     def test_runs_on_pdb(self, sample_pdb_path):
         from binding_metrics.metrics.interface import compute_interface_metrics
 
-        result = compute_interface_metrics(
-            sample_pdb_path, design_chain="B", receptor_chain="A"
-        )
+        result = compute_interface_metrics(sample_pdb_path, design_chain="B", receptor_chain="A")
         assert isinstance(result, dict)
 
     @requires_biotite
     def test_returns_expected_keys_pdb(self, sample_pdb_path):
         from binding_metrics.metrics.interface import compute_interface_metrics
 
-        result = compute_interface_metrics(
-            sample_pdb_path, design_chain="B", receptor_chain="A"
-        )
+        result = compute_interface_metrics(sample_pdb_path, design_chain="B", receptor_chain="A")
         expected_keys = {
-            "peptide_chain", "receptor_chain",
-            "delta_sasa", "sasa_peptide", "sasa_receptor", "sasa_complex",
-            "delta_g_int", "delta_g_int_kJ",
-            "polar_area", "apolar_area", "fraction_polar",
-            "n_interface_residues_peptide", "n_interface_residues_receptor",
-            "interface_residues_peptide", "interface_residues_receptor",
+            "peptide_chain",
+            "receptor_chain",
+            "delta_sasa",
+            "sasa_peptide",
+            "sasa_receptor",
+            "sasa_complex",
+            "delta_g_int",
+            "delta_g_int_kJ",
+            "polar_area",
+            "apolar_area",
+            "fraction_polar",
+            "n_interface_residues_peptide",
+            "n_interface_residues_receptor",
+            "interface_residues_peptide",
+            "interface_residues_receptor",
             "per_residue",
-            "hbonds", "hbond_energy",
-            "saltbridges", "saltbridges_bidentate", "saltbridge_energy",
+            "hbonds",
+            "hbond_energy",
+            "saltbridges",
+            "saltbridges_bidentate",
+            "saltbridge_energy",
         }
         assert set(result.keys()) == expected_keys
 
@@ -401,9 +425,7 @@ class TestComputeInterfaceMetricsPDB:
     def test_chain_ids_correct_pdb(self, sample_pdb_path):
         from binding_metrics.metrics.interface import compute_interface_metrics
 
-        result = compute_interface_metrics(
-            sample_pdb_path, design_chain="B", receptor_chain="A"
-        )
+        result = compute_interface_metrics(sample_pdb_path, design_chain="B", receptor_chain="A")
         assert result["peptide_chain"] == "B"
         assert result["receptor_chain"] == "A"
 
@@ -411,9 +433,7 @@ class TestComputeInterfaceMetricsPDB:
     def test_sasa_values_finite_pdb(self, sample_pdb_path):
         from binding_metrics.metrics.interface import compute_interface_metrics
 
-        result = compute_interface_metrics(
-            sample_pdb_path, design_chain="B", receptor_chain="A"
-        )
+        result = compute_interface_metrics(sample_pdb_path, design_chain="B", receptor_chain="A")
         assert np.isfinite(result["sasa_peptide"])
         assert np.isfinite(result["sasa_receptor"])
         assert np.isfinite(result["sasa_complex"])
@@ -428,29 +448,21 @@ class TestComputeDeltaSasaStatic:
     def test_runs_on_pdb(self, sample_pdb_path):
         from binding_metrics.metrics.sasa import compute_delta_sasa_static
 
-        result = compute_delta_sasa_static(
-            sample_pdb_path, peptide_chain="B", receptor_chain="A"
-        )
+        result = compute_delta_sasa_static(sample_pdb_path, peptide_chain="B", receptor_chain="A")
         assert isinstance(result, dict)
 
     @requires_biotite
     def test_returns_expected_keys_pdb(self, sample_pdb_path):
         from binding_metrics.metrics.sasa import compute_delta_sasa_static
 
-        result = compute_delta_sasa_static(
-            sample_pdb_path, peptide_chain="B", receptor_chain="A"
-        )
-        assert set(result.keys()) == {
-            "delta_sasa", "sasa_peptide", "sasa_receptor", "sasa_complex"
-        }
+        result = compute_delta_sasa_static(sample_pdb_path, peptide_chain="B", receptor_chain="A")
+        assert set(result.keys()) == {"delta_sasa", "sasa_peptide", "sasa_receptor", "sasa_complex"}
 
     @requires_biotite
     def test_sasa_values_positive_pdb(self, sample_pdb_path):
         from binding_metrics.metrics.sasa import compute_delta_sasa_static
 
-        result = compute_delta_sasa_static(
-            sample_pdb_path, peptide_chain="B", receptor_chain="A"
-        )
+        result = compute_delta_sasa_static(sample_pdb_path, peptide_chain="B", receptor_chain="A")
         assert result["sasa_peptide"] > 0
         assert result["sasa_receptor"] > 0
         assert result["sasa_complex"] > 0
@@ -463,7 +475,5 @@ class TestComputeDeltaSasaStatic:
         if not EXAMPLE_CIF.exists():
             pytest.skip("Test CIF not available")
 
-        result = compute_delta_sasa_static(
-            EXAMPLE_CIF, peptide_chain="A", receptor_chain="B"
-        )
+        result = compute_delta_sasa_static(EXAMPLE_CIF, peptide_chain="A", receptor_chain="B")
         assert np.isfinite(result["delta_sasa"])

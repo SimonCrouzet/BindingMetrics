@@ -71,8 +71,10 @@ class TestComputeInteractionEnergy:
         )
 
         relaxed_keys = {
-            "relaxed_interaction_energy", "relaxed_e_complex",
-            "relaxed_e_peptide", "relaxed_e_receptor",
+            "relaxed_interaction_energy",
+            "relaxed_e_complex",
+            "relaxed_e_peptide",
+            "relaxed_e_receptor",
         }
         assert relaxed_keys.issubset(result.keys())
 

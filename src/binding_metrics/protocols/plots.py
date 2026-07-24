@@ -21,6 +21,7 @@ class PlotSpec:
         color: Matplotlib color string
         bins: Number of histogram bins
     """
+
     column: str
     title: str
     xlabel: str = ""

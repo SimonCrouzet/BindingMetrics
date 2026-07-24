@@ -114,7 +114,7 @@ def calculate_interaction_energy(
                 epsilon = np.sqrt(eps1 * eps2)
                 if epsilon > 0 and sigma > 0:
                     sr6 = (sigma / r) ** 6
-                    e_lj = 4 * epsilon * (sr6 ** 2 - sr6)
+                    e_lj = 4 * epsilon * (sr6**2 - sr6)
                 else:
                     e_lj = 0.0
 
@@ -201,7 +201,7 @@ def calculate_component_energies(
                 epsilon = np.sqrt(eps1 * eps2)
                 if epsilon > 0 and sigma > 0:
                     sr6 = (sigma / r) ** 6
-                    e_lj_total += 4 * epsilon * (sr6 ** 2 - sr6)
+                    e_lj_total += 4 * epsilon * (sr6**2 - sr6)
 
         coulomb_energies.append(e_coulomb_total)
         lj_energies.append(e_lj_total)
@@ -221,10 +221,14 @@ def calculate_component_energies(
 # ---------------------------------------------------------------------------
 
 
-
-def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
-                            peptide_chain: str = None, ph: float = 7.4,
-                            random_seed: Optional[int] = DEFAULT_RANDOM_SEED):
+def _create_implicit_system(
+    topology,
+    positions,
+    solvent_model: str = "obc2",
+    peptide_chain: str = None,
+    ph: float = 7.4,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+):
     """Create an OpenMM system with implicit solvent after adding hydrogens.
 
     Cyclic topology is always detected and patched before addHydrogens.
@@ -268,9 +272,7 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
             load_nonstandard_xmls(ff, ns_info)
             extra_xmls.extend(ns_info.extra_ff_xmls)
 
-    topology, positions, bond_info = patch_cyclic_topology(
-        topology, positions, peptide_chain
-    )
+    topology, positions, bond_info = patch_cyclic_topology(topology, positions, peptide_chain)
     topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
     if bond_info:
         load_extra_xmls(ff, bond_info)
@@ -281,11 +283,13 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
     extra_xmls.extend(ncaa_xmls)
 
     from openmm.app import Modeller
+
     modeller = Modeller(topology, positions)
     addh_variants = None
     if bond_info:
         addh_variants = get_addh_variants(modeller.topology, bond_info, peptide_chain)
     from binding_metrics.core.system import deterministic_hydrogen_placement
+
     try:
         with deterministic_hydrogen_placement(random_seed):
             modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
@@ -297,9 +301,8 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
     # A wrong-side Cα H (random jitter + frozen heavy atoms during H addition)
     # perturbs the energy decomposition. No-op on already-clean structures.
     from binding_metrics.core.system import repair_ca_hydrogen_chirality
-    modeller.positions = repair_ca_hydrogen_chirality(
-        modeller.topology, modeller.positions
-    )
+
+    modeller.positions = repair_ca_hydrogen_chirality(modeller.topology, modeller.positions)
 
     system = ff.createSystem(
         modeller.topology,
@@ -309,8 +312,9 @@ def _create_implicit_system(topology, positions, solvent_model: str = "obc2",
     return system, modeller.topology, modeller.positions, bond_info, extra_xmls
 
 
-def _repair_orphaned_cys(topology, positions, solvent_model: str = "obc2",
-                         label: str = "") -> tuple:
+def _repair_orphaned_cys(
+    topology, positions, solvent_model: str = "obc2", label: str = ""
+) -> tuple:
     """Add HG back to CYS/CYX residues whose disulfide partner was severed.
 
     When the complex has a peptide–receptor disulfide, addHydrogens treats the
@@ -337,8 +341,8 @@ def _repair_orphaned_cys(topology, positions, solvent_model: str = "obc2",
         if sg is None or any(a.name == "HG" for a in res.atoms()):
             continue
         has_ss = any(
-            (b.atom1 is sg or b.atom2 is sg) and
-            (b.atom2 if b.atom1 is sg else b.atom1).element.symbol == "S"
+            (b.atom1 is sg or b.atom2 is sg)
+            and (b.atom2 if b.atom1 is sg else b.atom1).element.symbol == "S"
             for b in topology.bonds()
         )
         if not has_ss:
@@ -361,8 +365,8 @@ def _repair_orphaned_cys(topology, positions, solvent_model: str = "obc2",
     new_topo = Topology()
     old_to_new: dict = {}
     new_pos_list: list = []
-    sg_new_for_res: dict = {}   # res.index -> new SG Atom
-    hg_new_for_res: dict = {}   # res.index -> new HG Atom
+    sg_new_for_res: dict = {}  # res.index -> new SG Atom
+    hg_new_for_res: dict = {}  # res.index -> new HG Atom
 
     for chain in topology.chains():
         new_chain = new_topo.addChain(chain.id)
@@ -407,9 +411,11 @@ def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None, ncaa
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
     if bond_info:
         from binding_metrics.core.cyclic import load_extra_xmls
+
         load_extra_xmls(ff, bond_info)
     if ncaa_xmls:
         from binding_metrics.core.gaff_ncaa import _load_ffxml
+
         for xml_str in ncaa_xmls:
             _load_ffxml(ff, xml_str)
     return ff.createSystem(
@@ -439,6 +445,7 @@ def _evaluate_potential_energy(
         min_iterations: Optional brief minimization before evaluation (0 = none).
     """
     from openmm.app import Simulation
+
     integrator = openmm.VerletIntegrator(0.001 * unit.picoseconds)
     platform, properties = _get_platform(device)
     sim = Simulation(topology, system, integrator, platform, properties)
@@ -452,6 +459,7 @@ def _evaluate_potential_energy(
 def _extract_chain(topology, positions, chain_id: str):
     """Extract a single chain as a new (topology, positions) pair."""
     from openmm.app import Topology
+
     new_topology = Topology()
     new_positions = []
     old_to_new: dict[int, object] = {}
@@ -500,8 +508,10 @@ def _evaluate_subsystem_energies(
     """
     try:
         simulation.context.setPositions(positions)
-        e_c = simulation.context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(
-            unit.kilojoules_per_mole
+        e_c = (
+            simulation.context.getState(getEnergy=True)
+            .getPotentialEnergy()
+            .value_in_unit(unit.kilojoules_per_mole)
         )
         if not np.isfinite(e_c):
             return None, None, None
@@ -523,6 +533,7 @@ def _evaluate_subsystem_energies(
 
     except Exception as e:
         import traceback
+
         print(f"  Warning: subsystem energy evaluation failed: {e}")
         traceback.print_exc()
         return None, None, None
@@ -615,6 +626,7 @@ def compute_interaction_energy(
 
         # Strip heterogens (non-protein residues) before system creation
         from binding_metrics.io.structures import strip_heterogens
+
         topology, positions = strip_heterogens(topology, positions, peptide_chain, receptor_chain)
 
         if peptide_chain is None or receptor_chain is None:
@@ -636,7 +648,11 @@ def compute_interaction_energy(
 
         # Build complex system — adds hydrogens once, shared across all modes
         sys_complex, topo_h, pos_h, bond_info, extra_xmls = _create_implicit_system(
-            topology, positions, solvent_model, peptide_chain=peptide_chain, ph=ph,
+            topology,
+            positions,
+            solvent_model,
+            peptide_chain=peptide_chain,
+            ph=ph,
             random_seed=random_seed,
         )
         platform, props = _get_platform(device)
@@ -658,8 +674,15 @@ def compute_interaction_energy(
         if "raw" in modes:
             print(f"[{sample_id}] Raw mode...")
             e_c, e_p, e_r = _evaluate_subsystem_energies(
-                simulation, topo_h, pos_h, peptide_chain, receptor_chain, solvent_model, device,
-                bond_info=bond_info, ncaa_xmls=extra_xmls,
+                simulation,
+                topo_h,
+                pos_h,
+                peptide_chain,
+                receptor_chain,
+                solvent_model,
+                device,
+                bond_info=bond_info,
+                ncaa_xmls=extra_xmls,
             )
             if e_c is not None and e_p is not None and e_r is not None:
                 result["raw_e_complex"] = e_c
@@ -677,9 +700,7 @@ def compute_interaction_energy(
             print(f"[{sample_id}] Minimizing (backbone-restrained + unrestrained)...")
             try:
                 backbone_names = {"N", "CA", "C", "O"}
-                restraint = openmm.CustomExternalForce(
-                    "0.5 * k * ((x-x0)^2 + (y-y0)^2 + (z-z0)^2)"
-                )
+                restraint = openmm.CustomExternalForce("0.5 * k * ((x-x0)^2 + (y-y0)^2 + (z-z0)^2)")
                 restraint.addGlobalParameter(
                     "k", 100.0 * unit.kilojoules_per_mole / unit.nanometer**2
                 )
@@ -717,8 +738,15 @@ def compute_interaction_energy(
 
                 if "relaxed" in modes:
                     e_c, e_p, e_r = _evaluate_subsystem_energies(
-                        simulation, topo_h, pos_relaxed, peptide_chain, receptor_chain,
-                        solvent_model, device, bond_info=bond_info, ncaa_xmls=extra_xmls,
+                        simulation,
+                        topo_h,
+                        pos_relaxed,
+                        peptide_chain,
+                        receptor_chain,
+                        solvent_model,
+                        device,
+                        bond_info=bond_info,
+                        ncaa_xmls=extra_xmls,
                     )
                     if e_c is not None and e_p is not None and e_r is not None:
                         result["relaxed_e_complex"] = e_c
@@ -753,8 +781,15 @@ def compute_interaction_energy(
                 pos_md = state.getPositions()
 
                 e_c, e_p, e_r = _evaluate_subsystem_energies(
-                    simulation, topo_h, pos_md, peptide_chain, receptor_chain,
-                    solvent_model, device, bond_info=bond_info, ncaa_xmls=extra_xmls,
+                    simulation,
+                    topo_h,
+                    pos_md,
+                    peptide_chain,
+                    receptor_chain,
+                    solvent_model,
+                    device,
+                    bond_info=bond_info,
+                    ncaa_xmls=extra_xmls,
                 )
                 if e_c is not None and e_p is not None and e_r is not None:
                     result["after_md_e_complex"] = e_c
@@ -792,7 +827,9 @@ def main():
     parser.add_argument("--solvent-model", choices=["obc2", "gbn2"], default="obc2")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument(
-        "--modes", nargs="+", default=["raw", "relaxed", "after_md"],
+        "--modes",
+        nargs="+",
+        default=["raw", "relaxed", "after_md"],
         choices=["raw", "relaxed", "after_md"],
         help="Which modes to compute (default: all three)",
     )
@@ -802,10 +839,12 @@ def main():
     parser.add_argument("--after-md-timestep-fs", type=float, default=2.0)
     parser.add_argument("--after-md-temperature-k", type=float, default=300.0)
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(parser)
     args = parser.parse_args()
 
     from binding_metrics.cli import log_to_file
+
     with log_to_file(args.log_file):
         import pandas as pd
 

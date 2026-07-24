@@ -36,10 +36,7 @@ def _make_seed_dir(
 
     if conf is not None:
         # Serialise numpy arrays as lists for JSON
-        serialisable = {
-            k: v.tolist() if isinstance(v, np.ndarray) else v
-            for k, v in conf.items()
-        }
+        serialisable = {k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()}
         (seed_dir / f"{prefix}_confidences.json").write_text(json.dumps(serialisable))
 
     # Minimal stub structure file
@@ -96,8 +93,13 @@ class TestFindPredictionFiles:
         from binding_metrics.metrics.openfold import _find_prediction_files
 
         out = _make_seed_dir(
-            tmp_path, "myq", seed=1, sample=1,
-            agg=_default_agg(), conf=_default_conf(), timing={"inference": 10.0},
+            tmp_path,
+            "myq",
+            seed=1,
+            sample=1,
+            agg=_default_agg(),
+            conf=_default_conf(),
+            timing={"inference": 10.0},
         )
         files = _find_prediction_files(out, "myq", seed=1, sample=1)
 
@@ -171,10 +173,9 @@ class TestParseConfidences:
 
         conf = _default_conf(n_atoms=15, n_tokens=5, with_pde=True)
         path = tmp_path / "conf.json"
-        path.write_text(json.dumps({
-            k: v.tolist() if isinstance(v, np.ndarray) else v
-            for k, v in conf.items()
-        }))
+        path.write_text(
+            json.dumps({k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()})
+        )
         result = _parse_confidences(path)
 
         assert result["plddt_per_atom"] is not None
@@ -189,10 +190,9 @@ class TestParseConfidences:
 
         conf = _default_conf(with_pde=False)
         path = tmp_path / "conf_nopde.json"
-        path.write_text(json.dumps({
-            k: v.tolist() if isinstance(v, np.ndarray) else v
-            for k, v in conf.items()
-        }))
+        path.write_text(
+            json.dumps({k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()})
+        )
         result = _parse_confidences(path)
 
         assert result["pde"] is None
@@ -224,8 +224,7 @@ class TestComputeOpenfoldMetrics:
         agg = _default_agg(n_chains=2)
         conf = _default_conf(n_atoms=n_atoms, n_tokens=n_tokens, with_pde=True)
         timing = {"inference": 45.2, "msa": 12.3}
-        _make_seed_dir(tmp_path, "prot", seed=1, sample=1,
-                       agg=agg, conf=conf, timing=timing)
+        _make_seed_dir(tmp_path, "prot", seed=1, sample=1, agg=agg, conf=conf, timing=timing)
 
         metrics = compute_openfold_metrics(tmp_path, "prot", seed=1, sample=1)
 
@@ -319,6 +318,7 @@ class TestComputeOpenfoldMetrics:
         assert m1["avg_plddt"] == pytest.approx(70.0)
         assert m2["avg_plddt"] == pytest.approx(90.0)
 
+
 # ---------------------------------------------------------------------------
 # Tests: interface PAE / PDE slicing
 # ---------------------------------------------------------------------------
@@ -345,7 +345,7 @@ class TestInterfacePaeStats:
         atoms = self._two_chain_atoms(n_a, n_b)
         # tokens ordered A(0,1) then B(2,3,4); make the B×A block deterministic
         pae = np.zeros((5, 5), dtype=float)
-        pae[2:5, 0:2] = 4.0   # receptor→? here binder=B rows, receptor=A cols
+        pae[2:5, 0:2] = 4.0  # receptor→? here binder=B rows, receptor=A cols
         pae[0:2, 2:5] = 2.0
         stats = _interface_pae_stats(pae, atoms, binder_chain="B", receptor_chain="A")
 
@@ -424,8 +424,7 @@ requires_example_pdb = pytest.mark.skipif(
 
 def _count_pdb_atoms(pdb_path: Path) -> int:
     return sum(
-        1 for line in pdb_path.read_text().splitlines()
-        if line.startswith(("ATOM  ", "HETATM"))
+        1 for line in pdb_path.read_text().splitlines() if line.startswith(("ATOM  ", "HETATM"))
     )
 
 
@@ -442,7 +441,8 @@ def _count_pdb_residues(pdb_path: Path) -> int:
 
 def _pdb_chains(pdb_path: Path) -> set:
     return {
-        line[21] for line in pdb_path.read_text().splitlines()
+        line[21]
+        for line in pdb_path.read_text().splitlines()
         if line.startswith(("ATOM  ", "HETATM"))
     }
 

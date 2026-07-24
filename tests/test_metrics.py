@@ -32,9 +32,7 @@ class TestSASA:
 
             try:
                 with pytest.raises(ImportError, match="mdtraj"):
-                    sasa.calculate_buried_sasa(
-                        "fake.dcd", "fake.pdb", [0, 1], [2, 3]
-                    )
+                    sasa.calculate_buried_sasa("fake.dcd", "fake.pdb", [0, 1], [2, 3])
             finally:
                 sasa.md = original_md
 
@@ -109,9 +107,7 @@ class TestContacts:
 
         try:
             with pytest.raises(ImportError, match="mdtraj"):
-                contacts.calculate_contacts(
-                    "fake.dcd", "fake.pdb", [0, 1], [2, 3]
-                )
+                contacts.calculate_contacts("fake.dcd", "fake.pdb", [0, 1], [2, 3])
         finally:
             contacts.md = original_md
 
@@ -139,9 +135,7 @@ class TestContacts:
         assert result.dtype == np.float64
 
     @pytest.mark.integration
-    def test_contacts_empty_indices_returns_zeros(
-        self, sample_pdb_path: Path, tmp_path: Path
-    ):
+    def test_contacts_empty_indices_returns_zeros(self, sample_pdb_path: Path, tmp_path: Path):
         """Empty indices should return zeros."""
         pytest.importorskip("mdtraj")
         import mdtraj as md
@@ -181,9 +175,7 @@ class TestEnergy:
 
         try:
             with pytest.raises(ImportError, match="mdtraj"):
-                energy.calculate_interaction_energy(
-                    "fake.dcd", "fake.pdb", [0, 1], [2, 3]
-                )
+                energy.calculate_interaction_energy("fake.dcd", "fake.pdb", [0, 1], [2, 3])
         finally:
             energy.md = original_md
 
@@ -210,12 +202,8 @@ class TestEnergy:
         traj_path = tmp_path / "test.dcd"
         traj.save_dcd(str(traj_path))
 
-        ligand_indices = get_chain_atom_indices(
-            example_pdb_path, [example_pdb_chains["ligand"]]
-        )
-        receptor_indices = get_chain_atom_indices(
-            example_pdb_path, example_pdb_chains["receptor"]
-        )
+        ligand_indices = get_chain_atom_indices(example_pdb_path, [example_pdb_chains["ligand"]])
+        receptor_indices = get_chain_atom_indices(example_pdb_path, example_pdb_chains["receptor"])
 
         result = calculate_interaction_energy(
             traj_path,
@@ -249,12 +237,8 @@ class TestEnergy:
         traj_path = tmp_path / "test.dcd"
         traj.save_dcd(str(traj_path))
 
-        ligand_indices = get_chain_atom_indices(
-            example_pdb_path, [example_pdb_chains["ligand"]]
-        )
-        receptor_indices = get_chain_atom_indices(
-            example_pdb_path, example_pdb_chains["receptor"]
-        )
+        ligand_indices = get_chain_atom_indices(example_pdb_path, [example_pdb_chains["ligand"]])
+        receptor_indices = get_chain_atom_indices(example_pdb_path, example_pdb_chains["receptor"])
 
         result = calculate_component_energies(
             traj_path,
@@ -313,9 +297,7 @@ class TestRMSD:
         traj_path = tmp_path / "test.dcd"
         traj.save_dcd(str(traj_path))
 
-        result = calculate_rmsd(
-            traj_path, sample_pdb_path, atom_indices=list(range(33))
-        )
+        result = calculate_rmsd(traj_path, sample_pdb_path, atom_indices=list(range(33)))
 
         assert isinstance(result, np.ndarray)
         assert len(result) == traj.n_frames

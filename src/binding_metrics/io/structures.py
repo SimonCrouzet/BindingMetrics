@@ -80,6 +80,7 @@ def load_structure(path: str | Path) -> tuple:
     try:
         if suffix in (".cif", ".mmcif"):
             from openmm.app import PDBxFile
+
             struct = PDBxFile(str(path))
         elif suffix == ".pdb":
             struct = PDBFile(str(path))
@@ -110,11 +111,37 @@ def detect_chains(topology) -> tuple[Optional[str], Optional[str]]:
     # Amino acids only — exclude water (HOH) and nucleic acids which are also
     # in app.PDBFile._standardResidues and would cause water chains to be ranked.
     amino_acids = {
-        "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
-        "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
-        "TYR", "VAL",
-        "CYX", "HID", "HIE", "HIP", "ASPL", "GLUL", "LYSL",
-        "NMG", "NMA", "MVA", "MLE",
+        "ALA",
+        "ARG",
+        "ASN",
+        "ASP",
+        "CYS",
+        "GLN",
+        "GLU",
+        "GLY",
+        "HIS",
+        "ILE",
+        "LEU",
+        "LYS",
+        "MET",
+        "PHE",
+        "PRO",
+        "SER",
+        "THR",
+        "TRP",
+        "TYR",
+        "VAL",
+        "CYX",
+        "HID",
+        "HIE",
+        "HIP",
+        "ASPL",
+        "GLUL",
+        "LYSL",
+        "NMG",
+        "NMA",
+        "MVA",
+        "MLE",
     }
 
     chain_sizes = []
@@ -184,9 +211,9 @@ def detect_chains_from_file(
             label_ids = atom_site["label_asym_id"].as_array()
             atom_names = atom_site["auth_atom_id"].as_array()
             for auth, label, name in zip(auth_ids, label_ids, atom_names):
-                if str(name).strip() == "CA":   # protein Cα only
+                if str(name).strip() == "CA":  # protein Cα only
                     a_str, l_str = str(auth), str(label)
-                    if a_str not in auth_to_label:   # first occurrence wins
+                    if a_str not in auth_to_label:  # first occurrence wins
                         auth_to_label[a_str] = l_str
         except Exception:
             pass  # not all CIF files have both columns; mapping stays empty
@@ -201,10 +228,14 @@ def detect_chains_from_file(
 
     chain_info = []
     for cid in chain_ids:
-        n_res = len(set(zip(
-            aa_atoms.chain_id[aa_atoms.chain_id == cid],
-            aa_atoms.res_id[aa_atoms.chain_id == cid],
-        )))
+        n_res = len(
+            set(
+                zip(
+                    aa_atoms.chain_id[aa_atoms.chain_id == cid],
+                    aa_atoms.res_id[aa_atoms.chain_id == cid],
+                )
+            )
+        )
         chain_info.append({"id": str(cid), "n_residues": int(n_res)})
 
     chain_info.sort(key=lambda c: c["n_residues"])
@@ -225,27 +256,24 @@ def detect_chains_from_file(
         else:
             # Multiple candidates — pick the one with the most Cα contacts
             # to the peptide within 8 Å (interface-proximity criterion).
-            pep_ca = aa_atoms[
-                (aa_atoms.chain_id == peptide_chain) &
-                (aa_atoms.atom_name == "CA")
-            ]
+            pep_ca = aa_atoms[(aa_atoms.chain_id == peptide_chain) & (aa_atoms.atom_name == "CA")]
             best_chain, best_contacts = None, -1
             for ci in chain_info:
                 if ci["id"] == peptide_chain:
                     continue
-                cand_ca = aa_atoms[
-                    (aa_atoms.chain_id == ci["id"]) &
-                    (aa_atoms.atom_name == "CA")
-                ]
+                cand_ca = aa_atoms[(aa_atoms.chain_id == ci["id"]) & (aa_atoms.atom_name == "CA")]
                 if len(pep_ca) == 0 or len(cand_ca) == 0:
                     contacts = 0
                 else:
                     import numpy as np
                     from biotite.structure import distance
-                    dists = np.array([
-                        distance(pep_ca.coord, cand_ca.coord[j]).min()
-                        for j in range(len(cand_ca))
-                    ])
+
+                    dists = np.array(
+                        [
+                            distance(pep_ca.coord, cand_ca.coord[j]).min()
+                            for j in range(len(cand_ca))
+                        ]
+                    )
                     contacts = int((dists < 8.0).sum())
                 if contacts > best_contacts:
                     best_contacts, best_chain = contacts, ci["id"]
@@ -255,7 +283,9 @@ def detect_chains_from_file(
         rec_auto = receptor_chain is None
 
     pep_info = next((c for c in chain_info if c["id"] == peptide_chain), None)
-    rec_info = next((c for c in chain_info if c["id"] == receptor_chain), None) if receptor_chain else None
+    rec_info = (
+        next((c for c in chain_info if c["id"] == receptor_chain), None) if receptor_chain else None
+    )
 
     if verbose:
         print(f"  Chain detection ({path.name}):")
@@ -305,19 +335,50 @@ def strip_heterogens(
     import numpy as np
 
     amino_acids = {
-        "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
-        "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
-        "TYR", "VAL",
-        "CYX", "HID", "HIE", "HIP", "ASPL", "GLUL", "LYSL",
-        "NMG", "NMA", "MVA", "MLE",
+        "ALA",
+        "ARG",
+        "ASN",
+        "ASP",
+        "CYS",
+        "GLN",
+        "GLU",
+        "GLY",
+        "HIS",
+        "ILE",
+        "LEU",
+        "LYS",
+        "MET",
+        "PHE",
+        "PRO",
+        "SER",
+        "THR",
+        "TRP",
+        "TYR",
+        "VAL",
+        "CYX",
+        "HID",
+        "HIE",
+        "HIP",
+        "ASPL",
+        "GLUL",
+        "LYSL",
+        "NMG",
+        "NMA",
+        "MVA",
+        "MLE",
     }
 
     protein_chain_ids = {c for c in (peptide_chain, receptor_chain) if c}
-    protein_pos = np.array([
-        [p.x, p.y, p.z]
-        for a, p in zip(topology.atoms(), positions)
-        if a.residue.chain.id in protein_chain_ids
-    ]) * 10  # nm → Å
+    protein_pos = (
+        np.array(
+            [
+                [p.x, p.y, p.z]
+                for a, p in zip(topology.atoms(), positions)
+                if a.residue.chain.id in protein_chain_ids
+            ]
+        )
+        * 10
+    )  # nm → Å
 
     _water_names = {"HOH", "WAT", "TIP", "TIP3", "SOL"}
 
@@ -332,23 +393,30 @@ def strip_heterogens(
             atoms_to_remove.extend(res.atoms())
             continue
         # Other heterogens: warn if close to protein (may be a cofactor/ion)
-        res_pos = np.array([
-            [positions[a.index].x, positions[a.index].y, positions[a.index].z]
-            for a in res.atoms()
-        ]) * 10  # nm → Å
-        if len(protein_pos) > 0 and len(res_pos) > 0:
-            dists = np.linalg.norm(
-                res_pos[:, None, :] - protein_pos[None, :, :], axis=-1
+        res_pos = (
+            np.array(
+                [
+                    [positions[a.index].x, positions[a.index].y, positions[a.index].z]
+                    for a in res.atoms()
+                ]
             )
+            * 10
+        )  # nm → Å
+        if len(protein_pos) > 0 and len(res_pos) > 0:
+            dists = np.linalg.norm(res_pos[:, None, :] - protein_pos[None, :, :], axis=-1)
             min_dist = float(dists.min())
             if min_dist < warn_cutoff_ang:
-                print(f"  Warning: removing heterogen {res.name}{res.id} "
-                      f"(chain {res.chain.id}) which is {min_dist:.1f} Å from "
-                      f"the protein — it may be a functional cofactor or ion. "
-                      f"Parametrize it via custom_bond_handler to keep it.")
+                print(
+                    f"  Warning: removing heterogen {res.name}{res.id} "
+                    f"(chain {res.chain.id}) which is {min_dist:.1f} Å from "
+                    f"the protein — it may be a functional cofactor or ion. "
+                    f"Parametrize it via custom_bond_handler to keep it."
+                )
             else:
-                print(f"  Removing distant heterogen {res.name}{res.id} "
-                      f"(chain {res.chain.id}, {min_dist:.1f} Å from protein)")
+                print(
+                    f"  Removing distant heterogen {res.name}{res.id} "
+                    f"(chain {res.chain.id}, {min_dist:.1f} Å from protein)"
+                )
         else:
             print(f"  Removing heterogen {res.name}{res.id} (chain {res.chain.id})")
         atoms_to_remove.extend(res.atoms())
@@ -441,11 +509,20 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
         asym1, seq1 = _asym_seq(r1)
         asym2, seq2 = _asym_seq(r2)
         bond_id = f"covale{n_existing + i + 1}"
-        loop.add_row([
-            bond_id, "covale",
-            asym1, r1.name, seq1, a1.name,
-            asym2, r2.name, seq2, a2.name,
-        ])
+        loop.add_row(
+            [
+                bond_id,
+                "covale",
+                asym1,
+                r1.name,
+                seq1,
+                a1.name,
+                asym2,
+                r2.name,
+                seq2,
+                a2.name,
+            ]
+        )
 
     doc.write_file(str(cif_path))
 
@@ -548,7 +625,7 @@ def save_cif(
 
     try:
         source_block = gemmi.cif.read(str(source_cif_path)).sole_block()
-        output_doc   = gemmi.cif.read(str(tmp_path))
+        output_doc = gemmi.cif.read(str(tmp_path))
         output_block = output_doc.sole_block()
 
         # ── Restore original chain IDs and residue numbers ───────────────────────
@@ -576,8 +653,8 @@ def save_cif(
                 ["label_asym_id", "auth_asym_id", "auth_seq_id", "auth_atom_id"],
             )
             s_prev_auth = ""
-            s_prev_seq  = ""
-            s_res_idx   = -1
+            s_prev_seq = ""
+            s_res_idx = -1
             for row in src_table:
                 label, auth, seq, atom = row[0], row[1], row[2], row[3]
                 if label not in label_to_auth:
@@ -615,20 +692,20 @@ def save_cif(
             ["auth_asym_id", "auth_seq_id", "auth_atom_id", "label_asym_id"],
         )
         if out_table and out_to_auth:
-            o_res_idx:  dict[str, int]   = {}
+            o_res_idx: dict[str, int] = {}
             o_prev_key: dict[str, tuple] = {}
             for row in out_table:
                 out_ch, seq, atom = row[0], row[1], row[2]
                 auth_ch = out_to_auth.get(out_ch, out_ch)
                 res_key = (out_ch, seq)
                 if auth_ch not in o_res_idx:
-                    o_res_idx[auth_ch]  = 0
+                    o_res_idx[auth_ch] = 0
                     o_prev_key[auth_ch] = res_key
                 elif res_key != o_prev_key[auth_ch]:
                     o_res_idx[auth_ch] += 1
                     o_prev_key[auth_ch] = res_key
-                row[0] = auth_ch   # auth_asym_id  → original auth
-                row[3] = auth_ch   # label_asym_id → same, for consistency
+                row[0] = auth_ch  # auth_asym_id  → original auth
+                row[3] = auth_ch  # label_asym_id → same, for consistency
                 orig_seq = seq_map.get((auth_ch, o_res_idx[auth_ch]))
                 if orig_seq is not None:
                     row[1] = orig_seq  # auth_seq_id → original residue number
@@ -636,8 +713,12 @@ def save_cif(
         # Patch _struct_conn chain IDs (PDBxFile writes label_asym_id with
         # sequential letters; auth_asym_id variants may also appear).
         if out_to_auth:
-            for col in ("ptnr1_label_asym_id", "ptnr2_label_asym_id",
-                        "ptnr1_auth_asym_id",  "ptnr2_auth_asym_id"):
+            for col in (
+                "ptnr1_label_asym_id",
+                "ptnr2_label_asym_id",
+                "ptnr1_auth_asym_id",
+                "ptnr2_auth_asym_id",
+            ):
                 try:
                     sc_table = output_block.find("_struct_conn.", [col])
                     for row in sc_table:
@@ -764,22 +845,14 @@ def extract_model_to_tempfile(path: Path, model_num: int) -> Path:
 
     # loop.values is a flat row-major list; set_all_values() takes column-major.
     vals = list(loop.values)
-    keep_rows = [
-        i for i in range(n_rows)
-        if vals[i * n_cols + model_col].strip() == str(model_num)
-    ]
+    keep_rows = [i for i in range(n_rows) if vals[i * n_cols + model_col].strip() == str(model_num)]
     if not keep_rows:
         raise ValueError(f"Model {model_num} not found in {path}")
 
-    columns = [
-        [vals[r * n_cols + c] for r in keep_rows]
-        for c in range(n_cols)
-    ]
+    columns = [[vals[r * n_cols + c] for r in keep_rows] for c in range(n_cols)]
     loop.set_all_values(columns)
 
-    tmp = tempfile.NamedTemporaryFile(
-        suffix=".cif", delete=False, prefix=f"bm_model{model_num}_"
-    )
+    tmp = tempfile.NamedTemporaryFile(suffix=".cif", delete=False, prefix=f"bm_model{model_num}_")
     tmp.close()
     tmp_path = Path(tmp.name)
     doc.write_file(str(tmp_path))
@@ -829,8 +902,7 @@ def merge_cif_models(model_paths: list[tuple[int, Path]], output_path: Path) -> 
     first_vals = list(loop.values)
     n_rows = len(first_vals) // n_cols
     columns: list[list[str]] = [
-        [first_vals[r * n_cols + c] for r in range(n_rows)]
-        for c in range(n_cols)
+        [first_vals[r * n_cols + c] for r in range(n_rows)] for c in range(n_cols)
     ]
     for r in range(n_rows):
         columns[model_col][r] = str(first_num)
@@ -867,9 +939,7 @@ def merge_cif_models(model_paths: list[tuple[int, Path]], output_path: Path) -> 
             if c == model_col:
                 col_vals = [str(model_num)] * other_n_rows
             else:
-                col_vals = [
-                    other_vals[r * other_n_cols + other_c] for r in range(other_n_rows)
-                ]
+                col_vals = [other_vals[r * other_n_cols + other_c] for r in range(other_n_rows)]
             columns[c].extend(col_vals)
 
     loop.set_all_values(columns)
@@ -891,11 +961,13 @@ def get_residue_info(pdb_path: str | Path) -> list[dict]:
 
     residues = []
     for residue in topology.residues():
-        residues.append({
-            "name": residue.name,
-            "index": residue.index,
-            "chain": residue.chain.id,
-            "n_atoms": len(list(residue.atoms())),
-        })
+        residues.append(
+            {
+                "name": residue.name,
+                "index": residue.index,
+                "chain": residue.chain.id,
+                "n_atoms": len(list(residue.atoms())),
+            }
+        )
 
     return residues

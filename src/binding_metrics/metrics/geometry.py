@@ -75,6 +75,7 @@ def _load_structure(path: Path):
 def _auto_detect_designed_chain(atoms) -> Optional[str]:
     """Return chain ID of the smallest protein chain."""
     from binding_metrics.metrics.interface import detect_interface_chains
+
     pep, _ = detect_interface_chains(atoms, None)
     return pep
 
@@ -82,6 +83,7 @@ def _auto_detect_designed_chain(atoms) -> Optional[str]:
 def _auto_detect_chains(atoms, peptide_chain=None, receptor_chain=None):
     """Return (peptide_chain, receptor_chain) with auto-detection as needed."""
     from binding_metrics.metrics.interface import detect_interface_chains
+
     if peptide_chain is None or receptor_chain is None:
         auto_pep, auto_rec = detect_interface_chains(atoms, peptide_chain)
         peptide_chain = peptide_chain or auto_pep
@@ -215,15 +217,17 @@ def compute_ramachandran(
         counts[region] += 1
         if d_aa:
             n_d += 1
-        per_residue.append({
-            "res_id": int(ca.res_id),
-            "res_name": res_name,
-            "chain": str(ca.chain_id),
-            "phi": phi,
-            "psi": psi,
-            "is_d_aa": d_aa,
-            "region": region,
-        })
+        per_residue.append(
+            {
+                "res_id": int(ca.res_id),
+                "res_name": res_name,
+                "chain": str(ca.chain_id),
+                "phi": phi,
+                "psi": psi,
+                "is_d_aa": d_aa,
+                "region": region,
+            }
+        )
 
     n_eval = len(per_residue)
     if n_eval == 0:
@@ -318,14 +322,16 @@ def compute_omega_planarity(
         dev = min(abs(omega - 180.0), abs(omega + 180.0))
         is_outlier = dev > 15.0
         deviations.append(dev)
-        per_residue.append({
-            "res_id": int(ca.res_id),
-            "res_name": str(ca.res_name).strip(),
-            "chain": str(ca.chain_id),
-            "omega": omega,
-            "deviation": dev,
-            "is_outlier": is_outlier,
-        })
+        per_residue.append(
+            {
+                "res_id": int(ca.res_id),
+                "res_name": str(ca.res_name).strip(),
+                "chain": str(ca.chain_id),
+                "omega": omega,
+                "deviation": dev,
+                "is_outlier": is_outlier,
+            }
+        )
 
     n_eval = len(deviations)
     if n_eval == 0:
@@ -369,11 +375,14 @@ def _fibonacci_sphere(n: int) -> np.ndarray:
     i = np.arange(n, dtype=float)
     theta = np.arccos(1 - 2 * (i + 0.5) / n)
     phi_angles = 2 * np.pi * i / golden
-    return np.stack([
-        np.sin(theta) * np.cos(phi_angles),
-        np.sin(theta) * np.sin(phi_angles),
-        np.cos(theta),
-    ], axis=1)
+    return np.stack(
+        [
+            np.sin(theta) * np.cos(phi_angles),
+            np.sin(theta) * np.sin(phi_angles),
+            np.cos(theta),
+        ],
+        axis=1,
+    )
 
 
 def _build_surface_dots(
@@ -422,9 +431,7 @@ def _build_surface_dots(
     all_normals = []
 
     same_coords = all_same_chain_atoms.coord  # (n_same, 3)
-    same_vdw = np.array([
-        _get_vdw(str(a.element).strip()) for a in all_same_chain_atoms
-    ])
+    same_vdw = np.array([_get_vdw(str(a.element).strip()) for a in all_same_chain_atoms])
     if len(same_coords) == 0 or len(opposite_atoms) == 0:
         return np.zeros((0, 3)), np.zeros((0, 3))
 
@@ -591,7 +598,7 @@ def compute_shape_complementarity(
     # Compute scores A → B: for each A dot, find nearest B dot
     tree_B = cKDTree(dots_B)
     dist_AB, idx_AB = tree_B.query(dots_A, k=1)
-    omega_AB = np.exp(-weight * dist_AB ** 2)
+    omega_AB = np.exp(-weight * dist_AB**2)
     # Normal dot product with L&C sign flip: complementary (anti-parallel in
     # the lab frame) surfaces yield a POSITIVE product.
     dot_product_AB = np.sum(normals_A * (-normals_B[idx_AB]), axis=1)
@@ -600,7 +607,7 @@ def compute_shape_complementarity(
     # Compute scores B → A
     tree_A = cKDTree(dots_A)
     dist_BA, idx_BA = tree_A.query(dots_B, k=1)
-    omega_BA = np.exp(-weight * dist_BA ** 2)
+    omega_BA = np.exp(-weight * dist_BA**2)
     dot_product_BA = np.sum(normals_B * (-normals_A[idx_BA]), axis=1)
     scores_B = omega_BA * dot_product_BA
 
@@ -771,16 +778,12 @@ def compute_buried_void_volume(
         return _nan_result
 
     # Interface void: unoccupied, inaccessible in complex, but accessible in either half
-    interface_void = (
-        ~solid_complex
-        & ~accessible_complex
-        & (accessible_pep | accessible_rec)
-    )
+    interface_void = ~solid_complex & ~accessible_complex & (accessible_pep | accessible_rec)
 
     void_voxels = int(interface_void.sum())
     total_voxels = int(np.prod(grid_dims))
-    void_volume = void_voxels * grid_spacing ** 3
-    box_volume = total_voxels * grid_spacing ** 3
+    void_volume = void_voxels * grid_spacing**3
+    box_volume = total_voxels * grid_spacing**3
 
     return {
         "void_volume_A3": float(void_volume),
@@ -801,15 +804,21 @@ def main():
     )
     parser.add_argument("--input", "-i", type=Path, required=True, help="Input CIF/PDB file")
     parser.add_argument(
-        "--chain", type=str, default=None,
+        "--chain",
+        type=str,
+        default=None,
         help="Chain ID for Ramachandran/omega analysis (auto-detect if omitted)",
     )
     parser.add_argument(
-        "--peptide-chain", type=str, default=None,
+        "--peptide-chain",
+        type=str,
+        default=None,
         help="Peptide chain ID for Sc/void (auto-detect if omitted)",
     )
     parser.add_argument(
-        "--receptor-chain", type=str, default=None,
+        "--receptor-chain",
+        type=str,
+        default=None,
         help="Receptor chain ID for Sc/void (auto-detect if omitted)",
     )
     parser.add_argument(
@@ -820,33 +829,48 @@ def main():
     )
     # Sc parameters
     parser.add_argument("--n-dots", type=int, default=150, help="Surface dots per atom for Sc")
-    parser.add_argument("--interface-cutoff", type=float, default=6.0, help="Interface atom pre-selection cutoff Å")
-    parser.add_argument("--buried-cutoff", type=float, default=2.4, help="Buried-patch dot cutoff Å for Sc")
-    parser.add_argument("--normal-radius", type=float, default=6.0, help="Smoothed-normal neighbourhood radius Å")
-    parser.add_argument("--weight", type=float, default=0.5, help="Gaussian weight w (Å⁻²) for Sc exp(-w·d²)")
+    parser.add_argument(
+        "--interface-cutoff", type=float, default=6.0, help="Interface atom pre-selection cutoff Å"
+    )
+    parser.add_argument(
+        "--buried-cutoff", type=float, default=2.4, help="Buried-patch dot cutoff Å for Sc"
+    )
+    parser.add_argument(
+        "--normal-radius", type=float, default=6.0, help="Smoothed-normal neighbourhood radius Å"
+    )
+    parser.add_argument(
+        "--weight", type=float, default=0.5, help="Gaussian weight w (Å⁻²) for Sc exp(-w·d²)"
+    )
     # Void parameters
     parser.add_argument("--grid-spacing", type=float, default=0.5, help="Grid spacing Å for void")
     parser.add_argument("--probe-radius", type=float, default=1.4, help="Probe radius Å for void")
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(parser)
     args = parser.parse_args()
 
     from binding_metrics.cli import log_to_file
+
     with log_to_file(args.log_file):
         print(f"Computing '{args.metric}' metrics for: {args.input}")
 
         if args.metric == "ramachandran":
             result = compute_ramachandran(args.input, chain=args.chain)
             scalar_keys = [
-                "ramachandran_favoured_pct", "ramachandran_allowed_pct",
-                "ramachandran_outlier_pct", "ramachandran_outlier_count",
+                "ramachandran_favoured_pct",
+                "ramachandran_allowed_pct",
+                "ramachandran_outlier_pct",
+                "ramachandran_outlier_count",
                 "n_residues_evaluated",
             ]
         elif args.metric == "omega":
             result = compute_omega_planarity(args.input, chain=args.chain)
             scalar_keys = [
-                "omega_mean_dev", "omega_max_dev",
-                "omega_outlier_fraction", "omega_outlier_count", "n_bonds_evaluated",
+                "omega_mean_dev",
+                "omega_max_dev",
+                "omega_outlier_fraction",
+                "omega_outlier_count",
+                "n_bonds_evaluated",
             ]
         elif args.metric == "sc":
             result = compute_shape_complementarity(
@@ -870,8 +894,10 @@ def main():
                 interface_cutoff=args.interface_cutoff,
             )
             scalar_keys = [
-                "void_volume_A3", "void_grid_fraction",
-                "interface_box_volume_A3", "n_interface_atoms",
+                "void_volume_A3",
+                "void_grid_fraction",
+                "interface_box_volume_A3",
+                "n_interface_atoms",
             ]
 
         print(f"\n{args.metric.capitalize()} summary:")

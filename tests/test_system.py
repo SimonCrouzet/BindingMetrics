@@ -59,8 +59,13 @@ def _build_ca_residue(ha_dir, resname="ALA", mirror=False, with_cb=True):
     chain = top.addChain("A")
     res = top.addResidue(resname, chain)
     order = ["N", "CA", "C", "CB", "HA"] if with_cb else ["N", "CA", "C", "HA"]
-    els = {"N": element.nitrogen, "CA": element.carbon, "C": element.carbon,
-           "CB": element.carbon, "HA": element.hydrogen}
+    els = {
+        "N": element.nitrogen,
+        "CA": element.carbon,
+        "C": element.carbon,
+        "CB": element.carbon,
+        "HA": element.hydrogen,
+    }
     for name in order:
         top.addAtom(name, els[name], res)
     positions = unit.Quantity([Vec3(*coords[n]) for n in order], unit.nanometer)
@@ -273,9 +278,7 @@ class TestPrepDeterminism:
         raw_t, raw_p = load_structure(example_pdb_path)
 
         def prepped():
-            t, p = prep_structure(
-                raw_t, raw_p, ph=7.4, keep_water=False, canonicalize=False
-            )
+            t, p = prep_structure(raw_t, raw_p, ph=7.4, keep_water=False, canonicalize=False)
             return t, np.array(p.value_in_unit(unit.nanometer))
 
         topo, first = prepped()
@@ -302,9 +305,7 @@ class TestPrepDeterminism:
         from binding_metrics.io.structures import load_structure
 
         raw_t, raw_p = load_structure(example_pdb_path)
-        top, pos = prep_structure(
-            raw_t, raw_p, ph=7.4, keep_water=False, canonicalize=False
-        )
+        top, pos = prep_structure(raw_t, raw_p, ph=7.4, keep_water=False, canonicalize=False)
         coords = np.array(pos.value_in_unit(unit.nanometer))
 
         bad = []

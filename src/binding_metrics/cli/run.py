@@ -41,9 +41,9 @@ def _warn(msg: str) -> None:
 
 
 def _step(name: str) -> None:
-    print(f"\n{'='*60}", flush=True)
+    print(f"\n{'=' * 60}", flush=True)
     print(f"  Step: {name}", flush=True)
-    print(f"{'='*60}", flush=True)
+    print(f"{'=' * 60}", flush=True)
 
 
 def run_pipeline(
@@ -88,9 +88,9 @@ def run_pipeline(
         receptor_chain=receptor_chain,
         verbose=True,
     )
-    peptide_chain = chain_info["peptide_chain"]           # auth_asym_id (biotite)
+    peptide_chain = chain_info["peptide_chain"]  # auth_asym_id (biotite)
     receptor_chain = chain_info["receptor_chain"]
-    peptide_chain_label = chain_info["peptide_chain_label"]   # label_asym_id (OpenMM)
+    peptide_chain_label = chain_info["peptide_chain_label"]  # label_asym_id (OpenMM)
     receptor_chain_label = chain_info["receptor_chain_label"]
     results["chains"] = chain_info
 
@@ -103,12 +103,17 @@ def run_pipeline(
             from binding_metrics.io.structures import load_structure, save_structure
 
             if not HAS_PDBFIXER:
-                _warn("pdbfixer not available — skipping prep. Install with: pip install binding-metrics[structure]")
+                _warn(
+                    "pdbfixer not available — skipping prep. Install with: pip install binding-metrics[structure]"
+                )
             else:
                 topology, positions = load_structure(input_path)
                 topology, positions = prep_structure(
-                    topology, positions, ph=ph,
-                    keep_water=keep_water, canonicalize=canonicalize,
+                    topology,
+                    positions,
+                    ph=ph,
+                    keep_water=keep_water,
+                    canonicalize=canonicalize,
                     random_seed=random_seed,
                 )
                 prepped_path = output_dir / f"{sample_id}_cleaned.cif"
@@ -123,7 +128,7 @@ def run_pipeline(
                     peptide_chain=peptide_chain,
                     receptor_chain=receptor_chain,
                 )
-                peptide_chain_label  = prepped_chain_info["peptide_chain_label"]
+                peptide_chain_label = prepped_chain_info["peptide_chain_label"]
                 receptor_chain_label = prepped_chain_info["receptor_chain_label"]
         except Exception as e:
             _warn(f"Prep failed: {e} — continuing with raw input")
@@ -141,11 +146,14 @@ def run_pipeline(
     try:
         from binding_metrics.core.cyclic import detect_cyclization
         from binding_metrics.io.structures import load_structure
+
         _orig_topo, _orig_pos = load_structure(input_path)
         cyclic_bond_hints = detect_cyclization(_orig_topo, _orig_pos, peptide_chain_label)
         if cyclic_bond_hints:
-            print(f"  Cyclic bond hints from original file: "
-                  f"{[b.cyclic_type for b in cyclic_bond_hints]}")
+            print(
+                f"  Cyclic bond hints from original file: "
+                f"{[b.cyclic_type for b in cyclic_bond_hints]}"
+            )
     except Exception:
         pass
 
@@ -203,7 +211,9 @@ def run_pipeline(
         relaxed_path = prepped_path if prepped_path != input_path else input_path
         working_peptide = peptide_chain_label
         working_receptor = receptor_chain_label
-        print(f"\n  [skip] Relaxation skipped — using {'prepped' if relaxed_path != input_path else 'raw'} input for downstream steps.")
+        print(
+            f"\n  [skip] Relaxation skipped — using {'prepped' if relaxed_path != input_path else 'raw'} input for downstream steps."
+        )
         results["relax"] = {"skipped": True}
 
     # ------------------------------------------------------------------ Energy
@@ -266,7 +276,11 @@ def run_pipeline(
                 peptide_chain=working_peptide,
                 receptor_chain=working_receptor,
             )
-            results["geometry"] = {"ramachandran": rama, "omega": omega, "shape_complementarity": sc}
+            results["geometry"] = {
+                "ramachandran": rama,
+                "omega": omega,
+                "shape_complementarity": sc,
+            }
         except Exception as e:
             _warn(f"Geometry metrics failed: {e}")
             traceback.print_exc()
@@ -375,14 +389,17 @@ def run_pipeline(
                         compute_evobind_adversarial_check,
                         compute_evobind_score,
                     )
+
                     # Primary score on the OF3 prediction
                     try:
-                        of_metrics.update(compute_evobind_score(
-                            of_structure,
-                            plddt_per_atom=plddt,
-                            binder_chain=peptide_chain,
-                            receptor_chain=receptor_chain,
-                        ))
+                        of_metrics.update(
+                            compute_evobind_score(
+                                of_structure,
+                                plddt_per_atom=plddt,
+                                binder_chain=peptide_chain,
+                                receptor_chain=receptor_chain,
+                            )
+                        )
                     except Exception as e:
                         _warn(f"EvoBind score failed: {e}")
                         of_metrics["evobind_error"] = str(e)
@@ -391,13 +408,15 @@ def run_pipeline(
                     # input design pose? Large ΔCOM = OF3 places the binder
                     # elsewhere → design pose not supported by the prediction.
                     try:
-                        of_metrics.update(compute_evobind_adversarial_check(
-                            design_structure_path=input_path,
-                            afm_structure_path=of_structure,
-                            binder_chain=peptide_chain,
-                            receptor_chain=receptor_chain,
-                            afm_plddt_per_atom=plddt,
-                        ))
+                        of_metrics.update(
+                            compute_evobind_adversarial_check(
+                                design_structure_path=input_path,
+                                afm_structure_path=of_structure,
+                                binder_chain=peptide_chain,
+                                receptor_chain=receptor_chain,
+                                afm_plddt_per_atom=plddt,
+                            )
+                        )
                     except Exception as e:
                         _warn(f"EvoBind adversarial check failed: {e}")
                         of_metrics["adversarial_error"] = str(e)
@@ -452,33 +471,55 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--input", "-i", type=Path, required=True,
-                        help="Input CIF or PDB file")
-    parser.add_argument("--output-dir", "-o", type=Path, required=True,
-                        help="Directory to write all outputs")
-    parser.add_argument("--sample-id", type=str, default=None,
-                        help="Sample identifier (defaults to input file stem)")
-    parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda",
-                        help="Compute device (default: cuda)")
-    parser.add_argument("--peptide-chain", type=str, default=None,
-                        help="Peptide chain ID (auto-detect if omitted)")
-    parser.add_argument("--receptor-chain", type=str, default=None,
-                        help="Receptor chain ID (auto-detect if omitted)")
-    parser.add_argument("--reference", "--native", dest="reference", type=Path, default=None,
-                        help="Reference/native complex for reference-based accuracy "
-                             "metrics (DockQ, fnat, i-RMSD, L-RMSD). Supplying this "
-                             "auto-enables the 'dockq' metric. Requires: pip install DockQ")
+    parser.add_argument("--input", "-i", type=Path, required=True, help="Input CIF or PDB file")
+    parser.add_argument(
+        "--output-dir", "-o", type=Path, required=True, help="Directory to write all outputs"
+    )
+    parser.add_argument(
+        "--sample-id",
+        type=str,
+        default=None,
+        help="Sample identifier (defaults to input file stem)",
+    )
+    parser.add_argument(
+        "--device", choices=["cuda", "cpu"], default="cuda", help="Compute device (default: cuda)"
+    )
+    parser.add_argument(
+        "--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)"
+    )
+    parser.add_argument(
+        "--receptor-chain",
+        type=str,
+        default=None,
+        help="Receptor chain ID (auto-detect if omitted)",
+    )
+    parser.add_argument(
+        "--reference",
+        "--native",
+        dest="reference",
+        type=Path,
+        default=None,
+        help="Reference/native complex for reference-based accuracy "
+        "metrics (DockQ, fnat, i-RMSD, L-RMSD). Supplying this "
+        "auto-enables the 'dockq' metric. Requires: pip install DockQ",
+    )
 
     # Prep
     prep_group = parser.add_argument_group("Preparation")
-    prep_group.add_argument("--skip-prep", action="store_true",
-                            help="Skip PDBFixer prep; run relax on raw input")
-    prep_group.add_argument("--ph", type=float, default=7.4,
-                            help="pH for hydrogen placement during prep (default: 7.4)")
-    prep_group.add_argument("--keep-water", action="store_true",
-                            help="Retain crystallographic water molecules during prep")
     prep_group.add_argument(
-        "--canonicalize", action="store_true",
+        "--skip-prep", action="store_true", help="Skip PDBFixer prep; run relax on raw input"
+    )
+    prep_group.add_argument(
+        "--ph", type=float, default=7.4, help="pH for hydrogen placement during prep (default: 7.4)"
+    )
+    prep_group.add_argument(
+        "--keep-water",
+        action="store_true",
+        help="Retain crystallographic water molecules during prep",
+    )
+    prep_group.add_argument(
+        "--canonicalize",
+        action="store_true",
         help=(
             "Replace non-standard residues with standard equivalents during prep "
             "(e.g. MSE→MET, SEP→SER). By default they are preserved for GAFF2 "
@@ -488,12 +529,19 @@ def main():
 
     # Relaxation
     relax_group = parser.add_argument_group("Relaxation")
-    relax_group.add_argument("--skip-relax", action="store_true",
-                             help="Skip relaxation; run metrics on raw input")
-    relax_group.add_argument("--md-duration-ps", type=float, default=200.0,
-                             help="MD duration in ps (0 = minimize only, default: 200)")
     relax_group.add_argument(
-        "--random-seed", type=_seed_arg, default=DEFAULT_RANDOM_SEED,
+        "--skip-relax", action="store_true", help="Skip relaxation; run metrics on raw input"
+    )
+    relax_group.add_argument(
+        "--md-duration-ps",
+        type=float,
+        default=200.0,
+        help="MD duration in ps (0 = minimize only, default: 200)",
+    )
+    relax_group.add_argument(
+        "--random-seed",
+        type=_seed_arg,
+        default=DEFAULT_RANDOM_SEED,
         metavar="INT|none",
         help=(
             "Seed for all stochastic steps (hydrogen placement, MD velocities "
@@ -516,31 +564,56 @@ def main():
             "Default: all reference-free metrics. 'dockq' also needs --reference."
         ),
     )
-    metrics_group.add_argument("--energy-modes", nargs="+",
-                               choices=["raw", "relaxed", "after_md"],
-                               default=["relaxed"],
-                               help="Energy evaluation modes (default: relaxed)")
+    metrics_group.add_argument(
+        "--energy-modes",
+        nargs="+",
+        choices=["raw", "relaxed", "after_md"],
+        default=["relaxed"],
+        help="Energy evaluation modes (default: relaxed)",
+    )
 
     # OpenFold
     openfold_group = parser.add_argument_group("OpenFold")
-    openfold_group.add_argument("--openfold-mode", choices=["score", "refold"], default="score",
-                                help="score: both chains as templates (confidence); "
-                                     "refold: binder predicted freely (refolding RMSD). "
-                                     "Default: score")
-    openfold_group.add_argument("--openfold-conda-env", type=str, default="openfold3",
-                                help="Conda environment name where OpenFold3 is installed "
-                                     "(default: openfold3). Set to empty string to use "
-                                     "the current environment if openfold3 is installed there.")
+    openfold_group.add_argument(
+        "--openfold-mode",
+        choices=["score", "refold"],
+        default="score",
+        help="score: both chains as templates (confidence); "
+        "refold: binder predicted freely (refolding RMSD). "
+        "Default: score",
+    )
+    openfold_group.add_argument(
+        "--openfold-conda-env",
+        type=str,
+        default="openfold3",
+        help="Conda environment name where OpenFold3 is installed "
+        "(default: openfold3). Set to empty string to use "
+        "the current environment if openfold3 is installed there.",
+    )
 
     # Report
     report_group = parser.add_argument_group("Report")
-    report_group.add_argument("--format", choices=["json", "csv"], default="json",
-                              dest="fmt", help="Results output format (default: json)")
-    report_group.add_argument("--summary", action="store_true",
-                              help="Also write a human-readable summary (*_report.md or *_report.html)")
-    report_group.add_argument("--summary-format", choices=["md", "html"], default="md",
-                              dest="summary_format", help="Summary format (default: md)")
+    report_group.add_argument(
+        "--format",
+        choices=["json", "csv"],
+        default="json",
+        dest="fmt",
+        help="Results output format (default: json)",
+    )
+    report_group.add_argument(
+        "--summary",
+        action="store_true",
+        help="Also write a human-readable summary (*_report.md or *_report.html)",
+    )
+    report_group.add_argument(
+        "--summary-format",
+        choices=["md", "html"],
+        default="md",
+        dest="summary_format",
+        help="Summary format (default: md)",
+    )
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(report_group)
 
     args = parser.parse_args()
@@ -558,15 +631,16 @@ def main():
         metrics = metrics | {"dockq"}
 
     from binding_metrics.cli import log_to_file
+
     with log_to_file(args.log_file):
         sample_id = args.sample_id or args.input.stem
-        print(f"\n{'#'*60}")
+        print(f"\n{'#' * 60}")
         print(f"  binding-metrics-run: {sample_id}")
         print(f"  Input:  {args.input}")
         print(f"  Output: {args.output_dir}")
         if args.log_file:
             print(f"  Log:    {args.log_file}")
-        print(f"{'#'*60}")
+        print(f"{'#' * 60}")
 
         t_total = time.time()
         results = run_pipeline(
@@ -592,25 +666,33 @@ def main():
         results["total_elapsed_s"] = round(time.time() - t_total, 1)
 
         from binding_metrics.protocols.report import write_report
-        results_path = write_report(results, args.output_dir, sample_id,
-                                    fmt=args.fmt, summary=args.summary,
-                                    summary_format=args.summary_format)
+
+        results_path = write_report(
+            results,
+            args.output_dir,
+            sample_id,
+            fmt=args.fmt,
+            summary=args.summary,
+            summary_format=args.summary_format,
+        )
 
         failures = _collect_failures(results)
         if failures:
-            print(f"\n{'#'*60}")
-            print(f"  FAILED in {results['total_elapsed_s']}s — "
-                  f"{len(failures)} step(s) did not complete:")
+            print(f"\n{'#' * 60}")
+            print(
+                f"  FAILED in {results['total_elapsed_s']}s — "
+                f"{len(failures)} step(s) did not complete:"
+            )
             for step, reason in failures:
                 print(f"    [x] {step}: {reason}")
             print(f"  Partial results: {results_path}")
-            print(f"{'#'*60}\n")
+            print(f"{'#' * 60}\n")
             sys.exit(1)
 
-        print(f"\n{'#'*60}")
+        print(f"\n{'#' * 60}")
         print(f"  DONE in {results['total_elapsed_s']}s")
         print(f"  Results: {results_path}")
-        print(f"{'#'*60}\n")
+        print(f"{'#' * 60}\n")
 
 
 if __name__ == "__main__":

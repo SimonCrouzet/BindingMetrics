@@ -96,9 +96,7 @@ class MetricSpec:
 # ---------------------------------------------------------------------------
 
 METRICS: list[MetricSpec] = [
-
     # --- Static structure metrics -------------------------------------------
-
     MetricSpec(
         name="interface",
         import_path="binding_metrics.metrics.interface:compute_interface_metrics",
@@ -110,7 +108,6 @@ METRICS: list[MetricSpec] = [
         peptide_chain_arg="design_chain",
         receptor_chain_arg="receptor_chain",
     ),
-
     MetricSpec(
         name="coulomb",
         import_path="binding_metrics.metrics.electrostatics:compute_coulomb_cross_chain",
@@ -122,7 +119,6 @@ METRICS: list[MetricSpec] = [
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
     ),
-
     MetricSpec(
         name="ramachandran",
         import_path="binding_metrics.metrics.geometry:compute_ramachandran",
@@ -133,7 +129,6 @@ METRICS: list[MetricSpec] = [
         path_arg="cif_path",
         chain_arg="chain",
     ),
-
     MetricSpec(
         name="omega",
         import_path="binding_metrics.metrics.geometry:compute_omega_planarity",
@@ -144,7 +139,6 @@ METRICS: list[MetricSpec] = [
         path_arg="cif_path",
         chain_arg="chain",
     ),
-
     MetricSpec(
         name="shape_complementarity",
         import_path="binding_metrics.metrics.geometry:compute_shape_complementarity",
@@ -156,7 +150,6 @@ METRICS: list[MetricSpec] = [
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
     ),
-
     MetricSpec(
         name="void_volume",
         import_path="binding_metrics.metrics.geometry:compute_buried_void_volume",
@@ -168,7 +161,6 @@ METRICS: list[MetricSpec] = [
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
     ),
-
     MetricSpec(
         name="structure_rmsd",
         import_path="binding_metrics.metrics.comparison:compute_structure_rmsd",
@@ -180,13 +172,11 @@ METRICS: list[MetricSpec] = [
         secondary_path_arg="processed_path",
         peptide_chain_arg="design_chain",
     ),
-
     # --- Reference-based accuracy metrics -----------------------------------
     # These require a *reference* (native) structure and only make sense for
     # benchmarking / retrospective validation, not for scoring a design in
     # isolation. path_arg = predicted model, secondary_path_arg = reference.
     # DockQ performs its own automatic optimal chain-mapping search.
-
     MetricSpec(
         name="dockq",
         import_path="binding_metrics.metrics.dockq:compute_dockq_metrics",
@@ -197,7 +187,6 @@ METRICS: list[MetricSpec] = [
         path_arg="model_path",
         secondary_path_arg="reference_path",
     ),
-
     # --- Trajectory metrics -------------------------------------------------
     # All trajectory metrics receive topology_path from the manifest.
     # Chain arguments map to manifest fields resolved by the benchmark runner:
@@ -206,7 +195,6 @@ METRICS: list[MetricSpec] = [
     #   "receptor_chain"   — chain ID string (compute_receptor_drift only)
     # ligand_indices / receptor_indices are auto-computed from ligand_chain /
     # receptor_chain in the manifest, so users never have to supply raw indices.
-
     MetricSpec(
         name="interaction_energy",
         import_path="binding_metrics.metrics.energy:calculate_interaction_energy",
@@ -215,10 +203,9 @@ METRICS: list[MetricSpec] = [
         chain_mode="interface",
         formats=("pdb",),
         path_arg="trajectory_path",
-        peptide_chain_arg="ligand_indices",    # resolved to indices by runner
+        peptide_chain_arg="ligand_indices",  # resolved to indices by runner
         receptor_chain_arg="receptor_indices",
     ),
-
     MetricSpec(
         name="component_energies",
         import_path="binding_metrics.metrics.energy:calculate_component_energies",
@@ -230,17 +217,15 @@ METRICS: list[MetricSpec] = [
         peptide_chain_arg="ligand_indices",
         receptor_chain_arg="receptor_indices",
     ),
-
     MetricSpec(
         name="rmsd",
         import_path="binding_metrics.metrics.rmsd:calculate_rmsd",
         description="Per-frame RMSD relative to reference frame; auto-selects protein heavy atoms",
         input_type="trajectory",
-        chain_mode="none",                     # atom_indices optional, auto-detected
+        chain_mode="none",  # atom_indices optional, auto-detected
         formats=("pdb", "cif"),
         path_arg="trajectory_path",
     ),
-
     MetricSpec(
         name="rmsf",
         import_path="binding_metrics.metrics.rmsd:calculate_rmsf",
@@ -250,7 +235,6 @@ METRICS: list[MetricSpec] = [
         formats=("pdb", "cif"),
         path_arg="trajectory_path",
     ),
-
     MetricSpec(
         name="ligand_rmsd",
         import_path="binding_metrics.metrics.rmsd:calculate_ligand_rmsd",
@@ -262,18 +246,16 @@ METRICS: list[MetricSpec] = [
         peptide_chain_arg="ligand_indices",
         receptor_chain_arg="receptor_indices",
     ),
-
     MetricSpec(
         name="receptor_drift",
         import_path="binding_metrics.metrics.rmsd:compute_receptor_drift",
         description="Receptor backbone drift over trajectory: aligned and raw RMSD",
         input_type="trajectory",
-        chain_mode="single",                   # takes receptor_chain (chain ID string)
+        chain_mode="single",  # takes receptor_chain (chain ID string)
         formats=("pdb", "cif"),
         path_arg="trajectory_path",
         chain_arg="receptor_chain",
     ),
-
     MetricSpec(
         name="buried_sasa",
         import_path="binding_metrics.metrics.sasa:calculate_buried_sasa",
@@ -285,7 +267,6 @@ METRICS: list[MetricSpec] = [
         peptide_chain_arg="ligand_indices",
         receptor_chain_arg="receptor_indices",
     ),
-
     MetricSpec(
         name="contacts",
         import_path="binding_metrics.metrics.contacts:calculate_contacts",
@@ -297,14 +278,12 @@ METRICS: list[MetricSpec] = [
         peptide_chain_arg="ligand_indices",
         receptor_chain_arg="receptor_indices",
     ),
-
     # --- MD simulation ------------------------------------------------------
     # input_type="md_simulation": takes a single structure file (CIF or PDB),
     # runs the full relaxation pipeline (minimization + MD), and returns timing
     # from RelaxationResult.minimization_time_s / .md_time_s.
     # MD parameters (md_duration_ps, md_timestep_fs, device, …) are specified
     # per-entry in the manifest under the "md" key and forwarded to RelaxationConfig.
-
     MetricSpec(
         name="md_implicit",
         import_path="binding_metrics.protocols.relaxation:run_implicit_relaxation",
@@ -313,13 +292,11 @@ METRICS: list[MetricSpec] = [
             "3-stage minimization + Langevin MD"
         ),
         input_type="md_simulation",
-        chain_mode="none",          # chains auto-detected; override via manifest
+        chain_mode="none",  # chains auto-detected; override via manifest
         formats=("pdb", "cif"),
         path_arg="input_path",
     ),
-
     # --- OpenFold metrics ---------------------------------------------------
-
     MetricSpec(
         name="openfold",
         import_path="binding_metrics.metrics.openfold:compute_openfold_metrics",

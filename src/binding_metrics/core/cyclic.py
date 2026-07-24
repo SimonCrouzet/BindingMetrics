@@ -43,14 +43,15 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Threshold constants (nm)
 # ---------------------------------------------------------------------------
-_AMIDE_BOND_THRESH = 0.20   # N–C amide bond detection
-_DISULFIDE_THRESH  = 0.26   # S–S disulfide detection
-_SUSPECT_THRESH    = 0.22   # any short inter-residue contact (potential cyclic)
+_AMIDE_BOND_THRESH = 0.20  # N–C amide bond detection
+_DISULFIDE_THRESH = 0.26  # S–S disulfide detection
+_SUSPECT_THRESH = 0.22  # any short inter-residue contact (potential cyclic)
 
 
 # ---------------------------------------------------------------------------
 # Exception
 # ---------------------------------------------------------------------------
+
 
 class CyclizationError(ValueError):
     """Raised for unsupported or unrecognised cyclization types."""
@@ -85,6 +86,7 @@ Example using openmmforcefields:
 # Data class
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class CyclicBondInfo:
     """Metadata about the detected cyclic bond, used downstream for restraints.
@@ -101,10 +103,11 @@ class CyclicBondInfo:
         extra_ff_xmls: List of AMBER-format XML strings to load into the
             ForceField for lactam residue templates (ASPL, GLUL, LYSL).
     """
+
     cyclic_type: str
-    atom1_id: tuple   # (chain_id, res_idx_in_chain, atom_name)
+    atom1_id: tuple  # (chain_id, res_idx_in_chain, atom_name)
     atom2_id: tuple
-    omega_ids: Optional[tuple] = None   # 4 × (chain_id, res_idx, atom_name)
+    omega_ids: Optional[tuple] = None  # 4 × (chain_id, res_idx, atom_name)
     extra_ff_xmls: list = field(default_factory=list)
 
 
@@ -262,6 +265,7 @@ _LACTAM_XMLS = {
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _pos_nm(positions) -> np.ndarray:
     """Return positions as (N, 3) float array in nm."""
     try:
@@ -287,8 +291,17 @@ def _peptide_residues(topology, chain_id: str):
 
 # Covalent radii in nm (Cordero et al. 2008; subset covering biomolecules).
 _COVALENT_RADII_NM = {
-    "H": 0.031, "C": 0.076, "N": 0.071, "O": 0.066, "S": 0.105, "P": 0.107,
-    "F": 0.057, "CL": 0.102, "BR": 0.120, "I": 0.139, "SE": 0.120,
+    "H": 0.031,
+    "C": 0.076,
+    "N": 0.071,
+    "O": 0.066,
+    "S": 0.105,
+    "P": 0.107,
+    "F": 0.057,
+    "CL": 0.102,
+    "BR": 0.120,
+    "I": 0.139,
+    "SE": 0.120,
 }
 _DEFAULT_COVALENT_RADIUS_NM = 0.077
 _COVALENT_TOLERANCE = 1.3
@@ -326,8 +339,7 @@ def reconstruct_intraresidue_bonds(topology, positions, chain_id: str) -> int:
             continue
         idx_set = {a.index for a in atoms}
         has_intra = any(
-            b.atom1.index in idx_set and b.atom2.index in idx_set
-            for b in topology.bonds()
+            b.atom1.index in idx_set and b.atom2.index in idx_set for b in topology.bonds()
         )
         if has_intra:
             continue  # standard residue (or already reconstructed) — leave alone
@@ -362,6 +374,7 @@ def _find_atom(residue, name: str):
 # Detection
 # ---------------------------------------------------------------------------
 
+
 def detect_cyclization(topology, positions, chain_id: str) -> list:
     """Detect all cyclizations in the peptide chain.
 
@@ -394,9 +407,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
         return []
 
     # Pre-build set of existing topology bonds for fast membership tests.
-    existing_bonds: set = {
-        frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()
-    }
+    existing_bonds: set = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
 
     def _bonded(a, b) -> bool:
         """True if atoms a and b are already bonded in the topology."""
@@ -411,7 +422,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
 
     first, last = residues[0], residues[-1]
     n_first = _find_atom(first, "N")
-    c_last  = _find_atom(last,  "C")
+    c_last = _find_atom(last, "C")
 
     if n_first is None:
         warnings.warn(
@@ -431,22 +442,24 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
     # ---- 1. Head-to-tail amide: C(last) — N(first) ----
     if n_first is not None and c_last is not None:
         if _close_or_bonded(n_first, c_last, _AMIDE_BOND_THRESH):
-            ca_last  = _find_atom(last,  "CA")
+            ca_last = _find_atom(last, "CA")
             ca_first = _find_atom(first, "CA")
             omega = None
             if ca_last and ca_first:
                 omega = (
                     (chain_id, len(residues) - 1, "CA"),
                     (chain_id, len(residues) - 1, "C"),
-                    (chain_id, 0,                 "N"),
-                    (chain_id, 0,                 "CA"),
+                    (chain_id, 0, "N"),
+                    (chain_id, 0, "CA"),
                 )
-            results.append(CyclicBondInfo(
-                cyclic_type="head_to_tail",
-                atom1_id=(chain_id, len(residues) - 1, "C"),
-                atom2_id=(chain_id, 0,                 "N"),
-                omega_ids=omega,
-            ))
+            results.append(
+                CyclicBondInfo(
+                    cyclic_type="head_to_tail",
+                    atom1_id=(chain_id, len(residues) - 1, "C"),
+                    atom2_id=(chain_id, 0, "N"),
+                    omega_ids=omega,
+                )
+            )
             detected_pairs.add((c_last.index, n_first.index))
             detected_pairs.add((n_first.index, c_last.index))
 
@@ -462,7 +475,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                 stacklevel=2,
             )
             continue
-        for rj, res_j in cys_residues[i + 1:]:
+        for rj, res_j in cys_residues[i + 1 :]:
             sg_j = _find_atom(res_j, "SG")
             if sg_j is None:
                 warnings.warn(
@@ -473,12 +486,14 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                 )
                 continue
             if _close_or_bonded(sg_i, sg_j, _DISULFIDE_THRESH):
-                results.append(CyclicBondInfo(
-                    cyclic_type="disulfide",
-                    atom1_id=(chain_id, ri, "SG"),
-                    atom2_id=(chain_id, rj, "SG"),
-                    omega_ids=None,
-                ))
+                results.append(
+                    CyclicBondInfo(
+                        cyclic_type="disulfide",
+                        atom1_id=(chain_id, ri, "SG"),
+                        atom2_id=(chain_id, rj, "SG"),
+                        omega_ids=None,
+                    )
+                )
                 detected_pairs.add((sg_i.index, sg_j.index))
                 detected_pairs.add((sg_j.index, sg_i.index))
 
@@ -495,7 +510,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                         stacklevel=2,
                     )
                 if cg and _close_or_bonded(cg, n_first, _AMIDE_BOND_THRESH):
-                    ca_res   = _find_atom(res,   "CA")
+                    ca_res = _find_atom(res, "CA")
                     ca_first = _find_atom(first, "CA")
                     omega = None
                     if ca_res and ca_first:
@@ -505,13 +520,15 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                             (chain_id, 0, "N"),
                             (chain_id, 0, "CA"),
                         )
-                    results.append(CyclicBondInfo(
-                        cyclic_type="lactam_n_asp",
-                        atom1_id=(chain_id, i, "CG"),
-                        atom2_id=(chain_id, 0, "N"),
-                        omega_ids=omega,
-                        extra_ff_xmls=[_XML_ASPL],
-                    ))
+                    results.append(
+                        CyclicBondInfo(
+                            cyclic_type="lactam_n_asp",
+                            atom1_id=(chain_id, i, "CG"),
+                            atom2_id=(chain_id, 0, "N"),
+                            omega_ids=omega,
+                            extra_ff_xmls=[_XML_ASPL],
+                        )
+                    )
                     detected_pairs.add((cg.index, n_first.index))
                     detected_pairs.add((n_first.index, cg.index))
             elif res.name == "GLU":
@@ -524,7 +541,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                         stacklevel=2,
                     )
                 if cd and _close_or_bonded(cd, n_first, _AMIDE_BOND_THRESH):
-                    ca_res   = _find_atom(res,   "CA")
+                    ca_res = _find_atom(res, "CA")
                     ca_first = _find_atom(first, "CA")
                     omega = None
                     if ca_res and ca_first:
@@ -534,13 +551,15 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                             (chain_id, 0, "N"),
                             (chain_id, 0, "CA"),
                         )
-                    results.append(CyclicBondInfo(
-                        cyclic_type="lactam_n_glu",
-                        atom1_id=(chain_id, i, "CD"),
-                        atom2_id=(chain_id, 0, "N"),
-                        omega_ids=omega,
-                        extra_ff_xmls=[_XML_GLUL],
-                    ))
+                    results.append(
+                        CyclicBondInfo(
+                            cyclic_type="lactam_n_glu",
+                            atom1_id=(chain_id, i, "CD"),
+                            atom2_id=(chain_id, 0, "N"),
+                            omega_ids=omega,
+                            extra_ff_xmls=[_XML_GLUL],
+                        )
+                    )
                     detected_pairs.add((cd.index, n_first.index))
                     detected_pairs.add((n_first.index, cd.index))
 
@@ -558,22 +577,24 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                     )
                 if nz and _close_or_bonded(nz, c_last, _AMIDE_BOND_THRESH):
                     ca_last = _find_atom(last, "CA")
-                    ca_res  = _find_atom(res,  "CA")
+                    ca_res = _find_atom(res, "CA")
                     omega = None
                     if ca_last and ca_res:
                         omega = (
                             (chain_id, len(residues) - 1, "CA"),
                             (chain_id, len(residues) - 1, "C"),
-                            (chain_id, i,                 "NZ"),
-                            (chain_id, i,                 "CE"),
+                            (chain_id, i, "NZ"),
+                            (chain_id, i, "CE"),
                         )
-                    results.append(CyclicBondInfo(
-                        cyclic_type="lactam_c_lys",
-                        atom1_id=(chain_id, len(residues) - 1, "C"),
-                        atom2_id=(chain_id, i,                 "NZ"),
-                        omega_ids=omega,
-                        extra_ff_xmls=[_XML_LYSL],
-                    ))
+                    results.append(
+                        CyclicBondInfo(
+                            cyclic_type="lactam_c_lys",
+                            atom1_id=(chain_id, len(residues) - 1, "C"),
+                            atom2_id=(chain_id, i, "NZ"),
+                            omega_ids=omega,
+                            extra_ff_xmls=[_XML_LYSL],
+                        )
+                    )
                     detected_pairs.add((c_last.index, nz.index))
                     detected_pairs.add((nz.index, c_last.index))
 
@@ -610,13 +631,15 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                             (chain_id, ai, c_atom_name),
                             (chain_id, ai, cb_name),
                         )
-                    results.append(CyclicBondInfo(
-                        cyclic_type=ctype,
-                        atom1_id=(chain_id, li, "NZ"),
-                        atom2_id=(chain_id, ai, c_atom_name),
-                        omega_ids=omega,
-                        extra_ff_xmls=[_XML_LYSL, acid_xml],
-                    ))
+                    results.append(
+                        CyclicBondInfo(
+                            cyclic_type=ctype,
+                            atom1_id=(chain_id, li, "NZ"),
+                            atom2_id=(chain_id, ai, c_atom_name),
+                            omega_ids=omega,
+                            extra_ff_xmls=[_XML_LYSL, acid_xml],
+                        )
+                    )
                     detected_pairs.add((nz.index, c_atom.index))
                     detected_pairs.add((c_atom.index, nz.index))
 
@@ -641,8 +664,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
             f"Unsupported cyclization detected in topology: "
             f"{ri.name}{ri.id}.{ai.name} — "
             f"{rj.name}{rj.id}.{aj.name} "
-            f"({_dist(pos, ai.index, aj.index)*10:.2f} Å).\n"
-            + _UNSUPPORTED_MSG
+            f"({_dist(pos, ai.index, aj.index) * 10:.2f} Å).\n" + _UNSUPPORTED_MSG
         )
 
     return results
@@ -651,6 +673,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
 # ---------------------------------------------------------------------------
 # Topology patching
 # ---------------------------------------------------------------------------
+
 
 def register_ss_bonds(topology, positions) -> object:
     """Detect disulfide bonds by position and add any missing SG–SG bonds to the topology.
@@ -663,7 +686,8 @@ def register_ss_bonds(topology, positions) -> object:
     Returns the (possibly mutated) topology.
     """
     sg_atoms = [
-        a for a in topology.atoms()
+        a
+        for a in topology.atoms()
         if a.name == "SG" and a.element is not None and a.element.symbol == "S"
     ]
     if not sg_atoms:
@@ -686,7 +710,7 @@ def register_ss_bonds(topology, positions) -> object:
     # geometric match wins when two SG atoms compete for the same partner.
     candidates = []
     for i, ai in enumerate(sg_atoms):
-        for aj in sg_atoms[i + 1:]:
+        for aj in sg_atoms[i + 1 :]:
             d = _dist(pos_nm, ai.index, aj.index)
             if d < _DISULFIDE_THRESH:
                 candidates.append((d, ai, aj))
@@ -751,8 +775,7 @@ def rename_disulfide_cys_to_cyx(topology, positions):
     return topology, positions
 
 
-def patch_cyclic_topology(topology, positions, chain_id: str,
-                          hints: list = None):
+def patch_cyclic_topology(topology, positions, chain_id: str, hints: list = None):
     """Detect and patch all cyclizations in the peptide topology.
 
     Must be called AFTER PDBFixer heavy-atom repair and BEFORE
@@ -805,18 +828,22 @@ def patch_cyclic_topology(topology, positions, chain_id: str,
         elif info.cyclic_type == "disulfide":
             ri = info.atom1_id[1]
             rj = info.atom2_id[1]
-            topology, positions = _patch_disulfide(
-                topology, positions, residues, ri, rj, app
-            )
+            topology, positions = _patch_disulfide(topology, positions, residues, ri, rj, app)
 
         elif info.cyclic_type in ("lactam_n_asp", "lactam_n_glu"):
             sidechain_res_idx = info.atom1_id[1]
-            sidechain_atom    = info.atom1_id[2]
+            sidechain_atom = info.atom1_id[2]
             new_name = "ASPL" if info.cyclic_type == "lactam_n_asp" else "GLUL"
-            od_name  = "OD2"  if info.cyclic_type == "lactam_n_asp" else "OE2"
+            od_name = "OD2" if info.cyclic_type == "lactam_n_asp" else "OE2"
             topology, positions = _patch_lactam_n(
-                topology, positions, residues,
-                sidechain_res_idx, sidechain_atom, od_name, new_name, app,
+                topology,
+                positions,
+                residues,
+                sidechain_res_idx,
+                sidechain_atom,
+                od_name,
+                new_name,
+                app,
             )
 
         elif info.cyclic_type == "lactam_c_lys":
@@ -826,14 +853,21 @@ def patch_cyclic_topology(topology, positions, chain_id: str,
             )
 
         elif info.cyclic_type in ("lactam_sc_lys_asp", "lactam_sc_lys_glu"):
-            lys_res_idx  = info.atom1_id[1]
+            lys_res_idx = info.atom1_id[1]
             acid_res_idx = info.atom2_id[1]
-            acid_atom    = info.atom2_id[2]   # CG (ASP) or CD (GLU)
+            acid_atom = info.atom2_id[2]  # CG (ASP) or CD (GLU)
             new_acid_name = "ASPL" if info.cyclic_type == "lactam_sc_lys_asp" else "GLUL"
-            od_name       = "OD2"  if info.cyclic_type == "lactam_sc_lys_asp" else "OE2"
+            od_name = "OD2" if info.cyclic_type == "lactam_sc_lys_asp" else "OE2"
             topology, positions = _patch_lactam_sidechain(
-                topology, positions, residues,
-                lys_res_idx, acid_res_idx, acid_atom, od_name, new_acid_name, app,
+                topology,
+                positions,
+                residues,
+                lys_res_idx,
+                acid_res_idx,
+                acid_atom,
+                od_name,
+                new_acid_name,
+                app,
             )
 
     # Verify all closure atoms are still findable after patches
@@ -867,13 +901,13 @@ def _patch_head_to_tail(topology, positions, residues, app):
     residues = _peptide_residues(topology, residues[0].chain.id)
     first, last = residues[0], residues[-1]
     n_first = _find_atom(first, "N")
-    c_last  = _find_atom(last,  "C")
+    c_last = _find_atom(last, "C")
 
     # Add bond only if not already present (e.g. read directly from CIF CONECT)
     if n_first and c_last:
         already_bonded = any(
-            (b.atom1.index == n_first.index and b.atom2.index == c_last.index) or
-            (b.atom2.index == n_first.index and b.atom1.index == c_last.index)
+            (b.atom1.index == n_first.index and b.atom2.index == c_last.index)
+            or (b.atom2.index == n_first.index and b.atom1.index == c_last.index)
             for b in topology.bonds()
         )
         if not already_bonded:
@@ -909,8 +943,8 @@ def _patch_disulfide(topology, positions, residues, ri: int, rj: int, app):
     sg_j = _find_atom(residues[rj], "SG")
     if sg_i and sg_j:
         already = any(
-            (b.atom1.index == sg_i.index and b.atom2.index == sg_j.index) or
-            (b.atom2.index == sg_i.index and b.atom1.index == sg_j.index)
+            (b.atom1.index == sg_i.index and b.atom2.index == sg_j.index)
+            or (b.atom2.index == sg_i.index and b.atom1.index == sg_j.index)
             for b in topology.bonds()
         )
         if not already:
@@ -919,11 +953,18 @@ def _patch_disulfide(topology, positions, residues, ri: int, rj: int, app):
     return topology, positions
 
 
-def _patch_lactam_n(topology, positions, residues,
-                    sc_res_idx: int, sc_atom_name: str, od_name: str,
-                    new_res_name: str, app):
+def _patch_lactam_n(
+    topology,
+    positions,
+    residues,
+    sc_res_idx: int,
+    sc_atom_name: str,
+    od_name: str,
+    new_res_name: str,
+    app,
+):
     """Rename ASP/GLU → ASPL/GLUL, remove free carboxylate O, add CG/CD–N bond."""
-    sc_res  = residues[sc_res_idx]
+    sc_res = residues[sc_res_idx]
 
     # Remove OD2/OE2 (leaves only the amide O)
     to_remove = [a for a in sc_res.atoms() if a.name == od_name]
@@ -942,8 +983,8 @@ def _patch_lactam_n(topology, positions, residues,
     n_first = _find_atom(residues[0], "N")
     if sc_atom and n_first:
         already = any(
-            (b.atom1.index == sc_atom.index and b.atom2.index == n_first.index) or
-            (b.atom2.index == sc_atom.index and b.atom1.index == n_first.index)
+            (b.atom1.index == sc_atom.index and b.atom2.index == n_first.index)
+            or (b.atom2.index == sc_atom.index and b.atom1.index == n_first.index)
             for b in topology.bonds()
         )
         if not already:
@@ -955,7 +996,7 @@ def _patch_lactam_n(topology, positions, residues,
 def _patch_lactam_c_lys(topology, positions, residues, lys_idx: int, app):
     """Rename LYS → LYSL, remove OXT and extra HZ, add NZ–C(last) bond."""
     lys_res = residues[lys_idx]
-    last    = residues[-1]
+    last = residues[-1]
 
     # Remove OXT from C-terminal residue and extra amine protons (HZ2, HZ3)
     to_remove = []
@@ -976,12 +1017,12 @@ def _patch_lactam_c_lys(topology, positions, residues, lys_idx: int, app):
     residues[lys_idx].name = "LYSL"
 
     # Add NZ — C(last) bond (only if not already present)
-    nz     = _find_atom(residues[lys_idx], "NZ")
+    nz = _find_atom(residues[lys_idx], "NZ")
     c_last = _find_atom(residues[-1], "C")
     if nz and c_last:
         already = any(
-            (b.atom1.index == nz.index and b.atom2.index == c_last.index) or
-            (b.atom2.index == nz.index and b.atom1.index == c_last.index)
+            (b.atom1.index == nz.index and b.atom2.index == c_last.index)
+            or (b.atom2.index == nz.index and b.atom1.index == c_last.index)
             for b in topology.bonds()
         )
         if not already:
@@ -990,9 +1031,17 @@ def _patch_lactam_c_lys(topology, positions, residues, lys_idx: int, app):
     return topology, positions
 
 
-def _patch_lactam_sidechain(topology, positions, residues,
-                            lys_idx: int, acid_idx: int, acid_atom_name: str,
-                            od_name: str, new_acid_name: str, app):
+def _patch_lactam_sidechain(
+    topology,
+    positions,
+    residues,
+    lys_idx: int,
+    acid_idx: int,
+    acid_atom_name: str,
+    od_name: str,
+    new_acid_name: str,
+    app,
+):
     """Patch a side-chain-to-side-chain lactam (LYS NZ — ASP CG / GLU CD).
 
     Renames LYS → LYSL (removing the extra amine protons HZ2/HZ3, keeping NZ
@@ -1001,7 +1050,7 @@ def _patch_lactam_sidechain(topology, positions, residues,
     residues stay internal to the chain, so no terminal atoms (OXT, H1/H2/H3)
     are touched — unlike the terminal lactams.
     """
-    lys_res  = residues[lys_idx]
+    lys_res = residues[lys_idx]
     acid_res = residues[acid_idx]
 
     # Remove extra amine protons on the LYS NZ and the free carboxylate O.
@@ -1022,16 +1071,16 @@ def _patch_lactam_sidechain(topology, positions, residues,
     # Rename both residues to their lactam templates.
     chain_id = residues[0].chain.id
     residues = _peptide_residues(topology, chain_id)
-    residues[lys_idx].name  = "LYSL"
+    residues[lys_idx].name = "LYSL"
     residues[acid_idx].name = new_acid_name
 
     # Add NZ — CG/CD bond (only if not already present).
-    nz     = _find_atom(residues[lys_idx],  "NZ")
+    nz = _find_atom(residues[lys_idx], "NZ")
     c_atom = _find_atom(residues[acid_idx], acid_atom_name)
     if nz and c_atom:
         already = any(
-            (b.atom1.index == nz.index and b.atom2.index == c_atom.index) or
-            (b.atom2.index == nz.index and b.atom1.index == c_atom.index)
+            (b.atom1.index == nz.index and b.atom2.index == c_atom.index)
+            or (b.atom2.index == nz.index and b.atom1.index == c_atom.index)
             for b in topology.bonds()
         )
         if not already:
@@ -1043,6 +1092,7 @@ def _patch_lactam_sidechain(topology, positions, residues,
 # ---------------------------------------------------------------------------
 # Post-patch helpers
 # ---------------------------------------------------------------------------
+
 
 def _refresh_indices(info: CyclicBondInfo, residues: list, chain_id: str) -> CyclicBondInfo:
     """Return a new CyclicBondInfo with atom_ids still valid (indices unchanged)."""
@@ -1101,7 +1151,7 @@ def resolve_omega_atoms(topology, bond_info: CyclicBondInfo, chain_id: str) -> O
         return None
     residues = _peptide_residues(topology, chain_id)
     indices = []
-    for (_, ri, aname) in bond_info.omega_ids:
+    for _, ri, aname in bond_info.omega_ids:
         atom = _find_atom(residues[ri], aname)
         if atom is None:
             return None  # graceful fallback
@@ -1122,6 +1172,7 @@ def _internal_h_list(res_name: str):
     """
     from openmm.app import modeller as _modeller_mod
     from openmm.app.modeller import Modeller
+
     # Ensure OpenMM's built-in hydrogen definitions are loaded into
     # Modeller._residueHydrogens. The private loader is named
     # _loadStandardHydrogenDefinitions in OpenMM >= 8.2 but does not exist in
@@ -1131,6 +1182,7 @@ def _internal_h_list(res_name: str):
         Modeller._loadStandardHydrogenDefinitions()
     elif not getattr(Modeller, "_hasLoadedStandardHydrogens", False):
         import os
+
         Modeller.loadHydrogenDefinitions(
             os.path.join(os.path.dirname(_modeller_mod.__file__), "data", "hydrogens.xml")
         )
@@ -1161,7 +1213,10 @@ def _internal_h_list(res_name: str):
         # N-methyl protons on CN.  This lets addHydrogens build the full
         # heavy+H residue so the NMG/NMA/MVA/MLE FF template matches.
         _nme_parent = {
-            "NMG": "GLY", "NMA": "ALA", "MVA": "VAL", "MLE": "LEU",
+            "NMG": "GLY",
+            "NMA": "ALA",
+            "MVA": "VAL",
+            "MLE": "LEU",
         }
         if res_name in _nme_parent:
             base = _internal_h_list(_nme_parent[res_name]) or []
@@ -1174,11 +1229,7 @@ def _internal_h_list(res_name: str):
     #   terminal is None  → always added (applies to all forms)
     #   terminal contains '-' → specifically for internal
     # Exclude terminal='N' (N-terminal only) and terminal='C' (C-terminal only).
-    return [
-        (h.name, h.parent)
-        for h in spec.hydrogens
-        if h.terminal is None or "-" in h.terminal
-    ]
+    return [(h.name, h.parent) for h in spec.hydrogens if h.terminal is None or "-" in h.terminal]
 
 
 def get_addh_variants(topology, bond_info_list: list, chain_id: str) -> list:
@@ -1208,7 +1259,7 @@ def get_addh_variants(topology, bond_info_list: list, chain_id: str) -> list:
     for bond_info in bond_info_list:
         if bond_info.cyclic_type == "head_to_tail":
             first = chain_residues[0]
-            last  = chain_residues[-1]
+            last = chain_residues[-1]
             h_first = _internal_h_list(first.name)
             if h_first is not None:
                 variants[first.index] = h_first

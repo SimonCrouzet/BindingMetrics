@@ -52,28 +52,115 @@ import numpy as np
 # Residue names handled by ff14SB directly or by curated XML templates elsewhere.
 # Anything NOT in this set (and with >1 heavy atom, non-metal) is treated as an
 # exotic NCAA and parameterised with GAFF2.
-GAFF_SKIP_RESIDUES = frozenset({
-    # Canonical amino acids + protonation variants
-    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
-    "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
-    "TYR", "VAL",
-    "CYX", "HID", "HIE", "HIP", "HIN", "LYN", "ASH", "GLH",
-    # Curated non-standard templates (nonstandard.py / cyclic.py)
-    "NMG", "NMA", "MVA", "MLE", "ASPL", "GLUL", "LYSL",
-    # Capping groups
-    "ACE", "NME", "FOR",
-    # Nucleotides
-    "DA", "DC", "DG", "DT", "A", "C", "G", "T", "U",
-    # Water / ions
-    "HOH", "WAT", "H2O", "SOL", "TIP", "TIP3",
-    "NA", "CL", "K", "MG", "CA", "ZN", "LI", "RB", "CS", "FE", "MN", "CU",
-})
+GAFF_SKIP_RESIDUES = frozenset(
+    {
+        # Canonical amino acids + protonation variants
+        "ALA",
+        "ARG",
+        "ASN",
+        "ASP",
+        "CYS",
+        "GLN",
+        "GLU",
+        "GLY",
+        "HIS",
+        "ILE",
+        "LEU",
+        "LYS",
+        "MET",
+        "PHE",
+        "PRO",
+        "SER",
+        "THR",
+        "TRP",
+        "TYR",
+        "VAL",
+        "CYX",
+        "HID",
+        "HIE",
+        "HIP",
+        "HIN",
+        "LYN",
+        "ASH",
+        "GLH",
+        # Curated non-standard templates (nonstandard.py / cyclic.py)
+        "NMG",
+        "NMA",
+        "MVA",
+        "MLE",
+        "ASPL",
+        "GLUL",
+        "LYSL",
+        # Capping groups
+        "ACE",
+        "NME",
+        "FOR",
+        # Nucleotides
+        "DA",
+        "DC",
+        "DG",
+        "DT",
+        "A",
+        "C",
+        "G",
+        "T",
+        "U",
+        # Water / ions
+        "HOH",
+        "WAT",
+        "H2O",
+        "SOL",
+        "TIP",
+        "TIP3",
+        "NA",
+        "CL",
+        "K",
+        "MG",
+        "CA",
+        "ZN",
+        "LI",
+        "RB",
+        "CS",
+        "FE",
+        "MN",
+        "CU",
+    }
+)
 
-_METAL_SYMBOLS = frozenset({
-    "Li", "Na", "K", "Rb", "Cs", "Mg", "Ca", "Sr", "Ba",
-    "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
-    "Mo", "Ru", "Rh", "Pd", "Ag", "Cd", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
-})
+_METAL_SYMBOLS = frozenset(
+    {
+        "Li",
+        "Na",
+        "K",
+        "Rb",
+        "Cs",
+        "Mg",
+        "Ca",
+        "Sr",
+        "Ba",
+        "V",
+        "Cr",
+        "Mn",
+        "Fe",
+        "Co",
+        "Ni",
+        "Cu",
+        "Zn",
+        "Mo",
+        "Ru",
+        "Rh",
+        "Pd",
+        "Ag",
+        "Cd",
+        "W",
+        "Re",
+        "Os",
+        "Ir",
+        "Pt",
+        "Au",
+        "Hg",
+    }
+)
 
 
 def _pos_to_angstrom(positions) -> np.ndarray:
@@ -84,8 +171,7 @@ def _pos_to_angstrom(positions) -> np.ndarray:
 
 
 def _heavy_atoms(res) -> list:
-    return [a for a in res.atoms()
-            if a.element is not None and a.element.atomic_number > 1]
+    return [a for a in res.atoms() if a.element is not None and a.element.atomic_number > 1]
 
 
 def _is_ncaa(res) -> bool:
@@ -114,9 +200,7 @@ def _perceive_bond_orders(mol):
     for kwargs in ({}, {"allowChargedFragments": False}):
         candidate = Chem.Mol(mol)
         try:
-            rdDetermineBonds.DetermineBondOrders(
-                candidate, charge=0, embedChiral=False, **kwargs
-            )
+            rdDetermineBonds.DetermineBondOrders(candidate, charge=0, embedChiral=False, **kwargs)
             Chem.SanitizeMol(candidate)
             return candidate
         except Exception:
@@ -275,8 +359,7 @@ def _parse_gaff_forces(root):
     if tf is not None:
         for p in tf.findall("Proper"):
             propers.append(
-                ((p.get("class1"), p.get("class2"), p.get("class3"), p.get("class4")),
-                 p.attrib)
+                ((p.get("class1"), p.get("class2"), p.get("class3"), p.get("class4")), p.attrib)
             )
     return bonds, angles, propers
 
@@ -299,8 +382,9 @@ def _lookup_gaff_proper(propers, classes):
     return None
 
 
-def _generate_residue_template(res, topology, pos_A, gaff_version: str,
-                               backbone_amber: Optional[dict] = None):
+def _generate_residue_template(
+    res, topology, pos_A, gaff_version: str, backbone_amber: Optional[dict] = None
+):
     """Build one hybrid amber-backbone / GAFF-sidechain ExternalBond template.
 
     The protein backbone atoms (N, H, CA, HA, C, O) are typed with standard
@@ -357,8 +441,7 @@ def _generate_residue_template(res, topology, pos_A, gaff_version: str,
     # hydrogens have no place on a real peptide carbonyl: drop them and let the
     # amber C/O types (and the ff14SB C–O bond + carbonyl improper) describe it.
     retype = backbone_amber or {}
-    bb_heavy = {j for j, nm in rd_res_names.items()
-                if nm in _BACKBONE_HEAVY and nm in retype}
+    bb_heavy = {j for j, nm in rd_res_names.items() if nm in _BACKBONE_HEAVY and nm in retype}
     amide_h: set = set()
     alpha_h: set = set()
     spurious_h: set = set()
@@ -389,7 +472,7 @@ def _generate_residue_template(res, topology, pos_A, gaff_version: str,
     orig_class = {i: tatoms[i].get("type") for i in range(len(tatoms))}
     new_type: dict = {}
     new_class: dict = {}
-    is_amber: dict = {}   # atom carries an ff14SB (protein) class
+    is_amber: dict = {}  # atom carries an ff14SB (protein) class
     for i in keep_idx:
         nm = rd_res_names.get(i)
         if i in bb_heavy:
@@ -460,14 +543,14 @@ def _generate_residue_template(res, topology, pos_A, gaff_version: str,
     for h_idx, parent in keep_h:
         p = hconf.GetAtomPosition(h_idx)
         h_inject.append(
-            (new_name[h_idx], rd_res_names[parent],
-             np.array([p.x, p.y, p.z]) / 10.0)  # Å → nm
+            (new_name[h_idx], rd_res_names[parent], np.array([p.x, p.y, p.z]) / 10.0)  # Å → nm
         )
     return ffxml_out, h_inject
 
 
-def _inject_boundary_terms(root, mh, keep_set, cap_indices, orig_class,
-                           new_class, is_amber, changed):
+def _inject_boundary_terms(
+    root, mh, keep_set, cap_indices, orig_class, new_class, is_amber, changed
+):
     """Add explicit Bond/Angle/Proper entries for every backbone↔sidechain term.
 
     After retyping the backbone to amber and keeping the sidechain on GAFF, any
@@ -543,9 +626,7 @@ def _inject_boundary_terms(root, mh, keep_set, cap_indices, orig_class,
                     continue
                 if not (changed[i] or changed[j] or changed[k]):
                     continue
-                attrib = _lookup_gaff_angle(
-                    angles, orig_class[j], (orig_class[i], orig_class[k])
-                )
+                attrib = _lookup_gaff_angle(angles, orig_class[j], (orig_class[i], orig_class[k]))
                 if attrib is None:
                     continue
                 key = (new_class[j], frozenset({new_class[i], new_class[k]}))
@@ -652,9 +733,9 @@ def _rebuild_topology_with_injected_h(topology, pos_nm, h_by_res: dict):
     return new_top, new_positions
 
 
-def parameterize_ncaa_residues(topology, positions, ff, *,
-                               gaff_version: str = "gaff-2.2.20",
-                               verbose: bool = True):
+def parameterize_ncaa_residues(
+    topology, positions, ff, *, gaff_version: str = "gaff-2.2.20", verbose: bool = True
+):
     """Generate + load GAFF ExternalBond templates for exotic NCAA residues.
 
     Must run AFTER the D-amino-acid / N-methyl rename, ``patch_cyclic_topology``
@@ -699,8 +780,10 @@ def parameterize_ncaa_residues(topology, positions, ff, *,
     # hardcoded) used to retype the NCAA protein backbone so junctions match ff14SB.
     backbone_amber = _amber_backbone_types(ff)
     if backbone_amber is None and verbose:
-        print("  [warning] could not read ff14SB backbone types; "
-              "NCAA backbones stay on GAFF (junctions may be under-parameterised).")
+        print(
+            "  [warning] could not read ff14SB backbone types; "
+            "NCAA backbones stay on GAFF (junctions may be under-parameterised)."
+        )
 
     loaded_names: set = set()
     ncaa_ffxmls: list = []
@@ -709,9 +792,7 @@ def parameterize_ncaa_residues(topology, positions, ff, *,
 
     for res in ncaa_residues:
         try:
-            result = _generate_residue_template(
-                res, topology, pos_A, gaff_version, backbone_amber
-            )
+            result = _generate_residue_template(res, topology, pos_A, gaff_version, backbone_amber)
         except Exception as exc:
             if verbose:
                 print(f"  [warning] GAFF NCAA template failed for '{res.name}': {exc}")
@@ -729,15 +810,19 @@ def parameterize_ncaa_residues(topology, positions, ff, *,
             ncaa_ffxmls.append(ffxml)
             if verbose:
                 net = _template_net_charge(ffxml)
-                print(f"  Auto-GAFF2: '{res.name}' template generated "
-                      f"({len(h_inject)} H, net charge {net:+.4f})")
+                print(
+                    f"  Auto-GAFF2: '{res.name}' template generated "
+                    f"({len(h_inject)} H, net charge {net:+.4f})"
+                )
         elif h_names != expected_h.get(res.name):
             # A second instance perceived differently — reuse the first template
             # but warn; createSystem will surface a mismatch if truly incompatible.
             if verbose:
-                print(f"  [warning] '{res.name}' instance differs from first "
-                      f"template; reusing first (H {len(h_names)} vs "
-                      f"{len(expected_h.get(res.name, ()))}).")
+                print(
+                    f"  [warning] '{res.name}' instance differs from first "
+                    f"template; reusing first (H {len(h_names)} vs "
+                    f"{len(expected_h.get(res.name, ()))})."
+                )
 
     if not h_by_res:
         return topology, positions, ncaa_ffxmls

@@ -167,6 +167,7 @@ def compute_delta_sasa_static(
         atoms = pdbx.get_structure(pdbx_file, model=1)
     else:
         import biotite.structure.io.pdb as pdb_io
+
         pdb_file = pdb_io.PDBFile.read(str(path))
         atoms = pdb_io.get_structure(pdb_file, model=1)
 
@@ -196,16 +197,28 @@ def compute_delta_sasa_static(
 
     try:
         sasa_peptide = float(
-            biotite_sasa(peptide_atoms, probe_radius=probe_radius,
-                         point_number=960, vdw_radii=_get_radii(peptide_atoms)).sum()
+            biotite_sasa(
+                peptide_atoms,
+                probe_radius=probe_radius,
+                point_number=960,
+                vdw_radii=_get_radii(peptide_atoms),
+            ).sum()
         )
         sasa_receptor = float(
-            biotite_sasa(receptor_atoms, probe_radius=probe_radius,
-                         point_number=960, vdw_radii=_get_radii(receptor_atoms)).sum()
+            biotite_sasa(
+                receptor_atoms,
+                probe_radius=probe_radius,
+                point_number=960,
+                vdw_radii=_get_radii(receptor_atoms),
+            ).sum()
         )
         sasa_complex = float(
-            biotite_sasa(complex_atoms, probe_radius=probe_radius,
-                         point_number=960, vdw_radii=_get_radii(complex_atoms)).sum()
+            biotite_sasa(
+                complex_atoms,
+                probe_radius=probe_radius,
+                point_number=960,
+                vdw_radii=_get_radii(complex_atoms),
+            ).sum()
         )
         delta_sasa = sasa_peptide + sasa_receptor - sasa_complex
     except Exception as e:

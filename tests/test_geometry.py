@@ -49,6 +49,7 @@ class TestRamachandran:
     def test_import_function(self):
         """Should be able to import compute_ramachandran."""
         from binding_metrics.metrics.geometry import compute_ramachandran
+
         assert callable(compute_ramachandran)
 
     def test_returns_expected_keys(self):
@@ -180,6 +181,7 @@ class TestOmegaPlanarity:
     def test_import_function(self):
         """Should be able to import compute_omega_planarity."""
         from binding_metrics.metrics.geometry import compute_omega_planarity
+
         assert callable(compute_omega_planarity)
 
     def test_returns_expected_keys(self):
@@ -192,9 +194,12 @@ class TestOmegaPlanarity:
         result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="B")
 
         expected = {
-            "omega_mean_dev", "omega_max_dev",
-            "omega_outlier_fraction", "omega_outlier_count",
-            "n_bonds_evaluated", "per_residue",
+            "omega_mean_dev",
+            "omega_max_dev",
+            "omega_outlier_fraction",
+            "omega_outlier_count",
+            "n_bonds_evaluated",
+            "per_residue",
         }
         assert expected.issubset(set(result.keys()))
 
@@ -273,6 +278,7 @@ class TestShapeComplementarity:
     def test_import_function(self):
         """Should be able to import compute_shape_complementarity."""
         from binding_metrics.metrics.geometry import compute_shape_complementarity
+
         assert callable(compute_shape_complementarity)
 
     def test_returns_expected_keys(self):
@@ -287,9 +293,13 @@ class TestShapeComplementarity:
         )
 
         expected = {
-            "sc", "sc_A_to_B", "sc_B_to_A",
-            "n_surface_dots_A", "n_surface_dots_B",
-            "per_dot_scores_A", "per_dot_scores_B",
+            "sc",
+            "sc_A_to_B",
+            "sc_B_to_A",
+            "n_surface_dots_A",
+            "n_surface_dots_B",
+            "per_dot_scores_A",
+            "per_dot_scores_B",
         }
         assert expected.issubset(set(result.keys()))
 
@@ -414,9 +424,9 @@ class TestShapeComplementarity:
     @pytest.mark.parametrize(
         "tokens,lo,hi",
         [
-            (("1YCR",), 0.50, 0.80),   # p53 peptide - MDM2 (linear peptide)
-            (("3P8F",), 0.55, 0.85),   # SFTI-1 bicyclic peptide
-            (("1CWA",), 0.55, 0.85),   # cyclosporin (ncAA macrocycle)
+            (("1YCR",), 0.50, 0.80),  # p53 peptide - MDM2 (linear peptide)
+            (("3P8F",), 0.55, 0.85),  # SFTI-1 bicyclic peptide
+            (("1CWA",), 0.55, 0.85),  # cyclosporin (ncAA macrocycle)
         ],
     )
     def test_native_sc_in_physical_range(self, tokens, lo, hi):
@@ -467,9 +477,7 @@ class TestShapeComplementarity:
         gx, gy = np.meshgrid(xs, ys)
 
         def layer(z):
-            return np.stack(
-                [gx.ravel(), gy.ravel(), np.full(gx.size, z)], axis=1
-            )
+            return np.stack([gx.ravel(), gy.ravel(), np.full(gx.size, z)], axis=1)
 
         n_layers = 3
         # Chain A: contact face at z=0, body below; Chain B: contact face at
@@ -491,9 +499,7 @@ class TestShapeComplementarity:
             pf = pdb_io.PDBFile()
             pf.set_structure(arr)
             pf.write(fh.name)
-            result = compute_shape_complementarity(
-                fh.name, peptide_chain="A", receptor_chain="B"
-            )
+            result = compute_shape_complementarity(fh.name, peptide_chain="A", receptor_chain="B")
 
         if not np.isnan(result["sc"]):
             assert result["sc"] > 0.7, (
@@ -522,6 +528,7 @@ class TestBuriedVoidVolume:
     def test_import_function(self):
         """Should be able to import compute_buried_void_volume."""
         from binding_metrics.metrics.geometry import compute_buried_void_volume
+
         assert callable(compute_buried_void_volume)
 
     def test_returns_expected_keys(self):
@@ -532,13 +539,17 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
+            EXAMPLE_PDB_PATH,
+            peptide_chain="B",
+            receptor_chain="A",
             grid_spacing=1.0,  # coarser for speed
         )
 
         expected = {
-            "void_volume_A3", "void_grid_fraction",
-            "interface_box_volume_A3", "n_interface_atoms",
+            "void_volume_A3",
+            "void_grid_fraction",
+            "interface_box_volume_A3",
+            "n_interface_atoms",
         }
         assert expected.issubset(set(result.keys()))
 
@@ -555,7 +566,9 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
+            EXAMPLE_PDB_PATH,
+            peptide_chain="B",
+            receptor_chain="A",
             grid_spacing=1.0,
         )
 
@@ -572,7 +585,9 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
+            EXAMPLE_PDB_PATH,
+            peptide_chain="B",
+            receptor_chain="A",
             grid_spacing=1.0,
         )
 
@@ -587,7 +602,9 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
+            EXAMPLE_PDB_PATH,
+            peptide_chain="B",
+            receptor_chain="A",
             grid_spacing=1.0,
         )
 
@@ -602,7 +619,9 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
+            EXAMPLE_PDB_PATH,
+            peptide_chain="B",
+            receptor_chain="A",
             grid_spacing=1.0,
         )
 
@@ -615,9 +634,7 @@ class TestBuriedVoidVolume:
 
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
-        result = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="Z", receptor_chain="W"
-        )
+        result = compute_buried_void_volume(EXAMPLE_PDB_PATH, peptide_chain="Z", receptor_chain="W")
 
         assert np.isnan(result["void_volume_A3"])
 
@@ -629,7 +646,9 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
+            EXAMPLE_PDB_PATH,
+            peptide_chain="B",
+            receptor_chain="A",
             grid_spacing=1.0,
         )
 
@@ -655,11 +674,15 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result_coarse = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
+            EXAMPLE_PDB_PATH,
+            peptide_chain="B",
+            receptor_chain="A",
             grid_spacing=1.5,
         )
         result_fine = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
+            EXAMPLE_PDB_PATH,
+            peptide_chain="B",
+            receptor_chain="A",
             grid_spacing=0.75,
         )
 
@@ -678,28 +701,34 @@ class TestClassifyRamachandran:
 
     def test_alpha_helix_is_favoured(self):
         from binding_metrics.metrics.geometry import _classify_ramachandran
+
         assert _classify_ramachandran(-60.0, -45.0) == "favoured"
 
     def test_beta_sheet_is_favoured(self):
         from binding_metrics.metrics.geometry import _classify_ramachandran
+
         assert _classify_ramachandran(-120.0, 130.0) == "favoured"
 
     def test_ppii_is_favoured(self):
         from binding_metrics.metrics.geometry import _classify_ramachandran
+
         # Poly-proline II region
         assert _classify_ramachandran(-70.0, 150.0) == "favoured"
 
     def test_l_helix_is_favoured(self):
         from binding_metrics.metrics.geometry import _classify_ramachandran
+
         # Left-handed helix
         assert _classify_ramachandran(60.0, 40.0) == "favoured"
 
     def test_disallowed_region_is_outlier(self):
         from binding_metrics.metrics.geometry import _classify_ramachandran
+
         # Upper right: rarely seen
         assert _classify_ramachandran(60.0, 150.0) == "outlier"
 
     def test_nan_returns_none(self):
         from binding_metrics.metrics.geometry import _classify_ramachandran
+
         assert _classify_ramachandran(np.nan, -45.0) is None
         assert _classify_ramachandran(-60.0, np.nan) is None

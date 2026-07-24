@@ -16,12 +16,19 @@ def main() -> None:
         description="Fix and protonate a structure using PDBFixer.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--input", "-i", type=Path, required=True, help="Input structure (.pdb, .cif, .mmcif)")
-    parser.add_argument("--output", "-o", type=Path, required=True, help="Output structure (.pdb, .cif, .mmcif)")
-    parser.add_argument("--ph", type=float, default=7.4, help="pH for hydrogen placement")
-    parser.add_argument("--keep-water", action="store_true", help="Retain crystallographic water molecules")
     parser.add_argument(
-        "--canonicalize", action="store_true",
+        "--input", "-i", type=Path, required=True, help="Input structure (.pdb, .cif, .mmcif)"
+    )
+    parser.add_argument(
+        "--output", "-o", type=Path, required=True, help="Output structure (.pdb, .cif, .mmcif)"
+    )
+    parser.add_argument("--ph", type=float, default=7.4, help="pH for hydrogen placement")
+    parser.add_argument(
+        "--keep-water", action="store_true", help="Retain crystallographic water molecules"
+    )
+    parser.add_argument(
+        "--canonicalize",
+        action="store_true",
         help=(
             "Replace non-standard residues with their nearest standard equivalents "
             "(e.g. MSE→MET, SEP→SER). By default they are preserved so they can be "
@@ -29,7 +36,8 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--no-rebuild-zero-coord-atoms", action="store_true",
+        "--no-rebuild-zero-coord-atoms",
+        action="store_true",
         help=(
             "Disable detection and rebuild of zero-coordinate placeholder atoms. "
             "By default, atoms at the origin are removed and rebuilt by PDBFixer "
@@ -37,10 +45,12 @@ def main() -> None:
         ),
     )
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(parser)
     args = parser.parse_args()
 
     from binding_metrics.cli import log_to_file
+
     with log_to_file(args.log_file):
         try:
             from binding_metrics.core.system import HAS_PDBFIXER, prep_structure
@@ -65,8 +75,11 @@ def main() -> None:
         n_residues_before = topology.getNumResidues()
 
         topology, positions = prep_structure(
-            topology, positions, ph=args.ph,
-            keep_water=args.keep_water, canonicalize=args.canonicalize,
+            topology,
+            positions,
+            ph=args.ph,
+            keep_water=args.keep_water,
+            canonicalize=args.canonicalize,
             rebuild_zero_coord_atoms=not args.no_rebuild_zero_coord_atoms,
         )
 

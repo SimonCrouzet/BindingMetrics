@@ -98,8 +98,11 @@ def check_environment() -> bool:
     # GPU
     try:
         import openmm
-        platforms = [openmm.Platform.getPlatform(i).getName()
-                     for i in range(openmm.Platform.getNumPlatforms())]
+
+        platforms = [
+            openmm.Platform.getPlatform(i).getName()
+            for i in range(openmm.Platform.getNumPlatforms())
+        ]
         has_gpu = "CUDA" in platforms or "OpenCL" in platforms
         if has_gpu:
             gpu_platform = "CUDA" if "CUDA" in platforms else "OpenCL"
@@ -120,9 +123,12 @@ def run_tests(test_type: str = "unit", verbose: bool = False) -> int:
     tests_dir = project_root / "tests"
 
     cmd = [
-        sys.executable, "-m", "pytest",
+        sys.executable,
+        "-m",
+        "pytest",
         str(tests_dir),
-        "-W", "ignore::UserWarning",
+        "-W",
+        "ignore::UserWarning",
         "--tb=short" if verbose else "--tb=no",
     ]
 
@@ -149,6 +155,7 @@ def run_tests(test_type: str = "unit", verbose: bool = False) -> int:
 
         # Parse counts
         import re
+
         passed = failed = skipped = 0
         for match in re.finditer(r"(\d+) (passed|failed|skipped)", output):
             count, status = int(match.group(1)), match.group(2)

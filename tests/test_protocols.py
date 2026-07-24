@@ -226,9 +226,7 @@ class TestPeptideBindingProtocol:
     ):
         """run() should create trajectory and topology files."""
         pytest.importorskip("openmm")
-        pytest.importorskip(
-            "pdbfixer", reason="pdbfixer required to fix incomplete PDB structures"
-        )
+        pytest.importorskip("pdbfixer", reason="pdbfixer required to fix incomplete PDB structures")
 
         config = SimulationConfig(
             duration_ns=0.0001,  # Very short for testing

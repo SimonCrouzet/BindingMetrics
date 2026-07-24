@@ -23,6 +23,7 @@ class TestCoulombCrossChain:
     def test_import_function(self):
         """Should be able to import compute_coulomb_cross_chain."""
         from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
+
         assert callable(compute_coulomb_cross_chain)
 
     def test_requires_biotite_import(self):
@@ -30,11 +31,18 @@ class TestCoulombCrossChain:
         import sys
         from unittest.mock import patch
 
-        with patch.dict(sys.modules, {"biotite": None, "biotite.structure": None,
-                                       "biotite.structure.io": None,
-                                       "biotite.structure.io.pdbx": None,
-                                       "biotite.structure.io.pdb": None}):
+        with patch.dict(
+            sys.modules,
+            {
+                "biotite": None,
+                "biotite.structure": None,
+                "biotite.structure.io": None,
+                "biotite.structure.io.pdbx": None,
+                "biotite.structure.io.pdb": None,
+            },
+        ):
             from binding_metrics.metrics.electrostatics import _import_biotite
+
             with pytest.raises(ImportError, match="biotite"):
                 _import_biotite()
 
@@ -53,9 +61,13 @@ class TestCoulombCrossChain:
         )
 
         expected_keys = {
-            "coulomb_energy_kJ", "coulomb_energy_kcal",
-            "n_charged_pairs", "n_attractive", "n_repulsive",
-            "charged_atoms_peptide", "charged_atoms_receptor",
+            "coulomb_energy_kJ",
+            "coulomb_energy_kcal",
+            "n_charged_pairs",
+            "n_attractive",
+            "n_repulsive",
+            "charged_atoms_peptide",
+            "charged_atoms_receptor",
         }
         assert expected_keys.issubset(set(result.keys()))
 
