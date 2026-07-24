@@ -83,3 +83,11 @@ select = ["E", "F", "I", "N", "W"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+# --strict-markers turns a typo'd marker into a collection error instead of a
+# silently-never-selected test; --strict-config does the same for this table.
+addopts = "--strict-markers --strict-config"
+markers = [
+    "integration: exercises real structures and the full OpenMM/biotite stack, not mocks",
+    "gpu: requires a CUDA device — skipped on CPU-only machines and in CI",
+    "slow: takes minutes; excluded from the default developer loop",
+]
