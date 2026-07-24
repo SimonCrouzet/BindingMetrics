@@ -184,7 +184,8 @@ class TestReceptorDrift:
 
         result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "A")
 
-        # The example_linear_p53_1YCR.pdb has no meaningful unit cell → raw drift should be available
+        # The example_linear_p53_1YCR.pdb has no meaningful unit cell → raw
+        # drift should be available
         # (DCD trajectories from PDB load without PBC info when the source has dummy cell)
         # Just check the type is correct
         assert isinstance(result["pbc_detected"], bool)

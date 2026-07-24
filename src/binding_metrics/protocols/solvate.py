@@ -2,7 +2,8 @@
 
 Usage:
     binding-metrics-solvate --input cleaned.cif --output solvated.pdb
-    binding-metrics-solvate --input cleaned.pdb --output solvated.pdb --padding 1.2 --ionic-strength 0.1
+    binding-metrics-solvate --input cleaned.pdb --output solvated.pdb
+                            --padding 1.2 --ionic-strength 0.1
 """
 
 import argparse

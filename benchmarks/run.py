@@ -484,7 +484,8 @@ def run_md_benchmarks(entries: list[dict], output_dir: Path) -> list[dict]:
             min_s = timing.get("minimization_time_s") or 0
             md_s = timing.get("md_time_s") or 0
             print(
-                f"min={min_s * 1000:.0f} ms  md={md_s * 1000:.0f} ms  total={timing['total_time_s'] * 1000:.0f} ms"
+                f"min={min_s * 1000:.0f} ms  md={md_s * 1000:.0f} ms  "
+                f"total={timing['total_time_s'] * 1000:.0f} ms"
             )
 
         results.append(record)

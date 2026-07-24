@@ -3,7 +3,8 @@
 Used internally by ``binding-metrics-run`` and as a standalone tool.
 
 Usage:
-    binding-metrics-report --results path/to/*_results.json [--format json|csv] [--summary] [--summary-format md|html]
+    binding-metrics-report --results path/to/*_results.json [--format json|csv]
+                           [--summary] [--summary-format md|html]
 """
 
 from __future__ import annotations
@@ -776,7 +777,9 @@ def write_report(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Export binding-metrics results to JSON or CSV, with optional Markdown summary.",
+        description=(
+            "Export binding-metrics results to JSON or CSV, with optional Markdown summary."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

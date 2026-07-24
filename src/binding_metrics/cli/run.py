@@ -104,7 +104,8 @@ def run_pipeline(
 
             if not HAS_PDBFIXER:
                 _warn(
-                    "pdbfixer not available — skipping prep. Install with: pip install binding-metrics[structure]"
+                    "pdbfixer not available — skipping prep. Install with: "
+                    "pip install binding-metrics[structure]"
                 )
             else:
                 topology, positions = load_structure(input_path)
@@ -212,7 +213,9 @@ def run_pipeline(
         working_peptide = peptide_chain_label
         working_receptor = receptor_chain_label
         print(
-            f"\n  [skip] Relaxation skipped — using {'prepped' if relaxed_path != input_path else 'raw'} input for downstream steps."
+            f"\n  [skip] Relaxation skipped — using "
+            f"{'prepped' if relaxed_path != input_path else 'raw'} input "
+            "for downstream steps."
         )
         results["relax"] = {"skipped": True}
 
@@ -345,7 +348,8 @@ def run_pipeline(
 
             if not peptide_chain or not receptor_chain:
                 _warn(
-                    "OpenFold requires --peptide-chain and --receptor-chain (or auto-detect); skipping."
+                    "OpenFold requires --peptide-chain and --receptor-chain "
+                    "(or auto-detect); skipping."
                 )
                 results["openfold"] = {"skipped": True}
             else:

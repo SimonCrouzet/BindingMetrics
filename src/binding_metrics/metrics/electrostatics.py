@@ -139,7 +139,9 @@ def compute_coulomb_cross_chain(
                 charges.append(q)
                 info.append(
                     {
-                        "residue": f"{str(atom.res_name).strip()}:{str(atom.chain_id)}:{atom.res_id}",
+                        "residue": (
+                            f"{str(atom.res_name).strip()}:{str(atom.chain_id)}:{atom.res_id}"
+                        ),
                         "atom": str(atom.atom_name).strip(),
                         "charge": q,
                         "coords": atom.coord.tolist(),

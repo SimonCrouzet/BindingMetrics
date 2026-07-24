@@ -128,7 +128,9 @@ def _check_openfold() -> bool:
         )
     else:
         _fail(
-            title=f"OpenFold3 not found (checked current env and conda env '{_OPENFOLD_CONDA_ENV}')",
+            title=(
+                f"OpenFold3 not found (checked current env and conda env '{_OPENFOLD_CONDA_ENV}')"
+            ),
             cause="OpenFold3 is an optional dependency used for confidence scoring. "
             "Binding metrics will still run without it.",
             steps=[
@@ -231,13 +233,15 @@ def _check_openmm() -> bool:
             steps=[
                 f"{BOLD}Step 1{RESET} — Check your driver and the CUDA version it supports:",
                 "          nvidia-smi",
-                "        The 'CUDA Version' shown top-right is the maximum supported by your driver.",
+                "        The 'CUDA Version' shown top-right is the maximum "
+                "supported by your driver.",
                 "        It must be ≥ the CUDA version OpenMM was compiled against.",
                 "",
                 f"{BOLD}Step 2{RESET} — Read the full error from OpenMM:",
                 "          python -m openmm.testInstallation",
                 f"        {YELLOW}PTX version error{RESET} → your driver is too old, update it.",
-                f"        {YELLOW}library not found{RESET} → CUDA runtime missing or not on LD_LIBRARY_PATH.",
+                f"        {YELLOW}library not found{RESET} → CUDA runtime "
+                "missing or not on LD_LIBRARY_PATH.",
                 "",
                 f"{BOLD}Step 3{RESET} — Update your NVIDIA driver if needed:",
                 "        → Linux:        install the latest nvidia-driver package for your distro.",
@@ -255,12 +259,14 @@ def _check_openmm() -> bool:
                 "          nvidia-smi",
                 "        If this command fails, your driver is missing or not running.",
                 "        → Linux:        install the nvidia-driver package for your distro.",
-                "        → Windows/WSL2: install the NVIDIA driver on the Windows host (not inside WSL).",
+                "        → Windows/WSL2: install the NVIDIA driver on the "
+                "Windows host (not inside WSL).",
                 "",
                 f"{BOLD}Step 2{RESET} — Check that CUDA runtime libraries are on the system:",
                 "          ldconfig -p | grep libcuda",
                 "        If nothing appears, the CUDA runtime is missing.",
-                "        → Install the cuda-runtime package, or set LD_LIBRARY_PATH to its location.",
+                "        → Install the cuda-runtime package, or set "
+                "LD_LIBRARY_PATH to its location.",
                 "",
                 f"{BOLD}Step 3{RESET} — If you are running inside a container:",
                 "        Make sure it was started with GPU access and that the",
