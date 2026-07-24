@@ -847,13 +847,29 @@ def merge_cif_models(model_paths: list[tuple[int, Path]], output_path: Path) -> 
         other_n_cols = other_loop.width()
         if model_tag not in other_tags:
             raise ValueError(f"{model_tag} column missing from {path}")
-        other_model_col = other_tags.index(model_tag)
+
+        # Column order is a property of the writer, not of the format, so
+        # resolve each of the first model's columns by tag rather than by
+        # position: matching on index alone silently interleaves fields (say
+        # Cartn_y into Cartn_x) whenever two inputs order _atom_site
+        # differently.
+        missing = [tag for tag in tags if tag not in other_tags]
+        if missing:
+            raise ValueError(
+                f"{path} is missing _atom_site columns present in {first_path}: "
+                f"{', '.join(missing)}"
+            )
+        other_cols = [other_tags.index(tag) for tag in tags]
+
         other_vals = list(other_loop.values)
         other_n_rows = len(other_vals) // other_n_cols
-        for c in range(n_cols):
-            col_vals = [other_vals[r * other_n_cols + c] for r in range(other_n_rows)]
+        for c, other_c in enumerate(other_cols):
             if c == model_col:
                 col_vals = [str(model_num)] * other_n_rows
+            else:
+                col_vals = [
+                    other_vals[r * other_n_cols + other_c] for r in range(other_n_rows)
+                ]
             columns[c].extend(col_vals)
 
     loop.set_all_values(columns)

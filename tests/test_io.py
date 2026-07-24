@@ -10,6 +10,7 @@ from binding_metrics.io.structures import (
     get_residue_info,
     load_complex,
     load_structure,
+    merge_cif_models,
     save_cif,
     save_structure,
 )
@@ -629,3 +630,85 @@ class TestStructConnLandmine:
             "cyclosporin macrocycle not closed after load — struct_conn heuristic "
             "may have flipped."
         )
+
+
+class TestMergeCifModels:
+    """merge_cif_models must key _atom_site columns by tag, not by position."""
+
+    @staticmethod
+    def _write_single_model_cif(path: Path, tags: list[str], rows: list[list[str]]) -> None:
+        """Write a minimal CIF whose _atom_site loop uses the given column order."""
+        lines = ["data_test", "loop_"]
+        lines += [f"_atom_site.{t}" for t in tags]
+        lines += [" ".join(r) for r in rows]
+        path.write_text("\n".join(lines) + "\n")
+
+    @staticmethod
+    def _read_atom_site(path: Path) -> tuple[list[str], list[list[str]]]:
+        gemmi = pytest.importorskip("gemmi")
+        loop = gemmi.cif.read(str(path)).sole_block().find_loop("_atom_site.id").get_loop()
+        tags = list(loop.tags)
+        width = loop.width()
+        vals = list(loop.values)
+        rows = [vals[r * width : (r + 1) * width] for r in range(len(vals) // width)]
+        return tags, rows
+
+    @pytest.mark.integration
+    def test_merges_models_with_divergent_column_order(self, tmp_path: Path):
+        """A second model whose _atom_site columns are ordered differently must
+        still land in the right columns.
+
+        Nothing in the CIF spec fixes _atom_site column order, and different
+        writers emit different orders. Merging by column index rather than by
+        tag silently transposes fields — y coordinates into x, element into
+        atom name — producing a file that parses cleanly and is geometrically
+        wrong, which is the worst possible failure mode here.
+        """
+        tags_a = ["id", "type_symbol", "Cartn_x", "Cartn_y", "Cartn_z", "pdbx_PDB_model_num"]
+        # Same six columns, coordinates permuted relative to model 1.
+        tags_b = ["id", "type_symbol", "Cartn_z", "Cartn_x", "Cartn_y", "pdbx_PDB_model_num"]
+
+        model_a = tmp_path / "m1.cif"
+        model_b = tmp_path / "m2.cif"
+        self._write_single_model_cif(
+            model_a, tags_a, [["1", "C", "1.000", "2.000", "3.000", "1"]]
+        )
+        # Written in tags_b order, this row still means x=4, y=5, z=6.
+        self._write_single_model_cif(
+            model_b, tags_b, [["1", "C", "6.000", "4.000", "5.000", "1"]]
+        )
+
+        out = tmp_path / "merged.cif"
+        merge_cif_models([(1, model_a), (2, model_b)], out)
+
+        tags, rows = self._read_atom_site(out)
+        assert len(rows) == 2, "merged file should hold one row per input model"
+
+        def field(row: list[str], tag: str) -> str:
+            return row[tags.index(f"_atom_site.{tag}")]
+
+        assert [field(rows[0], t) for t in ("Cartn_x", "Cartn_y", "Cartn_z")] == [
+            "1.000", "2.000", "3.000",
+        ]
+        assert [field(rows[1], t) for t in ("Cartn_x", "Cartn_y", "Cartn_z")] == [
+            "4.000", "5.000", "6.000",
+        ], "model 2 coordinates were read positionally instead of by column tag"
+
+        assert field(rows[0], "pdbx_PDB_model_num") == "1"
+        assert field(rows[1], "pdbx_PDB_model_num") == "2"
+
+    @pytest.mark.integration
+    def test_rejects_model_missing_a_column(self, tmp_path: Path):
+        """A model lacking a column the first model has must fail loudly."""
+        tags_a = ["id", "type_symbol", "Cartn_x", "Cartn_y", "Cartn_z", "pdbx_PDB_model_num"]
+        tags_b = ["id", "Cartn_x", "Cartn_y", "Cartn_z", "pdbx_PDB_model_num"]
+
+        model_a = tmp_path / "m1.cif"
+        model_b = tmp_path / "m2.cif"
+        self._write_single_model_cif(
+            model_a, tags_a, [["1", "C", "1.000", "2.000", "3.000", "1"]]
+        )
+        self._write_single_model_cif(model_b, tags_b, [["1", "4.000", "5.000", "6.000", "1"]])
+
+        with pytest.raises(ValueError, match="type_symbol"):
+            merge_cif_models([(1, model_a), (2, model_b)], tmp_path / "merged.cif")
