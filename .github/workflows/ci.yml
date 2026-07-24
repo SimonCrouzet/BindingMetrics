@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+# A new push to a branch supersedes the run in flight. Never cancel on main:
+# those results are what branch protection and the badge report.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pinned so a ruff release never turns a green PR red on its own. Bump
+      # deliberately; ruff format output is not stable across minor versions.
+      - name: Install ruff
+        run: pip install "ruff==0.15.21"
+
+      # --output-format=github surfaces findings as inline PR annotations.
+      - name: ruff check
+        run: ruff check --output-format=github .
+
+      - name: ruff format
+        run: ruff format --check --diff .
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    # The conda solve is the slow part on a cache miss; the suite itself is
+    # about three minutes.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # The scientific stack (openmm, ambertools, openff-toolkit, rdkit) is
+      # conda-forge only, so CI builds the same environment.yml developers use
+      # rather than a pip approximation that would drift from it.
+      #
+      # cache-environment keys on the environment.yml hash: unchanged deps
+      # restore in about a minute, a dependency edit pays the full solve once.
+      - name: Set up conda environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          environment-name: binding-metrics
+          cache-environment: true
+          cache-environment-key: env-${{ runner.os }}-${{ hashFiles('environment.yml') }}
+
+      # login shell so the env is on PATH; recorded so a failure caused by a
+      # dependency moving underneath us is visible in the log.
+      - name: Report resolved versions
+        shell: bash -el {0}
+        run: |
+          micromamba list | grep -E "^ *(python|numpy|openmm|mdtraj|ambertools|openff-toolkit|rdkit|biotite|gemmi|pdbfixer) " || true
+          python -c "import openmm; print('openmm', openmm.version.version)"
+
+      # Everything except the gpu tier: GitHub runners have no CUDA device, so
+      # those tests can only be run locally or on self-hosted hardware. The
+      # integration tests do run here — they take seconds on CPU.
+      - name: Run tests
+        shell: bash -el {0}
+        run: pytest -m "not gpu" -v --durations=10
+
+      # The gpu tier is invisible to this workflow, so a test that fails to
+      # collect there would go unnoticed. Collect-only proves the modules at
+      # least import and the markers resolve.
+      - name: Check GPU tests still collect
+        shell: bash -el {0}
+        run: pytest -m "gpu" --collect-only -q
