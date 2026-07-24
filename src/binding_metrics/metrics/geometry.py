@@ -724,14 +724,6 @@ def compute_buried_void_volume(
     box_size = max_coord - min_coord
     grid_dims = np.ceil(box_size / grid_spacing).astype(int) + 1
 
-    # Collect VDW radii for all interface atoms
-    all_iface_atoms_list = [pep_iface, rec_iface]
-    all_iface_atoms_concat_coords = np.vstack([pep_iface.coord, rec_iface.coord])
-    all_iface_vdw = np.array([
-        _get_vdw(str(a.element).strip())
-        for chain in all_iface_atoms_list for a in chain
-    ])
-
     # Map atom coordinates to grid indices
     def _make_solid_grid(atom_coords: np.ndarray, atom_vdw: np.ndarray) -> np.ndarray:
         """Create boolean grid where True = voxel within VDW radius of any atom."""

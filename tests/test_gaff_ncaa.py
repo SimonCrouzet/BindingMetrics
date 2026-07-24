@@ -274,7 +274,6 @@ class TestCyclosporinRelaxSanity:
 
         pre = app.PDBxFile(str(prepped))
         post = app.PDBxFile(str(min_path))
-        pre_xyz = np.array([[v.x, v.y, v.z] for v in pre.positions]) * 10.0    # Å
         post_xyz = np.array([[v.x, v.y, v.z] for v in post.positions]) * 10.0  # Å
 
         assert np.all(np.isfinite(post_xyz)), "minimised coordinates contain NaN/inf"

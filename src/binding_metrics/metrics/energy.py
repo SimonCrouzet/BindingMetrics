@@ -75,10 +75,6 @@ def calculate_interaction_energy(
     if nonbonded_force is None:
         raise RuntimeError("No NonbondedForce found in system")
 
-    # Create sets for quick lookup
-    ligand_set = set(ligand_indices)
-    receptor_set = set(receptor_indices)
-
     # Calculate interaction energy for each frame
     interaction_energies = []
 

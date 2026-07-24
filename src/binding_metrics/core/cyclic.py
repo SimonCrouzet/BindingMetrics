@@ -924,7 +924,6 @@ def _patch_lactam_n(topology, positions, residues,
                     new_res_name: str, app):
     """Rename ASP/GLU → ASPL/GLUL, remove free carboxylate O, add CG/CD–N bond."""
     sc_res  = residues[sc_res_idx]
-    first   = residues[0]
 
     # Remove OD2/OE2 (leaves only the amide O)
     to_remove = [a for a in sc_res.atoms() if a.name == od_name]

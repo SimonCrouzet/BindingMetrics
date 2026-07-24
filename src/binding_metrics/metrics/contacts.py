@@ -91,7 +91,6 @@ def calculate_contact_residues(
     # Map atom indices to residues
     ligand_residues = set()
     receptor_residues = set()
-    contact_pairs = []
 
     # Build pairs and track residues
     pairs = []
