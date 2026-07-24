@@ -1,5 +1,6 @@
 """Tests for structure comparison utilities (RMSD between structures)."""
 
+import importlib.util
 from pathlib import Path
 
 import numpy as np
@@ -11,11 +12,7 @@ from binding_metrics.metrics.comparison import (
     compute_structure_rmsd,
 )
 
-try:
-    import gemmi
-    HAS_GEMMI = True
-except ImportError:
-    HAS_GEMMI = False
+HAS_GEMMI = importlib.util.find_spec("gemmi") is not None
 
 requires_gemmi = pytest.mark.skipif(not HAS_GEMMI, reason="gemmi not installed")
 

@@ -9,9 +9,9 @@ from typing import Literal, Optional
 import openmm.unit as unit
 from openmm.app import ForceField, Modeller, PDBFile
 
-log = logging.getLogger(__name__)
-
 from binding_metrics.core.forcefields import get_forcefield
+
+log = logging.getLogger(__name__)
 
 # Optional pdbfixer for structure repair
 try:

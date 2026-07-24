@@ -106,7 +106,9 @@ def check_environment() -> bool:
             print(ok(f"GPU {DIM}{gpu_platform}{RESET}"))
         else:
             print(warn(f"GPU {DIM}not available, using CPU{RESET}"))
-    except:
+    except Exception:
+        # Probing for a GPU is best-effort: any OpenMM import or platform
+        # error just means we report CPU.
         pass
 
     return all_ok
@@ -150,9 +152,12 @@ def run_tests(test_type: str = "unit", verbose: bool = False) -> int:
         passed = failed = skipped = 0
         for match in re.finditer(r"(\d+) (passed|failed|skipped)", output):
             count, status = int(match.group(1)), match.group(2)
-            if status == "passed": passed = count
-            elif status == "failed": failed = count
-            elif status == "skipped": skipped = count
+            if status == "passed":
+                passed = count
+            elif status == "failed":
+                failed = count
+            elif status == "skipped":
+                skipped = count
 
         # Show results
         total = passed + failed + skipped

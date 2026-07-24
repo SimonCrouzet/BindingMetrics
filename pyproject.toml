@@ -90,6 +90,10 @@ ignore = ["N806", "N803", "N815"]
 "src/binding_metrics/**/__init__.py" = ["F401"]
 # Frozen snapshots of superseded code, kept for provenance, not maintained.
 "archive/**" = ["ALL"]
+# Test names spell out the case under test, including chain IDs and units
+# (test_chain_R_works, test_delta_g_int_kJ_consistent). Lower-casing them
+# loses the distinction from chain r or kcal.
+"tests/**" = ["N802"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

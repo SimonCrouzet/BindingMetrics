@@ -1018,7 +1018,8 @@ def main():
         if result["n_models"] > 1:
             s = result["summary"]
             print(f"\n  Summary (mean over {result['n_models']} models):")
-            _sfmt = lambda k: f"{s[k]:.2f}" if np.isfinite(s.get(k, np.nan)) else "N/A"
+            def _sfmt(k):
+                return f"{s[k]:.2f}" if np.isfinite(s.get(k, np.nan)) else "N/A"
             print(f"    Ramachandran favoured : {_sfmt('ramachandran_favoured_pct')}%")
             print(f"    Ramachandran outliers : {_sfmt('ramachandran_outlier_pct')}%")
             print(f"    Clashscore            : {_sfmt('clashscore')}")

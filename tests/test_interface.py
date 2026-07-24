@@ -1,15 +1,12 @@
 """Tests for interface analysis metrics (SASA, ΔG_int, H-bonds, salt bridges)."""
 
+import importlib.util
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-try:
-    import biotite
-    HAS_BIOTITE = True
-except ImportError:
-    HAS_BIOTITE = False
+HAS_BIOTITE = importlib.util.find_spec("biotite") is not None
 
 requires_biotite = pytest.mark.skipif(not HAS_BIOTITE, reason="biotite not installed")
 

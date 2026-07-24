@@ -71,6 +71,7 @@ are kept small (minimize-only, tiny step counts) to share an 8 GB GPU.
 """
 
 import math
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -391,21 +392,19 @@ def _ca_signed_volumes(cif_path: Path) -> dict[tuple[str, int], float]:
 
 def _heavy_atom_composition(
     cif_path: Path,
-) -> tuple[int, dict[tuple[str, int], "Counter[str]"]]:
+) -> tuple[int, dict[tuple[str, int], Counter]]:
     """Total heavy-atom count and per-residue heavy-atom-name multiset.
 
     Returns ``(n_heavy_total, {(chain, resseq): Counter(atomname -> count)})``.
     Waters and hydrogens are excluded. The per-residue Counter lets us assert
     that minimization dropped/added/renamed no heavy atom in any residue.
     """
-    from collections import Counter
-
     import gemmi
 
     structure = gemmi.read_structure(str(cif_path))
     model = structure[0]
     total = 0
-    composition: dict[tuple, "Counter[str]"] = {}
+    composition: dict[tuple, Counter] = {}
     for _chain, residue, key in _iter_residues(model):
         if residue.name in {"HOH", "WAT"}:
             continue

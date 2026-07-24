@@ -44,7 +44,9 @@ class TestRelaxationConfig:
 
     def test_custom_bond_handler_callable(self):
         """Should accept a callable for custom_bond_handler."""
-        handler = lambda topo, pos, chain: (topo, pos, [])
+        def handler(topo, pos, chain):
+            return topo, pos, []
+
         config = RelaxationConfig(custom_bond_handler=handler)
         assert callable(config.custom_bond_handler)
 

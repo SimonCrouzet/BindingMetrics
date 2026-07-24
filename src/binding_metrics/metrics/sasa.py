@@ -151,7 +151,6 @@ def compute_delta_sasa_static(
             - sasa_complex (float, Å²)
     """
     try:
-        import biotite.structure as structure
         import biotite.structure.io.pdbx as pdbx
         from biotite.structure.info import vdw_radius_single
         from biotite.structure.sasa import sasa as biotite_sasa

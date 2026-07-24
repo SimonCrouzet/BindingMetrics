@@ -183,9 +183,9 @@ def detect_chains_from_file(
             auth_ids = atom_site["auth_asym_id"].as_array()
             label_ids = atom_site["label_asym_id"].as_array()
             atom_names = atom_site["auth_atom_id"].as_array()
-            for a, l, name in zip(auth_ids, label_ids, atom_names):
+            for auth, label, name in zip(auth_ids, label_ids, atom_names):
                 if str(name).strip() == "CA":   # protein Cα only
-                    a_str, l_str = str(a), str(l)
+                    a_str, l_str = str(auth), str(label)
                     if a_str not in auth_to_label:   # first occurrence wins
                         auth_to_label[a_str] = l_str
         except Exception:

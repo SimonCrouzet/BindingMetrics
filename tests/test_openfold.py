@@ -424,17 +424,17 @@ requires_example_pdb = pytest.mark.skipif(
 
 def _count_pdb_atoms(pdb_path: Path) -> int:
     return sum(
-        1 for l in pdb_path.read_text().splitlines()
-        if l.startswith(("ATOM  ", "HETATM"))
+        1 for line in pdb_path.read_text().splitlines()
+        if line.startswith(("ATOM  ", "HETATM"))
     )
 
 
 def _count_pdb_residues(pdb_path: Path) -> int:
     residues = set()
-    for l in pdb_path.read_text().splitlines():
-        if l.startswith(("ATOM  ", "HETATM")):
+    for line in pdb_path.read_text().splitlines():
+        if line.startswith(("ATOM  ", "HETATM")):
             try:
-                residues.add((l[21], int(l[22:26])))
+                residues.add((line[21], int(line[22:26])))
             except ValueError:
                 pass
     return len(residues)
@@ -442,8 +442,8 @@ def _count_pdb_residues(pdb_path: Path) -> int:
 
 def _pdb_chains(pdb_path: Path) -> set:
     return {
-        l[21] for l in pdb_path.read_text().splitlines()
-        if l.startswith(("ATOM  ", "HETATM"))
+        line[21] for line in pdb_path.read_text().splitlines()
+        if line.startswith(("ATOM  ", "HETATM"))
     }
 
 

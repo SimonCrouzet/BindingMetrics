@@ -195,7 +195,10 @@ def _check_openmm() -> bool:
     )
     output = result.stdout + result.stderr
 
-    version_line = next((l for l in output.splitlines() if l.startswith("OpenMM Version:")), None)
+    version_line = next(
+        (line for line in output.splitlines() if line.startswith("OpenMM Version:")),
+        None,
+    )
     version = version_line.split()[-1] if version_line else "unknown"
 
     if "CUDA - Successfully computed forces" in output:
