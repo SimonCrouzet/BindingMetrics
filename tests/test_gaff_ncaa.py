@@ -21,9 +21,10 @@ from binding_metrics.core.gaff_ncaa import (
 )
 
 # Cyclosporin A — the canonical backbone-NCAA test case (BMT, ABA + curated NMe).
-CYCLOSPORIN_CIF = (
-    Path(__file__).parent.parent / "manuscripts" / "example_runs" / "_input" / "1CWA.cif"
-)
+# Must come from data/, which is tracked: manuscripts/ is gitignored, so pointing
+# here at a copy under it silently skipped this whole module everywhere but the
+# author's machine.
+CYCLOSPORIN_CIF = Path(__file__).parent.parent / "data" / "example_ncaa_cyclosporin_1CWA.cif"
 
 try:
     import openmmforcefields  # noqa: F401
