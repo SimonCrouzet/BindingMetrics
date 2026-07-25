@@ -21,7 +21,26 @@ try:
 except Exception:
     HAS_CUDA = False
 
-requires_cuda = pytest.mark.skipif(not HAS_CUDA, reason="CUDA GPU not available")
+
+def requires_cuda(item):
+    """Mark a test (or class) as needing a real CUDA device.
+
+    Applies both halves deliberately:
+
+    - the ``gpu`` marker, so ``-m "not gpu"`` deselects it. This is what makes
+      the GPU tier addressable as a set — CI cannot run these, but it can still
+      collect them to prove they import.
+    - ``skipif``, so that selecting the gpu tier on a machine without a device
+      skips cleanly instead of erroring.
+
+    Using the marker alone would fail on a GPU-less machine that asked for the
+    tier; using skipif alone (the previous behaviour) left these tests selected
+    by every "not gpu" run, reporting as skips that looked like passes and
+    escaping the collect-only guard entirely.
+    """
+    item = pytest.mark.skipif(not HAS_CUDA, reason="CUDA GPU not available")(item)
+    return pytest.mark.gpu(item)
+
 
 # Best available OpenMM platform: CUDA if available, otherwise CPU
 BEST_PLATFORM = "CUDA" if HAS_CUDA else "CPU"

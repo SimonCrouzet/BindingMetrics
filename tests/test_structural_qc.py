@@ -516,7 +516,6 @@ ENERGY_REPRODUCIBILITY_TOL_KJ = 0.1
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_relaxation_energy_is_reproducible(tmp_path_factory):
     """The same input must give the same minimized energy on every run.
 
@@ -557,7 +556,6 @@ def test_relaxation_energy_is_reproducible(tmp_path_factory):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_is_reproducible_by_default_and_random_when_opted_out(
     prepped_example_cif, tmp_path_factory
 ):
@@ -607,7 +605,6 @@ def test_md_is_reproducible_by_default_and_random_when_opted_out(
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_energy_finite_and_did_not_increase(relaxed: RelaxedExample):
     """Check 1: minimized energy is finite, sane, and not higher than pre-min."""
     e = relaxed.energy_min
@@ -627,7 +624,6 @@ def test_energy_finite_and_did_not_increase(relaxed: RelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_structure_did_not_explode(relaxed: RelaxedExample):
     """Check 2: heavy-atom RMSD to the input is finite and bounded (< 5 Å)."""
     rmsd = compute_structure_rmsd(str(relaxed.input_path), str(relaxed.minimized_path))
@@ -642,7 +638,6 @@ def test_structure_did_not_explode(relaxed: RelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_coordinates_finite(relaxed: RelaxedExample):
     """Check 3: no NaN/inf coordinates in the minimized structure."""
     assert _all_coords_finite(relaxed.minimized_path), (
@@ -652,7 +647,6 @@ def test_coordinates_finite(relaxed: RelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_no_egregious_clashes(relaxed: RelaxedExample):
     """Check 4: no heavy-atom pair in different residues is closer than 0.8 Å."""
     min_dist, n_heavy = _min_interresidue_heavy_distance(relaxed.minimized_path)
@@ -666,7 +660,6 @@ def test_no_egregious_clashes(relaxed: RelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_bond_lengths_preserved(relaxed: RelaxedExample):
     """Check 5: no covalent bond was stretched/broken by minimization.
 
@@ -697,7 +690,6 @@ def test_bond_lengths_preserved(relaxed: RelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_chirality_preserved(relaxed: RelaxedExample):
     """Check 6: minimization did not invert any Cα stereocenter.
 
@@ -730,7 +722,6 @@ def test_chirality_preserved(relaxed: RelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_no_missing_heavy_atoms(relaxed: RelaxedExample):
     """Check 7: minimization dropped/added no heavy atom.
 
@@ -836,7 +827,6 @@ def md_relaxed(request, tmp_path_factory) -> MDRelaxedExample:
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_energy_finite_and_sane(md_relaxed: MDRelaxedExample):
     """MD check 1: mean trajectory energy is finite and in the sane range."""
     e = md_relaxed.energy_md_avg
@@ -849,7 +839,6 @@ def test_md_energy_finite_and_sane(md_relaxed: MDRelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_coordinates_finite(md_relaxed: MDRelaxedExample):
     """MD check 2: no NaN/inf coordinates in the final MD frame."""
     assert _all_coords_finite(md_relaxed.md_final_path), (
@@ -859,7 +848,6 @@ def test_md_coordinates_finite(md_relaxed: MDRelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_no_egregious_clashes(md_relaxed: MDRelaxedExample):
     """MD check 3: no fused atoms (closest inter-residue heavy pair > 0.8 Å)."""
     min_dist, n_heavy = _min_interresidue_heavy_distance(md_relaxed.md_final_path)
@@ -873,7 +861,6 @@ def test_md_no_egregious_clashes(md_relaxed: MDRelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_bonds_not_broken(md_relaxed: MDRelaxedExample):
     """MD check 4: covalent bonds stay intact (perceived from the minimized frame)."""
     pin = _heavy_atom_positions(md_relaxed.minimized_path)
@@ -892,7 +879,6 @@ def test_md_bonds_not_broken(md_relaxed: MDRelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_no_chirality_inversion(md_relaxed: MDRelaxedExample):
     """MD check 5: no Cα stereocenter inverts during MD (critical for D-residues)."""
     pre = _ca_signed_volumes(md_relaxed.minimized_path)
@@ -912,7 +898,6 @@ def test_md_no_chirality_inversion(md_relaxed: MDRelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_no_missing_heavy_atoms(md_relaxed: MDRelaxedExample):
     """MD check 6: MD neither drops nor adds atoms."""
     pre_total, _ = _heavy_atom_composition(md_relaxed.minimized_path)

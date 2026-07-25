@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import requires_cuda
 
 from binding_metrics.core.gaff_ncaa import (
     GAFF_SKIP_RESIDUES,
@@ -222,17 +223,17 @@ class TestGaffTemplateGeneration:
 # ---------------------------------------------------------------------------
 
 
+# Every test here goes through the `relaxed` fixture, which runs a real
+# minimisation — so the requirement belongs on the class, not inside the fixture
+# where no marker-based selection can see it.
 @requires_ommff
 @requires_cyclosporin
+@requires_cuda
 @pytest.mark.integration
 class TestCyclosporinRelaxSanity:
     @pytest.fixture(scope="class")
     def relaxed(self, tmp_path_factory):
         """Prep + minimise-only relaxation of cyclosporin; returns (result, in, out)."""
-        from conftest import HAS_CUDA
-
-        if not HAS_CUDA:
-            pytest.skip("CUDA GPU not available")
         from binding_metrics.core.system import prep_structure
         from binding_metrics.io.structures import load_structure, save_structure
         from binding_metrics.protocols.relaxation import (
