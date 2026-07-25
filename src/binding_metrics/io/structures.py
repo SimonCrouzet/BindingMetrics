@@ -694,6 +694,15 @@ def save_cif(
         if out_table and out_to_auth:
             o_res_idx: dict[str, int] = {}
             o_prev_key: dict[str, tuple] = {}
+            # Residue numbers must stay unique per auth chain. Several output
+            # chains can map back to one auth chain (waters especially), and
+            # each of those carries its own 1-based numbering from PDBxFile —
+            # so merging them without renumbering makes two distinct residues
+            # share a number, and the reader folds them into one. That is a
+            # silent structural mutation, so uniqueness wins over fidelity to
+            # the source numbering where the two conflict.
+            assigned: dict[tuple, str] = {}  # (auth_ch, res_idx) → seq to write
+            used: dict[str, set] = {}  # auth_ch → seq values already taken
             for row in out_table:
                 out_ch, seq, atom = row[0], row[1], row[2]
                 auth_ch = out_to_auth.get(out_ch, out_ch)
@@ -706,9 +715,19 @@ def save_cif(
                     o_prev_key[auth_ch] = res_key
                 row[0] = auth_ch  # auth_asym_id  → original auth
                 row[3] = auth_ch  # label_asym_id → same, for consistency
-                orig_seq = seq_map.get((auth_ch, o_res_idx[auth_ch]))
-                if orig_seq is not None:
-                    row[1] = orig_seq  # auth_seq_id → original residue number
+
+                res_id = (auth_ch, o_res_idx[auth_ch])
+                if res_id not in assigned:
+                    taken = used.setdefault(auth_ch, set())
+                    candidate = seq_map.get(res_id, seq)
+                    if candidate in taken:
+                        # Number already belongs to a different residue: take
+                        # the next free one above everything used so far.
+                        numeric = [int(s) for s in taken if str(s).lstrip("-").isdigit()]
+                        candidate = str(max(numeric) + 1 if numeric else 1)
+                    taken.add(candidate)
+                    assigned[res_id] = candidate
+                row[1] = assigned[res_id]  # auth_seq_id → original, or unique
 
         # Patch _struct_conn chain IDs (PDBxFile writes label_asym_id with
         # sequential letters; auth_asym_id variants may also appear).
@@ -731,6 +750,80 @@ def save_cif(
         _rename_internal_residues_to_standard(output_path)
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def _append_missing_conect(topology, output_path: Path) -> None:
+    """Add CONECT records for covalent bonds ``PDBFile.writeFile`` leaves out.
+
+    OpenMM emits CONECT only when a bond touches a non-standard residue, or for
+    a CYS SG-SG disulfide. A ring closure between two *standard* residues — the
+    head-to-tail amide of a cyclic peptide, where the partners are an ordinary
+    GLY and ASP — therefore leaves no trace in the file. On reload,
+    ``createStandardBonds`` cannot infer it either, because it only bonds
+    sequential residues and the two ends of a macrocycle are far apart in
+    sequence. The peptide silently comes back linear.
+
+    Only bonds OpenMM did not already write are appended, so no bond is
+    declared twice.
+    """
+    written = set()
+    for atom1, atom2 in topology.bonds():
+        standard = PDBFile._standardResidues
+        if atom1.residue.name not in standard or atom2.residue.name not in standard:
+            written.add(frozenset((atom1.index, atom2.index)))
+        elif (
+            atom1.name == "SG"
+            and atom2.name == "SG"
+            and atom1.residue.name == "CYS"
+            and atom2.residue.name == "CYS"
+        ):
+            written.add(frozenset((atom1.index, atom2.index)))
+
+    missing = []
+    for atom1, atom2 in topology.bonds():
+        key = frozenset((atom1.index, atom2.index))
+        if key in written:
+            continue
+        r1, r2 = atom1.residue, atom2.residue
+        if r1.index == r2.index:
+            continue  # intra-residue: rebuilt from the residue template
+        if r1.chain.id == r2.chain.id and abs(r1.index - r2.index) == 1:
+            continue  # sequential backbone: createStandardBonds handles it
+        missing.append((atom1.index, atom2.index))
+
+    if not missing:
+        return
+
+    lines = output_path.read_text().splitlines(keepends=True)
+
+    # Map topology atom order onto the serial numbers OpenMM actually wrote,
+    # by reading them back rather than re-deriving its numbering (which skips
+    # values for TER records).
+    serials: list[str] = []
+    for line in lines:
+        if line.startswith(("ATOM  ", "HETATM")):
+            serials.append(line[6:11].strip())
+    if len(serials) != topology.getNumAtoms():
+        # Numbering could not be established; leaving the file as written is
+        # better than emitting CONECT records pointing at the wrong atoms.
+        return
+
+    conect = [
+        f"CONECT{int(serials[i]):>5}{int(serials[j]):>5}\n"
+        for i, j in missing
+        if serials[i].isdigit() and serials[j].isdigit()
+    ]
+    if not conect:
+        return
+
+    # CONECT must precede END / MASTER.
+    insert_at = len(lines)
+    for idx in range(len(lines) - 1, -1, -1):
+        if lines[idx].startswith(("END", "MASTER")):
+            insert_at = idx
+        elif lines[idx].strip():
+            break
+    output_path.write_text("".join(lines[:insert_at] + conect + lines[insert_at:]))
 
 
 def save_structure(
@@ -761,6 +854,7 @@ def save_structure(
     elif suffix == ".pdb":
         with open(output_path, "w") as f:
             PDBFile.writeFile(topology, positions, f)
+        _append_missing_conect(topology, output_path)
     else:
         raise ValueError(f"Unsupported output format: {suffix!r}. Use .pdb, .cif, or .mmcif")
 

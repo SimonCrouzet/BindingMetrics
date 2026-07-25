@@ -406,17 +406,15 @@ class TestRoundTripStructure:
         assert dev < 1e-4, f"coord deviation {dev:.2e} nm too large"
 
     @pytest.mark.integration
-    @pytest.mark.xfail(
-        strict=True,
-        reason="save_cif merges two water residues on round-trip: its positional "
-        "auth_seq_id restoration can assign the same residue number to two "
-        "adjacent single-atom HOH residues, so OpenMM reads them back as one "
-        "residue (SFTI-1: 101 waters -> 100). Atoms and coordinates are intact; "
-        "only the water residue boundary is lost. Harmless in-pipeline (water is "
-        "stripped) but still a silent structural mutation.",
-    )
     def test_cif_preserves_water_residue_count(self, tmp_path):
-        """CIF round-trip must not merge distinct water residues."""
+        """CIF round-trip must not merge distinct water residues.
+
+        Waters are spread across several output chains that all map back to one
+        auth chain, each carrying its own 1-based numbering. Merging them
+        without renumbering gave two residues the same auth_seq_id, and the
+        reader folded them into one (SFTI-1: 101 waters -> 100) with atoms and
+        coordinates intact — a structural change nothing would have reported.
+        """
         src = _require(SFTI_CIF)
         topo, pos = load_structure(src)
         assert _n_water_residues(topo) > 0  # sanity: source has waters
@@ -527,16 +525,14 @@ class TestRoundTripBonds:
         assert _has_ring_closure(rt_topo), "SFTI-1 head-to-tail closure lost on CIF round-trip"
 
     @pytest.mark.integration
-    @pytest.mark.xfail(
-        strict=True,
-        reason="save_structure(.pdb) loses SFTI-1 head-to-tail closure: "
-        "PDBFile.writeFile emits CONECT only for non-standard residues, and the "
-        "GLY-ASP amide joins two standard residues, so no CONECT is written and "
-        "the geometric distance is too long for OpenMM's disulfide/standard-bond "
-        "reconstruction to recover it.",
-    )
     def test_pdb_preserves_head_to_tail(self, tmp_path):
-        """SFTI-1 head-to-tail closure must survive a .pdb round-trip."""
+        """SFTI-1 head-to-tail closure must survive a .pdb round-trip.
+
+        PDBFile.writeFile emits CONECT only for non-standard residues, and this
+        amide joins an ordinary GLY to an ordinary ASP — so save_structure adds
+        the missing record itself. Without that, the macrocycle reloads as a
+        linear peptide with no error anywhere.
+        """
         src = _require(SFTI_CIF)
         topo, pos = load_structure(src)
         assert _has_ring_closure(topo)  # sanity: source has it
