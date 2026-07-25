@@ -1,0 +1,91 @@
+name: Bug report
+description: A metric, protocol or CLI command behaves incorrectly or crashes
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most bugs here come down to the environment (numpy ABI, OpenMM CUDA
+        build, missing AmberTools) or to an unusual structure (non-canonical
+        residues, cyclic peptides, multi-model CIFs). The fields below are the
+        ones that make a report reproducible — please fill them in even if the
+        failure looks obvious.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+      placeholder: |
+        Expected dSASA to be positive for a bound peptide; got 0.0 for every
+        frame.
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or code
+      description: The exact command line or Python snippet that triggers it.
+      render: shell
+      placeholder: binding-metrics-run --input complex.cif --peptide-chain B --receptor-chain A
+    validations:
+      required: true
+
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Full output or traceback
+      description: >
+        The complete traceback, not just the last line — the frame that raised
+        is rarely the one at fault. Paste the log file if you used --log-file.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: check-env
+    attributes:
+      label: Output of `binding-metrics-check-env`
+      description: >
+        This reports Python, numpy, OpenMM and the available compute platforms
+        in one place. A mismatched numpy ABI or a CPU-only OpenMM build explains
+        a large share of reports.
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How was it installed
+      options:
+        - conda env create -f environment.yml
+        - Docker image (simoncrouzet/binding-metrics)
+        - pip install -e .
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Compute platform in use
+      options:
+        - CUDA (GPU)
+        - CPU
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: structure
+    attributes:
+      label: Structure involved
+      description: >
+        If the failure depends on the input: is the peptide cyclic (head-to-tail,
+        disulfide, lactam, staple)? Does it contain non-canonical residues?
+        Is it a multi-model file? A PDB ID or an attached minimal structure is
+        ideal — many of these bugs cannot be reproduced without one.
+    validations:
+      required: false
