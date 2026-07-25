@@ -68,6 +68,11 @@ jobs:
         run: |
           micromamba list | grep -E "^ *(python|numpy|openmm|mdtraj|ambertools|openff-toolkit|rdkit|biotite|gemmi|pdbfixer) " || true
           python -c "import openmm; print('openmm', openmm.version.version)"
+          # A broken editable install should fail here, not as 500 collection errors.
+          python -c "import binding_metrics; print('binding_metrics imported OK')"
+          # numpy must still be the conda-forge build: a PyPI wheel over it
+          # mismatches the ABI and segfaults the openff/AmberTools registry.
+          python -c "import numpy; assert numpy.__version__.startswith('1.'), numpy.__version__; print('numpy', numpy.__version__)"
 
       # Everything except the gpu tier: GitHub runners have no CUDA device, so
       # those tests can only be run locally or on self-hosted hardware. The
