@@ -180,15 +180,13 @@ class TestEnergy:
             energy.md = original_md
 
     @pytest.mark.integration
-    @pytest.mark.skip(reason="Requires PDB with hydrogens for force field parameterization")
     def test_interaction_energy_returns_array(
-        self, example_pdb_path: Path, example_pdb_chains: dict, tmp_path: Path
+        self, prepped_example_pdb: Path, example_pdb_chains: dict, tmp_path: Path
     ):
-        """Interaction energy should return numpy array.
+        """Interaction energy over a trajectory of the bound MDM2-p53 complex.
 
-        Note: This test requires a PDB with hydrogens added. Cryo-EM
-        structures typically lack hydrogens and need preprocessing
-        with PDBFixer or Modeller.addHydrogens() before energy calculation.
+        Uses the prepped fixture rather than the raw crystal: 1YCR has no
+        hydrogens, which the force field cannot parameterise.
         """
         pytest.importorskip("mdtraj")
         pytest.importorskip("openmm")
@@ -197,35 +195,36 @@ class TestEnergy:
         from binding_metrics.io.structures import get_chain_atom_indices
         from binding_metrics.metrics.energy import calculate_interaction_energy
 
-        # Load structure and get chain indices dynamically
-        traj = md.load(str(example_pdb_path))
+        traj = md.load(str(prepped_example_pdb))
         traj_path = tmp_path / "test.dcd"
         traj.save_dcd(str(traj_path))
 
-        ligand_indices = get_chain_atom_indices(example_pdb_path, [example_pdb_chains["ligand"]])
-        receptor_indices = get_chain_atom_indices(example_pdb_path, example_pdb_chains["receptor"])
+        ligand_indices = get_chain_atom_indices(prepped_example_pdb, [example_pdb_chains["ligand"]])
+        receptor_indices = get_chain_atom_indices(
+            prepped_example_pdb, example_pdb_chains["receptor"]
+        )
 
         result = calculate_interaction_energy(
             traj_path,
-            example_pdb_path,
+            prepped_example_pdb,
             ligand_indices=ligand_indices,
             receptor_indices=receptor_indices,
         )
 
-        # Generic assertions - no specific values
         assert isinstance(result, np.ndarray)
         assert len(result) == traj.n_frames
         assert result.dtype in (np.float64, np.float32)
+        assert np.all(np.isfinite(result)), "non-finite interaction energy"
+        # 1YCR is a bound complex, so the interaction must be favourable. A
+        # sign flip here is the failure mode that a shape-only assertion would
+        # have let through.
+        assert result[0] < 0, f"bound complex gave repulsive energy {result[0]} kJ/mol"
 
     @pytest.mark.integration
-    @pytest.mark.skip(reason="Requires PDB with hydrogens for force field parameterization")
     def test_component_energies_returns_dict(
-        self, example_pdb_path: Path, example_pdb_chains: dict, tmp_path: Path
+        self, prepped_example_pdb: Path, example_pdb_chains: dict, tmp_path: Path
     ):
-        """Component energies should return dict with elec/vdw.
-
-        Note: Requires preprocessed PDB with hydrogens.
-        """
+        """Electrostatic and vdW components must decompose the total exactly."""
         pytest.importorskip("mdtraj")
         pytest.importorskip("openmm")
         import mdtraj as md
@@ -233,28 +232,36 @@ class TestEnergy:
         from binding_metrics.io.structures import get_chain_atom_indices
         from binding_metrics.metrics.energy import calculate_component_energies
 
-        traj = md.load(str(example_pdb_path))
+        traj = md.load(str(prepped_example_pdb))
         traj_path = tmp_path / "test.dcd"
         traj.save_dcd(str(traj_path))
 
-        ligand_indices = get_chain_atom_indices(example_pdb_path, [example_pdb_chains["ligand"]])
-        receptor_indices = get_chain_atom_indices(example_pdb_path, example_pdb_chains["receptor"])
+        ligand_indices = get_chain_atom_indices(prepped_example_pdb, [example_pdb_chains["ligand"]])
+        receptor_indices = get_chain_atom_indices(
+            prepped_example_pdb, example_pdb_chains["receptor"]
+        )
 
         result = calculate_component_energies(
             traj_path,
-            example_pdb_path,
+            prepped_example_pdb,
             ligand_indices=ligand_indices,
             receptor_indices=receptor_indices,
         )
 
-        # Generic assertions - structure only
         assert isinstance(result, dict)
-        assert "electrostatic" in result
-        assert "vdw" in result
-        assert "total" in result
-        # Arrays should have same length
+        assert set(result) >= {"electrostatic", "vdw", "total"}
         assert len(result["electrostatic"]) == len(result["vdw"])
         assert len(result["total"]) == traj.n_frames
+        # The decomposition must be exact, not merely present: total is defined
+        # as elec + vdw, so a drift here means one component is being computed
+        # from different state than the other.
+        np.testing.assert_allclose(
+            result["total"], result["electrostatic"] + result["vdw"], rtol=0, atol=1e-9
+        )
+        assert np.all(np.isfinite(result["total"]))
+        # Both terms are attractive across a packed protein-peptide interface.
+        assert result["electrostatic"][0] < 0
+        assert result["vdw"][0] < 0
 
 
 class TestRMSD:
