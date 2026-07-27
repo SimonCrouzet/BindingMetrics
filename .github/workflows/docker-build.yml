@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The CUDA devel base plus a full conda env overruns the runner's default
       # free space; drop preinstalled toolchains this build never uses.
