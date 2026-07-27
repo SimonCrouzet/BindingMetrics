@@ -1,12 +1,11 @@
 """Tests for the protocol module."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-
 from conftest import BEST_PLATFORM
+
 from binding_metrics.core.simulation import SimulationConfig
 from binding_metrics.protocols.base import BaseProtocol, ProtocolResults
 from binding_metrics.protocols.peptide import PeptideBindingProtocol
@@ -227,9 +226,7 @@ class TestPeptideBindingProtocol:
     ):
         """run() should create trajectory and topology files."""
         pytest.importorskip("openmm")
-        pytest.importorskip(
-            "pdbfixer", reason="pdbfixer required to fix incomplete PDB structures"
-        )
+        pytest.importorskip("pdbfixer", reason="pdbfixer required to fix incomplete PDB structures")
 
         config = SimulationConfig(
             duration_ns=0.0001,  # Very short for testing

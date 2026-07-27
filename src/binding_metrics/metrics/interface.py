@@ -35,10 +35,10 @@ def _import_biotite():
     """Lazy import of required biotite modules."""
     try:
         import biotite.structure as struc
-        import biotite.structure.io.pdbx as pdbx
         import biotite.structure.io.pdb as pdb_io
-        from biotite.structure.sasa import sasa as biotite_sasa
+        import biotite.structure.io.pdbx as pdbx
         from biotite.structure.info import vdw_radius_single
+        from biotite.structure.sasa import sasa as biotite_sasa
 
         return struc, pdbx, pdb_io, biotite_sasa, vdw_radius_single
     except ImportError:
@@ -87,9 +87,34 @@ def detect_interface_chains(
         Tuple of (peptide_chain_id, receptor_chain_id)
     """
     amino_acids = {
-        "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
-        "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
-        "MSE", "SEC", "PYL", "HYP", "MLY", "SEP", "TPO", "PTR",
+        "ALA",
+        "ARG",
+        "ASN",
+        "ASP",
+        "CYS",
+        "GLN",
+        "GLU",
+        "GLY",
+        "HIS",
+        "ILE",
+        "LEU",
+        "LYS",
+        "MET",
+        "PHE",
+        "PRO",
+        "SER",
+        "THR",
+        "TRP",
+        "TYR",
+        "VAL",
+        "MSE",
+        "SEC",
+        "PYL",
+        "HYP",
+        "MLY",
+        "SEP",
+        "TPO",
+        "PTR",
     }
 
     chain_ids = np.unique(atoms.chain_id)
@@ -138,9 +163,7 @@ def _per_atom_sasa(atoms, probe_radius, sasa_fn, vdw_fn) -> np.ndarray:
 
 def _gamma_array(atoms) -> np.ndarray:
     """Per-atom solvation parameter array (kcal/mol/Å²)."""
-    return np.array(
-        [_SOLVATION_PARAMS.get(str(a.element).strip().upper(), 0.0) for a in atoms]
-    )
+    return np.array([_SOLVATION_PARAMS.get(str(a.element).strip().upper(), 0.0) for a in atoms])
 
 
 def _polar_mask(atoms) -> np.ndarray:
@@ -357,27 +380,29 @@ def compute_interface_metrics(
         hbond_result = {"hbonds": 0, "hbond_energy": 0.0}
         saltbridge_result = {"saltbridges": 0, "saltbridges_bidentate": 0, "saltbridge_energy": 0.0}
 
-    result.update({
-        "delta_sasa": delta_sasa,
-        "sasa_peptide": float(sasa_pep.sum()),
-        "sasa_receptor": float(sasa_rec.sum()),
-        "sasa_complex": float(sasa_cpx.sum()),
-        "delta_g_int": delta_g_int,
-        "delta_g_int_kJ": delta_g_int * _KCAL_TO_KJ,
-        "polar_area": polar_area,
-        "apolar_area": apolar_area,
-        "fraction_polar": polar_area / delta_sasa if delta_sasa > 0 else np.nan,
-        "n_interface_residues_peptide": len(per_res_pep),
-        "n_interface_residues_receptor": len(per_res_rec),
-        "interface_residues_peptide": [r["residue"] for r in per_res_pep],
-        "interface_residues_receptor": [r["residue"] for r in per_res_rec],
-        "per_residue": per_res_pep + per_res_rec,
-        "hbonds": hbond_result.get("hbonds", 0),
-        "hbond_energy": hbond_result.get("hbond_energy", 0.0),
-        "saltbridges": saltbridge_result.get("saltbridges", 0),
-        "saltbridges_bidentate": saltbridge_result.get("saltbridges_bidentate", 0),
-        "saltbridge_energy": saltbridge_result.get("saltbridge_energy", 0.0),
-    })
+    result.update(
+        {
+            "delta_sasa": delta_sasa,
+            "sasa_peptide": float(sasa_pep.sum()),
+            "sasa_receptor": float(sasa_rec.sum()),
+            "sasa_complex": float(sasa_cpx.sum()),
+            "delta_g_int": delta_g_int,
+            "delta_g_int_kJ": delta_g_int * _KCAL_TO_KJ,
+            "polar_area": polar_area,
+            "apolar_area": apolar_area,
+            "fraction_polar": polar_area / delta_sasa if delta_sasa > 0 else np.nan,
+            "n_interface_residues_peptide": len(per_res_pep),
+            "n_interface_residues_receptor": len(per_res_rec),
+            "interface_residues_peptide": [r["residue"] for r in per_res_pep],
+            "interface_residues_receptor": [r["residue"] for r in per_res_rec],
+            "per_residue": per_res_pep + per_res_rec,
+            "hbonds": hbond_result.get("hbonds", 0),
+            "hbond_energy": hbond_result.get("hbond_energy", 0.0),
+            "saltbridges": saltbridge_result.get("saltbridges", 0),
+            "saltbridges_bidentate": saltbridge_result.get("saltbridges_bidentate", 0),
+            "saltbridge_energy": saltbridge_result.get("saltbridge_energy", 0.0),
+        }
+    )
 
     return result
 
@@ -388,26 +413,36 @@ def main():
     )
     parser.add_argument("--input", "-i", type=Path, required=True, help="Input CIF file")
     parser.add_argument(
-        "--design-chain", type=str, default=None,
+        "--design-chain",
+        type=str,
+        default=None,
         help="Peptide chain ID (auto-detect if omitted)",
     )
     parser.add_argument(
-        "--receptor-chain", type=str, default=None,
+        "--receptor-chain",
+        type=str,
+        default=None,
         help="Receptor chain ID (auto-detect if omitted)",
     )
     parser.add_argument(
-        "--probe-radius", type=float, default=1.4,
+        "--probe-radius",
+        type=float,
+        default=1.4,
         help="Solvent probe radius in Å (default 1.4)",
     )
     parser.add_argument(
-        "--threshold", type=float, default=0.5,
+        "--threshold",
+        type=float,
+        default=0.5,
         help="Min buried SASA per residue to count as interface residue (Å², default 0.5)",
     )
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(parser)
     args = parser.parse_args()
 
     from binding_metrics.cli import log_to_file
+
     with log_to_file(args.log_file):
         print(f"Computing interface metrics for: {args.input}")
         metrics = compute_interface_metrics(
@@ -420,13 +455,24 @@ def main():
 
         print("\nInterface summary:")
         scalar_keys = [
-            "peptide_chain", "receptor_chain",
-            "delta_sasa", "sasa_peptide", "sasa_receptor", "sasa_complex",
-            "delta_g_int", "delta_g_int_kJ",
-            "polar_area", "apolar_area", "fraction_polar",
-            "n_interface_residues_peptide", "n_interface_residues_receptor",
-            "hbonds", "hbond_energy",
-            "saltbridges", "saltbridges_bidentate", "saltbridge_energy",
+            "peptide_chain",
+            "receptor_chain",
+            "delta_sasa",
+            "sasa_peptide",
+            "sasa_receptor",
+            "sasa_complex",
+            "delta_g_int",
+            "delta_g_int_kJ",
+            "polar_area",
+            "apolar_area",
+            "fraction_polar",
+            "n_interface_residues_peptide",
+            "n_interface_residues_receptor",
+            "hbonds",
+            "hbond_energy",
+            "saltbridges",
+            "saltbridges_bidentate",
+            "saltbridge_energy",
         ]
         for key in scalar_keys:
             val = metrics[key]
@@ -437,7 +483,9 @@ def main():
 
         if metrics["per_residue"]:
             print("\nPer-residue contributions (sorted by buried SASA):")
-            sorted_res = sorted(metrics["per_residue"], key=lambda r: r["buried_sasa"], reverse=True)
+            sorted_res = sorted(
+                metrics["per_residue"], key=lambda r: r["buried_sasa"], reverse=True
+            )
             print(f"  {'Residue':<20} {'BuriedSASA':>10} {'ΔG_res':>10} {'Polar':>8} {'Apolar':>8}")
             for r in sorted_res:
                 print(

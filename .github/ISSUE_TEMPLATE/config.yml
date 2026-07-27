@@ -1,0 +1,11 @@
+# Blank issues stay enabled: Discussions are off for this repo, so with the
+# forms as the only route a plain question would have nowhere to go. If
+# Discussions are turned on later, flip this to false and point a contact_link
+# at them.
+blank_issues_enabled: true
+contact_links:
+  - name: What does this metric mean, and is my value reasonable?
+    url: https://github.com/SimonCrouzet/BindingMetrics/blob/main/METRICS.md
+    about: >
+      METRICS.md documents every metric, what it measures, and its expected
+      range — worth checking before filing.

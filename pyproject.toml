@@ -79,7 +79,30 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
+# N806/N803/N815 fight established scientific notation. Atom, residue and
+# matrix names are read against the literature (CA, CB, OD2, dG, dSASA, R_gyr),
+# and lower-casing them to satisfy pep8-naming makes the code harder to check
+# against the papers it implements.
+ignore = ["N806", "N803", "N815"]
+
+[tool.ruff.lint.per-file-ignores]
+# Re-exports: the public surface is defined by what __init__ imports.
+"src/binding_metrics/**/__init__.py" = ["F401"]
+# Frozen snapshots of superseded code, kept for provenance, not maintained.
+"archive/**" = ["ALL"]
+# Test names spell out the case under test, including chain IDs and units
+# (test_chain_R_works, test_delta_g_int_kJ_consistent). Lower-casing them
+# loses the distinction from chain r or kcal.
+"tests/**" = ["N802"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+# --strict-markers turns a typo'd marker into a collection error instead of a
+# silently-never-selected test; --strict-config does the same for this table.
+addopts = "--strict-markers --strict-config"
+markers = [
+    "integration: exercises real structures and the full OpenMM/biotite stack, not mocks",
+    "gpu: requires a CUDA device — skipped on CPU-only machines and in CI",
+    "slow: takes minutes; excluded from the default developer loop",
+]

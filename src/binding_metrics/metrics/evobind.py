@@ -49,7 +49,6 @@ import numpy as np
 
 from binding_metrics.utils import backfill_auth_columns
 
-
 # ---------------------------------------------------------------------------
 # Internal helpers: coordinate extraction
 # ---------------------------------------------------------------------------
@@ -59,6 +58,7 @@ def _import_biotite():
     try:
         import biotite.structure as struc
         import biotite.structure.io.pdbx as pdbx
+
         return struc, pdbx
     except ImportError:
         raise ImportError(
@@ -76,6 +76,7 @@ def _load_atoms(path: Path):
         backfill_auth_columns(f)
         return pdbx.get_structure(f, model=1)
     import biotite.structure.io.pdb as pdb_io
+
     f = pdb_io.PDBFile.read(str(path))
     return pdb_io.get_structure(f, model=1)
 
@@ -133,7 +134,7 @@ def _pairwise_min_dists(coords_a: np.ndarray, coords_b: np.ndarray) -> np.ndarra
     """
     # (N, 1, 3) - (1, M, 3) → (N, M, 3) → (N, M)
     diff = coords_a[:, np.newaxis, :] - coords_b[np.newaxis, :, :]
-    dists = np.sqrt((diff ** 2).sum(axis=-1))
+    dists = np.sqrt((diff**2).sum(axis=-1))
     return dists.min(axis=1)
 
 
@@ -144,7 +145,7 @@ def _auto_interface_mask(
 ) -> np.ndarray:
     """Boolean mask over receptor Cβ positions within ``cutoff`` Å of any peptide Cβ."""
     diff = rec_cb_coords[:, np.newaxis, :] - pep_cb_coords[np.newaxis, :, :]
-    dists = np.sqrt((diff ** 2).sum(axis=-1))
+    dists = np.sqrt((diff**2).sum(axis=-1))
     return dists.min(axis=1) < cutoff
 
 
@@ -168,9 +169,7 @@ def _per_residue_plddt(
     chain_plddt = plddt_per_atom[mask]
     chain_res_ids = atoms.res_id[mask]
     unique_res = np.unique(chain_res_ids)
-    return np.array(
-        [chain_plddt[chain_res_ids == r].mean() for r in unique_res], dtype=float
-    )
+    return np.array([chain_plddt[chain_res_ids == r].mean() for r in unique_res], dtype=float)
 
 
 # ---------------------------------------------------------------------------
@@ -382,9 +381,7 @@ def compute_evobind_adversarial_check(
             f"No Cα atoms found for binder chain '{binder_chain}' in design structure."
         )
     if afm_pep_ca.array_length() == 0:
-        raise ValueError(
-            f"No Cα atoms found for binder chain '{binder_chain}' in AFM structure."
-        )
+        raise ValueError(f"No Cα atoms found for binder chain '{binder_chain}' in AFM structure.")
 
     # For CoM: match binder residues by number; fall back to positional
     # pairing when numbering schemes differ (e.g. OF3 renumbers from 1).

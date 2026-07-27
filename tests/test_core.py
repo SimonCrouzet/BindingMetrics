@@ -1,16 +1,13 @@
 """Tests for the core simulation module."""
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import numpy as np
 import pytest
 
 from binding_metrics.core.forcefields import (
     AMBER_CONFIG,
     CHARMM_CONFIG,
     FORCEFIELD_CONFIGS,
-    ForceFieldConfig,
     get_forcefield,
     get_forcefield_config,
 )

@@ -7,15 +7,16 @@ import tempfile
 from typing import Literal, Optional
 
 import openmm.unit as unit
-from openmm.app import Modeller, PDBFile, ForceField
-
-log = logging.getLogger(__name__)
+from openmm.app import ForceField, Modeller, PDBFile
 
 from binding_metrics.core.forcefields import get_forcefield
+
+log = logging.getLogger(__name__)
 
 # Optional pdbfixer for structure repair
 try:
     from pdbfixer import PDBFixer
+
     HAS_PDBFIXER = True
 except ImportError:
     HAS_PDBFIXER = False
@@ -55,10 +56,16 @@ def _extract_custom_bonds(topology) -> list:
             continue
         if a1.name == "SG" and a2.name == "SG":
             continue  # disulfide — rebuilt from geometry after addMissingAtoms
-        bonds.append((
-            res_local[r1.index][0], res_local[r1.index][1], a1.name,
-            res_local[r2.index][0], res_local[r2.index][1], a2.name,
-        ))
+        bonds.append(
+            (
+                res_local[r1.index][0],
+                res_local[r1.index][1],
+                a1.name,
+                res_local[r2.index][0],
+                res_local[r2.index][1],
+                a2.name,
+            )
+        )
     return bonds
 
 
@@ -77,7 +84,7 @@ def _readd_custom_bonds(topology, custom_bonds: list):
         for b in topology.bonds()
     }
 
-    for (ch1, li1, an1, ch2, li2, an2) in custom_bonds:
+    for ch1, li1, an1, ch2, li2, an2 in custom_bonds:
         a1 = lookup.get((ch1, li1, an1))
         a2 = lookup.get((ch2, li2, an2))
         if a1 and a2:
@@ -86,8 +93,15 @@ def _readd_custom_bonds(topology, custom_bonds: list):
                 topology.addBond(a1, a2)
                 existing.add(key)
         else:
-            log.warning("Could not restore custom bond %s[%d].%s – %s[%d].%s after prep",
-                        ch1, li1, an1, ch2, li2, an2)
+            log.warning(
+                "Could not restore custom bond %s[%d].%s – %s[%d].%s after prep",
+                ch1,
+                li1,
+                an1,
+                ch2,
+                li2,
+                an2,
+            )
     return topology
 
 
@@ -106,6 +120,7 @@ def _rebuild_connect_records(fixer) -> None:
     patch_cyclic_topology (which uses custom_bonds as hints for strained geometry).
     """
     from binding_metrics.core.cyclic import register_ss_bonds
+
     fixer.topology = register_ss_bonds(fixer.topology, fixer.positions)
 
 
@@ -117,8 +132,10 @@ def _delete_zero_coord_atoms(fixer) -> "PDBFixer":
     Returns the original fixer unchanged if no zero-coordinate atoms are found.
     """
     from openmm.app import PDBxFile
+
     atoms_at_origin = [
-        i for i, pos in enumerate(fixer.positions)
+        i
+        for i, pos in enumerate(fixer.positions)
         if abs(pos.x) < 1e-6 and abs(pos.y) < 1e-6 and abs(pos.z) < 1e-6
     ]
     if not atoms_at_origin:
@@ -149,6 +166,7 @@ def _topology_to_fixer(topology, positions) -> "PDBFixer":
             "pdbfixer is required. Install with: pip install binding-metrics[structure]"
         )
     from openmm.app import PDBxFile
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".cif", delete=False) as tmp:
         PDBxFile.writeFile(topology, positions, tmp)
         tmp_path = tmp.name
@@ -161,29 +179,88 @@ def _topology_to_fixer(topology, positions) -> "PDBFixer":
 
 # Standard amino acids and nucleotides recognised by AMBER ff14SB.
 _STANDARD_RESIDUES = {
-    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
-    "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
-    "TYR", "VAL",
+    "ALA",
+    "ARG",
+    "ASN",
+    "ASP",
+    "CYS",
+    "GLN",
+    "GLU",
+    "GLY",
+    "HIS",
+    "ILE",
+    "LEU",
+    "LYS",
+    "MET",
+    "PHE",
+    "PRO",
+    "SER",
+    "THR",
+    "TRP",
+    "TYR",
+    "VAL",
     # protonation variants
-    "HIE", "HID", "HIP", "CYX", "ASH", "GLH", "LYN",
+    "HIE",
+    "HID",
+    "HIP",
+    "CYX",
+    "ASH",
+    "GLH",
+    "LYN",
     # nucleotides
-    "DA", "DC", "DG", "DT", "A", "C", "G", "T", "U",
+    "DA",
+    "DC",
+    "DG",
+    "DT",
+    "A",
+    "C",
+    "G",
+    "T",
+    "U",
 }
 
 # Common metal ions parameterised in standard force fields (no GAFF2 needed).
 _METAL_ELEMENTS = {
-    "Li", "Na", "K", "Rb", "Cs",
-    "Mg", "Ca", "Sr", "Ba",
-    "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
-    "Mo", "Ru", "Rh", "Pd", "Ag", "Cd",
-    "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+    "Li",
+    "Na",
+    "K",
+    "Rb",
+    "Cs",
+    "Mg",
+    "Ca",
+    "Sr",
+    "Ba",
+    "V",
+    "Cr",
+    "Mn",
+    "Fe",
+    "Co",
+    "Ni",
+    "Cu",
+    "Zn",
+    "Mo",
+    "Ru",
+    "Rh",
+    "Pd",
+    "Ag",
+    "Cd",
+    "W",
+    "Re",
+    "Os",
+    "Ir",
+    "Pt",
+    "Au",
+    "Hg",
 }
 
 _WATER_NAMES = {"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"}
 
 
 def _add_hydrogens_cyclic(
-    topology, positions, custom_bonds: list, ph: float,
+    topology,
+    positions,
+    custom_bonds: list,
+    ph: float,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> tuple:
     """Add hydrogens to a topology that contains non-sequential cyclic bonds.
@@ -194,18 +271,19 @@ def _add_hydrogens_cyclic(
     uses the cyclic-aware ForceField templates instead.
     """
     from openmm.app import ForceField, Modeller
+
     from binding_metrics.core.cyclic import (
-        patch_cyclic_topology,
         get_addh_variants,
         load_extra_xmls,
+        patch_cyclic_topology,
         rename_disulfide_cys_to_cyx,
     )
+    from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
     from binding_metrics.core.nonstandard import (
         detect_nonstandard,
-        patch_nonstandard,
         load_nonstandard_xmls,
+        patch_nonstandard,
     )
-    from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
 
     # custom bonds are intra-chain, so both ends share the same chain ID.
     cyclic_chain = custom_bonds[0][0]
@@ -243,7 +321,9 @@ def _add_hydrogens_cyclic(
     )
     with deterministic_hydrogen_placement(random_seed):
         modeller.addHydrogens(
-            ff, pH=ph, variants=addh_variants,
+            ff,
+            pH=ph,
+            variants=addh_variants,
             platform=_hydrogen_placement_platform(),
         )
     return modeller.topology, modeller.positions
@@ -343,8 +423,7 @@ def repair_ca_hydrogen_chirality(topology, positions, verbose: bool = True):
         repaired.append(f"{res.name}{res.id}/{res.chain.id}")
 
     if repaired and verbose:
-        print(f"  Repaired {len(repaired)} wrong-side Cα hydrogen(s): "
-              f"{', '.join(repaired)}")
+        print(f"  Repaired {len(repaired)} wrong-side Cα hydrogen(s): {', '.join(repaired)}")
     # Vec3, not bare tuples: downstream consumers index positions as p.x/p.y/p.z.
     return unit.Quantity([Vec3(*map(float, p)) for p in pos], unit.nanometer)
 
@@ -404,8 +483,10 @@ def prep_structure(
         if nonstandard:
             names = ", ".join(f"{r.name}" for r, _ in nonstandard)
             log.info("Non-standard residues detected: %s", names)
-            log.info("These will be preserved. Use --small-molecules auto in relax to "
-                     "parameterise them with GAFF2, or --canonicalize to replace them.")
+            log.info(
+                "These will be preserved. Use --small-molecules auto in relax to "
+                "parameterise them with GAFF2, or --canonicalize to replace them."
+            )
 
     # Chain-aware heterogen filter — replaces PDBFixer's removeHeterogens():
     #   • Standard AA / nucleotide          → always keep
@@ -442,11 +523,7 @@ def prep_structure(
             if res.name in _STANDARD_RESIDUES:
                 continue
 
-            elements = {
-                atom.element.symbol
-                for atom in res.atoms()
-                if atom.element is not None
-            }
+            elements = {atom.element.symbol for atom in res.atoms() if atom.element is not None}
             if elements & _METAL_ELEMENTS:
                 kept_nonstandard.append(f"{res.name} (metal, chain {chain.id})")
                 continue
@@ -575,7 +652,8 @@ def prepare_system(
         topology, positions = tmp_modeller.topology, tmp_modeller.positions
 
     return solvate(
-        topology, positions,
+        topology,
+        positions,
         forcefield=forcefield,
         forcefield_name=forcefield_name,
         padding=padding,

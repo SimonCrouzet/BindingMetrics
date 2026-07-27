@@ -4,13 +4,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from conftest import requires_cuda
+
 from binding_metrics.metrics.energy import (
     _extract_chain,
     compute_interaction_energy,
 )
-
 
 
 class TestExtractChain:
@@ -72,8 +71,10 @@ class TestComputeInteractionEnergy:
         )
 
         relaxed_keys = {
-            "relaxed_interaction_energy", "relaxed_e_complex",
-            "relaxed_e_peptide", "relaxed_e_receptor",
+            "relaxed_interaction_energy",
+            "relaxed_e_complex",
+            "relaxed_e_peptide",
+            "relaxed_e_receptor",
         }
         assert relaxed_keys.issubset(result.keys())
 

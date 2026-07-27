@@ -203,9 +203,7 @@ class TestEveryMetricLoads:
             pytest.skip(f"{spec.name}: optional dependency not installed — {e}")
 
         params = inspect.signature(obj).parameters
-        has_var_kw = any(
-            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-        )
+        has_var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
         assert has_var_kw or spec.path_arg in params, (
             f"{spec.name}: registry declares path_arg {spec.path_arg!r} but "
             f"{spec.import_path} has no such parameter"
@@ -234,9 +232,7 @@ class TestEveryMetricLoads:
             pytest.skip(f"{spec.name}: class-based spec, not called by kwarg")
 
         params = inspect.signature(obj).parameters
-        has_var_kw = any(
-            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-        )
+        has_var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
         declared = [
             a
             for a in (

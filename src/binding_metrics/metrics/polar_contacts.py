@@ -9,7 +9,6 @@ import warnings
 
 import numpy as np
 
-
 # Coulomb constant in kcal/mol when distance is in Å and charges in e
 _COULOMB_K = 332.0637133
 
@@ -26,8 +25,8 @@ def _import_biotite():
     try:
         import biotite.structure as structure
         import biotite.structure.io.pdbx as pdbx
-        from biotite.structure.sasa import sasa
         from biotite.structure.info import vdw_radius_single
+        from biotite.structure.sasa import sasa
 
         return structure, pdbx, sasa, vdw_radius_single
     except ImportError:
@@ -84,8 +83,7 @@ def _add_hydrogens_if_needed(atoms, structure_mod):
         return atoms_h
     except Exception as e:
         warnings.warn(
-            f"hydride.add_hydrogen failed ({type(e).__name__}: {e}); "
-            "H-bonds may be undercounted",
+            f"hydride.add_hydrogen failed ({type(e).__name__}: {e}); H-bonds may be undercounted",
             stacklevel=2,
         )
         return atoms
@@ -144,9 +142,8 @@ def compute_hbonds(atoms, peptide_chain: str, receptor_chain: str) -> dict:
 
     donor_chains = chain_id[triplets[:, 0]]
     acceptor_chains = chain_id[triplets[:, 2]]
-    cross = (
-        ((donor_chains == peptide_chain) & (acceptor_chains == receptor_chain))
-        | ((donor_chains == receptor_chain) & (acceptor_chains == peptide_chain))
+    cross = ((donor_chains == peptide_chain) & (acceptor_chains == receptor_chain)) | (
+        (donor_chains == receptor_chain) & (acceptor_chains == peptide_chain)
     )
     triplets = triplets[cross]
     if len(triplets) == 0:
@@ -185,12 +182,17 @@ def compute_hbonds(atoms, peptide_chain: str, receptor_chain: str) -> dict:
 # HIS / HID / HIE are intentionally excluded — see docs/metrics.md.
 _POSITIVE_ATOMS: set[tuple[str, str]] = {
     ("LYS", "NZ"),
-    ("ARG", "NH1"), ("ARG", "NH2"), ("ARG", "NE"),
-    ("HIP", "ND1"), ("HIP", "NE2"),
+    ("ARG", "NH1"),
+    ("ARG", "NH2"),
+    ("ARG", "NE"),
+    ("HIP", "ND1"),
+    ("HIP", "NE2"),
 }
 _NEGATIVE_ATOMS: set[tuple[str, str]] = {
-    ("ASP", "OD1"), ("ASP", "OD2"),
-    ("GLU", "OE1"), ("GLU", "OE2"),
+    ("ASP", "OD1"),
+    ("ASP", "OD2"),
+    ("GLU", "OE1"),
+    ("GLU", "OE2"),
 }
 
 
@@ -253,15 +255,14 @@ def compute_saltbridges(
         return empty
 
     diff = pos_atoms.coord[:, None, :] - neg_atoms.coord[None, :, :]
-    distances = np.sqrt(np.sum(diff ** 2, axis=-1))
+    distances = np.sqrt(np.sum(diff**2, axis=-1))
 
     in_window = (distances > distance_min) & (distances < distance_max)
     pos_chains = pos_atoms.chain_id
     neg_chains = neg_atoms.chain_id
 
-    cross = (
-        ((pos_chains[:, None] == peptide_chain) & (neg_chains[None, :] == receptor_chain))
-        | ((pos_chains[:, None] == receptor_chain) & (neg_chains[None, :] == peptide_chain))
+    cross = ((pos_chains[:, None] == peptide_chain) & (neg_chains[None, :] == receptor_chain)) | (
+        (pos_chains[:, None] == receptor_chain) & (neg_chains[None, :] == peptide_chain)
     )
     valid = in_window & cross
 
@@ -269,16 +270,20 @@ def compute_saltbridges(
         return empty
 
     # Aggregate atom-pair contacts to residue-pair level.
-    pos_res_keys = list(zip(
-        pos_atoms.chain_id.tolist(),
-        pos_atoms.res_id.tolist(),
-        pos_atoms.res_name.tolist(),
-    ))
-    neg_res_keys = list(zip(
-        neg_atoms.chain_id.tolist(),
-        neg_atoms.res_id.tolist(),
-        neg_atoms.res_name.tolist(),
-    ))
+    pos_res_keys = list(
+        zip(
+            pos_atoms.chain_id.tolist(),
+            pos_atoms.res_id.tolist(),
+            pos_atoms.res_name.tolist(),
+        )
+    )
+    neg_res_keys = list(
+        zip(
+            neg_atoms.chain_id.tolist(),
+            neg_atoms.res_id.tolist(),
+            neg_atoms.res_name.tolist(),
+        )
+    )
 
     # For each (pos_res, neg_res) that has any qualifying contact:
     #   r_min = closest qualifying atom-pair distance

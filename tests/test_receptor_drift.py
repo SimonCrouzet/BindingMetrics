@@ -1,7 +1,6 @@
 """Tests for compute_receptor_drift in metrics/rmsd.py."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -27,6 +26,7 @@ class TestReceptorDrift:
         try:
             with pytest.raises(ImportError, match="mdtraj"):
                 from binding_metrics.metrics.rmsd import compute_receptor_drift
+
                 compute_receptor_drift("fake.dcd", "fake.pdb", "A")
         finally:
             rmsd.md = original_md
@@ -49,11 +49,15 @@ class TestReceptorDrift:
         result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "A")
 
         expected_keys = {
-            "drift_aligned_mean", "drift_aligned_max",
-            "drift_raw_mean", "drift_raw_max",
+            "drift_aligned_mean",
+            "drift_aligned_max",
+            "drift_raw_mean",
+            "drift_raw_max",
             "pbc_detected",
-            "drift_aligned_per_frame", "drift_raw_per_frame",
-            "n_receptor_ca", "n_frames",
+            "drift_aligned_per_frame",
+            "drift_raw_per_frame",
+            "n_receptor_ca",
+            "n_frames",
         }
         assert expected_keys.issubset(set(result.keys()))
 
@@ -180,7 +184,8 @@ class TestReceptorDrift:
 
         result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "A")
 
-        # The example_linear_p53_1YCR.pdb has no meaningful unit cell → raw drift should be available
+        # The example_linear_p53_1YCR.pdb has no meaningful unit cell → raw
+        # drift should be available
         # (DCD trajectories from PDB load without PBC info when the source has dummy cell)
         # Just check the type is correct
         assert isinstance(result["pbc_detected"], bool)

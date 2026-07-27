@@ -5,14 +5,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from conftest import requires_cuda
+
 from binding_metrics.protocols.relaxation import (
     ImplicitRelaxation,
     RelaxationConfig,
     RelaxationResult,
 )
-
 
 
 class TestRelaxationConfig:
@@ -45,7 +44,10 @@ class TestRelaxationConfig:
 
     def test_custom_bond_handler_callable(self):
         """Should accept a callable for custom_bond_handler."""
-        handler = lambda topo, pos, chain: (topo, pos, [])
+
+        def handler(topo, pos, chain):
+            return topo, pos, []
+
         config = RelaxationConfig(custom_bond_handler=handler)
         assert callable(config.custom_bond_handler)
 
@@ -156,7 +158,9 @@ class TestImplicitRelaxation:
         """sample_id should default to the input file stem."""
         config = RelaxationConfig(
             md_duration_ps=0.0,
-            min_steps_initial=5, min_steps_restrained=5, min_steps_final=5,
+            min_steps_initial=5,
+            min_steps_restrained=5,
+            min_steps_final=5,
         )
         relaxer = ImplicitRelaxation(config)
         result = relaxer.run(prepped_example_cif, tmp_path / "out")
@@ -168,7 +172,9 @@ class TestImplicitRelaxation:
         config = RelaxationConfig(
             md_duration_ps=0.0,
             device="cpu",
-            min_steps_initial=5, min_steps_restrained=5, min_steps_final=5,
+            min_steps_initial=5,
+            min_steps_restrained=5,
+            min_steps_final=5,
         )
         relaxer = ImplicitRelaxation(config)
         result = relaxer.run(prepped_example_cif, tmp_path / "out")
@@ -180,8 +186,8 @@ class TestImplicitRelaxation:
         config = RelaxationConfig()
         relaxer = ImplicitRelaxation(config)
 
-        from openmm import Vec3
         import openmm.unit as unit
+        from openmm import Vec3
 
         pos = [Vec3(float(i) * 0.1 + 0.1, 0.0, 0.0) for i in range(5)] * unit.nanometers
         rmsd = relaxer._compute_rmsd(pos, pos)
@@ -193,8 +199,8 @@ class TestImplicitRelaxation:
         config = RelaxationConfig()
         relaxer = ImplicitRelaxation(config)
 
-        from openmm import Vec3
         import openmm.unit as unit
+        from openmm import Vec3
 
         pos = [Vec3(float(i) * 0.1 + 0.1, 0.0, 0.0) for i in range(5)] * unit.nanometers
         trajectory = [pos, pos, pos]

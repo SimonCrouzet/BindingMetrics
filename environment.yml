@@ -64,12 +64,23 @@ dependencies:
   - pytest>=7.0
   - ruff>=0.1
 
-  # pip is used ONLY for the package itself (editable, dev) and the two pip-only
-  # packages that aren't on conda-forge (DockQ + its parallelbar dep). --no-deps
-  # keeps pip from pulling PyPI builds over the conda-forge natives above; DockQ's
-  # numpy/scipy/pandas/biopython deps are all provided by conda.
+  # pip is used ONLY for the package itself (editable) and the two pip-only
+  # packages that aren't on conda-forge (DockQ + its parallelbar dep).
+  #
+  # Do NOT add "--no-deps" here. conda writes this list to a requirements file
+  # and runs `pip install -r`, and --no-deps is a command-line flag with no
+  # requirements-file equivalent — pip rejects it as an invalid requirement and
+  # the whole env creation fails.
+  #
+  # The protection it was reaching for comes from the conda section instead:
+  # pip does not reinstall a dependency that is already satisfied, so every
+  # package DockQ pulls in (numpy, scipy, pandas, biopython) is pinned above
+  # from conda-forge and pip leaves those alone. That matters because a PyPI
+  # wheel built against a different numpy ABI silently mismatches the conda
+  # numpy and segfaults the openff/AmberTools toolkit registry. If DockQ ever
+  # gains a dependency, add it to the conda section above rather than letting
+  # pip resolve it.
   - pip:
-      - "--no-deps"
       - "-e ."
       - "DockQ>=2.0"
       - "parallelbar"
