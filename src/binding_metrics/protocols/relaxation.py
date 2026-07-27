@@ -533,6 +533,13 @@ class ImplicitRelaxation:
         base_xmls = ["amber14-all.xml", "amber14/tip3pfb.xml", gb_file]
         ff = app.ForceField(*base_xmls)
 
+        # Phosphorylated residues use AMBER phosaa params (net −2), not GAFF —
+        # GAFF would perceive the phosphate as neutral and protonate it away.
+        from binding_metrics.core import phosaa
+
+        phosaa.register(ff)
+        phosaa.ensure_hydrogen_definitions()
+
         # --- Non-standard residue patching (D-AAs and NMe-AAs, before H addition) ---
         from binding_metrics.core.nonstandard import (
             detect_nonstandard,

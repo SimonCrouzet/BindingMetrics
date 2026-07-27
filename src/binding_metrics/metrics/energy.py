@@ -257,6 +257,12 @@ def _create_implicit_system(
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
 
+    # Phosphorylated residues → AMBER phosaa params (net −2), not GAFF.
+    from binding_metrics.core import phosaa
+
+    phosaa.register(ff)
+    phosaa.ensure_hydrogen_definitions()
+
     # Accumulate every extra residue-template XML used to build the complex so
     # the peptide/receptor subsystems (which build their own force fields) can
     # reload them: curated N-methyl templates + GAFF NCAA templates. (Lactam
@@ -409,6 +415,9 @@ def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None, ncaa
     """Build an OpenMM system for a topology that already contains hydrogens."""
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
+    from binding_metrics.core import phosaa
+
+    phosaa.register(ff)
     if bond_info:
         from binding_metrics.core.cyclic import load_extra_xmls
 
