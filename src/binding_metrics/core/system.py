@@ -290,6 +290,12 @@ def _add_hydrogens_cyclic(
 
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
 
+    # Phosphorylated residues → AMBER phosaa params (net −2), not GAFF.
+    from binding_metrics.core import phosaa
+
+    phosaa.register(ff)
+    phosaa.ensure_hydrogen_definitions()
+
     # D-amino-acid / N-methyl rename first (e.g. DAL→ALA, SAR→NMG) so their
     # standard/curated templates match; must precede patch_cyclic_topology.
     ns_info = detect_nonstandard(topology, cyclic_chain)

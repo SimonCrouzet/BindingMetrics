@@ -91,6 +91,20 @@ GAFF_SKIP_RESIDUES = frozenset(
         "ASPL",
         "GLUL",
         "LYSL",
+        # Phosphorylated residues — handled by core.phosaa (AMBER phosaa
+        # params). GAFF perceives these at neutral charge and would protonate
+        # the phosphate to net 0, destroying the −2 charge; they MUST skip
+        # the GAFF path.
+        "SEP",
+        "TPO",
+        "PTR",
+        "S1P",
+        "T1P",
+        "Y1P",
+        "H1D",
+        "H2D",
+        "H1E",
+        "H2E",
         # Capping groups
         "ACE",
         "NME",
