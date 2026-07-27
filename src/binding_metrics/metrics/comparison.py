@@ -166,8 +166,7 @@ def compute_structure_rmsd(
         import gemmi
     except ImportError:
         raise ImportError(
-            "gemmi is required for structure comparison. "
-            "Install with: pip install gemmi"
+            "gemmi is required for structure comparison. Install with: pip install gemmi"
         )
 
     initial_st = gemmi.read_structure(str(initial_path))
@@ -220,16 +219,24 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compute RMSD between two structures (e.g. initial vs. relaxed)"
     )
-    parser.add_argument("--initial", "-a", type=Path, required=True, help="Initial (reference) structure")
-    parser.add_argument("--processed", "-b", type=Path, required=True, help="Processed (target) structure")
-    parser.add_argument("--design-chain", type=str, default=None, help="Designed chain ID (auto-detect if omitted)")
+    parser.add_argument(
+        "--initial", "-a", type=Path, required=True, help="Initial (reference) structure"
+    )
+    parser.add_argument(
+        "--processed", "-b", type=Path, required=True, help="Processed (target) structure"
+    )
+    parser.add_argument(
+        "--design-chain", type=str, default=None, help="Designed chain ID (auto-detect if omitted)"
+    )
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(parser)
     args = parser.parse_args()
 
     from binding_metrics.cli import log_to_file
+
     with log_to_file(args.log_file):
-        print(f"Comparing structures:")
+        print("Comparing structures:")
         print(f"  Initial:   {args.initial}")
         print(f"  Processed: {args.processed}")
         if args.design_chain:

@@ -18,7 +18,7 @@ from binding_metrics.utils import backfill_auth_columns
 # Formal partial charges assigned to ionisable atoms at pH 7.
 # Split charges on ARG to reflect resonance delocalization.
 _FORMAL_CHARGES: dict[tuple[str, str], float] = {
-    ("LYS", "NZ"):  +1.0,
+    ("LYS", "NZ"): +1.0,
     ("ARG", "NH1"): +0.5,
     ("ARG", "NH2"): +0.5,
     ("ASP", "OD1"): -0.5,
@@ -37,8 +37,8 @@ def _import_biotite():
     """Lazy import of required biotite modules."""
     try:
         import biotite.structure as struc
-        import biotite.structure.io.pdbx as pdbx
         import biotite.structure.io.pdb as pdb_io
+        import biotite.structure.io.pdbx as pdbx
 
         return struc, pdbx, pdb_io
     except ImportError:
@@ -137,12 +137,16 @@ def compute_coulomb_cross_chain(
             if q is not None:
                 positions.append(atom.coord.tolist())  # biotite coords are in Å
                 charges.append(q)
-                info.append({
-                    "residue": f"{str(atom.res_name).strip()}:{str(atom.chain_id)}:{atom.res_id}",
-                    "atom": str(atom.atom_name).strip(),
-                    "charge": q,
-                    "coords": atom.coord.tolist(),
-                })
+                info.append(
+                    {
+                        "residue": (
+                            f"{str(atom.res_name).strip()}:{str(atom.chain_id)}:{atom.res_id}"
+                        ),
+                        "atom": str(atom.atom_name).strip(),
+                        "charge": q,
+                        "coords": atom.coord.tolist(),
+                    }
+                )
         if positions:
             return np.array(positions), np.array(charges), info
         return np.zeros((0, 3)), np.zeros(0), []
@@ -192,31 +196,39 @@ def compute_coulomb_cross_chain(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Compute cross-chain Coulomb electrostatic energy"
-    )
+    parser = argparse.ArgumentParser(description="Compute cross-chain Coulomb electrostatic energy")
     parser.add_argument("--input", "-i", type=Path, required=True, help="Input CIF/PDB file")
     parser.add_argument(
-        "--design-chain", type=str, default=None,
+        "--design-chain",
+        type=str,
+        default=None,
         help="Peptide chain ID (auto-detect if omitted)",
     )
     parser.add_argument(
-        "--receptor-chain", type=str, default=None,
+        "--receptor-chain",
+        type=str,
+        default=None,
         help="Receptor chain ID (auto-detect if omitted)",
     )
     parser.add_argument(
-        "--dielectric", type=float, default=4.0,
+        "--dielectric",
+        type=float,
+        default=4.0,
         help="Effective dielectric constant (default 4.0)",
     )
     parser.add_argument(
-        "--cutoff", type=float, default=12.0,
+        "--cutoff",
+        type=float,
+        default=12.0,
         help="Distance cutoff in Å (default 12.0)",
     )
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(parser)
     args = parser.parse_args()
 
     from binding_metrics.cli import log_to_file
+
     with log_to_file(args.log_file):
         print(f"Computing Coulomb cross-chain energy for: {args.input}")
         metrics = compute_coulomb_cross_chain(
@@ -229,8 +241,11 @@ def main():
 
         print("\nElectrostatics summary:")
         scalar_keys = [
-            "coulomb_energy_kJ", "coulomb_energy_kcal",
-            "n_charged_pairs", "n_attractive", "n_repulsive",
+            "coulomb_energy_kJ",
+            "coulomb_energy_kcal",
+            "n_charged_pairs",
+            "n_attractive",
+            "n_repulsive",
         ]
         for key in scalar_keys:
             val = metrics[key]

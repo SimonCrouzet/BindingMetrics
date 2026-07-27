@@ -71,26 +71,26 @@ are kept small (minimize-only, tiny step counts) to share an 8 GB GPU.
 """
 
 import math
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import pytest
-
 from conftest import requires_cuda
 
-from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
 from binding_metrics.metrics.comparison import compute_structure_rmsd
+from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
 # --- QC thresholds (see module docstring for the measured values behind them) ---
-ENERGY_MAX_KJ = 1.0e6          # blown-up structures show |E| >> 1e6 (or inf)
-ENERGY_MIN_KJ = -1.0e8         # sane lower bound for a small implicit-solvent system
-ENERGY_DECREASE_TOL = 1.0      # kJ/mol slack when asserting min <= pre-min
-RMSD_MAX_ANG = 5.0             # heavy-atom RMSD above this = exploded
-MIN_HEAVY_DIST_ANG = 0.8       # closest non-same-residue heavy-atom pair must exceed this
+ENERGY_MAX_KJ = 1.0e6  # blown-up structures show |E| >> 1e6 (or inf)
+ENERGY_MIN_KJ = -1.0e8  # sane lower bound for a small implicit-solvent system
+ENERGY_DECREASE_TOL = 1.0  # kJ/mol slack when asserting min <= pre-min
+RMSD_MAX_ANG = 5.0  # heavy-atom RMSD above this = exploded
+MIN_HEAVY_DIST_ANG = 0.8  # closest non-same-residue heavy-atom pair must exceed this
 
 # Heavy-heavy covalent window used to *perceive* bonds from the (good) input
 # geometry: a C–C/C–N/C–O single bond is ~1.5 Å, an aromatic bond ~1.39 Å, and
@@ -116,16 +116,18 @@ CHIRALITY_MIN_VOLUME_A3 = 0.5
 @dataclass
 class RelaxedExample:
     """Bundle of everything the QC assertions need for one relaxed example."""
+
     name: str
-    input_path: Path          # the (prepped) structure handed to the relaxer
-    minimized_path: Path      # the minimized CIF the relaxer wrote
-    energy_min: float         # potential_energy_minimized (kJ/mol)
+    input_path: Path  # the (prepped) structure handed to the relaxer
+    minimized_path: Path  # the minimized CIF the relaxer wrote
+    energy_min: float  # potential_energy_minimized (kJ/mol)
     energy_pre: Optional[float]  # pre-minimization energy, or None if not captured
 
 
 # ---------------------------------------------------------------------------
 # Helpers (kept local to this file to avoid colliding with concurrent edits)
 # ---------------------------------------------------------------------------
+
 
 def _prep_on_the_fly(raw: Path, out: Path) -> Path:
     """Run the same PDBFixer prep the pipeline uses, writing a FF-ready CIF."""
@@ -323,9 +325,7 @@ def _heavy_atom_positions(cif_path: Path) -> dict[tuple[str, int, str], np.ndarr
         for atom in residue:
             if atom.element.name == "H":
                 continue
-            positions[key + (atom.name,)] = np.array(
-                [atom.pos.x, atom.pos.y, atom.pos.z]
-            )
+            positions[key + (atom.name,)] = np.array([atom.pos.x, atom.pos.y, atom.pos.z])
     return positions
 
 
@@ -384,15 +384,13 @@ def _ca_signed_volumes(cif_path: Path) -> dict[tuple[str, int], float]:
         if len(atoms) < 4:
             continue
         ca = atoms["CA"]
-        volumes[key] = float(
-            np.dot(atoms["N"] - ca, np.cross(atoms["C"] - ca, atoms["CB"] - ca))
-        )
+        volumes[key] = float(np.dot(atoms["N"] - ca, np.cross(atoms["C"] - ca, atoms["CB"] - ca)))
     return volumes
 
 
 def _heavy_atom_composition(
     cif_path: Path,
-) -> tuple[int, dict[tuple[str, int], "Counter[str]"]]:
+) -> tuple[int, dict[tuple[str, int], Counter]]:
     """Total heavy-atom count and per-residue heavy-atom-name multiset.
 
     Returns ``(n_heavy_total, {(chain, resseq): Counter(atomname -> count)})``.
@@ -400,12 +398,11 @@ def _heavy_atom_composition(
     that minimization dropped/added/renamed no heavy atom in any residue.
     """
     import gemmi
-    from collections import Counter
 
     structure = gemmi.read_structure(str(cif_path))
     model = structure[0]
     total = 0
-    composition: dict[tuple, "Counter[str]"] = {}
+    composition: dict[tuple, Counter] = {}
     for _chain, residue, key in _iter_residues(model):
         if residue.name in {"HOH", "WAT"}:
             continue
@@ -423,6 +420,7 @@ def _heavy_atom_composition(
 # ---------------------------------------------------------------------------
 # Fixtures: relax each example once per session, then share across QC checks
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def _relaxed_1ycr(prepped_example_cif, tmp_path_factory) -> RelaxedExample:
@@ -457,12 +455,12 @@ def _relaxed_cyclosporin(tmp_path_factory) -> RelaxedExample:
     if not raw.exists():
         pytest.skip(f"bundled example not found: {raw}")
     prep_dir = tmp_path_factory.mktemp("qc_prep_cyclosporin")
-    prepped = _prep_on_the_fly(
-        raw, prep_dir / "example_ncaa_cyclosporin_1CWA_prepped.cif"
-    )
+    prepped = _prep_on_the_fly(raw, prep_dir / "example_ncaa_cyclosporin_1CWA_prepped.cif")
     out = tmp_path_factory.mktemp("qc_relax_cyclosporin")
     return _relax(
-        prepped, out, "cyclosporin",
+        prepped,
+        out,
+        "cyclosporin",
         config=_small_config_gaff(),
         capture_premin=False,
     )
@@ -488,12 +486,12 @@ def _relaxed_somatostatin(tmp_path_factory) -> RelaxedExample:
     if not raw.exists():
         pytest.skip(f"bundled example not found: {raw}")
     prep_dir = tmp_path_factory.mktemp("qc_prep_somatostatin")
-    prepped = _prep_on_the_fly(
-        raw, prep_dir / "example_lactam_somatostatin_1XY4_prepped.cif"
-    )
+    prepped = _prep_on_the_fly(raw, prep_dir / "example_lactam_somatostatin_1XY4_prepped.cif")
     out = tmp_path_factory.mktemp("qc_relax_somatostatin")
     return _relax(
-        prepped, out, "somatostatin",
+        prepped,
+        out,
+        "somatostatin",
         config=_small_config_gaff(),
         capture_premin=False,
     )
@@ -518,7 +516,6 @@ ENERGY_REPRODUCIBILITY_TOL_KJ = 0.1
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_relaxation_energy_is_reproducible(tmp_path_factory):
     """The same input must give the same minimized energy on every run.
 
@@ -543,9 +540,7 @@ def test_relaxation_energy_is_reproducible(tmp_path_factory):
     for i in range(2):
         work = tmp_path_factory.mktemp(f"qc_repro_{i}")
         prepped = _prep_on_the_fly(raw, work / "prepped.cif")
-        result = ImplicitRelaxation(_small_config()).run(
-            prepped, work, sample_id=f"repro{i}"
-        )
+        result = ImplicitRelaxation(_small_config()).run(prepped, work, sample_id=f"repro{i}")
         assert result.success, f"run {i} failed: {result.error_message}"
         assert result.potential_energy_minimized is not None
         energies.append(float(result.potential_energy_minimized))
@@ -561,9 +556,9 @@ def test_relaxation_energy_is_reproducible(tmp_path_factory):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
-def test_md_is_reproducible_by_default_and_random_when_opted_out(prepped_example_cif,
-                                                                 tmp_path_factory):
+def test_md_is_reproducible_by_default_and_random_when_opted_out(
+    prepped_example_cif, tmp_path_factory
+):
     """MD is deterministic with the default seed and stochastic with seed=None.
 
     Guards the seeding of the two MD randomness sources the minimize-only path
@@ -577,11 +572,17 @@ def test_md_is_reproducible_by_default_and_random_when_opted_out(prepped_example
     loose floor so it is not flaky — independent 2 ps Langevin trajectories from
     freshly drawn velocities separate by far more than this.
     """
+
     def md_run(seed):
         cfg = RelaxationConfig(
-            min_steps_initial=50, min_steps_restrained=20, min_steps_final=50,
-            md_duration_ps=2.0, md_save_interval_ps=2.0,
-            device="cuda", small_molecules=None, random_seed=seed,
+            min_steps_initial=50,
+            min_steps_restrained=20,
+            min_steps_final=50,
+            md_duration_ps=2.0,
+            md_save_interval_ps=2.0,
+            device="cuda",
+            small_molecules=None,
+            random_seed=seed,
         )
         out = tmp_path_factory.mktemp("qc_md")
         result = ImplicitRelaxation(cfg).run(Path(prepped_example_cif), out, sample_id="md")
@@ -604,7 +605,6 @@ def test_md_is_reproducible_by_default_and_random_when_opted_out(prepped_example
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_energy_finite_and_did_not_increase(relaxed: RelaxedExample):
     """Check 1: minimized energy is finite, sane, and not higher than pre-min."""
     e = relaxed.energy_min
@@ -624,7 +624,6 @@ def test_energy_finite_and_did_not_increase(relaxed: RelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_structure_did_not_explode(relaxed: RelaxedExample):
     """Check 2: heavy-atom RMSD to the input is finite and bounded (< 5 Å)."""
     rmsd = compute_structure_rmsd(str(relaxed.input_path), str(relaxed.minimized_path))
@@ -639,7 +638,6 @@ def test_structure_did_not_explode(relaxed: RelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_coordinates_finite(relaxed: RelaxedExample):
     """Check 3: no NaN/inf coordinates in the minimized structure."""
     assert _all_coords_finite(relaxed.minimized_path), (
@@ -649,7 +647,6 @@ def test_coordinates_finite(relaxed: RelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_no_egregious_clashes(relaxed: RelaxedExample):
     """Check 4: no heavy-atom pair in different residues is closer than 0.8 Å."""
     min_dist, n_heavy = _min_interresidue_heavy_distance(relaxed.minimized_path)
@@ -663,7 +660,6 @@ def test_no_egregious_clashes(relaxed: RelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_bond_lengths_preserved(relaxed: RelaxedExample):
     """Check 5: no covalent bond was stretched/broken by minimization.
 
@@ -694,7 +690,6 @@ def test_bond_lengths_preserved(relaxed: RelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_chirality_preserved(relaxed: RelaxedExample):
     """Check 6: minimization did not invert any Cα stereocenter.
 
@@ -727,7 +722,6 @@ def test_chirality_preserved(relaxed: RelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_no_missing_heavy_atoms(relaxed: RelaxedExample):
     """Check 7: minimization dropped/added no heavy atom.
 
@@ -740,8 +734,7 @@ def test_no_missing_heavy_atoms(relaxed: RelaxedExample):
 
     assert in_total > 0, f"{relaxed.name}: no heavy atoms found in input"
     assert min_total == in_total, (
-        f"{relaxed.name}: heavy-atom count changed {in_total} -> {min_total} "
-        f"during minimization"
+        f"{relaxed.name}: heavy-atom count changed {in_total} -> {min_total} during minimization"
     )
     assert set(in_comp) == set(min_comp), (
         f"{relaxed.name}: residue set changed during minimization "
@@ -785,10 +778,11 @@ _MD_EXAMPLES = {
 @dataclass
 class MDRelaxedExample:
     """Everything the MD-path assertions need for one example."""
+
     name: str
-    minimized_path: Path      # pre-MD (minimized) frame — the sanity baseline
-    md_final_path: Path       # final MD frame
-    energy_md_avg: float      # mean potential energy over the MD trajectory
+    minimized_path: Path  # pre-MD (minimized) frame — the sanity baseline
+    md_final_path: Path  # final MD frame
+    energy_md_avg: float  # mean potential energy over the MD trajectory
 
 
 def _md_config(small_molecules: Optional[str]) -> RelaxationConfig:
@@ -833,7 +827,6 @@ def md_relaxed(request, tmp_path_factory) -> MDRelaxedExample:
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_energy_finite_and_sane(md_relaxed: MDRelaxedExample):
     """MD check 1: mean trajectory energy is finite and in the sane range."""
     e = md_relaxed.energy_md_avg
@@ -846,7 +839,6 @@ def test_md_energy_finite_and_sane(md_relaxed: MDRelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_coordinates_finite(md_relaxed: MDRelaxedExample):
     """MD check 2: no NaN/inf coordinates in the final MD frame."""
     assert _all_coords_finite(md_relaxed.md_final_path), (
@@ -856,7 +848,6 @@ def test_md_coordinates_finite(md_relaxed: MDRelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_no_egregious_clashes(md_relaxed: MDRelaxedExample):
     """MD check 3: no fused atoms (closest inter-residue heavy pair > 0.8 Å)."""
     min_dist, n_heavy = _min_interresidue_heavy_distance(md_relaxed.md_final_path)
@@ -870,7 +861,6 @@ def test_md_no_egregious_clashes(md_relaxed: MDRelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_bonds_not_broken(md_relaxed: MDRelaxedExample):
     """MD check 4: covalent bonds stay intact (perceived from the minimized frame)."""
     pin = _heavy_atom_positions(md_relaxed.minimized_path)
@@ -889,13 +879,13 @@ def test_md_bonds_not_broken(md_relaxed: MDRelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_no_chirality_inversion(md_relaxed: MDRelaxedExample):
     """MD check 5: no Cα stereocenter inverts during MD (critical for D-residues)."""
     pre = _ca_signed_volumes(md_relaxed.minimized_path)
     post = _ca_signed_volumes(md_relaxed.md_final_path)
     flipped = [
-        k for k in set(pre) & set(post)
+        k
+        for k in set(pre) & set(post)
         if (pre[k] > 0) != (post[k] > 0)
         and abs(pre[k]) >= CHIRALITY_MIN_VOLUME_A3
         and abs(post[k]) >= CHIRALITY_MIN_VOLUME_A3
@@ -908,12 +898,10 @@ def test_md_no_chirality_inversion(md_relaxed: MDRelaxedExample):
 
 @requires_cuda
 @pytest.mark.integration
-@pytest.mark.gpu
 def test_md_no_missing_heavy_atoms(md_relaxed: MDRelaxedExample):
     """MD check 6: MD neither drops nor adds atoms."""
     pre_total, _ = _heavy_atom_composition(md_relaxed.minimized_path)
     post_total, _ = _heavy_atom_composition(md_relaxed.md_final_path)
     assert pre_total == post_total, (
-        f"{md_relaxed.name}: heavy-atom count changed during MD "
-        f"({pre_total} → {post_total})"
+        f"{md_relaxed.name}: heavy-atom count changed during MD ({pre_total} → {post_total})"
     )

@@ -9,7 +9,7 @@ from openmm.app import PDBFile
 from binding_metrics.core.forcefields import get_forcefield
 from binding_metrics.core.simulation import MDSimulation, SimulationConfig
 from binding_metrics.core.system import prepare_system
-from binding_metrics.io.structures import load_complex, get_chain_atom_indices
+from binding_metrics.io.structures import get_chain_atom_indices, load_complex
 from binding_metrics.metrics.contacts import calculate_contacts
 from binding_metrics.metrics.energy import calculate_interaction_energy
 from binding_metrics.metrics.rmsd import calculate_rmsd
@@ -123,7 +123,9 @@ class PeptideBindingProtocol(BaseProtocol):
         """
         traj_path = trajectory_path or self._trajectory_path
         if traj_path is None:
-            raise RuntimeError("No trajectory available. Call run() first or provide trajectory_path.")
+            raise RuntimeError(
+                "No trajectory available. Call run() first or provide trajectory_path."
+            )
 
         topology_path = self._topology_path
         if topology_path is None:

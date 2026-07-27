@@ -2,7 +2,8 @@
 
 Usage:
     binding-metrics-solvate --input cleaned.cif --output solvated.pdb
-    binding-metrics-solvate --input cleaned.pdb --output solvated.pdb --padding 1.2 --ionic-strength 0.1
+    binding-metrics-solvate --input cleaned.pdb --output solvated.pdb
+                            --padding 1.2 --ionic-strength 0.1
 """
 
 import argparse
@@ -16,22 +17,36 @@ def main() -> None:
         description="Add explicit solvent and ions to a structure.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--input", "-i", type=Path, required=True, help="Input structure (.pdb, .cif, .mmcif)")
-    parser.add_argument("--output", "-o", type=Path, required=True, help="Output structure (.pdb, .cif, .mmcif)")
-    parser.add_argument("--forcefield", choices=["amber", "charmm"], default="amber", help="Force field for solvent parameters")
-    parser.add_argument("--padding", type=float, default=1.0, help="Distance in nm between solute and box edge")
-    parser.add_argument("--ionic-strength", type=float, default=0.15, help="Salt concentration in M")
+    parser.add_argument(
+        "--input", "-i", type=Path, required=True, help="Input structure (.pdb, .cif, .mmcif)"
+    )
+    parser.add_argument(
+        "--output", "-o", type=Path, required=True, help="Output structure (.pdb, .cif, .mmcif)"
+    )
+    parser.add_argument(
+        "--forcefield",
+        choices=["amber", "charmm"],
+        default="amber",
+        help="Force field for solvent parameters",
+    )
+    parser.add_argument(
+        "--padding", type=float, default=1.0, help="Distance in nm between solute and box edge"
+    )
+    parser.add_argument(
+        "--ionic-strength", type=float, default=0.15, help="Salt concentration in M"
+    )
     parser.add_argument("--positive-ion", default="Na+", help="Positive ion type")
     parser.add_argument("--negative-ion", default="Cl-", help="Negative ion type")
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(parser)
     args = parser.parse_args()
 
     from binding_metrics.cli import log_to_file
+
     with log_to_file(args.log_file):
         try:
-            from binding_metrics.core.system import solvate
-            from binding_metrics.core.system import get_system_info
+            from binding_metrics.core.system import get_system_info, solvate
             from binding_metrics.io.structures import load_structure, save_structure
         except ImportError as e:
             print(f"error: {e}", file=sys.stderr)
@@ -44,7 +59,8 @@ def main() -> None:
         topology, positions = load_structure(args.input)
 
         modeller = solvate(
-            topology, positions,
+            topology,
+            positions,
             forcefield_name=args.forcefield,
             padding=args.padding,
             ionic_strength=args.ionic_strength,

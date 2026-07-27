@@ -9,18 +9,17 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from binding_metrics.core.nonstandard import (
+    _XML_MLE,
+    _XML_MVA,
+    _XML_NMA,
+    _XML_NMG,
     D_AA_MAP,
     NME_AA_MAP,
     NonstandardInfo,
-    _XML_NMG,
-    _XML_NMA,
-    _XML_MVA,
-    _XML_MLE,
     detect_nonstandard,
     is_d_residue,
     patch_nonstandard,
 )
-
 
 # ---------------------------------------------------------------------------
 # D-AA registry
@@ -35,9 +34,25 @@ class TestDAminoAcidRegistry:
 
     def test_l_names_are_standard(self):
         standard = {
-            "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU",
-            "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO",
-            "SER", "THR", "TRP", "TYR", "VAL",
+            "ALA",
+            "ARG",
+            "ASN",
+            "ASP",
+            "CYS",
+            "GLN",
+            "GLU",
+            "HIS",
+            "ILE",
+            "LEU",
+            "LYS",
+            "MET",
+            "PHE",
+            "PRO",
+            "SER",
+            "THR",
+            "TRP",
+            "TYR",
+            "VAL",
         }
         for d_code, l_name in D_AA_MAP.items():
             assert l_name in standard, f"{d_code} → {l_name} is not a standard L-AA"
@@ -152,23 +167,33 @@ class TestNMeXMLTemplates:
         """Spot-check a few ForceField_NCAA charge values and verify neutrality."""
         # NMG backbone N charge from ForceField_NCAA
         root = ET.fromstring(_XML_NMG)
-        atoms = {a.get("name"): float(a.get("charge", 0))
-                 for a in root.find(".//Residue[@name='NMG']").findall("Atom")}
+        atoms = {
+            a.get("name"): float(a.get("charge", 0))
+            for a in root.find(".//Residue[@name='NMG']").findall("Atom")
+        }
         assert abs(atoms["N"] - (-0.058784)) < 1e-5
         assert abs(atoms["CN"] - (-0.311738)) < 1e-5
         assert abs(sum(atoms.values())) < 1e-3
 
         # MVA: verify CG1 and CG2 are symmetric (as expected by symmetry)
         root = ET.fromstring(_XML_MVA)
-        atoms = {a.get("name"): float(a.get("charge", 0))
-                 for a in root.find(".//Residue[@name='MVA']").findall("Atom")}
+        atoms = {
+            a.get("name"): float(a.get("charge", 0))
+            for a in root.find(".//Residue[@name='MVA']").findall("Atom")
+        }
         assert abs(atoms["CG1"] - atoms["CG2"]) < 1e-6
         assert abs(sum(atoms.values())) < 1e-3
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("name,xml", [
-        ("NMG", _XML_NMG), ("NMA", _XML_NMA), ("MVA", _XML_MVA), ("MLE", _XML_MLE),
-    ])
+    @pytest.mark.parametrize(
+        "name,xml",
+        [
+            ("NMG", _XML_NMG),
+            ("NMA", _XML_NMA),
+            ("MVA", _XML_MVA),
+            ("MLE", _XML_MLE),
+        ],
+    )
     def test_template_loads_into_ff14sb(self, name, xml):
         """Each NMe template must actually load into a real ff14SB ForceField.
 
@@ -294,8 +319,9 @@ class TestPatchNonstandardApplies:
     """
 
     def _positions(self, topology):
-        from openmm import Vec3
         import openmm.unit as unit
+        from openmm import Vec3
+
         n = topology.getNumAtoms()
         return unit.Quantity([Vec3(i, 0.0, 0.0) for i in range(n)], unit.nanometer)
 
@@ -321,27 +347,32 @@ class TestPatchNonstandardApplies:
 class TestRamachandranDAA:
     def test_l_alpha_helix_favoured(self):
         from binding_metrics.metrics.geometry import _classify_ramachandran
+
         # L-α-helix
         assert _classify_ramachandran(-60, -45) == "favoured"
 
     def test_d_alpha_helix_favoured_with_flag(self):
         from binding_metrics.metrics.geometry import _classify_ramachandran
+
         # D-α-helix: φ≈+60°, ψ≈+45° → negated → −60°, −45° → L-α-helix
         assert _classify_ramachandran(60, 45, is_d=True) == "favoured"
 
     def test_d_beta_sheet_outlier_without_flag(self):
         from binding_metrics.metrics.geometry import _classify_ramachandran
+
         # D-β-sheet (φ≈+120°, ψ≈−120°) is an outlier without the D-AA flag
         # because positive phi is outside all L-AA allowed regions
         assert _classify_ramachandran(120, -120, is_d=False) == "outlier"
 
     def test_d_beta_sheet_favoured(self):
         from binding_metrics.metrics.geometry import _classify_ramachandran
+
         # D-β-sheet: φ≈+120°, ψ≈−120° → negated → −120°, +120° → L-β-sheet
         assert _classify_ramachandran(120, -120, is_d=True) == "favoured"
 
     def test_nan_returns_none(self):
+
         from binding_metrics.metrics.geometry import _classify_ramachandran
-        import math
+
         assert _classify_ramachandran(float("nan"), 0.0) is None
         assert _classify_ramachandran(0.0, float("nan"), is_d=True) is None

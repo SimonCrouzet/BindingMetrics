@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import requires_cuda
 
 from binding_metrics.core.gaff_ncaa import (
     GAFF_SKIP_RESIDUES,
@@ -21,19 +22,19 @@ from binding_metrics.core.gaff_ncaa import (
 )
 
 # Cyclosporin A — the canonical backbone-NCAA test case (BMT, ABA + curated NMe).
-CYCLOSPORIN_CIF = (
-    Path(__file__).parent.parent / "manuscripts" / "example_runs" / "_input" / "1CWA.cif"
-)
+# Must come from data/, which is tracked: manuscripts/ is gitignored, so pointing
+# here at a copy under it silently skipped this whole module everywhere but the
+# author's machine.
+CYCLOSPORIN_CIF = Path(__file__).parent.parent / "data" / "example_ncaa_cyclosporin_1CWA.cif"
 
 try:
     import openmmforcefields  # noqa: F401
+
     HAS_OMMFF = True
 except ImportError:
     HAS_OMMFF = False
 
-requires_ommff = pytest.mark.skipif(
-    not HAS_OMMFF, reason="openmmforcefields not installed"
-)
+requires_ommff = pytest.mark.skipif(not HAS_OMMFF, reason="openmmforcefields not installed")
 requires_cyclosporin = pytest.mark.skipif(
     not CYCLOSPORIN_CIF.exists(), reason="1CWA.cif example not available"
 )
@@ -113,13 +114,18 @@ def cyclosporin_ncaa_result():
 
     Returns ``(topology, positions, ff, ncaa_xmls, peptide_chain)``.
     """
-    from pdbfixer import PDBFixer
     import openmm.app as app
-    from binding_metrics.core.nonstandard import (
-        detect_nonstandard, patch_nonstandard, load_nonstandard_xmls,
-    )
+    from pdbfixer import PDBFixer
+
     from binding_metrics.core.cyclic import (
-        patch_cyclic_topology, rename_disulfide_cys_to_cyx, load_extra_xmls,
+        load_extra_xmls,
+        patch_cyclic_topology,
+        rename_disulfide_cys_to_cyx,
+    )
+    from binding_metrics.core.nonstandard import (
+        detect_nonstandard,
+        load_nonstandard_xmls,
+        patch_nonstandard,
     )
 
     fixer = PDBFixer(filename=str(CYCLOSPORIN_CIF))
@@ -128,17 +134,14 @@ def cyclosporin_ncaa_result():
     # Peptide chain = smallest non-water chain.
     water = {"HOH", "WAT", "H2O"}
     sizes = sorted(
-        ((c.id, sum(1 for r in c.residues() if r.name not in water))
-         for c in topology.chains()),
+        ((c.id, sum(1 for r in c.residues() if r.name not in water)) for c in topology.chains()),
         key=lambda t: t[1],
     )
     peptide_chain = next(cid for cid, n in sizes if n > 0)
 
     ns = detect_nonstandard(topology, peptide_chain)
     topology, positions = patch_nonstandard(topology, positions, peptide_chain, ns)
-    topology, positions, bond_info = patch_cyclic_topology(
-        topology, positions, peptide_chain
-    )
+    topology, positions, bond_info = patch_cyclic_topology(topology, positions, peptide_chain)
     topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
 
     ff = app.ForceField("amber14-all.xml", "amber14/tip3pfb.xml", "implicit/obc2.xml")
@@ -186,21 +189,24 @@ class TestGaffTemplateGeneration:
             tmpl_atoms[resel.get("name")] = {a.get("name") for a in resel.findall("Atom")}
         for res in topology.residues():
             if res.name in tmpl_atoms:
-                heavy = {a.name for a in res.atoms()
-                         if a.element is not None and a.element.atomic_number > 1}
+                heavy = {
+                    a.name
+                    for a in res.atoms()
+                    if a.element is not None and a.element.atomic_number > 1
+                }
                 missing = heavy - tmpl_atoms[res.name]
                 assert not missing, f"{res.name} heavy atoms {missing} absent from template"
 
     def test_templates_load_and_build_system(self, cyclosporin_ncaa_result):
         """The generated templates must let ff14SB createSystem succeed."""
         import openmm.app as app
+
         from binding_metrics.core.cyclic import get_addh_variants
 
         topology, positions, ff, _, peptide_chain, bond_info = cyclosporin_ncaa_result
         modeller = app.Modeller(topology, positions)
         variants = (
-            get_addh_variants(modeller.topology, bond_info, peptide_chain)
-            if bond_info else None
+            get_addh_variants(modeller.topology, bond_info, peptide_chain) if bond_info else None
         )
         modeller.addHydrogens(ff, pH=7.4, variants=variants)
         system = ff.createSystem(
@@ -217,20 +223,22 @@ class TestGaffTemplateGeneration:
 # ---------------------------------------------------------------------------
 
 
+# Every test here goes through the `relaxed` fixture, which runs a real
+# minimisation — so the requirement belongs on the class, not inside the fixture
+# where no marker-based selection can see it.
 @requires_ommff
 @requires_cyclosporin
+@requires_cuda
 @pytest.mark.integration
 class TestCyclosporinRelaxSanity:
     @pytest.fixture(scope="class")
     def relaxed(self, tmp_path_factory):
         """Prep + minimise-only relaxation of cyclosporin; returns (result, in, out)."""
-        from conftest import HAS_CUDA
-        if not HAS_CUDA:
-            pytest.skip("CUDA GPU not available")
         from binding_metrics.core.system import prep_structure
         from binding_metrics.io.structures import load_structure, save_structure
         from binding_metrics.protocols.relaxation import (
-            ImplicitRelaxation, RelaxationConfig,
+            ImplicitRelaxation,
+            RelaxationConfig,
         )
 
         out = tmp_path_factory.mktemp("cyclo")
@@ -267,21 +275,32 @@ class TestCyclosporinRelaxSanity:
 
         pre = app.PDBxFile(str(prepped))
         post = app.PDBxFile(str(min_path))
-        pre_xyz = np.array([[v.x, v.y, v.z] for v in pre.positions]) * 10.0    # Å
         post_xyz = np.array([[v.x, v.y, v.z] for v in post.positions]) * 10.0  # Å
 
         assert np.all(np.isfinite(post_xyz)), "minimised coordinates contain NaN/inf"
 
         # Heavy-atom RMSD (no alignment) vs the prepped pose: minimise-only must
         # not translate/explode the structure.
-        pre_heavy = np.array(
-            [[v.x, v.y, v.z] for a, v in zip(pre.topology.atoms(), pre.positions)
-             if a.element is not None and a.element.symbol != "H"]
-        ) * 10.0
-        post_heavy = np.array(
-            [[v.x, v.y, v.z] for a, v in zip(post.topology.atoms(), post.positions)
-             if a.element is not None and a.element.symbol != "H"]
-        ) * 10.0
+        pre_heavy = (
+            np.array(
+                [
+                    [v.x, v.y, v.z]
+                    for a, v in zip(pre.topology.atoms(), pre.positions)
+                    if a.element is not None and a.element.symbol != "H"
+                ]
+            )
+            * 10.0
+        )
+        post_heavy = (
+            np.array(
+                [
+                    [v.x, v.y, v.z]
+                    for a, v in zip(post.topology.atoms(), post.positions)
+                    if a.element is not None and a.element.symbol != "H"
+                ]
+            )
+            * 10.0
+        )
         if pre_heavy.shape == post_heavy.shape:
             rmsd = float(np.sqrt(np.mean(np.sum((pre_heavy - post_heavy) ** 2, axis=1))))
             assert rmsd < 5.0, f"minimised heavy-atom RMSD {rmsd:.2f} Å too large (exploded)"
@@ -292,12 +311,9 @@ class TestCyclosporinRelaxSanity:
             key=lambda c: sum(1 for r in c.residues() if r.name not in ("HOH", "WAT")),
         )
         pep_heavy_idx = [
-            a.index for a in pep_chain.atoms()
-            if a.element is not None and a.element.symbol != "H"
+            a.index for a in pep_chain.atoms() if a.element is not None and a.element.symbol != "H"
         ]
-        bonded = {
-            frozenset((b.atom1.index, b.atom2.index)) for b in post.topology.bonds()
-        }
+        bonded = {frozenset((b.atom1.index, b.atom2.index)) for b in post.topology.bonds()}
         p = post_xyz[pep_heavy_idx]
         n = len(pep_heavy_idx)
         min_d = np.inf

@@ -94,7 +94,7 @@ def calculate_rmsf(
 
     # Calculate RMSF
     diff = traj_subset.xyz - mean_positions
-    rmsf = np.sqrt((diff ** 2).sum(axis=2).mean(axis=0))
+    rmsf = np.sqrt((diff**2).sum(axis=2).mean(axis=0))
 
     return rmsf
 
@@ -231,9 +231,9 @@ def compute_receptor_drift(
     else:
         # xyz shape: (n_frames, n_atoms, 3) in nm
         pos_all = traj.xyz[:, ca_idx_arr, :]  # (n_frames, n_ca, 3)
-        pos_ref = pos_all[reference_frame]     # (n_ca, 3)
+        pos_ref = pos_all[reference_frame]  # (n_ca, 3)
         diff = pos_all - pos_ref[np.newaxis, :, :]  # (n_frames, n_ca, 3)
-        drift_raw = np.sqrt(np.mean(np.sum(diff ** 2, axis=2), axis=1)) * 10.0
+        drift_raw = np.sqrt(np.mean(np.sum(diff**2, axis=2), axis=1)) * 10.0
         drift_raw_mean = float(np.mean(drift_raw))
         drift_raw_max = float(np.max(drift_raw))
 

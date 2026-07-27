@@ -52,9 +52,9 @@ def test_multiple_failures_collected():
     results = {
         "relax": {"success": False, "error_message": "boom"},
         "energy": {"error": "no template"},
-        "interface": {"delta_sasa": 1.0},          # ok
+        "interface": {"delta_sasa": 1.0},  # ok
         "geometry": {"error": "empty chain"},
-        "electrostatics": {"skipped": True},        # not a failure
+        "electrostatics": {"skipped": True},  # not a failure
     }
     steps = {s for s, _ in _collect_failures(results)}
     assert steps == {"relax", "energy", "geometry"}

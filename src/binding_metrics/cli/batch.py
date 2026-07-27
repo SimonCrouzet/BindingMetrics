@@ -74,6 +74,7 @@ def _build_reference_map(reference_dir: Path) -> dict[str, Path]:
 # Worker (must be module-level so it is picklable by multiprocessing)
 # ---------------------------------------------------------------------------
 
+
 def _run_one(
     input_path: Path,
     output_dir: Path,
@@ -96,7 +97,7 @@ def _run_one(
 ) -> dict:
     """Run the pipeline for a single structure and return a flat results dict."""
     from binding_metrics.cli import log_to_file
-    from binding_metrics.protocols.report import write_report, _flatten
+    from binding_metrics.protocols.report import _flatten, write_report
 
     sid = sample_id or input_path.stem
     sample_output_dir = output_dir / sid
@@ -110,12 +111,12 @@ def _run_one(
 
     try:
         with log_to_file(log_path):
-            print(f"\n{'#'*60}")
+            print(f"\n{'#' * 60}")
             print(f"  binding-metrics-batch worker: {sid}")
             print(f"  Input:  {input_path}")
             print(f"  Output: {sample_output_dir}")
             print(f"  Log:    {log_path}")
-            print(f"{'#'*60}")
+            print(f"{'#' * 60}")
 
             results = run_pipeline(
                 input_path=input_path,
@@ -157,6 +158,7 @@ def _run_one(
 # Batched OpenFold (single subprocess for all samples)
 # ---------------------------------------------------------------------------
 
+
 def _run_batched_openfold(
     rows: list[dict],
     sid_to_input: dict[str, Path],
@@ -174,8 +176,8 @@ def _run_batched_openfold(
     from binding_metrics.io.structures import detect_chains_from_file
     from binding_metrics.metrics.openfold import (
         _BatchSample,
-        run_openfold_batched,
         compute_openfold_metrics,
+        run_openfold_batched,
     )
     from binding_metrics.protocols.report import _flatten
 
@@ -209,12 +211,14 @@ def _run_batched_openfold(
         if not pchain or not rchain:
             continue
 
-        samples.append(_BatchSample(
-            query_name=sid,
-            complex_structure_path=input_path,
-            receptor_chain=rchain,
-            binder_chain=pchain,
-        ))
+        samples.append(
+            _BatchSample(
+                query_name=sid,
+                complex_structure_path=input_path,
+                receptor_chain=rchain,
+                binder_chain=pchain,
+            )
+        )
         sid_to_row_idx[sid] = i
         sid_to_chains[sid] = {"peptide": pchain, "receptor": rchain}
 
@@ -222,9 +226,9 @@ def _run_batched_openfold(
         print("  [skip] No eligible samples for batched OpenFold.", flush=True)
         return
 
-    print(f"\n{'='*60}", flush=True)
+    print(f"\n{'=' * 60}", flush=True)
     print(f"  Step: Batched OpenFold3 ({len(samples)} samples in one call)", flush=True)
-    print(f"{'='*60}", flush=True)
+    print(f"{'=' * 60}", flush=True)
 
     of_dir = output_dir / "_openfold_batch"
     try:
@@ -237,6 +241,7 @@ def _run_batched_openfold(
     except Exception as e:
         print(f"  [ERROR] Batched OpenFold failed: {e}", flush=True)
         import traceback
+
         traceback.print_exc()
         for sid, idx in sid_to_row_idx.items():
             rows[idx]["openfold_error"] = str(e)
@@ -273,22 +278,27 @@ def _run_batched_openfold(
             if of_structure:
                 try:
                     from binding_metrics.metrics.evobind import (
-                        compute_evobind_score,
                         compute_evobind_adversarial_check,
+                        compute_evobind_score,
                     )
-                    of_metrics.update(compute_evobind_score(
-                        of_structure,
-                        plddt_per_atom=plddt,
-                        binder_chain=pchain,
-                        receptor_chain=rchain,
-                    ))
-                    of_metrics.update(compute_evobind_adversarial_check(
-                        design_structure_path=sid_to_input[sid],
-                        afm_structure_path=of_structure,
-                        binder_chain=pchain,
-                        receptor_chain=rchain,
-                        afm_plddt_per_atom=plddt,
-                    ))
+
+                    of_metrics.update(
+                        compute_evobind_score(
+                            of_structure,
+                            plddt_per_atom=plddt,
+                            binder_chain=pchain,
+                            receptor_chain=rchain,
+                        )
+                    )
+                    of_metrics.update(
+                        compute_evobind_adversarial_check(
+                            design_structure_path=sid_to_input[sid],
+                            afm_structure_path=of_structure,
+                            binder_chain=pchain,
+                            receptor_chain=rchain,
+                            afm_plddt_per_atom=plddt,
+                        )
+                    )
                 except Exception as e:
                     of_metrics["evobind_error"] = str(e)
 
@@ -300,8 +310,11 @@ def _run_batched_openfold(
             # Update per-sample JSON report on disk
             _update_sample_json(output_dir / sid, sid, of_metrics)
 
-            print(f"  {sid}: ipTM={of_metrics.get('iptm', '?')}, "
-                  f"pLDDT={of_metrics.get('avg_plddt', '?')}", flush=True)
+            print(
+                f"  {sid}: ipTM={of_metrics.get('iptm', '?')}, "
+                f"pLDDT={of_metrics.get('avg_plddt', '?')}",
+                flush=True,
+            )
 
         except Exception as e:
             print(f"  {sid}: OpenFold metrics failed: {e}", flush=True)
@@ -311,6 +324,7 @@ def _run_batched_openfold(
 def _update_sample_json(sample_dir: Path, sid: str, of_metrics: dict) -> None:
     """Merge OpenFold results into an existing per-sample JSON report."""
     import json
+
     json_path = sample_dir / f"{sid}_results.json"
     if not json_path.exists():
         return
@@ -326,6 +340,7 @@ def _update_sample_json(sample_dir: Path, sid: str, of_metrics: dict) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run the binding-metrics pipeline on all structures in a directory.",
@@ -334,51 +349,89 @@ def main():
     )
 
     # Batch I/O
-    parser.add_argument("--input-dir", "-i", type=Path, required=True,
-                        help="Directory containing .cif / .pdb / .mmcif files")
-    parser.add_argument("--output-csv", type=Path, required=True,
-                        help="Path for the aggregated CSV results file")
-    parser.add_argument("--output-dir", "-o", type=Path, default=None,
-                        help="Directory for per-sample outputs "
-                             "(default: same directory as --output-csv)")
-    parser.add_argument("--workers", type=int, default=1,
-                        help="Number of parallel worker processes (default: 1). "
-                             "Use --device cpu when workers > 1 on a single GPU.")
-    parser.add_argument("--glob", type=str, default=None,
-                        help="Optional glob pattern to filter files within --input-dir "
-                             "(e.g. '*.cif'). Default: all .cif/.pdb/.mmcif files.")
-    parser.add_argument("--reference-dir", type=Path, default=None,
-                        help="Directory of native/reference structures for DockQ. "
-                             "Each sample is matched to a reference by filename stem "
-                             "(e.g. input 'target1.cif' → reference 'target1.pdb'). "
-                             "Supplying this auto-enables the 'dockq' metric. "
-                             "Requires: pip install DockQ")
+    parser.add_argument(
+        "--input-dir",
+        "-i",
+        type=Path,
+        required=True,
+        help="Directory containing .cif / .pdb / .mmcif files",
+    )
+    parser.add_argument(
+        "--output-csv", type=Path, required=True, help="Path for the aggregated CSV results file"
+    )
+    parser.add_argument(
+        "--output-dir",
+        "-o",
+        type=Path,
+        default=None,
+        help="Directory for per-sample outputs (default: same directory as --output-csv)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of parallel worker processes (default: 1). "
+        "Use --device cpu when workers > 1 on a single GPU.",
+    )
+    parser.add_argument(
+        "--glob",
+        type=str,
+        default=None,
+        help="Optional glob pattern to filter files within --input-dir "
+        "(e.g. '*.cif'). Default: all .cif/.pdb/.mmcif files.",
+    )
+    parser.add_argument(
+        "--reference-dir",
+        type=Path,
+        default=None,
+        help="Directory of native/reference structures for DockQ. "
+        "Each sample is matched to a reference by filename stem "
+        "(e.g. input 'target1.cif' → reference 'target1.pdb'). "
+        "Supplying this auto-enables the 'dockq' metric. "
+        "Requires: pip install DockQ",
+    )
 
     # Forwarded single-run options
-    parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda",
-                        help="Compute device (default: cuda)")
-    parser.add_argument("--peptide-chain", type=str, default=None,
-                        help="Peptide chain ID applied to all structures "
-                             "(auto-detect per structure if omitted)")
-    parser.add_argument("--receptor-chain", type=str, default=None,
-                        help="Receptor chain ID applied to all structures "
-                             "(auto-detect per structure if omitted)")
+    parser.add_argument(
+        "--device", choices=["cuda", "cpu"], default="cuda", help="Compute device (default: cuda)"
+    )
+    parser.add_argument(
+        "--peptide-chain",
+        type=str,
+        default=None,
+        help="Peptide chain ID applied to all structures (auto-detect per structure if omitted)",
+    )
+    parser.add_argument(
+        "--receptor-chain",
+        type=str,
+        default=None,
+        help="Receptor chain ID applied to all structures (auto-detect per structure if omitted)",
+    )
 
     prep_group = parser.add_argument_group("Preparation")
-    prep_group.add_argument("--skip-prep", action="store_true",
-                            help="Skip PDBFixer prep")
-    prep_group.add_argument("--ph", type=float, default=7.4,
-                            help="pH for hydrogen placement during prep (default: 7.4)")
-    prep_group.add_argument("--keep-water", action="store_true",
-                            help="Retain crystallographic water molecules during prep")
-    prep_group.add_argument("--canonicalize", action="store_true",
-                            help="Replace non-standard residues with standard equivalents")
+    prep_group.add_argument("--skip-prep", action="store_true", help="Skip PDBFixer prep")
+    prep_group.add_argument(
+        "--ph", type=float, default=7.4, help="pH for hydrogen placement during prep (default: 7.4)"
+    )
+    prep_group.add_argument(
+        "--keep-water",
+        action="store_true",
+        help="Retain crystallographic water molecules during prep",
+    )
+    prep_group.add_argument(
+        "--canonicalize",
+        action="store_true",
+        help="Replace non-standard residues with standard equivalents",
+    )
 
     relax_group = parser.add_argument_group("Relaxation")
-    relax_group.add_argument("--skip-relax", action="store_true",
-                             help="Skip relaxation")
-    relax_group.add_argument("--md-duration-ps", type=float, default=200.0,
-                             help="MD duration in ps (0 = minimize only, default: 200)")
+    relax_group.add_argument("--skip-relax", action="store_true", help="Skip relaxation")
+    relax_group.add_argument(
+        "--md-duration-ps",
+        type=float,
+        default=200.0,
+        help="MD duration in ps (0 = minimize only, default: 200)",
+    )
 
     metrics_group = parser.add_argument_group("Metrics")
     metrics_group.add_argument(
@@ -392,25 +445,39 @@ def main():
             "Default: all."
         ),
     )
-    metrics_group.add_argument("--energy-modes", nargs="+",
-                               choices=["raw", "relaxed", "after_md"],
-                               default=["relaxed"],
-                               help="Energy evaluation modes (default: relaxed)")
+    metrics_group.add_argument(
+        "--energy-modes",
+        nargs="+",
+        choices=["raw", "relaxed", "after_md"],
+        default=["relaxed"],
+        help="Energy evaluation modes (default: relaxed)",
+    )
 
     openfold_group = parser.add_argument_group("OpenFold")
-    openfold_group.add_argument("--openfold-mode", choices=["score", "refold"], default="score",
-                                help="score: both chains as templates; "
-                                     "refold: binder predicted freely. Default: score")
-    openfold_group.add_argument("--openfold-conda-env", type=str, default="openfold3",
-                                help="Conda env where OpenFold3 is installed (default: openfold3)")
+    openfold_group.add_argument(
+        "--openfold-mode",
+        choices=["score", "refold"],
+        default="score",
+        help="score: both chains as templates; refold: binder predicted freely. Default: score",
+    )
+    openfold_group.add_argument(
+        "--openfold-conda-env",
+        type=str,
+        default="openfold3",
+        help="Conda env where OpenFold3 is installed (default: openfold3)",
+    )
 
     from binding_metrics.cli import add_log_file_arg
+
     log_group = parser.add_argument_group("Logging")
     add_log_file_arg(log_group)
-    log_group.add_argument("--per-sample-log", action="store_true",
-                           help="Write a separate .log file for each sample inside its output "
-                                "directory (always on when --log-file is not set, ignored "
-                                "when --log-file is provided)")
+    log_group.add_argument(
+        "--per-sample-log",
+        action="store_true",
+        help="Write a separate .log file for each sample inside its output "
+        "directory (always on when --log-file is not set, ignored "
+        "when --log-file is provided)",
+    )
 
     args = parser.parse_args()
 
@@ -428,7 +495,8 @@ def main():
         input_files = sorted(args.input_dir.glob(args.glob))
     else:
         input_files = sorted(
-            p for p in args.input_dir.iterdir()
+            p
+            for p in args.input_dir.iterdir()
             if p.is_file() and p.suffix.lower() in _STRUCTURE_SUFFIXES
         )
 
@@ -436,13 +504,13 @@ def main():
         print(f"ERROR: no structure files found in {args.input_dir}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\n{'#'*60}")
-    print(f"  binding-metrics-batch")
+    print(f"\n{'#' * 60}")
+    print("  binding-metrics-batch")
     print(f"  Input dir:  {args.input_dir}  ({len(input_files)} structures)")
     print(f"  Output dir: {output_dir}")
     print(f"  Output CSV: {args.output_csv}")
     print(f"  Workers:    {args.workers}")
-    print(f"{'#'*60}\n")
+    print(f"{'#' * 60}\n")
 
     # ------------------------------------------------------------------ References
     # Map each sample (by filename stem) to a native structure for DockQ.
@@ -451,14 +519,17 @@ def main():
     selected_metrics = args.metrics
     if args.reference_dir is not None:
         if not args.reference_dir.is_dir():
-            print(f"ERROR: --reference-dir is not a directory: {args.reference_dir}",
-                  file=sys.stderr)
+            print(
+                f"ERROR: --reference-dir is not a directory: {args.reference_dir}", file=sys.stderr
+            )
             sys.exit(1)
         reference_map = _build_reference_map(args.reference_dir)
         selected_metrics = selected_metrics | {"dockq"}
         matched = sum(1 for f in input_files if f.stem in reference_map)
-        print(f"  References: {args.reference_dir}  "
-              f"({matched}/{len(input_files)} samples matched by stem)\n")
+        print(
+            f"  References: {args.reference_dir}  "
+            f"({matched}/{len(input_files)} samples matched by stem)\n"
+        )
 
     # ------------------------------------------------------------------ Build kwargs
     # Strip openfold from per-worker metrics — it will be run as a single
@@ -468,7 +539,7 @@ def main():
 
     common_kwargs = dict(
         output_dir=output_dir,
-        sample_id=None,          # derived from file stem per sample
+        sample_id=None,  # derived from file stem per sample
         skip_prep=args.skip_prep,
         ph=args.ph,
         keep_water=args.keep_water,
@@ -482,7 +553,7 @@ def main():
         energy_modes=tuple(args.energy_modes),
         openfold_mode=args.openfold_mode,
         openfold_conda_env=args.openfold_conda_env,
-        log_file=args.log_file,   # None → per-sample log inside sample dir
+        log_file=args.log_file,  # None → per-sample log inside sample dir
     )
 
     # ------------------------------------------------------------------ Run
@@ -500,8 +571,9 @@ def main():
             sid = input_path.stem
             sid_to_input[sid] = input_path
             print(f"[{i}/{len(input_files)}] Processing: {sid}", flush=True)
-            flat = _run_one(input_path=input_path,
-                            reference_path=reference_map.get(sid), **common_kwargs)
+            flat = _run_one(
+                input_path=input_path, reference_path=reference_map.get(sid), **common_kwargs
+            )
             rows.append(flat)
             status = flat.get("batch_status", "ok")
             if status == "ok":
@@ -521,8 +593,12 @@ def main():
             for input_path in input_files:
                 sid = input_path.stem
                 sid_to_input[sid] = input_path
-                fut = pool.submit(_run_one, input_path=input_path,
-                                  reference_path=reference_map.get(sid), **common_kwargs)
+                fut = pool.submit(
+                    _run_one,
+                    input_path=input_path,
+                    reference_path=reference_map.get(sid),
+                    **common_kwargs,
+                )
                 futures[fut] = sid
 
             done = 0
@@ -535,16 +611,27 @@ def main():
                     status = flat.get("batch_status", "ok")
                     if status == "ok":
                         n_ok += 1
-                        print(f"[{done}/{len(input_files)}] {sid} -> ok "
-                              f"({flat.get('total_elapsed_s', '?')}s)", flush=True)
+                        print(
+                            f"[{done}/{len(input_files)}] {sid} -> ok "
+                            f"({flat.get('total_elapsed_s', '?')}s)",
+                            flush=True,
+                        )
                     else:
                         n_err += 1
-                        print(f"[{done}/{len(input_files)}] {sid} -> ERROR: "
-                              f"{flat.get('batch_error', '?')}", flush=True)
+                        print(
+                            f"[{done}/{len(input_files)}] {sid} -> ERROR: "
+                            f"{flat.get('batch_error', '?')}",
+                            flush=True,
+                        )
                 except Exception as e:
                     n_err += 1
-                    rows.append({"sample_id": sid, "batch_status": "error",
-                                 "batch_error": f"{type(e).__name__}: {e}"})
+                    rows.append(
+                        {
+                            "sample_id": sid,
+                            "batch_status": "error",
+                            "batch_error": f"{type(e).__name__}: {e}",
+                        }
+                    )
                     print(f"[{done}/{len(input_files)}] {sid} -> FATAL: {e}", flush=True)
 
     # -------------------------------------------------------- Batched OpenFold
@@ -570,6 +657,7 @@ def main():
     fieldnames = list(all_keys)
 
     import csv
+
     with open(args.output_csv, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -577,10 +665,10 @@ def main():
             writer.writerow(row)
 
     elapsed = round(time.time() - t_batch_start, 1)
-    print(f"\n{'#'*60}")
+    print(f"\n{'#' * 60}")
     print(f"  DONE in {elapsed}s — {n_ok} ok, {n_err} error(s)")
     print(f"  Results: {args.output_csv}")
-    print(f"{'#'*60}\n")
+    print(f"{'#' * 60}\n")
 
     sys.exit(1 if n_err and n_ok == 0 else 0)
 

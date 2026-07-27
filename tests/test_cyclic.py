@@ -4,24 +4,21 @@ All tests run without OpenMM (pure-Python or lightweight) except those that
 build a real topology, which are marked @pytest.mark.integration.
 """
 
-import math
-import pytest
 import numpy as np
+import pytest
 
 from binding_metrics.core.cyclic import (
-    CyclicBondInfo,
-    CyclizationError,
     _XML_ASPL,
     _XML_GLUL,
     _XML_LYSL,
-    _AMIDE_BOND_THRESH,
-    _DISULFIDE_THRESH,
+    CyclicBondInfo,
+    CyclizationError,
 )
-
 
 # ---------------------------------------------------------------------------
 # CyclicBondInfo
 # ---------------------------------------------------------------------------
+
 
 class TestCyclicBondInfo:
     def test_fields(self):
@@ -49,11 +46,13 @@ class TestCyclicBondInfo:
 # XML template sanity checks (no OpenMM needed)
 # ---------------------------------------------------------------------------
 
+
 class TestLactamXMLTemplates:
     """Verify the XML strings are well-formed and contain expected tokens."""
 
     def _check_xml(self, xml_str, residue_name, amide_c_atom, amide_o_atom, closure_atom):
         import xml.etree.ElementTree as ET
+
         root = ET.fromstring(xml_str)
         residues = root.findall(".//Residue")
         names = [r.get("name") for r in residues]
@@ -84,6 +83,7 @@ class TestLactamXMLTemplates:
 
     def test_lysl_xml(self):
         import xml.etree.ElementTree as ET
+
         root = ET.fromstring(_XML_LYSL)
         res = root.find(".//Residue[@name='LYSL']")
         assert res is not None
@@ -98,6 +98,7 @@ class TestLactamXMLTemplates:
 # ---------------------------------------------------------------------------
 # Detection logic (requires OpenMM topology mocks)
 # ---------------------------------------------------------------------------
+
 
 def _make_minimal_topology(residue_names, atom_specs, bonds=None):
     """Build a minimal OpenMM Topology for testing.
@@ -116,19 +117,22 @@ def _make_minimal_topology(residue_names, atom_specs, bonds=None):
     from openmm.app import element as elem
 
     _elem = {
-        "N": elem.nitrogen, "C": elem.carbon, "O": elem.oxygen,
-        "S": elem.sulfur,   "H": elem.hydrogen,
+        "N": elem.nitrogen,
+        "C": elem.carbon,
+        "O": elem.oxygen,
+        "S": elem.sulfur,
+        "H": elem.hydrogen,
     }
 
     topology = app.Topology()
     chain = topology.addChain(id="A")
-    atom_map = {}   # (res_idx, atom_name) → Atom
+    atom_map = {}  # (res_idx, atom_name) → Atom
     pos_list = []
     atom_count = 0
 
     for ri, (res_name, specs) in enumerate(zip(residue_names, atom_specs)):
         res = topology.addResidue(res_name, chain)
-        for (aname, esym) in specs:
+        for aname, esym in specs:
             el = _elem.get(esym.upper(), elem.carbon)
             atom = topology.addAtom(aname, el, res)
             atom_map[(ri, aname)] = atom
@@ -156,6 +160,7 @@ class TestDetectCyclization:
 
     def test_head_to_tail_detected(self):
         from binding_metrics.core.cyclic import detect_cyclization
+
         res_names = ["ALA", "GLY", "ALA"]
         specs = [
             [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")],
@@ -163,13 +168,16 @@ class TestDetectCyclization:
             [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")],
         ]
         topology, positions, atom_map = _make_minimal_topology(res_names, specs)
-        positions[atom_map[(2, "C")].index] = positions[atom_map[(0, "N")].index] + np.array([0.133, 0, 0])
+        positions[atom_map[(2, "C")].index] = positions[atom_map[(0, "N")].index] + np.array(
+            [0.133, 0, 0]
+        )
         result = detect_cyclization(topology, positions, "A")
         assert len(result) == 1
         assert result[0].cyclic_type == "head_to_tail"
 
     def test_no_cyclization_returns_empty_list(self):
         from binding_metrics.core.cyclic import detect_cyclization
+
         res_names = ["ALA", "GLY"]
         specs = [
             [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")],
@@ -181,6 +189,7 @@ class TestDetectCyclization:
 
     def test_disulfide_detected(self):
         from binding_metrics.core.cyclic import detect_cyclization
+
         res_names = ["CYS", "ALA", "CYS"]
         specs = [
             [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C"), ("SG", "S")],
@@ -198,6 +207,7 @@ class TestDetectCyclization:
     def test_bicyclic_head_to_tail_plus_disulfide(self):
         """Bicyclic: both head-to-tail AND disulfide detected in one call."""
         from binding_metrics.core.cyclic import detect_cyclization
+
         res_names = ["CYS", "ALA", "CYS", "GLY"]
         specs = [
             [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C"), ("SG", "S")],
@@ -207,12 +217,12 @@ class TestDetectCyclization:
         ]
         topology, positions, atom_map = _make_minimal_topology(res_names, specs)
         # Head-to-tail: C(GLY3) close to N(CYS0)
-        positions[atom_map[(3, "C")].index] = (
-            positions[atom_map[(0, "N")].index] + np.array([0.133, 0, 0])
+        positions[atom_map[(3, "C")].index] = positions[atom_map[(0, "N")].index] + np.array(
+            [0.133, 0, 0]
         )
         # Disulfide: SG(CYS0) close to SG(CYS2)
-        positions[atom_map[(2, "SG")].index] = (
-            positions[atom_map[(0, "SG")].index] + np.array([0.205, 0, 0])
+        positions[atom_map[(2, "SG")].index] = positions[atom_map[(0, "SG")].index] + np.array(
+            [0.205, 0, 0]
         )
         result = detect_cyclization(topology, positions, "A")
         types = {r.cyclic_type for r in result}
@@ -227,6 +237,7 @@ class TestDetectCyclization:
         # false positives from tight backbone geometry). Here a sidechain
         # CB(res0)–CB(res2) staple is encoded as a real bond.
         from binding_metrics.core.cyclic import detect_cyclization
+
         res_names = ["ALA", "ALA", "ALA"]
         specs = [
             [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C")],
@@ -242,16 +253,25 @@ class TestDetectCyclization:
 
     def test_lactam_asp_detected(self):
         from binding_metrics.core.cyclic import detect_cyclization
+
         res_names = ["ALA", "ASP", "GLY"]
         specs = [
             [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")],
-            [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"),
-             ("CB", "C"), ("CG", "C"), ("OD1", "O"), ("OD2", "O")],
+            [
+                ("N", "N"),
+                ("CA", "C"),
+                ("C", "C"),
+                ("O", "O"),
+                ("CB", "C"),
+                ("CG", "C"),
+                ("OD1", "O"),
+                ("OD2", "O"),
+            ],
             [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")],
         ]
         topology, positions, atom_map = _make_minimal_topology(res_names, specs)
-        positions[atom_map[(1, "CG")].index] = (
-            positions[atom_map[(0, "N")].index] + np.array([0.133, 0, 0])
+        positions[atom_map[(1, "CG")].index] = positions[atom_map[(0, "N")].index] + np.array(
+            [0.133, 0, 0]
         )
         result = detect_cyclization(topology, positions, "A")
         assert len(result) == 1
@@ -268,14 +288,17 @@ class TestDetectCyclization:
 # STRUCT_CONN records and geometry is too strained for distance detection.
 # ---------------------------------------------------------------------------
 
+
 class TestRelaxationConfigCyclic:
     def test_default_cyclic_bond_hints_none(self):
         from binding_metrics.protocols.relaxation import RelaxationConfig
+
         config = RelaxationConfig()
         assert config.cyclic_bond_hints is None
 
     def test_cyclic_bond_hints_settable(self):
         from binding_metrics.protocols.relaxation import RelaxationConfig
+
         hint = CyclicBondInfo(
             cyclic_type="head_to_tail",
             atom1_id=("A", 4, "C"),
@@ -289,12 +312,14 @@ class TestRelaxationConfigCyclic:
 # _internal_h_list and get_addh_variants
 # ---------------------------------------------------------------------------
 
+
 class TestInternalHList:
     """Tests for _internal_h_list: no terminal H atoms should be returned."""
 
     def test_gly_no_terminal_h(self):
         pytest.importorskip("openmm", reason="OpenMM required")
         from binding_metrics.core.cyclic import _internal_h_list
+
         h_list = _internal_h_list("GLY")
         assert h_list is not None
         names = [h for h, _ in h_list]
@@ -308,6 +333,7 @@ class TestInternalHList:
     def test_ala_no_terminal_h(self):
         pytest.importorskip("openmm", reason="OpenMM required")
         from binding_metrics.core.cyclic import _internal_h_list
+
         h_list = _internal_h_list("ALA")
         assert h_list is not None
         names = [h for h, _ in h_list]
@@ -320,6 +346,7 @@ class TestInternalHList:
     def test_unknown_residue_returns_none(self):
         pytest.importorskip("openmm", reason="OpenMM required")
         from binding_metrics.core.cyclic import _internal_h_list
+
         assert _internal_h_list("XYZ") is None
 
 
@@ -333,8 +360,13 @@ class TestGetAddhVariants:
         from openmm import app
         from openmm.app import element as elem
 
-        _elem = {"N": elem.nitrogen, "C": elem.carbon, "O": elem.oxygen,
-                 "S": elem.sulfur, "H": elem.hydrogen}
+        _elem = {
+            "N": elem.nitrogen,
+            "C": elem.carbon,
+            "O": elem.oxygen,
+            "S": elem.sulfur,
+            "H": elem.hydrogen,
+        }
 
         topology = app.Topology()
         chain = topology.addChain(id="B")
@@ -352,10 +384,14 @@ class TestGetAddhVariants:
             return res, atoms
 
         # SFTI-1 sequence starts with GLY
-        r0, m0 = add_res("GLY", [("N","N"),("CA","C"),("C","C"),("O","O")])
-        r1, m1 = add_res("ARG", [("N","N"),("CA","C"),("C","C"),("O","O")])
-        r2, m2 = add_res("CYS", [("N","N"),("CA","C"),("C","C"),("O","O"),("CB","C"),("SG","S")])
-        r3, m3 = add_res("CYS", [("N","N"),("CA","C"),("C","C"),("O","O"),("CB","C"),("SG","S")])
+        r0, m0 = add_res("GLY", [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")])
+        r1, m1 = add_res("ARG", [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")])
+        r2, m2 = add_res(
+            "CYS", [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C"), ("SG", "S")]
+        )
+        r3, m3 = add_res(
+            "CYS", [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C"), ("SG", "S")]
+        )
 
         # Backbone bonds
         topology.addBond(m0["C"], m1["N"])
@@ -375,14 +411,16 @@ class TestGetAddhVariants:
         from binding_metrics.core.cyclic import (
             CyclicBondInfo,
             get_addh_variants,
-            _internal_h_list,
         )
+
         topology, positions = self._make_sfti_like_topology()
-        bond_info = [CyclicBondInfo(
-            cyclic_type="head_to_tail",
-            atom1_id=("B", 3, "C"),
-            atom2_id=("B", 0, "N"),
-        )]
+        bond_info = [
+            CyclicBondInfo(
+                cyclic_type="head_to_tail",
+                atom1_id=("B", 3, "C"),
+                atom2_id=("B", 0, "N"),
+            )
+        ]
         variants = get_addh_variants(topology, bond_info, "B")
 
         # First residue (GLY at index 0) must get a list variant, not a string
@@ -401,13 +439,14 @@ class TestGetAddhVariants:
         Uses a minimal synthetic topology — the call may fail for other reasons
         (incomplete residue geometry), but must NOT fail with 'Illegal variant'.
         """
-        from openmm import app, Vec3
-        from openmm.unit import nanometers
+        from openmm import Vec3, app
+
         from binding_metrics.core.cyclic import (
             get_addh_variants,
-            patch_cyclic_topology,
             load_extra_xmls,
+            patch_cyclic_topology,
         )
+
         topology, positions = self._make_sfti_like_topology()
         # Pass positions WITHOUT units so _CellList comparisons stay in plain floats
         pos_vec = [Vec3(p[0], p[1], p[2]) for p in positions]
@@ -445,12 +484,13 @@ class TestDetectSidechainLactam:
 
     def test_lys_asp_sidechain_detected(self):
         from binding_metrics.core.cyclic import detect_cyclization
+
         res_names = ["ALA", "LYS", "ALA", "ALA", "ALA", "ASP", "ALA"]
         specs = [_BB, _LYS_SPEC, _BB, _BB, _BB, _ASP_SPEC, _BB]
         topology, positions, atom_map = _make_minimal_topology(res_names, specs)
         # Place LYS NZ within amide-bond distance of ASP CG (i,i+4 staple)
-        positions[atom_map[(1, "NZ")].index] = (
-            positions[atom_map[(5, "CG")].index] + np.array([0.133, 0, 0])
+        positions[atom_map[(1, "NZ")].index] = positions[atom_map[(5, "CG")].index] + np.array(
+            [0.133, 0, 0]
         )
         result = detect_cyclization(topology, positions, "A")
         assert len(result) == 1
@@ -464,11 +504,12 @@ class TestDetectSidechainLactam:
 
     def test_lys_glu_sidechain_detected(self):
         from binding_metrics.core.cyclic import detect_cyclization
+
         res_names = ["ALA", "LYS", "ALA", "ALA", "ALA", "GLU", "ALA"]
         specs = [_BB, _LYS_SPEC, _BB, _BB, _BB, _GLU_SPEC, _BB]
         topology, positions, atom_map = _make_minimal_topology(res_names, specs)
-        positions[atom_map[(1, "NZ")].index] = (
-            positions[atom_map[(5, "CD")].index] + np.array([0.133, 0, 0])
+        positions[atom_map[(1, "NZ")].index] = positions[atom_map[(5, "CD")].index] + np.array(
+            [0.133, 0, 0]
         )
         result = detect_cyclization(topology, positions, "A")
         assert len(result) == 1
@@ -480,6 +521,7 @@ class TestDetectSidechainLactam:
     def test_no_false_positive_when_far(self):
         """Far-apart LYS and ASP side chains must not be flagged as a staple."""
         from binding_metrics.core.cyclic import detect_cyclization
+
         res_names = ["ALA", "LYS", "ALA", "ALA", "ALA", "ASP", "ALA"]
         specs = [_BB, _LYS_SPEC, _BB, _BB, _BB, _ASP_SPEC, _BB]
         topology, positions, atom_map = _make_minimal_topology(res_names, specs)
@@ -493,20 +535,23 @@ class TestLactamInternalHList:
     def test_lysl(self):
         pytest.importorskip("openmm", reason="OpenMM required")
         from binding_metrics.core.cyclic import _internal_h_list
+
         names = {n for n, _ in _internal_h_list("LYSL")}
-        assert "HZ1" in names                       # single amide proton kept
+        assert "HZ1" in names  # single amide proton kept
         assert "HZ2" not in names and "HZ3" not in names
-        assert "H" in names                          # backbone amide NH
+        assert "H" in names  # backbone amide NH
 
     def test_aspl(self):
         pytest.importorskip("openmm", reason="OpenMM required")
         from binding_metrics.core.cyclic import _internal_h_list
+
         names = {n for n, _ in _internal_h_list("ASPL")}
-        assert names == {"H", "HA", "HB2", "HB3"}    # HD2 dropped (OD2 gone)
+        assert names == {"H", "HA", "HB2", "HB3"}  # HD2 dropped (OD2 gone)
 
     def test_glul(self):
         pytest.importorskip("openmm", reason="OpenMM required")
         from binding_metrics.core.cyclic import _internal_h_list
+
         names = {n for n, _ in _internal_h_list("GLUL")}
         assert names == {"H", "HA", "HB2", "HB3", "HG2", "HG3"}
 
@@ -520,11 +565,13 @@ class TestLactamTemplateConnectivity:
     """
 
     @pytest.mark.parametrize(
-        "xml_str", [_XML_ASPL, _XML_GLUL, _XML_LYSL],
+        "xml_str",
+        [_XML_ASPL, _XML_GLUL, _XML_LYSL],
         ids=["ASPL", "GLUL", "LYSL"],
     )
     def test_no_unbonded_atoms(self, xml_str):
         import xml.etree.ElementTree as ET
+
         res = ET.fromstring(xml_str).find(".//Residue")
         atom_names = {a.get("name") for a in res.findall("Atom")}
         bonded = set()
@@ -543,15 +590,16 @@ class TestSidechainLactamEndToEnd:
     def _heavy_atom_peptide(self, seq):
         import os
         import tempfile
+
         pytest.importorskip("openmm", reason="OpenMM required")
         chem = pytest.importorskip("rdkit.Chem", reason="RDKit required")
+        from openmm.app import Modeller, PDBFile
         from rdkit.Chem import AllChem
-        from openmm.app import PDBFile, Modeller
 
         mol = chem.MolFromSequence(seq)
         mol = chem.AddHs(mol)
         AllChem.EmbedMolecule(mol, randomSeed=1)
-        mol = chem.RemoveHs(mol)                     # heavy-atom-only input
+        mol = chem.RemoveHs(mol)  # heavy-atom-only input
         fd, path = tempfile.mkstemp(suffix=".pdb")
         try:
             with os.fdopen(fd, "w") as fh:
@@ -564,11 +612,15 @@ class TestSidechainLactamEndToEnd:
         return modeller.topology, modeller.positions, chain_id
 
     def _run(self, seq, lys_idx, acid_idx, acid_atom, expect_name):
-        from openmm.app import ForceField, Modeller, NoCutoff, HBonds
+        from openmm.app import ForceField, HBonds, Modeller, NoCutoff
+
         from binding_metrics.core.cyclic import (
-            patch_cyclic_topology, get_addh_variants, load_extra_xmls,
+            get_addh_variants,
+            load_extra_xmls,
+            patch_cyclic_topology,
             resolve_closure_atoms,
         )
+
         top, pos, chain_id = self._heavy_atom_peptide(seq)
 
         # Introduce the closure bond as a prepped staple structure would carry it.
@@ -587,14 +639,11 @@ class TestSidechainLactamEndToEnd:
         variants = get_addh_variants(modeller.topology, bond_info, chain_id)
         modeller.addHydrogens(ff, pH=7.4, variants=variants)
 
-        system = ff.createSystem(
-            modeller.topology, nonbondedMethod=NoCutoff, constraints=HBonds
-        )
+        system = ff.createSystem(modeller.topology, nonbondedMethod=NoCutoff, constraints=HBonds)
         assert system.getNumParticles() == modeller.topology.getNumAtoms()
 
         i1, i2 = resolve_closure_atoms(modeller.topology, bond_info[0], chain_id)
-        assert any({b.atom1.index, b.atom2.index} == {i1, i2}
-                   for b in modeller.topology.bonds())
+        assert any({b.atom1.index, b.atom2.index} == {i1, i2} for b in modeller.topology.bonds())
 
     def test_lys_asp_staple_builds(self):
         # G-K-A-A-A-D-G : LYS(1) NZ — ASP(5) CG  (i,i+4)
@@ -617,12 +666,13 @@ class TestDisulfideRenameApplies:
 
     def test_ss_bonded_cys_become_cyx(self):
         from binding_metrics.core.cyclic import rename_disulfide_cys_to_cyx
+
         topology, positions, atom_map = _make_minimal_topology(
             ["CYS", "ALA", "CYS"], [self._CYS, self._ALA, self._CYS]
         )
         # Put the two SG atoms at a disulfide distance (~2.05 Å).
-        positions[atom_map[(2, "SG")].index] = (
-            positions[atom_map[(0, "SG")].index] + np.array([0.205, 0, 0])
+        positions[atom_map[(2, "SG")].index] = positions[atom_map[(0, "SG")].index] + np.array(
+            [0.205, 0, 0]
         )
         top2, _ = rename_disulfide_cys_to_cyx(topology, positions)
         assert [r.name for r in top2.residues()] == ["CYX", "ALA", "CYX"]
@@ -630,6 +680,7 @@ class TestDisulfideRenameApplies:
     def test_free_cys_not_renamed(self):
         # No close SG contact (atoms spread far apart) → CYS stays CYS, no spurious CYX.
         from binding_metrics.core.cyclic import rename_disulfide_cys_to_cyx
+
         topology, positions, atom_map = _make_minimal_topology(
             ["CYS", "ALA", "CYS"], [self._CYS, self._ALA, self._CYS]
         )
@@ -645,6 +696,7 @@ class TestDisulfideRenameApplies:
 # the NMe hydrogen-variant support.
 # ---------------------------------------------------------------------------
 
+
 def _make_bondless_ala_chain():
     """A one-residue ALA chain with realistic heavy-atom geometry but NO bonds.
 
@@ -652,23 +704,27 @@ def _make_bondless_ala_chain():
     ALA) arrives: correct atoms/coordinates, zero intra-residue bonds.
     """
     pytest.importorskip("openmm", reason="OpenMM required")
-    from openmm import app
-    from openmm.app import element as elem
     import openmm.unit as unit
-    from openmm import Vec3
+    from openmm import Vec3, app
+    from openmm.app import element as elem
 
     top = app.Topology()
     chain = top.addChain(id="B")
     res = top.addResidue("ALA", chain)
     coords_nm = {
-        "N":  (0.000, 0.000, 0.0),
+        "N": (0.000, 0.000, 0.0),
         "CA": (0.147, 0.000, 0.0),
-        "C":  (0.147, 0.153, 0.0),
-        "O":  (0.270, 0.153, 0.0),
+        "C": (0.147, 0.153, 0.0),
+        "O": (0.270, 0.153, 0.0),
         "CB": (0.147, -0.153, 0.0),
     }
-    els = {"N": elem.nitrogen, "CA": elem.carbon, "C": elem.carbon,
-           "O": elem.oxygen, "CB": elem.carbon}
+    els = {
+        "N": elem.nitrogen,
+        "CA": elem.carbon,
+        "C": elem.carbon,
+        "O": elem.oxygen,
+        "CB": elem.carbon,
+    }
     pos = []
     amap = {}
     for name, xyz in coords_nm.items():
@@ -685,14 +741,13 @@ class TestReconstructIntraresidueBonds:
 
     def test_bondless_residue_gets_standard_connectivity(self):
         from binding_metrics.core.cyclic import reconstruct_intraresidue_bonds
+
         top, positions, res, amap = _make_bondless_ala_chain()
         assert top.getNumBonds() == 0
 
         added = reconstruct_intraresidue_bonds(top, positions, "B")
 
-        bonded = {
-            frozenset((b.atom1.name, b.atom2.name)) for b in top.bonds()
-        }
+        bonded = {frozenset((b.atom1.name, b.atom2.name)) for b in top.bonds()}
         assert added == 4
         assert frozenset(("N", "CA")) in bonded
         assert frozenset(("CA", "C")) in bonded
@@ -705,6 +760,7 @@ class TestReconstructIntraresidueBonds:
 
     def test_already_bonded_residue_untouched(self):
         from binding_metrics.core.cyclic import reconstruct_intraresidue_bonds
+
         top, positions, res, amap = _make_bondless_ala_chain()
         # Pre-bond the residue as a standard residue would be.
         top.addBond(amap["N"], amap["CA"])
@@ -729,22 +785,29 @@ class TestDResidueBondRestore:
     """
 
     def test_dal_rename_restores_bonds(self):
-        from binding_metrics.core.nonstandard import detect_nonstandard, patch_nonstandard
-        from openmm import app
-        from openmm.app import element as elem
         import openmm.unit as unit
-        from openmm import Vec3
+        from openmm import Vec3, app
+        from openmm.app import element as elem
+
+        from binding_metrics.core.nonstandard import detect_nonstandard, patch_nonstandard
 
         top = app.Topology()
         chain = top.addChain(id="B")
         res = top.addResidue("DAL", chain)  # D-alanine, no bonds (as loaded)
         coords_nm = {
-            "N": (0.0, 0.0, 0.0), "CA": (0.147, 0.0, 0.0),
-            "C": (0.147, 0.153, 0.0), "O": (0.270, 0.153, 0.0),
+            "N": (0.0, 0.0, 0.0),
+            "CA": (0.147, 0.0, 0.0),
+            "C": (0.147, 0.153, 0.0),
+            "O": (0.270, 0.153, 0.0),
             "CB": (0.147, -0.153, 0.0),
         }
-        els = {"N": elem.nitrogen, "CA": elem.carbon, "C": elem.carbon,
-               "O": elem.oxygen, "CB": elem.carbon}
+        els = {
+            "N": elem.nitrogen,
+            "CA": elem.carbon,
+            "C": elem.carbon,
+            "O": elem.oxygen,
+            "CB": elem.carbon,
+        }
         pos = []
         for name, xyz in coords_nm.items():
             top.addAtom(name, els[name], res)
@@ -756,9 +819,9 @@ class TestDResidueBondRestore:
         top2, _ = patch_nonstandard(top, positions, "B", info)
 
         r = next(top2.residues())
-        assert r.name == "ALA"                     # renamed
+        assert r.name == "ALA"  # renamed
         bonded = {frozenset((b.atom1.name, b.atom2.name)) for b in top2.bonds()}
-        assert frozenset(("N", "CA")) in bonded    # bonds restored
+        assert frozenset(("N", "CA")) in bonded  # bonds restored
         assert frozenset(("CA", "C")) in bonded
         assert frozenset(("CA", "CB")) in bonded
         assert frozenset(("C", "O")) in bonded
@@ -769,12 +832,19 @@ class TestNMeInternalHList:
     addHydrogens builds their heavy+H form (matching the NMG/NMA/MVA/MLE FF
     templates)."""
 
-    @pytest.mark.parametrize("name,parent_backbone", [
-        ("NMG", "GLY"), ("NMA", "ALA"), ("MVA", "VAL"), ("MLE", "LEU"),
-    ])
+    @pytest.mark.parametrize(
+        "name,parent_backbone",
+        [
+            ("NMG", "GLY"),
+            ("NMA", "ALA"),
+            ("MVA", "VAL"),
+            ("MLE", "LEU"),
+        ],
+    )
     def test_nme_h_list(self, name, parent_backbone):
         pytest.importorskip("openmm", reason="OpenMM required")
         from binding_metrics.core.cyclic import _internal_h_list
+
         h = _internal_h_list(name)
         assert h is not None
         names = [n for n, _ in h]

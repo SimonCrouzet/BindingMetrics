@@ -21,7 +21,7 @@ import json
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -59,6 +59,7 @@ class RelaxationConfig:
             openmmforcefields. See field docstring for details.
         small_molecule_ff: GAFF2 version string (default 'gaff-2.2.20').
     """
+
     min_steps_initial: int = 1000
     min_steps_restrained: int = 500
     min_steps_final: int = 2000
@@ -173,6 +174,7 @@ class RelaxationResult:
         minimized_structure_path: Path to saved minimized structure CIF
         md_final_structure_path: Path to saved final MD frame CIF
     """
+
     sample_id: str
     success: bool
     error_message: Optional[str] = None
@@ -276,19 +278,58 @@ class ImplicitRelaxation:
         return result
 
     # Standard AMBER ff14SB residue names — these are handled by the base FF.
-    _AMBER_STANDARD = frozenset({
-        # Canonical amino acids + protonation variants
-        "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
-        "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
-        "TYR", "VAL",
-        "CYX", "HID", "HIE", "HIP", "HIN", "LYN", "ASH", "GLH",
-        # Our custom lactam residues
-        "ASPL", "GLUL", "LYSL",
-        # Common capping groups and ions
-        "ACE", "NME", "NMA", "FOR",
-        # Water / ions
-        "HOH", "WAT", "H2O", "NA", "CL", "K", "MG", "CA", "ZN",
-    })
+    _AMBER_STANDARD = frozenset(
+        {
+            # Canonical amino acids + protonation variants
+            "ALA",
+            "ARG",
+            "ASN",
+            "ASP",
+            "CYS",
+            "GLN",
+            "GLU",
+            "GLY",
+            "HIS",
+            "ILE",
+            "LEU",
+            "LYS",
+            "MET",
+            "PHE",
+            "PRO",
+            "SER",
+            "THR",
+            "TRP",
+            "TYR",
+            "VAL",
+            "CYX",
+            "HID",
+            "HIE",
+            "HIP",
+            "HIN",
+            "LYN",
+            "ASH",
+            "GLH",
+            # Our custom lactam residues
+            "ASPL",
+            "GLUL",
+            "LYSL",
+            # Common capping groups and ions
+            "ACE",
+            "NME",
+            "NMA",
+            "FOR",
+            # Water / ions
+            "HOH",
+            "WAT",
+            "H2O",
+            "NA",
+            "CL",
+            "K",
+            "MG",
+            "CA",
+            "ZN",
+        }
+    )
 
     @classmethod
     def _discover_heterogens(cls, topology) -> list:
@@ -310,8 +351,8 @@ class ImplicitRelaxation:
             List of unique ``openff.toolkit.Molecule`` objects (heavy atoms only),
             one per unknown residue name.
         """
-        from rdkit import Chem
         from openff.toolkit import Molecule
+        from rdkit import Chem
 
         seen: set = set()
         result = []
@@ -334,7 +375,7 @@ class ImplicitRelaxation:
                 if i1 in idx_map and i2 in idx_map:
                     rwmol.AddBond(idx_map[i1], idx_map[i2], Chem.BondType.SINGLE)
             try:
-                Chem.SanitizeMol(rwmol)   # perceives double bonds / aromaticity
+                Chem.SanitizeMol(rwmol)  # perceives double bonds / aromaticity
                 # hydrogens_are_explicit=True prevents openff from adding
                 # implicit H — the molecule must match the topology at this
                 # stage (before addHydrogens), which has heavy atoms only.
@@ -346,8 +387,10 @@ class ImplicitRelaxation:
                 result.append(mol)
                 print(f"  Auto-GAFF2: '{res.name}' ({mol.n_atoms} heavy atoms)")
             except Exception as exc:
-                print(f"  Warning: could not build GAFF2 molecule for '{res.name}': "
-                      f"{exc}. Skipping (residue will be excluded from the system).")
+                print(
+                    f"  Warning: could not build GAFF2 molecule for '{res.name}': "
+                    f"{exc}. Skipping (residue will be excluded from the system)."
+                )
 
         return result
 
@@ -360,6 +403,7 @@ class ImplicitRelaxation:
             import openmm.unit as _unit
             from openmm import app as _app
             from openmm.app import PDBxFile as _PDBxFile
+
             openmm = _openmm
             app = _app
             unit = _unit
@@ -375,12 +419,38 @@ class ImplicitRelaxation:
         self._import_openmm()
         # Amino acids only — exclude water (HOH), nucleic acids (A/C/G/T/U/I/DA/…)
         amino_acids = {
-            "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
-            "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
-            "TYR", "VAL",
+            "ALA",
+            "ARG",
+            "ASN",
+            "ASP",
+            "CYS",
+            "GLN",
+            "GLU",
+            "GLY",
+            "HIS",
+            "ILE",
+            "LEU",
+            "LYS",
+            "MET",
+            "PHE",
+            "PRO",
+            "SER",
+            "THR",
+            "TRP",
+            "TYR",
+            "VAL",
             # common non-standard variants also treated as protein
-            "CYX", "HID", "HIE", "HIP", "ASPL", "GLUL", "LYSL",
-            "NMG", "NMA", "MVA", "MLE",
+            "CYX",
+            "HID",
+            "HIE",
+            "HIP",
+            "ASPL",
+            "GLUL",
+            "LYSL",
+            "NMG",
+            "NMA",
+            "MVA",
+            "MLE",
         }
 
         chain_sizes = []
@@ -395,14 +465,21 @@ class ImplicitRelaxation:
         chain_sizes.sort(key=lambda x: x[1])
 
         peptide_chain = self.config.peptide_chain_id or chain_sizes[0][0]
-        receptor_chain = (
-            self.config.receptor_chain_id or (chain_sizes[-1][0] if len(chain_sizes) > 1 else None)
+        receptor_chain = self.config.receptor_chain_id or (
+            chain_sizes[-1][0] if len(chain_sizes) > 1 else None
         )
         return peptide_chain, receptor_chain
 
-    def _strip_heterogens(self, topology, positions, peptide_chain: str, receptor_chain: Optional[str],
-                          warn_cutoff_ang: float = 8.0):
+    def _strip_heterogens(
+        self,
+        topology,
+        positions,
+        peptide_chain: str,
+        receptor_chain: Optional[str],
+        warn_cutoff_ang: float = 8.0,
+    ):
         from binding_metrics.io.structures import strip_heterogens
+
         return strip_heterogens(topology, positions, peptide_chain, receptor_chain, warn_cutoff_ang)
 
     def _setup_system(self, input_path: Path):
@@ -418,7 +495,6 @@ class ImplicitRelaxation:
         Returns:
             Tuple of (system, topology, positions, bond_info)
         """
-        import tempfile
 
         self._import_openmm()
 
@@ -433,7 +509,8 @@ class ImplicitRelaxation:
 
         modeller = app.Modeller(topology, positions)
         origin_atoms = [
-            a for a, pos in zip(topology.atoms(), positions)
+            a
+            for a, pos in zip(topology.atoms(), positions)
             if abs(pos.x) < 1e-6 and abs(pos.y) < 1e-6 and abs(pos.z) < 1e-6
         ]
         if origin_atoms:
@@ -450,16 +527,19 @@ class ImplicitRelaxation:
         )
 
         # --- Force field setup ---
-        gb_file = "implicit/gbn2.xml" if self.config.solvent_model == "gbn2" else "implicit/obc2.xml"
+        gb_file = (
+            "implicit/gbn2.xml" if self.config.solvent_model == "gbn2" else "implicit/obc2.xml"
+        )
         base_xmls = ["amber14-all.xml", "amber14/tip3pfb.xml", gb_file]
         ff = app.ForceField(*base_xmls)
 
         # --- Non-standard residue patching (D-AAs and NMe-AAs, before H addition) ---
         from binding_metrics.core.nonstandard import (
             detect_nonstandard,
-            patch_nonstandard,
             load_nonstandard_xmls,
+            patch_nonstandard,
         )
+
         ns_info = detect_nonstandard(topology, peptide_chain)
         if not ns_info.is_empty:
             if ns_info.has_d_residues:
@@ -476,13 +556,15 @@ class ImplicitRelaxation:
         # Must run here so addHydrogens sees the correct internal-residue topology.
         bond_info = []
         from binding_metrics.core.cyclic import (
-            CyclizationError,
+            load_extra_xmls,
             patch_cyclic_topology,
             rename_disulfide_cys_to_cyx,
-            load_extra_xmls,
         )
+
         topology, positions, bond_info = patch_cyclic_topology(
-            topology, positions, peptide_chain,
+            topology,
+            positions,
+            peptide_chain,
             hints=self.config.cyclic_bond_hints,
         )
         topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
@@ -518,13 +600,18 @@ class ImplicitRelaxation:
             # covered by ff14SB or curated templates (NMG/MVA/MLE, lactams, CYX)
             # are skipped. This rebuilds the topology to inject the NCAA hydrogens.
             from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
+
             topology, positions, ncaa_xmls = parameterize_ncaa_residues(
-                topology, positions, ff,
+                topology,
+                positions,
+                ff,
                 gaff_version=self.config.small_molecule_ff,
             )
             if ncaa_xmls:
-                print(f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
-                      f"ExternalBond templates for {len(ncaa_xmls)} NCAA residue(s).")
+                print(
+                    f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
+                    f"ExternalBond templates for {len(ncaa_xmls)} NCAA residue(s)."
+                )
         elif self.config.small_molecules:
             # Explicit list: free small-molecule co-factors (no backbone bonds) via
             # openmmforcefields' template generator.
@@ -537,14 +624,17 @@ class ImplicitRelaxation:
                 ) from exc
             mols = self._coerce_molecules(self.config.small_molecules)
             if mols:
-                gaff = GAFFTemplateGenerator(molecules=mols, forcefield=self.config.small_molecule_ff)
+                gaff = GAFFTemplateGenerator(
+                    molecules=mols, forcefield=self.config.small_molecule_ff
+                )
                 ff.registerTemplateGenerator(gaff.generator)
-                print(f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
-                      f"for {len(mols)} small-molecule(s).")
+                print(
+                    f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
+                    f"for {len(mols)} small-molecule(s)."
+                )
         else:
             nonstandard_names = [
-                res.name for res in topology.residues()
-                if res.name not in self._AMBER_STANDARD
+                res.name for res in topology.residues() if res.name not in self._AMBER_STANDARD
             ]
             if nonstandard_names:
                 unique = sorted(set(nonstandard_names))
@@ -562,16 +652,20 @@ class ImplicitRelaxation:
         addh_variants = None
         if bond_info:
             from binding_metrics.core.cyclic import get_addh_variants
+
             addh_variants = get_addh_variants(modeller.topology, bond_info, peptide_chain)
 
         from binding_metrics.core.system import deterministic_hydrogen_placement
+
         seed = self.config.random_seed
         try:
             with deterministic_hydrogen_placement(seed):
                 modeller.addHydrogens(ff, pH=self.config.ph, variants=addh_variants)
         except Exception as e:
-            print(f"  Warning: addHydrogens(ff, pH={self.config.ph}) failed ({e}), "
-                  "retrying without ForceField (approximate H positions)...")
+            print(
+                f"  Warning: addHydrogens(ff, pH={self.config.ph}) failed ({e}), "
+                "retrying without ForceField (approximate H positions)..."
+            )
             try:
                 with deterministic_hydrogen_placement(seed):
                     modeller.addHydrogens(pH=self.config.ph, variants=addh_variants)
@@ -583,6 +677,7 @@ class ImplicitRelaxation:
         # frozen heavy atoms); left in place, minimization inverts the
         # stereocenter. No-op for inputs already repaired by prep_structure.
         from binding_metrics.core.system import repair_ca_hydrogen_chirality
+
         positions = repair_ca_hydrogen_chirality(topology, positions)
 
         # --- Custom bond handler (plugin hook, called after H addition) ---
@@ -619,9 +714,7 @@ class ImplicitRelaxation:
             Force index in the system
         """
         backbone_names = {"N", "CA", "C", "O"}
-        restraint = openmm.CustomExternalForce(
-            "0.5 * k * ((x-x0)^2 + (y-y0)^2 + (z-z0)^2)"
-        )
+        restraint = openmm.CustomExternalForce("0.5 * k * ((x-x0)^2 + (y-y0)^2 + (z-z0)^2)")
         restraint.addGlobalParameter(
             "k",
             self.config.restraint_strength * unit.kilojoules_per_mole / unit.nanometer**2,
@@ -679,10 +772,12 @@ class ImplicitRelaxation:
             Per-atom RMSF array in Angstroms
         """
         all_pos = (
-            np.array([
-                np.array([[p.x, p.y, p.z] for p in frame])[atom_indices]
-                for frame in trajectory_positions
-            ])
+            np.array(
+                [
+                    np.array([[p.x, p.y, p.z] for p in frame])[atom_indices]
+                    for frame in trajectory_positions
+                ]
+            )
             * 10  # nm -> Angstroms
         )
         mean_pos = all_pos.mean(axis=0)
@@ -700,6 +795,7 @@ class ImplicitRelaxation:
         Returns:
             Delta in Angstroms (positive = chains moved apart).
         """
+
         def _com_dist(positions):
             pos = np.array([[p.x, p.y, p.z] for p in positions]) * 10  # nm → Å
             pep_com = pos[peptide_indices].mean(axis=0)
@@ -754,9 +850,9 @@ class ImplicitRelaxation:
 
         n = len(residues)
         for i, res in enumerate(residues):
-            n_i  = _idx(res, "N")
+            n_i = _idx(res, "N")
             ca_i = _idx(res, "CA")
-            c_i  = _idx(res, "C")
+            c_i = _idx(res, "C")
             if n_i is None or ca_i is None or c_i is None:
                 continue
             # φ(i): C(i-1)–N(i)–CA(i)–C(i)   [uses cyclic wrap for residue 0]
@@ -771,7 +867,7 @@ class ImplicitRelaxation:
                 psi_quads.append((n_i, ca_i, c_i, n_next))
 
         if not phi_quads and not psi_quads:
-            return   # nothing to restrain
+            return  # nothing to restrain
 
         # Measure reference dihedrals from minimised positions
         ref_pos = np.array([[p.x, p.y, p.z] for p in ref_positions])
@@ -783,14 +879,12 @@ class ImplicitRelaxation:
             n1 = np.cross(b1, b2)
             n2 = np.cross(b2, b3)
             m1 = np.cross(n1, b2 / np.linalg.norm(b2))
-            x  = np.dot(n1, n2)
-            y  = np.dot(m1, n2)
+            x = np.dot(n1, n2)
+            y = np.dot(m1, n2)
             return math.atan2(y, x)
 
         # Build torsion force: V = k * (1 - cos(θ - θ0))  →  harmonic near θ0
-        torsion_force = openmm.CustomTorsionForce(
-            "k_phi * (1 - cos(theta - theta0))"
-        )
+        torsion_force = openmm.CustomTorsionForce("k_phi * (1 - cos(theta - theta0))")
         torsion_force.addGlobalParameter(
             "k_phi",
             50.0 * unit.kilojoules_per_mole,
@@ -805,9 +899,7 @@ class ImplicitRelaxation:
         omega_force = None
         omega_idx = None
         if omega_indices is not None:
-            omega_force = openmm.CustomTorsionForce(
-                "k_omega * (1 - cos(theta - theta0_omega))"
-            )
+            omega_force = openmm.CustomTorsionForce("k_omega * (1 - cos(theta - theta0_omega))")
             omega_force.addGlobalParameter(
                 "k_omega",
                 100.0 * unit.kilojoules_per_mole,
@@ -829,17 +921,13 @@ class ImplicitRelaxation:
         # Phase 2: reduce to 20 % (second quarter)
         simulation.context.setParameter("k_phi", 10.0 * unit.kilojoules_per_mole)
         if omega_force is not None:
-            simulation.context.setParameter(
-                "k_omega", 20.0 * unit.kilojoules_per_mole
-            )
+            simulation.context.setParameter("k_omega", 20.0 * unit.kilojoules_per_mole)
         simulation.step(warmup_steps // 4)
 
         # Phase 3: near-zero (last quarter)
         simulation.context.setParameter("k_phi", 1.0 * unit.kilojoules_per_mole)
         if omega_force is not None:
-            simulation.context.setParameter(
-                "k_omega", 2.0 * unit.kilojoules_per_mole
-            )
+            simulation.context.setParameter("k_omega", 2.0 * unit.kilojoules_per_mole)
         simulation.step(warmup_steps - warmup_steps // 2 - warmup_steps // 4)
 
         # Remove restraint forces so production MD is unrestrained.
@@ -864,11 +952,11 @@ class ImplicitRelaxation:
                 _sys.addParticle(1.0)
                 _ctx = openmm.Context(_sys, openmm.VerletIntegrator(0.001), platform)
                 del _ctx, _sys
-                print(f"  Platform: CUDA (mixed precision)")
+                print("  Platform: CUDA (mixed precision)")
                 return platform, properties
             except Exception as e:
                 print(f"  Warning: CUDA unavailable ({e}), falling back to CPU.")
-        print(f"  Platform: CPU")
+        print("  Platform: CPU")
         return openmm.Platform.getPlatformByName("CPU"), {}
 
     def run(
@@ -913,7 +1001,11 @@ class ImplicitRelaxation:
 
                 def _fmt_atom(aid: tuple) -> str:
                     ch, idx, name = aid
-                    res_id = _chain_res_ids.get(ch, [None] * (idx + 1))[idx] if idx < len(_chain_res_ids.get(ch, [])) else idx
+                    res_id = (
+                        _chain_res_ids.get(ch, [None] * (idx + 1))[idx]
+                        if idx < len(_chain_res_ids.get(ch, []))
+                        else idx
+                    )
                     return f"{ch}:{res_id}:{name}"
 
                 result.peptide_cyclic_bonds = [
@@ -951,6 +1043,7 @@ class ImplicitRelaxation:
                     resolve_closure_atoms,
                     resolve_omega_atoms,
                 )
+
                 for bi in bond_info:
                     try:
                         ci = resolve_closure_atoms(topology, bi, peptide_chain)
@@ -968,11 +1061,11 @@ class ImplicitRelaxation:
             # Stage 0 (cyclic only): relax all closure bond geometries before Stage 1.
             # One CustomBondForce covers all closure bonds (monocyclic or bicyclic+).
             if closure_indices_list:
-                print(f"[{sample_id}]   Stage 0: Closure bond geometry relaxation "
-                      f"({len(closure_indices_list)} bond(s))")
-                closure_force = openmm.CustomBondForce(
-                    "0.5 * k_closure * (r - r0_closure)^2"
+                print(
+                    f"[{sample_id}]   Stage 0: Closure bond geometry relaxation "
+                    f"({len(closure_indices_list)} bond(s))"
                 )
+                closure_force = openmm.CustomBondForce("0.5 * k_closure * (r - r0_closure)^2")
                 closure_force.addGlobalParameter(
                     "k_closure",
                     1000.0 * unit.kilojoules_per_mole / unit.nanometer**2,
@@ -980,7 +1073,7 @@ class ImplicitRelaxation:
                 closure_force.addGlobalParameter(
                     "r0_closure",
                     0.1325 * unit.nanometers,  # ideal amide bond; S-S is 0.205 nm but
-                )                              # the force field enforces the correct length
+                )  # the force field enforces the correct length
                 for ci in closure_indices_list:
                     closure_force.addBond(ci[0], ci[1], [])
                 system.addForce(closure_force)
@@ -991,7 +1084,10 @@ class ImplicitRelaxation:
             print(f"[{sample_id}]   Stage 1: Global relaxation")
             simulation.minimizeEnergy(
                 maxIterations=self.config.min_steps_initial,
-                tolerance=self.config.min_tolerance * 10 * unit.kilojoules_per_mole / unit.nanometer,
+                tolerance=self.config.min_tolerance
+                * 10
+                * unit.kilojoules_per_mole
+                / unit.nanometer,
             )
 
             print(f"[{sample_id}]   Stage 2: Backbone-restrained optimization")
@@ -1043,11 +1139,17 @@ class ImplicitRelaxation:
                 # Cyclic warmup: 10 ps backbone φ/ψ dihedral restraints to
                 # preserve ring conformation during velocity initialisation.
                 if closure_indices_list:
-                    print(f"[{sample_id}]   Cyclic warmup: 10 ps restrained MD "
-                          "(backbone φ/ψ restraints)...")
+                    print(
+                        f"[{sample_id}]   Cyclic warmup: 10 ps restrained MD "
+                        "(backbone φ/ψ restraints)..."
+                    )
                     self._run_cyclic_warmup(
-                        system, simulation, topology, minimized_positions,
-                        peptide_chain, omega_indices,
+                        system,
+                        simulation,
+                        topology,
+                        minimized_positions,
+                        peptide_chain,
+                        omega_indices,
                     )
 
                 steps_per_save = int(
@@ -1159,8 +1261,7 @@ def run_implicit_relaxation(
         config = RelaxationConfig(**config_kwargs)
     elif config_kwargs:
         raise TypeError(
-            "run_implicit_relaxation: pass either `config` or config keyword "
-            "overrides, not both"
+            "run_implicit_relaxation: pass either `config` or config keyword overrides, not both"
         )
 
     relaxer = ImplicitRelaxation(config)
@@ -1205,7 +1306,7 @@ def _run_one(
         print(f"  Results:   {rp}")
 
     if result.success:
-        print(f"\nSUCCESS")
+        print("\nSUCCESS")
         if result.minimized_structure_path:
             print(f"  Minimized: {result.minimized_structure_path}")
         if result.md_final_structure_path:
@@ -1224,37 +1325,79 @@ def main():
     )
     parser.add_argument("--input", "-i", type=Path, required=True, help="Input CIF or PDB file")
     parser.add_argument("--output-dir", "-o", type=Path, required=True, help="Output directory")
-    parser.add_argument("--md-duration-ps", type=float, default=200.0, help="MD duration in ps (0 to minimize only)")
-    parser.add_argument("--md-save-interval-ps", type=float, default=10.0, help="Frame save interval in ps")
-    parser.add_argument("--temperature", type=float, default=300.0, help="Simulation temperature in K")
+    parser.add_argument(
+        "--md-duration-ps", type=float, default=200.0, help="MD duration in ps (0 to minimize only)"
+    )
+    parser.add_argument(
+        "--md-save-interval-ps", type=float, default=10.0, help="Frame save interval in ps"
+    )
+    parser.add_argument(
+        "--temperature", type=float, default=300.0, help="Simulation temperature in K"
+    )
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda", help="Compute device")
-    parser.add_argument("--ph", type=float, default=7.4, help="pH for hydrogen addition (default 7.4)")
-    parser.add_argument("--solvent-model", choices=["obc2", "gbn2"], default="obc2", help="Implicit solvent model")
-    parser.add_argument("--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)")
-    parser.add_argument("--receptor-chain", type=str, default=None, help="Receptor chain ID (auto-detect if omitted)")
-    parser.add_argument("--sample-id", type=str, default=None, help="Sample identifier (defaults to input file stem)")
-    parser.add_argument("--small-molecules", type=str, default="auto",
-                        help="Non-standard residue parameterisation. 'auto' (default) "
-                             "builds GAFF2 ExternalBond templates for every exotic NCAA; "
-                             "'none' disables it.")
-    parser.add_argument("--random-seed", type=str, default=str(DEFAULT_RANDOM_SEED),
-                        metavar="INT|none",
-                        help="Seed for stochastic steps (hydrogen placement, MD "
-                             f"velocities/thermostat). Default {DEFAULT_RANDOM_SEED} "
-                             "(reproducible); 'none' for fresh randomness each run.")
+    parser.add_argument(
+        "--ph", type=float, default=7.4, help="pH for hydrogen addition (default 7.4)"
+    )
+    parser.add_argument(
+        "--solvent-model", choices=["obc2", "gbn2"], default="obc2", help="Implicit solvent model"
+    )
+    parser.add_argument(
+        "--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)"
+    )
+    parser.add_argument(
+        "--receptor-chain",
+        type=str,
+        default=None,
+        help="Receptor chain ID (auto-detect if omitted)",
+    )
+    parser.add_argument(
+        "--sample-id",
+        type=str,
+        default=None,
+        help="Sample identifier (defaults to input file stem)",
+    )
+    parser.add_argument(
+        "--small-molecules",
+        type=str,
+        default="auto",
+        help="Non-standard residue parameterisation. 'auto' (default) "
+        "builds GAFF2 ExternalBond templates for every exotic NCAA; "
+        "'none' disables it.",
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=str,
+        default=str(DEFAULT_RANDOM_SEED),
+        metavar="INT|none",
+        help="Seed for stochastic steps (hydrogen placement, MD "
+        f"velocities/thermostat). Default {DEFAULT_RANDOM_SEED} "
+        "(reproducible); 'none' for fresh randomness each run.",
+    )
 
     model_group = parser.add_mutually_exclusive_group()
-    model_group.add_argument("--model", type=int, default=None,
-                             help="Extract and relax a single model from a multi-model CIF (1-based)")
-    model_group.add_argument("--all-models", action="store_true",
-                             help="Relax every model in a multi-model CIF; "
-                                  "errors on single-model files if given explicitly. "
-                                  "sample-id is auto-set to <stem>_model<N> for each.")
+    model_group.add_argument(
+        "--model",
+        type=int,
+        default=None,
+        help="Extract and relax a single model from a multi-model CIF (1-based)",
+    )
+    model_group.add_argument(
+        "--all-models",
+        action="store_true",
+        help="Relax every model in a multi-model CIF; "
+        "errors on single-model files if given explicitly. "
+        "sample-id is auto-set to <stem>_model<N> for each.",
+    )
 
-    parser.add_argument("--results-json", type=Path, default=None,
-                        help="Path to write relax results as JSON. "
-                             "Omit to skip JSON output (ignored with --all-models).")
+    parser.add_argument(
+        "--results-json",
+        type=Path,
+        default=None,
+        help="Path to write relax results as JSON. "
+        "Omit to skip JSON output (ignored with --all-models).",
+    )
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(parser)
     args = parser.parse_args()
 
@@ -1270,6 +1413,7 @@ def main():
         seed = int(args.random_seed)
 
     from binding_metrics.cli import log_to_file
+
     with log_to_file(args.log_file):
         config = RelaxationConfig(
             md_duration_ps=args.md_duration_ps,
@@ -1287,17 +1431,24 @@ def main():
 
         if args.all_models:
             from binding_metrics.io.structures import detect_models, merge_cif_models
+
             models = detect_models(args.input)
             if len(models) == 1:
-                print(f"  [warning] --all-models: only one model found ({models[0]}); "
-                      f"proceeding with model {models[0]}.")
+                print(
+                    f"  [warning] --all-models: only one model found ({models[0]}); "
+                    f"proceeding with model {models[0]}."
+                )
             failed: list[int] = []
             minimized: list[tuple[int, Path]] = []
             for m in models:
-                print(f"\n{'='*60}\n  Model {m}\n{'='*60}")
+                print(f"\n{'=' * 60}\n  Model {m}\n{'=' * 60}")
                 result = _run_one(
-                    relaxer, args.input, args.output_dir,
-                    sample_id=None, results_json=None, model_num=m,
+                    relaxer,
+                    args.input,
+                    args.output_dir,
+                    sample_id=None,
+                    results_json=None,
+                    model_num=m,
                 )
                 if not result.success:
                     failed.append(m)
@@ -1319,7 +1470,9 @@ def main():
                 sys.exit(1)
         else:
             result = _run_one(
-                relaxer, args.input, args.output_dir,
+                relaxer,
+                args.input,
+                args.output_dir,
                 sample_id=args.sample_id,
                 results_json=args.results_json,
                 model_num=args.model,

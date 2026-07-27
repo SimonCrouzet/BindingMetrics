@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a new metric, protocol, or capability
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to measure or decide
+      description: >
+        The design question behind the request, not the implementation. What
+        would you do differently if you had this number?
+      placeholder: |
+        Ranking a set of designed binders, I need to tell apart poses that
+        differ only in buried polar surface — dSASA alone does not separate
+        them.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed metric or capability
+      description: What should it compute, and what should the output look like?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reference
+    attributes:
+      label: Reference
+      description: >
+        A paper, a formula, or a reference implementation. For a new metric this
+        matters more than the code — it defines what "correct" means and gives
+        the expected value range to validate against.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Existing metrics you have tried
+      description: >
+        Which of the current metrics come closest, and where do they fall short?
+        See METRICS.md for the full list.
+    validations:
+      required: false

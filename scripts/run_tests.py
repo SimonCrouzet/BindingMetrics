@@ -98,15 +98,20 @@ def check_environment() -> bool:
     # GPU
     try:
         import openmm
-        platforms = [openmm.Platform.getPlatform(i).getName()
-                     for i in range(openmm.Platform.getNumPlatforms())]
+
+        platforms = [
+            openmm.Platform.getPlatform(i).getName()
+            for i in range(openmm.Platform.getNumPlatforms())
+        ]
         has_gpu = "CUDA" in platforms or "OpenCL" in platforms
         if has_gpu:
             gpu_platform = "CUDA" if "CUDA" in platforms else "OpenCL"
             print(ok(f"GPU {DIM}{gpu_platform}{RESET}"))
         else:
             print(warn(f"GPU {DIM}not available, using CPU{RESET}"))
-    except:
+    except Exception:
+        # Probing for a GPU is best-effort: any OpenMM import or platform
+        # error just means we report CPU.
         pass
 
     return all_ok
@@ -118,9 +123,12 @@ def run_tests(test_type: str = "unit", verbose: bool = False) -> int:
     tests_dir = project_root / "tests"
 
     cmd = [
-        sys.executable, "-m", "pytest",
+        sys.executable,
+        "-m",
+        "pytest",
         str(tests_dir),
-        "-W", "ignore::UserWarning",
+        "-W",
+        "ignore::UserWarning",
         "--tb=short" if verbose else "--tb=no",
     ]
 
@@ -147,12 +155,16 @@ def run_tests(test_type: str = "unit", verbose: bool = False) -> int:
 
         # Parse counts
         import re
+
         passed = failed = skipped = 0
         for match in re.finditer(r"(\d+) (passed|failed|skipped)", output):
             count, status = int(match.group(1)), match.group(2)
-            if status == "passed": passed = count
-            elif status == "failed": failed = count
-            elif status == "skipped": skipped = count
+            if status == "passed":
+                passed = count
+            elif status == "failed":
+                failed = count
+            elif status == "skipped":
+                skipped = count
 
         # Show results
         total = passed + failed + skipped

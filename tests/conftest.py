@@ -15,12 +15,32 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 try:
     import openmm as _openmm
+
     _openmm.Platform.getPlatformByName("CUDA")
     HAS_CUDA = True
 except Exception:
     HAS_CUDA = False
 
-requires_cuda = pytest.mark.skipif(not HAS_CUDA, reason="CUDA GPU not available")
+
+def requires_cuda(item):
+    """Mark a test (or class) as needing a real CUDA device.
+
+    Applies both halves deliberately:
+
+    - the ``gpu`` marker, so ``-m "not gpu"`` deselects it. This is what makes
+      the GPU tier addressable as a set — CI cannot run these, but it can still
+      collect them to prove they import.
+    - ``skipif``, so that selecting the gpu tier on a machine without a device
+      skips cleanly instead of erroring.
+
+    Using the marker alone would fail on a GPU-less machine that asked for the
+    tier; using skipif alone (the previous behaviour) left these tests selected
+    by every "not gpu" run, reporting as skips that looked like passes and
+    escaping the collect-only guard entirely.
+    """
+    item = pytest.mark.skipif(not HAS_CUDA, reason="CUDA GPU not available")(item)
+    return pytest.mark.gpu(item)
+
 
 # Best available OpenMM platform: CUDA if available, otherwise CPU
 BEST_PLATFORM = "CUDA" if HAS_CUDA else "CPU"
@@ -170,14 +190,28 @@ def prepped_example_cif(tmp_path_factory) -> Path:
     return out
 
 
-def pytest_configure(config):
-    """Register custom markers."""
-    config.addinivalue_line(
-        "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
+@pytest.fixture(scope="session")
+def prepped_example_pdb(tmp_path_factory) -> Path:
+    """Same prepped 1YCR as :func:`prepped_example_cif`, written as PDB.
+
+    The trajectory-based energy functions read their topology with OpenMM's
+    ``PDBFile``, which does not accept mmCIF, so they need this variant rather
+    than the CIF one. 1YCR is linear and all-standard, so the PDB round-trip
+    has nothing to lose here — that is not true of the cyclic examples, which
+    is why this fixture is deliberately tied to 1YCR.
+    """
+    pytest.importorskip("openmm", reason="OpenMM required")
+    pytest.importorskip("pdbfixer", reason="pdbfixer required")
+    from binding_metrics.core.system import prep_structure
+    from binding_metrics.io.structures import load_structure, save_structure
+
+    raw = EXAMPLE_PDB_PATH
+    if not raw.exists():
+        pytest.skip(f"bundled example not found: {raw}")
+    out = tmp_path_factory.mktemp("prep_pdb") / "example_linear_p53_1YCR_prepped.pdb"
+    topology, positions = load_structure(raw)
+    topology, positions = prep_structure(
+        topology, positions, ph=7.4, keep_water=False, canonicalize=False
     )
-    config.addinivalue_line(
-        "markers", "integration: marks tests requiring OpenMM/MDTraj installation"
-    )
-    config.addinivalue_line(
-        "markers", "gpu: marks tests requiring GPU acceleration"
-    )
+    save_structure(topology, positions, out, source_path=raw)
+    return out

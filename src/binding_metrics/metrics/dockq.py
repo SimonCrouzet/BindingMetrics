@@ -217,22 +217,34 @@ def main():
         )
     )
     parser.add_argument(
-        "--model", "-m", type=Path, required=True,
+        "--model",
+        "-m",
+        type=Path,
+        required=True,
         help="Predicted complex structure (PDB or mmCIF)",
     )
     parser.add_argument(
-        "--reference", "--native", "-r", dest="reference", type=Path, required=True,
+        "--reference",
+        "--native",
+        "-r",
+        dest="reference",
+        type=Path,
+        required=True,
         help="Native / reference complex structure (PDB or mmCIF)",
     )
     parser.add_argument(
-        "--mapping", type=str, default=None,
+        "--mapping",
+        type=str,
+        default=None,
         help="Optional chain mapping in DockQ model:native convention (e.g. AB:CD)",
     )
     from binding_metrics.cli import add_log_file_arg
+
     add_log_file_arg(parser)
     args = parser.parse_args()
 
     from binding_metrics.cli import log_to_file
+
     with log_to_file(args.log_file):
         print("Computing DockQ reference-based metrics:")
         print(f"  Model:     {args.model}")

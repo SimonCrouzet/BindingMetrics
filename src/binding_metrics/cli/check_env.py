@@ -14,12 +14,12 @@ import sys
 # Terminal colours
 # ---------------------------------------------------------------------------
 
-GREEN  = "\033[32m"
-RED    = "\033[31m"
+GREEN = "\033[32m"
+RED = "\033[31m"
 YELLOW = "\033[33m"
-BOLD   = "\033[1m"
-DIM    = "\033[2m"
-RESET  = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+RESET = "\033[0m"
 
 
 def _ok(msg: str) -> None:
@@ -54,8 +54,11 @@ def _check_openfold() -> bool:
     def _run_openfold_available(python: str) -> bool:
         """Return True if run_openfold binary is importable / on PATH."""
         r = subprocess.run(
-            [python, "-c",
-             "import shutil, sys; sys.exit(0 if shutil.which('run_openfold') else 1)"],
+            [
+                python,
+                "-c",
+                "import shutil, sys; sys.exit(0 if shutil.which('run_openfold') else 1)",
+            ],
             capture_output=True,
         )
         return r.returncode == 0
@@ -74,11 +77,20 @@ def _check_openfold() -> bool:
 
     # 2. Check dedicated conda env — look for run_openfold binary directly
     import shutil
+
     conda = shutil.which("conda") or "conda"
     result = subprocess.run(
-        [conda, "run", "-n", _OPENFOLD_CONDA_ENV,
-         "python", "-c", "import openfold3; import shutil; print(shutil.which('run_openfold') or 'ok')"],
-        capture_output=True, text=True,
+        [
+            conda,
+            "run",
+            "-n",
+            _OPENFOLD_CONDA_ENV,
+            "python",
+            "-c",
+            "import openfold3; import shutil; print(shutil.which('run_openfold') or 'ok')",
+        ],
+        capture_output=True,
+        text=True,
     )
     if result.returncode == 0:
         _ok(
@@ -87,14 +99,15 @@ def _check_openfold() -> bool:
             f"     {DIM}Run integration tests with:{RESET}\n"
             f"     {DIM}  conda run -n {_OPENFOLD_CONDA_ENV} pytest "
             f"$(conda run -n {_OPENFOLD_CONDA_ENV} python -c "
-            f"\"import openfold3; print(openfold3.__path__[0])\")/tests/{RESET}"
+            f'"import openfold3; print(openfold3.__path__[0])")/tests/{RESET}'
         )
         return True
 
     # 3. Check whether the conda env exists at all
     env_check = subprocess.run(
         [conda, "env", "list"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     env_exists = _OPENFOLD_CONDA_ENV in (env_check.stdout + env_check.stderr)
 
@@ -102,7 +115,7 @@ def _check_openfold() -> bool:
         _fail(
             title=f"Conda env '{_OPENFOLD_CONDA_ENV}' exists but openfold3 is not importable",
             cause="The env was found but 'import openfold3' failed — the package may not be "
-                  "installed or its dependencies are broken.",
+            "installed or its dependencies are broken.",
             steps=[
                 f"{BOLD}Step 1{RESET} — Check what's installed:",
                 f"          conda run -n {_OPENFOLD_CONDA_ENV} pip show openfold3",
@@ -115,9 +128,11 @@ def _check_openfold() -> bool:
         )
     else:
         _fail(
-            title=f"OpenFold3 not found (checked current env and conda env '{_OPENFOLD_CONDA_ENV}')",
+            title=(
+                f"OpenFold3 not found (checked current env and conda env '{_OPENFOLD_CONDA_ENV}')"
+            ),
             cause="OpenFold3 is an optional dependency used for confidence scoring. "
-                  "Binding metrics will still run without it.",
+            "Binding metrics will still run without it.",
             steps=[
                 f"{BOLD}To install OpenFold3:{RESET}",
                 f"  conda create -n {_OPENFOLD_CONDA_ENV} python=3.10",
@@ -137,18 +152,22 @@ def _check_openfold() -> bool:
 def _check_mdtraj() -> bool:
     print(f"\n{BOLD}[ MDTraj ]{RESET}")
     result = subprocess.run(
-        [sys.executable, "-c",
-         "import mdtraj as md, numpy as np; "
-         "xyz = np.random.randn(10, 5, 3).astype(np.float32); "
-         "top = md.Topology(); chain = top.add_chain(); "
-         "res = top.add_residue('ALA', chain); "
-         "[top.add_atom(n, md.element.carbon, res) for n in ['N','CA','C','O','CB']]; "
-         "traj = md.Trajectory(xyz, top); "
-         "md.rmsd(traj, traj, 0); "
-         "md.compute_distances(traj, [[0,1]]); "
-         "md.shrake_rupley(traj); "
-         "print(md._version)"],
-        capture_output=True, text=True,
+        [
+            sys.executable,
+            "-c",
+            "import mdtraj as md, numpy as np; "
+            "xyz = np.random.randn(10, 5, 3).astype(np.float32); "
+            "top = md.Topology(); chain = top.add_chain(); "
+            "res = top.add_residue('ALA', chain); "
+            "[top.add_atom(n, md.element.carbon, res) for n in ['N','CA','C','O','CB']]; "
+            "traj = md.Trajectory(xyz, top); "
+            "md.rmsd(traj, traj, 0); "
+            "md.compute_distances(traj, [[0,1]]); "
+            "md.shrake_rupley(traj); "
+            "print(md._version)",
+        ],
+        capture_output=True,
+        text=True,
     )
     if result.returncode == 0:
         version = result.stdout.strip()
@@ -160,10 +179,10 @@ def _check_mdtraj() -> bool:
         _fail(
             title="mdtraj failed — NumPy version mismatch",
             cause="mdtraj was compiled against a different NumPy major version "
-                  "than what is currently installed.",
+            "than what is currently installed.",
             steps=[
                 f"{BOLD}Step 1{RESET} — Check installed versions:",
-                "          python -c \"import numpy; print(numpy.__version__)\"",
+                '          python -c "import numpy; print(numpy.__version__)"',
                 "          pip show mdtraj",
                 "",
                 f"{BOLD}Step 2{RESET} — Fix the mismatch:",
@@ -176,7 +195,7 @@ def _check_mdtraj() -> bool:
             cause="mdtraj may not be installed or has broken dependencies.",
             steps=[
                 f"{BOLD}Step 1{RESET} — Check the raw error:",
-                "          python -c \"import mdtraj\"",
+                '          python -c "import mdtraj"',
                 "",
                 f"{BOLD}Step 2{RESET} — Reinstall if needed:",
                 "          pip install mdtraj",
@@ -191,11 +210,15 @@ def _check_openmm() -> bool:
 
     result = subprocess.run(
         [sys.executable, "-m", "openmm.testInstallation"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     output = result.stdout + result.stderr
 
-    version_line = next((l for l in output.splitlines() if l.startswith("OpenMM Version:")), None)
+    version_line = next(
+        (line for line in output.splitlines() if line.startswith("OpenMM Version:")),
+        None,
+    )
     version = version_line.split()[-1] if version_line else "unknown"
 
     if "CUDA - Successfully computed forces" in output:
@@ -206,17 +229,19 @@ def _check_openmm() -> bool:
         _fail(
             title=f"OpenMM {version}: CUDA platform found but force computation failed",
             cause="The CUDA libraries are visible but something failed at runtime — "
-                  "most likely a driver / CUDA toolkit version mismatch.",
+            "most likely a driver / CUDA toolkit version mismatch.",
             steps=[
                 f"{BOLD}Step 1{RESET} — Check your driver and the CUDA version it supports:",
                 "          nvidia-smi",
-                "        The 'CUDA Version' shown top-right is the maximum supported by your driver.",
+                "        The 'CUDA Version' shown top-right is the maximum "
+                "supported by your driver.",
                 "        It must be ≥ the CUDA version OpenMM was compiled against.",
                 "",
                 f"{BOLD}Step 2{RESET} — Read the full error from OpenMM:",
                 "          python -m openmm.testInstallation",
                 f"        {YELLOW}PTX version error{RESET} → your driver is too old, update it.",
-                f"        {YELLOW}library not found{RESET} → CUDA runtime missing or not on LD_LIBRARY_PATH.",
+                f"        {YELLOW}library not found{RESET} → CUDA runtime "
+                "missing or not on LD_LIBRARY_PATH.",
                 "",
                 f"{BOLD}Step 3{RESET} — Update your NVIDIA driver if needed:",
                 "        → Linux:        install the latest nvidia-driver package for your distro.",
@@ -234,12 +259,14 @@ def _check_openmm() -> bool:
                 "          nvidia-smi",
                 "        If this command fails, your driver is missing or not running.",
                 "        → Linux:        install the nvidia-driver package for your distro.",
-                "        → Windows/WSL2: install the NVIDIA driver on the Windows host (not inside WSL).",
+                "        → Windows/WSL2: install the NVIDIA driver on the "
+                "Windows host (not inside WSL).",
                 "",
                 f"{BOLD}Step 2{RESET} — Check that CUDA runtime libraries are on the system:",
                 "          ldconfig -p | grep libcuda",
                 "        If nothing appears, the CUDA runtime is missing.",
-                "        → Install the cuda-runtime package, or set LD_LIBRARY_PATH to its location.",
+                "        → Install the cuda-runtime package, or set "
+                "LD_LIBRARY_PATH to its location.",
                 "",
                 f"{BOLD}Step 3{RESET} — If you are running inside a container:",
                 "        Make sure it was started with GPU access and that the",
@@ -274,8 +301,8 @@ def _check_openmm() -> bool:
 # ---------------------------------------------------------------------------
 
 CHECKS: list[tuple[str, object]] = [
-    ("OpenMM",    _check_openmm),
-    ("MDTraj",    _check_mdtraj),
+    ("OpenMM", _check_openmm),
+    ("MDTraj", _check_mdtraj),
     ("OpenFold3", _check_openfold),
 ]
 
@@ -283,6 +310,7 @@ CHECKS: list[tuple[str, object]] = [
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     print(f"\n{BOLD}{'=' * 56}{RESET}")
@@ -301,7 +329,7 @@ def main() -> None:
         print(f"{GREEN}{BOLD}  All {passed} check(s) passed — good, ready to go.{RESET}")
     else:
         print(f"{RED}{BOLD}  {passed} passed, {failed} failed.{RESET}")
-        print(f"  Please fix the issues above before running BindingMetrics.")
+        print("  Please fix the issues above before running BindingMetrics.")
     print(f"{BOLD}{'=' * 56}{RESET}\n")
 
     sys.exit(0 if failed == 0 else 1)
