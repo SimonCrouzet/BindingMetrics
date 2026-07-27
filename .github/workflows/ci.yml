@@ -54,7 +54,7 @@ jobs:
       # cache-environment keys on the environment.yml hash: unchanged deps
       # restore in about a minute, a dependency edit pays the full solve once.
       - name: Set up conda environment
-        uses: mamba-org/setup-micromamba@v2
+        uses: mamba-org/setup-micromamba@v3
         with:
           environment-file: environment.yml
           environment-name: binding-metrics
