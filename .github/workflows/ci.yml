@@ -20,9 +20,9 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -45,7 +45,7 @@ jobs:
     # about three minutes.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The scientific stack (openmm, ambertools, openff-toolkit, rdkit) is
       # conda-forge only, so CI builds the same environment.yml developers use
@@ -54,7 +54,7 @@ jobs:
       # cache-environment keys on the environment.yml hash: unchanged deps
       # restore in about a minute, a dependency edit pays the full solve once.
       - name: Set up conda environment
-        uses: mamba-org/setup-micromamba@v2
+        uses: mamba-org/setup-micromamba@v3
         with:
           environment-file: environment.yml
           environment-name: binding-metrics
