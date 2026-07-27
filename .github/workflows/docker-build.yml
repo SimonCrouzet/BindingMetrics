@@ -43,7 +43,7 @@ jobs:
           sudo rm -rf /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
           df -h /
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Only the base target: the full target adds the OpenFold3 ML stack and
       # nearly doubles the image, which does not fit a hosted runner.
