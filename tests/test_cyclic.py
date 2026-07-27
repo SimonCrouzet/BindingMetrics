@@ -234,20 +234,21 @@ class TestDetectCyclization:
         # detect_cyclization raises only on a non-sequential intra-chain
         # topology bond that matches no supported pattern (a covalent record,
         # not a mere close contact — distance scanning was dropped to avoid
-        # false positives from tight backbone geometry). Here a sidechain
-        # CB(res0)–CB(res2) staple is encoded as a real bond.
+        # false positives from tight backbone geometry). An S–C thioether
+        # bridge is a genuinely unsupported cross-link (an all-carbon C–C
+        # side-chain bridge is now recognised as a hydrocarbon staple).
         from binding_metrics.core.cyclic import detect_cyclization
 
-        res_names = ["ALA", "ALA", "ALA"]
+        res_names = ["CYS", "ALA", "ALA"]
         specs = [
-            [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C")],
+            [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C"), ("SG", "S")],
             [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C")],
             [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C")],
         ]
         topology, positions, atom_map = _make_minimal_topology(res_names, specs)
-        # Encode an unsupported (hydrocarbon-staple-like) covalent bond between
-        # non-adjacent residues 0 and 2.
-        topology.addBond(atom_map[(0, "CB")], atom_map[(2, "CB")])
+        # Encode an unsupported thioether (S–C) bond between non-adjacent
+        # residues 0 and 2.
+        topology.addBond(atom_map[(0, "SG")], atom_map[(2, "CB")])
         with pytest.raises(CyclizationError, match="Unsupported"):
             detect_cyclization(topology, positions, "A")
 
