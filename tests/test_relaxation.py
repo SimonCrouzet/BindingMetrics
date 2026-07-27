@@ -13,8 +13,6 @@ from binding_metrics.protocols.relaxation import (
     RelaxationResult,
 )
 
-# Real CIF test data (available in the repo)
-EXAMPLE_CIF = Path("data/rank001_design_spec_457.cif")
 
 
 class TestRelaxationConfig:
@@ -104,10 +102,8 @@ class TestImplicitRelaxation:
 
     @requires_cuda
     @pytest.mark.integration
-    def test_run_minimize_only_cif(self, tmp_path: Path):
+    def test_run_minimize_only_cif(self, tmp_path: Path, prepped_example_cif):
         """Should successfully minimize a CIF structure (no MD)."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
         config = RelaxationConfig(
             md_duration_ps=0.0,
             min_steps_initial=10,
@@ -115,7 +111,7 @@ class TestImplicitRelaxation:
             min_steps_final=10,
         )
         relaxer = ImplicitRelaxation(config)
-        result = relaxer.run(EXAMPLE_CIF, tmp_path / "out")
+        result = relaxer.run(prepped_example_cif, tmp_path / "out")
 
         assert result.success, result.error_message
         assert result.potential_energy_minimized is not None
@@ -126,10 +122,8 @@ class TestImplicitRelaxation:
     @requires_cuda
     @pytest.mark.slow
     @pytest.mark.integration
-    def test_run_with_md_cif(self, tmp_path: Path):
+    def test_run_with_md_cif(self, tmp_path: Path, prepped_example_cif):
         """Should run a very short MD simulation on a CIF structure."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
         config = RelaxationConfig(
             md_duration_ps=2.0,
             md_save_interval_ps=1.0,
@@ -139,7 +133,7 @@ class TestImplicitRelaxation:
             min_steps_final=200,
         )
         relaxer = ImplicitRelaxation(config)
-        result = relaxer.run(EXAMPLE_CIF, tmp_path / "out")
+        result = relaxer.run(prepped_example_cif, tmp_path / "out")
 
         assert result.success, result.error_message
         assert result.md_final_structure_path is not None
@@ -158,30 +152,26 @@ class TestImplicitRelaxation:
 
     @requires_cuda
     @pytest.mark.integration
-    def test_sample_id_defaults_to_file_stem(self, tmp_path: Path):
+    def test_sample_id_defaults_to_file_stem(self, tmp_path: Path, prepped_example_cif):
         """sample_id should default to the input file stem."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
         config = RelaxationConfig(
             md_duration_ps=0.0,
             min_steps_initial=5, min_steps_restrained=5, min_steps_final=5,
         )
         relaxer = ImplicitRelaxation(config)
-        result = relaxer.run(EXAMPLE_CIF, tmp_path / "out")
-        assert result.sample_id == EXAMPLE_CIF.stem
+        result = relaxer.run(prepped_example_cif, tmp_path / "out")
+        assert result.sample_id == prepped_example_cif.stem
 
     @pytest.mark.integration
-    def test_cpu_platform_available(self, tmp_path: Path):
+    def test_cpu_platform_available(self, tmp_path: Path, prepped_example_cif):
         """CPU platform should work as a fallback for non-GPU environments."""
-        if not EXAMPLE_CIF.exists():
-            pytest.skip("Test CIF not available")
         config = RelaxationConfig(
             md_duration_ps=0.0,
             device="cpu",
             min_steps_initial=5, min_steps_restrained=5, min_steps_final=5,
         )
         relaxer = ImplicitRelaxation(config)
-        result = relaxer.run(EXAMPLE_CIF, tmp_path / "out")
+        result = relaxer.run(prepped_example_cif, tmp_path / "out")
         assert result.success, result.error_message
 
     @pytest.mark.integration

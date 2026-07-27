@@ -382,66 +382,96 @@ def _build_surface_dots(
     all_same_chain_atoms,
     opposite_atoms,
     n_dots: int,
-    interface_cutoff: float,
+    buried_cutoff: float,
+    normal_radius: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build accessible surface dots for interface atoms.
+    """Build molecular-surface dots and smoothed outward normals.
 
-    For each interface atom generates n_dots surface points, filters out
-    dots occluded by same-chain atoms, and keeps only dots within
-    interface_cutoff of the opposite chain.
+    For each interface atom this generates ``n_dots`` points on its van der
+    Waals sphere, discards points buried inside neighbouring same-chain
+    atoms, and keeps only points that lie in genuine contact with the
+    opposite chain (nearest opposite atom within ``buried_cutoff``). This
+    contact selection isolates the buried interface patch (Lawrence &
+    Colman's interface surface, minus the peripheral band) rather than the
+    whole solvent-exposed shell of every interface atom.
+
+    The outward surface normal at each dot is estimated as the direction
+    from the local same-chain atomic centroid (atoms within
+    ``normal_radius``) to the dot. This smoothed normal approximates the
+    true molecular-surface normal far better than a single atom-centre →
+    dot vector, which is dominated by per-atom curvature and collapses the
+    normal dot-product for anything but head-on contacts.
 
     Args:
-        interface_atoms: Atoms in this chain that are at the interface
-        all_same_chain_atoms: All atoms in this chain (for occlusion check)
-        opposite_atoms: All atoms in the opposite chain
-        n_dots: Number of surface dots per atom
-        interface_cutoff: Distance cutoff in Å for interface proximity
+        interface_atoms: Atoms in this chain that are at the interface.
+        all_same_chain_atoms: All atoms in this chain (occlusion + normals).
+        opposite_atoms: All atoms in the opposite chain.
+        n_dots: Number of candidate surface dots per atom.
+        buried_cutoff: Max distance (Å) from a dot to the nearest opposite
+            atom for the dot to count as buried interface surface.
+        normal_radius: Radius (Å) of the same-chain neighbourhood used to
+            estimate the smoothed outward surface normal.
 
     Returns:
         Tuple of (dots, normals) each as (N, 3) arrays. Returns empty arrays
-        if no interface dots are found.
+        if no buried interface dots are found.
     """
+    cKDTree, _ = _import_scipy()
     unit_sphere = _fibonacci_sphere(n_dots)  # (n_dots, 3)
 
     all_dots = []
     all_normals = []
 
-    opp_coords = opposite_atoms.coord  # (n_opp, 3)
     same_coords = all_same_chain_atoms.coord  # (n_same, 3)
     same_vdw = np.array([
         _get_vdw(str(a.element).strip()) for a in all_same_chain_atoms
     ])
+    if len(same_coords) == 0 or len(opposite_atoms) == 0:
+        return np.zeros((0, 3)), np.zeros((0, 3))
 
-    for idx_a, atom_a in enumerate(interface_atoms):
+    same_tree = cKDTree(same_coords)
+    opp_tree = cKDTree(opposite_atoms.coord)
+    max_same_vdw = float(same_vdw.max())
+
+    for atom_a in interface_atoms:
         vdw_a = _get_vdw(str(atom_a.element).strip())
         center = atom_a.coord  # (3,)
         dots = center + vdw_a * unit_sphere  # (n_dots, 3)
 
-        # Filter occluded dots: dot must not be inside any OTHER same-chain atom
-        # Build a mask: for each dot, compute distance to all same-chain atoms
-        diff_same = dots[:, np.newaxis, :] - same_coords[np.newaxis, :, :]  # (n_d, n_s, 3)
-        dist_same = np.linalg.norm(diff_same, axis=-1)  # (n_d, n_s)
-
-        # Check if any same-chain atom (excluding self) occludes the dot
-        # Self-atom index: find in all_same_chain_atoms
-        # Simple approach: use vdw_same as threshold
-        occluded = np.any(dist_same < same_vdw[np.newaxis, :] * 0.99, axis=1)
-        dots = dots[~occluded]
+        # Occlusion: drop dots that fall inside any OTHER same-chain vdW
+        # sphere. The generating atom itself never occludes because its own
+        # dots sit at distance vdw_a, just outside vdw_a * 0.99.
+        neigh = same_tree.query_ball_point(dots, vdw_a + max_same_vdw)
+        keep = np.ones(len(dots), dtype=bool)
+        for i, nb in enumerate(neigh):
+            if not nb:
+                continue
+            d_nb = np.linalg.norm(same_coords[nb] - dots[i], axis=1)
+            if np.any(d_nb < same_vdw[nb] * 0.99):
+                keep[i] = False
+        dots = dots[keep]
         if len(dots) == 0:
             continue
 
-        # Filter interface dots: within cutoff of opposite chain
-        diff_opp = dots[:, np.newaxis, :] - opp_coords[np.newaxis, :, :]  # (n_d2, n_opp, 3)
-        dist_opp = np.linalg.norm(diff_opp, axis=-1)  # (n_d2, n_opp)
-        near_interface = np.any(dist_opp < interface_cutoff, axis=1)
-        dots = dots[near_interface]
+        # Buried-patch filter: keep only dots in real contact with the
+        # opposite chain (nearest opposite atom within buried_cutoff).
+        d_opp, _ = opp_tree.query(dots, k=1)
+        dots = dots[d_opp < buried_cutoff]
         if len(dots) == 0:
             continue
 
-        # Outward normals: from atom center to dot
-        normals = dots - center
+        # Smoothed outward surface normals: dot minus local same-chain
+        # atomic centroid, with a radial fallback when no neighbours exist.
+        normals = np.empty_like(dots)
+        neigh_n = same_tree.query_ball_point(dots, normal_radius)
+        for i, nb in enumerate(neigh_n):
+            local_centroid = same_coords[nb].mean(axis=0) if nb else center
+            n_vec = dots[i] - local_centroid
+            if float(n_vec @ n_vec) < 1e-12:
+                n_vec = dots[i] - center  # degenerate: fall back to radial
+            normals[i] = n_vec
         norms = np.linalg.norm(normals, axis=1, keepdims=True)
-        norms = np.where(norms > 0, norms, 1.0)
+        norms = np.where(norms > 1e-9, norms, 1.0)
         normals = normals / norms
 
         all_dots.append(dots)
@@ -457,16 +487,26 @@ def compute_shape_complementarity(
     cif_path: str | Path,
     peptide_chain: Optional[str] = None,
     receptor_chain: Optional[str] = None,
-    n_dots: int = 50,
-    interface_cutoff: float = 5.0,
-    sigma: float = 7.0,
+    n_dots: int = 150,
+    interface_cutoff: float = 6.0,
+    buried_cutoff: float = 2.4,
+    normal_radius: float = 6.0,
+    weight: float = 0.5,
 ) -> dict:
-    """Compute shape complementarity score (Lawrence & Colman, 1993).
+    """Compute shape complementarity Sc (Lawrence & Colman, 1993).
 
-    Generates molecular surface dots for interface atoms of each chain,
-    matches them across the interface, and computes a complementarity
-    score based on surface normal alignment weighted by proximity.
-    Typical values: 0.6-0.9 for well-packed interfaces, 0.0-0.4 for poor.
+    For the buried interface patch of each chain this samples molecular
+    surface dots with smoothed outward normals, then for every dot on one
+    surface finds the nearest dot on the other and scores
+    ``S = (n_a · n_a') * exp(-w · d²)``, where ``n_a`` is the dot's outward
+    normal, ``n_a'`` the outward normal at the nearest opposing dot (sign
+    flipped so complementary, anti-parallel surfaces score positive), ``d``
+    their separation and ``w`` the weight. Sc is the mean of the two
+    directional medians (A→B and B→A).
+
+    Typical values for well-formed native interfaces: ~0.65-0.75 for
+    protein-protein/protease-inhibitor packing, a touch lower for peptide
+    interfaces; ≲0.4 indicates flat, non-complementary surfaces.
 
     Type: score
 
@@ -474,9 +514,17 @@ def compute_shape_complementarity(
         cif_path: Path to structure file (CIF or PDB)
         peptide_chain: Chain ID of peptide (auto-detected if None)
         receptor_chain: Chain ID of receptor (auto-detected if None)
-        n_dots: Number of surface dots per atom (default 50)
-        interface_cutoff: Distance cutoff in Å for interface atoms (default 5.0)
-        sigma: Gaussian decay constant in Å (default 7.0)
+        n_dots: Number of candidate surface dots per atom (default 150)
+        interface_cutoff: Distance cutoff in Å for pre-selecting interface
+            atoms (default 6.0); only affects which atoms are dotted, not the
+            buried-patch definition below.
+        buried_cutoff: Max distance in Å from a surface dot to the nearest
+            opposite-chain atom for the dot to count as buried interface
+            surface (default 2.4). This isolates the genuine contact patch.
+        normal_radius: Neighbourhood radius in Å for smoothed surface
+            normals (default 6.0).
+        weight: Gaussian distance weight w in Å⁻² for exp(-w·d²)
+            (default 0.5, per Lawrence & Colman).
 
     Returns:
         Dictionary with keys:
@@ -518,24 +566,25 @@ def compute_shape_complementarity(
     if len(pep_atoms) == 0 or len(rec_atoms) == 0:
         return _nan_result
 
-    # Find interface atoms: within interface_cutoff of any atom in opposite chain
-    def _interface_atom_mask(chain_a_atoms, chain_b_atoms) -> np.ndarray:
-        diff = chain_a_atoms.coord[:, np.newaxis, :] - chain_b_atoms.coord[np.newaxis, :, :]
-        dist = np.linalg.norm(diff, axis=-1)  # (n_a, n_b)
-        return np.any(dist < interface_cutoff, axis=1)
-
-    pep_iface_mask = _interface_atom_mask(pep_atoms, rec_atoms)
-    rec_iface_mask = _interface_atom_mask(rec_atoms, pep_atoms)
-
-    pep_iface = pep_atoms[pep_iface_mask]
-    rec_iface = rec_atoms[rec_iface_mask]
+    # Pre-select interface atoms: nearest opposite-chain atom within cutoff.
+    # KD-tree keeps this O(N log N) instead of an O(N_a·N_b) dense matrix.
+    rec_tree = cKDTree(rec_atoms.coord)
+    pep_tree = cKDTree(pep_atoms.coord)
+    d_pep, _ = rec_tree.query(pep_atoms.coord, k=1)
+    d_rec, _ = pep_tree.query(rec_atoms.coord, k=1)
+    pep_iface = pep_atoms[d_pep < interface_cutoff]
+    rec_iface = rec_atoms[d_rec < interface_cutoff]
 
     if len(pep_iface) == 0 or len(rec_iface) == 0:
         return _nan_result
 
-    # Build surface dots for each chain
-    dots_A, normals_A = _build_surface_dots(pep_iface, pep_atoms, rec_atoms, n_dots, interface_cutoff)
-    dots_B, normals_B = _build_surface_dots(rec_iface, rec_atoms, pep_atoms, n_dots, interface_cutoff)
+    # Build buried-patch surface dots + smoothed normals for each chain
+    dots_A, normals_A = _build_surface_dots(
+        pep_iface, pep_atoms, rec_atoms, n_dots, buried_cutoff, normal_radius
+    )
+    dots_B, normals_B = _build_surface_dots(
+        rec_iface, rec_atoms, pep_atoms, n_dots, buried_cutoff, normal_radius
+    )
 
     if len(dots_A) == 0 or len(dots_B) == 0:
         return _nan_result
@@ -543,15 +592,16 @@ def compute_shape_complementarity(
     # Compute scores A → B: for each A dot, find nearest B dot
     tree_B = cKDTree(dots_B)
     dist_AB, idx_AB = tree_B.query(dots_A, k=1)
-    omega_AB = np.exp(-(dist_AB ** 2) / (sigma ** 2))
-    # Normal dot product: A outward normal · (-B outward normal)
+    omega_AB = np.exp(-weight * dist_AB ** 2)
+    # Normal dot product with L&C sign flip: complementary (anti-parallel in
+    # the lab frame) surfaces yield a POSITIVE product.
     dot_product_AB = np.sum(normals_A * (-normals_B[idx_AB]), axis=1)
     scores_A = omega_AB * dot_product_AB
 
     # Compute scores B → A
     tree_A = cKDTree(dots_A)
     dist_BA, idx_BA = tree_A.query(dots_B, k=1)
-    omega_BA = np.exp(-(dist_BA ** 2) / (sigma ** 2))
+    omega_BA = np.exp(-weight * dist_BA ** 2)
     dot_product_BA = np.sum(normals_B * (-normals_A[idx_BA]), axis=1)
     scores_B = omega_BA * dot_product_BA
 
@@ -778,9 +828,11 @@ def main():
         help="Metric to compute (default: ramachandran)",
     )
     # Sc parameters
-    parser.add_argument("--n-dots", type=int, default=50, help="Surface dots per atom for Sc")
-    parser.add_argument("--interface-cutoff", type=float, default=5.0, help="Interface cutoff Å")
-    parser.add_argument("--sigma", type=float, default=7.0, help="Gaussian sigma for Sc (Å)")
+    parser.add_argument("--n-dots", type=int, default=150, help="Surface dots per atom for Sc")
+    parser.add_argument("--interface-cutoff", type=float, default=6.0, help="Interface atom pre-selection cutoff Å")
+    parser.add_argument("--buried-cutoff", type=float, default=2.4, help="Buried-patch dot cutoff Å for Sc")
+    parser.add_argument("--normal-radius", type=float, default=6.0, help="Smoothed-normal neighbourhood radius Å")
+    parser.add_argument("--weight", type=float, default=0.5, help="Gaussian weight w (Å⁻²) for Sc exp(-w·d²)")
     # Void parameters
     parser.add_argument("--grid-spacing", type=float, default=0.5, help="Grid spacing Å for void")
     parser.add_argument("--probe-radius", type=float, default=1.4, help="Probe radius Å for void")
@@ -812,7 +864,9 @@ def main():
                 receptor_chain=args.receptor_chain,
                 n_dots=args.n_dots,
                 interface_cutoff=args.interface_cutoff,
-                sigma=args.sigma,
+                buried_cutoff=args.buried_cutoff,
+                normal_radius=args.normal_radius,
+                weight=args.weight,
             )
             scalar_keys = ["sc", "sc_A_to_B", "sc_B_to_A", "n_surface_dots_A", "n_surface_dots_B"]
         else:  # void

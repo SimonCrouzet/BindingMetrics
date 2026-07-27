@@ -1,11 +1,18 @@
 """Cyclic peptide topology detection and patching for OpenMM.
 
 Supported cyclization types (detected by inter-atom distance on heavy atoms):
-    head_to_tail  : backbone C(last) — N(first) amide bond
-    disulfide     : CYS SG — SG (residues renamed to CYX)
-    lactam_n_asp  : ASP sidechain CG — backbone N-terminus amide
-    lactam_n_glu  : GLU sidechain CD — backbone N-terminus amide
-    lactam_c_lys  : LYS sidechain NZ — backbone C-terminus amide
+    head_to_tail       : backbone C(last) — N(first) amide bond
+    disulfide          : CYS SG — SG (residues renamed to CYX)
+    lactam_n_asp       : ASP sidechain CG — backbone N-terminus amide
+    lactam_n_glu       : GLU sidechain CD — backbone N-terminus amide
+    lactam_c_lys       : LYS sidechain NZ — backbone C-terminus amide
+    lactam_sc_lys_asp  : LYS sidechain NZ — ASP sidechain CG amide (staple)
+    lactam_sc_lys_glu  : LYS sidechain NZ — GLU sidechain CD amide (staple)
+
+The two ``lactam_sc_*`` types are side-chain-to-side-chain lactam bridges
+(e.g. the i,i+4 Lys–Asp/Glu staples used to pre-organise α-helices). Both
+partners are internal residues; they reuse the same ASPL/GLUL/LYSL templates
+as the terminal lactams, differing only in the atoms that form the closure.
 
 Unsupported cyclization types (raises CyclizationError with guidance):
     - Hydrocarbon staples (all-carbon bridges)
@@ -127,9 +134,13 @@ _XML_ASPL = """\
    <Atom name="OD1" type="protein-O"   charge="-0.5931"/>
    <Atom name="C"   type="protein-C"   charge=" 0.5973"/>
    <Atom name="O"   type="protein-O"   charge="-0.5679"/>
+   <Bond atomName1="N"   atomName2="H"/>
    <Bond atomName1="N"   atomName2="CA"/>
+   <Bond atomName1="CA"  atomName2="HA"/>
    <Bond atomName1="CA"  atomName2="CB"/>
    <Bond atomName1="CA"  atomName2="C"/>
+   <Bond atomName1="CB"  atomName2="HB2"/>
+   <Bond atomName1="CB"  atomName2="HB3"/>
    <Bond atomName1="CB"  atomName2="CG"/>
    <Bond atomName1="CG"  atomName2="OD1"/>
    <Bond atomName1="C"   atomName2="O"/>
@@ -162,10 +173,16 @@ _XML_GLUL = """\
    <Atom name="OE1" type="protein-O"   charge="-0.6086"/>
    <Atom name="C"   type="protein-C"   charge=" 0.5973"/>
    <Atom name="O"   type="protein-O"   charge="-0.5679"/>
+   <Bond atomName1="N"   atomName2="H"/>
    <Bond atomName1="N"   atomName2="CA"/>
+   <Bond atomName1="CA"  atomName2="HA"/>
    <Bond atomName1="CA"  atomName2="CB"/>
    <Bond atomName1="CA"  atomName2="C"/>
+   <Bond atomName1="CB"  atomName2="HB2"/>
+   <Bond atomName1="CB"  atomName2="HB3"/>
    <Bond atomName1="CB"  atomName2="CG"/>
+   <Bond atomName1="CG"  atomName2="HG2"/>
+   <Bond atomName1="CG"  atomName2="HG3"/>
    <Bond atomName1="CG"  atomName2="CD"/>
    <Bond atomName1="CD"  atomName2="OE1"/>
    <Bond atomName1="C"   atomName2="O"/>
@@ -205,12 +222,22 @@ _XML_LYSL = """\
    <Atom name="HZ1" type="protein-H"   charge=" 0.2719"/>
    <Atom name="C"   type="protein-C"   charge=" 0.5973"/>
    <Atom name="O"   type="protein-O"   charge="-0.5679"/>
+   <Bond atomName1="N"   atomName2="H"/>
    <Bond atomName1="N"   atomName2="CA"/>
+   <Bond atomName1="CA"  atomName2="HA"/>
    <Bond atomName1="CA"  atomName2="CB"/>
    <Bond atomName1="CA"  atomName2="C"/>
+   <Bond atomName1="CB"  atomName2="HB2"/>
+   <Bond atomName1="CB"  atomName2="HB3"/>
    <Bond atomName1="CB"  atomName2="CG"/>
+   <Bond atomName1="CG"  atomName2="HG2"/>
+   <Bond atomName1="CG"  atomName2="HG3"/>
    <Bond atomName1="CG"  atomName2="CD"/>
+   <Bond atomName1="CD"  atomName2="HD2"/>
+   <Bond atomName1="CD"  atomName2="HD3"/>
    <Bond atomName1="CD"  atomName2="CE"/>
+   <Bond atomName1="CE"  atomName2="HE2"/>
+   <Bond atomName1="CE"  atomName2="HE3"/>
    <Bond atomName1="CE"  atomName2="NZ"/>
    <Bond atomName1="NZ"  atomName2="HZ1"/>
    <Bond atomName1="C"   atomName2="O"/>
@@ -226,6 +253,9 @@ _LACTAM_XMLS = {
     "lactam_n_asp": _XML_ASPL,
     "lactam_n_glu": _XML_GLUL,
     "lactam_c_lys": _XML_LYSL,
+    # Side-chain lactams reuse both partner templates (LYSL + acid).
+    "lactam_sc_lys_asp": (_XML_LYSL, _XML_ASPL),
+    "lactam_sc_lys_glu": (_XML_LYSL, _XML_GLUL),
 }
 
 
@@ -254,6 +284,71 @@ def _peptide_residues(topology, chain_id: str):
         if chain.id == chain_id:
             return list(chain.residues())
     raise ValueError(f"Chain '{chain_id}' not found in topology.")
+
+
+# Covalent radii in nm (Cordero et al. 2008; subset covering biomolecules).
+_COVALENT_RADII_NM = {
+    "H": 0.031, "C": 0.076, "N": 0.071, "O": 0.066, "S": 0.105, "P": 0.107,
+    "F": 0.057, "CL": 0.102, "BR": 0.120, "I": 0.139, "SE": 0.120,
+}
+_DEFAULT_COVALENT_RADIUS_NM = 0.077
+_COVALENT_TOLERANCE = 1.3
+
+
+def reconstruct_intraresidue_bonds(topology, positions, chain_id: str) -> int:
+    """Add missing intra-residue covalent bonds for residues that have none.
+
+    OpenMM's ``createStandardBonds`` (run when a structure is loaded) only builds
+    bonds for residues whose *load-time* name is a recognised standard type.  A
+    non-standard residue (a D-amino acid, an N-methylated residue, or an exotic
+    building block such as BMT/ABA in cyclosporin) is therefore left with **no**
+    intra-residue bonds.  Downstream this breaks:
+
+      * ``ForceField`` template matching for a D-residue renamed to its standard
+        L counterpart ("atoms match ALA, but the bonds are different"), and
+      * GAFF2 parameterisation / custom-XML template matching for NCAA residues
+        (the molecule graph built from topology bonds is disconnected).
+
+    This restores those bonds geometrically (element-aware covalent-radius test),
+    operating **only** on residues in ``chain_id`` that currently have zero
+    intra-residue bonds — so standard residues (already bonded) and inter-residue
+    backbone / cyclic-closure bonds are never touched.  It is a no-op for a fully
+    standard peptide (e.g. 3P8F), whose residues already carry their bonds.
+
+    Returns the number of bonds added.
+    """
+    pos = _pos_nm(positions)
+    residues = _peptide_residues(topology, chain_id)
+    existing = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
+    added = 0
+    for res in residues:
+        atoms = list(res.atoms())
+        if len(atoms) < 2:
+            continue
+        idx_set = {a.index for a in atoms}
+        has_intra = any(
+            b.atom1.index in idx_set and b.atom2.index in idx_set
+            for b in topology.bonds()
+        )
+        if has_intra:
+            continue  # standard residue (or already reconstructed) — leave alone
+        for i in range(len(atoms)):
+            ai = atoms[i]
+            if ai.element is None:
+                continue
+            ra = _COVALENT_RADII_NM.get(ai.element.symbol.upper(), _DEFAULT_COVALENT_RADIUS_NM)
+            for j in range(i + 1, len(atoms)):
+                aj = atoms[j]
+                if aj.element is None:
+                    continue
+                rb = _COVALENT_RADII_NM.get(aj.element.symbol.upper(), _DEFAULT_COVALENT_RADIUS_NM)
+                if _dist(pos, ai.index, aj.index) < (ra + rb) * _COVALENT_TOLERANCE:
+                    key = frozenset((ai.index, aj.index))
+                    if key not in existing:
+                        topology.addBond(ai, aj)
+                        existing.add(key)
+                        added += 1
+    return added
 
 
 def _find_atom(residue, name: str):
@@ -483,6 +578,49 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                     detected_pairs.add((c_last.index, nz.index))
                     detected_pairs.add((nz.index, c_last.index))
 
+    # ---- 4b. Side-chain-to-side-chain lactam: LYS NZ — ASP CG / GLU CD ----
+    #         (i,i+4-type helix staples; both partners are internal side chains)
+    lys_residues = [(i, r) for i, r in enumerate(residues) if r.name == "LYS"]
+    # (acid residue name, closure atom, cyclic type, acid template, atom bonded
+    #  to the closure carbon on the acid side — used for the ω dihedral)
+    acid_specs = [
+        ("ASP", "CG", "lactam_sc_lys_asp", _XML_ASPL, "CB"),
+        ("GLU", "CD", "lactam_sc_lys_glu", _XML_GLUL, "CG"),
+    ]
+    for li, lys in lys_residues:
+        nz = _find_atom(lys, "NZ")
+        if nz is None:
+            continue
+        ce = _find_atom(lys, "CE")
+        for acid_name, c_atom_name, ctype, acid_xml, cb_name in acid_specs:
+            for ai, acid in enumerate(residues):
+                if ai == li or acid.name != acid_name:
+                    continue
+                c_atom = _find_atom(acid, c_atom_name)
+                if c_atom is None:
+                    continue
+                if (nz.index, c_atom.index) in detected_pairs:
+                    continue  # already claimed by a terminal-lactam pattern
+                if _close_or_bonded(nz, c_atom, _AMIDE_BOND_THRESH):
+                    omega = None
+                    cb_atom = _find_atom(acid, cb_name)
+                    if ce is not None and cb_atom is not None:
+                        omega = (
+                            (chain_id, li, "CE"),
+                            (chain_id, li, "NZ"),
+                            (chain_id, ai, c_atom_name),
+                            (chain_id, ai, cb_name),
+                        )
+                    results.append(CyclicBondInfo(
+                        cyclic_type=ctype,
+                        atom1_id=(chain_id, li, "NZ"),
+                        atom2_id=(chain_id, ai, c_atom_name),
+                        omega_ids=omega,
+                        extra_ff_xmls=[_XML_LYSL, acid_xml],
+                    ))
+                    detected_pairs.add((nz.index, c_atom.index))
+                    detected_pairs.add((c_atom.index, nz.index))
+
     # ---- 5. Catch unsupported cyclization: non-sequential intra-chain topology
     #         bonds that were not recognised as a supported pattern ----
     #
@@ -646,6 +784,12 @@ def patch_cyclic_topology(topology, positions, chain_id: str,
     except ImportError as e:
         raise ImportError("OpenMM is required for cyclic peptide patching.") from e
 
+    # Restore intra-residue bonds for any non-standard residue that lost them at
+    # load time (D-amino acids, N-methyl residues, exotic NCAA building blocks).
+    # Needed before template matching / GAFF parameterisation; no-op for a fully
+    # standard peptide.
+    reconstruct_intraresidue_bonds(topology, positions, chain_id)
+
     info_list = detect_cyclization(topology, positions, chain_id)
     if not info_list and hints:
         info_list = hints
@@ -680,6 +824,17 @@ def patch_cyclic_topology(topology, positions, chain_id: str,
             lys_res_idx = info.atom2_id[1]
             topology, positions = _patch_lactam_c_lys(
                 topology, positions, residues, lys_res_idx, app
+            )
+
+        elif info.cyclic_type in ("lactam_sc_lys_asp", "lactam_sc_lys_glu"):
+            lys_res_idx  = info.atom1_id[1]
+            acid_res_idx = info.atom2_id[1]
+            acid_atom    = info.atom2_id[2]   # CG (ASP) or CD (GLU)
+            new_acid_name = "ASPL" if info.cyclic_type == "lactam_sc_lys_asp" else "GLUL"
+            od_name       = "OD2"  if info.cyclic_type == "lactam_sc_lys_asp" else "OE2"
+            topology, positions = _patch_lactam_sidechain(
+                topology, positions, residues,
+                lys_res_idx, acid_res_idx, acid_atom, od_name, new_acid_name, app,
             )
 
     # Verify all closure atoms are still findable after patches
@@ -782,7 +937,7 @@ def _patch_lactam_n(topology, positions, residues,
     # Rename residue
     chain_id = residues[0].chain.id
     residues = _peptide_residues(topology, chain_id)
-    residues[sc_res_idx]._name = new_res_name
+    residues[sc_res_idx].name = new_res_name
 
     # Add sidechain-C — N(first) bond (only if not already present)
     sc_atom = _find_atom(residues[sc_res_idx], sc_atom_name)
@@ -820,7 +975,7 @@ def _patch_lactam_c_lys(topology, positions, residues, lys_idx: int, app):
 
     chain_id = residues[0].chain.id
     residues = _peptide_residues(topology, chain_id)
-    residues[lys_idx]._name = "LYSL"
+    residues[lys_idx].name = "LYSL"
 
     # Add NZ — C(last) bond (only if not already present)
     nz     = _find_atom(residues[lys_idx], "NZ")
@@ -833,6 +988,56 @@ def _patch_lactam_c_lys(topology, positions, residues, lys_idx: int, app):
         )
         if not already:
             topology.addBond(nz, c_last)
+
+    return topology, positions
+
+
+def _patch_lactam_sidechain(topology, positions, residues,
+                            lys_idx: int, acid_idx: int, acid_atom_name: str,
+                            od_name: str, new_acid_name: str, app):
+    """Patch a side-chain-to-side-chain lactam (LYS NZ — ASP CG / GLU CD).
+
+    Renames LYS → LYSL (removing the extra amine protons HZ2/HZ3, keeping NZ
+    as the amide nitrogen) and ASP/GLU → ASPL/GLUL (removing the free
+    carboxylate oxygen OD2/OE2), then adds the NZ–CG/CD closure bond. Both
+    residues stay internal to the chain, so no terminal atoms (OXT, H1/H2/H3)
+    are touched — unlike the terminal lactams.
+    """
+    lys_res  = residues[lys_idx]
+    acid_res = residues[acid_idx]
+
+    # Remove extra amine protons on the LYS NZ and the free carboxylate O.
+    # (Structures are heavy-atom-only at this stage, so these are usually
+    # absent; the removal is defensive for pre-protonated inputs.)
+    to_remove = []
+    for atom in lys_res.atoms():
+        if atom.name in ("HZ2", "HZ3"):
+            to_remove.append(atom)
+    for atom in acid_res.atoms():
+        if atom.name == od_name:
+            to_remove.append(atom)
+    if to_remove:
+        modeller = app.Modeller(topology, positions)
+        modeller.delete(to_remove)
+        topology, positions = modeller.topology, modeller.positions
+
+    # Rename both residues to their lactam templates.
+    chain_id = residues[0].chain.id
+    residues = _peptide_residues(topology, chain_id)
+    residues[lys_idx].name  = "LYSL"
+    residues[acid_idx].name = new_acid_name
+
+    # Add NZ — CG/CD bond (only if not already present).
+    nz     = _find_atom(residues[lys_idx],  "NZ")
+    c_atom = _find_atom(residues[acid_idx], acid_atom_name)
+    if nz and c_atom:
+        already = any(
+            (b.atom1.index == nz.index and b.atom2.index == c_atom.index) or
+            (b.atom2.index == nz.index and b.atom1.index == c_atom.index)
+            for b in topology.bonds()
+        )
+        if not already:
+            topology.addBond(nz, c_atom)
 
     return topology, positions
 
@@ -917,13 +1122,54 @@ def _internal_h_list(res_name: str):
     Returns None if the residue has no entry in OpenMM's hydrogen definitions
     (addHydrogens won't touch it anyway in that case).
     """
+    from openmm.app import modeller as _modeller_mod
     from openmm.app.modeller import Modeller
-    Modeller._loadStandardHydrogenDefinitions()
+    # Ensure OpenMM's built-in hydrogen definitions are loaded into
+    # Modeller._residueHydrogens. The private loader is named
+    # _loadStandardHydrogenDefinitions in OpenMM >= 8.2 but does not exist in
+    # 8.1.x, where addHydrogens lazy-loads the bundled data/hydrogens.xml via the
+    # public loadHydrogenDefinitions(). Replicate that portably across versions.
+    if hasattr(Modeller, "_loadStandardHydrogenDefinitions"):
+        Modeller._loadStandardHydrogenDefinitions()
+    elif not getattr(Modeller, "_hasLoadedStandardHydrogens", False):
+        import os
+        Modeller.loadHydrogenDefinitions(
+            os.path.join(os.path.dirname(_modeller_mod.__file__), "data", "hydrogens.xml")
+        )
+        Modeller._hasLoadedStandardHydrogens = True
     if res_name not in Modeller._residueHydrogens:
         # CYX is CYS without the SH proton; use CYS internal H list, drop HG.
         if res_name == "CYX":
             cys_list = _internal_h_list("CYS")
             return [(n, p) for n, p in (cys_list or []) if n != "HG"]
+        # Lactam residues are not in OpenMM's hydrogen definitions, so
+        # addHydrogens would add no H to them.  Derive the H list from the
+        # parent amino acid, dropping the H atoms on the atoms consumed by the
+        # side-chain amide (carboxylate O for ASPL/GLUL; two of the three amine
+        # protons for LYSL, whose NZ keeps a single amide HZ1).
+        _lactam_parent = {
+            "ASPL": ("ASP", {"HD2"}),
+            "GLUL": ("GLU", {"HE2"}),
+            "LYSL": ("LYS", {"HZ2", "HZ3"}),
+        }
+        if res_name in _lactam_parent:
+            parent, drop = _lactam_parent[res_name]
+            base = _internal_h_list(parent) or []
+            return [(n, p) for n, p in base if n not in drop]
+        # N-methylated residues (NMG/NMA/MVA/MLE) are not in OpenMM's hydrogen
+        # definitions either.  Their backbone N is tertiary (bonded to the
+        # N-methyl carbon CN instead of an amide H), so derive the H list from
+        # the parent amino acid, drop the backbone amide H, and add the three
+        # N-methyl protons on CN.  This lets addHydrogens build the full
+        # heavy+H residue so the NMG/NMA/MVA/MLE FF template matches.
+        _nme_parent = {
+            "NMG": "GLY", "NMA": "ALA", "MVA": "VAL", "MLE": "LEU",
+        }
+        if res_name in _nme_parent:
+            base = _internal_h_list(_nme_parent[res_name]) or []
+            h = [(n, p) for n, p in base if not (n == "H" and p == "N")]
+            h += [("HN1", "CN"), ("HN2", "CN"), ("HN3", "CN")]
+            return h
         return None
     spec = Modeller._residueHydrogens[res_name]
     # Include H atoms that are applicable to internal residues:
@@ -985,16 +1231,19 @@ def get_addh_variants(topology, bond_info_list: list, chain_id: str) -> list:
                 variants[last.index] = h_last
         # disulfide: CYX residues need explicit variants — handled below.
 
-    # CYX residues require explicit H-specs because CYX is not in
-    # Modeller._residueHydrogens.  Scan ALL residues (not just the cyclic
-    # chain) so that inter-chain disulfide partners (e.g. receptor CYS
-    # renamed to CYX) are also covered.  We only override None entries so
-    # head_to_tail first/last assignments are not disturbed.
+    # CYX, the custom lactam residues (ASPL/GLUL/LYSL) and the N-methylated
+    # residues (NMG/NMA/MVA/MLE) are not in Modeller._residueHydrogens, so
+    # addHydrogens would add no H to them.  Provide explicit internal-form H
+    # specs.  Scan ALL residues (not just the cyclic chain) so inter-chain
+    # disulfide partners (e.g. a receptor CYS renamed to CYX) are also covered.
+    # Only override None entries so the head_to_tail/lactam terminal
+    # assignments above are not disturbed.
+    _custom_h_residues = ("CYX", "ASPL", "GLUL", "LYSL", "NMG", "NMA", "MVA", "MLE")
     for res in topology.residues():
-        if res.name == "CYX" and variants[res.index] is None:
-            h_cyx = _internal_h_list("CYX")
-            if h_cyx is not None:
-                variants[res.index] = h_cyx
+        if res.name in _custom_h_residues and variants[res.index] is None:
+            h_spec = _internal_h_list(res.name)
+            if h_spec is not None:
+                variants[res.index] = h_spec
 
     return variants
 

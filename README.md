@@ -1,8 +1,8 @@
 # BindingMetrics
 
-**BindingMetrics** is a Python toolkit for evaluating biologics binding quality through physics-based metrics. It is designed for scoring peptide–protein complexes produced by structure prediction or computational design pipelines.
+**BindingMetrics** is a Python toolkit for evaluating designed peptide–protein complexes through physics-based metrics. It computes a reproducible panel of biophysical descriptors — interface geometry and energetics, structural sanity, backbone quality — to characterize, rank, and triage the peptide binders produced by structure prediction and computational design. It sits *downstream* of a design or prediction run and *upstream* of expensive experimental validation, bringing together the model's own confidence signals (parsed from OpenFold3: pLDDT, pTM, ipTM, PAE) with the physics-based descriptors those scores don't capture — because a confident model is not the same as a physically reasonable interface.
 
-Metrics span from fast static-structure analysis (buried SASA, hydrogen bonds, salt bridges, Ramachandran validation) to force-field interaction energies computed with optional energy minimization and short MD equilibration, to trajectory-level receptor drift and structure prediction confidence scores from OpenFold3. When a native structure is available, it also computes **reference-based CAPRI accuracy** (DockQ, fnat, i-RMSD, L-RMSD) — useful for benchmarking predictions against ground truth (e.g. antibody–antigen complexes).
+Metrics span from fast static-structure analysis (buried SASA, hydrogen bonds, salt bridges, Ramachandran validation) to force-field interaction energies computed with optional energy minimization and short MD equilibration, plus structural sanity checks on the relaxed output (no explosion, no clashes, no stretched bonds, no Cα stereocenter inversion), trajectory-level receptor drift, and structure-prediction confidence scores from OpenFold3. When a native structure is available, it also computes **reference-based CAPRI accuracy** (DockQ, fnat, i-RMSD, L-RMSD) — useful for benchmarking predictions against ground truth (e.g. antibody–antigen complexes). Every stochastic step is seeded, so results are **reproducible by default** (`--random-seed none` opts into fresh randomness).
 
 ---
 
@@ -19,6 +19,18 @@ Cyclic connectivity is read from `_struct_conn` in the input CIF file (written b
 - **Minimizes cyclic geometry** with a dedicated closure-bond relaxation stage before global minimization
 
 No flags needed — cyclic topology is detected and applied automatically whenever the input CIF contains the relevant `_struct_conn` entries.
+
+---
+
+## Non-canonical and D-amino-acid residues
+
+Therapeutic peptides are frequently rich in non-canonical chemistry — cyclosporin, for instance, is a head-to-tail macrocycle with a D-alanine and seven N-methylated residues. BindingMetrics handles the common cases natively, without user flags:
+
+- **D-amino acids** — all 19 chiral D-residues (PDB CCD codes) are recognised; they reuse the ff14SB bonded parameters of their L counterparts, and Ramachandran validation is made chirality-aware.
+- **N-methylated residues** — sarcosine (N-Me-Gly), N-Me-Ala, N-Me-Val, and N-Me-Leu are parameterised from curated templates.
+- **Exotic backbone-embedded residues** — residues with no AMBER template (e.g. cyclosporin's MeBmt and 2-aminobutyrate) are auto-parameterised on the fly with GAFF2. Because such a residue carries backbone (external) bonds that general small-molecule parameterisation rejects, BindingMetrics generates a residue template that records those external bonds explicitly, so backbone connectivity is preserved and force-field matching succeeds. Controlled by `--small-molecules auto` (the default in `binding-metrics-run`).
+
+These are exercised end-to-end by the bundled examples: `data/example_ncaa_cyclosporin_1CWA.cif` (cyclosporin A–cyclophilin A: D-Ala + N-methyl + GAFF), alongside `example_linear_p53_1YCR.pdb` (MDM2–p53, linear) and `example_bicyclic_sfti1_3P8F.cif` (SFTI-1–matriptase: head-to-tail + disulfide).
 
 ---
 

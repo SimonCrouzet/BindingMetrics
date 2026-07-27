@@ -101,9 +101,11 @@ class TestNMeXMLTemplates:
         assert "N" in atoms
         assert n_methyl_c in atoms
         assert "HN1" in atoms and "HN2" in atoms and "HN3" in atoms
-        assert atoms["N"].get("type") == "N"
-        assert atoms[n_methyl_c].get("type") == "CT"
-        assert atoms["HN1"].get("type") == "H1"  # H adjacent to N (one EWG)
+        # Types must be the ff14SB *type names* (namespaced "protein-<class>"),
+        # not bare AMBER class names, or ForceField.loadFile raises KeyError.
+        assert atoms["N"].get("type") == "protein-N"
+        assert atoms[n_methyl_c].get("type") == "protein-CT"
+        assert atoms["HN1"].get("type") == "protein-H1"  # H adjacent to N (one EWG)
 
         # No backbone H on N (it's N-methylated)
         assert "H" not in atoms, f"Unexpected backbone H in {res_name} template"
@@ -116,8 +118,8 @@ class TestNMeXMLTemplates:
         assert "N" in ext and "C" in ext
 
         # Standard backbone carbonyl
-        assert atoms["C"].get("type") == "C"
-        assert atoms["O"].get("type") == "O"
+        assert atoms["C"].get("type") == "protein-C"
+        assert atoms["O"].get("type") == "protein-O"
 
     def test_nmg(self):
         self._check_template(_XML_NMG, "NMG")
@@ -162,6 +164,34 @@ class TestNMeXMLTemplates:
                  for a in root.find(".//Residue[@name='MVA']").findall("Atom")}
         assert abs(atoms["CG1"] - atoms["CG2"]) < 1e-6
         assert abs(sum(atoms.values())) < 1e-3
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("name,xml", [
+        ("NMG", _XML_NMG), ("NMA", _XML_NMA), ("MVA", _XML_MVA), ("MLE", _XML_MLE),
+    ])
+    def test_template_loads_into_ff14sb(self, name, xml):
+        """Each NMe template must actually load into a real ff14SB ForceField.
+
+        Regression test: the templates reference ff14SB atom types by their
+        *type name* (namespaced ``protein-<class>``). Using bare class names
+        (e.g. ``type="N"``) parses as valid XML but raises ``KeyError`` inside
+        ``ForceField.loadFile`` when the type is resolved. String-only XML
+        parsing does not catch this — loading against the real force field does.
+        """
+        pytest.importorskip("openmm", reason="OpenMM required")
+        import os
+        import tempfile
+
+        from binding_metrics.core.forcefields import get_forcefield
+
+        ff = get_forcefield("amber")
+        fd, path = tempfile.mkstemp(suffix=".xml")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(xml)
+            ff.loadFile(path)  # must not raise KeyError on the atom type
+        finally:
+            os.unlink(path)
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +280,37 @@ class TestDetectNonstandard:
         info = detect_nonstandard(topology, "A")
         assert len(info.nmethyl_residues) == 2
         assert len(info.extra_ff_xmls) == 1  # NMG XML loaded once
+
+
+@pytest.mark.integration
+class TestPatchNonstandardApplies:
+    """patch_nonstandard must actually rewrite residue .name.
+
+    Regression: the rename previously assigned to res._name (a dead attribute on
+    OpenMM's Residue, whose name lives in .name), so every D-amino-acid and
+    N-methyl rename silently no-op'd — detection passed but the topology handed to
+    createSystem still carried DAL/SAR, which then failed template matching. This
+    test checks the *applied* names, not just detection.
+    """
+
+    def _positions(self, topology):
+        from openmm import Vec3
+        import openmm.unit as unit
+        n = topology.getNumAtoms()
+        return unit.Quantity([Vec3(i, 0.0, 0.0) for i in range(n)], unit.nanometer)
+
+    def test_d_and_nme_renames_land_on_name(self):
+        # DAL -> ALA (D-AA); SAR -> NMG (N-methyl needing rename); MLE stays MLE.
+        topology = _make_minimal_topology(["DAL", "SAR", "MLE", "ALA"])
+        info = detect_nonstandard(topology, "A")
+        top2, _ = patch_nonstandard(topology, self._positions(topology), "A", info)
+        assert [r.name for r in top2.residues()] == ["ALA", "NMG", "MLE", "ALA"]
+
+    def test_standard_only_unchanged(self):
+        topology = _make_minimal_topology(["ALA", "GLY", "LEU"])
+        info = detect_nonstandard(topology, "A")
+        top2, _ = patch_nonstandard(topology, self._positions(topology), "A", info)
+        assert [r.name for r in top2.residues()] == ["ALA", "GLY", "LEU"]
 
 
 # ---------------------------------------------------------------------------

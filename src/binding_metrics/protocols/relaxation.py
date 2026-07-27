@@ -27,6 +27,8 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+
 
 @dataclass
 class RelaxationConfig:
@@ -73,6 +75,14 @@ class RelaxationConfig:
 
     solvent_model: str = "obc2"
     device: str = "cuda"
+
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED
+    """Seed for every stochastic step (hydrogen placement, MD initial velocities
+    and the Langevin thermostat). A fixed int (the default) makes a run
+    reproducible; ``None`` opts into fresh randomness, e.g. to generate
+    independent MD replicas. Note: minimization is reproducible regardless, but
+    GPU MD may still differ in the last digits across runs even with a fixed seed
+    because CUDA force reduction order is not deterministic."""
 
     peptide_chain_id: Optional[str] = None
     receptor_chain_id: Optional[str] = None
@@ -494,17 +504,44 @@ class ImplicitRelaxation:
             print("  Linear peptide (no cyclization detected)")
 
         # --- GAFF2 for non-standard residues / small-molecule co-factors ---
-        # Must be registered BEFORE addHydrogens so that addHydrogens can use
-        # the GAFF template to add H to non-standard residues.
-        # Molecules are built as heavy-atom-only here (matching the topology
-        # state before H addition). GAFF/antechamber adds H internally during
-        # parameterization.
+        # Must run BEFORE addHydrogens so the generated residue templates (with
+        # <ExternalBond> tags) match the backbone-embedded NCAA residues and so
+        # their hydrogens are injected before createSystem.
         #
         # Note: GAFF2 is a general small-molecule force field. It works for
         # small organic co-factors and modified amino acids (as a pragmatic
         # approximation), but purpose-built parameters (e.g. CGENFF, RESP-fitted
         # charges) give higher accuracy for MD production runs.
-        if not self.config.small_molecules:
+        if self.config.small_molecules == "auto":
+            # Auto path: generate ExternalBond residue templates for every exotic
+            # NCAA (BMT, ABA, …) directly from the topology geometry. Residues
+            # covered by ff14SB or curated templates (NMG/MVA/MLE, lactams, CYX)
+            # are skipped. This rebuilds the topology to inject the NCAA hydrogens.
+            from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
+            topology, positions, ncaa_xmls = parameterize_ncaa_residues(
+                topology, positions, ff,
+                gaff_version=self.config.small_molecule_ff,
+            )
+            if ncaa_xmls:
+                print(f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
+                      f"ExternalBond templates for {len(ncaa_xmls)} NCAA residue(s).")
+        elif self.config.small_molecules:
+            # Explicit list: free small-molecule co-factors (no backbone bonds) via
+            # openmmforcefields' template generator.
+            try:
+                from openmmforcefields.generators import GAFFTemplateGenerator
+            except ImportError as exc:
+                raise ImportError(
+                    "openmmforcefields is required for small_molecules support. "
+                    "Install with: conda install -c conda-forge openmmforcefields openff-toolkit"
+                ) from exc
+            mols = self._coerce_molecules(self.config.small_molecules)
+            if mols:
+                gaff = GAFFTemplateGenerator(molecules=mols, forcefield=self.config.small_molecule_ff)
+                ff.registerTemplateGenerator(gaff.generator)
+                print(f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
+                      f"for {len(mols)} small-molecule(s).")
+        else:
             nonstandard_names = [
                 res.name for res in topology.residues()
                 if res.name not in self._AMBER_STANDARD
@@ -515,26 +552,6 @@ class ImplicitRelaxation:
                 print("  These will likely cause 'No template found' errors.")
                 print("  → Run with --small-molecules auto to parameterise via GAFF2.")
                 print("  → Or run binding-metrics-prep --canonicalize to replace them first.")
-
-        if self.config.small_molecules:
-            try:
-                from openmmforcefields.generators import GAFFTemplateGenerator
-            except ImportError as exc:
-                raise ImportError(
-                    "openmmforcefields is required for small_molecules support. "
-                    "Install with: conda install -c conda-forge openmmforcefields openff-toolkit"
-                ) from exc
-            if self.config.small_molecules == "auto":
-                mols = self._discover_heterogens(topology)
-            else:
-                mols = self._coerce_molecules(self.config.small_molecules)
-            if mols:
-                gaff = GAFFTemplateGenerator(molecules=mols, forcefield=self.config.small_molecule_ff)
-                ff.registerTemplateGenerator(gaff.generator)
-                print(f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
-                      f"for {len(mols)} non-standard residue(s).")
-            else:
-                print("  Note: small_molecules='auto' found no non-standard residues.")
 
         # --- Add hydrogens ---
         print("  Adding hydrogens...")
@@ -547,16 +564,26 @@ class ImplicitRelaxation:
             from binding_metrics.core.cyclic import get_addh_variants
             addh_variants = get_addh_variants(modeller.topology, bond_info, peptide_chain)
 
+        from binding_metrics.core.system import deterministic_hydrogen_placement
+        seed = self.config.random_seed
         try:
-            modeller.addHydrogens(ff, pH=self.config.ph, variants=addh_variants)
+            with deterministic_hydrogen_placement(seed):
+                modeller.addHydrogens(ff, pH=self.config.ph, variants=addh_variants)
         except Exception as e:
             print(f"  Warning: addHydrogens(ff, pH={self.config.ph}) failed ({e}), "
                   "retrying without ForceField (approximate H positions)...")
             try:
-                modeller.addHydrogens(pH=self.config.ph, variants=addh_variants)
+                with deterministic_hydrogen_placement(seed):
+                    modeller.addHydrogens(pH=self.config.ph, variants=addh_variants)
             except Exception as e2:
                 print(f"  Warning: addHydrogens failed: {e2}")
         topology, positions = modeller.topology, modeller.positions
+
+        # addHydrogens can strand a Cα H on the wrong face (random jitter +
+        # frozen heavy atoms); left in place, minimization inverts the
+        # stereocenter. No-op for inputs already repaired by prep_structure.
+        from binding_metrics.core.system import repair_ca_hydrogen_chirality
+        positions = repair_ca_hydrogen_chirality(topology, positions)
 
         # --- Custom bond handler (plugin hook, called after H addition) ---
         if self.config.custom_bond_handler is not None:
@@ -900,12 +927,15 @@ class ImplicitRelaxation:
 
             peptide_chain, receptor_chain = self._identify_chains(topology)
 
-            # Integrator
+            # Integrator. Seed the Langevin noise stream for reproducibility
+            # (config.random_seed None => leave unseeded for fresh randomness).
             integrator = openmm.LangevinMiddleIntegrator(
                 self.config.md_temperature_k * unit.kelvin,
                 self.config.md_friction / unit.picosecond,
                 self.config.md_timestep_fs * unit.femtosecond,
             )
+            if self.config.random_seed is not None:
+                integrator.setRandomNumberSeed(self.config.random_seed)
 
             platform, properties = self._get_platform()
             simulation = app.Simulation(topology, system, integrator, platform, properties)
@@ -998,9 +1028,17 @@ class ImplicitRelaxation:
             if self.config.md_duration_ps > 0:
                 print(f"[{sample_id}] Running MD ({self.config.md_duration_ps} ps)...")
                 md_start = time.time()
-                simulation.context.setVelocitiesToTemperature(
-                    self.config.md_temperature_k * unit.kelvin
-                )
+                # Seed the initial Maxwell-Boltzmann velocities too, else MD is
+                # nondeterministic even with a seeded integrator.
+                if self.config.random_seed is not None:
+                    simulation.context.setVelocitiesToTemperature(
+                        self.config.md_temperature_k * unit.kelvin,
+                        self.config.random_seed,
+                    )
+                else:
+                    simulation.context.setVelocitiesToTemperature(
+                        self.config.md_temperature_k * unit.kelvin
+                    )
 
                 # Cyclic warmup: 10 ps backbone φ/ψ dihedral restraints to
                 # preserve ring conformation during velocity initialisation.
@@ -1086,6 +1124,53 @@ class ImplicitRelaxation:
         return result
 
 
+def run_implicit_relaxation(
+    input_path: Path,
+    output_dir: Optional[Path] = None,
+    *,
+    config: Optional["RelaxationConfig"] = None,
+    sample_id: Optional[str] = None,
+    **config_kwargs,
+) -> "RelaxationResult":
+    """Function wrapper around :class:`ImplicitRelaxation` for generic invocation.
+
+    ``ImplicitRelaxation`` takes its ``RelaxationConfig`` in ``__init__`` and the
+    structure path in ``.run()``, so it cannot be driven by a generic runner that
+    forwards ``input_path`` as a single keyword. This thin wrapper exposes the
+    interface the metric registry advertises: ``input_path`` (and ``output_dir``)
+    as call kwargs, with the config either passed explicitly or built from keyword
+    overrides taken from the manifest ``md`` block.
+
+    Args:
+        input_path: Path to input CIF or PDB structure file.
+        output_dir: Directory for output structures. Defaults to a temporary
+            directory when omitted (e.g. pure benchmark timing runs).
+        config: Optional pre-built RelaxationConfig. If omitted, one is created
+            from ``config_kwargs``.
+        sample_id: Identifier for this run (defaults to the input file stem).
+        **config_kwargs: Forwarded to ``RelaxationConfig`` when ``config`` is None.
+
+    Returns:
+        RelaxationResult with energies, RMSD/RMSF, timing, and output paths.
+    """
+    import tempfile
+
+    if config is None:
+        config = RelaxationConfig(**config_kwargs)
+    elif config_kwargs:
+        raise TypeError(
+            "run_implicit_relaxation: pass either `config` or config keyword "
+            "overrides, not both"
+        )
+
+    relaxer = ImplicitRelaxation(config)
+
+    if output_dir is None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            return relaxer.run(Path(input_path), Path(tmp_dir), sample_id=sample_id)
+    return relaxer.run(Path(input_path), Path(output_dir), sample_id=sample_id)
+
+
 def _run_one(
     relaxer: "ImplicitRelaxation",
     input_path: Path,
@@ -1148,6 +1233,15 @@ def main():
     parser.add_argument("--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)")
     parser.add_argument("--receptor-chain", type=str, default=None, help="Receptor chain ID (auto-detect if omitted)")
     parser.add_argument("--sample-id", type=str, default=None, help="Sample identifier (defaults to input file stem)")
+    parser.add_argument("--small-molecules", type=str, default="auto",
+                        help="Non-standard residue parameterisation. 'auto' (default) "
+                             "builds GAFF2 ExternalBond templates for every exotic NCAA; "
+                             "'none' disables it.")
+    parser.add_argument("--random-seed", type=str, default=str(DEFAULT_RANDOM_SEED),
+                        metavar="INT|none",
+                        help="Seed for stochastic steps (hydrogen placement, MD "
+                             f"velocities/thermostat). Default {DEFAULT_RANDOM_SEED} "
+                             "(reproducible); 'none' for fresh randomness each run.")
 
     model_group = parser.add_mutually_exclusive_group()
     model_group.add_argument("--model", type=int, default=None,
@@ -1167,6 +1261,14 @@ def main():
     if args.all_models and args.sample_id is not None:
         parser.error("--sample-id cannot be used with --all-models (IDs are auto-generated)")
 
+    if args.small_molecules is not None and args.small_molecules.lower() == "none":
+        args.small_molecules = None
+
+    if args.random_seed.strip().lower() in ("none", "random", "off"):
+        seed = None
+    else:
+        seed = int(args.random_seed)
+
     from binding_metrics.cli import log_to_file
     with log_to_file(args.log_file):
         config = RelaxationConfig(
@@ -1178,6 +1280,8 @@ def main():
             solvent_model=args.solvent_model,
             peptide_chain_id=args.peptide_chain,
             receptor_chain_id=args.receptor_chain,
+            small_molecules=args.small_molecules,
+            random_seed=seed,
         )
         relaxer = ImplicitRelaxation(config)
 

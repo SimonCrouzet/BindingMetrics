@@ -20,11 +20,20 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
+from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+
 ALL_METRICS = frozenset({"energy", "interface", "geometry", "electrostatics", "openfold"})
 # Reference-based metrics require a native structure (--reference) and are not
 # part of the default set; they are auto-enabled when a reference is supplied.
 REFERENCE_METRICS = frozenset({"dockq"})
 KNOWN_METRICS = ALL_METRICS | REFERENCE_METRICS
+
+
+def _seed_arg(value: str) -> Optional[int]:
+    """Parse --random-seed: an integer, or 'none'/'random' for fresh randomness."""
+    if value.strip().lower() in ("none", "random", "off"):
+        return None
+    return int(value)
 
 
 def _warn(msg: str) -> None:
@@ -60,6 +69,8 @@ def run_pipeline(
     # openfold
     openfold_mode: str = "score",
     openfold_conda_env: Optional[str] = None,
+    # reproducibility
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
     """Run the full pipeline and return a results dict."""
     if sample_id is None:
@@ -98,6 +109,7 @@ def run_pipeline(
                 topology, positions = prep_structure(
                     topology, positions, ph=ph,
                     keep_water=keep_water, canonicalize=canonicalize,
+                    random_seed=random_seed,
                 )
                 prepped_path = output_dir / f"{sample_id}_cleaned.cif"
                 save_structure(topology, positions, prepped_path, source_path=input_path)
@@ -155,6 +167,10 @@ def run_pipeline(
             peptide_chain_id=peptide_chain_label,
             receptor_chain_id=receptor_chain_label,
             cyclic_bond_hints=cyclic_bond_hints or None,
+            # Auto-parameterise any non-canonical residue (e.g. cyclosporin's
+            # BMT/ABA) with GAFF2 ExternalBond templates so relaxation builds.
+            small_molecules="auto",
+            random_seed=random_seed,
         )
         relaxer = ImplicitRelaxation(config)
         t0 = time.time()
@@ -204,6 +220,7 @@ def run_pipeline(
                 sample_id=sample_id,
                 modes=energy_modes,
                 ph=ph,
+                random_seed=random_seed,
             )
             results["energy"] = energy
         except Exception as e:
@@ -397,6 +414,27 @@ def run_pipeline(
     return results
 
 
+def _collect_failures(results: dict) -> list:
+    """Return ``(step, reason)`` for every metric step that did not complete.
+
+    A step counts as failed when its result dict carries an ``error`` key, or
+    when a step that reports a ``success`` flag (relaxation, energy) has
+    ``success is False``. Steps marked ``{"skipped": True}`` are not failures.
+    Used to make the pipeline exit non-zero instead of silently reporting
+    success when metrics could not be computed.
+    """
+    failures = []
+    for step, res in results.items():
+        if not isinstance(res, dict) or res.get("skipped"):
+            continue
+        if "error" in res:
+            failures.append((step, str(res["error"])[:200]))
+        elif res.get("success") is False:
+            reason = res.get("error_message") or "step reported success=False"
+            failures.append((step, str(reason)[:200]))
+    return failures
+
+
 def _parse_metrics(value: str) -> frozenset:
     names = {v.strip() for v in value.split(",")}
     unknown = names - KNOWN_METRICS
@@ -454,6 +492,16 @@ def main():
                              help="Skip relaxation; run metrics on raw input")
     relax_group.add_argument("--md-duration-ps", type=float, default=200.0,
                              help="MD duration in ps (0 = minimize only, default: 200)")
+    relax_group.add_argument(
+        "--random-seed", type=_seed_arg, default=DEFAULT_RANDOM_SEED,
+        metavar="INT|none",
+        help=(
+            "Seed for all stochastic steps (hydrogen placement, MD velocities "
+            "and thermostat). A fixed integer makes the run reproducible "
+            f"(default: {DEFAULT_RANDOM_SEED}); pass 'none' for fresh randomness "
+            "each run, e.g. to generate independent MD replicas."
+        ),
+    )
 
     # Metrics
     metrics_group = parser.add_argument_group("Metrics")
@@ -539,6 +587,7 @@ def main():
             reference_path=args.reference,
             openfold_mode=args.openfold_mode,
             openfold_conda_env=args.openfold_conda_env,
+            random_seed=args.random_seed,
         )
         results["total_elapsed_s"] = round(time.time() - t_total, 1)
 
@@ -546,6 +595,17 @@ def main():
         results_path = write_report(results, args.output_dir, sample_id,
                                     fmt=args.fmt, summary=args.summary,
                                     summary_format=args.summary_format)
+
+        failures = _collect_failures(results)
+        if failures:
+            print(f"\n{'#'*60}")
+            print(f"  FAILED in {results['total_elapsed_s']}s — "
+                  f"{len(failures)} step(s) did not complete:")
+            for step, reason in failures:
+                print(f"    [x] {step}: {reason}")
+            print(f"  Partial results: {results_path}")
+            print(f"{'#'*60}\n")
+            sys.exit(1)
 
         print(f"\n{'#'*60}")
         print(f"  DONE in {results['total_elapsed_s']}s")

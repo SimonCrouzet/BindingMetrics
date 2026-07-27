@@ -199,6 +199,7 @@ def _parse_confidences(path: Path) -> dict:
     return {
         "plddt_per_atom": _arr("plddt"),
         "pde": _arr("pde"),
+        "pae": _arr("pae"),
         "gpde": _scalar("gpde"),
     }
 
@@ -398,6 +399,53 @@ def _interface_pde_stats(
     }
 
 
+def _interface_pae_stats(
+    pae: np.ndarray,
+    atoms,
+    binder_chain: str,
+    receptor_chain: str,
+) -> dict:
+    """PAE statistics for the binder–receptor interface region.
+
+    Slices the full PAE (predicted aligned error) matrix to the
+    binder×receptor token sub-matrix and returns summary statistics and the
+    raw slice. PAE at token (i, j) is the expected position error of token i
+    when the prediction is aligned on token j; the interface block therefore
+    reports how confidently the binder is placed relative to the receptor.
+
+    Args:
+        pae: Full PAE matrix, shape ``(n_tokens, n_tokens)``.
+        atoms: Biotite AtomArray of the predicted structure.
+        binder_chain: Chain ID of the binder.
+        receptor_chain: Chain ID of the receptor.
+
+    Returns:
+        Dict with:
+            ``pae_interface`` (np.ndarray): Sub-matrix ``(n_binder_res, n_receptor_res)``.
+            ``mean_interface_pae`` (float): Mean PAE over the interface slice (Å).
+            ``max_interface_pae`` (float): Max PAE over the interface slice (Å).
+            ``n_binder_tokens`` (int): Binder residue token count.
+            ``n_receptor_tokens`` (int): Receptor residue token count.
+    """
+    offsets = _chain_token_offsets(atoms)
+    missing = [c for c in (binder_chain, receptor_chain) if c not in offsets]
+    if missing:
+        raise ValueError(f"Chains not found in structure: {missing}")
+    b0, b1 = offsets[binder_chain]
+    r0, r1 = offsets[receptor_chain]
+    # PAE is asymmetric; average the binder→receptor and receptor→binder blocks
+    # so the reported interface confidence does not depend on slice direction.
+    sub_br = pae[b0:b1, r0:r1]
+    sub_rb = pae[r0:r1, b0:b1]
+    return {
+        "pae_interface": sub_br,
+        "mean_interface_pae": float((sub_br.mean() + sub_rb.mean()) / 2.0),
+        "max_interface_pae": float(max(sub_br.max(), sub_rb.max())),
+        "n_binder_tokens": b1 - b0,
+        "n_receptor_tokens": r1 - r0,
+    }
+
+
 def compute_interface_pae(
     confidences_path,
     structure_path,
@@ -406,24 +454,37 @@ def compute_interface_pae(
 ) -> dict:
     """Interface PAE slice from OpenFold3 output.
 
-    NOT IMPLEMENTED — waiting for OpenFold3 to write the full PAE matrix to
-    the confidences file.  As of v0.4.0 the ``_confidences.json/npz`` only
-    contains ``plddt`` and ``pde``; the n_tokens × n_tokens PAE array is not
-    persisted even when ``pae_enabled=True``.
+    OpenFold3 (>= v0.4.1) writes the full ``pae`` matrix to
+    ``*_confidences.json/.npz`` alongside ``plddt`` and ``pde`` when the full
+    confidence scores are requested with the ``pae_enabled`` model preset. This
+    loads that matrix and the predicted structure and returns the interface
+    (binder×receptor) PAE statistics.
 
-    Once PR #142 (openfold3 repo) is merged and released (or a local build is
-    used), add ``"pae": _arr("pae")`` to ``_parse_confidences`` and implement
-    this function using ``_interface_pae_stats``.
+    Args:
+        confidences_path: Path to ``*_confidences.json`` or ``.npz``.
+        structure_path: Path to the predicted model (.cif/.pdb) — used to map
+            chains to PAE token ranges.
+        binder_chain: Chain ID of the binder.
+        receptor_chain: Chain ID of the receptor.
+
+    Returns:
+        Dict from :func:`_interface_pae_stats` (``pae_interface``,
+        ``mean_interface_pae``, ``max_interface_pae``, token counts).
 
     Raises:
-        NotImplementedError: Always, until the OF3 PAE matrix is written to disk.
+        ValueError: If the confidences file has no PAE matrix (the run did not
+            enable the PAE head / persist full confidences).
     """
-    raise NotImplementedError(
-        "Interface PAE requires OpenFold3 to write the full PAE matrix to "
-        "_confidences.json/npz, which is not yet done in the released v0.4.0. "
-        "Track https://github.com/aqlaboratory/openfold-3/pull/142 and rebuild "
-        "from source (pip install -e .) once merged."
-    )
+    conf = _parse_confidences(Path(confidences_path))
+    pae = conf.get("pae")
+    if pae is None:
+        raise ValueError(
+            f"No PAE matrix in {confidences_path}. Re-run OpenFold3 with the "
+            "'pae_enabled' preset and full confidence output so the 'pae' array "
+            "is written to the confidences file."
+        )
+    atoms = _load_atoms(Path(structure_path))
+    return _interface_pae_stats(pae, atoms, binder_chain, receptor_chain)
 
 
 # ---------------------------------------------------------------------------
@@ -505,17 +566,25 @@ def compute_openfold_metrics(
             pde (np.ndarray | None): PDE matrix (n_tokens×n_tokens); only if
                 include_matrices=True
             max_pde (float): max PDE value (Å)
+            pae (np.ndarray | None): PAE matrix (n_tokens×n_tokens); only if
+                include_matrices=True and the run persisted the PAE head
+            max_pae (float): max PAE value (Å); NaN if no PAE matrix present
 
         Per-chain structural analysis [requires binder_chain]:
             binder_plddt_per_residue (np.ndarray | None): mean pLDDT per
                 residue for the binder chain, shape (n_binder_res,)
             binder_avg_plddt (float): mean pLDDT over all binder residues
 
-        Interface PDE [requires binder_chain + receptor_chain]:
+        Interface PDE / PAE [requires binder_chain + receptor_chain]:
             mean_interface_pde (float): mean PDE over binder×receptor tokens (Å)
             max_interface_pde (float): max PDE over binder×receptor tokens (Å)
             pde_interface (np.ndarray | None): raw PDE slice, shape
                 (n_binder_res, n_receptor_res); only if include_matrices=True
+            mean_interface_pae (float): mean PAE over the interface tokens (Å),
+                averaged over both slice directions; NaN if no PAE persisted
+            max_interface_pae (float): max PAE over the interface tokens (Å)
+            pae_interface (np.ndarray | None): raw PAE slice (binder→receptor);
+                only if include_matrices=True
 
         Refolding RMSD [requires binder_chain + reference_structure_path]:
             binder_ca_rmsd (float): binder Cα RMSD vs. reference (Å).
@@ -549,13 +618,18 @@ def compute_openfold_metrics(
         "n_atoms": 0,
         "pde": None,
         "max_pde": float("nan"),
+        "pae": None,
+        "max_pae": float("nan"),
         # Per-chain structural analysis (populated when binder_chain is given)
         "binder_plddt_per_residue": None,
         "binder_avg_plddt": float("nan"),
-        # Interface PDE (populated when binder_chain + receptor_chain are given)
+        # Interface PDE / PAE (populated when binder_chain + receptor_chain are given)
         "mean_interface_pde": float("nan"),
         "max_interface_pde": float("nan"),
         "pde_interface": None,
+        "mean_interface_pae": float("nan"),
+        "max_interface_pae": float("nan"),
+        "pae_interface": None,
         # Refolding RMSD (populated when binder_chain + reference_structure_path)
         "binder_ca_rmsd": float("nan"),
         # Timing
@@ -580,10 +654,15 @@ def compute_openfold_metrics(
 
         if include_matrices:
             result["pde"] = conf["pde"]
+            result["pae"] = conf["pae"]
 
         pde = conf["pde"]
         if pde is not None:
             result["max_pde"] = float(pde.max())
+
+        pae = conf["pae"]
+        if pae is not None:
+            result["max_pae"] = float(pae.max())
 
     # --- Timing ---
     if files["timing"] is not None:
@@ -625,6 +704,22 @@ def compute_openfold_metrics(
                             result["pde_interface"] = pde_stats["pde_interface"]
                     except Exception as exc:
                         warnings.warn(f"compute_openfold_metrics: interface PDE skipped: {exc}")
+
+                # Interface PAE statistics (binder × receptor token block)
+                pae_src = result.get("pae")
+                if pae_src is None and files["confidences"] is not None:
+                    pae_src = _parse_confidences(files["confidences"]).get("pae")
+                if pae_src is not None:
+                    try:
+                        pae_stats = _interface_pae_stats(
+                            pae_src, pred_atoms, binder_chain, receptor_chain
+                        )
+                        result["mean_interface_pae"] = pae_stats["mean_interface_pae"]
+                        result["max_interface_pae"] = pae_stats["max_interface_pae"]
+                        if include_matrices:
+                            result["pae_interface"] = pae_stats["pae_interface"]
+                    except Exception as exc:
+                        warnings.warn(f"compute_openfold_metrics: interface PAE skipped: {exc}")
 
             # Binder Cα RMSD vs. reference structure
             if reference_structure_path is not None:

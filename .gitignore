@@ -223,3 +223,15 @@ temp/
 # data files
 *.zip
 structures/
+# Manuscript / paper working files (audit, preprint, validation) - not published
+manuscripts/
+
+# Client / private target data - must never be published (IP hygiene)
+MC1R*
+*_inverse_folded
+
+# Local scratch / working dirs - private design specs live here (IP hygiene)
+archive/
+results/
+compiled_cache.db
+*design_spec*

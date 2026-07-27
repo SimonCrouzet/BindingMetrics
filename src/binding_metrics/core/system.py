@@ -1,9 +1,10 @@
 """System preparation utilities for MD simulations."""
 
+import contextlib
 import logging
 import os
 import tempfile
-from typing import Literal
+from typing import Literal, Optional
 
 import openmm.unit as unit
 from openmm.app import Modeller, PDBFile, ForceField
@@ -18,6 +19,17 @@ try:
     HAS_PDBFIXER = True
 except ImportError:
     HAS_PDBFIXER = False
+
+
+#: Default seed for every stochastic step (hydrogen placement, PDBFixer atom
+#: rebuild, MD velocities and Langevin noise) so the pipeline is reproducible by
+#: default. MUST be non-zero: OpenMM's ``setRandomNumberSeed(0)`` is the sentinel
+#: for "choose a fresh random seed at run time", so a 0 here would silently
+#: re-randomize the integrators it is fed to (e.g. PDBFixer.addMissingAtoms).
+#: The specific value carries no meaning; do not "tune" it to dodge a bad
+#: hydrogen placement — repair_ca_hydrogen_chirality exists to fix those. Pass
+#: ``random_seed=None`` through the configs to opt back into fresh randomness.
+DEFAULT_RANDOM_SEED = 1
 
 
 def _extract_custom_bonds(topology) -> list:
@@ -170,7 +182,10 @@ _METAL_ELEMENTS = {
 _WATER_NAMES = {"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"}
 
 
-def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) -> tuple:
+def _add_hydrogens_cyclic(
+    topology, positions, custom_bonds: list, ph: float,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+) -> tuple:
     """Add hydrogens to a topology that contains non-sequential cyclic bonds.
 
     PDBFixer's addMissingHydrogens cannot handle cyclic peptides — it applies
@@ -185,9 +200,24 @@ def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) ->
         load_extra_xmls,
         rename_disulfide_cys_to_cyx,
     )
+    from binding_metrics.core.nonstandard import (
+        detect_nonstandard,
+        patch_nonstandard,
+        load_nonstandard_xmls,
+    )
+    from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
 
     # custom bonds are intra-chain, so both ends share the same chain ID.
     cyclic_chain = custom_bonds[0][0]
+
+    ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
+
+    # D-amino-acid / N-methyl rename first (e.g. DAL→ALA, SAR→NMG) so their
+    # standard/curated templates match; must precede patch_cyclic_topology.
+    ns_info = detect_nonstandard(topology, cyclic_chain)
+    if not ns_info.is_empty:
+        topology, positions = patch_nonstandard(topology, positions, cyclic_chain, ns_info)
+        load_nonstandard_xmls(ff, ns_info)
 
     # patch_cyclic_topology detects the cyclic bond by distance (works even
     # without the bond already in the topology), removes C-terminal OXT and
@@ -199,19 +229,124 @@ def _add_hydrogens_cyclic(topology, positions, custom_bonds: list, ph: float) ->
     # peptide–receptor SS bonds) that would otherwise fail in addHydrogens.
     topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
 
-    if not bond_info:
-        # Shouldn't happen if custom_bonds is non-empty, but fall back gracefully.
-        modeller = Modeller(topology, positions)
-        modeller.addHydrogens(pH=ph)
-        return modeller.topology, modeller.positions
+    if bond_info:
+        load_extra_xmls(ff, bond_info)
 
-    ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
-    load_extra_xmls(ff, bond_info)
+    # GAFF2 ExternalBond templates for exotic NCAAs (BMT/ABA/…): generates and
+    # loads their templates and injects their hydrogens so addHydrogens (whose
+    # internal createSystem would otherwise fail on "No template") succeeds.
+    topology, positions, _ncaa_xmls = parameterize_ncaa_residues(topology, positions, ff)
 
     modeller = Modeller(topology, positions)
-    addh_variants = get_addh_variants(modeller.topology, bond_info, cyclic_chain)
-    modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
+    addh_variants = (
+        get_addh_variants(modeller.topology, bond_info, cyclic_chain) if bond_info else None
+    )
+    with deterministic_hydrogen_placement(random_seed):
+        modeller.addHydrogens(
+            ff, pH=ph, variants=addh_variants,
+            platform=_hydrogen_placement_platform(),
+        )
     return modeller.topology, modeller.positions
+
+
+def _hydrogen_placement_platform():
+    """The Reference platform: double-precision, single-threaded, deterministic.
+
+    ``addHydrogens`` runs a short energy minimization to settle the new
+    hydrogens. On a fast platform (CUDA/OpenCL) the reduction order is not
+    deterministic, so that minimization lands in a marginally different spot each
+    run — hydrogens on rotatable groups shift by up to ~0.25 Å, which is enough
+    to tip the downstream main minimization into a different basin and change the
+    reported energy by hundreds of kJ/mol. Running the tiny H minimization on the
+    Reference platform makes prep bit-reproducible regardless of installed
+    hardware; it is cheap (a few dozen steps on one small system).
+    """
+    from openmm import Platform
+
+    return Platform.getPlatformByName("Reference")
+
+
+@contextlib.contextmanager
+def deterministic_hydrogen_placement(seed: Optional[int] = DEFAULT_RANDOM_SEED):
+    """Make ``addHydrogens`` reproducible for the duration of the block.
+
+    ``Modeller.addHydrogens`` offsets every new hydrogen by
+    ``0.05 nm * Vec3(random(), random(), random())`` drawn from Python's global
+    ``random`` module, which nobody seeds. Identical input therefore yields a
+    slightly different structure on every run, and hence a different minimum:
+    1YCR has been observed anywhere between about -14.0k and -14.6k kJ/mol
+    across runs. For a tool whose output is a QC *measurement*, that
+    irreproducibility is a defect in its own right.
+
+    Seeding fixes the placement so the same input gives the same answer. The
+    previous RNG state is restored on exit, so seeding here never perturbs
+    randomness elsewhere in the caller's process. Pass ``seed=None`` to leave
+    the global RNG untouched and get fresh randomness (opt-in via the configs'
+    ``random_seed``).
+    """
+    if seed is None:
+        yield
+        return
+
+    import random
+
+    state = random.getstate()
+    random.seed(seed)
+    try:
+        yield
+    finally:
+        random.setstate(state)
+
+
+def repair_ca_hydrogen_chirality(topology, positions, verbose: bool = True):
+    """Move Cα hydrogens that hydrogen addition placed on the wrong face.
+
+    ``Modeller.addHydrogens`` seeds each new hydrogen at a 0.1 nm base vector
+    plus ``0.05 nm * Vec3(random(), random(), random())`` drawn from Python's
+    *unseeded* global ``random``, then relaxes the hydrogens with every heavy
+    atom frozen (``setParticleMass(i, 0)``). When the jitter pushes HA across
+    the N/CA/C plane, that frozen-heavy-atom relaxation cannot bring it back:
+    HA settles into the wrong-side minimum and prep emits a Cα whose HA and CB
+    share a face, which is chemically impossible.
+
+    Left alone, this silently inverts the stereocenter downstream: the bad HA
+    contributes almost all of the Cα's angle strain, ``constraints=HBonds``
+    fixes the CA-HA length so the minimizer cannot relieve it by moving HA, and
+    ff14SB has no improper on Cα — so the only path left is pushing CB through
+    the plane. Observed on roughly one prep in six of the 3P8F example.
+
+    For any tetrahedral Cα, CB and HA lie on opposite sides of the N/CA/C
+    plane. That holds for L- and D-amino acids alike, so this repair reads the
+    correct side off the actual CB position and is handedness-agnostic (safe for
+    D-residues). It is a no-op on correct structures.
+    """
+    import numpy as np
+    from openmm import Vec3, unit
+
+    pos = np.array(positions.value_in_unit(unit.nanometer))
+    repaired = []
+    for res in topology.residues():
+        idx = {a.name: a.index for a in res.atoms()}
+        if not {"N", "CA", "C", "CB", "HA"} <= set(idx):
+            continue  # e.g. GLY (no CB) has no Cα stereocenter
+        ca = pos[idx["CA"]]
+        n, c, cb, ha = (pos[idx[k]] for k in ("N", "C", "CB", "HA"))
+        v_cb = np.dot(n - ca, np.cross(c - ca, cb - ca))
+        v_ha = np.dot(n - ca, np.cross(c - ca, ha - ca))
+        if (v_cb > 0) != (v_ha > 0):
+            continue  # opposite faces — correct
+        u = sum((x - ca) / np.linalg.norm(x - ca) for x in (n, c, cb))
+        norm = np.linalg.norm(u)
+        if norm < 1e-6:
+            continue  # degenerate planar tripod
+        pos[idx["HA"]] = ca - u / norm * 0.109  # ideal 4th tetrahedral vertex
+        repaired.append(f"{res.name}{res.id}/{res.chain.id}")
+
+    if repaired and verbose:
+        print(f"  Repaired {len(repaired)} wrong-side Cα hydrogen(s): "
+              f"{', '.join(repaired)}")
+    # Vec3, not bare tuples: downstream consumers index positions as p.x/p.y/p.z.
+    return unit.Quantity([Vec3(*map(float, p)) for p in pos], unit.nanometer)
 
 
 def prep_structure(
@@ -221,6 +356,7 @@ def prep_structure(
     keep_water: bool = False,
     canonicalize: bool = False,
     rebuild_zero_coord_atoms: bool = True,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> tuple:
     """Fix missing residues/atoms and add hydrogens in one PDBFixer pass.
 
@@ -238,6 +374,10 @@ def prep_structure(
             origin (zero-coordinate placeholders from pipelines that skip atom
             modelling) and let PDBFixer rebuild them via findMissingAtoms().
             Set to False when the input is known to be fully modelled.
+        random_seed: Seed for the stochastic steps of prep (hydrogen-placement
+            jitter and PDBFixer's atom-rebuild minimization). A fixed int (the
+            default) makes prep reproducible; ``None`` opts into fresh
+            randomness.
 
     Returns:
         Tuple of (topology, positions) with repaired and protonated structure
@@ -275,7 +415,11 @@ def prep_structure(
     #   • Everything else (free ligands, crystallographic additives, glycans
     #     in their own chain …)             → remove
     fixer.findMissingAtoms()
-    fixer.addMissingAtoms()
+    # Seeded: addMissingAtoms minimizes rebuilt atoms with a stochastic
+    # integrator, so an unseeded call makes prep irreproducible for any
+    # structure with missing side-chain atoms. addMissingAtoms(seed=None) leaves
+    # the integrator unseeded (fresh randomness), matching random_seed=None.
+    fixer.addMissingAtoms(seed=random_seed)
 
     # Detect and register all non-standard bonds from the rebuilt geometry
     # (SS bonds, CYS→CYX rename). Must run after addMissingAtoms so that
@@ -336,11 +480,21 @@ def prep_structure(
         # then uses cyclic FF templates for addHydrogens.  Do NOT restore bonds
         # here — patch_cyclic_topology detects and adds the bond itself.
         result_topo, result_pos = _add_hydrogens_cyclic(
-            fixer.topology, fixer.positions, custom_bonds, ph
+            fixer.topology, fixer.positions, custom_bonds, ph, random_seed=random_seed
         )
     else:
-        fixer.addMissingHydrogens(ph)
-        result_topo, result_pos = fixer.topology, fixer.positions
+        # Inline of PDBFixer.addMissingHydrogens so we can pin the H-placement
+        # minimization to the deterministic Reference platform (the method itself
+        # exposes no platform argument).
+        _h_modeller = Modeller(fixer.topology, fixer.positions)
+        with deterministic_hydrogen_placement(random_seed):
+            _h_modeller.addHydrogens(pH=ph, platform=_hydrogen_placement_platform())
+        result_topo, result_pos = _h_modeller.topology, _h_modeller.positions
+
+    # addHydrogens jitters new H randomly and relaxes them with the heavy atoms
+    # frozen, which intermittently strands a Cα H on the wrong face; left in
+    # place it inverts the stereocenter during minimization.
+    result_pos = repair_ca_hydrogen_chirality(result_topo, result_pos)
 
     return result_topo, result_pos
 

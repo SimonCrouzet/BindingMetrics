@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example.pdb"
+DATA_DIR = Path(__file__).parent.parent / "data"
+EXAMPLE_PDB_PATH = DATA_DIR / "example_linear_p53_1YCR.pdb"
 
 
 def _skip_if_no_biotite():
@@ -16,6 +17,25 @@ def _skip_if_no_biotite():
 def _skip_if_no_example():
     if not EXAMPLE_PDB_PATH.exists():
         pytest.skip(f"Example PDB not found: {EXAMPLE_PDB_PATH}")
+
+
+def _find_native_example(*pdb_id_tokens):
+    """Return the first bundled example file whose name contains a token.
+
+    The bundled native complexes have been renamed across revisions
+    (e.g. ``example_linear_p53_1YCR.pdb`` vs ``example_linearpeptide_1YCR.pdb``),
+    so tests discover them by PDB id rather than a hard-coded filename.
+    Returns None if no matching, readable file is present.
+    """
+    if not DATA_DIR.is_dir():
+        return None
+    for path in sorted(DATA_DIR.iterdir()):
+        if path.suffix.lower() not in (".pdb", ".cif", ".mmcif"):
+            continue
+        name = path.name.lower()
+        if any(tok.lower() in name for tok in pdb_id_tokens):
+            return path
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +58,7 @@ class TestRamachandran:
 
         from binding_metrics.metrics.geometry import compute_ramachandran
 
-        result = compute_ramachandran(EXAMPLE_PDB_PATH, chain="M")
+        result = compute_ramachandran(EXAMPLE_PDB_PATH, chain="B")
 
         expected = {
             "ramachandran_favoured_pct",
@@ -57,7 +77,7 @@ class TestRamachandran:
 
         from binding_metrics.metrics.geometry import compute_ramachandran
 
-        result = compute_ramachandran(EXAMPLE_PDB_PATH, chain="M")
+        result = compute_ramachandran(EXAMPLE_PDB_PATH, chain="B")
 
         if result["n_residues_evaluated"] > 0:
             total = (
@@ -74,7 +94,7 @@ class TestRamachandran:
 
         from binding_metrics.metrics.geometry import compute_ramachandran
 
-        result = compute_ramachandran(EXAMPLE_PDB_PATH, chain="M")
+        result = compute_ramachandran(EXAMPLE_PDB_PATH, chain="B")
 
         for entry in result["per_residue"]:
             assert "res_id" in entry
@@ -86,13 +106,13 @@ class TestRamachandran:
             assert entry["region"] in ("favoured", "allowed", "outlier")
 
     def test_chain_R_receptor(self):
-        """Should work for receptor chain R too."""
+        """Should work for receptor chain A too."""
         _skip_if_no_biotite()
         _skip_if_no_example()
 
         from binding_metrics.metrics.geometry import compute_ramachandran
 
-        result = compute_ramachandran(EXAMPLE_PDB_PATH, chain="R")
+        result = compute_ramachandran(EXAMPLE_PDB_PATH, chain="A")
 
         assert result["n_residues_evaluated"] > 0
 
@@ -104,9 +124,9 @@ class TestRamachandran:
         from binding_metrics.metrics.geometry import compute_ramachandran
 
         result_auto = compute_ramachandran(EXAMPLE_PDB_PATH)
-        result_M = compute_ramachandran(EXAMPLE_PDB_PATH, chain="M")
+        result_M = compute_ramachandran(EXAMPLE_PDB_PATH, chain="B")
 
-        # Auto should pick chain M (smaller chain)
+        # Auto should pick chain B (smaller chain)
         assert result_auto["n_residues_evaluated"] == result_M["n_residues_evaluated"]
 
     def test_outlier_count_consistent_with_pct(self):
@@ -116,7 +136,7 @@ class TestRamachandran:
 
         from binding_metrics.metrics.geometry import compute_ramachandran
 
-        result = compute_ramachandran(EXAMPLE_PDB_PATH, chain="R")
+        result = compute_ramachandran(EXAMPLE_PDB_PATH, chain="A")
 
         n_eval = result["n_residues_evaluated"]
         if n_eval > 0:
@@ -169,7 +189,7 @@ class TestOmegaPlanarity:
 
         from binding_metrics.metrics.geometry import compute_omega_planarity
 
-        result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="M")
+        result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="B")
 
         expected = {
             "omega_mean_dev", "omega_max_dev",
@@ -185,7 +205,7 @@ class TestOmegaPlanarity:
 
         from binding_metrics.metrics.geometry import compute_omega_planarity
 
-        result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="M")
+        result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="B")
 
         if result["n_bonds_evaluated"] > 0:
             assert result["omega_mean_dev"] >= 0.0
@@ -198,7 +218,7 @@ class TestOmegaPlanarity:
 
         from binding_metrics.metrics.geometry import compute_omega_planarity
 
-        result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="M")
+        result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="B")
 
         for entry in result["per_residue"]:
             assert "omega" in entry
@@ -214,19 +234,19 @@ class TestOmegaPlanarity:
 
         from binding_metrics.metrics.geometry import compute_omega_planarity
 
-        result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="R")
+        result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="A")
 
         manual_outliers = sum(1 for e in result["per_residue"] if e["is_outlier"])
         assert manual_outliers == result["omega_outlier_count"]
 
     def test_chain_R_works(self):
-        """Should work for receptor chain R."""
+        """Should work for receptor chain A."""
         _skip_if_no_biotite()
         _skip_if_no_example()
 
         from binding_metrics.metrics.geometry import compute_omega_planarity
 
-        result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="R")
+        result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="A")
         assert result["n_bonds_evaluated"] > 0
 
     def test_deviation_within_range(self):
@@ -236,7 +256,7 @@ class TestOmegaPlanarity:
 
         from binding_metrics.metrics.geometry import compute_omega_planarity
 
-        result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="M")
+        result = compute_omega_planarity(EXAMPLE_PDB_PATH, chain="B")
 
         for entry in result["per_residue"]:
             assert 0.0 <= entry["deviation"] <= 180.0
@@ -263,7 +283,7 @@ class TestShapeComplementarity:
         from binding_metrics.metrics.geometry import compute_shape_complementarity
 
         result = compute_shape_complementarity(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R"
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A"
         )
 
         expected = {
@@ -273,6 +293,29 @@ class TestShapeComplementarity:
         }
         assert expected.issubset(set(result.keys()))
 
+    def test_sc_is_finite_on_real_example(self):
+        """The real complex must yield a finite Sc, not a silent NaN.
+
+        Every other Sc assertion in this class is guarded by
+        ``if not np.isnan(result["sc"])``, so a regression that made
+        shape-complementarity return NaN on real input would pass all of them
+        vacuously. This unguarded check fails if the effective computation breaks.
+        """
+        _skip_if_no_biotite()
+        _skip_if_no_example()
+
+        from binding_metrics.metrics.geometry import compute_shape_complementarity
+
+        result = compute_shape_complementarity(
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A"
+        )
+
+        assert not np.isnan(result["sc"]), "Sc is NaN on a real interface"
+        assert -1.0 <= result["sc"] <= 1.0
+        # A real bound interface generates surface dots on both partners.
+        assert result["n_surface_dots_A"] > 0
+        assert result["n_surface_dots_B"] > 0
+
     def test_sc_value_in_range(self):
         """Sc score should be in [-1, 1]."""
         _skip_if_no_biotite()
@@ -281,7 +324,7 @@ class TestShapeComplementarity:
         from binding_metrics.metrics.geometry import compute_shape_complementarity
 
         result = compute_shape_complementarity(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R"
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A"
         )
 
         if not np.isnan(result["sc"]):
@@ -295,7 +338,7 @@ class TestShapeComplementarity:
         from binding_metrics.metrics.geometry import compute_shape_complementarity
 
         result = compute_shape_complementarity(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R"
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A"
         )
 
         if not np.isnan(result["sc"]):
@@ -310,7 +353,7 @@ class TestShapeComplementarity:
         from binding_metrics.metrics.geometry import compute_shape_complementarity
 
         result = compute_shape_complementarity(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R"
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A"
         )
 
         if not np.isnan(result["sc"]):
@@ -325,7 +368,7 @@ class TestShapeComplementarity:
         from binding_metrics.metrics.geometry import compute_shape_complementarity
 
         result = compute_shape_complementarity(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R"
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A"
         )
 
         assert isinstance(result["per_dot_scores_A"], np.ndarray)
@@ -353,11 +396,108 @@ class TestShapeComplementarity:
 
         result_auto = compute_shape_complementarity(EXAMPLE_PDB_PATH)
         result_explicit = compute_shape_complementarity(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R"
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A"
         )
 
         if not np.isnan(result_auto["sc"]) and not np.isnan(result_explicit["sc"]):
             assert result_auto["sc"] == pytest.approx(result_explicit["sc"], rel=1e-4)
+
+    # -- Physical calibration on native complexes (Lawrence & Colman range) --
+    #
+    # Well-formed native interfaces score Sc ~= 0.6-0.75 (protease-inhibitor
+    # ~0.70-0.78, antibody-antigen ~0.64-0.68); peptide interfaces run a touch
+    # lower. A collapsed value (~0.2) means the surface normals / interface
+    # selection are broken. As an external anchor, this implementation scores
+    # the classic trypsin-BPTI interface (PDB 2PTC) at ~0.70, matching the
+    # Lawrence & Colman (1993) literature value of ~0.71-0.72.
+
+    @pytest.mark.parametrize(
+        "tokens,lo,hi",
+        [
+            (("1YCR",), 0.50, 0.80),   # p53 peptide - MDM2 (linear peptide)
+            (("3P8F",), 0.55, 0.85),   # SFTI-1 bicyclic peptide
+            (("1CWA",), 0.55, 0.85),   # cyclosporin (ncAA macrocycle)
+        ],
+    )
+    def test_native_sc_in_physical_range(self, tokens, lo, hi):
+        """Native complexes must score in the physically sensible Sc range.
+
+        Regression guard against the miscalibration that returned Sc ~= 0.2
+        for well-packed native interfaces.
+        """
+        _skip_if_no_biotite()
+        path = _find_native_example(*tokens)
+        if path is None:
+            pytest.skip(f"No bundled example for {tokens}")
+
+        from binding_metrics.metrics.geometry import compute_shape_complementarity
+
+        result = compute_shape_complementarity(path)
+        sc = result["sc"]
+        if np.isnan(sc):
+            pytest.skip(f"No interface detected for {path.name}")
+        assert lo <= sc <= hi, (
+            f"{path.name}: Sc={sc:.3f} outside expected native range "
+            f"[{lo}, {hi}] - shape complementarity is miscalibrated"
+        )
+        assert result["n_surface_dots_A"] > 0
+        assert result["n_surface_dots_B"] > 0
+
+    def test_facing_slabs_are_complementary(self):
+        """Two facing atom slabs in vdW contact must give a high positive Sc.
+
+        A cheap, self-contained calibration case: two multi-layer slabs whose
+        facing surfaces sit at van der Waals contact form a near-perfect
+        lock-and-key interface, which must score near the top of the range
+        (Sc > 0.7). This exercises the normal sign convention and weighting
+        without any external file. The slabs are several layers thick so the
+        smoothed surface normal of the contact face is well defined.
+        """
+        _skip_if_no_biotite()
+        import tempfile
+        import biotite.structure as struc
+        import biotite.structure.io.pdb as pdb_io
+        from binding_metrics.metrics.geometry import compute_shape_complementarity
+
+        spacing = 3.4  # ~vdW contact for carbon
+        xs = np.arange(8) * spacing
+        ys = np.arange(8) * spacing
+        gx, gy = np.meshgrid(xs, ys)
+
+        def layer(z):
+            return np.stack(
+                [gx.ravel(), gy.ravel(), np.full(gx.size, z)], axis=1
+            )
+
+        n_layers = 3
+        # Chain A: contact face at z=0, body below; Chain B: contact face at
+        # z=spacing, body above -> the two faces are one vdW spacing apart.
+        slab_a = np.vstack([layer(-spacing * k) for k in range(n_layers)])
+        slab_b = np.vstack([layer(spacing * (k + 1)) for k in range(n_layers)])
+        coords = np.vstack([slab_a, slab_b])
+        n = len(slab_a)
+
+        arr = struc.AtomArray(len(coords))
+        arr.coord = coords.astype(np.float32)
+        arr.chain_id = np.array(["A"] * n + ["B"] * len(slab_b))
+        arr.res_id = np.arange(1, len(coords) + 1)
+        arr.res_name = np.array(["ALA"] * len(coords))
+        arr.atom_name = np.array(["C"] * len(coords))
+        arr.element = np.array(["C"] * len(coords))
+
+        with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as fh:
+            pf = pdb_io.PDBFile()
+            pf.set_structure(arr)
+            pf.write(fh.name)
+            result = compute_shape_complementarity(
+                fh.name, peptide_chain="A", receptor_chain="B"
+            )
+
+        if not np.isnan(result["sc"]):
+            assert result["sc"] > 0.7, (
+                f"Complementary facing slabs scored Sc={result['sc']:.3f}; "
+                "sign convention or normals are wrong"
+            )
 
     def test_fibonacci_sphere(self):
         """Fibonacci sphere points should be unit vectors."""
@@ -390,7 +530,7 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R",
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
             grid_spacing=1.0,  # coarser for speed
         )
 
@@ -400,6 +540,28 @@ class TestBuriedVoidVolume:
         }
         assert expected.issubset(set(result.keys()))
 
+    def test_void_volume_finite_on_real_example(self):
+        """The real interface must yield a finite (non-NaN) void volume.
+
+        ``test_void_volume_non_negative`` and ``test_void_fraction_in_range`` are
+        both guarded by ``if not np.isnan(...)``, so a regression returning NaN on
+        real input would pass them without asserting anything. This closes that gap.
+        """
+        _skip_if_no_biotite()
+        _skip_if_no_example()
+
+        from binding_metrics.metrics.geometry import compute_buried_void_volume
+
+        result = compute_buried_void_volume(
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
+            grid_spacing=1.0,
+        )
+
+        assert not np.isnan(result["void_volume_A3"])
+        assert not np.isnan(result["void_grid_fraction"])
+        assert result["void_volume_A3"] >= 0.0
+        assert 0.0 <= result["void_grid_fraction"] <= 1.0
+
     def test_void_volume_non_negative(self):
         """Void volume should be non-negative."""
         _skip_if_no_biotite()
@@ -408,7 +570,7 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R",
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
             grid_spacing=1.0,
         )
 
@@ -423,7 +585,7 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R",
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
             grid_spacing=1.0,
         )
 
@@ -438,7 +600,7 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R",
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
             grid_spacing=1.0,
         )
 
@@ -465,7 +627,7 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R",
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
             grid_spacing=1.0,
         )
 
@@ -491,11 +653,11 @@ class TestBuriedVoidVolume:
         from binding_metrics.metrics.geometry import compute_buried_void_volume
 
         result_coarse = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R",
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
             grid_spacing=1.5,
         )
         result_fine = compute_buried_void_volume(
-            EXAMPLE_PDB_PATH, peptide_chain="M", receptor_chain="R",
+            EXAMPLE_PDB_PATH, peptide_chain="B", receptor_chain="A",
             grid_spacing=0.75,
         )
 

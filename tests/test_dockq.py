@@ -129,7 +129,7 @@ class TestComputeDockqEndToEnd:
     def test_identical_structure_scores_one(self):
         from pathlib import Path
 
-        example = Path("data/example.pdb")
+        example = Path("data/example_linear_p53_1YCR.pdb")
         if not example.exists():
             pytest.skip("no example complex available")
         out = compute_dockq_metrics(example, example)

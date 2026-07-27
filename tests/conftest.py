@@ -27,7 +27,7 @@ BEST_PLATFORM = "CUDA" if HAS_CUDA else "CPU"
 
 
 # Path to real example PDB for integration tests
-EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example.pdb"
+EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
 
 
 @pytest.fixture
@@ -132,15 +132,42 @@ def example_pdb_path() -> Path:
 
 @pytest.fixture
 def example_pdb_chains() -> dict:
-    """Chain IDs for the example PDB structure.
+    """Chain IDs for the bundled example PDB structure (public PDB 1YCR).
 
-    Returns dict with 'ligand' and 'receptor' chain IDs.
-    Tests should use these rather than hard-coding chain IDs.
+    data/example_linear_p53_1YCR.pdb is the MDM2-p53 complex: chain A = receptor (MDM2),
+    chain B = peptide (p53). Returns dict with 'ligand' and 'receptor' chain
+    IDs. Tests should use these rather than hard-coding chain IDs.
     """
     return {
-        "ligand": "M",
-        "receptor": ["R"],
+        "ligand": "B",
+        "receptor": ["A"],
     }
+
+
+@pytest.fixture(scope="session")
+def prepped_example_cif(tmp_path_factory) -> Path:
+    """Force-field-ready 1YCR, prepped from the bundled raw example on the fly.
+
+    The raw crystal (data/example_linear_p53_1YCR.pdb) has no hydrogens and an
+    uncapped terminus, so it can't build an OpenMM system directly. Rather than
+    ship a separate pre-prepped file, we run the same PDBFixer prep the pipeline
+    uses (once per session) and hand the result to the force-field tests.
+    """
+    pytest.importorskip("openmm", reason="OpenMM required")
+    pytest.importorskip("pdbfixer", reason="pdbfixer required")
+    from binding_metrics.core.system import prep_structure
+    from binding_metrics.io.structures import load_structure, save_structure
+
+    raw = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+    if not raw.exists():
+        pytest.skip(f"bundled example not found: {raw}")
+    out = tmp_path_factory.mktemp("prep") / "example_linear_p53_1YCR_prepped.cif"
+    topology, positions = load_structure(raw)
+    topology, positions = prep_structure(
+        topology, positions, ph=7.4, keep_water=False, canonicalize=False
+    )
+    save_structure(topology, positions, out, source_path=raw)
+    return out
 
 
 def pytest_configure(config):

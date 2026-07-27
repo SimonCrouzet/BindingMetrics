@@ -44,6 +44,7 @@ Supported NMe PDB codes (input → canonical template name):
     MLE       →  MLE
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -117,16 +118,16 @@ _XML_NMG = """\
 <ForceField>
  <Residues>
   <Residue name="NMG">
-   <Atom name="N"   type="N"   charge="-0.058784"/>
-   <Atom name="CN"  type="CT"  charge="-0.311738"/>
-   <Atom name="HN1" type="H1"  charge=" 0.124265"/>
-   <Atom name="HN2" type="H1"  charge=" 0.124265"/>
-   <Atom name="HN3" type="H1"  charge=" 0.124265"/>
-   <Atom name="CA"  type="CX"  charge="-0.240556"/>
-   <Atom name="HA2" type="H1"  charge=" 0.117262"/>
-   <Atom name="HA3" type="H1"  charge=" 0.117262"/>
-   <Atom name="C"   type="C"   charge=" 0.576907"/>
-   <Atom name="O"   type="O"   charge="-0.573149"/>
+   <Atom name="N"   type="protein-N"   charge="-0.058784"/>
+   <Atom name="CN"  type="protein-CT"  charge="-0.311738"/>
+   <Atom name="HN1" type="protein-H1"  charge=" 0.124265"/>
+   <Atom name="HN2" type="protein-H1"  charge=" 0.124265"/>
+   <Atom name="HN3" type="protein-H1"  charge=" 0.124265"/>
+   <Atom name="CA"  type="protein-CX"  charge="-0.240556"/>
+   <Atom name="HA2" type="protein-H1"  charge=" 0.117262"/>
+   <Atom name="HA3" type="protein-H1"  charge=" 0.117262"/>
+   <Atom name="C"   type="protein-C"   charge=" 0.576907"/>
+   <Atom name="O"   type="protein-O"   charge="-0.573149"/>
    <Bond atomName1="N"   atomName2="CN"/>
    <Bond atomName1="N"   atomName2="CA"/>
    <Bond atomName1="CN"  atomName2="HN1"/>
@@ -149,19 +150,19 @@ _XML_NMA = """\
 <ForceField>
  <Residues>
   <Residue name="NMA">
-   <Atom name="N"   type="N"   charge="-0.036802"/>
-   <Atom name="CN"  type="CT"  charge="-0.353242"/>
-   <Atom name="HN1" type="H1"  charge=" 0.129448"/>
-   <Atom name="HN2" type="H1"  charge=" 0.129448"/>
-   <Atom name="HN3" type="H1"  charge=" 0.129448"/>
-   <Atom name="CA"  type="CX"  charge=" 0.020348"/>
-   <Atom name="HA"  type="H1"  charge=" 0.047291"/>
-   <Atom name="CB"  type="CT"  charge="-0.182508"/>
-   <Atom name="HB1" type="HC"  charge=" 0.067317"/>
-   <Atom name="HB2" type="HC"  charge=" 0.067317"/>
-   <Atom name="HB3" type="HC"  charge=" 0.067317"/>
-   <Atom name="C"   type="C"   charge=" 0.437383"/>
-   <Atom name="O"   type="O"   charge="-0.522764"/>
+   <Atom name="N"   type="protein-N"   charge="-0.036802"/>
+   <Atom name="CN"  type="protein-CT"  charge="-0.353242"/>
+   <Atom name="HN1" type="protein-H1"  charge=" 0.129448"/>
+   <Atom name="HN2" type="protein-H1"  charge=" 0.129448"/>
+   <Atom name="HN3" type="protein-H1"  charge=" 0.129448"/>
+   <Atom name="CA"  type="protein-CX"  charge=" 0.020348"/>
+   <Atom name="HA"  type="protein-H1"  charge=" 0.047291"/>
+   <Atom name="CB"  type="protein-CT"  charge="-0.182508"/>
+   <Atom name="HB1" type="protein-HC"  charge=" 0.067317"/>
+   <Atom name="HB2" type="protein-HC"  charge=" 0.067317"/>
+   <Atom name="HB3" type="protein-HC"  charge=" 0.067317"/>
+   <Atom name="C"   type="protein-C"   charge=" 0.437383"/>
+   <Atom name="O"   type="protein-O"   charge="-0.522764"/>
    <Bond atomName1="N"   atomName2="CN"/>
    <Bond atomName1="N"   atomName2="CA"/>
    <Bond atomName1="CN"  atomName2="HN1"/>
@@ -187,25 +188,25 @@ _XML_MVA = """\
 <ForceField>
  <Residues>
   <Residue name="MVA">
-   <Atom name="N"   type="N"   charge="-0.077388"/>
-   <Atom name="CN"  type="CT"  charge="-0.228891"/>
-   <Atom name="HN1" type="H1"  charge=" 0.095543"/>
-   <Atom name="HN2" type="H1"  charge=" 0.095543"/>
-   <Atom name="HN3" type="H1"  charge=" 0.095543"/>
-   <Atom name="CA"  type="CX"  charge="-0.370509"/>
-   <Atom name="HA"  type="H1"  charge=" 0.145778"/>
-   <Atom name="CB"  type="3C"  charge=" 0.353677"/>
-   <Atom name="HB"  type="HC"  charge=" 0.053477"/>
-   <Atom name="CG1" type="CT"  charge="-0.484027"/>
-   <Atom name="HG11" type="HC" charge=" 0.122836"/>
-   <Atom name="HG12" type="HC" charge=" 0.122836"/>
-   <Atom name="HG13" type="HC" charge=" 0.122836"/>
-   <Atom name="CG2" type="CT"  charge="-0.484027"/>
-   <Atom name="HG21" type="HC" charge=" 0.122836"/>
-   <Atom name="HG22" type="HC" charge=" 0.122836"/>
-   <Atom name="HG23" type="HC" charge=" 0.122836"/>
-   <Atom name="C"   type="C"   charge=" 0.602902"/>
-   <Atom name="O"   type="O"   charge="-0.534639"/>
+   <Atom name="N"   type="protein-N"   charge="-0.077388"/>
+   <Atom name="CN"  type="protein-CT"  charge="-0.228891"/>
+   <Atom name="HN1" type="protein-H1"  charge=" 0.095543"/>
+   <Atom name="HN2" type="protein-H1"  charge=" 0.095543"/>
+   <Atom name="HN3" type="protein-H1"  charge=" 0.095543"/>
+   <Atom name="CA"  type="protein-CX"  charge="-0.370509"/>
+   <Atom name="HA"  type="protein-H1"  charge=" 0.145778"/>
+   <Atom name="CB"  type="protein-3C"  charge=" 0.353677"/>
+   <Atom name="HB"  type="protein-HC"  charge=" 0.053477"/>
+   <Atom name="CG1" type="protein-CT"  charge="-0.484027"/>
+   <Atom name="HG11" type="protein-HC" charge=" 0.122836"/>
+   <Atom name="HG12" type="protein-HC" charge=" 0.122836"/>
+   <Atom name="HG13" type="protein-HC" charge=" 0.122836"/>
+   <Atom name="CG2" type="protein-CT"  charge="-0.484027"/>
+   <Atom name="HG21" type="protein-HC" charge=" 0.122836"/>
+   <Atom name="HG22" type="protein-HC" charge=" 0.122836"/>
+   <Atom name="HG23" type="protein-HC" charge=" 0.122836"/>
+   <Atom name="C"   type="protein-C"   charge=" 0.602902"/>
+   <Atom name="O"   type="protein-O"   charge="-0.534639"/>
    <Bond atomName1="N"   atomName2="CN"/>
    <Bond atomName1="N"   atomName2="CA"/>
    <Bond atomName1="CN"  atomName2="HN1"/>
@@ -237,28 +238,28 @@ _XML_MLE = """\
 <ForceField>
  <Residues>
   <Residue name="MLE">
-   <Atom name="N"   type="N"   charge="-0.073133"/>
-   <Atom name="CN"  type="CT"  charge="-0.351941"/>
-   <Atom name="HN1" type="H1"  charge=" 0.129060"/>
-   <Atom name="HN2" type="H1"  charge=" 0.129060"/>
-   <Atom name="HN3" type="H1"  charge=" 0.129060"/>
-   <Atom name="CA"  type="CX"  charge="-0.095313"/>
-   <Atom name="HA"  type="H1"  charge=" 0.050991"/>
-   <Atom name="CB"  type="2C"  charge="-0.139229"/>
-   <Atom name="HB2" type="HC"  charge=" 0.051454"/>
-   <Atom name="HB3" type="HC"  charge=" 0.051454"/>
-   <Atom name="CG"  type="3C"  charge=" 0.418706"/>
-   <Atom name="HG"  type="HC"  charge="-0.026087"/>
-   <Atom name="CD1" type="CT"  charge="-0.439742"/>
-   <Atom name="HD11" type="HC" charge=" 0.100252"/>
-   <Atom name="HD12" type="HC" charge=" 0.100252"/>
-   <Atom name="HD13" type="HC" charge=" 0.100252"/>
-   <Atom name="CD2" type="CT"  charge="-0.439742"/>
-   <Atom name="HD21" type="HC" charge=" 0.100252"/>
-   <Atom name="HD22" type="HC" charge=" 0.100252"/>
-   <Atom name="HD23" type="HC" charge=" 0.100252"/>
-   <Atom name="C"   type="C"   charge=" 0.542163"/>
-   <Atom name="O"   type="O"   charge="-0.538274"/>
+   <Atom name="N"   type="protein-N"   charge="-0.073133"/>
+   <Atom name="CN"  type="protein-CT"  charge="-0.351941"/>
+   <Atom name="HN1" type="protein-H1"  charge=" 0.129060"/>
+   <Atom name="HN2" type="protein-H1"  charge=" 0.129060"/>
+   <Atom name="HN3" type="protein-H1"  charge=" 0.129060"/>
+   <Atom name="CA"  type="protein-CX"  charge="-0.095313"/>
+   <Atom name="HA"  type="protein-H1"  charge=" 0.050991"/>
+   <Atom name="CB"  type="protein-2C"  charge="-0.139229"/>
+   <Atom name="HB2" type="protein-HC"  charge=" 0.051454"/>
+   <Atom name="HB3" type="protein-HC"  charge=" 0.051454"/>
+   <Atom name="CG"  type="protein-3C"  charge=" 0.418706"/>
+   <Atom name="HG"  type="protein-HC"  charge="-0.026087"/>
+   <Atom name="CD1" type="protein-CT"  charge="-0.439742"/>
+   <Atom name="HD11" type="protein-HC" charge=" 0.100252"/>
+   <Atom name="HD12" type="protein-HC" charge=" 0.100252"/>
+   <Atom name="HD13" type="protein-HC" charge=" 0.100252"/>
+   <Atom name="CD2" type="protein-CT"  charge="-0.439742"/>
+   <Atom name="HD21" type="protein-HC" charge=" 0.100252"/>
+   <Atom name="HD22" type="protein-HC" charge=" 0.100252"/>
+   <Atom name="HD23" type="protein-HC" charge=" 0.100252"/>
+   <Atom name="C"   type="protein-C"   charge=" 0.542163"/>
+   <Atom name="O"   type="protein-O"   charge="-0.538274"/>
    <Bond atomName1="N"   atomName2="CN"/>
    <Bond atomName1="N"   atomName2="CA"/>
    <Bond atomName1="CN"  atomName2="HN1"/>
@@ -348,6 +349,60 @@ def _find_atom(residue, name: str):
         if atom.name == name:
             return atom
     return None
+
+
+def _add_standard_intraresidue_bonds(topology, residue) -> None:
+    """Add the intra-residue covalent bonds of a residue's standard template.
+
+    OpenMM's ``PDBxFile``/``Topology.createStandardBonds`` only builds bonds for
+    residues whose *load-time* name is a recognised standard type.  A D-amino
+    acid is loaded under its D name (e.g. ``DAL``), so ``createStandardBonds``
+    skips it and the residue is left with **no** intra-residue bonds.  After we
+    rename it to its L counterpart (e.g. ``ALA``), ``ForceField`` template
+    matching then fails with *"The set of atoms matches ALA, but the bonds are
+    different"*.
+
+    This restores the missing bonds from OpenMM's built-in standard bond
+    definitions (keyed on the now-standard residue name), skipping:
+      * inter-residue references (atom names prefixed with ``+``/``-``) — the
+        backbone C–N and any cyclic-closure bonds already exist, and
+      * bonds already present in the topology.
+
+    Safe to call on a residue that already has its bonds (no-op) and on a
+    residue with no standard definition (no-op).
+    """
+    import openmm.app.topology as _topmod
+
+    Topology = _topmod.Topology
+    if not getattr(Topology, "_hasLoadedStandardBonds", False):
+        # Trigger the same lazy load createStandardBonds uses.
+        Topology.loadBondDefinitions(
+            os.path.join(os.path.dirname(_topmod.__file__), "data", "residues.xml")
+        )
+        Topology._hasLoadedStandardBonds = True
+
+    std_bonds = Topology._standardBonds.get(residue.name)
+    if not std_bonds:
+        return
+
+    atom_by_name = {a.name: a for a in residue.atoms()}
+    existing = {
+        frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()
+    }
+    for bond in std_bonds:
+        a_name, b_name = bond[0], bond[1]
+        # Skip inter-residue references (handled elsewhere / already present).
+        if a_name[0] in "+-" or b_name[0] in "+-":
+            continue
+        a1 = atom_by_name.get(a_name)
+        a2 = atom_by_name.get(b_name)
+        if a1 is None or a2 is None:
+            continue
+        key = frozenset((a1.index, a2.index))
+        if key in existing:
+            continue
+        topology.addBond(a1, a2)
+        existing.add(key)
 
 
 # ---------------------------------------------------------------------------
@@ -444,14 +499,22 @@ def patch_nonstandard(topology, positions, chain_id: str, info: NonstandardInfo)
     residues = _peptide_residues(topology, chain_id)
 
     # --- Rename D-amino acids → L counterpart ---
+    # NB: assign to .name (a plain attribute on OpenMM's Residue), NOT ._name —
+    # setting ._name creates a dead attribute and leaves the rename a silent no-op.
     for entry in info.d_residues:
-        residues[entry["res_idx"]]._name = entry["l_name"]
+        res = residues[entry["res_idx"]]
+        res.name = entry["l_name"]
+        # A D-residue was loaded under its D name, so createStandardBonds never
+        # built its intra-residue bonds. Restore them now that it carries a
+        # standard L name, else ForceField template matching fails with
+        # "atoms match <L>, but the bonds are different".
+        _add_standard_intraresidue_bonds(topology, res)
 
     # --- Rename NMe-AAs and remove spurious backbone H on N ---
     atoms_to_remove = []
     for entry in info.nmethyl_residues:
         res = residues[entry["res_idx"]]
-        res._name = entry["template_name"]
+        res.name = entry["template_name"]  # .name, not ._name (see D-AA note above)
         # Remove any H that PDBFixer added to backbone N (should be absent in NMe)
         for atom in res.atoms():
             if atom.name in _NME_N_BAD_H:

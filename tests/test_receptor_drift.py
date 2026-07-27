@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example.pdb"
+EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
 
 
 class TestReceptorDrift:
@@ -46,7 +46,7 @@ class TestReceptorDrift:
         traj_path = tmp_path / "test.dcd"
         traj.save_dcd(str(traj_path))
 
-        result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "R")
+        result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "A")
 
         expected_keys = {
             "drift_aligned_mean", "drift_aligned_max",
@@ -72,7 +72,7 @@ class TestReceptorDrift:
         traj_path = tmp_path / "single.dcd"
         traj.save_dcd(str(traj_path))
 
-        result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "R")
+        result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "A")
 
         # Single frame: aligned drift of reference frame is ~0 (DCD round-trip
         # may introduce ~0.01 Å numerical noise due to float32 precision)
@@ -80,7 +80,7 @@ class TestReceptorDrift:
 
     @pytest.mark.integration
     def test_n_receptor_ca_positive(self, tmp_path: Path):
-        """Should detect at least one Cα atom for receptor chain R."""
+        """Should detect at least one Cα atom for receptor chain A."""
         pytest.importorskip("mdtraj")
         import mdtraj as md
 
@@ -93,7 +93,7 @@ class TestReceptorDrift:
         traj_path = tmp_path / "test.dcd"
         traj.save_dcd(str(traj_path))
 
-        result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "R")
+        result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "A")
 
         assert result["n_receptor_ca"] > 0
         assert result["n_frames"] == traj.n_frames
@@ -113,7 +113,7 @@ class TestReceptorDrift:
         traj_path = tmp_path / "test.dcd"
         traj.save_dcd(str(traj_path))
 
-        result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "R")
+        result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "A")
 
         # For a single-frame traj, drift is 0; aligned max should be >= 0
         assert result["drift_aligned_max"] >= 0.0
@@ -156,7 +156,7 @@ class TestReceptorDrift:
         traj_path = tmp_path / "multi.dcd"
         traj5.save_dcd(str(traj_path))
 
-        result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "R")
+        result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "A")
 
         assert result["n_frames"] == 5
         assert len(result["drift_aligned_per_frame"]) == 5
@@ -178,9 +178,9 @@ class TestReceptorDrift:
         traj_path = tmp_path / "test.dcd"
         traj.save_dcd(str(traj_path))
 
-        result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "R")
+        result = compute_receptor_drift(traj_path, EXAMPLE_PDB_PATH, "A")
 
-        # The example.pdb has no meaningful unit cell → raw drift should be available
+        # The example_linear_p53_1YCR.pdb has no meaningful unit cell → raw drift should be available
         # (DCD trajectories from PDB load without PBC info when the source has dummy cell)
         # Just check the type is correct
         assert isinstance(result["pbc_detected"], bool)

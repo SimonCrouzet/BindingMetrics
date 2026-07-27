@@ -375,12 +375,6 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
     except ImportError:
         return
 
-    # Map global residue index → local 1-based position within its chain
-    res_local: dict[int, int] = {}
-    for chain in topology.chains():
-        for local_idx, res in enumerate(chain.residues(), start=1):
-            res_local[res.index] = local_idx
-
     custom_bonds = []
     for bond in topology.bonds():
         a1, a2 = bond.atom1, bond.atom2
@@ -399,19 +393,42 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
     doc = gemmi.cif.read(str(cif_path))
     block = doc.sole_block()
 
+    # Derive each residue's (auth_asym_id, auth_seq_id) from the FINAL _atom_site
+    # that was just written.  Those rows are 1:1 with topology.atoms(), and those
+    # are the exact columns OpenMM's PDBxFile keys atoms on when it reloads the
+    # file.  Using the topology chain id / a chain-local index here instead would
+    # not match _atom_site after save_cif has rewritten it to the original auth
+    # IDs, and OpenMM would silently drop the bond on reload.
+    res_key: dict[int, tuple[str, str]] = {}
+    site = block.find("_atom_site.", ["auth_asym_id", "auth_seq_id"])
+    if site:
+        for atom, row in zip(topology.atoms(), site):
+            res_key.setdefault(atom.residue.index, (row[0], row[1]))
+
+    def _asym_seq(res) -> tuple[str, str]:
+        # Fall back to the topology's own values if _atom_site could not be read.
+        return res_key.get(res.index, (res.chain.id, str(res.id)))
+
     existing = block.find(["_struct_conn.id"])
     n_existing = len(existing) if existing else 0
 
+    # Use the SAME label_* column names PDBxFile.writeFile emits.  On reload
+    # OpenMM reads struct_conn partners exclusively via ptnr*_label_asym_id /
+    # ptnr*_label_seq_id / ptnr*_label_atom_id — a freshly-created loop that used
+    # auth_* column names would be written but never read back.  The values we
+    # store come from _atom_site's auth_asym_id / auth_seq_id (which save_cif has
+    # already made equal to the label_asym_id it writes), so they match the atom
+    # keys OpenMM builds.
     _STRUCT_CONN_COLS = [
         "_struct_conn.id",
         "_struct_conn.conn_type_id",
-        "_struct_conn.ptnr1_auth_asym_id",
+        "_struct_conn.ptnr1_label_asym_id",
         "_struct_conn.ptnr1_label_comp_id",
-        "_struct_conn.ptnr1_auth_seq_id",
+        "_struct_conn.ptnr1_label_seq_id",
         "_struct_conn.ptnr1_label_atom_id",
-        "_struct_conn.ptnr2_auth_asym_id",
+        "_struct_conn.ptnr2_label_asym_id",
         "_struct_conn.ptnr2_label_comp_id",
-        "_struct_conn.ptnr2_auth_seq_id",
+        "_struct_conn.ptnr2_label_seq_id",
         "_struct_conn.ptnr2_label_atom_id",
     ]
     loop_ref = block.find_loop("_struct_conn.id")
@@ -422,35 +439,55 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
 
     for i, (a1, a2) in enumerate(custom_bonds):
         r1, r2 = a1.residue, a2.residue
+        asym1, seq1 = _asym_seq(r1)
+        asym2, seq2 = _asym_seq(r2)
         bond_id = f"covale{n_existing + i + 1}"
         loop.add_row([
             bond_id, "covale",
-            r1.chain.id, r1.name, str(res_local[r1.index]), a1.name,
-            r2.chain.id, r2.name, str(res_local[r2.index]), a2.name,
+            asym1, r1.name, seq1, a1.name,
+            asym2, r2.name, seq2, a2.name,
         ])
 
     doc.write_file(str(cif_path))
 
 
-def _rename_cyx_to_cys_in_cif(cif_path: Path) -> None:
-    """Rename CYX residues back to CYS in the output CIF.
+#: Force-field-internal residue names that prep introduces to match specialised
+#: templates, mapped back to the standard code they must be restored to on
+#: output. CYX = disulfide-bonded CYS; ASPL/GLUL/LYSL = the lactam-closing
+#: Asp/Glu/Lys templates.
+_FF_INTERNAL_RESIDUE_RENAMES = (
+    ("CYX", "CYS"),
+    ("ASPL", "ASP"),
+    ("GLUL", "GLU"),
+    ("LYSL", "LYS"),
+)
 
-    OpenMM renames disulfide-bonded CYS to CYX internally so it can match the
-    CYX forcefield template (no HG, external SG bond).  That internal name must
-    not leak into output files — downstream tools expect CYS.  The disulfide
-    bond geometry and _struct_conn records are unaffected by this rename.
 
-    Uses text replacement rather than gemmi mutation because gemmi Table views
-    from block.find() do not propagate edits back through doc.write_file().
-    CYX is a 3-letter residue code unique to the forcefield internals and safe
-    to replace as a whole-word token.
+def _rename_internal_residues_to_standard(cif_path: Path) -> None:
+    """Restore force-field-internal residue names to standard codes on output.
+
+    Prep renames residues internally so they match specialised force-field
+    templates — disulfide CYS→CYX, and lactam-closing ASP/GLU/LYS→ASPL/GLUL/LYSL.
+    Those internal names must not leak into output files: downstream tools, and
+    binding-metrics' own ``detect_cyclization`` (which matches the standard
+    residue name plus the ``_struct_conn`` closure bond), expect CYS/ASP/GLU/LYS.
+    The bond geometry and ``_struct_conn`` records are untouched, so re-detection
+    recovers the closure from the bond on reload. Without this, a saved lactam
+    structure carries GLUL/LYSL names and fails re-detection, raising a spurious
+    CyclizationError when the prepped file is relaxed.
+
+    Uses whole-word text replacement rather than gemmi mutation because gemmi
+    Table views from ``block.find()`` do not propagate edits back through
+    ``doc.write_file()``. Each code is a 3–4-letter token unique to the
+    force-field internals and safe to replace as a whole word.
     """
     import re
 
     content = cif_path.read_text()
-    if "CYX" not in content:
-        return
-    new_content = re.sub(r"\bCYX\b", "CYS", content)
+    new_content = content
+    for internal, standard in _FF_INTERNAL_RESIDUE_RENAMES:
+        if internal in new_content:
+            new_content = re.sub(rf"\b{internal}\b", standard, new_content)
     if new_content != content:
         cif_path.write_text(new_content)
 
@@ -493,7 +530,7 @@ def save_cif(
         # PDBxFile only writes disulfide bonds to _struct_conn; patch in any
         # other non-sequential intra-chain covalent bonds (e.g. head-to-tail).
         _patch_nonstd_bonds_in_cif(output_path, topology)
-        _rename_cyx_to_cys_in_cif(output_path)
+        _rename_internal_residues_to_standard(output_path)
         return
 
     try:
@@ -501,7 +538,7 @@ def save_cif(
     except ImportError:
         with open(output_path, "w") as f:
             PDBxFile.writeFile(topology, positions, f)
-        _rename_cyx_to_cys_in_cif(output_path)
+        _rename_internal_residues_to_standard(output_path)
         return
 
     # Write fresh OpenMM CIF — correct atoms and H, but with label chain IDs
@@ -611,7 +648,7 @@ def save_cif(
 
         output_doc.write_file(str(output_path))
         _patch_nonstd_bonds_in_cif(output_path, topology)
-        _rename_cyx_to_cys_in_cif(output_path)
+        _rename_internal_residues_to_standard(output_path)
     finally:
         tmp_path.unlink(missing_ok=True)
 

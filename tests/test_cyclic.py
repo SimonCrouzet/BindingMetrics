@@ -221,16 +221,22 @@ class TestDetectCyclization:
         assert len(result) == 2
 
     def test_unsupported_cyclization_raises(self):
+        # detect_cyclization raises only on a non-sequential intra-chain
+        # topology bond that matches no supported pattern (a covalent record,
+        # not a mere close contact — distance scanning was dropped to avoid
+        # false positives from tight backbone geometry). Here a sidechain
+        # CB(res0)–CB(res2) staple is encoded as a real bond.
         from binding_metrics.core.cyclic import detect_cyclization
-        res_names = ["ALA", "ALA"]
+        res_names = ["ALA", "ALA", "ALA"]
         specs = [
+            [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C")],
             [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C")],
             [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C")],
         ]
         topology, positions, atom_map = _make_minimal_topology(res_names, specs)
-        positions[atom_map[(1, "CB")].index] = (
-            positions[atom_map[(0, "CB")].index] + np.array([0.15, 0, 0])
-        )
+        # Encode an unsupported (hydrocarbon-staple-like) covalent bond between
+        # non-adjacent residues 0 and 2.
+        topology.addBond(atom_map[(0, "CB")], atom_map[(2, "CB")])
         with pytest.raises(CyclizationError, match="Unsupported"):
             detect_cyclization(topology, positions, "A")
 
@@ -254,19 +260,29 @@ class TestDetectCyclization:
 
 
 # ---------------------------------------------------------------------------
-# RelaxationConfig: is_cyclic field
+# RelaxationConfig: cyclic_bond_hints field
+#
+# Cyclization is always auto-detected (there is no is_cyclic flag). The only
+# cyclic-related config field is cyclic_bond_hints, an optional list of
+# CyclicBondInfo used as a fallback when a prepped file has lost its
+# STRUCT_CONN records and geometry is too strained for distance detection.
 # ---------------------------------------------------------------------------
 
 class TestRelaxationConfigCyclic:
-    def test_default_is_cyclic_false(self):
+    def test_default_cyclic_bond_hints_none(self):
         from binding_metrics.protocols.relaxation import RelaxationConfig
         config = RelaxationConfig()
-        assert config.is_cyclic is False
+        assert config.cyclic_bond_hints is None
 
-    def test_is_cyclic_true(self):
+    def test_cyclic_bond_hints_settable(self):
         from binding_metrics.protocols.relaxation import RelaxationConfig
-        config = RelaxationConfig(is_cyclic=True)
-        assert config.is_cyclic is True
+        hint = CyclicBondInfo(
+            cyclic_type="head_to_tail",
+            atom1_id=("A", 4, "C"),
+            atom2_id=("A", 0, "N"),
+        )
+        config = RelaxationConfig(cyclic_bond_hints=[hint])
+        assert config.cyclic_bond_hints == [hint]
 
 
 # ---------------------------------------------------------------------------
@@ -411,3 +427,361 @@ class TestGetAddhVariants:
             assert "Illegal variant" not in str(exc), (
                 f"addHydrogens raised 'Illegal variant' — GLY fix is broken: {exc}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Side-chain-to-side-chain lactam staples  (#1: lactam_sc_lys_asp / _glu)
+# ---------------------------------------------------------------------------
+
+_BB = [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")]
+_LYS_SPEC = _BB + [("CB", "C"), ("CG", "C"), ("CD", "C"), ("CE", "C"), ("NZ", "N")]
+_ASP_SPEC = _BB + [("CB", "C"), ("CG", "C"), ("OD1", "O"), ("OD2", "O")]
+_GLU_SPEC = _BB + [("CB", "C"), ("CG", "C"), ("CD", "C"), ("OE1", "O"), ("OE2", "O")]
+
+
+@pytest.mark.integration
+class TestDetectSidechainLactam:
+    """detect_cyclization for internal LYS–ASP / LYS–GLU side-chain lactams."""
+
+    def test_lys_asp_sidechain_detected(self):
+        from binding_metrics.core.cyclic import detect_cyclization
+        res_names = ["ALA", "LYS", "ALA", "ALA", "ALA", "ASP", "ALA"]
+        specs = [_BB, _LYS_SPEC, _BB, _BB, _BB, _ASP_SPEC, _BB]
+        topology, positions, atom_map = _make_minimal_topology(res_names, specs)
+        # Place LYS NZ within amide-bond distance of ASP CG (i,i+4 staple)
+        positions[atom_map[(1, "NZ")].index] = (
+            positions[atom_map[(5, "CG")].index] + np.array([0.133, 0, 0])
+        )
+        result = detect_cyclization(topology, positions, "A")
+        assert len(result) == 1
+        info = result[0]
+        assert info.cyclic_type == "lactam_sc_lys_asp"
+        assert info.atom1_id == ("A", 1, "NZ")
+        assert info.atom2_id == ("A", 5, "CG")
+        assert _XML_LYSL in info.extra_ff_xmls
+        assert _XML_ASPL in info.extra_ff_xmls
+        assert info.omega_ids is not None
+
+    def test_lys_glu_sidechain_detected(self):
+        from binding_metrics.core.cyclic import detect_cyclization
+        res_names = ["ALA", "LYS", "ALA", "ALA", "ALA", "GLU", "ALA"]
+        specs = [_BB, _LYS_SPEC, _BB, _BB, _BB, _GLU_SPEC, _BB]
+        topology, positions, atom_map = _make_minimal_topology(res_names, specs)
+        positions[atom_map[(1, "NZ")].index] = (
+            positions[atom_map[(5, "CD")].index] + np.array([0.133, 0, 0])
+        )
+        result = detect_cyclization(topology, positions, "A")
+        assert len(result) == 1
+        info = result[0]
+        assert info.cyclic_type == "lactam_sc_lys_glu"
+        assert info.atom2_id == ("A", 5, "CD")
+        assert _XML_GLUL in info.extra_ff_xmls
+
+    def test_no_false_positive_when_far(self):
+        """Far-apart LYS and ASP side chains must not be flagged as a staple."""
+        from binding_metrics.core.cyclic import detect_cyclization
+        res_names = ["ALA", "LYS", "ALA", "ALA", "ALA", "ASP", "ALA"]
+        specs = [_BB, _LYS_SPEC, _BB, _BB, _BB, _ASP_SPEC, _BB]
+        topology, positions, atom_map = _make_minimal_topology(res_names, specs)
+        result = detect_cyclization(topology, positions, "A")
+        assert result == []
+
+
+class TestLactamInternalHList:
+    """_internal_h_list must return the correct H set for the lactam residues."""
+
+    def test_lysl(self):
+        pytest.importorskip("openmm", reason="OpenMM required")
+        from binding_metrics.core.cyclic import _internal_h_list
+        names = {n for n, _ in _internal_h_list("LYSL")}
+        assert "HZ1" in names                       # single amide proton kept
+        assert "HZ2" not in names and "HZ3" not in names
+        assert "H" in names                          # backbone amide NH
+
+    def test_aspl(self):
+        pytest.importorskip("openmm", reason="OpenMM required")
+        from binding_metrics.core.cyclic import _internal_h_list
+        names = {n for n, _ in _internal_h_list("ASPL")}
+        assert names == {"H", "HA", "HB2", "HB3"}    # HD2 dropped (OD2 gone)
+
+    def test_glul(self):
+        pytest.importorskip("openmm", reason="OpenMM required")
+        from binding_metrics.core.cyclic import _internal_h_list
+        names = {n for n, _ in _internal_h_list("GLUL")}
+        assert names == {"H", "HA", "HB2", "HB3", "HG2", "HG3"}
+
+
+class TestLactamTemplateConnectivity:
+    """Regression guard: every atom in a lactam template must be bonded.
+
+    The H atoms were originally declared without bonds to their parent heavy
+    atoms, which made createSystem reject the built residue ('too many H-C
+    bonds').  This test fails if that omission recurs.
+    """
+
+    @pytest.mark.parametrize(
+        "xml_str", [_XML_ASPL, _XML_GLUL, _XML_LYSL],
+        ids=["ASPL", "GLUL", "LYSL"],
+    )
+    def test_no_unbonded_atoms(self, xml_str):
+        import xml.etree.ElementTree as ET
+        res = ET.fromstring(xml_str).find(".//Residue")
+        atom_names = {a.get("name") for a in res.findall("Atom")}
+        bonded = set()
+        for b in res.findall("Bond"):
+            bonded.add(b.get("atomName1"))
+            bonded.add(b.get("atomName2"))
+        external = {e.get("atomName") for e in res.findall("ExternalBond")}
+        unbonded = atom_names - bonded - external
+        assert not unbonded, f"{res.get('name')}: unbonded atoms {sorted(unbonded)}"
+
+
+@pytest.mark.integration
+class TestSidechainLactamEndToEnd:
+    """Full patch -> addHydrogens -> createSystem for a real heavy-atom peptide."""
+
+    def _heavy_atom_peptide(self, seq):
+        import os
+        import tempfile
+        pytest.importorskip("openmm", reason="OpenMM required")
+        chem = pytest.importorskip("rdkit.Chem", reason="RDKit required")
+        from rdkit.Chem import AllChem
+        from openmm.app import PDBFile, Modeller
+
+        mol = chem.MolFromSequence(seq)
+        mol = chem.AddHs(mol)
+        AllChem.EmbedMolecule(mol, randomSeed=1)
+        mol = chem.RemoveHs(mol)                     # heavy-atom-only input
+        fd, path = tempfile.mkstemp(suffix=".pdb")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(chem.MolToPDBBlock(mol))
+            pdb = PDBFile(path)
+        finally:
+            os.unlink(path)
+        modeller = Modeller(pdb.topology, pdb.positions)
+        chain_id = next(iter(modeller.topology.chains())).id
+        return modeller.topology, modeller.positions, chain_id
+
+    def _run(self, seq, lys_idx, acid_idx, acid_atom, expect_name):
+        from openmm.app import ForceField, Modeller, NoCutoff, HBonds
+        from binding_metrics.core.cyclic import (
+            patch_cyclic_topology, get_addh_variants, load_extra_xmls,
+            resolve_closure_atoms,
+        )
+        top, pos, chain_id = self._heavy_atom_peptide(seq)
+
+        # Introduce the closure bond as a prepped staple structure would carry it.
+        residues = list(next(iter(top.chains())).residues())
+        a1 = next(a for a in residues[lys_idx].atoms() if a.name == "NZ")
+        a2 = next(a for a in residues[acid_idx].atoms() if a.name == acid_atom)
+        top.addBond(a1, a2)
+
+        top, pos, bond_info = patch_cyclic_topology(top, pos, chain_id)
+        names = [r.name for r in next(iter(top.chains())).residues()]
+        assert "LYSL" in names and expect_name in names
+
+        ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
+        load_extra_xmls(ff, bond_info)
+        modeller = Modeller(top, pos)
+        variants = get_addh_variants(modeller.topology, bond_info, chain_id)
+        modeller.addHydrogens(ff, pH=7.4, variants=variants)
+
+        system = ff.createSystem(
+            modeller.topology, nonbondedMethod=NoCutoff, constraints=HBonds
+        )
+        assert system.getNumParticles() == modeller.topology.getNumAtoms()
+
+        i1, i2 = resolve_closure_atoms(modeller.topology, bond_info[0], chain_id)
+        assert any({b.atom1.index, b.atom2.index} == {i1, i2}
+                   for b in modeller.topology.bonds())
+
+    def test_lys_asp_staple_builds(self):
+        # G-K-A-A-A-D-G : LYS(1) NZ — ASP(5) CG  (i,i+4)
+        self._run("GKAAADG", 1, 5, "CG", "ASPL")
+
+    def test_lys_glu_staple_builds(self):
+        # G-K-A-A-A-E-G : LYS(1) NZ — GLU(5) CD  (i,i+4)
+        self._run("GKAAAEG", 1, 5, "CD", "GLUL")
+
+
+@pytest.mark.integration
+class TestDisulfideRenameApplies:
+    """Regression: rename_disulfide_cys_to_cyx must rewrite res.name to CYX (not a
+    dead ._name), so the CYX force-field template — which requires the HG-less,
+    externally-SG-bonded residue — matches at createSystem. test_disulfide_detected
+    only covers detection, not the applied rename."""
+
+    _CYS = [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C"), ("SG", "S")]
+    _ALA = [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")]
+
+    def test_ss_bonded_cys_become_cyx(self):
+        from binding_metrics.core.cyclic import rename_disulfide_cys_to_cyx
+        topology, positions, atom_map = _make_minimal_topology(
+            ["CYS", "ALA", "CYS"], [self._CYS, self._ALA, self._CYS]
+        )
+        # Put the two SG atoms at a disulfide distance (~2.05 Å).
+        positions[atom_map[(2, "SG")].index] = (
+            positions[atom_map[(0, "SG")].index] + np.array([0.205, 0, 0])
+        )
+        top2, _ = rename_disulfide_cys_to_cyx(topology, positions)
+        assert [r.name for r in top2.residues()] == ["CYX", "ALA", "CYX"]
+
+    def test_free_cys_not_renamed(self):
+        # No close SG contact (atoms spread far apart) → CYS stays CYS, no spurious CYX.
+        from binding_metrics.core.cyclic import rename_disulfide_cys_to_cyx
+        topology, positions, atom_map = _make_minimal_topology(
+            ["CYS", "ALA", "CYS"], [self._CYS, self._ALA, self._CYS]
+        )
+        top2, _ = rename_disulfide_cys_to_cyx(topology, positions)
+        assert [r.name for r in top2.residues()] == ["CYS", "ALA", "CYS"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: non-standard residues lose their intra-residue bonds at CIF load
+# (createStandardBonds only bonds standard names).  This broke the head-to-tail
+# cyclosporin junction (a D-Ala renamed to ALA whose bonds were never built) and
+# the N-methyl / GAFF residues.  Covered by reconstruct_intraresidue_bonds and
+# the NMe hydrogen-variant support.
+# ---------------------------------------------------------------------------
+
+def _make_bondless_ala_chain():
+    """A one-residue ALA chain with realistic heavy-atom geometry but NO bonds.
+
+    Mirrors how a residue that was non-standard at load time (e.g. DAL renamed to
+    ALA) arrives: correct atoms/coordinates, zero intra-residue bonds.
+    """
+    pytest.importorskip("openmm", reason="OpenMM required")
+    from openmm import app
+    from openmm.app import element as elem
+    import openmm.unit as unit
+    from openmm import Vec3
+
+    top = app.Topology()
+    chain = top.addChain(id="B")
+    res = top.addResidue("ALA", chain)
+    coords_nm = {
+        "N":  (0.000, 0.000, 0.0),
+        "CA": (0.147, 0.000, 0.0),
+        "C":  (0.147, 0.153, 0.0),
+        "O":  (0.270, 0.153, 0.0),
+        "CB": (0.147, -0.153, 0.0),
+    }
+    els = {"N": elem.nitrogen, "CA": elem.carbon, "C": elem.carbon,
+           "O": elem.oxygen, "CB": elem.carbon}
+    pos = []
+    amap = {}
+    for name, xyz in coords_nm.items():
+        a = top.addAtom(name, els[name], res)
+        amap[name] = a
+        pos.append(Vec3(*xyz))
+    positions = unit.Quantity(pos, unit.nanometer)
+    return top, positions, res, amap
+
+
+@pytest.mark.integration
+class TestReconstructIntraresidueBonds:
+    """reconstruct_intraresidue_bonds restores bonds only for bond-less residues."""
+
+    def test_bondless_residue_gets_standard_connectivity(self):
+        from binding_metrics.core.cyclic import reconstruct_intraresidue_bonds
+        top, positions, res, amap = _make_bondless_ala_chain()
+        assert top.getNumBonds() == 0
+
+        added = reconstruct_intraresidue_bonds(top, positions, "B")
+
+        bonded = {
+            frozenset((b.atom1.name, b.atom2.name)) for b in top.bonds()
+        }
+        assert added == 4
+        assert frozenset(("N", "CA")) in bonded
+        assert frozenset(("CA", "C")) in bonded
+        assert frozenset(("CA", "CB")) in bonded
+        assert frozenset(("C", "O")) in bonded
+        # No spurious 1,3 bonds (e.g. N–C, N–CB, CA–O).
+        assert frozenset(("N", "C")) not in bonded
+        assert frozenset(("N", "CB")) not in bonded
+        assert frozenset(("CA", "O")) not in bonded
+
+    def test_already_bonded_residue_untouched(self):
+        from binding_metrics.core.cyclic import reconstruct_intraresidue_bonds
+        top, positions, res, amap = _make_bondless_ala_chain()
+        # Pre-bond the residue as a standard residue would be.
+        top.addBond(amap["N"], amap["CA"])
+        top.addBond(amap["CA"], amap["C"])
+        top.addBond(amap["CA"], amap["CB"])
+        top.addBond(amap["C"], amap["O"])
+        before = top.getNumBonds()
+
+        added = reconstruct_intraresidue_bonds(top, positions, "B")
+
+        assert added == 0
+        assert top.getNumBonds() == before  # no duplicates
+
+
+@pytest.mark.integration
+class TestDResidueBondRestore:
+    """patch_nonstandard restores the intra-residue bonds of a renamed D-amino acid.
+
+    Regression for the cyclosporin head-to-tail junction: DAL is loaded under its
+    D name (so createStandardBonds skips it, leaving 0 intra bonds); after the
+    DAL->ALA rename the internal ALA template must still match.
+    """
+
+    def test_dal_rename_restores_bonds(self):
+        from binding_metrics.core.nonstandard import detect_nonstandard, patch_nonstandard
+        from openmm import app
+        from openmm.app import element as elem
+        import openmm.unit as unit
+        from openmm import Vec3
+
+        top = app.Topology()
+        chain = top.addChain(id="B")
+        res = top.addResidue("DAL", chain)  # D-alanine, no bonds (as loaded)
+        coords_nm = {
+            "N": (0.0, 0.0, 0.0), "CA": (0.147, 0.0, 0.0),
+            "C": (0.147, 0.153, 0.0), "O": (0.270, 0.153, 0.0),
+            "CB": (0.147, -0.153, 0.0),
+        }
+        els = {"N": elem.nitrogen, "CA": elem.carbon, "C": elem.carbon,
+               "O": elem.oxygen, "CB": elem.carbon}
+        pos = []
+        for name, xyz in coords_nm.items():
+            top.addAtom(name, els[name], res)
+            pos.append(Vec3(*xyz))
+        positions = unit.Quantity(pos, unit.nanometer)
+
+        info = detect_nonstandard(top, "B")
+        assert info.has_d_residues
+        top2, _ = patch_nonstandard(top, positions, "B", info)
+
+        r = next(top2.residues())
+        assert r.name == "ALA"                     # renamed
+        bonded = {frozenset((b.atom1.name, b.atom2.name)) for b in top2.bonds()}
+        assert frozenset(("N", "CA")) in bonded    # bonds restored
+        assert frozenset(("CA", "C")) in bonded
+        assert frozenset(("CA", "CB")) in bonded
+        assert frozenset(("C", "O")) in bonded
+
+
+class TestNMeInternalHList:
+    """_internal_h_list must supply H specs for N-methylated NCAA residues so
+    addHydrogens builds their heavy+H form (matching the NMG/NMA/MVA/MLE FF
+    templates)."""
+
+    @pytest.mark.parametrize("name,parent_backbone", [
+        ("NMG", "GLY"), ("NMA", "ALA"), ("MVA", "VAL"), ("MLE", "LEU"),
+    ])
+    def test_nme_h_list(self, name, parent_backbone):
+        pytest.importorskip("openmm", reason="OpenMM required")
+        from binding_metrics.core.cyclic import _internal_h_list
+        h = _internal_h_list(name)
+        assert h is not None
+        names = [n for n, _ in h]
+        parents = {n: p for n, p in h}
+        # The three N-methyl protons on CN are present.
+        for hn in ("HN1", "HN2", "HN3"):
+            assert hn in names
+            assert parents[hn] == "CN"
+        # The backbone amide H is dropped (tertiary N in N-methyl residues).
+        assert not any(n == "H" and p == "N" for n, p in h)
