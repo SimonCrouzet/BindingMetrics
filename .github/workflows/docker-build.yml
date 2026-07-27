@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The CUDA devel base plus a full conda env overruns the runner's default
       # free space; drop preinstalled toolchains this build never uses.
@@ -43,12 +43,12 @@ jobs:
           sudo rm -rf /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
           df -h /
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Only the base target: the full target adds the OpenFold3 ML stack and
       # nearly doubles the image, which does not fit a hosted runner.
       - name: Build base image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           target: base

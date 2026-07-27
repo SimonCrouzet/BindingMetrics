@@ -12,7 +12,13 @@ updates:
     # The workflows pin floating majors (@v4), so patches and minors already
     # arrive on their own. What needs a human is a new major — a changed Node
     # runtime or renamed inputs — which is what these PRs will be.
-    open-pull-requests-limit: 5
+    #
+    # Headroom matters more than it looks: the limit caps *open* PRs, and
+    # Dependabot silently declines to raise the rest once it is reached. At 5,
+    # a single Node-runtime wave across the seven actions used here saturated
+    # the queue and hid two bumps entirely, with nothing in the UI to say so.
+    # Keep this comfortably above the number of distinct actions in use.
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "ci"
     labels:
