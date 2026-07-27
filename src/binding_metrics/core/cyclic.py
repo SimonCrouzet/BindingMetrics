@@ -8,14 +8,20 @@ Supported cyclization types (detected by inter-atom distance on heavy atoms):
     lactam_c_lys       : LYS sidechain NZ — backbone C-terminus amide
     lactam_sc_lys_asp  : LYS sidechain NZ — ASP sidechain CG amide (staple)
     lactam_sc_lys_glu  : LYS sidechain NZ — GLU sidechain CD amide (staple)
+    hydrocarbon_staple : all-carbon side-chain cross-link (Aileron-type staple)
 
 The two ``lactam_sc_*`` types are side-chain-to-side-chain lactam bridges
 (e.g. the i,i+4 Lys–Asp/Glu staples used to pre-organise α-helices). Both
 partners are internal residues; they reuse the same ASPL/GLUL/LYSL templates
 as the terminal lactams, differing only in the atoms that form the closure.
 
+``hydrocarbon_staple`` covers all-hydrocarbon staples (e.g. the S5/R8 olefin
+residues MK8/0EH joined by ring-closing metathesis). The staple residues are
+non-canonical and parameterised by :mod:`binding_metrics.core.gaff_ncaa`; the
+GAFF↔GAFF cross-link is covered by GAFF's own terms, so no template is needed
+and detection only has to recognise (not reject) it.
+
 Unsupported cyclization types (raises CyclizationError with guidance):
-    - Hydrocarbon staples (all-carbon bridges)
     - Thioether bridges (non-disulfide S-C)
     - Macrolactone / macrolactam via Ser/Thr/Tyr
     - Biaryl ethers (vancomycin-type)
@@ -67,7 +73,6 @@ BindingMetrics supports automatic topology patching for:
   • Lactam C-terminal    (LYS NZ → backbone C-terminus)
 
 Your structure appears to contain a different cyclization:
-  • Hydrocarbon staple   (all-carbon bridge, e.g. Aileron-type)
   • Thioether bridge     (S–C, e.g. lanthipeptide)
   • Macrolactone/ester   (Ser/Thr/Tyr O → carbonyl C)
   • Biaryl ether         (vancomycin-type)
@@ -370,6 +375,33 @@ def _find_atom(residue, name: str):
     return None
 
 
+#: Backbone atom names — a cross-link touching one of these is not a side-chain
+#: staple.
+_BACKBONE_ATOM_NAMES = frozenset({"N", "CA", "C", "O", "OXT"})
+
+
+def _is_hydrocarbon_staple_bond(ai, aj) -> bool:
+    """True for an all-carbon side-chain cross-link (a hydrocarbon staple).
+
+    Both endpoints must be carbon side-chain atoms (i.e. not backbone
+    N/CA/C/O). This all-carbon signature distinguishes an Aileron-type
+    hydrocarbon staple (e.g. the S5/R8 olefin residues MK8/0EH joined by
+    ring-closing metathesis) from thioether (S–C), macrolactone (O–C) and
+    biaryl-ether cross-links, which are still reported as unsupported.
+
+    The staple residues themselves are non-standard and get parameterised by
+    :mod:`binding_metrics.core.gaff_ncaa`; the cross-link bond (GAFF↔GAFF) is
+    covered by GAFF's own class-based terms, so no dedicated template is needed.
+    """
+
+    def _sidechain_carbon(a) -> bool:
+        return (
+            a.element is not None and a.element.symbol == "C" and a.name not in _BACKBONE_ATOM_NAMES
+        )
+
+    return _sidechain_carbon(ai) and _sidechain_carbon(aj)
+
+
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
@@ -643,14 +675,20 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                     detected_pairs.add((nz.index, c_atom.index))
                     detected_pairs.add((c_atom.index, nz.index))
 
-    # ---- 5. Catch unsupported cyclization: non-sequential intra-chain topology
-    #         bonds that were not recognised as a supported pattern ----
+    # ---- 5. Classify remaining non-sequential intra-chain topology bonds ----
     #
-    # We read from the topology (which reflects STRUCT_CONN covale entries from the
+    # Read from the topology (which reflects STRUCT_CONN covale entries from the
     # CIF) rather than scanning atom-pair distances.  Distance scanning produces
     # false positives for close but non-covalent contacts such as tight backbone
     # geometry (e.g. THR1.N — PRO2.CB at 1.79 Å, five bonds apart) and is
     # unreliable for structures with steric clashes or poor geometry.
+    #
+    # An all-carbon side-chain cross-link is a hydrocarbon staple: the staple
+    # residues are parameterised by GAFF (core.gaff_ncaa) and the cross-link is
+    # covered by GAFF's own terms, so it is recognised rather than rejected.
+    # Any other unrecognised cross-link (thioether S–C, macrolactone O–C,
+    # biaryl ether …) still raises CyclizationError.
+    local_of = {r.index: i for i, r in enumerate(residues)}
     for bond in topology.bonds():
         ai, aj = bond.atom1, bond.atom2
         ri, rj = ai.residue, aj.residue
@@ -660,6 +698,21 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
             continue  # sequential backbone bond
         if (ai.index, aj.index) in detected_pairs:
             continue  # already handled as a supported pattern
+        if _is_hydrocarbon_staple_bond(ai, aj):
+            li, lj = local_of.get(ri.index), local_of.get(rj.index)
+            if li is None or lj is None:
+                continue  # endpoint outside the scanned chain (defensive)
+            results.append(
+                CyclicBondInfo(
+                    cyclic_type="hydrocarbon_staple",
+                    atom1_id=(chain_id, li, ai.name),
+                    atom2_id=(chain_id, lj, aj.name),
+                    omega_ids=None,
+                )
+            )
+            detected_pairs.add((ai.index, aj.index))
+            detected_pairs.add((aj.index, ai.index))
+            continue
         raise CyclizationError(
             f"Unsupported cyclization detected in topology: "
             f"{ri.name}{ri.id}.{ai.name} — "
@@ -868,6 +921,11 @@ def patch_cyclic_topology(topology, positions, chain_id: str, hints: list = None
                 od_name,
                 new_acid_name,
                 app,
+            )
+
+        elif info.cyclic_type == "hydrocarbon_staple":
+            topology, positions = _patch_hydrocarbon_staple(
+                topology, positions, residues, info, app
             )
 
     # Verify all closure atoms are still findable after patches
@@ -1086,6 +1144,29 @@ def _patch_lactam_sidechain(
         if not already:
             topology.addBond(nz, c_atom)
 
+    return topology, positions
+
+
+def _patch_hydrocarbon_staple(topology, positions, residues, info, app):
+    """Ensure the all-carbon staple cross-link bond is present in the topology.
+
+    Nothing else is patched: the staple residues (e.g. MK8/0EH) are exotic
+    non-canonical amino acids parameterised by
+    :func:`binding_metrics.core.gaff_ncaa.parameterize_ncaa_residues`, and the
+    GAFF↔GAFF cross-link bond is covered by GAFF's own class-based terms. We
+    only guarantee the bond exists (it normally arrives via CONECT / STRUCT_CONN)
+    so GAFF caps and parameterises it — no residue rename or atom removal.
+    """
+    ri, name1 = info.atom1_id[1], info.atom1_id[2]
+    rj, name2 = info.atom2_id[1], info.atom2_id[2]
+    a1 = _find_atom(residues[ri], name1)
+    a2 = _find_atom(residues[rj], name2)
+    if a1 and a2:
+        already = any(
+            {b.atom1.index, b.atom2.index} == {a1.index, a2.index} for b in topology.bonds()
+        )
+        if not already:
+            topology.addBond(a1, a2)
     return topology, positions
 
 
