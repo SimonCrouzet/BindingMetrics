@@ -653,6 +653,22 @@ def _am1bcc_charges(molecule, random_seed: Optional[int] = DEFAULT_RANDOM_SEED) 
     return charges + (total_charge - charges.sum()) / molecule.n_atoms
 
 
+def _assign_am1bcc_charges(molecules, random_seed: Optional[int] = DEFAULT_RANDOM_SEED) -> None:
+    """Set :func:`_am1bcc_charges` on every OpenFF molecule that has no partial charges yet.
+
+    ``GAFFTemplateGenerator`` keeps charges that are already on a molecule, so calling this
+    before the generator is built keeps its own AM1-BCC call, and the sqm timing that makes
+    it irreproducible, out of the template.
+    """
+    from openff.units import Quantity, unit
+
+    for molecule in molecules:
+        if molecule.partial_charges is None:
+            molecule.partial_charges = Quantity(
+                _am1bcc_charges(molecule, random_seed), unit.elementary_charge
+            )
+
+
 def _generate_residue_template(
     res,
     topology,
@@ -685,7 +701,6 @@ def _generate_residue_template(
     :func:`_am1bcc_charges`); the same residue graph and seed give the same template.
     """
     from openff.toolkit import Molecule
-    from openff.units import Quantity, unit
     from openmmforcefields.generators import GAFFTemplateGenerator
     from rdkit import Chem
 
@@ -717,7 +732,7 @@ def _generate_residue_template(
     # Charges from here, not from GAFFTemplateGenerator: its own AM1-BCC call lets sqm pick
     # the diagonaliser by timing (see _am1bcc_charges). The generator keeps charges that are
     # already set on the molecule and only adds the GAFF2 types and bonded parameters.
-    off.partial_charges = Quantity(_am1bcc_charges(off, random_seed), unit.elementary_charge)
+    _assign_am1bcc_charges([off], random_seed)
     gaff = GAFFTemplateGenerator(molecules=[off], forcefield=gaff_version)
     ffxml = gaff.generate_residue_template(off)
 

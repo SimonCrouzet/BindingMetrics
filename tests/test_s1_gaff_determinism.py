@@ -377,6 +377,65 @@ class TestTheSeedReachesTheTemplateBuild:
         assert recorded_seed["random_seed"] == 7
 
 
+@pytest.mark.integration
+class TestExplicitSmallMoleculeRoute:
+    """``small_molecules=[...]`` gets its charges from ``_am1bcc_charges`` too."""
+
+    @pytest.fixture
+    def generator_inputs(self, monkeypatch):
+        """Stop ``_setup_system`` when the template generator is built; record what it gets.
+
+        ``seeds`` holds the seed of each ``_am1bcc_charges`` call and ``charges`` the partial
+        charges of each molecule when the generator receives it.
+        """
+        import openmmforcefields.generators as generators
+
+        seen: dict = {"seeds": [], "charges": None}
+
+        def fake_charges(molecule, random_seed=None):
+            seen["seeds"].append(random_seed)
+            return np.linspace(-0.01, 0.01, molecule.n_atoms)
+
+        class FakeGenerator:
+            def __init__(self, molecules, forcefield):
+                seen["charges"] = [m.partial_charges for m in molecules]
+                raise TemplateStepReachedError
+
+        monkeypatch.setattr(gaff_ncaa, "_am1bcc_charges", fake_charges)
+        monkeypatch.setattr(generators, "GAFFTemplateGenerator", FakeGenerator)
+        return seen
+
+    @staticmethod
+    def _setup(small_molecules, seed):
+        from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
+
+        config = RelaxationConfig(
+            small_molecules=small_molecules,
+            random_seed=seed,
+            peptide_chain_id="B",
+            receptor_chain_id="A",
+        )
+        ImplicitRelaxation(config)._setup_system(P53_PDB)
+
+    def test_charges_are_set_before_the_generator_is_built(self, generator_inputs):
+        with pytest.raises(TemplateStepReachedError):
+            self._setup(["CCO", "c1ccccc1O"], seed=9)
+        assert generator_inputs["seeds"] == [9, 9]
+        charges = generator_inputs["charges"]
+        assert len(charges) == 2 and all(q is not None for q in charges)
+
+    def test_charges_the_user_gave_are_kept(self, generator_inputs):
+        from openff.units import Quantity, unit
+
+        molecule = openff_molecule.from_smiles("CCO")
+        given = Quantity(np.linspace(-0.02, 0.02, molecule.n_atoms), unit.elementary_charge)
+        molecule.partial_charges = given
+        with pytest.raises(TemplateStepReachedError):
+            self._setup([molecule], seed=9)
+        assert generator_inputs["seeds"] == []
+        np.testing.assert_array_equal(generator_inputs["charges"][0].magnitude, given.magnitude)
+
+
 @requires_cuda
 @requires_antechamber
 @pytest.mark.integration

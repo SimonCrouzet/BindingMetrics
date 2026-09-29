@@ -834,6 +834,11 @@ class ImplicitRelaxation(Relaxer):
                 ) from exc
             mols = self._coerce_molecules(self.config.small_molecules)
             if mols:
+                # The generator's own AM1-BCC call lets sqm pick its diagonaliser by timing,
+                # so the charges would change from run to run; set them here instead.
+                from binding_metrics.core.gaff_ncaa import _assign_am1bcc_charges
+
+                _assign_am1bcc_charges(mols, self.config.random_seed)
                 gaff = GAFFTemplateGenerator(
                     molecules=mols, forcefield=self.config.small_molecule_ff
                 )
