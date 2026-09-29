@@ -218,3 +218,48 @@ class TestMainStatusAccounting:
         code, _ = _run_main(monkeypatch, tmp_path, {"a": {"batch_status": "ok"}})
         assert code == 0
         assert "1 ok, 0 error(s)\n" in capsys.readouterr().out
+
+
+class TestPerSampleLog:
+    def test_default_is_one_log_inside_each_sample_dir(self, tmp_path):
+        path = batch._resolve_log_path(tmp_path / "s1", "s1", None)
+        assert path == tmp_path / "s1" / "s1.log"
+
+    def test_explicit_log_file_wins(self, tmp_path):
+        shared = tmp_path / "all.log"
+        assert batch._resolve_log_path(tmp_path / "s1", "s1", shared) == shared
+
+    def test_worker_writes_its_own_log(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(batch, "run_pipeline", lambda **_: {"sample_id": "s1"})
+        _run_one(**_worker_kwargs(tmp_path, sample_id="s1"))
+        assert "binding-metrics-batch worker: s1" in (tmp_path / "s1" / "s1.log").read_text()
+
+    def test_flag_is_accepted_and_reported_ignored_with_log_file(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        rows = {"a": {"batch_status": "ok"}}
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        (input_dir / "a.cif").write_text("data_x\n")
+        monkeypatch.setattr(
+            batch, "_run_one", lambda input_path, **_: dict(rows["a"], sample_id="a")
+        )
+        argv = [
+            "binding-metrics-batch",
+            "-i",
+            str(input_dir),
+            "--output-csv",
+            str(tmp_path / "m.csv"),
+        ]
+        monkeypatch.setattr(sys, "argv", argv + ["--per-sample-log"])
+        with pytest.raises(SystemExit) as exc:
+            batch.main()
+        assert exc.value.code == 0
+        assert "ignored" not in capsys.readouterr().err
+
+        monkeypatch.setattr(
+            sys, "argv", argv + ["--per-sample-log", "--log-file", str(tmp_path / "x.log")]
+        )
+        with pytest.raises(SystemExit):
+            batch.main()
+        assert "--per-sample-log is ignored because --log-file was given" in capsys.readouterr().err

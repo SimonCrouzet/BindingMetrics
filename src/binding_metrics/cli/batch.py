@@ -77,6 +77,16 @@ def _build_reference_map(reference_dir: Path) -> dict[str, Path]:
     return refs
 
 
+def _resolve_log_path(sample_output_dir: Path, sid: str, log_file: Optional[Path]) -> Path:
+    """Return the file a worker logs to.
+
+    Without ``--log-file`` every sample gets ``{sample_dir}/{sid}.log``; this is
+    what ``--per-sample-log`` asks for, so the flag needs no separate branch.
+    An explicit ``--log-file`` wins and all samples share it.
+    """
+    return Path(log_file) if log_file else sample_output_dir / f"{sid}.log"
+
+
 # ---------------------------------------------------------------------------
 # Worker (must be module-level so it is picklable by multiprocessing)
 # ---------------------------------------------------------------------------
@@ -118,7 +128,7 @@ def _run_one(
 
     sid = sample_id or input_path.stem
     sample_output_dir = output_dir / sid
-    log_path = log_file if log_file else sample_output_dir / f"{sid}.log"
+    log_path = _resolve_log_path(sample_output_dir, sid, log_file)
 
     t0 = time.time()
     error_msg: Optional[str] = None
@@ -504,6 +514,13 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.per_sample_log and args.log_file is not None:
+        print(
+            "warning: --per-sample-log is ignored because --log-file was given; "
+            f"all samples log to {args.log_file}",
+            file=sys.stderr,
+        )
 
     # ------------------------------------------------------------------ Resolve dirs
     if not args.input_dir.is_dir():
