@@ -1,5 +1,6 @@
 """Structure loading and manipulation utilities."""
 
+import logging
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -8,6 +9,8 @@ from openmm import app
 from openmm.app import PDBFile
 
 from binding_metrics.utils import add_to_report, backfill_auth_columns, extend_report
+
+logger = logging.getLogger(__name__)
 
 
 def load_complex(pdb_path: str | Path) -> PDBFile:
@@ -453,12 +456,10 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
     (head-to-tail amide, lactam, etc.) are silently omitted, so PDBxFile
     cannot round-trip them.  This function reads the written CIF back with
     gemmi and appends the missing covale rows.
-    """
-    try:
-        import gemmi
-    except ImportError:
-        return
 
+    Without gemmi the bonds cannot be written, so a saved cyclic peptide comes
+    back linear on reload; that is logged as a warning when such bonds exist.
+    """
     custom_bonds = []
     for bond in topology.bonds():
         a1, a2 = bond.atom1, bond.atom2
@@ -472,6 +473,19 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
         custom_bonds.append((a1, a2))
 
     if not custom_bonds:
+        return
+
+    try:
+        import gemmi
+    except ImportError:
+        logger.warning(
+            "gemmi is not installed: the %d ring-closure or other non-sequential "
+            "bond(s) of %s cannot be written to _struct_conn, so the file reloads "
+            "without them (a cyclic peptide comes back linear). Install with: "
+            "pip install binding-metrics[structure]",
+            len(custom_bonds),
+            cif_path,
+        )
         return
 
     doc = gemmi.cif.read(str(cif_path))
@@ -604,7 +618,8 @@ def save_cif(
     a label→auth mapping and a positional (auth_chain, res_idx) → auth_seq_id
     table from the source CIF.
 
-    Falls back to raw OpenMM output if gemmi is not available or source is None.
+    Falls back to raw OpenMM output if gemmi is not available (logged as a
+    warning) or source is None.
 
     Args:
         topology: OpenMM Topology object
@@ -629,6 +644,13 @@ def save_cif(
     try:
         import gemmi
     except ImportError:
+        logger.warning(
+            "gemmi is not installed: %s keeps OpenMM's sequential chain IDs and "
+            "1-based residue numbers instead of those of %s, and non-sequential "
+            "bonds are not recorded. Install with: pip install binding-metrics[structure]",
+            output_path,
+            source_cif_path,
+        )
         with open(output_path, "w") as f:
             PDBxFile.writeFile(topology, positions, f)
         _rename_internal_residues_to_standard(output_path)
@@ -913,7 +935,6 @@ def extract_model_to_tempfile(path: Path, model_num: int) -> Path:
     Returns the original *path* unchanged when:
     - The file is not a CIF.
     - The ``pdbx_PDB_model_num`` column is absent (already single-model).
-    - gemmi is not installed.
 
     The caller is responsible for unlinking the returned temp file when it
     differs from the input path.
@@ -928,6 +949,8 @@ def extract_model_to_tempfile(path: Path, model_num: int) -> Path:
 
     Raises:
         ValueError: If *model_num* is not found in the file.
+        ImportError: If *path* is a CIF and gemmi is not installed. Returning
+            the input would silently score whichever model the file lists first.
     """
     path = Path(path)
     if path.suffix.lower() not in (".cif", ".mmcif"):
@@ -935,8 +958,11 @@ def extract_model_to_tempfile(path: Path, model_num: int) -> Path:
 
     try:
         import gemmi
-    except ImportError:
-        return path
+    except ImportError as exc:
+        raise ImportError(
+            f"gemmi is required to extract model {model_num} from {path.name}. "
+            "Install with: pip install binding-metrics[structure]"
+        ) from exc
 
     doc = gemmi.cif.read(str(path))
     block = doc.sole_block()
