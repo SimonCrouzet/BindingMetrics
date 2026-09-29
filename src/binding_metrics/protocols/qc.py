@@ -55,9 +55,9 @@ Measured values on the bundled examples (short minimizations on CUDA)::
     cyclosporin -21515 kJ/mol   n/a          0.297 A      1.327 A
 
                 min bond   max bond   C-alpha centres   heavy atoms
-    1YCR        1.218 A    1.822 A     94          819
-    3P8F        1.217 A    2.052 A    225          1970
-    cyclosporin 1.219 A    1.821 A    152          1351
+    1YCR        1.217 A    1.825 A     94          819
+    3P8F        1.217 A    2.050 A    225          1970
+    cyclosporin 1.219 A    1.822 A    152          1351
 
 The longest topology bonds are the methionine C-S bond (1.82 A) and disulfides
 (2.05 A), so the 2.5 A limit keeps a margin of 0.45 A over any real bond.
