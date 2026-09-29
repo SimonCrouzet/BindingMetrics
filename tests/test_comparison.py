@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from binding_metrics.metrics.comparison import (
+    _get_coords,
     _kabsch_rmsd,
     _matched_rmsd,
     compute_structure_rmsd,
@@ -18,6 +19,36 @@ requires_gemmi = pytest.mark.skipif(not HAS_GEMMI, reason="gemmi not installed")
 
 EXAMPLE_CIF = Path("data/example_linear_p53_1YCR.pdb")
 EXAMPLE_CIF2 = Path("data/example_bicyclic_sfti1_3P8F.cif")
+
+
+def _pdb_lines(chains: dict[str, np.ndarray]) -> list[str]:
+    """ATOM records for backbone-only residues; each chain maps to (n_res, 4, 3) coordinates."""
+    lines = []
+    serial = 1
+    for chain_id, residues in chains.items():
+        for res_num, residue in enumerate(residues, start=1):
+            for atom_name, xyz in zip((" N  ", " CA ", " C  ", " O  "), residue):
+                element = atom_name.strip()[0]
+                lines.append(
+                    f"ATOM  {serial:5d} {atom_name} ALA {chain_id}{res_num:4d}    "
+                    f"{xyz[0]:8.3f}{xyz[1]:8.3f}{xyz[2]:8.3f}  1.00  0.00          {element:>2s}"
+                )
+                serial += 1
+    return lines
+
+
+def _write_pdb(path: Path, models: list[dict[str, np.ndarray]]) -> Path:
+    """Write a (multi-)model PDB file from per-model chain coordinates."""
+    out = []
+    for i, chains in enumerate(models, start=1):
+        if len(models) > 1:
+            out.append(f"MODEL     {i:4d}")
+        out.extend(_pdb_lines(chains))
+        if len(models) > 1:
+            out.append("ENDMDL")
+    out.append("END")
+    path.write_text("\n".join(out) + "\n")
+    return path
 
 
 def _rotation_matrix(axis, angle_rad: float) -> np.ndarray:
@@ -152,6 +183,66 @@ class TestMatchedRmsd:
         assert result is not None
         assert np.isfinite(result)
         assert isinstance(result, float)
+
+
+class TestMultiModelInput:
+    """Only the first model of an ensemble file enters the comparison."""
+
+    @staticmethod
+    def _ensemble(tmp_path: Path):
+        """Two-chain structure (A: 4 residues, B: 2 residues) in two very different models."""
+        rng = np.random.default_rng(11)
+        model1 = {"A": rng.normal(size=(4, 4, 3)) * 4.0, "B": rng.normal(size=(2, 4, 3)) * 4.0}
+        model2 = {
+            "A": model1["A"] + rng.normal(size=(4, 4, 3)) * 3.0,
+            "B": model1["B"] + rng.normal(size=(2, 4, 3)) * 3.0,
+        }
+        single = _write_pdb(tmp_path / "single.pdb", [model1])
+        multi = _write_pdb(tmp_path / "multi.pdb", [model1, model2])
+        return model1, single, multi
+
+    @requires_gemmi
+    def test_get_coords_reads_first_model_only(self, tmp_path):
+        import gemmi
+
+        model1, _, multi = self._ensemble(tmp_path)
+        coords, keys = _get_coords(gemmi.read_structure(str(multi)))
+        assert coords.shape == (24, 3)  # (4 + 2) residues x 4 backbone atoms, one model
+        assert len(set(keys)) == len(keys)  # no duplicated (chain, res, atom) keys
+        expected = np.concatenate([model1["A"].reshape(-1, 3), model1["B"].reshape(-1, 3)])
+        np.testing.assert_allclose(coords, expected, atol=1e-3)  # PDB has 3 decimals
+
+    @requires_gemmi
+    def test_ensembles_with_equal_first_model_give_zero(self, tmp_path):
+        """Two ensembles whose model 1 agree but whose later models differ compare as 0.
+
+        With equal atom counts the direct-Kabsch path used to run on the
+        concatenation of all models, so the differing model 2 leaked in.
+        """
+        model1, _, multi = self._ensemble(tmp_path)
+        rng = np.random.default_rng(12)
+        other_model2 = {k: v + rng.normal(size=v.shape) * 5.0 for k, v in model1.items()}
+        other = _write_pdb(tmp_path / "other.pdb", [model1, other_model2])
+        result = compute_structure_rmsd(multi, other, design_chain="B")
+        for key in ("rmsd", "bb_rmsd", "rmsd_design", "bb_rmsd_design"):
+            assert result[key] is not None
+            assert result[key] < 1e-2, key
+
+    @requires_gemmi
+    def test_design_chain_autodetect_ignores_later_models(self, tmp_path):
+        """The auto-detected design chain is the smallest chain of model 1 (chain B).
+
+        Model 2 carries an extra one-residue chain C that must not win.
+        """
+        model1, single, _ = self._ensemble(tmp_path)
+        rng = np.random.default_rng(13)
+        model2 = {**model1, "C": rng.normal(size=(1, 4, 3))}
+        multi = _write_pdb(tmp_path / "with_extra_chain.pdb", [model1, model2])
+        auto = compute_structure_rmsd(multi, single)
+        explicit = compute_structure_rmsd(multi, single, design_chain="B")
+        assert auto["rmsd_design"] is not None
+        assert auto["rmsd_design"] == pytest.approx(explicit["rmsd_design"])
+        assert auto["bb_rmsd_design"] == pytest.approx(explicit["bb_rmsd_design"])
 
 
 class TestComputeStructureRmsd:

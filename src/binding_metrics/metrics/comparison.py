@@ -26,7 +26,7 @@ def _get_coords(
     """Extract coordinates and atom keys from a gemmi Structure.
 
     Args:
-        structure: gemmi Structure object
+        structure: gemmi Structure object; only its first model is read
         chain_filter: If given, only include atoms from this chain
         backbone_only: If True, only include backbone atoms (N, CA, C, O)
 
@@ -37,7 +37,10 @@ def _get_coords(
     coords = []
     keys = []
 
-    for model in structure:
+    # First model only, like every other loader: concatenating the models of
+    # an NMR/ensemble file would build one point set with duplicated keys.
+    models = [structure[0]] if len(structure) > 0 else []
+    for model in models:
         for chain in model:
             if chain_filter is not None and chain.name != chain_filter:
                 continue
@@ -181,8 +184,8 @@ def compute_structure_rmsd(
     # Auto-detect design chain from initial structure
     if design_chain is None:
         chain_sizes = []
-        for model in initial_st:
-            for chain in model:
+        if len(initial_st) > 0:
+            for chain in initial_st[0]:
                 n_res = sum(1 for r in chain if r.name not in {"HOH", "WAT"})
                 if n_res > 0:
                     chain_sizes.append((chain.name, n_res))
