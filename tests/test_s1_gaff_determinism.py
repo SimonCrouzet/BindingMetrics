@@ -238,6 +238,95 @@ class TestWithSqm:
         assert np.abs(charges - reference).max() < 5e-3
 
 
+def _aba_between_two_neighbours(smiles: str):
+    """Topology and coordinates (Å) of ``ACE-ABA-NME`` heavy atoms, embedded from ``smiles``.
+
+    ``smiles`` must have the layout ``CC(=O)N[C@@H](CC)C(=O)NC``. Only the outer atom of each
+    neighbour (the carbonyl C before, the N after) is kept, which is what the caps use.
+    """
+    from openmm.app import Topology, element
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    AllChem.EmbedMolecule(mol, randomSeed=11)
+    xyz = mol.GetConformer().GetPositions()
+    # (residue, atom name, element, SMILES index)
+    layout = [
+        ("XXA", "C", element.carbon, 1),
+        ("ABA", "N", element.nitrogen, 3),
+        ("ABA", "CA", element.carbon, 4),
+        ("ABA", "C", element.carbon, 7),
+        ("ABA", "O", element.oxygen, 8),
+        ("ABA", "CB", element.carbon, 5),
+        ("ABA", "CG", element.carbon, 6),
+        ("XXB", "N", element.nitrogen, 9),
+    ]
+    topology = Topology()
+    chain = topology.addChain("A")
+    residues: dict = {}
+    atoms: dict = {}
+    for res_name, name, elem, _ in layout:
+        residue = residues.setdefault(res_name, topology.addResidue(res_name, chain))
+        atoms[(res_name, name)] = topology.addAtom(name, elem, residue)
+    for first, second in [
+        (("XXA", "C"), ("ABA", "N")),
+        (("ABA", "N"), ("ABA", "CA")),
+        (("ABA", "CA"), ("ABA", "C")),
+        (("ABA", "C"), ("ABA", "O")),
+        (("ABA", "CA"), ("ABA", "CB")),
+        (("ABA", "CB"), ("ABA", "CG")),
+        (("ABA", "C"), ("XXB", "N")),
+    ]:
+        topology.addBond(atoms[first], atoms[second])
+    positions = np.array([xyz[index] for *_, index in layout])
+    return topology, positions, residues["ABA"]
+
+
+@requires_antechamber
+@pytest.mark.integration
+class TestTheChargeConformerHasTheInputStereochemistry:
+    """The AM1-BCC conformer must be the stereoisomer of the residue, not a random one."""
+
+    @staticmethod
+    def _sdf_of_the_charge_calculation(monkeypatch, smiles, seed):
+        sdf_texts: list = []
+
+        def fake(args, workdir):
+            if "molecule.sdf" in args:
+                sdf_texts.append(Path(workdir, "molecule.sdf").read_text())
+            if "charges.txt" in args:
+                # Non-zero charges: all-zero ones make the template generator run its own
+                # AM1-BCC calculation.
+                n_atoms = _atom_count(sdf_texts[0])
+                charges = np.linspace(-0.01, 0.01, n_atoms)
+                Path(workdir, "charges.txt").write_text(" ".join(str(q) for q in charges))
+
+        monkeypatch.setattr(gaff_ncaa, "_run_antechamber", fake)
+        topology, positions, residue = _aba_between_two_neighbours(smiles)
+        gaff_ncaa._generate_residue_template(
+            residue, topology, positions, "gaff-2.2.20", random_seed=seed
+        )
+        return sdf_texts[0]
+
+    @pytest.mark.parametrize(
+        "smiles, cip_label",
+        [
+            ("CC(=O)N[C@@H](CC)C(=O)NC", "S"),
+            ("CC(=O)N[C@H](CC)C(=O)NC", "R"),
+        ],
+    )
+    @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+    def test_every_seed_embeds_the_input_enantiomer(self, monkeypatch, smiles, cip_label, seed):
+        from rdkit import Chem
+
+        sdf = self._sdf_of_the_charge_calculation(monkeypatch, smiles, seed)
+        mol = Chem.MolFromMolBlock(sdf, removeHs=False)
+        Chem.AssignStereochemistryFrom3D(mol)
+        labels = [a.GetProp("_CIPCode") for a in mol.GetAtoms() if a.HasProp("_CIPCode")]
+        assert labels == [cip_label]
+
+
 class TemplateStepReachedError(Exception):
     """Raised by a stub to stop a step once it calls the template generator."""
 

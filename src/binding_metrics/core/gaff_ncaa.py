@@ -587,9 +587,10 @@ def _am1bcc_charges(molecule, random_seed: Optional[int] = DEFAULT_RANDOM_SEED) 
 
     * The conformer is embedded with ``random_seed`` (the toolkit fixes it at 1, which is
       the default here, so the default conformer is the toolkit's). ``None`` draws a new
-      conformer per call. The charges depend on the conformer; the molecule built here has
-      no stereochemistry, so the seed also decides which stereoisomer is embedded, and the
-      charges of MeBmt differ by up to 0.024 e between seeds 1 and 2.
+      conformer per call. AM1-BCC charges depend on the conformer: those of MeBmt differ by
+      up to 0.065 e between seeds 1 and 2, so keep the seed fixed to compare runs. The
+      stereochemistry of the embedded conformer is that of ``molecule``; a molecule without
+      stereochemistry gets a random stereoisomer for each seed.
     * sqm's diagonaliser is fixed (see ``_SQM_DIAG_ROUTINE_INTERNAL``). With the toolkit
       call sqm chose it by timing, and one of the choices ended the AM1 minimisation of a
       flexible molecule in another geometry: the AM1-BCC charges of MeBmt (cyclosporin A)
@@ -694,6 +695,10 @@ def _generate_residue_template(
     mol, single_bond_reason = _perceive_residue_bond_orders(mol, rd_res_names, res.name)
     mh = Chem.AddHs(mol, addCoords=True)
     hconf = mh.GetConformer()
+    # Read the stereocentres and the E/Z double bonds from the geometry. The graph carries no
+    # stereochemistry, and without it the conformer that sqm minimises is a random
+    # stereoisomer: MeBmt (1CWA) was embedded as a diastereomer with a Z double bond.
+    Chem.AssignStereochemistryFrom3D(mh)
     neutral_groups = _neutral_ionizable_groups(mh, rd_res_names, cap_indices)
 
     # Classify hydrogens: keep those bonded to a residue heavy atom; drop cap-H.

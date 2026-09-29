@@ -191,27 +191,32 @@ class TestGaffTemplateGeneration:
         assert ncaa_xmls.bond_order_source_by_residue == {"BMT": "ccd", "ABA": "ccd"}
 
     @staticmethod
-    def _rebuilt_xml(cyclosporin_ncaa_result, residue_name):
-        """Template of ``residue_name`` built a second time, next to the one the fixture made."""
+    def _build_again(cyclosporin_ncaa_result, residue_name):
+        """Template XML of ``residue_name`` built a second time from the fixture's topology."""
         from binding_metrics.core.gaff_ncaa import (
             _amber_backbone_types,
             _generate_residue_template,
             _pos_to_angstrom,
         )
 
-        topology, positions, ff, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        topology, positions, ff, _, _, _ = cyclosporin_ncaa_result
         residue = next(r for r in topology.residues() if r.name == residue_name)
-        rebuilt = _generate_residue_template(
+        return _generate_residue_template(
             residue,
             topology,
             _pos_to_angstrom(positions),
             "gaff-2.2.20",
             _amber_backbone_types(ff),
         )[0]
+
+    @classmethod
+    def _rebuilt_xml(cls, cyclosporin_ncaa_result, residue_name):
+        """``(first, rebuilt)``: the template the fixture made and a second build of it."""
+        ncaa_xmls = cyclosporin_ncaa_result[3]
         first = next(
             x for x in ncaa_xmls if ET.fromstring(x).find(".//Residue").get("name") == residue_name
         )
-        return first, rebuilt
+        return first, cls._build_again(cyclosporin_ncaa_result, residue_name)
 
     def test_a_second_build_of_abu_is_identical(self, cyclosporin_ncaa_result):
         """Same residue, same seed: same charges and atom types, byte for byte."""
@@ -223,6 +228,28 @@ class TestGaffTemplateGeneration:
         """MeBmt is the residue whose charges used to change between builds (sqm timing)."""
         first, rebuilt = self._rebuilt_xml(cyclosporin_ncaa_result, "BMT")
         assert rebuilt == first
+
+    def test_mebmt_stereochemistry_reaches_the_charge_calculation(
+        self, cyclosporin_ncaa_result, monkeypatch
+    ):
+        """MeBmt is (2S,3R,4R) with an E double bond in the structure; AM1-BCC must see that.
+
+        Without it the conformer that sqm minimises is a random stereoisomer: seed 1 gave a
+        diastereomer with a Z double bond.
+        """
+        from binding_metrics.core import gaff_ncaa
+
+        seen: dict = {}
+
+        def charges(molecule, random_seed=None):
+            seen["molecule"] = molecule
+            return np.linspace(-0.01, 0.01, molecule.n_atoms)
+
+        monkeypatch.setattr(gaff_ncaa, "_am1bcc_charges", charges)
+        self._build_again(cyclosporin_ncaa_result, "BMT")
+        molecule = seen["molecule"]
+        assert [a.stereochemistry for a in molecule.atoms if a.stereochemistry] == ["S", "R", "R"]
+        assert [b.stereochemistry for b in molecule.bonds if b.stereochemistry] == ["E"]
 
     @staticmethod
     def _template(ncaa_xmls, residue_name):
