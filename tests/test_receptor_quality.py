@@ -155,6 +155,7 @@ class TestRamachandran:
         assert res["favoured_count"] == 6
         assert res["favoured_pct"] == pytest.approx(100.0)
         assert res["outlier_count"] == 0
+        assert "reason" not in res
 
     def test_region_counts_and_percentages(self):
         phi_psi = [
@@ -187,13 +188,29 @@ class TestRamachandran:
         assert res["n_evaluated"] == 0
         assert np.isnan(res["favoured_pct"]) and np.isnan(res["outlier_pct"])
         assert res["outlier_count"] == 0
+        assert res["reason"] == "no residue with both phi and psi"
 
-    def test_missing_backbone_atoms_give_the_empty_record(self):
+    def test_missing_backbone_atoms_give_the_empty_record_with_a_reason(self):
         arr = _helix(4)
         no_carbonyl = arr[arr.atom_name != "C"]
         res = rq._ramachandran(no_carbonyl)
         assert res["n_evaluated"] == 0
         assert np.isnan(res["favoured_pct"])
+        assert res["reason"] == "no residue with both phi and psi"
+
+    def test_empty_input_gives_the_empty_record_with_a_reason(self):
+        res = rq._ramachandran(_helix(4)[:0])
+        assert res["n_evaluated"] == 0
+        assert np.isnan(res["favoured_pct"])
+        assert res["reason"].startswith("backbone dihedrals unavailable")
+
+    def test_unexpected_errors_are_not_swallowed(self, monkeypatch):
+        def _boom(atoms):
+            raise RuntimeError("unexpected")
+
+        monkeypatch.setattr(struc, "dihedral_backbone", _boom)
+        with pytest.raises(RuntimeError, match="unexpected"):
+            rq._ramachandran(_helix(4))
 
 
 # ---------------------------------------------------------------------------
@@ -256,9 +273,12 @@ class TestClashscore:
         res = rq._clashscore(arr)
         assert np.isnan(res["clashscore"])
         assert res["n_clashes"] == 0
+        assert res["reason"] == "fewer than two heavy atoms"
 
     def test_ideal_helix_has_no_clashes(self):
-        assert rq._clashscore(_helix(10))["n_clashes"] == 0
+        res = rq._clashscore(_helix(10))
+        assert res["n_clashes"] == 0
+        assert "reason" not in res
 
 
 _LEGACY = {"exclude_bonded": False, "exempt_hbond_pairs": False}
@@ -434,6 +454,7 @@ class TestRotamers:
         res = rq._rotamer_quality(_helix(5))  # all ALA
         assert res["n_evaluated"] == 0
         assert np.isnan(res["outlier_pct"])
+        assert res["reason"] == "no residue with a complete chi1 dihedral"
 
 
 class TestCbetaDeviation:
@@ -475,6 +496,10 @@ class TestCbetaDeviation:
         res = rq._cbeta_deviations(_chain_atoms(residues, res_names=["GLY"] * 3))
         assert res["cb_n_evaluated"] == 0
         assert np.isnan(res["cb_deviation_pct"])
+        assert res["reason"] == "no residue with N, CA, C and CB"
+
+    def test_no_reason_when_residues_were_evaluated(self):
+        assert "reason" not in rq._cbeta_deviations(_helix(4))
 
 
 class TestBackboneGeometry:
@@ -486,6 +511,14 @@ class TestBackboneGeometry:
         assert res["total_angles"] == 2 * n + 2 * (n - 1)
         assert res["bad_bonds"] == 0 and res["bad_angles"] == 0
         assert res["bad_bonds_pct"] == 0.0
+        assert "reason" not in res
+
+    def test_atoms_without_a_backbone_give_nan_with_a_reason(self):
+        arr = _atoms_at(("A", 1, "ALA", "CB", "C", [0.0, 0.0, 0.0]))
+        res = rq._backbone_geometry(arr)
+        assert res["total_bonds"] == 0 and res["total_angles"] == 0
+        assert np.isnan(res["bad_bonds_pct"]) and np.isnan(res["bad_angles_pct"])
+        assert res["reason"] == "no complete backbone bond or angle found"
 
     def test_stretched_carbonyl_is_a_bad_bond(self):
         residues = _backbone_residues([(-63.0, -43.0)] * 4)
@@ -733,6 +766,7 @@ class TestScoreModel:
         assert res["clashes"]["n_clashes"] == 0
         assert res["rotamers"]["n_evaluated"] == 6
         assert np.isfinite(res["molprobity_score"])
+        assert "reason" not in res
 
     def test_chain_without_chi1_residues_has_no_composite_score(self, monkeypatch):
         # the rotamer term is undefined for poly-Ala/Gly, and the composite needs all three terms
@@ -740,6 +774,8 @@ class TestScoreModel:
         res = rq._score_model(_helix(6), "A", 0.4, "obc2", "cuda", 1)
         assert np.isnan(res["rotamers"]["outlier_pct"])
         assert np.isnan(res["molprobity_score"])
+        assert res["reason"].startswith("molprobity_score undefined")
+        assert "rotamers: no residue with a complete chi1 dihedral" in res["reason"]
 
     def test_missing_receptor_chain_reports_an_error(self):
         res = rq._score_model(_helix(4), "Z", 0.4, "obc2", "cuda", 1)

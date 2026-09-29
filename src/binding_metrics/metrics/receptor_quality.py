@@ -187,7 +187,20 @@ def _vdw(element: str) -> float:
 
 
 def _ramachandran(chain_atoms) -> dict:
-    """Compute Ramachandran backbone dihedral quality for a single AtomArray."""
+    """Ramachandran backbone dihedral quality for a single AtomArray.
+
+    Each residue with both phi and psi is placed in a favoured, allowed or
+    outlier region of the Ramachandran plot (``geometry._classify_ramachandran``;
+    D-residues are scored on the mirrored plot). The regions are simplified
+    boxes, not the density contours of MolProbity's Top8000 data (Lovell et al.
+    2003, Proteins 50:437; Williams et al. 2018).
+
+    Returns:
+        ``favoured_pct``, ``allowed_pct``, ``outlier_pct`` (float, NaN when
+        nothing was evaluated), ``favoured_count``, ``allowed_count``,
+        ``outlier_count`` and ``n_evaluated`` (int), and ``reason`` (str) only
+        when nothing could be evaluated.
+    """
     from binding_metrics.core.nonstandard import is_d_residue
     from binding_metrics.metrics.geometry import _classify_ramachandran
 
@@ -204,8 +217,9 @@ def _ramachandran(chain_atoms) -> dict:
 
     try:
         phi_rad, psi_rad, _ = struc.dihedral_backbone(chain_atoms)
-    except Exception:
-        return _empty
+    except (IndexError, struc.BadStructureError) as exc:
+        # biotite cannot build the backbone when N, CA or C atoms are missing.
+        return {**_empty, "reason": f"backbone dihedrals unavailable: {type(exc).__name__}"}
 
     phi_deg = np.degrees(phi_rad)
     psi_deg = np.degrees(psi_rad)
@@ -224,7 +238,7 @@ def _ramachandran(chain_atoms) -> dict:
 
     n_eval = sum(counts.values())
     if n_eval == 0:
-        return _empty
+        return {**_empty, "reason": "no residue with both phi and psi"}
 
     return {
         "favoured_pct": 100.0 * counts["favoured"] / n_eval,
@@ -395,7 +409,13 @@ def _clashscore(
 
     Returns:
         ``clashscore`` (float, NaN below two heavy atoms), ``n_clashes`` (int)
-        and ``n_heavy_atoms`` (int).
+        and ``n_heavy_atoms`` (int); ``reason`` (str) only when the score could
+        not be computed.
+
+    References:
+        Word et al. 1999, J. Mol. Biol. 285:1735 (all-atom contact analysis);
+        Chen et al. 2010, Acta Cryst. D66:12; Williams et al. 2018, Protein Sci.
+        27:293 (MolProbity clashscore).
     """
     cKDTree = _import_scipy()
 
@@ -406,7 +426,12 @@ def _clashscore(
     n_heavy = len(heavy)
 
     if n_heavy < 2:
-        return {"clashscore": np.nan, "n_clashes": 0, "n_heavy_atoms": n_heavy}
+        return {
+            "clashscore": np.nan,
+            "n_clashes": 0,
+            "n_heavy_atoms": n_heavy,
+            "reason": "fewer than two heavy atoms",
+        }
 
     coords = heavy.coord
     tree = cKDTree(coords)
@@ -522,7 +547,12 @@ def _rotamer_quality(chain_atoms) -> dict:
     Residues without χ1 (GLY, ALA) are skipped.
 
     Note: this is a χ1-only approximation. Full rotamer validation requires
-    the backbone-dependent Dunbrack rotamer library.
+    the backbone-dependent Dunbrack rotamer library (Shapovalov & Dunbrack 2011,
+    Structure 19:844; used by MolProbity via Lovell et al. 2000, Proteins 40:389).
+
+    Returns:
+        ``outlier_count`` and ``n_evaluated`` (int), ``outlier_pct`` (float,
+        NaN when no residue has a χ1), and ``reason`` (str) only in that case.
     """
     struc, _, _ = _import_biotite()
 
@@ -537,17 +567,14 @@ def _rotamer_quality(chain_atoms) -> dict:
             continue
 
         # Dihedral N-CA-CB-X
-        try:
-            chi1_rad = float(
-                struc.dihedral(
-                    atoms["N"],
-                    atoms["CA"],
-                    atoms["CB"],
-                    atoms[terminal],
-                )
+        chi1_rad = float(
+            struc.dihedral(
+                atoms["N"],
+                atoms["CA"],
+                atoms["CB"],
+                atoms[terminal],
             )
-        except Exception:
-            continue
+        )
 
         chi1_deg = float(np.degrees(chi1_rad))
         n_evaluated += 1
@@ -555,7 +582,12 @@ def _rotamer_quality(chain_atoms) -> dict:
             n_outliers += 1
 
     if n_evaluated == 0:
-        return {"outlier_count": 0, "outlier_pct": np.nan, "n_evaluated": 0}
+        return {
+            "outlier_count": 0,
+            "outlier_pct": np.nan,
+            "n_evaluated": 0,
+            "reason": "no residue with a complete chi1 dihedral",
+        }
 
     return {
         "outlier_count": n_outliers,
@@ -605,8 +637,15 @@ def _ideal_cbeta(n: np.ndarray, ca: np.ndarray, c: np.ndarray) -> Optional[np.nd
 def _cbeta_deviations(chain_atoms, threshold: float = 0.25) -> dict:
     """Count Cβ deviations > threshold Å from their ideal backbone-derived position.
 
-    Follows MolProbity convention: deviations > 0.25 Å indicate backbone distortion.
-    GLY is skipped (no Cβ).
+    Follows MolProbity convention: deviations > 0.25 Å indicate backbone distortion
+    (Lovell et al. 2003, Proteins 50:437). GLY is skipped (no Cβ). MolProbity
+    derives the ideal Cβ from the side-chain-dependent Cα geometry; here it comes
+    from the backbone N, CA, C with tetrahedral geometry, so values differ slightly.
+
+    Returns:
+        ``cb_deviation_count`` and ``cb_n_evaluated`` (int), ``cb_deviation_pct``
+        (float, NaN when no residue was evaluated), and ``reason`` (str) only in
+        that case.
     """
     n_evaluated = 0
     n_deviating = 0
@@ -626,11 +665,14 @@ def _cbeta_deviations(chain_atoms, threshold: float = 0.25) -> dict:
         if dev > threshold:
             n_deviating += 1
 
-    return {
+    result = {
         "cb_deviation_count": n_deviating,
         "cb_n_evaluated": n_evaluated,
         "cb_deviation_pct": 100.0 * n_deviating / n_evaluated if n_evaluated > 0 else np.nan,
     }
+    if n_evaluated == 0:
+        result["reason"] = "no residue with N, CA, C and CB"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -672,9 +714,16 @@ def _angle_deg(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
 def _backbone_geometry(chain_atoms) -> dict:
     """Check backbone bond lengths and angles against Engh & Huber ideal values.
 
-    Flags bonds and angles deviating > 4σ from ideal as 'bad'.
+    Flags bonds and angles deviating > 4σ from ideal as 'bad' (Engh & Huber
+    1991, Acta Cryst. A47:392; the criterion MolProbity applies).
     Inter-residue C–N bonds are skipped when the distance exceeds 2.5 Å
     (chain break or model gap).
+
+    Returns:
+        ``bad_bonds``, ``total_bonds``, ``bad_angles``, ``total_angles`` (int),
+        ``bad_bonds_pct`` and ``bad_angles_pct`` (float, NaN when the total is
+        zero), and ``reason`` (str) only when no bond or no angle could be
+        evaluated.
     """
     residues = []
     for res_name, atoms in _iter_residues(chain_atoms):
@@ -738,7 +787,7 @@ def _backbone_geometry(chain_atoms) -> dict:
                         if abs(ang - ideal) > thresh:
                             bad_angles += 1
 
-    return {
+    result = {
         "bad_bonds": bad_bonds,
         "total_bonds": total_bonds,
         "bad_bonds_pct": 100.0 * bad_bonds / total_bonds if total_bonds > 0 else np.nan,
@@ -746,6 +795,9 @@ def _backbone_geometry(chain_atoms) -> dict:
         "total_angles": total_angles,
         "bad_angles_pct": 100.0 * bad_angles / total_angles if total_angles > 0 else np.nan,
     }
+    if total_bonds == 0 or total_angles == 0:
+        result["reason"] = "no complete backbone bond or angle found"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -765,8 +817,11 @@ def _molprobity_score(
     Penalty terms activate above baseline noise levels (0.2% rama, 2% rotamer).
 
     Note: rotamer term uses simplified χ1 classification, not the full Dunbrack
-    library, so the score is indicative rather than directly comparable to the
-    published MolProbity values.
+    library, and the clashscore counts heavy-atom overlaps only (Williams et al.
+    2018 describe the all-atom original), so the score is indicative rather than
+    directly comparable to published MolProbity values.
+
+    Returns NaN when any input is not finite.
     """
     if not all(np.isfinite(v) for v in (clashscore, rama_outlier_pct, rota_outlier_pct)):
         return np.nan
@@ -857,10 +912,7 @@ def _receptor_energy(
                 pdb = PDBFile(str(tmp_path))
                 ff_tmp = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
                 mod = Modeller(pdb.topology, pdb.positions)
-                try:
-                    mod.addHydrogens(ff_tmp, pH=7.4, platform=placement_platform)
-                except Exception:
-                    mod.addHydrogens(ff_tmp, platform=placement_platform)
+                mod.addHydrogens(ff_tmp, pH=7.4, platform=placement_platform)
         topology, positions = mod.topology, mod.positions
 
         ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
@@ -870,15 +922,14 @@ def _receptor_energy(
             constraints=openmm.app.HBonds,
         )
 
-        try:
-            if device == "cuda":
+        platform = openmm.Platform.getPlatformByName("CPU")
+        props = {}
+        if device == "cuda":
+            try:
                 platform = openmm.Platform.getPlatformByName("CUDA")
                 props = {"CudaPrecision": "mixed"}
-            else:
-                raise Exception("cpu requested")
-        except Exception:
-            platform = openmm.Platform.getPlatformByName("CPU")
-            props = {}
+            except openmm.OpenMMException:
+                pass  # no CUDA platform registered: evaluate on the CPU platform
 
         integrator = openmm.VerletIntegrator(0.001 * unit.picoseconds)
         sim = Simulation(topology, system, integrator, platform, props)
@@ -898,6 +949,9 @@ def _receptor_energy(
         }
 
     except Exception as e:
+        # Broad on purpose: PDBFixer, OpenMM and the force field raise many exception
+        # types on unusual input, and the energy is one term of a multi-metric report,
+        # so a failure is recorded in ``error`` instead of aborting the other terms.
         return {**_nan, "error": f"{type(e).__name__}: {e}"}
 
     finally:
@@ -969,7 +1023,7 @@ def _score_model(
         rota.get("outlier_pct", np.nan),
     )
 
-    return {
+    result = {
         "model_index": model_index,
         "n_residues": n_res,
         "n_heavy_atoms": n_heavy,
@@ -982,6 +1036,15 @@ def _score_model(
         "energy": energy,
         "molprobity_score": mp_score,
     }
+    if not np.isfinite(mp_score):
+        undefined = [
+            f"{name}: {term['reason']}"
+            for name, term in (("clashscore", clash), ("ramachandran", rama), ("rotamers", rota))
+            if "reason" in term
+        ]
+        detail = "; ".join(undefined) or "a term is not finite"
+        result["reason"] = f"molprobity_score undefined ({detail})"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1037,11 +1100,24 @@ def compute_receptor_quality(
             cbeta: cb_deviation_count, cb_n_evaluated, cb_deviation_pct
             backbone_geometry: bad/total bonds+angles and %
             b_factors: mean/max/min/std, n_high_b_residues (>60 Å²)
-            energy: energy_kJ_mol, energy_per_residue_kJ_mol, n_atoms_with_h
-            molprobity_score (float): composite score (lower = better)
+            energy: energy_kJ_mol, energy_per_residue_kJ_mol, n_atoms_with_h,
+                error (None on success, else "ExceptionType: message")
+            molprobity_score (float): composite score (lower = better); NaN when
+                the clashscore, Ramachandran or rotamer term is undefined
+                (for example a chain without any χ1 residue)
+
+            Every term dict above carries a ``reason`` string only when its
+            value could not be computed; the value then keeps its NaN sentinel.
 
         Aggregate summary (mean over models):
             summary (dict) — all scalar metrics averaged; best_model_index
+
+        A structure without a protein chain returns ``error`` (str) instead.
+
+    References:
+        Chen et al. 2010, Acta Cryst. D66:12 and Williams et al. 2018, Protein
+        Sci. 27:293 (MolProbity); Engh & Huber 1991, Acta Cryst. A47:392
+        (backbone geometry); Lovell et al. 2003, Proteins 50:437 (Cβ deviation).
     """
     path = Path(path)
     all_models = _load_all_models(path)
