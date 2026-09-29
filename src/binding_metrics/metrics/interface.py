@@ -17,6 +17,7 @@ from typing import Literal, Optional
 
 import numpy as np
 
+from binding_metrics.metrics.polar_contacts import _NEGATIVE_ATOMS, _POSITIVE_ATOMS
 from binding_metrics.utils import backfill_auth_columns
 
 logger = logging.getLogger(__name__)
@@ -30,14 +31,20 @@ _HETERO_MODES = ("ignore", "keep")
 _AMBER_VARIANT_NAMES = frozenset({"HID", "HIE", "HIN", "CYX", "ASH"})
 _CAP_NAMES = frozenset({"ACE", "NME", "NH2"})
 
-# Eisenberg-McLachlan atomic solvation parameters (kcal/mol/Å²).
-# Negative = apolar/hydrophobic (burial is favorable).
-# Positive = polar/hydrophilic (burial is unfavorable).
+# Atomic solvation parameters of Eisenberg & McLachlan, Nature 319:199-203 (1986).
+# The published values (cal/mol/Å² of accessible area; positive = exposing the atom
+# to water is unfavorable) are, with their standard errors:
+#     C +16 (2), S +21 (10), neutral O/N -6 (4), charged O(-) -24 (10), charged N(+) -50 (9)
+# as tabulated for the same reference in Table 1 of Krissinel & Henrick, J. Mol. Biol.
+# 372:774-797 (2007). ΔG_int below is the solvation part of binding, so each value enters
+# with the opposite sign and per Å² of BURIED area (kcal/mol/Å²; negative = burial is
+# favorable, positive = burial is unfavorable).
 _SOLVATION_PARAMS: dict[str, float] = {
     "C": -0.016,
-    "N": +0.063,
-    "O": +0.024,
     "S": -0.021,
+    "N/O": +0.006,
+    "O-": +0.024,
+    "N+": +0.050,
 }
 
 _KCAL_TO_KJ = 4.184
@@ -217,9 +224,40 @@ def _per_atom_sasa(atoms, probe_radius, sasa_fn, vdw_fn) -> np.ndarray:
     return np.where(np.isfinite(per_atom), per_atom, 0.0)
 
 
+def _solvation_types(atoms) -> np.ndarray:
+    """Eisenberg-McLachlan atom type per atom.
+
+    Returns an array of "C", "S", "N/O" (neutral), "O-" (carboxylate oxygen),
+    "N+" (Lys NZ, Arg NE/NH1/NH2, HIP ring nitrogens) or "" for atoms that carry
+    no parameter (hydrogen, phosphorus, selenium, halogens). The charged atoms are
+    those of the salt-bridge allowlists in ``polar_contacts``, so both metrics
+    agree on which groups are charged. Termini are typed as neutral N/O.
+    """
+    elements = np.char.upper(np.char.strip(atoms.element.astype(str)))
+    res_names = np.char.upper(np.char.strip(atoms.res_name.astype(str)))
+    atom_names = np.char.strip(atoms.atom_name.astype(str))
+
+    types = np.full(len(atoms), "", dtype="<U3")
+    types[elements == "C"] = "C"
+    types[elements == "S"] = "S"
+    polar = np.isin(elements, ["N", "O"])
+    types[polar] = "N/O"
+    for i in np.flatnonzero(polar):
+        key = (res_names[i], atom_names[i])
+        if key in _POSITIVE_ATOMS:
+            types[i] = "N+"
+        elif key in _NEGATIVE_ATOMS:
+            types[i] = "O-"
+    return types
+
+
 def _gamma_array(atoms) -> np.ndarray:
-    """Per-atom solvation parameter array (kcal/mol/Å²)."""
-    return np.array([_SOLVATION_PARAMS.get(str(a.element).strip().upper(), 0.0) for a in atoms])
+    """Per-atom solvation parameter array (kcal/mol/Å² of buried area)."""
+    types = _solvation_types(atoms)
+    gamma = np.zeros(len(atoms))
+    for atom_type, value in _SOLVATION_PARAMS.items():
+        gamma[types == atom_type] = value
+    return gamma
 
 
 def _polar_mask(atoms) -> np.ndarray:
@@ -245,8 +283,9 @@ def _collect_per_residue(chain_atoms, buried_sasa: np.ndarray, threshold: float)
         for each residue whose buried SASA meets the threshold.
     """
     res_data: dict[tuple, dict] = {}
+    gamma_per_atom = _gamma_array(chain_atoms)
 
-    for atom, bsasa in zip(chain_atoms, buried_sasa):
+    for atom, bsasa, gamma in zip(chain_atoms, buried_sasa, gamma_per_atom):
         key = (str(atom.chain_id), int(atom.res_id), str(atom.ins_code).strip())
         if key not in res_data:
             res_data[key] = {
@@ -260,7 +299,6 @@ def _collect_per_residue(chain_atoms, buried_sasa: np.ndarray, threshold: float)
                 "apolar_area": 0.0,
             }
         element = str(atom.element).strip().upper()
-        gamma = _SOLVATION_PARAMS.get(element, 0.0)
         res_data[key]["buried_sasa"] += float(bsasa)
         res_data[key]["delta_g_res"] += gamma * float(bsasa)
         if element in ("N", "O"):
@@ -288,9 +326,14 @@ def compute_interface_metrics(
     """Compute binding interface metrics for a protein complex.
 
     Combines per-atom SASA analysis with hydrogen bond and salt bridge
-    counting. The solvation binding energy (ΔG_int) is estimated using
-    Eisenberg-McLachlan atomic solvation parameters following the approach
-    of Krissinel & Henrick (PISA, 2007).
+    counting. The solvation binding energy (ΔG_int) is the sum over atoms of
+    an atomic solvation parameter times the atom's buried area, with the five
+    Eisenberg & McLachlan (1986) atom types (C, S, neutral N/O, charged O(-),
+    charged N(+)) as used in PISA (Krissinel & Henrick, 2007). ΔG_int is only
+    the solvation term: PISA adds explicit hydrogen-bond and salt-bridge terms,
+    which are reported here as separate keys. The parameters are not fitted to
+    this package's data, so read ΔG_int as a relative score between designs of
+    one target, not as an absolute affinity.
 
     Args:
         cif_path: Path to CIF structure file
@@ -321,7 +364,10 @@ def compute_interface_metrics(
             sasa_complex: complex SASA
 
         Solvation energy (Eisenberg-McLachlan / PISA):
-            delta_g_int (kcal/mol): ΔG_int = Σ_i γ_i × ΔA_i
+            delta_g_int (kcal/mol): ΔG_int = Σ_i γ_i × ΔA_i, with ΔA_i the
+                buried area of atom i and γ_i in kcal/mol/Å² of buried area:
+                C -0.016, S -0.021, neutral N/O +0.006, O(-) +0.024,
+                N(+) +0.050. Negative = burial is favorable.
             delta_g_int_kJ (kJ/mol)
             polar_area (Å²): buried area from N and O atoms
             apolar_area (Å²): buried area from C and S atoms

@@ -30,11 +30,11 @@ SFTI1_TRYPSIN = DATA / "example_bicyclic_sfti1_3P8F.cif"
 
 # Interface values of the water-free 1CWA complex (chain C on chain A).
 CYCLOSPORIN_DELTA_SASA = 985.4
-CYCLOSPORIN_DELTA_G_INT = 1.257
+CYCLOSPORIN_DELTA_G_INT = -6.1125
 
-# 1YCR has no heteroatoms; these values were recorded before the hetero filter existed.
+# 1YCR has no heteroatoms; its delta_sasa was recorded before the hetero filter existed.
 P53_DELTA_SASA = 1465.7209
-P53_DELTA_G_INT = -0.77161
+P53_DELTA_G_INT = -11.0502
 
 
 @pytest.fixture(scope="module")
