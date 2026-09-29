@@ -27,6 +27,11 @@ Values from earlier versions differ in the cases below. A change reads "before -
   +0.024 kcal/mol/A^2. Five atom types after Eisenberg and McLachlan (1986) replace it: C -0.016,
   S -0.021, neutral N/O +0.006, O(-) +0.024, N(+) +0.050 (values as tabulated by Krissinel and Henrick, 2007).
   - `delta_g_int`: 1YCR -0.77 -> -11.05 kcal/mol, 1CWA +1.26 -> -6.11 (water-free input), 3P8F NaN -> -4.97.
+- **Buried area and `delta_g_int` on heavy atoms (#39).** With explicit hydrogens the surface of a heavy atom
+  was partly taken by its hydrogens, which carry no solvation parameter, and polar + apolar did not add up to
+  `delta_sasa`. Hydrogens are dropped before the areas (`hydrogens="keep"` restores the old atom set).
+  - 1YCR relaxed by `binding-metrics-run` (851 H of 1670 atoms): `delta_sasa` 1552.4 -> 1488.4 A^2, polar + apolar
+    651.4 -> 1488.4 A^2, `delta_g_int` -0.95 -> -10.50 kcal/mol. The bundled files without hydrogens are unchanged.
 - **Void volume honours `probe_radius` (#17).** A void must be closed to the probe in the complex and
   open for each chain alone; before, the probe was ignored and a cavity walled by one chain counted.
   - `void_volume_A3` at the default probe: 1YCR 0.25 -> 55.875, 3P8F 0.38 -> 31.875, 1CWA 0.50 -> 16.25 A^3.
@@ -103,6 +108,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
   `results["nonfinite_fields"]`, the paths of NaN and infinite values in the JSON (#25).
 - `hetero` keyword and `--hetero {ignore,keep}` flag for the interface, static SASA, H-bond,
   salt-bridge, shape-complementarity and void-volume metrics (#14).
+- `hydrogens` keyword of `compute_interface_metrics` and `compute_delta_sasa_static`, and
+  `--hydrogens {ignore,keep}` on `binding-metrics-interface` (#39).
 - Result keys `omega_cis_count`, `cyclic_closure_detected`, `cyclic_closure_evaluated`,
   `n_ionisable_residues_seen` and `n_residues_unrecognised`.
 - EvoBind keys `interface_fallback_used`, `n_superposition_atoms`, `receptor_pairing`,

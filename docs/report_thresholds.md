@@ -61,8 +61,8 @@ not. Useful for ranking within a campaign, not directly comparable to experiment
 ## ΔSASA (Å²)
 
 Solvent-accessible surface area buried at the interface upon complex formation:
-SASA_peptide + SASA_receptor − SASA_complex. Both partners are counted, so about half of it lies on each
-side.
+SASA_peptide + SASA_receptor − SASA_complex, computed on heavy atoms. Both partners are counted, so about
+half of it lies on each side.
 
 | Band  | Value     | Rationale |
 |-------|-----------|-----------|

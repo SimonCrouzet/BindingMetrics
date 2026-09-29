@@ -106,7 +106,7 @@ binding-metrics-receptor-quality --input ensemble.cif --receptor-chain A --outpu
 
 | Category | Metric | Type | Backend |
 |---|---|---|---|
-| Interface geometry | Buried SASA Δ*A* (both partners), polar/apolar breakdown | Score | biotite |
+| Interface geometry | Buried SASA Δ*A* of heavy atoms (both partners), polar/apolar breakdown | Score | biotite |
 | Interface energetics | Solvation term Δ*G*_int (negative = burial favourable; uncalibrated) | Score | biotite |
 | Interactions | Cross-chain H-bonds, salt bridges, each with a heuristic energy score | Score | biotite + hydride |
 | Electrostatics | Coulomb cross-chain energy of formal charges — negative = net attractive | Score | biotite |
@@ -270,7 +270,7 @@ The default `--metrics` includes `openfold`, so pass a list without it when Open
 
 ## Quick Start
 
-Every structure metric works on one binder chain and one target chain. Name them with `peptide_chain` (or `design_chain`, `chain`) and `receptor_chain`, or with the aliases `binder_chain` and `target_chain`; the command-line tools take `--binder-chain` and `--target-chain`. Without them, the metric functions take the smallest protein chain as the binder and the largest as the target. Waters, ions, ligands and glycans that carry a protein chain ID are dropped by default (`hetero="ignore"`); `hetero="keep"`, or `--hetero keep` on `binding-metrics-interface` and `-geometry`, uses every atom of the chain.
+Every structure metric works on one binder chain and one target chain. Name them with `peptide_chain` (or `design_chain`, `chain`) and `receptor_chain`, or with the aliases `binder_chain` and `target_chain`; the command-line tools take `--binder-chain` and `--target-chain`. Without them, the metric functions take the smallest protein chain as the binder and the largest as the target. Waters, ions, ligands and glycans that carry a protein chain ID are dropped by default (`hetero="ignore"`); `hetero="keep"`, or `--hetero keep` on `binding-metrics-interface` and `-geometry`, uses every atom of the chain. The buried areas and `delta_g_int` are computed on heavy atoms whatever the protonation of the input (`hydrogens="keep"` or `--hydrogens keep` includes the hydrogens).
 
 ### Interface analysis
 
@@ -569,7 +569,7 @@ Each structure gets its own directory, JSON report and log under `--output-dir` 
 
 | Command | Description |
 |---|---|
-| `binding-metrics-interface` | PISA-inspired interface metrics; `--hetero {ignore,keep}` |
+| `binding-metrics-interface` | PISA-inspired interface metrics; `--hetero {ignore,keep}`, `--hydrogens {ignore,keep}` |
 | `binding-metrics-energy` | Force-field interaction energy (raw / relaxed / after MD); `--ph`, `--random-seed` |
 | `binding-metrics-electrostatics` | Coulomb cross-chain interaction energy |
 | `binding-metrics-geometry` | Ramachandran, ω planarity, shape complementarity, void volume; `--hetero {ignore,keep}` |

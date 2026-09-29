@@ -65,9 +65,11 @@ GAFF2 parameters for non-canonical residues need openmmforcefields, openff-toolk
 
 ## 2. interface geometry
 
-`compute_interface_metrics(cif_path, design_chain=None, receptor_chain=None, probe_radius=1.4, interface_threshold=0.5, *, binder_chain=None, target_chain=None, hetero="ignore")` — `binding_metrics.metrics.interface`
+`compute_interface_metrics(cif_path, design_chain=None, receptor_chain=None, probe_radius=1.4, interface_threshold=0.5, *, binder_chain=None, target_chain=None, hetero="ignore", hydrogens="ignore")` — `binding_metrics.metrics.interface`
 
 PISA-inspired interface descriptors on a static structure. Per-atom areas come from the Shrake-Rupley algorithm (Shrake & Rupley 1973) as implemented in biotite (960 points per atom, probe 1.4 Å, biotite's single van der Waals radius per element, 1.8 Å for an element without an entry). Water and monoatomic ions are not part of the surface. The buried area of an atom is its area alone minus its area in the complex, clamped at 0.
+
+Hydrogen and deuterium atoms are dropped before the areas are computed (`hydrogens="ignore"`, the default). The solvation parameters below describe heavy atoms, and the hydrogens attached to a carbon or nitrogen would otherwise take part of its surface, so the areas, the polar/apolar partition and `delta_g_int` refer to heavy atoms whatever the protonation of the input. `hydrogens="keep"` uses the atoms left by the `hetero` filter; the total then includes the hydrogens, which are in neither the polar nor the apolar mask. H-bond and salt-bridge counts do not depend on the setting.
 
 | key | type | unit | description |
 |-----|------|------|-------------|
@@ -94,7 +96,7 @@ PISA-inspired interface descriptors on a static structure. Per-atom areas come f
 | `saltbridge_energy` | float | kcal/mol | salt-bridge score, ≤ 0 |
 | `reason` | str | — | only when a value could not be computed |
 
-`polar_area` and `apolar_area` cover heavy atoms; hydrogens are in neither, so the two do not add up to `delta_sasa` on a structure with hydrogens. `delta_sasa` counts both partners, so the area buried on one side is about half of it.
+`polar_area` and `apolar_area` cover N, O, C and S. With the default they add up to `delta_sasa` unless the structure has atoms of other elements (phosphorus in a phosphorylated residue, for example). `delta_sasa` counts both partners, so the area buried on one side is about half of it.
 
 **solvation energy.** ΔG_int = Σᵢ γᵢ · ΔAᵢ over the atoms of both chains, with ΔAᵢ the buried area of atom i. The five atom types are those of Eisenberg & McLachlan (1986), as tabulated in Table 1 of Krissinel & Henrick (2007) for the PISA method.
 
@@ -110,15 +112,15 @@ The published values are given per Å² of accessible area (C +16, S +21, neutra
 
 `delta_g_int` is uncalibrated. PISA adds explicit hydrogen-bond and salt-bridge terms, which this package reports as separate keys, and the parameters are not fitted to any data set used here. No threshold or affinity relation has been established for it, so read it as a relative score between designs of one target. On the bundled complexes it is −11.05 (1YCR), −6.11 (1CWA) and −4.97 (3P8F) kcal/mol.
 
-### `compute_delta_sasa_static(cif_path, peptide_chain, receptor_chain, probe_radius=1.4, *, binder_chain=None, target_chain=None, hetero="ignore")`
+### `compute_delta_sasa_static(cif_path, peptide_chain, receptor_chain, probe_radius=1.4, *, binder_chain=None, target_chain=None, hetero="ignore", hydrogens="ignore")`
 
-Buried area only, without the per-atom decomposition. Both chains are required. Returns `delta_sasa`, `sasa_peptide`, `sasa_receptor` and `sasa_complex` (Å²), plus `reason` when a chain has no atoms or the SASA calculation failed. Atoms with an undefined area (water, ions under `hetero="keep"`) count as zero.
+Buried area only, without the per-atom decomposition. Both chains are required. Returns `delta_sasa`, `sasa_peptide`, `sasa_receptor` and `sasa_complex` (Å²), plus `reason` when a chain has no atoms or the SASA calculation failed. Atoms with an undefined area (water, ions under `hetero="keep"`) count as zero, and hydrogens are dropped unless `hydrogens="keep"`.
 
 ### CLI: `binding-metrics-interface`
 
 ```bash
 binding-metrics-interface --input complex.cif [--binder-chain B] [--target-chain A] \
-    [--probe-radius 1.4] [--threshold 0.5] [--hetero ignore]
+    [--probe-radius 1.4] [--threshold 0.5] [--hetero ignore] [--hydrogens ignore]
 ```
 
 ---
