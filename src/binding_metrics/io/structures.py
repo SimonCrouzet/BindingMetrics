@@ -1,6 +1,7 @@
 """Structure loading and manipulation utilities."""
 
 import logging
+import re
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -718,6 +719,23 @@ def _rename_internal_residues_to_standard(cif_path: Path) -> None:
         cif_path.write_text(new_content)
 
 
+def _ids_fit_cif(topology) -> bool:
+    """True when every chain ID and residue number can be written to mmCIF as they are.
+
+    ``PDBxFile.writeFile(keepIds=True)`` prints them unquoted, so a blank or
+    spaced chain ID (a PDB file without chain IDs) or a non-numeric residue
+    number would corrupt the columns. Chain IDs must also be unique: a PDB file
+    puts the waters of chain A in a second chain called A, and once the two share
+    an ID the metric code cannot tell them apart.
+    """
+    chain_ids = [chain.id for chain in topology.chains()]
+    return (
+        len(set(chain_ids)) == len(chain_ids)
+        and all(re.fullmatch(r"[A-Za-z0-9]+", cid) for cid in chain_ids)
+        and all(re.fullmatch(r"-?[0-9]+", str(res.id)) for res in topology.residues())
+    )
+
+
 def save_cif(
     topology,
     positions,
@@ -752,8 +770,11 @@ def save_cif(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if source_cif_path is None:
+        # Without a source CIF to read the caller's IDs from, the topology's own
+        # chain IDs and residue numbers are the only ones there are. PDBxFile
+        # would replace them with A, B, C... and 1, 2, 3...
         with open(output_path, "w") as f:
-            PDBxFile.writeFile(topology, positions, f)
+            PDBxFile.writeFile(topology, positions, f, keepIds=_ids_fit_cif(topology))
         # PDBxFile only writes disulfide bonds to _struct_conn; patch in any
         # other non-sequential intra-chain covalent bonds (e.g. head-to-tail).
         _patch_nonstd_bonds_in_cif(output_path, topology)
@@ -800,9 +821,15 @@ def save_cif(
         #   original chain = label_to_auth[ topology.chains()[i].id ]
         #
         # And residue numbers are restored by positional index within that auth chain.
+        #
+        # PDBxFile names the chains by label_asym_id only when the file has more
+        # label IDs than author IDs (waters and ligands each get a label ID);
+        # otherwise the topology already carries the author IDs and the map stays
+        # empty: a label ID could name another chain's author ID.
 
         # source label → auth
         label_to_auth: dict[str, str] = {}
+        source_auth_ids: set[str] = set()
         # (source_auth_chain, heavy-atom res_idx) → original auth_seq_id
         seq_map: dict[tuple, str] = {}
         source_columns = ["label_asym_id", "auth_asym_id", "auth_seq_id", "auth_atom_id"]
@@ -822,6 +849,7 @@ def save_cif(
             s_res_idx = -1
             for row in src_table:
                 label, auth, seq, atom = row[0], row[1], row[2], row[3]
+                source_auth_ids.add(auth)
                 if label not in label_to_auth:
                     label_to_auth[label] = auth
                 if not str(atom).startswith("H"):
@@ -842,6 +870,9 @@ def save_cif(
                 exc,
                 output_path.name,
             )
+
+        if len(label_to_auth) <= len(source_auth_ids):
+            label_to_auth = {}
 
         # output sequential letter → original auth chain ID
         topo_chain_ids = [c.id for c in topology.chains()]

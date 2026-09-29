@@ -501,7 +501,11 @@ def prep_structure(
             Behaviour is identical when ``report`` is None.
 
     Returns:
-        Tuple of (topology, positions) with repaired and protonated structure
+        Tuple of (topology, positions) with repaired and protonated structure. The
+        chains keep the IDs they have in ``topology``, so a chain ID the caller
+        passes to a later step still names the same chain (PDBFixer would
+        otherwise relabel them A, B, C, ...). Residue numbers of a PDB input
+        restart at 1 in each chain; a CIF input gets its own back in ``save_cif``.
     """
     # Capture non-sequential intra-chain bonds (e.g. head-to-tail N→C) before
     # the PDBFixer round-trip drops them (PDBxFile.writeFile only writes SS bonds).
@@ -611,11 +615,32 @@ def prep_structure(
         add_to_report(report, "n_missing_atoms_rebuilt", n_atoms_rebuilt)
         add_to_report(report, "n_missing_residue_gaps", n_residue_gaps)
 
+    # Chains that keep at least one residue, by the caller's ID. Modeller.delete drops
+    # a chain that ends up empty (the water chains of a PDB file) and keeps the order.
+    removed = set(residues_to_remove)
+    surviving_ids = (
+        [
+            input_chain_ids[chain.index]
+            for chain in fixer.topology.chains()
+            if any(res not in removed for res in chain.residues())
+        ]
+        if keep_input_ids
+        else []
+    )
+
     if residues_to_remove:
         modeller = Modeller(fixer.topology, fixer.positions)
         modeller.delete(residues_to_remove)
         fixer.topology = modeller.topology
         fixer.positions = modeller.positions
+
+    if surviving_ids and len(set(surviving_ids)) == len(surviving_ids):
+        # Name the chains as the caller did: the returned topology, the file written
+        # from it and the chain IDs the caller passes on must agree. Chains that
+        # still share an ID (waters kept after the polymer of a PDB file) keep
+        # PDBFixer's letters, which tell them apart.
+        for chain, chain_id in zip(fixer.topology.chains(), surviving_ids):
+            chain.id = chain_id
 
     if custom_bonds:
         # Use cyclic-aware H placement: patch_cyclic_topology (called inside)

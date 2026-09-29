@@ -322,3 +322,148 @@ class TestBondsInsideNonstandardResidues:
         assert (
             reconstruct_intraresidue_bonds(bare, positions, "no-such-chain", residues=residues) == 9
         )
+
+
+class TestChainIdsSurvivePrep:
+    """``--peptide-chain Q`` must still name the peptide after ``binding-metrics-prep``."""
+
+    def test_prep_returns_the_callers_chain_ids(self):
+        from binding_metrics.core.system import prep_structure
+        from binding_metrics.io.structures import load_structure
+
+        topology, positions = load_structure(PHOSPHO_PDB)  # chain Q
+        topology, positions = prep_structure(topology, positions)
+        assert [c.id for c in topology.chains()] == ["Q"]
+
+    def test_pdb_input_keeps_its_chain_id_in_the_prepped_cif(self, tmp_path):
+        from binding_metrics.core.system import prep_structure
+        from binding_metrics.io.structures import load_structure, save_structure
+
+        topology, positions = prep_structure(*load_structure(PHOSPHO_PDB))
+        out = tmp_path / "prepped.cif"
+        save_structure(topology, positions, out, source_path=PHOSPHO_PDB)
+        reloaded, _ = load_structure(out)
+        assert [c.id for c in reloaded.chains()] == ["Q"]
+
+    def test_cif_input_with_author_ids_that_differ_from_label_ids_keeps_them(self, tmp_path):
+        """Author B is the 8-residue chain (label A); author A is the 5-residue one (label B).
+
+        OpenMM names the chains by author ID here (no water, so no extra label ID). The
+        label IDs are the same letters as the author IDs, in the other order; reading a
+        topology ID as a label ID would swap the two chains in the prepped file.
+        """
+        from binding_metrics.core.system import prep_structure
+        from binding_metrics.io.structures import load_structure, save_structure
+
+        cif = _write_mmcif(tmp_path / "swapped.cif", [("A", "B", 8, 0.0), ("B", "A", 5, 30.0)])
+        topology, positions = load_structure(cif)
+        assert [c.id for c in topology.chains()] == ["B", "A"]
+        topology, positions = prep_structure(topology, positions)
+        assert [c.id for c in topology.chains()] == ["B", "A"]
+        out = tmp_path / "prepped.cif"
+        save_structure(topology, positions, out, source_path=cif)
+        reloaded, _ = load_structure(out)
+        residues = {c.id: sum(1 for _ in c.residues()) for c in reloaded.chains()}
+        assert residues == {"B": 8, "A": 5}
+
+    @staticmethod
+    def _peptide_and_water_chain():
+        """A PDB file puts the waters after the polymer in a second chain of the same ID."""
+        from openmm import Vec3, unit
+        from openmm.app import Modeller, Topology, element
+
+        from binding_metrics.io.structures import load_structure
+
+        topology, positions = load_structure(PHOSPHO_PDB)
+        water = Topology()
+        residue = water.addResidue("HOH", water.addChain("Q"))
+        water.addAtom("O", element.oxygen, residue)
+        modeller = Modeller(topology, positions)
+        modeller.add(water, unit.Quantity([Vec3(9.0, 9.0, 9.0)], unit.nanometer))
+        assert [c.id for c in modeller.topology.chains()] == ["Q", "Q"]
+        return modeller.topology, modeller.positions
+
+    def test_the_water_chain_of_the_same_id_is_gone_after_prep(self):
+        from binding_metrics.core.system import prep_structure
+
+        topology, _ = prep_structure(*self._peptide_and_water_chain())
+        assert [c.id for c in topology.chains()] == ["Q"]
+
+    def test_chains_that_still_share_an_id_keep_pdbfixers_letters(self):
+        from binding_metrics.core.system import prep_structure
+
+        topology, _ = prep_structure(*self._peptide_and_water_chain(), keep_water=True)
+        assert [c.id for c in topology.chains()] == ["A", "B"]
+
+    @pytest.mark.parametrize(
+        ("chains", "expected"),
+        [
+            ({"Q": ["1", "2"]}, True),
+            ({"A": ["-1", "1"], "B": ["1"]}, True),
+            ({"Q": ["1"], "R": ["1"]}, True),
+            ({" ": ["1"]}, False),  # a PDB file without chain IDs
+            ({"Q": ["1A"]}, False),  # not an integer residue number
+        ],
+    )
+    def test_ids_fit_cif(self, chains, expected):
+        from openmm.app import Topology
+
+        from binding_metrics.io.structures import _ids_fit_cif
+
+        topology = Topology()
+        for chain_id, residue_ids in chains.items():
+            chain = topology.addChain(chain_id)
+            for residue_id in residue_ids:
+                topology.addResidue("GLY", chain, id=residue_id)
+        assert _ids_fit_cif(topology) is expected
+
+    def test_ids_fit_cif_rejects_two_chains_with_one_id(self):
+        from openmm.app import Topology
+
+        from binding_metrics.io.structures import _ids_fit_cif
+
+        topology = Topology()
+        for _ in range(2):
+            topology.addResidue("GLY", topology.addChain("Q"), id="1")
+        assert _ids_fit_cif(topology) is False
+
+    def test_save_cif_without_source_writes_letters_when_the_ids_do_not_fit(self, tmp_path):
+        from openmm import Vec3, unit
+        from openmm.app import PDBxFile, Topology, element
+
+        from binding_metrics.io.structures import save_cif
+
+        topology = Topology()
+        for chain_id in ("Q", "Q"):
+            residue = topology.addResidue("HOH", topology.addChain(chain_id))
+            topology.addAtom("O", element.oxygen, residue)
+        positions = unit.Quantity([Vec3(0.1, 0.1, 0.1), Vec3(0.5, 0.5, 0.5)], unit.nanometer)
+        out = tmp_path / "two_q.cif"
+        save_cif(topology, positions, out)
+        assert [c.id for c in PDBxFile(str(out)).topology.chains()] == ["A", "B"]
+
+
+STAPLE_PDB = DATA_DIR / "example_staple_3V3B.pdb"
+
+
+class TestStapledPeptideOnChainC:
+    """3V3B's only chain is C, not A: the cyclic-bond hints name the input chain."""
+
+    def test_prep_finds_the_stapled_chain_before_parameterising_the_staple(self, monkeypatch):
+        """Stops at the GAFF step (minutes of sqm) once the chain lookup has succeeded."""
+        from binding_metrics.core import gaff_ncaa
+        from binding_metrics.core.system import prep_structure
+        from binding_metrics.io.structures import load_structure
+
+        class GaffReachedError(Exception):
+            pass
+
+        def stop_at_gaff(topology, positions, ff, **kwargs):
+            raise GaffReachedError([chain.id for chain in topology.chains()])
+
+        monkeypatch.setattr(gaff_ncaa, "parameterize_ncaa_residues", stop_at_gaff)
+        topology, positions = load_structure(STAPLE_PDB)
+        assert [c.id for c in topology.chains()] == ["C"]
+        with pytest.raises(GaffReachedError) as reached:
+            prep_structure(topology, positions)
+        assert reached.value.args[0] == ["C"]
