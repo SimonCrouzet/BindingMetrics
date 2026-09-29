@@ -46,6 +46,27 @@ def import_biotite(purpose: str):
     return struc, pdbx, pdb_io
 
 
+def require_openmm(feature: str) -> None:
+    """Raise a ModuleNotFoundError that names the extra when OpenMM is missing.
+
+    Args:
+        feature: The function that needs OpenMM, for the message.
+
+    Raises:
+        ModuleNotFoundError: If OpenMM cannot be imported (an ImportError
+            subclass, ``name="openmm"``), as ``get_forcefield`` does.
+    """
+    try:
+        import openmm  # noqa: F401
+    except ImportError as exc:
+        raise ModuleNotFoundError(
+            f"{feature} needs OpenMM, which could not be imported. "
+            "Install it with `pip install binding-metrics[simulation]`, "
+            "or use environment.yml for a GPU build.",
+            name="openmm",
+        ) from exc
+
+
 def load_structure(
     path: str | Path,
     *,

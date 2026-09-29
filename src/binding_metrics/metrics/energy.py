@@ -37,7 +37,7 @@ except ImportError:
 # OpenMM is imported inside the functions that use it, so this module can be
 # imported (and its CLI parser built) on installs without OpenMM.
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
-from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
+from binding_metrics.metrics._common import ChainAliasAction, require_openmm, resolve_chain_role
 from binding_metrics.utils import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -113,7 +113,8 @@ def calculate_interaction_energy(
         each frame. Negative values are favourable.
 
     Raises:
-        ImportError: If mdtraj is not installed.
+        ImportError: If mdtraj is not installed, or, as ModuleNotFoundError
+            naming ``pip install binding-metrics[simulation]``, if OpenMM is.
         RuntimeError: If the force field system has no NonbondedForce.
     """
     if md is None:
@@ -121,6 +122,7 @@ def calculate_interaction_energy(
             "mdtraj is required for energy calculations. "
             "Install with: pip install binding-metrics[analysis]"
         )
+    require_openmm("calculate_interaction_energy")
 
     import openmm
     import openmm.unit as unit
@@ -216,7 +218,8 @@ def calculate_component_energies(
             total: electrostatic + vdw.
 
     Raises:
-        ImportError: If mdtraj is not installed.
+        ImportError: If mdtraj is not installed, or, as ModuleNotFoundError
+            naming ``pip install binding-metrics[simulation]``, if OpenMM is.
         RuntimeError: If the force field system has no NonbondedForce.
     """
     if md is None:
@@ -224,6 +227,7 @@ def calculate_component_energies(
             "mdtraj is required for energy calculations. "
             "Install with: pip install binding-metrics[analysis]"
         )
+    require_openmm("calculate_component_energies")
 
     import openmm
     import openmm.unit as unit
@@ -815,11 +819,18 @@ def compute_interaction_energy(
             one "<mode>: <reason>" entry per failed mode (joined by "; "), so a
             mode that came back as None can be explained even when ``success``
             is True.
+
+    Raises:
+        ModuleNotFoundError: If OpenMM is not installed; the message names
+            ``pip install binding-metrics[simulation]``.
+        ValueError: If a chain ID is given through both its old parameter and
+            its ``binder_chain`` / ``target_chain`` alias with different values.
     """
     peptide_chain = resolve_chain_role("peptide_chain", peptide_chain, "binder_chain", binder_chain)
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
+    require_openmm("compute_interaction_energy")
 
     import openmm
     import openmm.unit as unit
