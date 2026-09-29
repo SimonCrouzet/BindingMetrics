@@ -14,7 +14,13 @@ from binding_metrics._constants import (
     DEFAULT_RANDOM_SEED,  # re-exported: callers import it from here
 )
 from binding_metrics.core.forcefields import get_forcefield
-from binding_metrics.core.residues import METAL_ELEMENTS
+from binding_metrics.core.residues import (
+    AMBER_STANDARD_RESIDUES,
+    ION_NAMES_COMMON,
+    METAL_ELEMENTS,
+    WATER_NAMES_ALL,
+    WATER_NAMES_PDB_AMBER,
+)
 from binding_metrics.utils import add_to_report, extend_report
 
 log = logging.getLogger(__name__)
@@ -187,50 +193,6 @@ def _topology_to_fixer(topology, positions) -> "PDBFixer":
         os.unlink(tmp_path)
     return fixer
 
-
-# Standard amino acids and nucleotides recognised by AMBER ff14SB.
-_STANDARD_RESIDUES = {
-    "ALA",
-    "ARG",
-    "ASN",
-    "ASP",
-    "CYS",
-    "GLN",
-    "GLU",
-    "GLY",
-    "HIS",
-    "ILE",
-    "LEU",
-    "LYS",
-    "MET",
-    "PHE",
-    "PRO",
-    "SER",
-    "THR",
-    "TRP",
-    "TYR",
-    "VAL",
-    # protonation variants
-    "HIE",
-    "HID",
-    "HIP",
-    "CYX",
-    "ASH",
-    "GLH",
-    "LYN",
-    # nucleotides
-    "DA",
-    "DC",
-    "DG",
-    "DT",
-    "A",
-    "C",
-    "G",
-    "T",
-    "U",
-}
-
-_WATER_NAMES = {"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"}
 
 #: Longest C(i)-N(i+1) distance still read as a peptide bond. A real amide bond
 #: is about 1.33 A (Engh and Huber, Acta Cryst. A47, 392-400, 1991); one missing
@@ -600,7 +562,7 @@ def prep_structure(
     protein_chains: set = set()
     for chain in fixer.topology.chains():
         for res in chain.residues():
-            if res.name in _STANDARD_RESIDUES:
+            if res.name in AMBER_STANDARD_RESIDUES:
                 protein_chains.add(chain.id)
                 break
 
@@ -616,7 +578,7 @@ def prep_structure(
     for chain in fixer.topology.chains():
         chain_label = input_chain_ids[chain.index] if keep_input_ids else chain.id
         for res in chain.residues():
-            if res.name in _STANDARD_RESIDUES:
+            if res.name in AMBER_STANDARD_RESIDUES:
                 continue
 
             elements = {atom.element.symbol for atom in res.atoms() if atom.element is not None}
@@ -624,7 +586,7 @@ def prep_structure(
                 kept_nonstandard.append(f"{res.name} (metal, chain {chain_label})")
                 continue
 
-            if res.name in _WATER_NAMES:
+            if res.name in WATER_NAMES_ALL:
                 if not keep_water:
                     residues_to_remove.append(res)
                     n_removed_waters += 1
@@ -808,12 +770,11 @@ def get_system_info(modeller: Modeller) -> dict:
     # Count water molecules and ions
     n_waters = 0
     n_ions = 0
-    ion_names = {"NA", "CL", "K", "MG", "CA", "ZN"}
 
     for residue in topology.residues():
-        if residue.name == "HOH" or residue.name == "WAT":
+        if residue.name in WATER_NAMES_PDB_AMBER:
             n_waters += 1
-        elif residue.name in ion_names:
+        elif residue.name in ION_NAMES_COMMON:
             n_ions += 1
 
     # Get box vectors

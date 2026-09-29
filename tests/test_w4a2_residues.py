@@ -32,6 +32,21 @@ OLD_METAL_ELEMENTS = frozenset(
     ).split()
 )
 
+# core.system._STANDARD_RESIDUES: amino acids, protonation variants, nucleotides.
+OLD_SYSTEM_STANDARD_RESIDUES = frozenset(
+    (
+        "ALA ARG ASN ASP CYS GLN GLU GLY HIS ILE LEU LYS MET PHE PRO SER THR TRP TYR VAL "
+        "HIE HID HIP CYX ASH GLH LYN "
+        "DA DC DG DT A C G T U"
+    ).split()
+)
+
+# core.system._WATER_NAMES.
+OLD_SYSTEM_WATER_NAMES = frozenset({"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"})
+
+# core.system.get_system_info: local ``ion_names``.
+OLD_SYSTEM_ION_NAMES = frozenset({"NA", "CL", "K", "MG", "CA", "ZN"})
+
 
 def _build_topology(chains):
     """Topology with one carbon atom per residue; ``chains`` maps chain id to residue names."""
@@ -203,3 +218,40 @@ class TestPrepStructureClassification:
         assert not {"HOH", "WAT", "SOL", "TIP3", "TIP", "H2O", "LIG"} & {
             residue.name for residue in prepped.residues()
         }
+
+
+class TestSystemSets:
+    def test_standard_residues_equal_the_old_literal(self):
+        assert residues.AMBER_STANDARD_RESIDUES == OLD_SYSTEM_STANDARD_RESIDUES
+        assert len(residues.AMBER_STANDARD_RESIDUES) == 36
+
+    def test_standard_residues_leave_out_hin_and_cym(self):
+        assert not {"HIN", "CYM"} & residues.AMBER_STANDARD_RESIDUES
+        assert residues.AMBER_STANDARD_VARIANTS == residues.AMBER_PROTONATION_VARIANTS - {"CYM"}
+
+    def test_nucleotides(self):
+        assert residues.NUCLEOTIDE_RESIDUES == {"DA", "DC", "DG", "DT", "A", "C", "G", "T", "U"}
+
+    def test_all_water_names_equal_the_old_literal(self):
+        assert residues.WATER_NAMES_ALL == OLD_SYSTEM_WATER_NAMES
+
+    def test_ion_names_equal_the_old_literal(self):
+        assert residues.ION_NAMES_COMMON == OLD_SYSTEM_ION_NAMES
+
+    def test_the_water_sets_nest(self):
+        assert residues.WATER_NAMES_PDB_AMBER < residues.WATER_NAMES_WITH_H2O
+        assert residues.WATER_NAMES_WITH_H2O < residues.WATER_NAMES_ALL
+        assert residues.WATER_NAMES_STRIP_HETEROGENS < residues.WATER_NAMES_ALL
+
+    def test_system_info_counts_hoh_and_wat_as_water_and_the_common_ions(self):
+        from types import SimpleNamespace
+
+        from binding_metrics.core.system import get_system_info
+
+        names = ["ALA", "HOH", "WAT", "SOL", "H2O", "NA", "CL", "K", "MG", "CA", "ZN", "FE"]
+        topology, _ = _build_topology({"A": names})
+
+        info = get_system_info(SimpleNamespace(topology=topology))
+
+        assert info["n_waters"] == 2
+        assert info["n_ions"] == 6

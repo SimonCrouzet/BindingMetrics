@@ -101,3 +101,33 @@ METAL_ELEMENTS: frozenset[str] = frozenset(
         "Li Na K Rb Cs Mg Ca Sr Ba V Cr Mn Fe Co Ni Cu Zn Mo Ru Rh Pd Ag Cd W Re Os Ir Pt Au Hg"
     ).split()
 )
+
+#: Nucleotide residue names: DNA (DA, DC, DG, DT) and RNA or one-letter (A, C,
+#: G, T, U).
+NUCLEOTIDE_RESIDUES: frozenset[str] = frozenset({"DA", "DC", "DG", "DT", "A", "C", "G", "T", "U"})
+
+#: AMBER protonation and disulfide variants that the preparation code counts as
+#: standard residues: ``AMBER_PROTONATION_VARIANTS`` without CYM, which is not in
+#: this set.
+AMBER_STANDARD_VARIANTS: frozenset[str] = AMBER_PROTONATION_VARIANTS - {"CYM"}
+
+#: Ions that solvation and the force field handle by name (NA, CL, K, MG, CA,
+#: ZN).
+ION_NAMES_COMMON: frozenset[str] = frozenset({"NA", "CL", "K", "MG", "CA", "ZN"})
+
+#: Standard amino acids, the AMBER variants and nucleotides of AMBER ff14SB, as
+#: ``core.system.prep_structure`` reads them: anything else is a metal, water,
+#: kept non-standard residue or heterogen to strip. HIN is not in it, unlike
+#: ``AMBER_STANDARD_VARIANTS``.
+AMBER_STANDARD_RESIDUES: frozenset[str] = (
+    STANDARD_AMINO_ACIDS | (AMBER_STANDARD_VARIANTS - {"HIN"}) | NUCLEOTIDE_RESIDUES
+)
+
+#: HOH, WAT and H2O: the water names the structural QC skips and the relaxation
+#: heterogen scan counts among the residues the force field already knows.
+WATER_NAMES_WITH_H2O: frozenset[str] = WATER_NAMES_PDB_AMBER | {"H2O"}
+
+#: Every water name the package recognises: the PDB, AMBER and H2O names plus
+#: the water-model names. ``core.system`` uses it to classify residues and the
+#: GAFF skip list keeps solvent away from antechamber.
+WATER_NAMES_ALL: frozenset[str] = WATER_NAMES_WITH_H2O | WATER_MODEL_NAMES
