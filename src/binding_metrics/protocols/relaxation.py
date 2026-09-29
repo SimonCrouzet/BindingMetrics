@@ -1670,6 +1670,7 @@ def main():
     configure_logging()
 
     from binding_metrics.cli import small_molecules_arg
+    from binding_metrics.metrics._common import ChainAliasAction
 
     parser = argparse.ArgumentParser(
         description="Implicit solvent MD relaxation for protein complexes",
@@ -1706,10 +1707,17 @@ def main():
         "--solvent-model", choices=["obc2", "gbn2"], default="obc2", help="Implicit solvent model"
     )
     parser.add_argument(
-        "--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)"
+        "--peptide-chain",
+        "--binder-chain",
+        action=ChainAliasAction,
+        type=str,
+        default=None,
+        help="Peptide chain ID (auto-detect if omitted)",
     )
     parser.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         default=None,
         help="Receptor chain ID (auto-detect if omitted)",

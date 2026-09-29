@@ -33,6 +33,7 @@ from binding_metrics._constants import (
 )
 from binding_metrics.cli import add_openfold_seeds_arg, md_save_interval_for
 from binding_metrics.cli import seed_arg as _seed_arg
+from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.metrics.registry import get_metric
 from binding_metrics.provenance import collect_provenance
 from binding_metrics.utils import configure_logging
@@ -162,6 +163,9 @@ def run_pipeline(
     # reproducibility
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
     openfold_seeds: Optional[Sequence[int]] = None,
+    *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -170,6 +174,8 @@ def run_pipeline(
         output_dir: Directory for intermediate files; created when missing.
         peptide_chain, receptor_chain: Explicit chain IDs (auth IDs). Auto-detected
             when None; an ID that is not in the structure raises ``ChainNotFoundError``.
+        binder_chain, target_chain: Aliases of ``peptide_chain`` and ``receptor_chain``
+            (keyword-only). Both spellings with different IDs raise ``ValueError``.
         random_seed: Seed for hydrogen placement and MD; ``None`` for fresh randomness.
         openfold_seeds: Seed values written to the OpenFold3 query JSON; ``None``
             keeps the OpenFold default. Separate from ``random_seed``.
@@ -189,7 +195,12 @@ def run_pipeline(
 
     Raises:
         ChainNotFoundError: a requested chain ID does not exist in the structure.
+        ValueError: a chain is given through both spellings with different IDs.
     """
+    peptide_chain = resolve_chain_role("peptide_chain", peptide_chain, "binder_chain", binder_chain)
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain
+    )
     if sample_id is None:
         sample_id = input_path.stem
 
@@ -634,10 +645,17 @@ def main():
         help=f"Compute device (default: {DEFAULT_DEVICE})",
     )
     parser.add_argument(
-        "--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)"
+        "--peptide-chain",
+        "--binder-chain",
+        action=ChainAliasAction,
+        type=str,
+        default=None,
+        help="Peptide chain ID (auto-detect if omitted)",
     )
     parser.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         default=None,
         help="Receptor chain ID (auto-detect if omitted)",

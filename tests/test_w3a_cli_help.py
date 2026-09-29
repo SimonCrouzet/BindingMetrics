@@ -1,11 +1,15 @@
 """The command-line options of the pipeline CLIs are unchanged.
 
-GOLDEN records, for every option of binding-metrics-run, -batch, -relax,
--prep and -solvate, what --help shows for it: group, metavar, choices, nargs,
+``GOLDEN`` records, for every option of ``binding-metrics-run``, ``-batch``, ``-relax``,
+``-prep`` and ``-solvate``, what ``--help`` shows for it: group, metavar, choices, nargs,
 required flag, default and the expanded help text. It was captured before the repeated
 default literals (pH, device, MD duration, save interval) were replaced by the named
-constants in binding_metrics._constants. New options may be added; an existing one
+constants in ``binding_metrics._constants``. New options may be added; an existing one
 must not change.
+
+Two deliberate edits since the capture: ``--peptide-chain`` and ``--receptor-chain`` gained
+the alias spellings ``--binder-chain`` and ``--target-chain``, and the ``--metrics`` help of
+``-batch`` lists ``dockq``, which the option already accepted.
 """
 
 import argparse
@@ -845,8 +849,11 @@ def test_existing_options_are_unchanged(cli, monkeypatch):
     assert parser.description == GOLDEN[cli]["description"]
     described = describe_options(parser)
     for option, expected in GOLDEN[cli]["options"].items():
-        assert option in described, f"{cli}: option {option} disappeared"
-        assert described[option] == expected, f"{cli}: {option} changed"
+        # A spelling may be appended to an option (``--peptide-chain`` gained
+        # ``--binder-chain``); the old spellings stay first and everything else is equal.
+        found = [key for key in described if key == option or key.startswith(option + "/")]
+        assert len(found) == 1, f"{cli}: option {option} disappeared"
+        assert described[found[0]] == expected, f"{cli}: {option} changed"
 
 
 @pytest.mark.parametrize("cli", sorted(GOLDEN))

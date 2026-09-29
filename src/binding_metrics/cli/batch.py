@@ -69,6 +69,7 @@ from binding_metrics.cli.run import (
     _parse_metrics,
     run_pipeline,
 )
+from binding_metrics.metrics._common import ChainAliasAction
 from binding_metrics.provenance import collect_provenance
 from binding_metrics.utils import configure_logging
 
@@ -146,8 +147,15 @@ def _run_one(
     log_file: Optional[Path],
     reference_path: Optional[Path] = None,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+    *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """Run the pipeline for a single structure and return a flat results dict.
+
+    ``binder_chain`` and ``target_chain`` are keyword-only aliases of
+    ``peptide_chain`` and ``receptor_chain``; both spellings with different IDs
+    make the sample an ``"error"`` row, like any other pipeline failure.
 
     The row carries ``batch_status``:
 
@@ -201,6 +209,8 @@ def _run_one(
                 openfold_mode=openfold_mode,
                 openfold_conda_env=openfold_conda_env,
                 random_seed=random_seed,
+                binder_chain=binder_chain,
+                target_chain=target_chain,
             )
             results["total_elapsed_s"] = round(time.time() - t0, 1)
 
@@ -486,12 +496,16 @@ def main():
     )
     parser.add_argument(
         "--peptide-chain",
+        "--binder-chain",
+        action=ChainAliasAction,
         type=str,
         default=None,
         help="Peptide chain ID applied to all structures (auto-detect per structure if omitted)",
     )
     parser.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         default=None,
         help="Receptor chain ID applied to all structures (auto-detect per structure if omitted)",
