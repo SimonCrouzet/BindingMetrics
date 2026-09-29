@@ -350,6 +350,7 @@ def _add_hydrogens_cyclic(
         detect_nonstandard,
         load_nonstandard_xmls,
         patch_nonstandard,
+        restore_nonstandard_names,
     )
 
     # custom bonds are intra-chain, so both ends share the same chain ID.
@@ -399,6 +400,10 @@ def _add_hydrogens_cyclic(
             variants=addh_variants,
             platform=_hydrogen_placement_platform(),
         )
+    # The force field needed the L / template names above; the topology that
+    # leaves prep (and is written to the prepped file) keeps the input names, so
+    # the relaxation step and later metrics see DAL and SAR rather than ALA and NMG.
+    restore_nonstandard_names(modeller.topology, ns_info)
     return modeller.topology, modeller.positions
 
 

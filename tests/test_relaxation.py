@@ -503,3 +503,105 @@ class TestRelaxedOutputKeepsNonstandardNames:
         scored = [entry["res_name"] for entry in rama["per_residue"]]
         assert "SAR" in scored
         assert "NMG" not in scored
+
+
+CYCLOSPORIN_PEPTIDE_NAMES = [
+    "DAL",
+    "MLE",
+    "MLE",
+    "MVA",
+    "BMT",
+    "ABA",
+    "SAR",
+    "MLE",
+    "VAL",
+    "MLE",
+    "ALA",
+]
+
+
+def _chain_residue_names(cif_path) -> list:
+    """Residue names of the smallest chain (the peptide) of a CIF file."""
+    import gemmi
+
+    model = gemmi.read_structure(str(cif_path))[0]
+    peptide = min(model, key=len)
+    return [residue.name for residue in peptide]
+
+
+@pytest.fixture(scope="module")
+def prepped_cyclosporin(tmp_path_factory):
+    """The raw cyclosporin example after ``prep_structure``, written to a CIF."""
+    pytest.importorskip("openmmforcefields", reason="GAFF templates for BMT/ABA")
+    from binding_metrics.core.system import prep_structure
+    from binding_metrics.io.structures import load_structure, save_structure
+
+    topology, positions = load_structure(str(CYCLOSPORIN_CIF))
+    topology, positions = prep_structure(topology, positions, ph=7.4)
+    prepped = tmp_path_factory.mktemp("cyclosporin_prep") / "prepped.cif"
+    save_structure(topology, positions, prepped)
+    return prepped
+
+
+@pytest.mark.integration
+class TestPrepKeepsNonstandardNames:
+    """``prep_structure`` writes cyclosporin with its input D-Ala and Sar names.
+
+    The cyclic hydrogen-placement step renames DAL to ALA and SAR to NMG for the
+    force field. The prepped file must carry the original names, otherwise the
+    relaxation step has no D-residue to detect and the relaxed output is all-L.
+    """
+
+    def test_prepped_peptide_keeps_input_residue_names(self, prepped_cyclosporin):
+        assert _chain_residue_names(prepped_cyclosporin) == CYCLOSPORIN_PEPTIDE_NAMES
+
+    def test_d_alanine_atoms_are_present(self, prepped_cyclosporin):
+        import gemmi
+
+        model = gemmi.read_structure(str(prepped_cyclosporin))[0]
+        peptide = min(model, key=len)
+        d_ala = peptide[0]
+        assert d_ala.name == "DAL"
+        assert {"N", "CA", "C", "O", "CB", "HA"} <= {atom.name for atom in d_ala}
+
+
+@pytest.fixture(scope="module")
+def relaxed_after_prep(prepped_cyclosporin, tmp_path_factory):
+    """Minimize-only relaxation of the prepped cyclosporin file."""
+    config = RelaxationConfig(
+        md_duration_ps=0.0,
+        min_steps_initial=50,
+        min_steps_restrained=20,
+        min_steps_final=50,
+        small_molecules="auto",
+    )
+    out = tmp_path_factory.mktemp("cyclosporin_prep_relax")
+    result = ImplicitRelaxation(config).run(prepped_cyclosporin, out)
+    assert result.success, result.error_message
+    return result
+
+
+@requires_cuda
+@pytest.mark.integration
+class TestPrepThenRelaxKeepsNonstandardNames:
+    """Prep followed by relaxation keeps DAL and SAR in the final CIF."""
+
+    def test_relaxed_peptide_keeps_input_residue_names(self, relaxed_after_prep):
+        names = _chain_residue_names(relaxed_after_prep.minimized_structure_path)
+        assert names == CYCLOSPORIN_PEPTIDE_NAMES
+
+    def test_ramachandran_reads_the_names_from_the_full_pipeline(self, relaxed_after_prep):
+        """Sarcosine is scored under its own name and D flags follow the names.
+
+        The D-alanine is residue 1 of the ring, where phi is undefined, so it is
+        not among the scored residues and ``n_d_residues`` stays 0 here.
+        """
+        from binding_metrics.core.nonstandard import is_d_residue
+        from binding_metrics.metrics.geometry import compute_ramachandran
+
+        rama = compute_ramachandran(relaxed_after_prep.minimized_structure_path)
+        per_residue = rama["per_residue"]
+        scored = [entry["res_name"] for entry in per_residue]
+        assert "SAR" in scored
+        assert "NMG" not in scored
+        assert all(entry["is_d_aa"] == is_d_residue(entry["res_name"]) for entry in per_residue)
