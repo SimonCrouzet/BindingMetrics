@@ -592,14 +592,23 @@ def compute_interaction_energy(
         after_md_duration_ps: Short MD duration in picoseconds.
         after_md_timestep_fs: MD timestep in femtoseconds.
         after_md_temperature_k: MD temperature in Kelvin.
+        ph: pH used to choose protonation states when hydrogens are added
+            (default 7.4). If OpenMM rejects the pH-aware call, hydrogens are
+            added with OpenMM's default protonation instead.
+        random_seed: Seed for hydrogen placement, the Langevin integrator and
+            the initial MD velocities (default ``DEFAULT_RANDOM_SEED``). Pass
+            ``None`` to draw fresh randomness on every call. CUDA "mixed"
+            precision is not bit-for-bit reproducible, so GPU energies from
+            the same seed can still differ slightly between runs.
 
     Returns:
         Flat dictionary with keys:
             sample_id, success, error_message, num_contacts, num_close_contacts,
             {mode}_interaction_energy, {mode}_e_complex, {mode}_e_peptide,
             {mode}_e_receptor  —  for each requested mode.
-            Negative values of {mode}_interaction_energy indicate a favorable
-            (stabilizing) interaction between peptide and receptor.
+            All energies are in kJ/mol. Negative values of
+            {mode}_interaction_energy indicate a favorable (stabilizing)
+            interaction between peptide and receptor.
     """
     from binding_metrics.io.structures import detect_chains, load_structure
 
@@ -823,7 +832,14 @@ def compute_interaction_energy(
     return result
 
 
-def main():
+def _seed_arg(value: str) -> Optional[int]:
+    """Parse ``--random-seed``: an integer, or 'none'/'random'/'off' to disable seeding."""
+    if value.strip().lower() in ("none", "random", "off"):
+        return None
+    return int(value)
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Compute interaction energy via subsystem decomposition (implicit solvent)"
     )
@@ -847,9 +863,30 @@ def main():
     parser.add_argument("--after-md-duration-ps", type=float, default=10.0)
     parser.add_argument("--after-md-timestep-fs", type=float, default=2.0)
     parser.add_argument("--after-md-temperature-k", type=float, default=300.0)
+    parser.add_argument(
+        "--ph",
+        type=float,
+        default=7.4,
+        help="pH used to choose protonation states when hydrogens are added (default: 7.4)",
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=_seed_arg,
+        default=DEFAULT_RANDOM_SEED,
+        metavar="INT|none",
+        help=(
+            "Seed for hydrogen placement, the thermostat and the initial MD velocities "
+            f"(default: {DEFAULT_RANDOM_SEED}); pass 'none' for fresh randomness on each run."
+        ),
+    )
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(parser)
+    return parser
+
+
+def main():
+    parser = _build_parser()
     args = parser.parse_args()
 
     from binding_metrics.cli import log_to_file
@@ -878,6 +915,8 @@ def main():
                 after_md_duration_ps=args.after_md_duration_ps,
                 after_md_timestep_fs=args.after_md_timestep_fs,
                 after_md_temperature_k=args.after_md_temperature_k,
+                ph=args.ph,
+                random_seed=args.random_seed,
             )
             results.append(r)
 
