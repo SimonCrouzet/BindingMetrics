@@ -13,8 +13,8 @@ Model and method references:
     Force field     AMBER ff14SB (Maier et al., J. Chem. Theory Comput. 11, 3696, 2015),
                     loaded through OpenMM's ``amber14-all.xml``.
     Implicit water  OBC2 (Onufriev, Bashford and Case, Proteins 55, 383, 2004) or
-                    GBn2 (Nguyen, Perez, Simmerling and Roitberg, J. Chem. Theory
-                    Comput. 9, 2020, 2013) generalized Born, no cutoff.
+                    GBn2 (Nguyen, Roe and Simmerling, J. Chem. Theory Comput. 9,
+                    2020, 2013) generalized Born, no cutoff.
     Constraints     Bonds to hydrogen are constrained, which is what allows the
                     default 2 fs time step.
     MD integrator   Langevin "middle" scheme (Zhang, Liu, Yan, Tuckerman and Liu,
