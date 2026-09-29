@@ -33,7 +33,7 @@ def _messages(caplog):
 
 def test_no_print_call_outside_main():
     """Library code must log; only the CLI ``main()`` may print."""
-    tree = ast.parse(Path(interface.__file__).read_text())
+    tree = ast.parse(Path(interface.__file__).read_text(encoding="utf-8"))
     offenders = []
     for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
         if func.name == "main":

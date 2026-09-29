@@ -53,6 +53,7 @@ def blocked_import_run(tmp_path_factory):
         [sys.executable, "-c", _BLOCKED_IMPORT_SCRIPT],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=tmp_path_factory.mktemp("blocked_import"),
         timeout=120,
     )

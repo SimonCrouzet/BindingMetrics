@@ -33,6 +33,7 @@ def test_version_of_an_uninstalled_source_tree_is_a_valid_placeholder(tmp_path):
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=tmp_path,
         timeout=120,
     )

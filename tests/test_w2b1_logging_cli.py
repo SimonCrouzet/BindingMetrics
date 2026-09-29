@@ -58,7 +58,7 @@ def test_the_metrics_scripts_are_found():
 @pytest.mark.parametrize("script", sorted(SCRIPTS))
 def test_main_starts_with_configure_logging(script):
     main = _resolve(SCRIPTS[script])
-    tree = ast.parse(Path(inspect.getsourcefile(main)).read_text())
+    tree = ast.parse(Path(inspect.getsourcefile(main)).read_text(encoding="utf-8"))
     (func,) = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == main.__name__]
     first = func.body[0]
     assert isinstance(first, ast.Expr) and isinstance(first.value, ast.Call)

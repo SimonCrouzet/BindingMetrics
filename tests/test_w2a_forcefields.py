@@ -72,6 +72,7 @@ def blocked_run(tmp_path_factory):
         [sys.executable, "-c", "import sys\n" + _BLOCKED_SCRIPT],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=tmp_path_factory.mktemp("forcefields_blocked"),
         timeout=120,
     )

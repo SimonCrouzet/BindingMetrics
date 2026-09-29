@@ -28,7 +28,7 @@ PACKAGES = [
 
 def _type_checking_imports(package):
     """Map name -> module from the ``if TYPE_CHECKING:`` block of a package ``__init__``."""
-    tree = ast.parse(Path(package.__file__).read_text())
+    tree = ast.parse(Path(package.__file__).read_text(encoding="utf-8"))
     imports = {}
     for node in tree.body:
         if isinstance(node, ast.If) and getattr(node.test, "id", None) == "TYPE_CHECKING":
@@ -80,10 +80,14 @@ def fake_package(tmp_path, monkeypatch):
     """A throwaway package whose one module imports a dependency that is not installed."""
     root = tmp_path / "w2a_fake_package"
     root.mkdir()
-    (root / "__init__.py").write_text("")
-    (root / "needs_absent.py").write_text("import w2a_absent_dependency\nthing = 1\n")
-    (root / "needs_unlisted.py").write_text("import w2a_unlisted_dependency\nthing = 1\n")
-    (root / "fine.py").write_text("thing = 42\n")
+    (root / "__init__.py").write_text("", encoding="utf-8")
+    (root / "needs_absent.py").write_text(
+        "import w2a_absent_dependency\nthing = 1\n", encoding="utf-8"
+    )
+    (root / "needs_unlisted.py").write_text(
+        "import w2a_unlisted_dependency\nthing = 1\n", encoding="utf-8"
+    )
+    (root / "fine.py").write_text("thing = 42\n", encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setitem(
         binding_metrics._EXTRA_FOR_DEPENDENCY, "w2a_absent_dependency", "simulation"
@@ -143,6 +147,7 @@ def _run_in_clean_interpreter(script, tmp_path):
         [sys.executable, "-c", textwrap.dedent(script)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=tmp_path,
         timeout=180,
     )

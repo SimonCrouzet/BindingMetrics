@@ -17,7 +17,7 @@ LOGGER_NAME = "binding_metrics.metrics.sasa"
 
 
 def test_module_has_no_print_calls():
-    tree = ast.parse(Path(sasa.__file__).read_text())
+    tree = ast.parse(Path(sasa.__file__).read_text(encoding="utf-8"))
     prints = [
         call.lineno
         for call in ast.walk(tree)

@@ -13,7 +13,7 @@ CONFIG = Path(__file__).parent.parent / ".github" / "dependabot.yml"
 def actions_entry():
     if not CONFIG.exists():
         pytest.skip("no .github/dependabot.yml in this checkout")
-    config = yaml.safe_load(CONFIG.read_text())
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     (entry,) = [u for u in config["updates"] if u["package-ecosystem"] == "github-actions"]
     return entry
 
@@ -32,5 +32,7 @@ def test_every_update_goes_into_one_group(actions_entry):
 
 
 def test_only_github_actions_are_tracked():
-    config = yaml.safe_load(CONFIG.read_text()) if CONFIG.exists() else {"updates": []}
+    config = (
+        yaml.safe_load(CONFIG.read_text(encoding="utf-8")) if CONFIG.exists() else {"updates": []}
+    )
     assert {u["package-ecosystem"] for u in config["updates"]} <= {"github-actions"}

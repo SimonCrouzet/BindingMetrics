@@ -48,7 +48,7 @@ def _records(caplog):
 
 def test_no_print_call_outside_main():
     """Library code must log; only the CLI ``main()`` may print."""
-    tree = ast.parse(Path(energy.__file__).read_text())
+    tree = ast.parse(Path(energy.__file__).read_text(encoding="utf-8"))
     offenders = []
     for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
         if func.name == "main":
@@ -57,7 +57,7 @@ def test_no_print_call_outside_main():
             if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "print":
                 offenders.append((func.name, call.lineno))
     assert not offenders
-    assert "print_exc" not in Path(energy.__file__).read_text()
+    assert "print_exc" not in Path(energy.__file__).read_text(encoding="utf-8")
 
 
 def test_failed_subsystem_evaluation_is_logged_with_traceback(caplog):

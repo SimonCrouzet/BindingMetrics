@@ -230,6 +230,7 @@ def blocked_results(tmp_path_factory):
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=tmp_path_factory.mktemp("no_openmm"),
         timeout=600,
     )
