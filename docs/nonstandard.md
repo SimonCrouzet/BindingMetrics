@@ -27,7 +27,7 @@ OpenMM builds the bonds of a residue from a table of standard residue names. A r
 2. **`patch_cyclic_topology`** calls `reconstruct_nonstandard_residue_bonds` for every protein chain, the receptor included. It restores the bonds inside each residue that has none and the C(i) to N(i+1) peptide bond next to it when the two atoms are within 0.20 nm; a chain break is not bridged. A PDB file without CONECT records for the residue relies on this step.
 3. **`strip_heterogens`** keeps SEP, TPO and PTR in every chain, so an unselected chain is not cut at its phosphoserine.
 
-A residue of the receptor that the force fields do not cover goes through the [GAFF2 route](#gaff2-route-for-other-non-canonical-residues) like one of the peptide. The charge calculation for P1L of 6SBA is repeated each time a system is built; the minimisation of 6SBA takes 2.3 minutes end to end.
+A residue of the receptor that the force fields do not cover goes through the [GAFF2 route](#gaff2-route-for-other-non-canonical-residues) like one of the peptide. The charge calculation for P1L of 6SBA is repeated each time a system is built and takes minutes.
 
 `CYM`, the AMBER deprotonated cysteine, is a standard residue, as `HID`, `HIE`, `HIP`, `HIN`, `CYX`, `ASH`, `GLH` and `LYN` are; amber14 has its template, so no GAFF2 parameters are built for it.
 
