@@ -455,8 +455,8 @@ def compute_interface_metrics(
 
     # H-bonds and salt bridges
     try:
-        hbond_result = compute_hbonds(atoms, design_chain, receptor_chain)
-        saltbridge_result = compute_saltbridges(atoms, design_chain, receptor_chain)
+        hbond_result = compute_hbonds(atoms, design_chain, receptor_chain, hetero=hetero)
+        saltbridge_result = compute_saltbridges(atoms, design_chain, receptor_chain, hetero=hetero)
     except Exception as e:
         print(f"  Warning: H-bond/salt bridge computation failed: {e}")
         hbond_result = {"hbonds": 0, "hbond_energy": 0.0}

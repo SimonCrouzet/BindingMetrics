@@ -6,6 +6,7 @@ primary signal) plus interpretable count(s) (supplementary). See
 """
 
 import warnings
+from typing import Literal
 
 import numpy as np
 
@@ -100,7 +101,13 @@ def _angle_deg(a, b, c):
     return np.degrees(np.arccos(cos_t))
 
 
-def compute_hbonds(atoms, peptide_chain: str, receptor_chain: str) -> dict:
+def compute_hbonds(
+    atoms,
+    peptide_chain: str,
+    receptor_chain: str,
+    *,
+    hetero: Literal["ignore", "keep"] = "ignore",
+) -> dict:
     """Detect cross-chain hydrogen bonds and score them.
 
     Uses biotite's Baker-Hubbard detector (default: H-acceptor distance ≤ 2.5 Å,
@@ -117,13 +124,23 @@ def compute_hbonds(atoms, peptide_chain: str, receptor_chain: str) -> dict:
         E = -k_hb * cos²(180° - θ_DHA) / d_HA
         k_hb = 5.0 kcal·Å/mol  (ideal d=2.0, θ=180° → -2.5 kcal/mol)
 
+    Parameters
+    ----------
+    hetero : {"ignore", "keep"}
+        "ignore" (default) drops waters, ions, ligands and glycans before the
+        chain selection, so a water that carries a receptor chain ID is not
+        counted as a receptor atom. "keep" uses every atom as before.
+
     Returns
     -------
     dict with keys:
         hbond_energy : float  — sum of pair energies, kcal/mol (≤ 0)
         hbonds       : int    — number of unique cross-chain heavy-atom pairs
     """
+    from binding_metrics.metrics.interface import filter_hetero_atoms
+
     structure, _, _, _ = _import_biotite()
+    atoms = filter_hetero_atoms(atoms, hetero)
     atoms = _add_hydrogens_if_needed(atoms, structure)
 
     with warnings.catch_warnings():
@@ -202,6 +219,8 @@ def compute_saltbridges(
     receptor_chain: str,
     distance_min: float = 0.5,
     distance_max: float = 5.5,
+    *,
+    hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Detect cross-chain salt bridges and score them.
 
@@ -227,6 +246,12 @@ def compute_saltbridges(
     A bidentate bridge naturally scores stronger because r_min is the
     shorter of the two contacts.
 
+    Parameters
+    ----------
+    hetero : {"ignore", "keep"}
+        "ignore" (default) drops waters, ions, ligands and glycans before the
+        chain selection; "keep" uses every atom as before.
+
     Returns
     -------
     dict with keys:
@@ -234,6 +259,9 @@ def compute_saltbridges(
         saltbridges           : int   — residue-pair count
         saltbridges_bidentate : int   — pairs with ≥ 2 atom-pair contacts
     """
+    from binding_metrics.metrics.interface import filter_hetero_atoms
+
+    atoms = filter_hetero_atoms(atoms, hetero)
     pos_mask = np.zeros(len(atoms), dtype=bool)
     neg_mask = np.zeros(len(atoms), dtype=bool)
 
