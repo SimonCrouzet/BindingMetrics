@@ -17,7 +17,7 @@ try:
 
     _openmm.Platform.getPlatformByName("CUDA")
     HAS_CUDA = True
-except Exception:
+except Exception:  # noqa: BLE001 - probe: whatever the failure, there is no usable CUDA here
     HAS_CUDA = False
 
 

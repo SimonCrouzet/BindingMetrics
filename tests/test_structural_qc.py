@@ -141,7 +141,7 @@ def _capture_premin_energy(
         context.setPositions(positions)
         energy = context.getState(getEnergy=True).getPotentialEnergy()
         return float(energy.value_in_unit(unit.kilojoules_per_mole))
-    except Exception:
+    except Exception:  # noqa: BLE001 - best effort by design; None tells the caller it failed
         return None
 
 

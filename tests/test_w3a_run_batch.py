@@ -254,7 +254,7 @@ class _InlineExecutor:
         future = Future()
         try:
             future.set_result(fn(*args, **kwargs))
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - a real pool also parks any error on the future
             future.set_exception(error)
         return future
 
