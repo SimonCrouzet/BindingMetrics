@@ -299,7 +299,7 @@ def _create_implicit_system(
     try:
         with deterministic_hydrogen_placement(random_seed):
             modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
-    except Exception as e:
+    except (ValueError, openmm.OpenMMException) as e:
         print(f"  Warning: addHydrogens with pH failed ({e}), retrying without pH")
         with deterministic_hydrogen_placement(random_seed):
             modeller.addHydrogens(ff, variants=addh_variants)
@@ -440,7 +440,8 @@ def _get_platform(device: str = "cuda"):
         try:
             platform = openmm.Platform.getPlatformByName("CUDA")
             return platform, {"CudaPrecision": "mixed"}
-        except Exception:
+        except openmm.OpenMMException:
+            # CUDA plugin not loaded: fall through to the CPU platform.
             pass
     return openmm.Platform.getPlatformByName("CPU"), {}
 
@@ -506,11 +507,16 @@ def _evaluate_subsystem_energies(
     device: str,
     bond_info=None,
     ncaa_xmls=None,
+    failures: Optional[list] = None,
 ) -> tuple:
     """Evaluate E_complex, E_peptide, E_receptor at given positions.
 
     Uses the existing simulation context for complex energy (avoids rebuilding
     the system). Creates fresh subsystem simulations for peptide and receptor.
+
+    Args:
+        failures: If given, the reason for every failed evaluation is appended
+            to this list as a string.
 
     Returns:
         (e_complex, e_peptide, e_receptor) with None values on failure.
@@ -523,6 +529,8 @@ def _evaluate_subsystem_energies(
             .value_in_unit(unit.kilojoules_per_mole)
         )
         if not np.isfinite(e_c):
+            if failures is not None:
+                failures.append("complex energy is not finite")
             return None, None, None
 
         pep_topo, pep_pos = _extract_chain(topo_h, positions, peptide_chain)
@@ -536,16 +544,29 @@ def _evaluate_subsystem_energies(
         e_r = _evaluate_potential_energy(sys_r, rec_topo, rec_pos, device)
 
         if not (np.isfinite(e_p) and np.isfinite(e_r)):
+            if failures is not None:
+                failures.append("peptide or receptor energy is not finite")
             return e_c, None, None
 
         return e_c, e_p, e_r
 
     except Exception as e:
-        import traceback
-
+        # Per-mode isolation: a failed evaluation must not discard the other modes.
         print(f"  Warning: subsystem energy evaluation failed: {e}")
         traceback.print_exc()
+        if failures is not None:
+            failures.append(f"{type(e).__name__}: {e}")
         return None, None, None
+
+
+def _append_error_message(result: dict, message: str) -> None:
+    """Append ``message`` to ``result["error_message"]`` without touching ``success``.
+
+    A failed mode leaves the other modes usable, so it is recorded next to the
+    energies that did come out. Messages are joined with "; ".
+    """
+    previous = result["error_message"]
+    result["error_message"] = f"{previous}; {message}" if previous else message
 
 
 def compute_interaction_energy(
@@ -609,6 +630,11 @@ def compute_interaction_energy(
             All energies are in kJ/mol. Negative values of
             {mode}_interaction_energy indicate a favorable (stabilizing)
             interaction between peptide and receptor.
+            ``success`` is True when at least one mode produced an energy.
+            ``error_message`` is None when nothing failed; otherwise it holds
+            one "<mode>: <reason>" entry per failed mode (joined by "; "), so a
+            mode that came back as None can be explained even when ``success``
+            is True.
     """
     from binding_metrics.io.structures import detect_chains, load_structure
 
@@ -691,6 +717,7 @@ def compute_interaction_energy(
         # --- RAW mode ---
         if "raw" in modes:
             print(f"[{sample_id}] Raw mode...")
+            failures: list[str] = []
             e_c, e_p, e_r = _evaluate_subsystem_energies(
                 simulation,
                 topo_h,
@@ -701,6 +728,7 @@ def compute_interaction_energy(
                 device,
                 bond_info=bond_info,
                 ncaa_xmls=extra_xmls,
+                failures=failures,
             )
             if e_c is not None and e_p is not None and e_r is not None:
                 result["raw_e_complex"] = e_c
@@ -711,6 +739,7 @@ def compute_interaction_energy(
                 print(f"[{sample_id}]   E_int(raw) = {result['raw_interaction_energy']:.1f} kJ/mol")
             else:
                 print(f"[{sample_id}]   Raw evaluation returned NaN (likely clashes)")
+                _append_error_message(result, "raw: " + "; ".join(failures))
 
         # --- RELAXED mode (also prepares state for after_md) ---
         pos_relaxed = pos_h
@@ -755,6 +784,7 @@ def compute_interaction_energy(
                 simulation.context.reinitialize(preserveState=True)
 
                 if "relaxed" in modes:
+                    failures = []
                     e_c, e_p, e_r = _evaluate_subsystem_energies(
                         simulation,
                         topo_h,
@@ -765,6 +795,7 @@ def compute_interaction_energy(
                         device,
                         bond_info=bond_info,
                         ncaa_xmls=extra_xmls,
+                        failures=failures,
                     )
                     if e_c is not None and e_p is not None and e_r is not None:
                         result["relaxed_e_complex"] = e_c
@@ -776,8 +807,15 @@ def compute_interaction_energy(
                             f"[{sample_id}]   E_int(relaxed) = "
                             f"{result['relaxed_interaction_energy']:.1f} kJ/mol"
                         )
+                    else:
+                        _append_error_message(result, "relaxed: " + "; ".join(failures))
             except Exception as e:
+                # Per-step isolation: the other modes stay usable; the reason is recorded.
                 print(f"[{sample_id}] Warning: relaxed/minimization failed: {e}")
+                step = "relaxed" if "relaxed" in modes else "after_md"
+                _append_error_message(
+                    result, f"{step}: minimization failed: {type(e).__name__}: {e}"
+                )
 
         # --- AFTER_MD mode ---
         if "after_md" in modes:
@@ -798,6 +836,7 @@ def compute_interaction_energy(
                 state = simulation.context.getState(getPositions=True)
                 pos_md = state.getPositions()
 
+                failures = []
                 e_c, e_p, e_r = _evaluate_subsystem_energies(
                     simulation,
                     topo_h,
@@ -808,6 +847,7 @@ def compute_interaction_energy(
                     device,
                     bond_info=bond_info,
                     ncaa_xmls=extra_xmls,
+                    failures=failures,
                 )
                 if e_c is not None and e_p is not None and e_r is not None:
                     result["after_md_e_complex"] = e_c
@@ -819,13 +859,16 @@ def compute_interaction_energy(
                         f"[{sample_id}]   E_int(after_md) = "
                         f"{result['after_md_interaction_energy']:.1f} kJ/mol"
                     )
+                else:
+                    _append_error_message(result, "after_md: " + "; ".join(failures))
             except Exception as e:
                 print(f"[{sample_id}] Warning: after_md failed: {e}")
+                _append_error_message(result, f"after_md: {type(e).__name__}: {e}")
 
         result["success"] = any_success
 
     except Exception as e:
-        result["error_message"] = f"{type(e).__name__}: {e}"
+        _append_error_message(result, f"{type(e).__name__}: {e}")
         print(f"[{sample_id}] ERROR: {result['error_message']}")
         traceback.print_exc()
 
