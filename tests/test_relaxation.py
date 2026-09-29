@@ -466,10 +466,11 @@ class TestRelaxedOutputKeepsNonstandardNames:
     downstream step that keys on the residue name (Ramachandran D-residue
     handling among them) saw an all-L peptide.
 
-    The D-alanine is the first residue of the cyclic peptide, where the linear
-    phi angle is undefined, so ``compute_ramachandran`` cannot score it and its
-    ``n_d_residues`` stays 0 for this structure. The internal sarcosine is
-    scored, which shows the name reaching that metric.
+    The D-alanine is the first residue of the cyclic peptide. Its phi comes
+    from the ring-closing C-N bond, which ``compute_ramachandran`` evaluates, so
+    the residue is scored under its own name and counted in ``n_d_residues``.
+    The internal sarcosine is scored too, which shows the name reaching that
+    metric.
     """
 
     @staticmethod
@@ -503,6 +504,8 @@ class TestRelaxedOutputKeepsNonstandardNames:
         scored = [entry["res_name"] for entry in rama["per_residue"]]
         assert "SAR" in scored
         assert "NMG" not in scored
+        assert "DAL" in scored
+        assert rama["n_d_residues"] == 1
 
 
 CYCLOSPORIN_PEPTIDE_NAMES = [
@@ -593,8 +596,8 @@ class TestPrepThenRelaxKeepsNonstandardNames:
     def test_ramachandran_reads_the_names_from_the_full_pipeline(self, relaxed_after_prep):
         """Sarcosine is scored under its own name and D flags follow the names.
 
-        The D-alanine is residue 1 of the ring, where phi is undefined, so it is
-        not among the scored residues and ``n_d_residues`` stays 0 here.
+        The D-alanine is residue 1 of the ring. Its phi comes from the
+        ring-closing C-N bond, so it is scored and ``n_d_residues`` is 1 here.
         """
         from binding_metrics.core.nonstandard import is_d_residue
         from binding_metrics.metrics.geometry import compute_ramachandran
@@ -604,4 +607,6 @@ class TestPrepThenRelaxKeepsNonstandardNames:
         scored = [entry["res_name"] for entry in per_residue]
         assert "SAR" in scored
         assert "NMG" not in scored
+        assert "DAL" in scored
+        assert rama["n_d_residues"] == 1
         assert all(entry["is_d_aa"] == is_d_residue(entry["res_name"]) for entry in per_residue)
