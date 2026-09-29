@@ -472,5 +472,17 @@ class TestUpdateSampleJson:
         assert of["plddt_per_atom"] == [91.25, 88.5]
         assert of["structure_path"] == str(Path("of3") / "s1_model.cif")
 
-    def test_unknown_objects_still_fall_back_to_str(self):
-        assert batch._json_default(object).startswith("<class")
+    def test_encoder_is_the_report_writers_encoder(self, tmp_path):
+        """One encoder for the per-sample JSON and the batch update: they cannot drift."""
+        import json
+
+        import numpy as np
+
+        from binding_metrics.protocols.report import _json_default
+
+        (tmp_path / "s1_results.json").write_text("{}")
+        batch._update_sample_json(tmp_path, "s1", {"marker": object, "x": np.float64(2.5)})
+        of = json.loads((tmp_path / "s1_results.json").read_text())["openfold"]
+        assert of["marker"] == _json_default(object)
+        assert of["marker"].startswith("<class")
+        assert of["x"] == 2.5

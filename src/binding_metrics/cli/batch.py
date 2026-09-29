@@ -388,24 +388,11 @@ def _run_batched_openfold(
             rows[idx]["openfold_error"] = str(e)
 
 
-def _json_default(obj):
-    """``json.dumps`` hook: numpy scalars and arrays become numbers, paths strings.
-
-    ``default=str`` turned an ``np.float32`` such as an ipTM into the *string*
-    ``"0.83"`` and a per-atom pLDDT array into a truncated text repr.
-    """
-    import numpy as np
-
-    if isinstance(obj, np.generic):
-        return obj.item()
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    return str(obj)
-
-
 def _update_sample_json(sample_dir: Path, sid: str, of_metrics: dict) -> None:
     """Merge OpenFold results into an existing per-sample JSON report."""
     import json
+
+    from binding_metrics.protocols.report import _json_default
 
     json_path = sample_dir / f"{sid}_results.json"
     if not json_path.exists():
