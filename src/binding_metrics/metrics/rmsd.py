@@ -10,9 +10,11 @@ says otherwise.
 
 import warnings
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
+
+from binding_metrics.metrics._common import resolve_chain_role
 
 try:
     import mdtraj as md
@@ -210,8 +212,10 @@ def calculate_ligand_rmsd(
 def compute_receptor_drift(
     trajectory_path: str | Path,
     topology_path: str | Path,
-    receptor_chain: str,
+    receptor_chain: Optional[str] = None,
     reference_frame: int = 0,
+    *,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """Compute receptor backbone drift over a trajectory.
 
@@ -225,8 +229,11 @@ def compute_receptor_drift(
     Args:
         trajectory_path: Path to trajectory file
         topology_path: Path to topology/PDB file
-        receptor_chain: Chain ID of the receptor (e.g. "A")
+        receptor_chain: Chain ID of the receptor (e.g. "A"). Required,
+            through this parameter or ``target_chain``.
         reference_frame: Frame index to use as reference (default 0)
+        target_chain: Alias of ``receptor_chain``; different IDs in both raise
+            ``ValueError``.
 
     Returns:
         Dictionary with keys:
@@ -246,6 +253,9 @@ def compute_receptor_drift(
             n_receptor_ca (int): Number of receptor Cα atoms used
             n_frames (int): Total number of frames in trajectory
     """
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
     if md is None:
         raise ImportError(
             "mdtraj is required for receptor drift calculations. "

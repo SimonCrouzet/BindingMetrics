@@ -18,6 +18,7 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.metrics._common import resolve_chain_role
 from binding_metrics.utils import configure_logging
 
 
@@ -161,6 +162,8 @@ def compute_structure_rmsd(
     initial_path: str | Path,
     processed_path: str | Path,
     design_chain: Optional[str] = None,
+    *,
+    binder_chain: Optional[str] = None,
 ) -> dict[str, Optional[float] | str]:
     """Compute RMSD between two structures (e.g. initial vs. relaxed).
 
@@ -176,6 +179,8 @@ def compute_structure_rmsd(
         processed_path: Path to the second (target) structure
         design_chain: Chain ID of the designed/peptide region. Auto-detected
             as the smallest protein chain if None.
+        binder_chain: Alias of ``design_chain`` (same meaning); giving both
+            with different IDs raises ``ValueError``.
 
     Returns:
         Dictionary with keys:
@@ -187,6 +192,7 @@ def compute_structure_rmsd(
             - reason (str): Only present when at least one value is None;
               names each variant that could not be computed and why.
     """
+    design_chain = resolve_chain_role("design_chain", design_chain, "binder_chain", binder_chain)
     try:
         import gemmi
     except ImportError:

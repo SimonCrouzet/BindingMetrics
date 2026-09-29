@@ -37,6 +37,7 @@ except ImportError:
 # OpenMM is imported inside the functions that use it, so this module can be
 # imported (and its CLI parser built) on installs without OpenMM.
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
+from binding_metrics.metrics._common import resolve_chain_role
 from binding_metrics.utils import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -743,6 +744,9 @@ def compute_interaction_energy(
     after_md_timestep_fs: float = 2.0,
     after_md_temperature_k: float = 300.0,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+    *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """Compute interaction energies via subsystem decomposition for multiple modes.
 
@@ -789,6 +793,9 @@ def compute_interaction_energy(
             ``None`` to draw fresh randomness on every call. CUDA "mixed"
             precision is not bit-for-bit reproducible, so GPU energies from
             the same seed can still differ slightly between runs.
+        binder_chain: Alias of ``peptide_chain``; different IDs in both raise
+            ``ValueError``.
+        target_chain: Alias of ``receptor_chain``, same rule.
 
     Returns:
         Flat dictionary with keys:
@@ -809,6 +816,11 @@ def compute_interaction_energy(
             mode that came back as None can be explained even when ``success``
             is True.
     """
+    peptide_chain = resolve_chain_role("peptide_chain", peptide_chain, "binder_chain", binder_chain)
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain
+    )
+
     import openmm
     import openmm.unit as unit
 

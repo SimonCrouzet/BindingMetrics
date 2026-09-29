@@ -23,6 +23,8 @@ from typing import Literal, Optional
 
 import numpy as np
 
+from binding_metrics.metrics._common import resolve_chain_role
+
 # e²/(4π ε0) in kcal·Å/(mol·e²)
 _COULOMB_K = 332.0637133
 
@@ -129,9 +131,11 @@ def _no_hbonds(reason: Optional[str]) -> dict:
 
 def compute_hbonds(
     atoms,
-    peptide_chain: str,
-    receptor_chain: str,
+    peptide_chain: Optional[str] = None,
+    receptor_chain: Optional[str] = None,
     *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
     hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Detect cross-chain hydrogen bonds and score them.
@@ -160,6 +164,12 @@ def compute_hbonds(
 
     Parameters
     ----------
+    peptide_chain, receptor_chain : str
+        Chain IDs of the two partners. Each is required, through this
+        parameter or its alias.
+    binder_chain, target_chain : str, optional
+        Aliases of ``peptide_chain`` and ``receptor_chain``. Different IDs in
+        an alias and its parameter raise ``ValueError``.
     hetero : {"ignore", "keep"}
         "ignore" (default) drops waters, ions, ligands and glycans before the
         chain selection, so a water that carries a receptor chain ID is not
@@ -176,6 +186,12 @@ def compute_hbonds(
     """
     from binding_metrics.metrics.interface import filter_hetero_atoms
 
+    peptide_chain = resolve_chain_role(
+        "peptide_chain", peptide_chain, "binder_chain", binder_chain, required=True
+    )
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
     structure, _, _, _ = _import_biotite()
     atoms = filter_hetero_atoms(atoms, hetero)
     atoms, hydrogen_reason = _add_hydrogens_if_needed(atoms, structure)
@@ -291,11 +307,13 @@ def l_equivalent_residue_names(res_names) -> np.ndarray:
 
 def compute_saltbridges(
     atoms,
-    peptide_chain: str,
-    receptor_chain: str,
+    peptide_chain: Optional[str] = None,
+    receptor_chain: Optional[str] = None,
     distance_min: float = 0.5,
     distance_max: float = 5.5,
     *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
     hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Detect cross-chain salt bridges and score them.
@@ -330,6 +348,12 @@ def compute_saltbridges(
 
     Parameters
     ----------
+    peptide_chain, receptor_chain : str
+        Chain IDs of the two partners. Each is required, through this
+        parameter or its alias.
+    binder_chain, target_chain : str, optional
+        Aliases of ``peptide_chain`` and ``receptor_chain``. Different IDs in
+        an alias and its parameter raise ``ValueError``.
     hetero : {"ignore", "keep"}
         "ignore" (default) drops waters, ions, ligands and glycans before the
         chain selection; "keep" uses every atom as before.
@@ -343,6 +367,12 @@ def compute_saltbridges(
     """
     from binding_metrics.metrics.interface import filter_hetero_atoms
 
+    peptide_chain = resolve_chain_role(
+        "peptide_chain", peptide_chain, "binder_chain", binder_chain, required=True
+    )
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
     atoms = filter_hetero_atoms(atoms, hetero)
     pos_mask = np.zeros(len(atoms), dtype=bool)
     neg_mask = np.zeros(len(atoms), dtype=bool)

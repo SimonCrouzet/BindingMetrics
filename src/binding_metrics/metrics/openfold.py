@@ -63,6 +63,7 @@ from typing import Optional, Sequence
 
 import numpy as np
 
+from binding_metrics.metrics._common import resolve_chain_role
 from binding_metrics.metrics._openfold_cli import (  # noqa: F401  (re-exported)
     _add_parse_args,
     _add_query_seeds_arg,
@@ -524,7 +525,9 @@ def compute_interface_pae(
     confidences_path,
     structure_path,
     binder_chain: str,
-    receptor_chain: str,
+    receptor_chain: Optional[str] = None,
+    *,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """Interface PAE slice from OpenFold3 output.
 
@@ -539,7 +542,10 @@ def compute_interface_pae(
         structure_path: Path to the predicted model (.cif/.pdb) — used to map
             chains to PAE token ranges.
         binder_chain: Chain ID of the binder.
-        receptor_chain: Chain ID of the receptor.
+        receptor_chain: Chain ID of the receptor. Required, through this
+            parameter or ``target_chain``.
+        target_chain: Alias of ``receptor_chain``; different IDs in both raise
+            ``ValueError``.
 
     Returns:
         Dict from :func:`_interface_pae_stats` (``pae_interface``,
@@ -551,6 +557,9 @@ def compute_interface_pae(
             size does not equal the structure's residue count (a ligand or
             modified residue makes the token count differ).
     """
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
     conf = _parse_confidences(Path(confidences_path))
     pae = conf.get("pae")
     if pae is None:
@@ -579,6 +588,7 @@ def compute_openfold_metrics(
     receptor_chain: Optional[str] = None,
     *,
     seed_index: Optional[int] = None,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """Extract confidence metrics from OpenFold3 output files.
 
@@ -621,6 +631,8 @@ def compute_openfold_metrics(
                 when computing ``binder_ca_rmsd``, giving the
                 receptor-frame binder RMSD.
         seed_index: Clearer name for ``seed``; when given it takes precedence.
+        target_chain: Alias of ``receptor_chain``; different IDs in both raise
+            ``ValueError``.
 
     Returns:
         Dictionary with keys:
@@ -687,6 +699,9 @@ def compute_openfold_metrics(
                 fit the structure, a binder RMSD mismatch, or a structure that
                 could not be parsed.
     """
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain
+    )
     if seed_index is not None:
         seed = seed_index
     output_dir = Path(output_dir)

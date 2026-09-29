@@ -23,6 +23,7 @@ from typing import Literal, Optional
 
 import numpy as np
 
+from binding_metrics.metrics._common import resolve_chain_role
 from binding_metrics.metrics.polar_contacts import (
     _NEGATIVE_ATOMS,
     _POSITIVE_ATOMS,
@@ -309,6 +310,8 @@ def compute_interface_metrics(
     probe_radius: float = 1.4,
     interface_threshold: float = 0.5,
     *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
     hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Compute binding interface metrics for a protein complex.
@@ -338,6 +341,9 @@ def compute_interface_metrics(
             "keep" uses every atom with the chain ID as before; atoms without
             a defined SASA (water, ions) then count as zero area instead of
             turning the sums into NaN.
+        binder_chain: Alias of ``design_chain``; different IDs in both raise
+            ``ValueError``.
+        target_chain: Alias of ``receptor_chain``, same rule.
 
     Returns:
         Dictionary with keys:
@@ -385,6 +391,10 @@ def compute_interface_metrics(
     """
     from binding_metrics.metrics.polar_contacts import compute_hbonds, compute_saltbridges
 
+    design_chain = resolve_chain_role("design_chain", design_chain, "binder_chain", binder_chain)
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain
+    )
     _, _, _, sasa_fn, vdw_fn = _import_biotite()
 
     cif_path = Path(cif_path)

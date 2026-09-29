@@ -47,6 +47,7 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.metrics._common import resolve_chain_role
 from binding_metrics.utils import backfill_auth_columns
 
 # ---------------------------------------------------------------------------
@@ -213,9 +214,11 @@ def compute_evobind_score(
     structure_path: str | Path,
     plddt_per_atom: Optional[np.ndarray],
     binder_chain: str,
-    receptor_chain: str,
+    receptor_chain: Optional[str] = None,
     receptor_interface_residues: Optional[list[int]] = None,
     interface_cutoff_angstrom: float = 8.0,
+    *,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """Compute the primary EvoBind design score for a single predicted structure.
 
@@ -234,13 +237,16 @@ def compute_evobind_score(
         plddt_per_atom: Per-atom pLDDT [0–100], shape (n_atoms,), from the
             same prediction. If None only distance metrics are returned.
         binder_chain: Chain ID of the designed binder/peptide.
-        receptor_chain: Chain ID of the receptor/target.
+        receptor_chain: Chain ID of the receptor/target. Required, through
+            this parameter or ``target_chain``.
         receptor_interface_residues: Explicit list of receptor residue numbers
             that define the binding interface. If None the interface is
             auto-detected as receptor residues whose Cβ lies within
             ``interface_cutoff_angstrom`` Å of any binder Cβ.
         interface_cutoff_angstrom: Distance cutoff (Å) for auto-detection
             (default 8.0, matching the EvoBind CB-contact threshold).
+        target_chain: Alias of ``receptor_chain``; different IDs in both raise
+            ``ValueError``.
 
     Returns:
         Dictionary with keys:
@@ -277,6 +283,9 @@ def compute_evobind_score(
     Reference:
         Bryant et al. 2025, Commun. Chem. (doi:10.1038/s42004-025-01601-3).
     """
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
     atoms = _load_atoms(Path(structure_path))
 
     pep_cb = _cb_atoms(atoms, binder_chain)
@@ -344,10 +353,12 @@ def compute_evobind_adversarial_check(
     design_structure_path: str | Path,
     afm_structure_path: str | Path,
     binder_chain: str,
-    receptor_chain: str,
+    receptor_chain: Optional[str] = None,
     afm_plddt_per_atom: Optional[np.ndarray] = None,
     interface_cutoff_angstrom: float = 8.0,
     max_resname_mismatch_fraction: float = 0.5,
+    *,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """EvoBind adversarial check: consistency between two structure predictions.
 
@@ -375,6 +386,7 @@ def compute_evobind_adversarial_check(
             AlphaFold-Multimer or OpenFold3 standard complex scoring.
         binder_chain: Chain ID of the binder in **both** structures.
         receptor_chain: Chain ID of the receptor in **both** structures.
+            Required, through this parameter or ``target_chain``.
         afm_plddt_per_atom: Per-atom pLDDT [0–100] from the AFM prediction,
             shape (n_atoms,). Used to compute the pLDDT-weighted adversarial
             score.  If None, only geometric metrics are returned.
@@ -386,6 +398,8 @@ def compute_evobind_adversarial_check(
             binder) residues have different residue names (histidine and
             cysteine protonation variants count as equal), the pairing is
             rejected with a ValueError (default 0.5).
+        target_chain: Alias of ``receptor_chain``; different IDs in both raise
+            ``ValueError``.
 
     Returns:
         Dictionary with keys:
@@ -436,6 +450,9 @@ def compute_evobind_adversarial_check(
     Reference:
         Bryant et al. 2025, Commun. Chem. (doi:10.1038/s42004-025-01601-3).
     """
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
     struc, _ = _import_biotite()
 
     design_atoms = _load_atoms(Path(design_structure_path))

@@ -21,6 +21,7 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.metrics._common import resolve_chain_role
 from binding_metrics.metrics.polar_contacts import l_equivalent_residue_names
 from binding_metrics.utils import backfill_auth_columns, configure_logging
 
@@ -140,6 +141,9 @@ def compute_coulomb_cross_chain(
     receptor_chain: Optional[str] = None,
     dielectric: float = 4.0,
     cutoff_ang: float = 12.0,
+    *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """Compute simplified Coulomb cross-chain interaction energy.
 
@@ -159,6 +163,9 @@ def compute_coulomb_cross_chain(
         receptor_chain: Chain ID of receptor (auto-detected if None)
         dielectric: Effective dielectric constant (default 4.0)
         cutoff_ang: Distance cutoff in Å (default 12.0)
+        binder_chain: Alias of ``peptide_chain``; different IDs in both raise
+            ``ValueError``.
+        target_chain: Alias of ``receptor_chain``, same rule.
 
     Returns:
         Dictionary with keys:
@@ -190,6 +197,10 @@ def compute_coulomb_cross_chain(
     """
     from binding_metrics.metrics.interface import detect_interface_chains
 
+    peptide_chain = resolve_chain_role("peptide_chain", peptide_chain, "binder_chain", binder_chain)
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain
+    )
     cif_path = Path(cif_path)
     atoms = _load_structure(cif_path)
 

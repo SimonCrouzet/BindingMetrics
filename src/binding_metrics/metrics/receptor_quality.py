@@ -32,6 +32,7 @@ from typing import Optional
 import numpy as np
 
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
+from binding_metrics.metrics._common import resolve_chain_role
 from binding_metrics.utils import backfill_auth_columns, configure_logging
 
 # ---------------------------------------------------------------------------
@@ -1060,6 +1061,7 @@ def compute_receptor_quality(
     *,
     exclude_bonded: bool = True,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """Compute MolProbity-style structural quality metrics for a receptor chain.
 
@@ -1084,6 +1086,8 @@ def compute_receptor_quality(
             calls agree; ``None`` gives fresh randomness. The energy is a single
             point at the input geometry, so it is the term most exposed to the
             hydrogen jitter.
+        target_chain: Alias of ``receptor_chain``; different IDs in both raise
+            ``ValueError``.
 
     Returns:
         Dictionary with keys:
@@ -1118,6 +1122,9 @@ def compute_receptor_quality(
         Sci. 27:293 (MolProbity); Engh & Huber 1991, Acta Cryst. A47:392
         (backbone geometry); Lovell et al. 2003, Proteins 50:437 (Cβ deviation).
     """
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain
+    )
     path = Path(path)
     all_models = _load_all_models(path)
 

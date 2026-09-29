@@ -17,6 +17,7 @@ from typing import Literal, Optional
 
 import numpy as np
 
+from binding_metrics.metrics._common import resolve_chain_role
 from binding_metrics.utils import backfill_auth_columns, configure_logging
 
 # ---------------------------------------------------------------------------
@@ -311,6 +312,8 @@ def _classify_ramachandran(phi: float, psi: float, is_d: bool = False) -> Option
 def compute_ramachandran(
     cif_path: str | Path,
     chain: Optional[str] = None,
+    *,
+    binder_chain: Optional[str] = None,
 ) -> dict:
     """Compute Ramachandran backbone dihedral quality metrics for a chain.
 
@@ -336,6 +339,8 @@ def compute_ramachandran(
     Args:
         cif_path: Path to structure file (CIF or PDB)
         chain: Chain ID to evaluate (auto-detects smallest chain if None)
+        binder_chain: Alias of ``chain`` (the binder is the chain evaluated by
+            default); different IDs in both raise ``ValueError``.
 
     Returns:
         Dictionary with keys:
@@ -367,6 +372,7 @@ def compute_ramachandran(
     """
     from binding_metrics.core.nonstandard import is_d_residue
 
+    chain = resolve_chain_role("chain", chain, "binder_chain", binder_chain)
     cif_path = Path(cif_path)
     atoms = _load_structure(cif_path)
 
@@ -462,6 +468,8 @@ _CIS_OMEGA_MAX_DEG = 30.0
 def compute_omega_planarity(
     cif_path: str | Path,
     chain: Optional[str] = None,
+    *,
+    binder_chain: Optional[str] = None,
 ) -> dict:
     """Compute omega dihedral planarity metrics for peptide bonds.
 
@@ -482,6 +490,8 @@ def compute_omega_planarity(
     Args:
         cif_path: Path to structure file (CIF or PDB)
         chain: Chain ID to evaluate (auto-detects smallest chain if None)
+        binder_chain: Alias of ``chain`` (the binder is the chain evaluated by
+            default); different IDs in both raise ``ValueError``.
 
     Returns:
         Dictionary with keys:
@@ -510,6 +520,7 @@ def compute_omega_planarity(
         ValueError: If ``chain`` is given but absent from the structure; the
             message lists the chain IDs that are present.
     """
+    chain = resolve_chain_role("chain", chain, "binder_chain", binder_chain)
     cif_path = Path(cif_path)
     atoms = _load_structure(cif_path)
 
@@ -735,6 +746,8 @@ def compute_shape_complementarity(
     normal_radius: float = 6.0,
     weight: float = 0.5,
     *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
     hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Compute shape complementarity Sc (Lawrence & Colman, 1993, J. Mol. Biol. 234, 946).
@@ -779,6 +792,9 @@ def compute_shape_complementarity(
         hetero: "ignore" (default) keeps only amino-acid atoms, so waters,
             ions and ligands that carry a protein chain ID are dropped before
             the chain masks are built; "keep" uses every atom of the chain.
+        binder_chain: Alias of ``peptide_chain``; different IDs in both raise
+            ``ValueError``.
+        target_chain: Alias of ``receptor_chain``, same rule.
 
     Returns:
         Dictionary with keys:
@@ -798,6 +814,10 @@ def compute_shape_complementarity(
             reason (str): Only present when Sc could not be computed (the
                 score is then NaN); says why.
     """
+    peptide_chain = resolve_chain_role("peptide_chain", peptide_chain, "binder_chain", binder_chain)
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain
+    )
     cKDTree, _ = _import_scipy()
     struc, _, _, _ = _import_biotite()
 
@@ -1022,6 +1042,8 @@ def compute_buried_void_volume(
     interface_cutoff: float = 5.0,
     padding: float = 3.0,
     *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
     hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Compute buried void volume at the peptide-receptor interface.
@@ -1071,6 +1093,9 @@ def compute_buried_void_volume(
         hetero: "ignore" (default) keeps only amino-acid atoms, so waters,
             ions and ligands that carry a protein chain ID are not counted as
             interface atoms; "keep" uses every atom of the chain.
+        binder_chain: Alias of ``peptide_chain``; different IDs in both raise
+            ``ValueError``.
+        target_chain: Alias of ``receptor_chain``, same rule.
 
     Returns:
         Dictionary with keys:
@@ -1093,6 +1118,10 @@ def compute_buried_void_volume(
     if probe_radius < 0:
         raise ValueError(f"probe_radius must be >= 0, got {probe_radius}")
 
+    peptide_chain = resolve_chain_role("peptide_chain", peptide_chain, "binder_chain", binder_chain)
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain
+    )
     cif_path = Path(cif_path)
     atoms = _filter_hetero(_load_structure(cif_path), hetero)
     peptide_chain, receptor_chain = _auto_detect_chains(atoms, peptide_chain, receptor_chain)

@@ -7,10 +7,11 @@ static function uses biotite. Both implement the Shrake-Rupley algorithm
 
 import logging
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 
+from binding_metrics.metrics._common import resolve_chain_role
 from binding_metrics.utils import backfill_auth_columns
 
 logger = logging.getLogger(__name__)
@@ -127,10 +128,12 @@ def calculate_interface_sasa(
 
 def compute_delta_sasa_static(
     cif_path: str | Path,
-    peptide_chain: str,
-    receptor_chain: str,
+    peptide_chain: Optional[str] = None,
+    receptor_chain: Optional[str] = None,
     probe_radius: float = 1.4,
     *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
     hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Compute delta SASA (buried surface area on binding) for a static structure.
@@ -145,9 +148,14 @@ def compute_delta_sasa_static(
 
     Args:
         cif_path: Path to CIF structure file
-        peptide_chain: Chain ID of the peptide
-        receptor_chain: Chain ID of the receptor
+        peptide_chain: Chain ID of the peptide. Required, through this
+            parameter or ``binder_chain``.
+        receptor_chain: Chain ID of the receptor. Required, through this
+            parameter or ``target_chain``.
         probe_radius: Solvent probe radius in Ångström (default 1.4 = water)
+        binder_chain: Alias of ``peptide_chain``; different IDs in both raise
+            ``ValueError``.
+        target_chain: Alias of ``receptor_chain``, same rule.
         hetero: "ignore" (default) keeps only the polymer before the chain
             selection (see ``interface.filter_hetero_atoms``), so waters,
             ions, ligands and glycans that carry a protein chain ID are
@@ -167,6 +175,12 @@ def compute_delta_sasa_static(
     """
     from binding_metrics.metrics.interface import SASA_POINT_NUMBER, filter_hetero_atoms
 
+    peptide_chain = resolve_chain_role(
+        "peptide_chain", peptide_chain, "binder_chain", binder_chain, required=True
+    )
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
     try:
         import biotite.structure.io.pdbx as pdbx
         from biotite.structure.info import vdw_radius_single
