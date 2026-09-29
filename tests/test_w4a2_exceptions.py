@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from binding_metrics import provenance
@@ -387,3 +388,48 @@ class TestRunPipelineCatches:
 
         assert of_metrics["evobind_error"] == str(failure)
         assert of_metrics["adversarial_error"] == str(failure)
+
+
+class TestGaffNcaa:
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_failed_template_is_skipped_and_logged_even_when_not_verbose(
+        self, monkeypatch, caplog, failure
+    ):
+        pytest.importorskip("openmmforcefields")
+        from binding_metrics.core import gaff_ncaa
+
+        residue = SimpleNamespace(name="ABA", index=0)
+        topology = SimpleNamespace(residues=lambda: iter([residue]))
+
+        def broken(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(gaff_ncaa, "_is_ncaa", lambda res: True)
+        monkeypatch.setattr(gaff_ncaa, "_pos_to_angstrom", lambda positions: np.zeros((1, 3)))
+        monkeypatch.setattr(gaff_ncaa, "_amber_backbone_types", lambda ff: None)
+        monkeypatch.setattr(gaff_ncaa, "_generate_residue_template", broken)
+        with caplog.at_level(logging.DEBUG, logger="binding_metrics.core.gaff_ncaa"):
+            _, _, templates = gaff_ncaa.parameterize_ncaa_residues(
+                topology, [None], ff=None, verbose=False
+            )
+
+        assert len(templates) == 0
+        assert "GAFF NCAA template failed for 'ABA'" in caplog.text
+
+    def test_bond_order_perception_logs_each_failed_attempt_and_still_sanitises(
+        self, monkeypatch, caplog
+    ):
+        rdkit_chem = pytest.importorskip("rdkit.Chem")
+        from rdkit.Chem import rdDetermineBonds
+
+        from binding_metrics.core.gaff_ncaa import _perceive_bond_orders
+
+        def broken(*_args, **_kwargs):
+            raise RuntimeError("no perception")
+
+        monkeypatch.setattr(rdDetermineBonds, "DetermineBondOrders", broken)
+        with caplog.at_level(logging.DEBUG, logger="binding_metrics.core.gaff_ncaa"):
+            perceived = _perceive_bond_orders(rdkit_chem.MolFromSmiles("CCO"))
+
+        assert rdkit_chem.MolToSmiles(perceived) == "CCO"
+        assert caplog.text.count("Bond-order perception failed") == 2

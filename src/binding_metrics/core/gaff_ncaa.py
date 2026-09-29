@@ -174,7 +174,7 @@ def _ccd_heavy_atom_chemistry(res_name: str):
             # elements and charges are read here.
             warnings.simplefilter("ignore", UserWarning)
             component = info.residue(res_name) if ccd_bonds else None
-    except Exception as exc:  # biotite missing, or too old to expose the dictionary
+    except Exception as exc:  # noqa: BLE001 - biotite missing or too old; None is the fallback
         logger.debug("Chemical Component Dictionary lookup failed for '%s': %s", res_name, exc)
         return None
     if not ccd_bonds:
@@ -256,7 +256,7 @@ def _ccd_bond_orders(mol, atom_names: dict, res_name: str):
         Chem.SanitizeMol(perceived)
         neutral = rdMolStandardize.Uncharger().uncharge(perceived)
         Chem.SanitizeMol(neutral)
-    except Exception as exc:  # RDKit raises several exception types for a bad valence
+    except Exception as exc:  # noqa: BLE001 - RDKit raises several types for a bad valence
         return None, f"the dictionary bond orders do not sanitise in RDKit ({exc})"
     return neutral, ""
 
@@ -295,7 +295,8 @@ def _perceive_bond_orders(mol):
             rdDetermineBonds.DetermineBondOrders(candidate, charge=0, embedChiral=False, **kwargs)
             Chem.SanitizeMol(candidate)
             return candidate
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - RDKit raises several types; next attempt follows
+            logger.debug("Bond-order perception failed with %s: %s", kwargs or "defaults", exc)
             continue
     candidate = Chem.Mol(mol)
     Chem.SanitizeMol(candidate)
@@ -983,9 +984,11 @@ def parameterize_ncaa_residues(
     for res in ncaa_residues:
         try:
             result = _generate_residue_template(res, topology, pos_A, gaff_version, backbone_amber)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - per-residue isolation; the residue is skipped
             if verbose:
                 logger.warning("  [warning] GAFF NCAA template failed for '%s': %s", res.name, exc)
+            else:
+                logger.debug("GAFF NCAA template failed for '%s': %s", res.name, exc)
             result = None
         if result is None:
             continue
