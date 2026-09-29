@@ -257,6 +257,8 @@ The default `--metrics` includes `openfold`, so pass a list without it when Open
 
 ## Quick Start
 
+Every structure metric works on one binder chain and one target chain. Name them with `peptide_chain` (or `design_chain`, `chain`) and `receptor_chain`, or with the aliases `binder_chain` and `target_chain`; the command-line tools take `--binder-chain` and `--target-chain`. Without them, the metric functions take the smallest protein chain as the binder and the largest as the target. Waters, ions, ligands and glycans that carry a protein chain ID are dropped by default (`hetero="ignore"`); `hetero="keep"`, or `--hetero keep` on `binding-metrics-interface` and `-geometry`, uses every atom of the chain.
+
 ### Interface analysis
 
 ```python
@@ -412,6 +414,55 @@ for cif in sorted(Path("designs/").glob("*.cif")):
 pd.DataFrame(rows).sort_values("relaxed_e_int").to_csv("scores.csv", index=False)
 ```
 
+### Pipeline and batch in Python
+
+`binding-metrics-run` and `binding-metrics-batch` are thin wrappers over two functions that run in-process:
+
+```python
+from pathlib import Path
+from binding_metrics import run_pipeline, run_batch
+
+results = run_pipeline(
+    Path("complex.cif"), Path("results/"),
+    skip_prep=True, skip_relax=True,                 # static metrics only
+    metrics=frozenset({"interface", "geometry"}),
+)
+print(results["interface"]["delta_sasa"], results["provenance"]["seed"])
+
+rows = run_batch(
+    sorted(Path("designs/").glob("*.cif")), "results/",
+    metrics={"interface", "geometry"}, skip_prep=True, skip_relax=True,
+    n_workers=4,
+    on_result=lambda row: print(row["sample_id"], row["batch_status"]),
+)
+```
+
+`run_pipeline` takes the options of the `binding-metrics-run` flags as keyword arguments and returns the results dict described under [Results](#results-and-provenance). `binder_chain`, `target_chain` and `openfold_seeds` are keyword arguments too. `run_batch` returns one flat row per path in the order of the paths, whatever the number of workers, and writes the per-sample JSON and log; `on_result` is called with each row as it finishes (in completion order when `n_workers > 1`), and `on_error="raise"` re-raises an exception instead of recording an error row. The CSV of `binding-metrics-batch` is these rows.
+
+The relaxation step is a `Relaxer`. `ImplicitRelaxation` is the one the package ships; pass another implementation, for a different force field or a stub in a test, with `run_pipeline(..., relaxer=...)`. The pipeline reads `success`, `error_message` and the structure path from the returned `RelaxationResult` and records its `to_dict()` under `results["relax"]`:
+
+```python
+from binding_metrics import Relaxer, run_pipeline
+from binding_metrics.protocols.relaxation import RelaxationResult
+
+class NoRelaxation(Relaxer):
+    """Hand the input structure on unchanged."""
+
+    def run(self, input_path, output_dir, sample_id=None):
+        return RelaxationResult(
+            sample_id=sample_id or input_path.stem,
+            success=True,
+            minimized_structure_path=str(input_path),
+        )
+
+results = run_pipeline(
+    Path("complex.cif"), Path("results/"),
+    skip_prep=True, relaxer=NoRelaxation(), metrics=frozenset({"interface"}),
+)
+```
+
+Names that need an optional dependency raise an error that names the extra, and `import binding_metrics` does not import OpenMM, so the static metrics, `run_pipeline` and `run_batch` import on an install without it.
+
 ---
 
 ## CLI Tools
@@ -420,8 +471,8 @@ pd.DataFrame(rows).sort_values("relaxed_e_int").to_csv("scores.csv", index=False
 
 | Command | Description |
 |---|---|
-| `binding-metrics-prep` | Fix missing atoms/residues, add hydrogens (`--ph 7.4`), optionally canonicalize non-standard residues (`--canonicalize`) |
-| `binding-metrics-solvate` | Add explicit water box and ions for MD |
+| `binding-metrics-prep` | Fix missing atoms/residues, add hydrogens (`--ph 7.4`), optionally canonicalize non-standard residues (`--canonicalize`); `--random-seed` |
+| `binding-metrics-solvate` | Add explicit water box and ions for MD; `--random-seed` seeds the ion placement |
 
 These two commands are composable pipeline steps:
 
@@ -430,11 +481,14 @@ binding-metrics-prep    --input complex.cif --output cleaned.cif --ph 7.4
 binding-metrics-solvate --input cleaned.cif --output solvated.pdb
 ```
 
+Both print a JSON summary on stdout; library warnings go to stderr so that the JSON stays alone on stdout.
+
 **Full pipeline**
 
 | Command | Description |
 |---|---|
-| `binding-metrics-run` | Run the complete pipeline (prep → relax → energy → interface → geometry → electrostatics → OpenFold3) on a single structure |
+| `binding-metrics-run` | Run the pipeline (prep → relax → energy → interface → geometry → electrostatics → OpenFold3, and DockQ with a reference) on a single structure |
+| `binding-metrics-batch` | Run it on every structure of a directory and write one CSV row per structure |
 
 ```bash
 binding-metrics-run \
@@ -443,26 +497,30 @@ binding-metrics-run \
     --summary                      # also write a human-readable *_report.md
 ```
 
-Peptide and receptor chains are **auto-detected** (smallest chain = peptide; when more than two chains are present, the one with the most Cα contacts to the peptide is the receptor). Override with `--peptide-chain` / `--receptor-chain`.
+Peptide and receptor chains are **auto-detected** (smallest chain = peptide; when more than two chains are present, the one with the most Cα contacts to the peptide is the receptor). Override with `--peptide-chain` / `--receptor-chain`, or their aliases `--binder-chain` / `--target-chain`. An ID that is not in the structure stops the run with an error that lists the chains present.
 
-**Cyclic peptides** are handled automatically — cyclic connectivity is read from `_struct_conn` in the input CIF and propagated through prep, relaxation, and energy decomposition with no extra flags required. See [Cyclic peptide support](#cyclic-peptide-support) above.
+**Cyclic peptides** are handled automatically: the closure is detected from the input and propagated through prep, relaxation and energy decomposition with no extra flags. See [Cyclic peptide support](#cyclic-peptide-support) above.
 
-The pipeline always starts with a **prep step** (equivalent to `binding-metrics-prep`) that fixes missing atoms, adds hydrogens, and removes waters. Key prep flags:
+Unless `--skip-prep` is given, the pipeline starts with a **prep step** (equivalent to `binding-metrics-prep`) that fixes missing atoms, adds hydrogens and removes waters and other heterogens. The options of `binding-metrics-run`, all of which `binding-metrics-batch` accepts too (batch names the reference option `--reference-dir`):
+
+| Option | Default | Effect |
+|---|---|---|
+| `--metrics LIST` | `energy,interface,geometry,electrostatics,openfold` | comma-separated subset; `dockq` is added by `--reference` |
+| `--skip-prep`, `--skip-relax` | off | skip preparation, or relaxation and MD |
+| `--ph` | 7.4 | protonation pH |
+| `--keep-water`, `--canonicalize` | off | keep crystallographic waters; rename non-standard residues to their canonical equivalents |
+| `--md-duration-ps` | 200 | MD after minimization; 0 minimizes only; a value below 10 saves one frame at the end |
+| `--energy-modes` | `relaxed` | any of `raw`, `relaxed`, `after_md` (the `after_md` run lasts 10 ps, independent of `--md-duration-ps`) |
+| `--random-seed INT\|none` | 1 | seed of the stochastic steps; `none` for fresh randomness |
+| `--reference PATH` | none | native structure; enables DockQ |
+| `--openfold-mode`, `--openfold-conda-env`, `--openfold-seeds` | `score`, `openfold3`, seed 42 | OpenFold3 step |
+| `--config PATH` | none | TOML file with option defaults (below) |
+| `--summary`, `--summary-format`, `--format` | off, `md`, `json` | write a summary with the scorecard; results as JSON or CSV (`binding-metrics-run` only) |
+| `--log-file PATH` | none | send all output to a file |
 
 ```bash
-binding-metrics-run --input complex.cif --output-dir results/ \
-    --ph 7.4           # protonation pH (default: 7.4)
-    --keep-water       # keep crystallographic waters
-    --canonicalize     # rename non-standard residues to their canonical equivalents
-    --skip-prep        # skip prep — use if the structure is already protonated
-```
-
-All metric steps are enabled by default. Skip relaxation with `--skip-relax`; select a subset of metrics with `--metrics`:
-
-```bash
-# MD + energy only:
-binding-metrics-run --input complex.cif --output-dir results/ \
-    --metrics energy
+# Relaxation and energy only:
+binding-metrics-run --input complex.cif --output-dir results/ --metrics energy
 # Everything except OpenFold:
 binding-metrics-run --input complex.cif --output-dir results/ \
     --metrics energy,interface,geometry,electrostatics
@@ -470,15 +528,39 @@ binding-metrics-run --input complex.cif --output-dir results/ \
 
 OpenFold3 runs in the `openfold3` conda env by default (see [OpenFold3 install](#openfold3-optional) above). Use `--openfold-mode refold` to measure refolding RMSD (binder predicted freely, receptor fixed as template).
 
+**Configuration files.** `--config` (on `binding-metrics-run`, `-batch` and `-relax`) reads option defaults from a flat TOML file. Keys are long option names with dashes or underscores, a flag takes `true` or `false`, an option with several values takes a list, and an unknown key is an error. Precedence is the built-in default, then the file, then the command line.
+
+```toml
+# run.toml
+md-duration-ps = 100
+ph = 7.0
+metrics = "interface,geometry"
+energy-modes = ["relaxed", "raw"]
+skip-prep = true
+```
+
+```bash
+binding-metrics-run --config run.toml --input complex.cif --output-dir results/
+```
+
+**Batch runs.**
+
+```bash
+binding-metrics-batch --input-dir designs/ --output-csv metrics.csv --workers 4
+```
+
+Each structure gets its own directory, JSON report and log under `--output-dir` (by default the directory of the CSV). The CSV has one row per structure, in input order, with a `batch_status` column: `ok` (every step completed), `partial` (the pipeline finished but a step failed; see `batch_failed_steps` and `batch_failed_reasons`) or `error` (the worker raised; see `batch_error`). The last columns, `provenance_*`, record the package version, git sha, Python, OS, OpenMM version, platform and seed. The exit code is non-zero only when no sample is `ok`. Each worker process opens its own CUDA context and takes its share of GPU memory, so several workers on one GPU can run out of memory. Structures are matched to natives for DockQ by file stem (`--reference-dir`, `target1.cif` with `target1.pdb`).
+
 **Scoring (individual steps)**
 
 | Command | Description |
 |---|---|
-| `binding-metrics-interface` | PISA-inspired interface metrics |
-| `binding-metrics-energy` | Force-field interaction energy (raw / relaxed / after MD) |
+| `binding-metrics-interface` | PISA-inspired interface metrics; `--hetero {ignore,keep}` |
+| `binding-metrics-energy` | Force-field interaction energy (raw / relaxed / after MD); `--ph`, `--random-seed` |
 | `binding-metrics-electrostatics` | Coulomb cross-chain interaction energy |
-| `binding-metrics-geometry` | Ramachandran, ω planarity, shape complementarity, void volume |
+| `binding-metrics-geometry` | Ramachandran, ω planarity, shape complementarity, void volume; `--hetero {ignore,keep}` |
 | `binding-metrics-compare` | RMSD between two structures |
+| `binding-metrics-dockq` | DockQ, fnat, fnonnat, i-RMSD, L-RMSD of a prediction against a native |
 | `binding-metrics-openfold` | Parse / run OpenFold3 confidence metrics |
 | `binding-metrics-relax` | Implicit-solvent energy minimization; supports multi-model CIFs via `--model N` or `--all-models` |
 
@@ -532,15 +614,52 @@ binding-metrics-report --results results/my_run/sample_results.json \
     --summary --summary-format html
 ```
 
-The `--summary` flag (available on both `binding-metrics-run` and `binding-metrics-report`) writes a human-readable summary alongside the JSON/CSV output. Use `--summary-format md` (default) for Markdown or `--summary-format html` for a self-contained HTML page. It includes a RAG scorecard (🟢/🟡/🔴) for the key metrics, cyclic topology metadata when present, and per-residue breakdowns for the interface and geometry sections. See [`docs/report_thresholds.md`](docs/report_thresholds.md) for the scorecard thresholds and their scientific rationale.
+The `--summary` flag (available on both `binding-metrics-run` and `binding-metrics-report`) writes a human-readable summary alongside the JSON/CSV output. Use `--summary-format md` (default) for Markdown or `--summary-format html` for a self-contained HTML page (needs the `report` extra). It has a section for each step (marked skipped when the step did not run), per-residue buried SASA of the peptide in the interface section, and a RAG scorecard (🟢/🟡/🔴, ⬜ for a value that was not computed). The scorecard thresholds are heuristic; see [`docs/report_thresholds.md`](docs/report_thresholds.md).
 
-All scoring tools auto-detect peptide and receptor chains. Pass `--peptide-chain` / `--receptor-chain` to override. See `--help` on each command for full options, or `METRICS.md` for detailed documentation.
+The individual scoring tools take a peptide and a receptor chain through `--peptide-chain` (or `--design-chain`, `--binder-chain`) and `--receptor-chain` (or `--target-chain`); without them the smallest protein chain is the peptide and the largest the receptor. See `--help` on each command for the options.
+
+---
+
+## Results and provenance
+
+`binding-metrics-run` writes `<sample>_results.json` (`--format csv` writes the flattened CSV instead), and `run_pipeline` returns the same dict. Top-level keys:
+
+| Key | Content |
+|---|---|
+| `sample_id`, `input`, `total_elapsed_s` | identifiers and wall time |
+| `provenance` | package version, git sha (when the package runs from its own checkout), Python, OS, OpenMM version, platform, seed |
+| `chains` | resolved chain IDs and residue counts |
+| `prep` | what preparation changed: `removed_heterogens`, `n_removed_waters`, `kept_nonstandard`, `n_missing_atoms_rebuilt`, `n_missing_residue_gaps`, and `ncaa_bond_order_source` for GAFF2 residues |
+| `relax` | energies, RMSD and RMSF, the OpenMM `platform`, and the structural QC: `qc_passed`, `qc_failed_checks` and (in the JSON) `qc_checks` |
+| `energy`, `interface`, `geometry`, `electrostatics`, `dockq`, `openfold` | one dict per metric: `{"skipped": True}` when it did not run, `{"error": message}` when it failed |
+| `nonfinite_fields` | the JSON paths of every NaN or infinite value |
+
+A value that could not be computed keeps its NaN, 0 or None, and its dict gains a string under `reason` that says why; a dict without `reason` was computed in full. The QC of the relaxed structure is advisory: a failed check logs a warning and changes neither the results nor the exit code. `binding-metrics-run` exits with 1 when a step failed, after writing the partial results. The schemas are in [`docs/metrics.md`](docs/metrics.md#15-pipeline-results-and-provenance).
+
+---
+
+## Logging
+
+Library code logs through `logging` and never configures it on import. The command-line tools call `binding_metrics.utils.configure_logging()`, which sends records up to WARNING to stdout and ERROR and above to stderr, as the bare message. `binding-metrics-prep` and `-solvate` send warnings to stderr as well, so that their JSON summary is alone on stdout. `--log-file PATH` redirects both streams of a command to a file. `binding-metrics-batch` writes one log per sample, `<output-dir>/<sample>/<sample>.log`, unless `--log-file` names one file shared by all samples.
+
+In a script, call `configure_logging()` for the same behaviour, or attach handlers to the `binding_metrics` logger yourself:
+
+```python
+import logging
+from binding_metrics.utils import configure_logging
+
+configure_logging(logging.INFO)
+```
 
 ---
 
 ## Documentation
 
-Full API reference, return value schemas, algorithm notes, and implementation details are in [`docs/metrics.md`](docs/metrics.md).
+- [`docs/metrics.md`](docs/metrics.md): every metric with its signature, result keys, units and algorithm notes; the pipeline results; the metric registry
+- [`docs/nonstandard.md`](docs/nonstandard.md): D-amino acids, N-methylated and phosphorylated residues, the GAFF2 route, cyclic closures and their limits
+- [`docs/report_thresholds.md`](docs/report_thresholds.md): the scorecard thresholds
+- [`CHANGELOG.md`](CHANGELOG.md): what changed, with the results that differ from earlier versions
+- [`METRICS.md`](METRICS.md) points to `docs/metrics.md`
 
 ---
 
