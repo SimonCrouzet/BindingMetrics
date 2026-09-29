@@ -9,6 +9,20 @@ Minimization stages:
     Stage 2: Backbone-restrained optimization (side chains optimize)
     Stage 3: Final unrestrained refinement
 
+Model and method references:
+    Force field     AMBER ff14SB (Maier et al., J. Chem. Theory Comput. 11, 3696, 2015),
+                    loaded through OpenMM's ``amber14-all.xml``.
+    Implicit water  OBC2 (Onufriev, Bashford and Case, Proteins 55, 383, 2004) or
+                    GBn2 (Nguyen, Perez, Simmerling and Roitberg, J. Chem. Theory
+                    Comput. 9, 2020, 2013) generalized Born, no cutoff.
+    Constraints     Bonds to hydrogen are constrained, which is what allows the
+                    default 2 fs time step.
+    MD integrator   Langevin "middle" scheme (Zhang, Liu, Yan, Tuckerman and Liu,
+                    J. Phys. Chem. A 123, 6056, 2019), as implemented by OpenMM's
+                    ``LangevinMiddleIntegrator``.
+    RMSD            Optimal superposition by the Kabsch algorithm (Acta Cryst. A32,
+                    922, 1976).
+
 Usage:
     python -m binding_metrics.protocols.relaxation \\
         --input complex.cif \\
@@ -33,6 +47,55 @@ from binding_metrics.core.system import DEFAULT_RANDOM_SEED
 
 logger = logging.getLogger(__name__)
 
+# --- Minimization schedule -------------------------------------------------
+#
+# The three stages use a tolerance that tightens from coarse to fine: the first
+# stages only need to remove clashes and relieve strain, so stopping early saves
+# time, while the last stage converges to ``RelaxationConfig.min_tolerance``.
+# OpenMM measures the tolerance as the RMS force in kJ/mol/nm.
+
+#: Stage 1 (global relaxation) tolerance, as a multiple of ``min_tolerance``.
+STAGE1_TOLERANCE_FACTOR = 10
+#: Stage 2 (backbone-restrained) tolerance, as a multiple of ``min_tolerance``.
+STAGE2_TOLERANCE_FACTOR = 5
+
+# --- Cyclic closure (Stage 0) ----------------------------------------------
+#
+# A closure bond taken from a predicted or crystal structure can start far from
+# its equilibrium length. Stage 0 first pulls each closure bond to a peptide-bond
+# length with a strong harmonic restraint, then switches the restraint off so the
+# force field alone decides the final geometry in Stages 1-3.
+
+#: Restraint force constant of the closure bond in kJ/mol/nm^2.
+CLOSURE_RESTRAINT_K_KJ_MOL_NM2 = 1000.0
+#: Target length of the closure bond in nm: a peptide C-N bond is about 0.133 nm
+#: (Engh and Huber, Acta Cryst. A47, 392, 1991). A disulfide S-S bond is longer
+#: (0.205 nm), but the restraint is switched off before Stage 1 and the force
+#: field then relaxes the bond to its own length.
+CLOSURE_BOND_TARGET_NM = 0.1325
+#: Iteration cap of the Stage 0 minimization.
+CLOSURE_MINIMIZATION_MAX_ITERATIONS = 200
+
+# --- Cyclic warm-up MD -----------------------------------------------------
+#
+# Assigning Maxwell-Boltzmann velocities to a minimized macrocycle can kick it
+# out of the ring conformation the minimization found. The warm-up runs the
+# first picoseconds of MD with cosine restraints on the backbone phi/psi
+# dihedrals (and on the closure omega), centred on the minimized angles, and
+# releases them in three steps: 100 %, 20 % and 2 % of the initial force
+# constant over the first half, next quarter and last quarter of the warm-up.
+# The energy is k * (1 - cos(theta - theta0)), which is harmonic with force
+# constant k near theta0.
+
+#: Length of the restrained warm-up in ps.
+CYCLIC_WARMUP_PS = 10.0
+#: Force constant k of the phi/psi restraints in kJ/mol for the three phases.
+WARMUP_PHI_PSI_K_KJ_MOL = (50.0, 10.0, 1.0)
+#: Force constant k of the closure omega restraint in kJ/mol for the three
+#: phases. It is twice the phi/psi value: the single closure omega is held more
+#: tightly than the phi/psi torsions.
+WARMUP_OMEGA_K_KJ_MOL = (100.0, 20.0, 2.0)
+
 #: Slack when deciding whether ``md_duration_ps`` is a whole number of save
 #: intervals; absorbs floating-point error such as 0.3 / 0.1 = 2.9999999999999996.
 _FRAME_COUNT_TOLERANCE = 1e-9
@@ -51,8 +114,11 @@ class RelaxationConfig:
         min_steps_initial: Steps for initial global minimization (stage 1)
         min_steps_restrained: Steps for backbone-restrained minimization (stage 2)
         min_steps_final: Steps for final unrestrained minimization (stage 3)
-        min_tolerance: Energy tolerance in kJ/mol/nm for final stage
-        restraint_strength: Backbone restraint force constant in kJ/mol/nm²
+        min_tolerance: Energy tolerance in kJ/mol/nm for the final stage; Stages
+            1 and 2 use ``STAGE1_TOLERANCE_FACTOR`` and ``STAGE2_TOLERANCE_FACTOR``
+            times this value
+        restraint_strength: Backbone restraint force constant in kJ/mol/nm² for
+            Stage 2 (100 kJ/mol/nm² is 1 kJ/mol/Å²), centred on the input backbone
         md_duration_ps: MD simulation duration in picoseconds (0 to skip)
         md_timestep_fs: MD integration timestep in femtoseconds
         md_temperature_k: Simulation temperature in Kelvin
@@ -829,6 +895,11 @@ class ImplicitRelaxation:
     def _add_restraints(self, system, topology, positions, backbone_only: bool = True) -> int:
         """Add harmonic position restraints to the system.
 
+        Each restrained atom feels ``0.5 * k * |x - x0|^2`` with ``k`` from
+        ``config.restraint_strength``. ``k`` is a global parameter named ``"k"``,
+        so setting it to 0 in the context switches the restraint off without
+        removing the force (Stage 3 does this).
+
         Args:
             system: OpenMM System
             topology: OpenMM Topology
@@ -893,6 +964,10 @@ class ImplicitRelaxation:
     def _compute_rmsf(self, trajectory_positions, atom_indices) -> np.ndarray:
         """Compute per-atom RMSF from a list of trajectory frame positions.
 
+        RMSF_i = sqrt(mean over frames of |x_i(t) - <x_i>|^2), where <x_i> is the
+        mean position over the saved frames. Frames are not superposed first, so
+        the value includes any overall drift of the complex.
+
         Args:
             trajectory_positions: List of OpenMM position sets (one per frame)
             atom_indices: Atom indices to include
@@ -941,13 +1016,15 @@ class ImplicitRelaxation:
         ref_positions,
         peptide_chain: str,
         omega_indices,
-        warmup_ps: float = 10.0,
+        warmup_ps: float = CYCLIC_WARMUP_PS,
     ) -> None:
         """Run short restrained MD to preserve ring conformation on velocity init.
 
         Adds backbone φ/ψ dihedral restraints (cosine form) centred on the
         minimised structure, runs ``warmup_ps`` picoseconds with a progressive
         three-phase release, then removes all restraint forces before returning.
+        The force constants and the reason for the release schedule are with
+        ``WARMUP_PHI_PSI_K_KJ_MOL`` and ``WARMUP_OMEGA_K_KJ_MOL``.
 
         Args:
             system: OpenMM System (modified in-place; forces are removed after warmup).
@@ -957,7 +1034,8 @@ class ImplicitRelaxation:
             peptide_chain: Peptide chain ID.
             omega_indices: 4-tuple of atom indices for the closure ω dihedral,
                 or None (ω restraint is skipped when None).
-            warmup_ps: Total warmup MD duration in picoseconds (default 10).
+            warmup_ps: Total warmup MD duration in picoseconds
+                (default ``CYCLIC_WARMUP_PS``).
         """
         import math
 
@@ -1013,10 +1091,12 @@ class ImplicitRelaxation:
             return math.atan2(y, x)
 
         # Build torsion force: V = k * (1 - cos(θ - θ0))  →  harmonic near θ0
+        phi_psi_k_kj_mol = WARMUP_PHI_PSI_K_KJ_MOL
+        omega_k_kj_mol = WARMUP_OMEGA_K_KJ_MOL
         torsion_force = openmm.CustomTorsionForce("k_phi * (1 - cos(theta - theta0))")
         torsion_force.addGlobalParameter(
             "k_phi",
-            50.0 * unit.kilojoules_per_mole,
+            phi_psi_k_kj_mol[0] * unit.kilojoules_per_mole,
         )
         torsion_force.addPerTorsionParameter("theta0")
 
@@ -1031,7 +1111,7 @@ class ImplicitRelaxation:
             omega_force = openmm.CustomTorsionForce("k_omega * (1 - cos(theta - theta0_omega))")
             omega_force.addGlobalParameter(
                 "k_omega",
-                100.0 * unit.kilojoules_per_mole,
+                omega_k_kj_mol[0] * unit.kilojoules_per_mole,
             )
             omega_force.addPerTorsionParameter("theta0_omega")
             theta0_omega = _dihedral_rad(ref_pos, *omega_indices)
@@ -1047,16 +1127,16 @@ class ImplicitRelaxation:
         # Phase 1: full restraint (first half)
         simulation.step(warmup_steps // 2)
 
-        # Phase 2: reduce to 20 % (second quarter)
-        simulation.context.setParameter("k_phi", 10.0 * unit.kilojoules_per_mole)
+        # Phase 2: 20 % of the initial force constant (second quarter)
+        simulation.context.setParameter("k_phi", phi_psi_k_kj_mol[1] * unit.kilojoules_per_mole)
         if omega_force is not None:
-            simulation.context.setParameter("k_omega", 20.0 * unit.kilojoules_per_mole)
+            simulation.context.setParameter("k_omega", omega_k_kj_mol[1] * unit.kilojoules_per_mole)
         simulation.step(warmup_steps // 4)
 
-        # Phase 3: near-zero (last quarter)
-        simulation.context.setParameter("k_phi", 1.0 * unit.kilojoules_per_mole)
+        # Phase 3: 2 % of the initial force constant (last quarter)
+        simulation.context.setParameter("k_phi", phi_psi_k_kj_mol[2] * unit.kilojoules_per_mole)
         if omega_force is not None:
-            simulation.context.setParameter("k_omega", 2.0 * unit.kilojoules_per_mole)
+            simulation.context.setParameter("k_omega", omega_k_kj_mol[2] * unit.kilojoules_per_mole)
         simulation.step(warmup_steps - warmup_steps // 2 - warmup_steps // 4)
 
         # Remove restraint forces so production MD is unrestrained.
@@ -1104,6 +1184,12 @@ class ImplicitRelaxation:
 
     def _get_platform(self):
         """Get the OpenMM compute platform, falling back to CPU if CUDA fails.
+
+        CUDA runs in "mixed" precision: forces are computed in single precision
+        and the integration is done in double precision, the usual OpenMM
+        setting for MD on GPUs (Eastman et al., PLoS Comput. Biol. 13,
+        e1005659, 2017). A context is created once as a probe, because a driver or
+        PTX mismatch only shows up at context creation, not at platform lookup.
 
         Besides returning ``(platform, properties)``, records what was chosen in
         ``self._platform_used``, ``self._precision_used`` and
@@ -1257,34 +1343,38 @@ class ImplicitRelaxation:
                 closure_force = openmm.CustomBondForce("0.5 * k_closure * (r - r0_closure)^2")
                 closure_force.addGlobalParameter(
                     "k_closure",
-                    1000.0 * unit.kilojoules_per_mole / unit.nanometer**2,
+                    CLOSURE_RESTRAINT_K_KJ_MOL_NM2 * unit.kilojoules_per_mole / unit.nanometer**2,
                 )
                 closure_force.addGlobalParameter(
-                    "r0_closure",
-                    0.1325 * unit.nanometers,  # ideal amide bond; S-S is 0.205 nm but
-                )  # the force field enforces the correct length
+                    "r0_closure", CLOSURE_BOND_TARGET_NM * unit.nanometers
+                )
                 for ci in closure_indices_list:
                     closure_force.addBond(ci[0], ci[1], [])
                 system.addForce(closure_force)
                 simulation.context.reinitialize(preserveState=True)
-                simulation.minimizeEnergy(maxIterations=200)
+                simulation.minimizeEnergy(maxIterations=CLOSURE_MINIMIZATION_MAX_ITERATIONS)
                 simulation.context.setParameter("k_closure", 0.0)
 
             print(f"[{sample_id}]   Stage 1: Global relaxation")
             simulation.minimizeEnergy(
                 maxIterations=self.config.min_steps_initial,
                 tolerance=self.config.min_tolerance
-                * 10
+                * STAGE1_TOLERANCE_FACTOR
                 * unit.kilojoules_per_mole
                 / unit.nanometer,
             )
 
             print(f"[{sample_id}]   Stage 2: Backbone-restrained optimization")
+            # The restraints are centred on the input backbone (``positions``),
+            # so side chains settle while the backbone stays near the input.
             self._add_restraints(system, topology, positions, backbone_only=True)
             simulation.context.reinitialize(preserveState=True)
             simulation.minimizeEnergy(
                 maxIterations=self.config.min_steps_restrained,
-                tolerance=self.config.min_tolerance * 5 * unit.kilojoules_per_mole / unit.nanometer,
+                tolerance=self.config.min_tolerance
+                * STAGE2_TOLERANCE_FACTOR
+                * unit.kilojoules_per_mole
+                / unit.nanometer,
             )
 
             print(f"[{sample_id}]   Stage 3: Final unrestrained refinement")
