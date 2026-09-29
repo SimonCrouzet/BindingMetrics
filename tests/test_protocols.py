@@ -210,6 +210,54 @@ class TestPeptideBindingProtocol:
         with pytest.raises(RuntimeError, match="No trajectory"):
             protocol.analyze()
 
+    @pytest.mark.parametrize("empty_series", ["sasa", "contacts", "energy", "rmsd"])
+    def test_analyze_raises_on_a_trajectory_with_no_frames(
+        self, sample_pdb_path: Path, monkeypatch, empty_series
+    ):
+        """An empty per-frame series must raise, not become NaN means."""
+        from binding_metrics.protocols import peptide
+
+        frames = np.array([1.0, 2.0])
+        series = {
+            "sasa": frames,
+            "contacts": frames,
+            "energy": frames,
+            "rmsd": frames,
+        }
+        series[empty_series] = np.array([])
+        monkeypatch.setattr(peptide, "get_chain_atom_indices", lambda *a, **k: [0, 1])
+        monkeypatch.setattr(peptide, "calculate_buried_sasa", lambda *a, **k: series["sasa"])
+        monkeypatch.setattr(peptide, "calculate_contacts", lambda *a, **k: series["contacts"])
+        monkeypatch.setattr(
+            peptide, "calculate_interaction_energy", lambda *a, **k: series["energy"]
+        )
+        monkeypatch.setattr(peptide, "calculate_rmsd", lambda *a, **k: series["rmsd"])
+
+        protocol = PeptideBindingProtocol(
+            pdb_path=sample_pdb_path, ligand_chain="B", receptor_chains=["A"]
+        )
+        with pytest.raises(RuntimeError, match="trajectory has 0 frames"):
+            protocol.analyze(trajectory_path=Path("empty.dcd"))
+        assert protocol.results is None
+
+    def test_analyze_with_frames_still_returns_finite_means(self, sample_pdb_path, monkeypatch):
+        from binding_metrics.protocols import peptide
+
+        monkeypatch.setattr(peptide, "get_chain_atom_indices", lambda *a, **k: [0, 1])
+        for name, values in (
+            ("calculate_buried_sasa", [100.0, 110.0]),
+            ("calculate_contacts", [10.0, 12.0]),
+            ("calculate_interaction_energy", [-50.0, -54.0]),
+            ("calculate_rmsd", [0.1, 0.2]),
+        ):
+            monkeypatch.setattr(peptide, name, lambda *a, _v=values, **k: np.array(_v))
+        protocol = PeptideBindingProtocol(
+            pdb_path=sample_pdb_path, ligand_chain="B", receptor_chains=["A"]
+        )
+        results = protocol.analyze(trajectory_path=Path("ok.dcd"))
+        assert results.sasa_buried_mean == 105.0
+        assert results.interaction_energy_mean == -52.0
+
     def test_multiple_receptor_chains(self, sample_pdb_path: Path):
         """Should accept multiple receptor chains."""
         protocol = PeptideBindingProtocol(
