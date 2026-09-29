@@ -54,11 +54,11 @@ def _import_scipy():
         from scipy.spatial import cKDTree
 
         return cKDTree
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "scipy is required for clashscore computation. "
             "Install with: pip install binding-metrics[biotite]"
-        )
+        ) from exc
 
 
 def _import_openmm():
@@ -68,11 +68,11 @@ def _import_openmm():
         from openmm.app import ForceField, Modeller, PDBFile, Simulation
 
         return openmm, unit, ForceField, Modeller, PDBFile, Simulation
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "openmm is required for energy computation. "
             "Install with: pip install binding-metrics[simulation]"
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +713,7 @@ def _backbone_geometry(chain_atoms) -> dict:
         evaluated.
     """
     residues = []
-    for res_name, atoms in _iter_residues(chain_atoms):
+    for _, atoms in _iter_residues(chain_atoms):
         residues.append(atoms)
 
     bad_bonds = 0
@@ -935,10 +935,10 @@ def _receptor_energy(
             "error": None,
         }
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - one term of a multi-metric report; recorded in "error"
         # Broad on purpose: PDBFixer, OpenMM and the force field raise many exception
-        # types on unusual input, and the energy is one term of a multi-metric report,
-        # so a failure is recorded in ``error`` instead of aborting the other terms.
+        # types on unusual input, so a failure is recorded in ``error`` instead of
+        # aborting the other terms.
         return {**_nan, "error": f"{type(e).__name__}: {e}"}
 
     finally:

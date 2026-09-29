@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from binding_metrics.metrics import geometry
+from binding_metrics.metrics import geometry, receptor_quality
 from binding_metrics.metrics._common import import_biotite
 from binding_metrics.metrics.comparison import compute_structure_rmsd
 
@@ -35,4 +35,18 @@ class TestGeometry:
         monkeypatch.setitem(sys.modules, "scipy.spatial", None)
         with pytest.raises(ImportError, match="scipy is required") as info:
             geometry._import_scipy()
+        assert isinstance(info.value.__cause__, ImportError)
+
+
+class TestReceptorQuality:
+    def test_missing_scipy_error_names_the_original_import_failure(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "scipy.spatial", None)
+        with pytest.raises(ImportError, match="scipy is required") as info:
+            receptor_quality._import_scipy()
+        assert isinstance(info.value.__cause__, ImportError)
+
+    def test_missing_openmm_error_names_the_original_import_failure(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "openmm", None)
+        with pytest.raises(ImportError, match="openmm is required") as info:
+            receptor_quality._import_openmm()
         assert isinstance(info.value.__cause__, ImportError)
