@@ -3,7 +3,9 @@
 RMSDs are computed with mdtraj (McGibbon et al., 2015, Biophys. J. 109, 1528),
 whose ``rmsd`` superposes every frame on the reference with the QCP algorithm
 (Theobald, 2005, Acta Cryst. A61, 478), so values are free of overall rotation
-and translation. Distances are in nm unless a function says otherwise.
+and translation. ``calculate_ligand_rmsd`` is the exception: it fits on the
+receptor and leaves the ligand unfitted. Distances are in nm unless a function
+says otherwise.
 """
 
 import warnings
@@ -158,11 +160,12 @@ def calculate_ligand_rmsd(
 ) -> dict[str, np.ndarray]:
     """Calculate RMSD for ligand after aligning on receptor.
 
-    The trajectory is superposed on the receptor atoms, but the ligand RMSD is
-    then taken with ``md.rmsd``, which superposes the ligand on its reference
-    again. The ligand value therefore measures the change of the ligand's own
-    conformation and leaves out its rigid-body displacement relative to the
-    receptor.
+    Every frame is superposed on the reference frame using the receptor atoms
+    only. The ligand RMSD is then the plain root-mean-square displacement of
+    the ligand atoms in that receptor frame, with no further fit, as in the
+    CAPRI ligand RMSD (Mendez et al., 2003, Proteins 52, 51). It therefore
+    includes the rigid-body motion of the ligand relative to the receptor and
+    is 0 only when the ligand keeps its pose in the receptor frame.
 
     Args:
         trajectory_path: Path to trajectory file
@@ -172,7 +175,9 @@ def calculate_ligand_rmsd(
         reference_frame: Frame index to use as reference
 
     Returns:
-        Dictionary with 'ligand_rmsd' and 'receptor_rmsd' arrays
+        Dictionary with 'ligand_rmsd' (receptor-frame ligand displacement,
+        nm) and 'receptor_rmsd' (receptor RMSD after its own fit, nm) arrays,
+        one value per frame.
     """
     if md is None:
         raise ImportError(
@@ -189,9 +194,12 @@ def calculate_ligand_rmsd(
     receptor_traj = traj.atom_slice(receptor_indices)
     receptor_rmsd = md.rmsd(receptor_traj, receptor_traj, frame=reference_frame)
 
-    # Calculate ligand RMSD (relative to receptor-aligned reference)
-    ligand_traj = traj.atom_slice(ligand_indices)
-    ligand_rmsd = md.rmsd(ligand_traj, ligand_traj, frame=reference_frame)
+    # md.rmsd would fit the ligand onto its own reference again and hide any
+    # displacement relative to the receptor, so the RMSD is taken directly on
+    # the receptor-aligned coordinates.
+    ligand_xyz = traj.xyz[:, np.asarray(ligand_indices, dtype=int), :]
+    ligand_displacement = ligand_xyz - ligand_xyz[reference_frame]
+    ligand_rmsd = np.sqrt((ligand_displacement**2).sum(axis=2).mean(axis=1))
 
     return {
         "ligand_rmsd": ligand_rmsd,
