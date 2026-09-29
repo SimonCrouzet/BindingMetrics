@@ -12,6 +12,9 @@ Usage:
         --workers 4 \\
         [all the same options as binding-metrics-run]
 
+Every CSV row ends with ``provenance_*`` columns (package version, git sha,
+seed, platform) that tie the row to the code and settings that produced it.
+
 Sample status (CSV column ``batch_status``)
 -------------------------------------------
 ``ok`` (all steps completed), ``partial`` (the pipeline finished but a step

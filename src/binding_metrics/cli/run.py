@@ -10,7 +10,11 @@ Usage:
         [--ph 7.4] \\
         [--metrics energy,interface,geometry,electrostatics,openfold] \\
         [--md-duration-ps 200] \\
+        [--random-seed 1] \\
         [--device cuda]
+
+The results JSON carries a ``provenance`` block (package version, git sha, seed,
+platform) so a result can be tied to the code and settings that produced it.
 """
 
 import argparse
@@ -210,6 +214,8 @@ def run_pipeline(
                 f"{[b.cyclic_type for b in cyclic_bond_hints]}"
             )
     except Exception:
+        # The hints are best effort. Without them relaxation detects cyclisation
+        # from the prepped file, which may have lost the STRUCT_CONN records.
         pass
 
     relaxed_path: Optional[Path] = None
@@ -515,6 +521,7 @@ def _collect_failures(results: dict) -> list:
 
 
 def _parse_metrics(value: str) -> frozenset:
+    """Parse ``--metrics``: a comma-separated list of names from ``KNOWN_METRICS``."""
     names = {v.strip() for v in value.split(",")}
     unknown = names - KNOWN_METRICS
     if unknown:
