@@ -361,7 +361,7 @@ def load_manifest(dataset_dir: Path) -> dict:
             "Create one listing your structures and/or trajectories. "
             "See benchmarks/manifest_example.json for the format."
         )
-    with open(manifest_path) as f:
+    with open(manifest_path, encoding="utf-8") as f:
         data = json.load(f)
 
     # Resolve all paths relative to the manifest directory
@@ -596,12 +596,13 @@ def save_results(
         "md_results": md_results,
     }
     json_path = output_dir / f"{timestamp}.json"
-    with open(json_path, "w") as f:
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, default=_json_default)
 
     report_path = output_dir / f"{timestamp}.md"
     report_path.write_text(
-        format_report(static_results, traj_results, md_results, static_specs, traj_specs) + "\n"
+        format_report(static_results, traj_results, md_results, static_specs, traj_specs) + "\n",
+        encoding="utf-8",
     )
 
     return json_path

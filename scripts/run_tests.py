@@ -149,7 +149,9 @@ def run_tests(test_type: str = "unit", verbose: bool = False) -> int:
         return subprocess.call(cmd, cwd=project_root)
     else:
         # Capture and parse
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", cwd=project_root
+        )
         output = result.stdout + result.stderr
 
         # Parse counts
