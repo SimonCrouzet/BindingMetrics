@@ -35,12 +35,7 @@ except ImportError:
 
 # OpenMM is imported inside the functions that use it, so this module can be
 # imported (and its CLI parser built) on installs without OpenMM.
-try:
-    from binding_metrics.core.system import DEFAULT_RANDOM_SEED
-except ImportError:
-    # core.system imports OpenMM at module level. Without OpenMM the value is
-    # duplicated here; tests/test_l6_import.py checks that the two stay equal.
-    DEFAULT_RANDOM_SEED = 1
+from binding_metrics._constants import DEFAULT_RANDOM_SEED
 
 # 1 / (4 pi eps0) in OpenMM units (kJ nm mol^-1 e^-2).
 _COULOMB_K_KJ_NM_MOL_E2 = 138.935456

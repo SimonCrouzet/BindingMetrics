@@ -53,9 +53,9 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+from binding_metrics._constants import DEFAULT_RANDOM_SEED
 from binding_metrics.cli import add_random_seed_arg
 from binding_metrics.cli.run import ALL_METRICS, _collect_failures, _parse_metrics, run_pipeline
-from binding_metrics.core.system import DEFAULT_RANDOM_SEED
 from binding_metrics.provenance import collect_provenance
 
 _STRUCTURE_SUFFIXES = {".cif", ".pdb", ".mmcif"}

@@ -97,7 +97,7 @@ def add_random_seed_arg(parser, what: str) -> None:
         what: Which stochastic steps the seed drives, worded for the help text
             (for example ``"ion placement"``).
     """
-    from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+    from binding_metrics._constants import DEFAULT_RANDOM_SEED
 
     parser.add_argument(
         "--random-seed",

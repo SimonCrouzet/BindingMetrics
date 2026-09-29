@@ -24,8 +24,8 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
+from binding_metrics._constants import DEFAULT_RANDOM_SEED
 from binding_metrics.cli import seed_arg as _seed_arg
-from binding_metrics.core.system import DEFAULT_RANDOM_SEED
 from binding_metrics.provenance import collect_provenance
 
 ALL_METRICS = frozenset({"energy", "interface", "geometry", "electrostatics", "openfold"})

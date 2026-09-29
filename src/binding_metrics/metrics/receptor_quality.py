@@ -31,14 +31,8 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics._constants import DEFAULT_RANDOM_SEED
 from binding_metrics.utils import backfill_auth_columns
-
-try:
-    from binding_metrics.core.system import DEFAULT_RANDOM_SEED
-except ImportError:
-    # core.system imports OpenMM at module level. Without OpenMM the value is
-    # duplicated here; tests/test_receptor_quality.py checks that the two stay equal.
-    DEFAULT_RANDOM_SEED = 1
 
 # ---------------------------------------------------------------------------
 # Lazy imports
