@@ -31,9 +31,20 @@ simulation = ["openmm>=8.0"]  # plain CPU build; for GPU use environment.yml
 analysis   = ["mdtraj>=1.9"]
 structure  = ["pdbfixer>=1.9", "gemmi>=0.6"]
 biotite    = ["biotite>=0.41", "hydride", "scipy>=1.10"]
+# Everything the static (single-structure) metrics import: biotite for SASA,
+# interface, electrostatics, geometry and H-bond/salt-bridge counting; hydride to
+# add hydrogens for the H-bond count; gemmi for structure comparison and the
+# OpenFold/mmCIF handling; scipy for the KD-tree searches and void-volume grid
+# labelling in the geometry and receptor-quality metrics.
+static     = ["biotite>=0.41", "hydride", "gemmi>=0.6", "scipy>=1.10"]
 openfold   = ["openfold"]
 dockq      = ["DockQ>=2.0"]  # reference-based CAPRI metrics (MIT licensed)
-gaff       = []  # openmmforcefields + openff-toolkit are conda-forge only
+# Intentionally empty: openmmforcefields, openff-toolkit, ambertools and rdkit
+# (the GAFF2 route for non-standard residues) are conda-forge only and cannot be
+# expressed as pip requirements. Install them with environment.yml. The extra
+# stays defined so `pip install binding-metrics[gaff]` does not warn about an
+# unknown extra.
+gaff       = []
 all = [
     "openmm>=8.0",
     "mdtraj>=1.9",
@@ -41,6 +52,8 @@ all = [
     "gemmi>=0.6",
     "biotite>=0.41",
     "hydride",
+    "scipy>=1.10",
+    "DockQ>=2.0",
     "pandas>=1.5",
     "matplotlib>=3.6",
     "markdown>=3.4",
