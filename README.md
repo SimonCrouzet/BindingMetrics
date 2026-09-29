@@ -392,7 +392,8 @@ score = compute_evobind_score(
 print(f"EvoBind score: {score['evobind_score']:.2f} Å  (if_dist: {score['if_dist_pep_to_rec']:.2f} Å)")
 
 # Adversarial check: does the OF3 prediction agree with the input design pose?
-# Large Δ COM means OF3 places the binder elsewhere → hallucinated pose.
+# A large Δ COM means OF3 places the binder elsewhere, so the prediction
+# does not support the design pose.
 check = compute_evobind_adversarial_check(
     design_structure_path="input_design.cif",
     afm_structure_path="of3_prediction.cif",
