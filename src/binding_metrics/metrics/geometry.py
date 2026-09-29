@@ -230,6 +230,22 @@ def _apply_closing_dihedrals(chain_atoms, phi_deg, psi_deg, omega_deg) -> bool:
     return True
 
 
+def _select_chain(atoms, chain: str):
+    """Atoms of one chain.
+
+    Raises:
+        ValueError: If no atom carries ``chain``; the message lists the chain
+            IDs that are present.
+    """
+    mask = atoms.chain_id == chain
+    if not mask.any():
+        available = sorted({str(c) for c in atoms.chain_id})
+        raise ValueError(
+            f"chain {chain!r} not found in the structure; available chains: {available}"
+        )
+    return atoms[mask]
+
+
 def _backbone_dihedrals_deg(chain_atoms):
     """φ, ψ and ω in degrees for a chain, closing a head-to-tail ring if present.
 
@@ -344,6 +360,10 @@ def compute_ramachandran(
         Diagnostics:
             reason (str): Only present when no residue could be evaluated
                 (percentages are then NaN); says why.
+
+    Raises:
+        ValueError: If ``chain`` is given but absent from the structure; the
+            message lists the chain IDs that are present.
     """
     from binding_metrics.core.nonstandard import is_d_residue
 
@@ -366,7 +386,7 @@ def compute_ramachandran(
             "reason": _NO_CHAIN_REASON,
         }
 
-    chain_atoms = atoms[atoms.chain_id == chain]
+    chain_atoms = _select_chain(atoms, chain)
     phi_deg, psi_deg, _, closure_detected, closure_evaluated = _backbone_dihedrals_deg(chain_atoms)
 
     # dihedral_backbone yields one (phi, psi, omega) per residue, so the CA
@@ -485,6 +505,10 @@ def compute_omega_planarity(
         Diagnostics:
             reason (str): Only present when no peptide bond could be
                 evaluated (the deviations are then NaN); says why.
+
+    Raises:
+        ValueError: If ``chain`` is given but absent from the structure; the
+            message lists the chain IDs that are present.
     """
     cif_path = Path(cif_path)
     atoms = _load_structure(cif_path)
@@ -505,7 +529,7 @@ def compute_omega_planarity(
             "reason": _NO_CHAIN_REASON,
         }
 
-    chain_atoms = atoms[atoms.chain_id == chain]
+    chain_atoms = _select_chain(atoms, chain)
     _, _, omega_deg, closure_detected, closure_evaluated = _backbone_dihedrals_deg(chain_atoms)
 
     ca_mask = chain_atoms.atom_name == "CA"
