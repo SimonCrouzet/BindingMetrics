@@ -37,6 +37,7 @@ except ImportError:
 # OpenMM is imported inside the functions that use it, so this module can be
 # imported (and its CLI parser built) on installs without OpenMM.
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
+from binding_metrics.core.residues import CYSTEINE_NAMES
 from binding_metrics.metrics._common import ChainAliasAction, require_openmm, resolve_chain_role
 from binding_metrics.utils import configure_logging
 
@@ -457,7 +458,7 @@ def _repair_orphaned_cys(
 
     orphans: dict = {}  # res.index -> (sg_atom_index, cb_atom_index_or_None)
     for res in topology.residues():
-        if res.name not in ("CYS", "CYX"):
+        if res.name not in CYSTEINE_NAMES:
             continue
         sg = next((a for a in res.atoms() if a.name == "SG"), None)
         if sg is None or any(a.name == "HG" for a in res.atoms()):

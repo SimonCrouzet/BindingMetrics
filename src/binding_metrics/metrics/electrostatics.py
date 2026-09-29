@@ -21,6 +21,7 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.core.residues import IONISATION_MODELLED_RESIDUES
 from binding_metrics.metrics._common import (
     KJ_TO_KCAL,
     ChainAliasAction,
@@ -53,12 +54,7 @@ _FORMAL_CHARGES: dict[tuple[str, str], float] = {
 # Residues whose ionisation state is modelled or known to be neutral. An amino-acid
 # residue outside this set (an ncAA such as MLE or BMT) may carry a charge that
 # _FORMAL_CHARGES does not know; it is counted in ``n_residues_unrecognised``.
-_RECOGNISED_RESIDUES = frozenset(
-    (
-        "ALA ARG ASN ASP CYS GLN GLU GLY HIS ILE LEU LYS MET PHE PRO SER THR TRP TYR VAL "
-        "HID HIE HIN HIP CYX CYM ASH GLH LYN MSE SEP TPO PTR"
-    ).split()
-)
+_RECOGNISED_RESIDUES = IONISATION_MODELLED_RESIDUES
 
 # Coulomb constant: e²/(4πε₀) × N_A = 1389.35 kJ·Å/mol·e²
 # Assumes distances in Ångströms; returns energy in kJ/mol.

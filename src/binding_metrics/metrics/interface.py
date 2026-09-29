@@ -23,6 +23,7 @@ from typing import Literal, Optional
 
 import numpy as np
 
+from binding_metrics.core.residues import AMBER_VARIANTS_OUTSIDE_CCD, TERMINAL_CAP_NAMES
 from binding_metrics.metrics._common import (
     KCAL_TO_KJ,
     ChainAliasAction,
@@ -41,12 +42,11 @@ logger = logging.getLogger(__name__)
 
 _HETERO_MODES = ("ignore", "keep")
 
-# Polymer residues that biotite's CCD-based amino-acid filter does not know:
-# AMBER/OpenMM protonation variants and the terminal capping groups. Structures
-# that come from MD or from other modelling tools carry them, and dropping them
-# would remove residues of the chain instead of the surrounding solvent.
-_AMBER_VARIANT_NAMES = frozenset({"HID", "HIE", "HIN", "CYX", "ASH"})
-_CAP_NAMES = frozenset({"ACE", "NME", "NH2"})
+# Polymer residues that biotite's CCD-based amino-acid filter does not know are
+# the AMBER/OpenMM protonation variants (AMBER_VARIANTS_OUTSIDE_CCD) and the
+# terminal capping groups (TERMINAL_CAP_NAMES). Structures that come from MD or
+# from other modelling tools carry them, and dropping them would remove residues
+# of the chain instead of the surrounding solvent.
 
 # Atomic solvation parameters of Eisenberg & McLachlan, Nature 319:199-203 (1986).
 # The published values (cal/mol/Å² of accessible area; positive = exposing the atom
@@ -97,7 +97,7 @@ def _amino_acid_mask(atoms) -> np.ndarray:
     """Atoms of amino-acid residues: CCD peptide-linking residues plus AMBER variants."""
     struc, _, _, _, _ = _import_biotite()
     res_names = np.char.upper(np.char.strip(atoms.res_name.astype(str)))
-    return struc.filter_amino_acids(atoms) | np.isin(res_names, list(_AMBER_VARIANT_NAMES))
+    return struc.filter_amino_acids(atoms) | np.isin(res_names, list(AMBER_VARIANTS_OUTSIDE_CCD))
 
 
 def filter_hetero_atoms(atoms, hetero: Literal["ignore", "keep"] = "ignore"):
@@ -127,7 +127,7 @@ def filter_hetero_atoms(atoms, hetero: Literal["ignore", "keep"] = "ignore"):
     if hetero == "keep":
         return atoms
     res_names = np.char.upper(np.char.strip(atoms.res_name.astype(str)))
-    polymer = _amino_acid_mask(atoms) | np.isin(res_names, list(_CAP_NAMES))
+    polymer = _amino_acid_mask(atoms) | np.isin(res_names, list(TERMINAL_CAP_NAMES))
     return atoms[polymer]
 
 

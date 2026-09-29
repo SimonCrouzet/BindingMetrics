@@ -47,6 +47,7 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.core.residues import VARIANT_TO_PARENT_RESIDUE
 from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
 
 # ---------------------------------------------------------------------------
@@ -132,23 +133,6 @@ def _auto_interface_mask(
     return dists.min(axis=1) < cutoff
 
 
-# Residue names that differ only by protonation state or disulfide bonding
-# between force fields and prediction tools; they name the same amino acid.
-_RESNAME_EQUIVALENTS = {
-    "HID": "HIS",
-    "HIE": "HIS",
-    "HIP": "HIS",
-    "HSD": "HIS",
-    "HSE": "HIS",
-    "HSP": "HIS",
-    "CYX": "CYS",
-    "CYM": "CYS",
-    "ASH": "ASP",
-    "GLH": "GLU",
-    "LYN": "LYS",
-}
-
-
 def _resname_mismatch_fraction(atoms_a, atoms_b) -> float:
     """Fraction of paired atoms whose residue names differ (pair k = atom k of each array).
 
@@ -159,7 +143,9 @@ def _resname_mismatch_fraction(atoms_a, atoms_b) -> float:
         return 0.0
 
     def _canonical(atoms):
-        return [_RESNAME_EQUIVALENTS.get(str(r).strip(), str(r).strip()) for r in atoms.res_name]
+        return [
+            VARIANT_TO_PARENT_RESIDUE.get(str(r).strip(), str(r).strip()) for r in atoms.res_name
+        ]
 
     return float(np.mean([a != b for a, b in zip(_canonical(atoms_a), _canonical(atoms_b))]))
 

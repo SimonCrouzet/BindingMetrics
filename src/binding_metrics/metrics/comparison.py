@@ -18,6 +18,7 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.core.residues import WATER_NAMES_PDB_AMBER
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.utils import configure_logging
 
@@ -49,7 +50,7 @@ def _get_coords(
             if chain_filter is not None and chain.name != chain_filter:
                 continue
             for residue in chain:
-                if residue.name in {"HOH", "WAT"}:
+                if residue.name in WATER_NAMES_PDB_AMBER:
                     continue
                 for atom in residue:
                     if backbone_only and atom.name not in backbone_atoms:
@@ -209,7 +210,7 @@ def compute_structure_rmsd(
         chain_sizes = []
         if len(initial_st) > 0:
             for chain in initial_st[0]:
-                n_res = sum(1 for r in chain if r.name not in {"HOH", "WAT"})
+                n_res = sum(1 for r in chain if r.name not in WATER_NAMES_PDB_AMBER)
                 if n_res > 0:
                     chain_sizes.append((chain.name, n_res))
         if chain_sizes:
