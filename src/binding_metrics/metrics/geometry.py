@@ -13,7 +13,7 @@ Usage:
 
 import argparse
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
 
@@ -70,6 +70,34 @@ def _load_structure(path: Path):
     else:
         pdb_file = pdb_io.PDBFile.read(str(path))
         return pdb_io.get_structure(pdb_file, model=1)
+
+
+_HETERO_MODES = ("ignore", "keep")
+
+
+def _filter_hetero(atoms, hetero: Literal["ignore", "keep"]):
+    """Apply the heteroatom policy before any per-chain selection.
+
+    Waters, ions and ligands frequently carry the chain ID of the protein
+    chain they sit next to, so a chain-ID mask alone counts them as protein
+    atoms (on 1CWA this moves Sc from 0.722 to 0.750 and the void interface
+    atom count from 153 to 123). "ignore" keeps only amino-acid atoms with
+    ``biotite.structure.filter_amino_acids``, which also covers D- and
+    non-canonical peptide-linking residues; "keep" returns the atoms as read.
+
+    Args:
+        atoms: biotite AtomArray.
+        hetero: "ignore" or "keep".
+
+    Raises:
+        ValueError: If ``hetero`` is not one of the two modes.
+    """
+    if hetero not in _HETERO_MODES:
+        raise ValueError(f"hetero must be one of {_HETERO_MODES}, got {hetero!r}")
+    if hetero == "keep":
+        return atoms
+    struc, _, _, _ = _import_biotite()
+    return atoms[struc.filter_amino_acids(atoms)]
 
 
 def _auto_detect_designed_chain(atoms) -> Optional[str]:
@@ -498,6 +526,8 @@ def compute_shape_complementarity(
     buried_cutoff: float = 2.4,
     normal_radius: float = 6.0,
     weight: float = 0.5,
+    *,
+    hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Compute shape complementarity Sc (Lawrence & Colman, 1993).
 
@@ -531,6 +561,9 @@ def compute_shape_complementarity(
             normals (default 6.0).
         weight: Gaussian distance weight w in Å⁻² for exp(-w·d²)
             (default 0.5, per Lawrence & Colman).
+        hetero: "ignore" (default) keeps only amino-acid atoms, so waters,
+            ions and ligands that carry a protein chain ID are dropped before
+            the chain masks are built; "keep" uses every atom of the chain.
 
     Returns:
         Dictionary with keys:
@@ -550,7 +583,7 @@ def compute_shape_complementarity(
     struc, _, _, _ = _import_biotite()
 
     cif_path = Path(cif_path)
-    atoms = _load_structure(cif_path)
+    atoms = _filter_hetero(_load_structure(cif_path), hetero)
     peptide_chain, receptor_chain = _auto_detect_chains(atoms, peptide_chain, receptor_chain)
 
     _nan_result = {
@@ -660,6 +693,8 @@ def compute_buried_void_volume(
     probe_radius: float = 1.4,
     interface_cutoff: float = 5.0,
     padding: float = 3.0,
+    *,
+    hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Compute buried void volume at the peptide-receptor interface.
 
@@ -678,6 +713,9 @@ def compute_buried_void_volume(
         probe_radius: Solvent probe radius in Å (default 1.4)
         interface_cutoff: Distance cutoff for interface atom selection in Å (default 5.0)
         padding: Bounding box padding in Å (default 3.0)
+        hetero: "ignore" (default) keeps only amino-acid atoms, so waters,
+            ions and ligands that carry a protein chain ID are not counted as
+            interface atoms; "keep" uses every atom of the chain.
 
     Returns:
         Dictionary with keys:
@@ -691,7 +729,7 @@ def compute_buried_void_volume(
             n_interface_atoms (int): Total interface atoms considered
     """
     cif_path = Path(cif_path)
-    atoms = _load_structure(cif_path)
+    atoms = _filter_hetero(_load_structure(cif_path), hetero)
     peptide_chain, receptor_chain = _auto_detect_chains(atoms, peptide_chain, receptor_chain)
 
     _nan_result = {
@@ -844,6 +882,15 @@ def main():
     # Void parameters
     parser.add_argument("--grid-spacing", type=float, default=0.5, help="Grid spacing Å for void")
     parser.add_argument("--probe-radius", type=float, default=1.4, help="Probe radius Å for void")
+    parser.add_argument(
+        "--hetero",
+        choices=list(_HETERO_MODES),
+        default="ignore",
+        help=(
+            "Sc/void: 'ignore' drops waters, ions and ligands before chain selection; "
+            "'keep' uses every atom of the chain (default: ignore)"
+        ),
+    )
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(parser)
@@ -882,6 +929,7 @@ def main():
                 buried_cutoff=args.buried_cutoff,
                 normal_radius=args.normal_radius,
                 weight=args.weight,
+                hetero=args.hetero,
             )
             scalar_keys = ["sc", "sc_A_to_B", "sc_B_to_A", "n_surface_dots_A", "n_surface_dots_B"]
         else:  # void
@@ -892,6 +940,7 @@ def main():
                 grid_spacing=args.grid_spacing,
                 probe_radius=args.probe_radius,
                 interface_cutoff=args.interface_cutoff,
+                hetero=args.hetero,
             )
             scalar_keys = [
                 "void_volume_A3",
