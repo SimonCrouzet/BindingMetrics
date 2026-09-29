@@ -53,6 +53,7 @@ from typing import Optional
 from binding_metrics.cli import add_random_seed_arg
 from binding_metrics.cli.run import ALL_METRICS, _collect_failures, _parse_metrics, run_pipeline
 from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+from binding_metrics.provenance import collect_provenance
 
 _STRUCTURE_SUFFIXES = {".cif", ".pdb", ".mmcif"}
 
@@ -77,6 +78,15 @@ def _build_reference_map(reference_dir: Path) -> dict[str, Path]:
         if p.is_file() and p.suffix.lower() in _STRUCTURE_SUFFIXES:
             refs.setdefault(p.stem, p)
     return refs
+
+
+def _provenance_columns(provenance: dict) -> dict:
+    """Flatten a provenance block into ``provenance_<key>`` CSV columns.
+
+    ``report._flatten`` only knows the metric sections, so the block is
+    flattened here. The columns come after every existing one.
+    """
+    return {f"provenance_{key}": value for key, value in provenance.items()}
 
 
 def _resolve_log_path(sample_output_dir: Path, sid: str, log_file: Optional[Path]) -> Path:
@@ -191,6 +201,10 @@ def _run_one(
         flat["batch_failed_reasons"] = " | ".join(f"{step}: {why}" for step, why in failures)
     else:
         flat["batch_status"] = "ok"
+    # A worker that raised has no pipeline results, so fall back to a fresh block.
+    flat.update(
+        _provenance_columns(results.get("provenance") or collect_provenance(seed=random_seed))
+    )
     return flat
 
 

@@ -365,3 +365,64 @@ class TestRandomSeed:
         worker_default = inspect.signature(_run_one).parameters["random_seed"].default
         pipeline_default = inspect.signature(run_pipeline).parameters["random_seed"].default
         assert worker_default == pipeline_default
+
+
+class TestProvenanceColumns:
+    def test_worker_row_carries_the_block_as_flat_columns(self, tmp_path):
+        row = _run_one(**_worker_kwargs(tmp_path, random_seed=5))
+        assert row["batch_status"] == "ok"
+        assert row["provenance_seed"] == 5
+        assert row["provenance_schema_version"] == 1
+        assert isinstance(row["provenance_package_version"], str)
+        assert all(not isinstance(v, (dict, list)) for v in row.values())
+
+    def test_error_rows_still_record_the_seed(self, tmp_path, monkeypatch):
+        def boom(**_):
+            raise RuntimeError("kaboom")
+
+        monkeypatch.setattr(batch, "run_pipeline", boom)
+        row = _run_one(**_worker_kwargs(tmp_path, sample_id="s1", random_seed=8))
+        assert row["batch_status"] == "error"
+        assert row["provenance_seed"] == 8
+
+    def test_provenance_does_not_disturb_existing_columns(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            batch,
+            "run_pipeline",
+            lambda **_: {
+                "sample_id": "s1",
+                "input": "x.cif",
+                "provenance": {"seed": 1, "git_sha": None},
+                "interface": {"delta_sasa": 10.0},
+            },
+        )
+        row = _run_one(**_worker_kwargs(tmp_path, sample_id="s1"))
+        columns = list(row)
+        assert columns[:3] == ["sample_id", "input", "total_elapsed_s"]
+        assert row["interface_delta_sasa"] == 10.0
+        assert row["provenance_git_sha"] is None
+        assert columns.index("batch_status") < columns.index("provenance_seed")
+
+    def test_provenance_columns_reach_the_csv(self, tmp_path, monkeypatch):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        (input_dir / "a.cif").write_text("data_x\n")
+        out_csv = tmp_path / "m.csv"
+        monkeypatch.setattr(
+            batch,
+            "run_pipeline",
+            lambda **kw: {
+                "sample_id": "a",
+                "provenance": batch.collect_provenance(seed=kw["random_seed"]),
+            },
+        )
+        argv = ["binding-metrics-batch", "-i", str(input_dir), "--output-csv", str(out_csv)]
+        monkeypatch.setattr(sys, "argv", argv + ["--random-seed", "13", "--metrics", "energy"])
+        with pytest.raises(SystemExit) as exc:
+            batch.main()
+        assert exc.value.code == 0
+        with open(out_csv, newline="") as fh:
+            (row,) = list(csv.DictReader(fh))
+        assert row["batch_status"] == "ok"
+        assert row["provenance_seed"] == "13"
+        assert row["provenance_schema_version"] == "1"
