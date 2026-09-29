@@ -688,6 +688,20 @@ class ImplicitRelaxation(Relaxer):
             modeller.delete(origin_atoms)
             topology, positions = modeller.topology, modeller.positions
 
+        # OpenMM bonds each residue to the next by name, whatever the distance, so a
+        # chain break is closed by the minimisation. Say so; the run is unchanged.
+        from binding_metrics.core.system import find_chain_breaks
+
+        for gap in find_chain_breaks(topology, positions):
+            logger.warning(
+                "  Chain break in chain %s: residues %s and %s are %.2f A apart (C to N); "
+                "the two are bonded and the minimisation pulls them together.",
+                gap["chain"],
+                gap["residue_before"],
+                gap["residue_after"],
+                gap["c_n_distance_angstrom"],
+            )
+
         # --- Identify chains ---
         peptide_chain, receptor_chain = self._identify_chains(topology)
 

@@ -18,6 +18,7 @@ from binding_metrics.core.residues import (
     AMBER_STANDARD_RESIDUES,
     ION_NAMES_COMMON,
     METAL_ELEMENTS,
+    TERMINAL_CAP_NAMES,
     WATER_NAMES_ALL,
     WATER_NAMES_PDB_AMBER,
 )
@@ -251,6 +252,59 @@ def _count_residue_gaps(topology, positions) -> int:
                         n_gaps += 1
             previous = (res, atoms)
     return n_gaps
+
+
+def find_chain_breaks(topology, positions) -> list:
+    """Find consecutive residues of one chain that are too far apart to be bonded.
+
+    OpenMM bonds every residue to the next one in the chain by name
+    (``createStandardBonds``), whatever the distance, and so does the relaxation,
+    which then closes the gap by stretching the two ends together. A chain break
+    caused by an unresolved loop or a segment that a model placed elsewhere thus
+    disappears from the result without a message. This lists them: residues i and
+    i+1 of a chain (amino acids or capping groups, waters and ligands in between
+    skipped) whose C(i) and N(i+1) atoms are more than
+    ``_PEPTIDE_BOND_MAX_ANGSTROM`` (2.0 A, against 1.33 A for an amide bond) apart.
+    A pair where either atom is missing or sits at the origin as a placeholder cannot
+    be judged and is not listed.
+
+    Returns:
+        A list with one dict per break: ``chain`` (chain ID), ``residue_before`` and
+        ``residue_after`` (residue numbers as strings) and ``c_n_distance_angstrom``.
+    """
+    import numpy as np
+
+    coords_nm = np.array(positions.value_in_unit(unit.nanometer))
+
+    def _atom_angstrom(atoms: dict, name: str):
+        index = atoms.get(name)
+        if index is None or np.abs(coords_nm[index]).max() < _ORIGIN_PLACEHOLDER_TOL_NM:
+            return None
+        return coords_nm[index] * 10.0
+
+    breaks = []
+    for chain in topology.chains():
+        previous = None
+        for res in chain.residues():
+            atoms = {a.name: a.index for a in res.atoms()}
+            if "CA" not in atoms and res.name not in TERMINAL_CAP_NAMES | {"FOR"}:
+                continue  # water, ion, ligand or nucleotide
+            if previous is not None:
+                c_xyz = _atom_angstrom(previous[1], "C")
+                n_xyz = _atom_angstrom(atoms, "N")
+                if c_xyz is not None and n_xyz is not None:
+                    distance = float(np.linalg.norm(c_xyz - n_xyz))
+                    if distance > _PEPTIDE_BOND_MAX_ANGSTROM:
+                        breaks.append(
+                            {
+                                "chain": chain.id,
+                                "residue_before": str(previous[0].id),
+                                "residue_after": str(res.id),
+                                "c_n_distance_angstrom": round(distance, 2),
+                            }
+                        )
+            previous = (res, atoms)
+    return breaks
 
 
 def _add_hydrogens_cyclic(
@@ -491,6 +545,11 @@ def prep_structure(
               including atoms deleted as origin placeholders and terminal OXT.
             * ``n_missing_residue_gaps`` (int): chain positions where residues
               are unresolved and were left as a gap, not rebuilt.
+            * ``chain_breaks`` (list[dict]): consecutive residues of one chain whose C
+              and N atoms are more than 2.0 A apart in the input, each as ``{"chain",
+              "residue_before", "residue_after", "c_n_distance_angstrom"}`` (see
+              :func:`find_chain_breaks`). Prep leaves them as they are; the
+              relaxation bonds the two residues anyway.
             * ``ncaa_bond_order_source`` (dict[str, str]): for a cyclic peptide
               with non-canonical residues that needed a GAFF template, the
               source of each residue's bond orders, ``"ccd"`` (Chemical
@@ -517,6 +576,16 @@ def prep_structure(
     # read the numbering gaps and the caller's chain IDs off the input topology.
     input_chain_ids = [chain.id for chain in topology.chains()]
     n_residue_gaps = _count_residue_gaps(topology, positions)
+    chain_breaks = find_chain_breaks(topology, positions)
+    for gap in chain_breaks:
+        log.warning(
+            "Chain break in chain %s: residues %s and %s are %.2f A apart (C to N). "
+            "Relaxation bonds them, which closes the gap by pulling the two segments together.",
+            gap["chain"],
+            gap["residue_before"],
+            gap["residue_after"],
+            gap["c_n_distance_angstrom"],
+        )
 
     fixer = _topology_to_fixer(topology, positions)
 
@@ -614,6 +683,7 @@ def prep_structure(
         extend_report(report, "kept_nonstandard", kept_nonstandard)
         add_to_report(report, "n_missing_atoms_rebuilt", n_atoms_rebuilt)
         add_to_report(report, "n_missing_residue_gaps", n_residue_gaps)
+        extend_report(report, "chain_breaks", chain_breaks)
 
     # Chains that keep at least one residue, by the caller's ID. Modeller.delete drops
     # a chain that ends up empty (the water chains of a PDB file) and keeps the order.
