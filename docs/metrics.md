@@ -646,7 +646,7 @@ binding-metrics-receptor-quality --input receptor.pdb --output quality.csv    # 
 
 A metric that did not run is `{"skipped": True}`; one that failed is `{"error": message}`, and the command exits with 1 when any step failed.
 
-**prep.** `output`, `ph`, `keep_water`, plus the report of preparation: `removed_heterogens` (list of `"NAME (chain X)"`), `n_removed_waters`, `kept_nonstandard` (non-standard residues and metal ions that were kept), `n_missing_atoms_rebuilt`, `n_missing_residue_gaps` and `chain_breaks`. Each entry of `chain_breaks` is `{"chain", "residue_before", "residue_after", "c_n_distance_angstrom"}`: two consecutive residues of a chain whose C and N atoms are more than 2.0 Å apart in the input. Prep logs a warning for each and leaves them as they are; the relaxation bonds the two residues by name and closes the gap. For a cyclic peptide with residues that needed a GAFF template, `ncaa_bond_order_source` says where each residue's bond orders came from: `"ccd"` (Chemical Component Dictionary) or `"single_bonds"` (fallback, see [`nonstandard.md`](nonstandard.md)).
+**prep.** `output`, `ph`, `keep_water`, plus the report of preparation: `removed_heterogens` (list of `"NAME (chain X)"`), `n_removed_waters`, `kept_nonstandard` (non-standard residues and metal ions that were kept), `n_missing_atoms_rebuilt`, `n_missing_residue_gaps` and `chain_breaks`. Each entry of `chain_breaks` is `{"chain", "residue_before", "residue_after", "c_n_distance_angstrom"}`: two consecutive residues of a chain whose C and N atoms are more than 2.0 Å apart in the input. Prep logs a warning for each and leaves them as they are; the relaxation bonds the two residues by name and closes the gap. The chain IDs in `removed_heterogens`, `kept_nonstandard` and `chain_breaks` are those of the OpenMM topology, which for a CIF with more label IDs than author IDs are the label IDs (the peptide of 1CWA is author chain C and appears as chain B). For a cyclic peptide with residues that needed a GAFF template, `ncaa_bond_order_source` says where each residue's bond orders came from: `"ccd"` (Chemical Component Dictionary) or `"single_bonds"` (fallback, see [`nonstandard.md`](nonstandard.md)).
 
 **relax.** `RelaxationResult.to_dict()`, plus `elapsed_s`:
 
@@ -678,7 +678,7 @@ The MD-based keys are `None` when `--md-duration-ps 0`.
 6. `chirality`: no Cα stereocentre changed sign
 7. `composition`: no heavy atom added, dropped or renamed
 
-The limits are wide on purpose: they separate a relaxed structure from an exploded one and do not measure quality. QC is advisory. `qc_passed` is True, False, or None when QC did not run; `qc_failed_checks` lists the failed checks (MD-frame checks prefixed `md_final:`); `qc_checks` has one row per check with its value, limit and detail and appears in the JSON only. A failed check logs a warning line and changes neither `success` nor the exit code.
+The limits are wide on purpose: they separate a relaxed structure from an exploded one and do not measure quality. QC is advisory. `qc_passed` is True, False, or None when QC did not run; `qc_failed_checks` is a comma-separated string of the failed check names (empty when none failed; MD-frame checks are prefixed `md_final:`); `qc_checks` has one row per check with its value, limit and detail and appears in the JSON only. A failed check logs a warning line and changes neither `success` nor the exit code.
 
 **provenance.**
 
