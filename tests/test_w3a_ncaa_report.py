@@ -128,8 +128,8 @@ class TestPrepReport:
         assert "ncaa_bond_order_source" not in report
 
     @pytest.mark.integration
-    def test_somatostatin_lactam_falls_back_to_single_bonds(self):
-        """1XY4: the IAM residue is not in the dictionary the way the structure names it."""
+    def test_somatostatin_iam_takes_its_bond_orders_from_the_dictionary(self):
+        """1XY4: IAM matches its dictionary entry once a bond listed twice is capped once."""
         pytest.importorskip("pdbfixer")
         pytest.importorskip("openmmforcefields")
         from binding_metrics.core.system import prep_structure
@@ -138,7 +138,7 @@ class TestPrepReport:
         topology, positions = load_structure(SOMATOSTATIN)
         report = {}
         prep_structure(topology, positions, report=report)
-        assert report["ncaa_bond_order_source"] == {"IAM": "single_bonds"}
+        assert report["ncaa_bond_order_source"] == {"IAM": "ccd"}
 
 
 class TestPipelineResults:
