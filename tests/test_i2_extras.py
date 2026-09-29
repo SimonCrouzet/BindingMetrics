@@ -52,3 +52,17 @@ class TestReportExtra:
     def test_all_extra_carries_the_packages_of_the_report_extra(self, extras):
         report = set(map(_distribution, extras["report"]))
         assert report <= set(map(_distribution, extras["all"]))
+
+
+class TestOpenFoldExtras:
+    def test_openfold_and_openfold3_install_the_openfold3_package(self, extras):
+        assert extras["openfold"] == extras["openfold3"] == ["openfold3"]
+
+    def test_the_install_command_of_check_env_names_the_same_package(self):
+        source = (SRC / "cli" / "check_env.py").read_text(encoding="utf-8")
+        assert "pip install openfold3" in source
+
+    def test_every_extra_that_a_message_promises_exists(self, extras):
+        from binding_metrics import _EXTRA_FOR_DEPENDENCY
+
+        assert set(_EXTRA_FOR_DEPENDENCY.values()) <= set(extras)

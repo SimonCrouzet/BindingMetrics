@@ -37,7 +37,13 @@ biotite    = ["biotite>=0.41", "hydride", "scipy>=1.10"]
 # OpenFold/mmCIF handling; scipy for the KD-tree searches and void-volume grid
 # labelling in the geometry and receptor-quality metrics.
 static     = ["biotite>=0.41", "hydride", "gemmi>=0.6", "scipy>=1.10"]
-openfold   = ["openfold"]
+# OpenFold3 is imported as `openfold3` and installed with `pip install openfold3`
+# (binding-metrics-check-env, environment_openfold3.yml); the metrics call its
+# `run_openfold` command and never import it. `openfold` is the extra name that
+# the missing-dependency message of binding_metrics/__init__.py gives and
+# `openfold3` an alias for it. Both suit the dedicated OpenFold3 environment.
+openfold   = ["openfold3"]
+openfold3  = ["openfold3"]
 dockq      = ["DockQ>=2.0"]  # reference-based CAPRI metrics (MIT licensed)
 # Intentionally empty: openmmforcefields, openff-toolkit, ambertools and rdkit
 # (the GAFF2 route for non-standard residues) are conda-forge only and cannot be
