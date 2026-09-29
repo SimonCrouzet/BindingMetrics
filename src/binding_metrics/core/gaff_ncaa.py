@@ -36,7 +36,8 @@ Per non-canonical residue the generator:
    only to a cap), adds an ``<ExternalBond>`` for every capped residue atom, and
    redistributes the removed cap charge so the template is net-neutral (integer).
 5. Injects the residue's kept hydrogens into the OpenMM topology (rebuilding it) so
-   the topology residue matches the generated template.
+   the topology residue matches the generated template. A residue that already carries
+   exactly those hydrogens, as in a structure this route has relaxed, keeps its own.
 
 The GAFF force blocks (``<AtomTypes>``/``<HarmonicBondForce>``/…) are kept unchanged.
 
@@ -1044,6 +1045,36 @@ def _rebuild_topology_with_injected_h(topology, pos_nm, h_by_res: dict):
     return new_top, new_positions
 
 
+def _hydrogen_parents(topology) -> dict:
+    """``{index of each hydrogen atom: the atom it is bonded to}`` for an OpenMM topology."""
+    parents: dict = {}
+    for bond in topology.bonds():
+        for hydrogen, parent in ((bond.atom1, bond.atom2), (bond.atom2, bond.atom1)):
+            if hydrogen.element is not None and hydrogen.element.atomic_number == 1:
+                parents[hydrogen.index] = parent
+    return parents
+
+
+def _has_template_hydrogens(res, hydrogen_parents: dict, h_inject: list) -> bool:
+    """True if ``res`` holds exactly the hydrogens of its template: same names, same parent atoms.
+
+    ``h_inject`` is the ``(name, parent name, position)`` list of the template. Such a residue
+    keeps its own hydrogens, positions included, instead of taking the ones RDKit places: a
+    relaxed structure keeps its relaxed hydrogens. A residue with more, fewer or differently
+    named hydrogens, or with a hydrogen that has no bond, is not a match.
+    """
+    hydrogens = [a for a in res.atoms() if a.element is not None and a.element.atomic_number == 1]
+    if len(hydrogens) != len(h_inject):
+        return False
+    present = set()
+    for atom in hydrogens:
+        parent = hydrogen_parents.get(atom.index)
+        if parent is None or parent.residue.index != res.index:
+            return False
+        present.add((atom.name, parent.name))
+    return present == {(name, parent) for name, parent, _ in h_inject}
+
+
 class NcaaTemplateList(list):
     """The generated force-field XML strings, plus per-residue charge bookkeeping.
 
@@ -1093,7 +1124,10 @@ def parameterize_ncaa_residues(
     For every residue not covered by ff14SB or a curated template, a residue
     template with ``<ExternalBond>`` tags is generated from the topology geometry,
     loaded into ``ff``, and the residue's hydrogens are injected into a rebuilt
-    topology so the residue matches the template.
+    topology so the residue matches the template. A residue that already holds
+    exactly the template's hydrogens (same names on the same parent atoms) keeps
+    them and their positions; any other residue loses its hydrogens and gets the
+    ones RDKit places.
 
     Args:
         topology: OpenMM Topology (heavy atoms; may already carry some H).
@@ -1146,6 +1180,7 @@ def parameterize_ncaa_residues(
     loaded_names: set = set()
     h_by_res: dict = {}
     expected_h: dict = {}  # name -> tuple of kept H names (consistency guard)
+    hydrogen_parents = None  # built once, when the first template is ready
 
     for res in ncaa_residues:
         try:
@@ -1161,7 +1196,12 @@ def parameterize_ncaa_residues(
         if result is None:
             continue
         ffxml, h_inject, neutral_groups, single_bond_reason = result
-        h_by_res[res.index] = h_inject
+        if hydrogen_parents is None:
+            hydrogen_parents = _hydrogen_parents(topology)
+        if _has_template_hydrogens(res, hydrogen_parents, h_inject):
+            logger.debug("GAFF NCAA '%s' keeps the hydrogens it has", res.name)
+        else:
+            h_by_res[res.index] = h_inject
         h_names = tuple(h[0] for h in h_inject)
 
         if res.name not in loaded_names:

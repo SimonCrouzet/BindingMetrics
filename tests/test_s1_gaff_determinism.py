@@ -446,7 +446,8 @@ def test_1cwa_pipeline_run_twice_gives_the_same_numbers(tmp_path):
 
     Before the fix, two runs of the same command gave relaxed E_int of -298.6 and -297.1
     kJ/mol and buried areas of 1010.3 and 1006.4 A^2, because MeBmt was parameterised
-    with different charges in prep.
+    with different charges in prep. The raw complex energy of the energy step also lay 124
+    kJ/mol above the relaxation minimum, because BMT and ABA got new hydrogens there.
     """
     from binding_metrics.cli.run import run_pipeline
 
@@ -480,3 +481,8 @@ def test_1cwa_pipeline_run_twice_gives_the_same_numbers(tmp_path):
 
     # CUDA mixed precision may differ in the last digits; the template change was 1e-3 in kJ/mol.
     assert numbers(second) == pytest.approx(numbers(first), rel=1e-6)
+
+    # The energy step reads the relaxed hydrogens of BMT and ABA back, so the complex energy of
+    # the relaxed structure is the relaxation minimum, as for complexes without a GAFF2 residue.
+    gap = first["energy"]["raw_e_complex"] - first["relax"]["potential_energy_minimized"]
+    assert abs(gap) < 0.5, f"raw complex energy is {gap:.1f} kJ/mol above the relaxation minimum"

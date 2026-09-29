@@ -218,6 +218,17 @@ class TestGaffTemplateGeneration:
         )
         return first, cls._build_again(cyclosporin_ncaa_result, residue_name)
 
+    @pytest.mark.slow
+    def test_a_second_pass_keeps_the_hydrogens_of_the_first(self, cyclosporin_ncaa_result):
+        """The first pass returns each template's hydrogens, so a second pass rebuilds nothing."""
+        import openmm.app as app
+
+        topology, positions, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        fresh = app.ForceField("amber14-all.xml", "amber14/tip3pfb.xml", "implicit/obc2.xml")
+        new_topology, new_positions, xmls = parameterize_ncaa_residues(topology, positions, fresh)
+        assert new_topology is topology and new_positions is positions
+        assert list(xmls) == list(ncaa_xmls)
+
     def test_a_second_build_of_abu_is_identical(self, cyclosporin_ncaa_result):
         """Same residue, same seed: same charges and atom types, byte for byte."""
         first, rebuilt = self._rebuilt_xml(cyclosporin_ncaa_result, "ABA")
@@ -503,6 +514,8 @@ def stubbed_template_step(monkeypatch):
     monkeypatch.setattr(gaff_ncaa, "_amber_backbone_types", lambda ff: None)
     monkeypatch.setattr(gaff_ncaa, "_generate_residue_template", generate)
     monkeypatch.setattr(gaff_ncaa, "_load_ffxml", lambda ff, ffxml: None)
+    monkeypatch.setattr(gaff_ncaa, "_hydrogen_parents", lambda topology: {})
+    monkeypatch.setattr(gaff_ncaa, "_has_template_hydrogens", lambda res, parents, h: False)
     monkeypatch.setattr(
         gaff_ncaa, "_rebuild_topology_with_injected_h", lambda top, pos, h: (top, pos)
     )
