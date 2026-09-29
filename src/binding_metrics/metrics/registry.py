@@ -52,6 +52,34 @@ InputType = Literal[
     "predicted_structure",
 ]
 ChainMode = Literal["none", "single", "interface", "interface_2paths"]
+Direction = Literal["higher_is_better", "lower_is_better"]
+CostClass = Literal["static", "structural", "md", "model"]
+
+#: Allowed values of ``MetricSpec.direction``.
+DIRECTIONS: tuple[str, ...] = ("higher_is_better", "lower_is_better")
+
+#: Allowed values of ``MetricSpec.cost_class``, cheapest first.
+COST_CLASSES: tuple[str, ...] = ("static", "structural", "md", "model")
+
+#: Allowed values of ``MetricSpec.unit``. Spelled in ASCII so the strings survive
+#: any CSV, JSON or terminal. ``nm`` and ``nm^2`` are the MDTraj units of the
+#: trajectory metrics; the static metrics report angstrom.
+KNOWN_UNITS: frozenset[str] = frozenset(
+    {
+        "kJ/mol",
+        "kcal/mol",
+        "angstrom",
+        "angstrom^2",
+        "angstrom^3",
+        "nm",
+        "nm^2",
+        "degree",
+        "percent",
+        "fraction",
+        "count",
+        "dimensionless",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -84,6 +112,37 @@ class MetricSpec:
         Kwarg name for the peptide / designed chain.
     receptor_chain_arg:
         Kwarg name for the receptor chain.
+    headline_key:
+        For a metric that returns a dict, the key that ``direction`` and
+        ``unit`` describe; a dotted path (``"summary.molprobity_score"``)
+        reaches into a nested dict. None when the function returns the
+        quantity itself (an array or a scalar) or when the result is a bundle
+        of descriptors with no single headline.
+    direction:
+        ``"higher_is_better"`` or ``"lower_is_better"`` for the headline value,
+        None when there is no single accepted reading (bundles, counts whose
+        preferred direction depends on the question).
+    unit:
+        Unit of the headline value, one of ``KNOWN_UNITS``; None when the value
+        has no documented unit.
+    cost_class:
+        What has to run to obtain the result from a bare structure:
+        ``"static"`` reads one structure and does geometry, no force field, no
+        simulation, no learned model (seconds or less);
+        ``"structural"`` builds a force-field system on one structure (adds
+        hydrogens, evaluates or minimises the energy);
+        ``"md"`` needs a molecular-dynamics trajectory, or runs a simulation
+        (the analysis of an existing trajectory is cheap, the simulation that
+        produces it is not);
+        ``"model"`` needs a structure-prediction run (OpenFold3, AlphaFold),
+        whose outputs the metric parses or compares.
+    requires_extras:
+        Names of the ``pip install binding-metrics[<extra>]`` extras (keys of
+        ``[project.optional-dependencies]`` in ``pyproject.toml``) that the
+        default use of the metric needs.
+    requires_gpu:
+        True when the metric runs its heavy computation on a CUDA device by
+        default. A scheduling hint, read before the function is imported.
     """
 
     name: str
@@ -97,6 +156,12 @@ class MetricSpec:
     chain_arg: Optional[str] = None
     peptide_chain_arg: Optional[str] = None
     receptor_chain_arg: Optional[str] = None
+    headline_key: Optional[str] = None
+    direction: Optional[Direction] = None
+    unit: Optional[str] = None
+    cost_class: Optional[CostClass] = None
+    requires_extras: tuple[str, ...] = ()
+    requires_gpu: bool = False
 
     def load(self) -> Callable:
         """Import and return the metric function (lazy)."""
@@ -125,6 +190,9 @@ METRICS: list[MetricSpec] = [
         path_arg="cif_path",
         peptide_chain_arg="design_chain",
         receptor_chain_arg="receptor_chain",
+        # A bundle of descriptors with different directions and units: no headline.
+        cost_class="static",
+        requires_extras=("biotite",),
     ),
     MetricSpec(
         name="coulomb",
@@ -136,6 +204,11 @@ METRICS: list[MetricSpec] = [
         path_arg="cif_path",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        headline_key="coulomb_energy_kJ",
+        direction="lower_is_better",
+        unit="kJ/mol",
+        cost_class="static",
+        requires_extras=("biotite",),
     ),
     MetricSpec(
         name="ramachandran",
@@ -146,6 +219,11 @@ METRICS: list[MetricSpec] = [
         formats=("pdb", "cif"),
         path_arg="cif_path",
         chain_arg="chain",
+        headline_key="ramachandran_favoured_pct",
+        direction="higher_is_better",
+        unit="percent",
+        cost_class="static",
+        requires_extras=("biotite",),
     ),
     MetricSpec(
         name="omega",
@@ -156,6 +234,11 @@ METRICS: list[MetricSpec] = [
         formats=("pdb", "cif"),
         path_arg="cif_path",
         chain_arg="chain",
+        headline_key="omega_outlier_fraction",
+        direction="lower_is_better",
+        unit="fraction",
+        cost_class="static",
+        requires_extras=("biotite",),
     ),
     MetricSpec(
         name="shape_complementarity",
@@ -167,6 +250,11 @@ METRICS: list[MetricSpec] = [
         path_arg="cif_path",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        headline_key="sc",
+        direction="higher_is_better",
+        unit="dimensionless",
+        cost_class="static",
+        requires_extras=("biotite",),
     ),
     MetricSpec(
         name="void_volume",
@@ -178,6 +266,11 @@ METRICS: list[MetricSpec] = [
         path_arg="cif_path",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        headline_key="void_volume_A3",
+        direction="lower_is_better",
+        unit="angstrom^3",
+        cost_class="static",
+        requires_extras=("biotite",),
     ),
     MetricSpec(
         name="structure_rmsd",
@@ -189,6 +282,11 @@ METRICS: list[MetricSpec] = [
         path_arg="initial_path",
         secondary_path_arg="processed_path",
         peptide_chain_arg="design_chain",
+        headline_key="rmsd",
+        direction="lower_is_better",
+        unit="angstrom",
+        cost_class="static",
+        requires_extras=("structure",),
     ),
     MetricSpec(
         name="delta_sasa_static",
@@ -200,6 +298,11 @@ METRICS: list[MetricSpec] = [
         path_arg="cif_path",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        headline_key="delta_sasa",
+        direction="higher_is_better",
+        unit="angstrom^2",
+        cost_class="static",
+        requires_extras=("biotite",),
     ),
     MetricSpec(
         name="receptor_quality",
@@ -213,6 +316,12 @@ METRICS: list[MetricSpec] = [
         formats=("pdb", "cif"),
         path_arg="path",
         receptor_chain_arg="receptor_chain",
+        # The composite MolProbity-style score of the per-model summary; it has no unit.
+        headline_key="summary.molprobity_score",
+        direction="lower_is_better",
+        cost_class="structural",
+        requires_extras=("biotite", "simulation", "structure"),
+        requires_gpu=True,
     ),
     MetricSpec(
         name="evobind_adversarial",
@@ -228,6 +337,11 @@ METRICS: list[MetricSpec] = [
         secondary_path_arg="afm_structure_path",
         peptide_chain_arg="binder_chain",
         receptor_chain_arg="receptor_chain",
+        # No unit is documented: a product of two distances and a confidence ratio.
+        headline_key="evobind_adversarial_score",
+        direction="lower_is_better",
+        cost_class="model",
+        requires_extras=("biotite",),
     ),
     # --- In-memory structure and prediction inputs --------------------------
     # These do not read a file path. ``path_arg`` names the kwarg that receives
@@ -243,6 +357,11 @@ METRICS: list[MetricSpec] = [
         path_arg="atoms",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        headline_key="hbond_energy",
+        direction="lower_is_better",
+        unit="kcal/mol",
+        cost_class="static",
+        requires_extras=("biotite",),
     ),
     MetricSpec(
         name="saltbridges",
@@ -254,6 +373,11 @@ METRICS: list[MetricSpec] = [
         path_arg="atoms",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        headline_key="saltbridge_energy",
+        direction="lower_is_better",
+        unit="kcal/mol",
+        cost_class="static",
+        requires_extras=("biotite",),
     ),
     MetricSpec(
         name="evobind_score",
@@ -268,6 +392,11 @@ METRICS: list[MetricSpec] = [
         path_arg="structure_path",
         peptide_chain_arg="binder_chain",
         receptor_chain_arg="receptor_chain",
+        headline_key="evobind_score",
+        direction="lower_is_better",
+        unit="angstrom",
+        cost_class="model",
+        requires_extras=("biotite",),
     ),
     # --- Reference-based accuracy metrics -----------------------------------
     # These require a *reference* (native) structure and only make sense for
@@ -283,6 +412,11 @@ METRICS: list[MetricSpec] = [
         formats=("pdb", "cif"),
         path_arg="model_path",
         secondary_path_arg="reference_path",
+        headline_key="dockq",
+        direction="higher_is_better",
+        unit="dimensionless",
+        cost_class="static",
+        requires_extras=("dockq",),
     ),
     # --- Trajectory metrics -------------------------------------------------
     # All trajectory metrics receive topology_path from the manifest.
@@ -302,6 +436,11 @@ METRICS: list[MetricSpec] = [
         path_arg="trajectory_path",
         peptide_chain_arg="ligand_indices",  # resolved to indices by runner
         receptor_chain_arg="receptor_indices",
+        # Returns the per-frame array itself, in kJ/mol.
+        direction="lower_is_better",
+        unit="kJ/mol",
+        cost_class="md",
+        requires_extras=("simulation", "analysis"),
     ),
     MetricSpec(
         name="component_energies",
@@ -313,6 +452,11 @@ METRICS: list[MetricSpec] = [
         path_arg="trajectory_path",
         peptide_chain_arg="ligand_indices",
         receptor_chain_arg="receptor_indices",
+        headline_key="total",
+        direction="lower_is_better",
+        unit="kJ/mol",
+        cost_class="md",
+        requires_extras=("simulation", "analysis"),
     ),
     MetricSpec(
         name="rmsd",
@@ -322,6 +466,11 @@ METRICS: list[MetricSpec] = [
         chain_mode="none",  # atom_indices optional, auto-detected
         formats=("pdb", "cif"),
         path_arg="trajectory_path",
+        # Returns the per-frame array itself, in nm (MDTraj units).
+        direction="lower_is_better",
+        unit="nm",
+        cost_class="md",
+        requires_extras=("analysis",),
     ),
     MetricSpec(
         name="rmsf",
@@ -331,6 +480,11 @@ METRICS: list[MetricSpec] = [
         chain_mode="none",
         formats=("pdb", "cif"),
         path_arg="trajectory_path",
+        # Returns the per-atom array itself, in nm (MDTraj units).
+        direction="lower_is_better",
+        unit="nm",
+        cost_class="md",
+        requires_extras=("analysis",),
     ),
     MetricSpec(
         name="ligand_rmsd",
@@ -342,6 +496,11 @@ METRICS: list[MetricSpec] = [
         path_arg="trajectory_path",
         peptide_chain_arg="ligand_indices",
         receptor_chain_arg="receptor_indices",
+        headline_key="ligand_rmsd",
+        direction="lower_is_better",
+        unit="nm",
+        cost_class="md",
+        requires_extras=("analysis",),
     ),
     MetricSpec(
         name="receptor_drift",
@@ -352,6 +511,11 @@ METRICS: list[MetricSpec] = [
         formats=("pdb", "cif"),
         path_arg="trajectory_path",
         chain_arg="receptor_chain",
+        headline_key="drift_aligned_mean",
+        direction="lower_is_better",
+        unit="angstrom",
+        cost_class="md",
+        requires_extras=("analysis",),
     ),
     MetricSpec(
         name="buried_sasa",
@@ -363,6 +527,11 @@ METRICS: list[MetricSpec] = [
         path_arg="trajectory_path",
         peptide_chain_arg="ligand_indices",
         receptor_chain_arg="receptor_indices",
+        # Returns the per-frame array itself, in nm^2 (MDTraj units).
+        direction="higher_is_better",
+        unit="nm^2",
+        cost_class="md",
+        requires_extras=("analysis",),
     ),
     MetricSpec(
         name="contacts",
@@ -374,6 +543,11 @@ METRICS: list[MetricSpec] = [
         path_arg="trajectory_path",
         peptide_chain_arg="ligand_indices",
         receptor_chain_arg="receptor_indices",
+        # Returns the per-frame count array itself. Whether more contacts is better
+        # depends on the question, so no direction is declared.
+        unit="count",
+        cost_class="md",
+        requires_extras=("analysis",),
     ),
     MetricSpec(
         name="interface_sasa",
@@ -385,6 +559,11 @@ METRICS: list[MetricSpec] = [
         path_arg="trajectory_path",
         peptide_chain_arg="ligand_indices",
         receptor_chain_arg="receptor_indices",
+        headline_key="buried",
+        direction="higher_is_better",
+        unit="nm^2",
+        cost_class="md",
+        requires_extras=("analysis",),
     ),
     MetricSpec(
         name="contact_residues",
@@ -396,6 +575,9 @@ METRICS: list[MetricSpec] = [
         path_arg="trajectory_path",
         peptide_chain_arg="ligand_indices",
         receptor_chain_arg="receptor_indices",
+        # Residue lists: no direction, no unit.
+        cost_class="md",
+        requires_extras=("analysis",),
     ),
     # --- MD simulation ------------------------------------------------------
     # input_type="md_simulation": takes a single structure file (CIF or PDB),
@@ -414,6 +596,10 @@ METRICS: list[MetricSpec] = [
         chain_mode="none",  # chains auto-detected; override via manifest
         formats=("pdb", "cif"),
         path_arg="input_path",
+        # Returns a RelaxationResult, not a scored quantity: no direction, no unit.
+        cost_class="md",
+        requires_extras=("simulation", "structure"),
+        requires_gpu=True,
     ),
     # The per-structure counterpart of "interaction_energy": E_complex - E_peptide -
     # E_receptor by subsystem decomposition, after optional minimisation and MD
@@ -431,6 +617,14 @@ METRICS: list[MetricSpec] = [
         path_arg="input_path",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        # The default modes include "relaxed"; docs/report_thresholds.md scores E_int on
+        # the minimised structure.
+        headline_key="relaxed_interaction_energy",
+        direction="lower_is_better",
+        unit="kJ/mol",
+        cost_class="md",
+        requires_extras=("simulation",),
+        requires_gpu=True,
     ),
     # --- OpenFold metrics ---------------------------------------------------
     MetricSpec(
@@ -441,6 +635,9 @@ METRICS: list[MetricSpec] = [
         chain_mode="none",
         formats=(),
         path_arg="output_dir",
+        # Bundle: pLDDT and ipTM are higher-is-better, pDE is lower-is-better.
+        cost_class="model",
+        requires_extras=("biotite",),
     ),
     MetricSpec(
         name="interface_pae",
@@ -453,6 +650,11 @@ METRICS: list[MetricSpec] = [
         secondary_path_arg="structure_path",
         peptide_chain_arg="binder_chain",
         receptor_chain_arg="receptor_chain",
+        headline_key="mean_interface_pae",
+        direction="lower_is_better",
+        unit="angstrom",
+        cost_class="model",
+        requires_extras=("biotite",),
     ),
 ]
 
