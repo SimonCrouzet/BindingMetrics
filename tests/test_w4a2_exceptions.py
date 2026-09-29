@@ -480,3 +480,54 @@ class TestSimulationPlatform:
 
         with pytest.raises(RuntimeError, match="driver crashed"):
             self._simulation()._get_platform()
+
+
+class TestReportRendering:
+    def test_rag_marks_a_value_the_thresholds_cannot_compare_as_not_available(self):
+        from binding_metrics.protocols.report import _THRESHOLDS, _rag
+
+        spec = _THRESHOLDS[0]
+
+        assert _rag("not a number", spec) == "⬜"
+        assert _rag(np.array([1.0, 2.0]), spec) == "⬜"
+
+    def test_rag_still_grades_a_number(self):
+        from binding_metrics.protocols.report import _rag
+
+        spec = {"green": lambda v: v < 2.0, "amber": lambda v: v < 4.0}
+
+        assert [_rag(value, spec) for value in (1.0, 3.0, 5.0)] == ["🟢", "🟡", "🔴"]
+
+    @pytest.mark.parametrize("raw", ["not json", '["a", "b"]', "5", '{"a": 1}'])
+    def test_unusable_rmsf_leaves_the_warning_out_and_logs_it(self, caplog, raw):
+        from binding_metrics.protocols.report import _md_relax
+
+        with caplog.at_level(logging.DEBUG, logger="binding_metrics.protocols.report"):
+            text = _md_relax({"success": True, "peptide_rmsf_per_residue": raw})
+
+        assert "High RMSF" not in text
+        assert "Per-residue RMSF left out of the report" in caplog.text
+
+    def test_high_rmsf_residues_are_flagged(self):
+        from binding_metrics.protocols.report import _md_relax
+
+        text = _md_relax({"success": True, "peptide_rmsf_per_residue": "[0.5, 2.25, 1.0]"})
+
+        assert "High RMSF (> 1.5 Å):** res2=2.25" in text
+
+    @pytest.mark.parametrize("values", [["a", "b"], [[1.0, 2.0], [3.0, 4.0]]])
+    def test_unusable_plddt_leaves_the_warning_out_and_logs_it(self, caplog, values):
+        from binding_metrics.protocols.report import _md_openfold
+
+        with caplog.at_level(logging.DEBUG, logger="binding_metrics.protocols.report"):
+            text = _md_openfold({"avg_plddt": 80.0, "binder_plddt_per_residue": values})
+
+        assert "Low binder pLDDT" not in text
+        assert "Per-residue pLDDT left out of the report" in caplog.text
+
+    def test_low_plddt_residues_are_flagged(self):
+        from binding_metrics.protocols.report import _md_openfold
+
+        text = _md_openfold({"avg_plddt": 80.0, "binder_plddt_per_residue": [90.0, 60.5, 88.0]})
+
+        assert "Low binder pLDDT (< 70):** res2 (60.5)" in text

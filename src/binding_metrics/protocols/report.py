@@ -210,7 +210,7 @@ def _rag(value: Any, spec: dict) -> str:
         if spec["amber"](value):
             return "🟡"
         return "🔴"
-    except Exception:
+    except (TypeError, ValueError):  # a value the thresholds cannot compare (text, an array)
         return "⬜"
 
 
@@ -393,8 +393,8 @@ def _md_relax(relax: dict | None) -> str:
             flagged = [f"res{i + 1}={v:.2f}" for i, v in enumerate(vals) if v > 1.5]
             if flagged:
                 lines.append(f"\n⚠️ **High RMSF (> 1.5 Å):** {', '.join(flagged)}")
-        except Exception:
-            pass
+        except (TypeError, ValueError) as exc:  # not JSON, or values that are not numbers
+            logger.debug("Per-residue RMSF left out of the report: %s", exc)
     return "\n".join(lines) + "\n"
 
 
@@ -596,8 +596,8 @@ def _md_openfold(of: dict | None) -> str:
             if low_idx:
                 low_strs = [f"res{i + 1} ({plddt_per_res[i]:.1f})" for i in low_idx]
                 lines.append(f"\n⚠️ **Low binder pLDDT (< 70):** {', '.join(low_strs)}")
-        except Exception:
-            pass
+        except (TypeError, ValueError, IndexError) as exc:  # values that are not numbers
+            logger.debug("Per-residue pLDDT left out of the report: %s", exc)
     return "\n".join(lines) + "\n"
 
 
