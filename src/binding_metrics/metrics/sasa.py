@@ -5,12 +5,15 @@ static function uses biotite. Both implement the Shrake-Rupley algorithm
 (J. Mol. Biol. 79:351-371, 1973).
 """
 
+import logging
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
 
 from binding_metrics.utils import backfill_auth_columns
+
+logger = logging.getLogger(__name__)
 
 try:
     import mdtraj as md
@@ -233,7 +236,7 @@ def compute_delta_sasa_static(
         sasa_complex = _total_sasa(complex_atoms)
         delta_sasa = sasa_peptide + sasa_receptor - sasa_complex
     except Exception as e:  # kept broad: one bad structure must not abort a batch (see reason)
-        print(f"  Warning: biotite SASA computation failed: {e}")
+        logger.warning(f"  Warning: biotite SASA computation failed: {e}")
         delta_sasa = sasa_peptide = sasa_receptor = sasa_complex = np.nan
         reason = f"SASA computation failed: {type(e).__name__}: {e}"
 
