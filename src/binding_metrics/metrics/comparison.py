@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -143,11 +144,22 @@ def _matched_rmsd(
     return _kabsch_rmsd(c1, c2)
 
 
+def _why_no_rmsd(coords1: np.ndarray, coords2: np.ndarray) -> str:
+    """Say why `_matched_rmsd` returned None for these inputs."""
+    if len(coords1) == 0 and len(coords2) == 0:
+        return "no atoms selected in either structure"
+    if len(coords1) == 0:
+        return "no atoms selected in the initial structure"
+    if len(coords2) == 0:
+        return "no atoms selected in the processed structure"
+    return "no (chain, residue number, atom name) key is shared by the two structures"
+
+
 def compute_structure_rmsd(
     initial_path: str | Path,
     processed_path: str | Path,
     design_chain: Optional[str] = None,
-) -> dict[str, Optional[float]]:
+) -> dict[str, Optional[float] | str]:
     """Compute RMSD between two structures (e.g. initial vs. relaxed).
 
     Atoms are matched by (chain, residue number, atom name) to handle
@@ -170,6 +182,8 @@ def compute_structure_rmsd(
             - rmsd_design (float, Å): All-atom RMSD of designed chain only
             - bb_rmsd_design (float, Å): Backbone-only RMSD of designed chain
             Values are None if computation failed for that variant.
+            - reason (str): Only present when at least one value is None;
+              names each variant that could not be computed and why.
     """
     try:
         import gemmi
@@ -193,34 +207,32 @@ def compute_structure_rmsd(
             chain_sizes.sort(key=lambda x: x[1])
             design_chain = chain_sizes[0][0]
 
-    result: dict[str, Optional[float]] = {
+    result: dict[str, Optional[float] | str] = {
         "rmsd": None,
         "bb_rmsd": None,
         "rmsd_design": None,
         "bb_rmsd_design": None,
     }
 
-    # Full complex — all atoms
-    c1, k1 = _get_coords(initial_st, backbone_only=False)
-    c2, k2 = _get_coords(processed_st, backbone_only=False)
-    result["rmsd"] = _matched_rmsd(c1, k1, c2, k2)
+    failures: list[str] = []
 
-    # Full complex — backbone
-    b1, bk1 = _get_coords(initial_st, backbone_only=True)
-    b2, bk2 = _get_coords(processed_st, backbone_only=True)
-    result["bb_rmsd"] = _matched_rmsd(b1, bk1, b2, bk2)
+    def _variant(name: str, chain_filter: Optional[str], backbone_only: bool) -> None:
+        c1, k1 = _get_coords(initial_st, chain_filter, backbone_only)
+        c2, k2 = _get_coords(processed_st, chain_filter, backbone_only)
+        result[name] = _matched_rmsd(c1, k1, c2, k2)
+        if result[name] is None:
+            failures.append(f"{name} ({_why_no_rmsd(c1, c2)})")
 
+    _variant("rmsd", None, backbone_only=False)
+    _variant("bb_rmsd", None, backbone_only=True)
     if design_chain:
-        # Design chain — all atoms
-        d1, dk1 = _get_coords(initial_st, chain_filter=design_chain, backbone_only=False)
-        d2, dk2 = _get_coords(processed_st, chain_filter=design_chain, backbone_only=False)
-        result["rmsd_design"] = _matched_rmsd(d1, dk1, d2, dk2)
+        _variant("rmsd_design", design_chain, backbone_only=False)
+        _variant("bb_rmsd_design", design_chain, backbone_only=True)
+    else:
+        failures.append("rmsd_design, bb_rmsd_design (no design chain given or detected)")
 
-        # Design chain — backbone
-        db1, dbk1 = _get_coords(initial_st, chain_filter=design_chain, backbone_only=True)
-        db2, dbk2 = _get_coords(processed_st, chain_filter=design_chain, backbone_only=True)
-        result["bb_rmsd_design"] = _matched_rmsd(db1, dbk1, db2, dbk2)
-
+    if failures:
+        result["reason"] = "not computed: " + "; ".join(failures)
     return result
 
 
@@ -255,10 +267,14 @@ def main():
 
         print("\nResults:")
         for key, val in result.items():
+            if key == "reason":
+                continue
             if val is not None:
                 print(f"  {key}: {val:.3f} Å")
             else:
                 print(f"  {key}: N/A")
+        if "reason" in result:
+            print(f"  reason: {result['reason']}", file=sys.stderr)
 
 
 if __name__ == "__main__":

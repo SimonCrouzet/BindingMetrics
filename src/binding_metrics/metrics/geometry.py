@@ -100,6 +100,19 @@ def _filter_hetero(atoms, hetero: Literal["ignore", "keep"]):
     return atoms[struc.filter_amino_acids(atoms)]
 
 
+_NO_CHAIN_REASON = "no chain was given and no protein chain could be auto-detected"
+_TWO_CHAINS_REASON = (
+    "peptide and receptor chains could not be determined (fewer than two protein chains)"
+)
+
+
+def _empty_chain_reason(peptide_chain: str, receptor_chain: str, pep_atoms, hetero: str) -> str:
+    """Reason text for a peptide/receptor pair where one chain selects no atoms."""
+    missing = "peptide" if len(pep_atoms) == 0 else "receptor"
+    chain = peptide_chain if missing == "peptide" else receptor_chain
+    return f"{missing} chain {chain!r} has no atoms in the structure (hetero={hetero!r})"
+
+
 def _auto_detect_designed_chain(atoms) -> Optional[str]:
     """Return chain ID of the smallest protein chain."""
     from binding_metrics.metrics.interface import detect_interface_chains
@@ -197,10 +210,15 @@ def compute_ramachandran(
             ramachandran_outlier_pct (float): Percentage as outliers
             ramachandran_outlier_count (int): Number of outlier residues
             n_residues_evaluated (int): Residues with complete backbone (excl. termini)
+            n_d_residues (int): Evaluated residues that are D-amino acids
 
         Features:
             per_residue (list[dict]): Per-residue data with keys:
-                res_id, res_name, chain, phi, psi, region
+                res_id, res_name, chain, phi, psi, is_d_aa, region
+
+        Diagnostics:
+            reason (str): Only present when no residue could be evaluated
+                (percentages are then NaN); says why.
     """
     from binding_metrics.core.nonstandard import is_d_residue
 
@@ -219,6 +237,7 @@ def compute_ramachandran(
             "n_residues_evaluated": 0,
             "n_d_residues": 0,
             "per_residue": [],
+            "reason": _NO_CHAIN_REASON,
         }
 
     chain_atoms = atoms[atoms.chain_id == chain]
@@ -270,6 +289,7 @@ def compute_ramachandran(
             "n_residues_evaluated": 0,
             "n_d_residues": n_d,
             "per_residue": per_residue,
+            "reason": f"chain {chain!r} has no residue with a complete phi/psi pair",
         }
 
     return {
@@ -316,6 +336,10 @@ def compute_omega_planarity(
         Features:
             per_residue (list[dict]): Per-residue data with keys:
                 res_id, res_name, chain, omega, deviation, is_outlier
+
+        Diagnostics:
+            reason (str): Only present when no peptide bond could be
+                evaluated (the deviations are then NaN); says why.
     """
     struc, _, _, _ = _import_biotite()
     cif_path = Path(cif_path)
@@ -331,6 +355,7 @@ def compute_omega_planarity(
             "omega_outlier_count": 0,
             "n_bonds_evaluated": 0,
             "per_residue": [],
+            "reason": _NO_CHAIN_REASON,
         }
 
     chain_atoms = atoms[atoms.chain_id == chain]
@@ -373,6 +398,7 @@ def compute_omega_planarity(
             "omega_outlier_count": 0,
             "n_bonds_evaluated": 0,
             "per_residue": per_residue,
+            "reason": f"chain {chain!r} has no peptide bond with a defined omega angle",
         }
 
     dev_arr = np.array(deviations)
@@ -581,6 +607,10 @@ def compute_shape_complementarity(
             n_surface_dots_B (int): Number of interface surface dots for receptor
             per_dot_scores_A (np.ndarray): S_i values for peptide dots
             per_dot_scores_B (np.ndarray): S_i values for receptor dots
+
+        Diagnostics:
+            reason (str): Only present when Sc could not be computed (the
+                score is then NaN); says why.
     """
     cKDTree, _ = _import_scipy()
     struc, _, _, _ = _import_biotite()
@@ -589,24 +619,26 @@ def compute_shape_complementarity(
     atoms = _filter_hetero(_load_structure(cif_path), hetero)
     peptide_chain, receptor_chain = _auto_detect_chains(atoms, peptide_chain, receptor_chain)
 
-    _nan_result = {
-        "sc": np.nan,
-        "sc_A_to_B": np.nan,
-        "sc_B_to_A": np.nan,
-        "n_surface_dots_A": 0,
-        "n_surface_dots_B": 0,
-        "per_dot_scores_A": np.array([]),
-        "per_dot_scores_B": np.array([]),
-    }
+    def _nan_result(reason: str) -> dict:
+        return {
+            "sc": np.nan,
+            "sc_A_to_B": np.nan,
+            "sc_B_to_A": np.nan,
+            "n_surface_dots_A": 0,
+            "n_surface_dots_B": 0,
+            "per_dot_scores_A": np.array([]),
+            "per_dot_scores_B": np.array([]),
+            "reason": reason,
+        }
 
     if peptide_chain is None or receptor_chain is None:
-        return _nan_result
+        return _nan_result(_TWO_CHAINS_REASON)
 
     pep_atoms = atoms[atoms.chain_id == peptide_chain]
     rec_atoms = atoms[atoms.chain_id == receptor_chain]
 
     if len(pep_atoms) == 0 or len(rec_atoms) == 0:
-        return _nan_result
+        return _nan_result(_empty_chain_reason(peptide_chain, receptor_chain, pep_atoms, hetero))
 
     # Pre-select interface atoms: nearest opposite-chain atom within cutoff.
     # KD-tree keeps this O(N log N) instead of an O(N_a·N_b) dense matrix.
@@ -618,7 +650,9 @@ def compute_shape_complementarity(
     rec_iface = rec_atoms[d_rec < interface_cutoff]
 
     if len(pep_iface) == 0 or len(rec_iface) == 0:
-        return _nan_result
+        return _nan_result(
+            f"no atom of one chain lies within interface_cutoff={interface_cutoff} A of the other"
+        )
 
     # Build buried-patch surface dots + smoothed normals for each chain
     dots_A, normals_A = _build_surface_dots(
@@ -629,7 +663,9 @@ def compute_shape_complementarity(
     )
 
     if len(dots_A) == 0 or len(dots_B) == 0:
-        return _nan_result
+        return _nan_result(
+            f"no surface dot lies within buried_cutoff={buried_cutoff} A of the opposite chain"
+        )
 
     # Compute scores A → B: for each A dot, find nearest B dot
     tree_B = cKDTree(dots_B)
@@ -864,6 +900,10 @@ def compute_buried_void_volume(
             interface_box_volume_A3 (float): Total interface bounding box volume in Å³
             n_interface_atoms (int): Total interface atoms considered
 
+        Diagnostics:
+            reason (str): Only present when the void volume could not be
+                computed (the score is then NaN); says why.
+
     Raises:
         ValueError: If ``probe_radius`` is negative.
     """
@@ -874,21 +914,23 @@ def compute_buried_void_volume(
     atoms = _filter_hetero(_load_structure(cif_path), hetero)
     peptide_chain, receptor_chain = _auto_detect_chains(atoms, peptide_chain, receptor_chain)
 
-    _nan_result = {
-        "void_volume_A3": np.nan,
-        "void_grid_fraction": np.nan,
-        "interface_box_volume_A3": np.nan,
-        "n_interface_atoms": 0,
-    }
+    def _nan_result(reason: str) -> dict:
+        return {
+            "void_volume_A3": np.nan,
+            "void_grid_fraction": np.nan,
+            "interface_box_volume_A3": np.nan,
+            "n_interface_atoms": 0,
+            "reason": reason,
+        }
 
     if peptide_chain is None or receptor_chain is None:
-        return _nan_result
+        return _nan_result(_TWO_CHAINS_REASON)
 
     pep_atoms = atoms[atoms.chain_id == peptide_chain]
     rec_atoms = atoms[atoms.chain_id == receptor_chain]
 
     if len(pep_atoms) == 0 or len(rec_atoms) == 0:
-        return _nan_result
+        return _nan_result(_empty_chain_reason(peptide_chain, receptor_chain, pep_atoms, hetero))
 
     diff = pep_atoms.coord[:, np.newaxis, :] - rec_atoms.coord[np.newaxis, :, :]
     dist_pr = np.linalg.norm(diff, axis=-1)  # (n_pep, n_rec)
@@ -897,7 +939,9 @@ def compute_buried_void_volume(
 
     n_iface = len(pep_iface) + len(rec_iface)
     if n_iface == 0:
-        return _nan_result
+        return _nan_result(
+            f"no atom of one chain lies within interface_cutoff={interface_cutoff} A of the other"
+        )
 
     all_iface_coords = np.vstack([pep_iface.coord, rec_iface.coord])
     min_coord = all_iface_coords.min(axis=0) - padding
@@ -933,14 +977,20 @@ def compute_buried_void_volume(
     def _grid(coords, radii):
         return _occupancy_grid(coords, radii, origin, grid_spacing, grid_dims)
 
-    solid_complex = _grid(pep_coord, pep_vdw) | _grid(rec_coord, rec_vdw)
-    interface_void = _interface_void_mask(
-        solid_complex,
-        _grid(pep_coord, pep_vdw + probe_radius),
-        _grid(rec_coord, rec_vdw + probe_radius),
-        grid_spacing,
-        probe_radius,
-    )
+    try:
+        solid_complex = _grid(pep_coord, pep_vdw) | _grid(rec_coord, rec_vdw)
+        interface_void = _interface_void_mask(
+            solid_complex,
+            _grid(pep_coord, pep_vdw + probe_radius),
+            _grid(rec_coord, rec_vdw + probe_radius),
+            grid_spacing,
+            probe_radius,
+        )
+    except MemoryError:
+        return _nan_result(
+            f"the {int(np.prod(grid_dims))}-voxel grid does not fit in memory; "
+            "increase grid_spacing"
+        )
 
     void_voxels = int(interface_void[in_box].sum())
     total_voxels = int(np.prod(box_dims))
