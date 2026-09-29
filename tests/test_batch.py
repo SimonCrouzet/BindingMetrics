@@ -263,3 +263,44 @@ class TestPerSampleLog:
         with pytest.raises(SystemExit):
             batch.main()
         assert "--per-sample-log is ignored because --log-file was given" in capsys.readouterr().err
+
+
+class TestSharedLogFile:
+    def test_log_to_file_append_mode_keeps_earlier_content(self, tmp_path):
+        from binding_metrics.cli import log_to_file
+
+        log = tmp_path / "x.log"
+        with log_to_file(log):
+            print("first")
+        with log_to_file(log, mode="a"):
+            print("second")
+        assert log.read_text().split() == ["first", "second"]
+        with log_to_file(log):  # default mode still starts afresh
+            print("third")
+        assert log.read_text().split() == ["third"]
+
+    def test_every_sample_stays_in_a_shared_log_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(batch, "run_pipeline", lambda **_: {})
+        shared = tmp_path / "logs" / "all.log"
+        for sid in ("s1", "s2"):
+            _run_one(**_worker_kwargs(tmp_path, sample_id=sid, log_file=shared))
+        text = shared.read_text()
+        assert "worker: s1" in text
+        assert "worker: s2" in text
+
+    def test_main_starts_the_shared_log_file_afresh(self, tmp_path, monkeypatch):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        (input_dir / "a.cif").write_text("data_x\n")
+        shared = tmp_path / "all.log"
+        shared.write_text("STALE LOG FROM AN EARLIER RUN\n")
+        monkeypatch.setattr(batch, "_run_one", lambda input_path, **_: {"batch_status": "ok"})
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["binding-metrics-batch", "-i", str(input_dir), "--output-csv", str(tmp_path / "m.csv")]
+            + ["--log-file", str(shared)],
+        )
+        with pytest.raises(SystemExit):
+            batch.main()
+        assert shared.read_text() == ""

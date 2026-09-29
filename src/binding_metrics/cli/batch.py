@@ -137,7 +137,9 @@ def _run_one(
     sample_output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        with log_to_file(log_path):
+        # A shared --log-file is truncated once by main(); each worker appends,
+        # otherwise every sample would erase the previous samples' logs.
+        with log_to_file(log_path, mode="a" if log_file else "w"):
             print(f"\n{'#' * 60}")
             print(f"  binding-metrics-batch worker: {sid}")
             print(f"  Input:  {input_path}")
@@ -598,6 +600,9 @@ def main():
     )
 
     # ------------------------------------------------------------------ Run
+    if args.log_file is not None:
+        args.log_file.parent.mkdir(parents=True, exist_ok=True)
+        args.log_file.write_text("", encoding="utf-8")  # workers append to it
     t_batch_start = time.time()
     rows: list[dict] = []
     # Map sample_id → input_path for the batched OF3 call later

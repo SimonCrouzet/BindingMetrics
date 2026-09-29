@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 @contextmanager
-def log_to_file(log_file):
+def log_to_file(log_file, mode: str = "w"):
     """Context manager: redirect stdout+stderr to *log_file* when provided.
 
     Usage::
@@ -16,6 +16,10 @@ def log_to_file(log_file):
         with log_to_file(args.log_file):
             # all print() calls go to the file (or stdout if log_file is None)
             ...
+
+    ``mode`` is the ``open`` mode: ``"w"`` (default) starts the file afresh,
+    ``"a"`` appends, for callers that enter the context several times on the
+    same file (one batch run logging every sample to a shared ``--log-file``).
     """
     if log_file is None:
         yield
@@ -23,7 +27,7 @@ def log_to_file(log_file):
 
     log_file = Path(log_file)
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(log_file, "w", encoding="utf-8", buffering=1)
+    fh = open(log_file, mode, encoding="utf-8", buffering=1)
     old_out, old_err = sys.stdout, sys.stderr
     sys.stdout = sys.stderr = fh
     try:
