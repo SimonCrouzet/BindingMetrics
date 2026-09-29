@@ -1,6 +1,7 @@
 """``run_batch``: the in-process counterpart of ``binding-metrics-batch`` (issue #32)."""
 
 import csv
+import re
 import shutil
 import sys
 from concurrent.futures import Future
@@ -297,8 +298,14 @@ class TestCommandLineOnRunBatch:
         code, rows = self._main(monkeypatch, tmp_path, self._worker, workers=2)
         out = capsys.readouterr().out
         assert code == 0
-        assert "[1/2] a -> ok (1.5s)\n" in out
-        assert "[2/2] b -> FATAL: worker died\n" in out
+        # The inline executor hands the futures back in no fixed order, so the
+        # counters are checked as a set.
+        counted = re.findall(r"^\[(\d)/2\] (\w) -> (.*)$", out, flags=re.MULTILINE)
+        assert sorted((sid, text) for _, sid, text in counted) == [
+            ("a", "ok (1.5s)"),
+            ("b", "FATAL: worker died"),
+        ]
+        assert sorted(n for n, _, _ in counted) == ["1", "2"]
         assert "Processing:" not in out
         assert [row["batch_status"] for row in rows] == ["ok", "error"]
         assert rows[1]["batch_error"] == "RuntimeError: worker died"
