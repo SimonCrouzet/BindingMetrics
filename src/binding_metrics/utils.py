@@ -40,12 +40,26 @@ def configure_logging(level: int = logging.INFO) -> None:
     stdout, ERROR and above on stderr, with the bare message and no prefix.
     Calling it again only updates the level, so nested entry points are safe.
 
+    ``python -m binding_metrics.<module>`` runs the module as ``__main__``, so its
+    ``getLogger(__name__)`` logger is named ``__main__`` and sits outside the
+    package hierarchy; in that case the same handlers are attached to it. A user's
+    own ``__main__`` script is not touched.
+
     Args:
         level: Threshold for the package logger (default INFO).
     """
-    package_logger = logging.getLogger(_PACKAGE_LOGGER)
-    package_logger.setLevel(level)
-    if any(isinstance(h, _CurrentStreamHandler) for h in package_logger.handlers):
+    loggers = [logging.getLogger(_PACKAGE_LOGGER)]
+    main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    if (getattr(main_spec, "name", None) or "").startswith(f"{_PACKAGE_LOGGER}."):
+        loggers.append(logging.getLogger("__main__"))
+    for target in loggers:
+        target.setLevel(level)
+        _attach_console_handlers(target)
+
+
+def _attach_console_handlers(target: logging.Logger) -> None:
+    """Add the stdout/stderr handlers to ``target`` unless they are already there."""
+    if any(isinstance(h, _CurrentStreamHandler) for h in target.handlers):
         return
     formatter = logging.Formatter("%(message)s")
     to_stdout = _CurrentStreamHandler("stdout")
@@ -53,7 +67,7 @@ def configure_logging(level: int = logging.INFO) -> None:
     to_stderr = _CurrentStreamHandler("stderr", level=logging.ERROR)
     for handler in (to_stdout, to_stderr):
         handler.setFormatter(formatter)
-        package_logger.addHandler(handler)
+        target.addHandler(handler)
 
 
 def extend_report(report: dict, key: str, values: list) -> None:

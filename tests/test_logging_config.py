@@ -3,6 +3,7 @@
 import io
 import logging
 import sys
+import types
 
 import pytest
 
@@ -15,8 +16,10 @@ def package_logger():
     logger = logging.getLogger("binding_metrics")
     saved_level = logger.level
     yield logger
-    for handler in [h for h in logger.handlers if isinstance(h, _CurrentStreamHandler)]:
-        logger.removeHandler(handler)
+    for name in ("binding_metrics", "__main__"):
+        target = logging.getLogger(name)
+        for handler in [h for h in target.handlers if isinstance(h, _CurrentStreamHandler)]:
+            target.removeHandler(handler)
     logger.setLevel(saved_level)
 
 
@@ -59,3 +62,28 @@ def test_other_loggers_are_left_alone(package_logger, capsys):
     configure_logging()
     logging.getLogger("some_other_library").warning("not ours")
     assert capsys.readouterr().out == ""
+
+
+def test_module_run_with_dash_m_is_covered(package_logger, capsys, monkeypatch):
+    """`python -m binding_metrics.x` logs under the name __main__, outside the package."""
+    main_module = sys.modules["__main__"]
+    monkeypatch.setattr(
+        main_module,
+        "__spec__",
+        types.SimpleNamespace(name="binding_metrics.cli.run"),
+        raising=False,
+    )
+    configure_logging()
+    logging.getLogger("__main__").info("from a module run as a script")
+    assert capsys.readouterr().out == "from a module run as a script\n"
+
+
+def test_a_user_script_named_main_is_not_touched(package_logger, capsys, monkeypatch):
+    main_module = sys.modules["__main__"]
+    monkeypatch.setattr(
+        main_module, "__spec__", types.SimpleNamespace(name="my_analysis"), raising=False
+    )
+    configure_logging()
+    assert not any(
+        isinstance(h, _CurrentStreamHandler) for h in logging.getLogger("__main__").handlers
+    )
