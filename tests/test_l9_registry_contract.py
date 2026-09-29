@@ -352,3 +352,127 @@ class TestNewMetricsCallThroughTheSpec:
         # Attractive interactions only: energies are <= 0 by construction.
         assert result[energy_key] <= 0.0
         assert result[next(k for k in keys if k in ("hbonds", "saltbridges"))] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Mandatory fields and call semantics
+# ---------------------------------------------------------------------------
+
+
+class TestMandatoryFields:
+    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
+    def test_required_string_fields_are_nonempty(self, spec):
+        for field in ("name", "import_path", "description", "input_type", "chain_mode", "path_arg"):
+            value = getattr(spec, field)
+            assert isinstance(value, str) and value.strip(), f"{spec.name}: empty {field}"
+
+    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
+    def test_optional_arg_names_are_none_or_identifiers(self, spec):
+        for field in (
+            "secondary_path_arg",
+            "chain_arg",
+            "peptide_chain_arg",
+            "receptor_chain_arg",
+        ):
+            value = getattr(spec, field)
+            assert value is None or value.isidentifier(), f"{spec.name}: {field}={value!r}"
+
+    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
+    def test_formats_is_a_tuple_of_lowercase_strings(self, spec):
+        assert isinstance(spec.formats, tuple)
+        assert all(f == f.lower() for f in spec.formats)
+
+    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
+    def test_kwarg_names_are_distinct(self, spec):
+        """One kwarg cannot receive two roles."""
+        names = [
+            n
+            for n in (
+                spec.path_arg,
+                spec.secondary_path_arg,
+                spec.chain_arg,
+                spec.peptide_chain_arg,
+                spec.receptor_chain_arg,
+            )
+            if n
+        ]
+        assert len(names) == len(set(names)), f"{spec.name}: duplicated kwarg names {names}"
+
+    def test_spec_is_frozen(self):
+        spec = get_metric("interface")
+        with pytest.raises(AttributeError):
+            spec.name = "renamed"  # type: ignore[misc]
+
+
+class TestCallSemantics:
+    """``spec.call(**kwargs)`` forwards every keyword to the loaded function, unchanged."""
+
+    def test_call_forwards_keywords_and_returns_the_result(self):
+        spec = MetricSpec(
+            name="probe",
+            import_path="builtins:dict",
+            description="d",
+            input_type="static_structure",
+        )
+        assert spec.call(a=1, b=[2]) == {"a": 1, "b": [2]}
+
+    def test_call_passes_no_positional_arguments(self):
+        spec = MetricSpec(
+            name="probe",
+            import_path="builtins:dict",
+            description="d",
+            input_type="static_structure",
+        )
+        assert spec.call() == {}
+
+    def test_load_returns_the_function_object(self):
+        import json
+
+        spec = MetricSpec(
+            name="probe", import_path="json:dumps", description="d", input_type="static_structure"
+        )
+        assert spec.load() is json.dumps
+
+    def test_construction_does_not_import_the_target(self):
+        """Loading is lazy: a spec for a missing module is fine until it is loaded."""
+        spec = MetricSpec(
+            name="ghost",
+            import_path="binding_metrics_no_such_module:fn",
+            description="d",
+            input_type="static_structure",
+        )
+        with pytest.raises(ImportError):
+            spec.load()
+
+    def test_call_propagates_errors_of_the_metric(self):
+        spec = MetricSpec(
+            name="probe", import_path="json:dumps", description="d", input_type="static_structure"
+        )
+        with pytest.raises(TypeError):
+            spec.call(not_a_parameter=1)
+
+    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
+    def test_declared_kwargs_bind_to_the_function_signature(self, spec):
+        """The kwargs a runner builds from the spec fields bind without a TypeError."""
+        import inspect
+
+        try:
+            fn = spec.load()
+        except ImportError as e:
+            pytest.skip(f"{spec.name}: optional dependency not installed — {e}")
+        if inspect.isclass(fn):
+            pytest.skip(f"{spec.name}: class")
+        kwargs = {
+            n: object()
+            for n in (
+                spec.path_arg,
+                spec.secondary_path_arg,
+                spec.chain_arg,
+                spec.peptide_chain_arg,
+                spec.receptor_chain_arg,
+            )
+            if n
+        }
+        # bind_partial: required parameters the spec does not declare (a pLDDT array,
+        # a query name) are the caller's business; unknown names are the registry's bug.
+        inspect.signature(fn).bind_partial(**kwargs)
