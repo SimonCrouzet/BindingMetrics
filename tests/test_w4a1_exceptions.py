@@ -12,7 +12,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from binding_metrics.metrics import geometry, interface, polar_contacts, receptor_quality, sasa
+from binding_metrics.metrics import (
+    energy,
+    geometry,
+    interface,
+    polar_contacts,
+    receptor_quality,
+    sasa,
+)
 from binding_metrics.metrics._common import import_biotite
 from binding_metrics.metrics.comparison import compute_structure_rmsd
 
@@ -95,3 +102,37 @@ class TestInterface:
         assert result["hbonds"] == 0
         # The SASA part of the result is still computed.
         assert np.isfinite(result["delta_sasa"])
+
+
+class TestEnergy:
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_subsystem_evaluation_records_any_exception_type(self, failure):
+        pytest.importorskip("openmm")
+
+        class _Context:
+            def setPositions(self, positions):
+                raise failure
+
+        class _Simulation:
+            context = _Context()
+
+        failures: list[str] = []
+        out = energy._evaluate_subsystem_energies(
+            _Simulation(), None, None, "B", "A", "obc2", "cpu", failures=failures
+        )
+        assert out == (None, None, None)
+        assert failures == [f"{type(failure).__name__}: {failure}"]
+
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_failed_setup_is_recorded_in_error_message(self, monkeypatch, failure):
+        pytest.importorskip("openmm")
+
+        def broken(*args, **kwargs):
+            raise failure
+
+        monkeypatch.setattr(energy, "_create_implicit_system", broken)
+        result = energy.compute_interaction_energy(
+            P53_MDM2, peptide_chain="B", receptor_chain="A", modes=("raw",)
+        )
+        assert result["success"] is False
+        assert result["error_message"] == f"{type(failure).__name__}: {failure}"

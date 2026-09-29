@@ -714,8 +714,9 @@ def _evaluate_subsystem_energies(
 
         return e_c, e_p, e_r
 
-    except Exception as e:
-        # Per-mode isolation: a failed evaluation must not discard the other modes.
+    except Exception as e:  # noqa: BLE001 - per-mode isolation; recorded in ``failures``
+        # OpenMM, the force field and the topology helpers raise many types here, and a
+        # failed evaluation must not discard the other modes.
         logger.warning(f"  Warning: subsystem energy evaluation failed: {e}")
         # ERROR records go to stderr, which keeps the traceback off the results stream.
         logger.error(traceback.format_exc().rstrip("\n"))
@@ -1015,8 +1016,8 @@ def compute_interaction_energy(
                         )
                     else:
                         _append_error_message(result, "relaxed: " + "; ".join(failures))
-            except Exception as e:
-                # Per-step isolation: the other modes stay usable; the reason is recorded.
+            except Exception as e:  # noqa: BLE001 - per-step isolation; recorded in error_message
+                # The other modes stay usable; the reason is recorded.
                 logger.warning(f"[{sample_id}] Warning: relaxed/minimization failed: {e}")
                 step = "relaxed" if "relaxed" in modes else "after_md"
                 _append_error_message(
@@ -1078,13 +1079,13 @@ def compute_interaction_energy(
                     )
                 else:
                     _append_error_message(result, "after_md: " + "; ".join(failures))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - per-step isolation; recorded in error_message
                 logger.warning(f"[{sample_id}] Warning: after_md failed: {e}")
                 _append_error_message(result, f"after_md: {type(e).__name__}: {e}")
 
         result["success"] = any_success
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - per-sample isolation; recorded in error_message
         _append_error_message(result, f"{type(e).__name__}: {e}")
         # Logged at WARNING so the line stays on stdout with the other progress lines;
         # the traceback below is an ERROR record and goes to stderr.
