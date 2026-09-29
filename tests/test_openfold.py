@@ -1065,3 +1065,42 @@ class TestModuleLayout:
         openfold.main()
         assert called["seeds"] == [3]
         assert called["query_name"] == "q"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "_DEFAULT_QUERY_SEEDS",
+            "_BatchSample",
+            "_extract_chain_to_cif",
+            "_extract_sequence_from_structure",
+            "_query_seeds",
+            "_safe_entry_id",
+            "_write_a3m_self_alignment",
+            "_write_runner_yaml",
+            "prepare_batched_refolding_queries",
+            "prepare_batched_scoring_queries",
+            "prepare_refolding_query",
+            "prepare_scoring_query",
+        ],
+    )
+    def test_runner_and_query_names_remain_importable_from_openfold(self, name):
+        from binding_metrics.metrics import _openfold_run, openfold
+
+        assert getattr(openfold, name) is getattr(_openfold_run, name)
+
+    def test_wrappers_call_the_names_patched_on_the_openfold_module(self, tmp_path, monkeypatch):
+        """run_openfold_* stay in openfold.py, so patching run_openfold and prepare_* works."""
+        from binding_metrics.metrics import openfold
+
+        calls = []
+        monkeypatch.setattr(
+            openfold,
+            "prepare_scoring_query",
+            lambda **kw: calls.append(("prepare", kw["seeds"])) or tmp_path / "q.json",
+        )
+        monkeypatch.setattr(
+            openfold, "run_openfold", lambda **kw: calls.append(("run", kw["output_dir"]))
+        )
+        out = openfold.run_openfold_scoring("c.cif", "A", "B", "q", tmp_path, seeds=(9,))
+        assert out == tmp_path / "predictions"
+        assert calls == [("prepare", (9,)), ("run", tmp_path / "predictions")]
