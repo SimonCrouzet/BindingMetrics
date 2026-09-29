@@ -278,3 +278,239 @@ class TestRunAsModule:
         )
         assert proc.returncode == 0, proc.stderr
         assert SKIP_LINES + DOCKQ_STEP + DOCKQ_WARNING in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# binding-metrics-batch
+# ---------------------------------------------------------------------------
+
+
+def _batch_records(caplog):
+    return [
+        (r.levelno, r.getMessage()) for r in caplog.records if r.name == "binding_metrics.cli.batch"
+    ]
+
+
+def _worker_kwargs(tmp_path, **overrides):
+    kwargs = dict(
+        input_path=EXAMPLE_1YCR,
+        output_dir=tmp_path,
+        sample_id="s1",
+        skip_prep=True,
+        ph=7.4,
+        keep_water=False,
+        canonicalize=False,
+        skip_relax=True,
+        md_duration_ps=0.0,
+        device="cuda",
+        peptide_chain=None,
+        receptor_chain=None,
+        metrics=frozenset(),
+        energy_modes=("relaxed",),
+        openfold_mode="score",
+        openfold_conda_env=None,
+        log_file=None,
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+class TestBatchWorker:
+    def test_log_file_holds_the_banner_and_the_pipeline_messages(
+        self, tmp_path, monkeypatch, package_logger
+    ):
+        from binding_metrics.cli import batch
+
+        def fake_pipeline(**_):
+            logging.getLogger("binding_metrics.cli.run").info("from the pipeline")
+            return {"sample_id": "s1"}
+
+        configure_logging()
+        monkeypatch.setattr(batch, "run_pipeline", fake_pipeline)
+        batch._run_one(**_worker_kwargs(tmp_path))
+        log = tmp_path / "s1" / "s1.log"
+        assert log.read_text(encoding="utf-8") == (
+            f"\n{HASHES}\n  binding-metrics-batch worker: s1\n  Input:  {EXAMPLE_1YCR}\n"
+            f"  Output: {tmp_path / 's1'}\n  Log:    {log}\n{HASHES}\nfrom the pipeline\n"
+        )
+
+    def test_banner_reaches_the_logger(self, tmp_path, monkeypatch, caplog):
+        from binding_metrics.cli import batch
+
+        caplog.set_level(logging.INFO, logger="binding_metrics")
+        monkeypatch.setattr(batch, "run_pipeline", lambda **_: {"sample_id": "s1"})
+        batch._run_one(**_worker_kwargs(tmp_path))
+        messages = [msg for _, msg in _batch_records(caplog)]
+        assert "  binding-metrics-batch worker: s1" in messages
+        assert f"  Input:  {EXAMPLE_1YCR}" in messages
+
+
+class _RecordingPool:
+    """Stand-in for ProcessPoolExecutor that runs each job inline."""
+
+    initializers = []
+
+    def __init__(self, max_workers=None, initializer=None):
+        self.initializers.append(initializer)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def submit(self, fn, **kwargs):
+        from concurrent.futures import Future
+
+        future = Future()
+        future.set_result(fn(**kwargs))
+        return future
+
+
+class TestBatchMain:
+    def _argv(self, tmp_path, *extra):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir(exist_ok=True)
+        (input_dir / "a.cif").write_text("data_x\n")
+        return [
+            "binding-metrics-batch",
+            "-i",
+            str(input_dir),
+            "--output-csv",
+            str(tmp_path / "m.csv"),
+            "--metrics",
+            "energy",
+            *extra,
+        ]
+
+    def test_main_installs_the_console_handlers(self, tmp_path, monkeypatch, package_logger):
+        from binding_metrics.cli import batch
+
+        monkeypatch.setattr(batch, "_run_one", lambda input_path, **_: {"batch_status": "ok"})
+        monkeypatch.setattr(sys, "argv", self._argv(tmp_path))
+        with pytest.raises(SystemExit):
+            batch.main()
+        assert any(isinstance(h, _CurrentStreamHandler) for h in package_logger.handlers)
+
+    def test_worker_processes_configure_logging_on_start(self, tmp_path, monkeypatch):
+        """Spawned or forkserver workers do not inherit the parent's handlers."""
+        from binding_metrics.cli import batch
+
+        _RecordingPool.initializers = []
+        monkeypatch.setattr(batch, "ProcessPoolExecutor", _RecordingPool)
+        monkeypatch.setattr(batch, "_run_one", lambda input_path, **_: {"batch_status": "ok"})
+        monkeypatch.setattr(sys, "argv", self._argv(tmp_path, "--workers", "2"))
+        with pytest.raises(SystemExit):
+            batch.main()
+        assert _RecordingPool.initializers == [configure_logging]
+
+
+def _openfold_step(count):
+    return f"\n{BAR}\n  Step: Batched OpenFold3 ({count} samples in one call)\n{BAR}\n"
+
+
+class TestBatchedOpenFoldMessages:
+    def _call(self, tmp_path, rows, sid_to_input):
+        from binding_metrics.cli import batch
+
+        batch._run_batched_openfold(
+            rows=rows,
+            sid_to_input=sid_to_input,
+            output_dir=tmp_path,
+            openfold_mode="score",
+            openfold_conda_env=None,
+            peptide_chain="B",
+            receptor_chain="A",
+        )
+
+    def _patch_openfold(self, monkeypatch, run=None, metrics=None):
+        from binding_metrics.metrics import openfold
+
+        if run is not None:
+            monkeypatch.setattr(openfold, "run_openfold_batched", run)
+        if metrics is not None:
+            monkeypatch.setattr(openfold, "compute_openfold_metrics", metrics)
+
+    def test_no_eligible_samples(self, tmp_path, package_logger, caplog, capsys):
+        caplog.set_level(logging.INFO, logger="binding_metrics")
+        configure_logging()
+        self._call(tmp_path, rows=[], sid_to_input={})
+        assert capsys.readouterr().out == "  [skip] No eligible samples for batched OpenFold.\n"
+        assert _batch_records(caplog) == [
+            (logging.INFO, "  [skip] No eligible samples for batched OpenFold.")
+        ]
+
+    def test_failed_batch_call_is_reported_on_stdout(
+        self, tmp_path, monkeypatch, package_logger, caplog, capsys
+    ):
+        def fail(**_):
+            raise RuntimeError("no gpu")
+
+        caplog.set_level(logging.INFO, logger="binding_metrics")
+        configure_logging()
+        self._patch_openfold(monkeypatch, run=fail)
+        rows = [{"sample_id": "s1", "batch_status": "ok"}]
+        self._call(tmp_path, rows, {"s1": EXAMPLE_1YCR})
+        out, err = capsys.readouterr()
+        assert out.endswith(_openfold_step(1) + "  [ERROR] Batched OpenFold failed: no gpu\n")
+        assert "RuntimeError: no gpu" in err  # the traceback keeps going to stderr
+        assert rows[0]["openfold_error"] == "no gpu"
+        assert (logging.WARNING, "  [ERROR] Batched OpenFold failed: no gpu") in _batch_records(
+            caplog
+        )
+
+    def test_per_sample_summary_line(self, tmp_path, monkeypatch, package_logger, capsys):
+        configure_logging()
+        self._patch_openfold(
+            monkeypatch,
+            run=lambda **_: tmp_path,
+            metrics=lambda **_: {"iptm": 0.5, "avg_plddt": 80.0},
+        )
+        rows = [{"sample_id": "s1", "batch_status": "ok"}]
+        self._call(tmp_path, rows, {"s1": EXAMPLE_1YCR})
+        out = capsys.readouterr().out
+        assert out.endswith(_openfold_step(1) + "  s1: ipTM=0.5, pLDDT=80.0\n")
+        assert rows[0]["openfold_iptm"] == 0.5
+
+    def test_failed_metrics_extraction_is_reported_on_stdout(
+        self, tmp_path, monkeypatch, package_logger, caplog, capsys
+    ):
+        def fail(**_):
+            raise ValueError("bad output")
+
+        caplog.set_level(logging.INFO, logger="binding_metrics")
+        configure_logging()
+        self._patch_openfold(monkeypatch, run=lambda **_: tmp_path, metrics=fail)
+        rows = [{"sample_id": "s1", "batch_status": "ok"}]
+        self._call(tmp_path, rows, {"s1": EXAMPLE_1YCR})
+        out, err = capsys.readouterr()
+        assert out.endswith(_openfold_step(1) + "  s1: OpenFold metrics failed: bad output\n")
+        assert err == ""
+        assert rows[0]["openfold_error"] == "bad output"
+        assert (logging.WARNING, "  s1: OpenFold metrics failed: bad output") in _batch_records(
+            caplog
+        )
+
+
+class TestBatchAsModule:
+    def test_python_dash_m_writes_the_per_sample_log(self, tmp_path):
+        """``python -m binding_metrics.cli.batch`` runs the file as ``__main__``."""
+        import shutil
+        import subprocess
+
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        shutil.copy(EXAMPLE_1YCR, input_dir / "ycr.pdb")
+        proc = subprocess.run(
+            [sys.executable, "-m", "binding_metrics.cli.batch"]
+            + ["-i", str(input_dir), "--output-csv", str(tmp_path / "m.csv")]
+            + ["--skip-prep", "--skip-relax", "--metrics", "dockq"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "[1/1] Processing: ycr\n  -> ok" in proc.stdout
+        log = (tmp_path / "ycr" / "ycr.log").read_text(encoding="utf-8")
+        assert "  binding-metrics-batch worker: ycr\n" in log
+        assert SKIP_LINES + DOCKQ_STEP + DOCKQ_WARNING in log

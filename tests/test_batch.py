@@ -5,6 +5,7 @@ filename stem), which is pure and testable without running the pipeline.
 """
 
 import csv
+import logging
 import sys
 from pathlib import Path
 
@@ -12,8 +13,20 @@ import pytest
 
 from binding_metrics.cli import batch
 from binding_metrics.cli.batch import _build_reference_map, _run_one
+from binding_metrics.utils import _CurrentStreamHandler, configure_logging
 
 EXAMPLE_1YCR = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+
+
+@pytest.fixture(autouse=True)
+def _restore_package_logger():
+    """``batch.main`` installs console handlers; do not leave them for later tests."""
+    package_logger = logging.getLogger("binding_metrics")
+    saved_level = package_logger.level
+    yield
+    for handler in [h for h in package_logger.handlers if isinstance(h, _CurrentStreamHandler)]:
+        package_logger.removeHandler(handler)
+    package_logger.setLevel(saved_level)
 
 
 def _touch(path: Path) -> Path:
@@ -230,6 +243,7 @@ class TestPerSampleLog:
         assert batch._resolve_log_path(tmp_path / "s1", "s1", shared) == shared
 
     def test_worker_writes_its_own_log(self, tmp_path, monkeypatch):
+        configure_logging()  # what batch.main() (or a pool worker) does before a sample runs
         monkeypatch.setattr(batch, "run_pipeline", lambda **_: {"sample_id": "s1"})
         _run_one(**_worker_kwargs(tmp_path, sample_id="s1"))
         assert "binding-metrics-batch worker: s1" in (tmp_path / "s1" / "s1.log").read_text()
@@ -280,6 +294,7 @@ class TestSharedLogFile:
         assert log.read_text().split() == ["third"]
 
     def test_every_sample_stays_in_a_shared_log_file(self, tmp_path, monkeypatch):
+        configure_logging()
         monkeypatch.setattr(batch, "run_pipeline", lambda **_: {})
         shared = tmp_path / "logs" / "all.log"
         for sid in ("s1", "s2"):

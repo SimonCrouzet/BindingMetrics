@@ -46,6 +46,7 @@ Note on GPU parallelism:
 """
 
 import argparse
+import logging
 import sys
 import time
 import traceback
@@ -57,6 +58,12 @@ from binding_metrics._constants import DEFAULT_RANDOM_SEED
 from binding_metrics.cli import add_random_seed_arg
 from binding_metrics.cli.run import ALL_METRICS, _collect_failures, _parse_metrics, run_pipeline
 from binding_metrics.provenance import collect_provenance
+from binding_metrics.utils import configure_logging
+
+# Named explicitly: ``python -m binding_metrics.cli.batch`` executes this file as
+# ``__main__``, and a logger called ``__main__`` would sit outside the package
+# logger that ``configure_logging`` sets up, so its INFO lines would be lost.
+logger = logging.getLogger("binding_metrics.cli.batch")
 
 _STRUCTURE_SUFFIXES = {".cif", ".pdb", ".mmcif"}
 
@@ -156,12 +163,12 @@ def _run_one(
         # A shared --log-file is truncated once by main(); each worker appends,
         # otherwise every sample would erase the previous samples' logs.
         with log_to_file(log_path, mode="a" if log_file else "w"):
-            print(f"\n{'#' * 60}")
-            print(f"  binding-metrics-batch worker: {sid}")
-            print(f"  Input:  {input_path}")
-            print(f"  Output: {sample_output_dir}")
-            print(f"  Log:    {log_path}")
-            print(f"{'#' * 60}")
+            logger.info("\n%s", "#" * 60)
+            logger.info("  binding-metrics-batch worker: %s", sid)
+            logger.info("  Input:  %s", input_path)
+            logger.info("  Output: %s", sample_output_dir)
+            logger.info("  Log:    %s", log_path)
+            logger.info("%s", "#" * 60)
 
             results = run_pipeline(
                 input_path=input_path,
@@ -280,12 +287,13 @@ def _run_batched_openfold(
         sid_to_chains[sid] = {"peptide": pchain, "receptor": rchain}
 
     if not samples:
-        print("  [skip] No eligible samples for batched OpenFold.", flush=True)
+        logger.info("  [skip] No eligible samples for batched OpenFold.")
         return
 
-    print(f"\n{'=' * 60}", flush=True)
-    print(f"  Step: Batched OpenFold3 ({len(samples)} samples in one call)", flush=True)
-    print(f"{'=' * 60}", flush=True)
+    bar = "=" * 60
+    logger.info(
+        "\n%s\n  Step: Batched OpenFold3 (%d samples in one call)\n%s", bar, len(samples), bar
+    )
 
     of_dir = output_dir / "_openfold_batch"
     try:
@@ -296,7 +304,8 @@ def _run_batched_openfold(
             conda_env=openfold_conda_env,
         )
     except Exception as e:
-        print(f"  [ERROR] Batched OpenFold failed: {e}", flush=True)
+        # Warning level keeps the line on stdout, where it was printed before.
+        logger.warning("  [ERROR] Batched OpenFold failed: %s", e)
         import traceback
 
         traceback.print_exc()
@@ -367,14 +376,15 @@ def _run_batched_openfold(
             # Update per-sample JSON report on disk
             _update_sample_json(output_dir / sid, sid, of_metrics)
 
-            print(
-                f"  {sid}: ipTM={of_metrics.get('iptm', '?')}, "
-                f"pLDDT={of_metrics.get('avg_plddt', '?')}",
-                flush=True,
+            logger.info(
+                "  %s: ipTM=%s, pLDDT=%s",
+                sid,
+                of_metrics.get("iptm", "?"),
+                of_metrics.get("avg_plddt", "?"),
             )
 
         except Exception as e:
-            print(f"  {sid}: OpenFold metrics failed: {e}", flush=True)
+            logger.warning("  %s: OpenFold metrics failed: %s", sid, e)
             rows[idx]["openfold_error"] = str(e)
 
 
@@ -414,6 +424,7 @@ def _update_sample_json(sample_dir: Path, sid: str, of_metrics: dict) -> None:
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser(
         description="Run the binding-metrics pipeline on all structures in a directory.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -681,7 +692,10 @@ def main():
         #   - `rows` is appended only in the main process via as_completed(),
         #     which delivers results one at a time → no concurrent list mutation.
         futures = {}
-        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        # Workers started with "spawn" or "forkserver" do not inherit the handlers
+        # installed above, so each configures logging itself. Without it their
+        # pipeline messages would never reach the per-sample log files.
+        with ProcessPoolExecutor(max_workers=args.workers, initializer=configure_logging) as pool:
             for input_path in input_files:
                 sid = input_path.stem
                 sid_to_input[sid] = input_path
