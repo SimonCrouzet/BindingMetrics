@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from binding_metrics.core.residues import PROTEIN_RESIDUES
 from binding_metrics.utils import add_to_report, backfill_auth_columns, extend_report
 
 if TYPE_CHECKING:
@@ -134,43 +135,9 @@ def detect_chains(topology) -> tuple[Optional[str], Optional[str]]:
     """
     # Amino acids only — exclude water (HOH) and nucleic acids which are also
     # in app.PDBFile._standardResidues and would cause water chains to be ranked.
-    amino_acids = {
-        "ALA",
-        "ARG",
-        "ASN",
-        "ASP",
-        "CYS",
-        "GLN",
-        "GLU",
-        "GLY",
-        "HIS",
-        "ILE",
-        "LEU",
-        "LYS",
-        "MET",
-        "PHE",
-        "PRO",
-        "SER",
-        "THR",
-        "TRP",
-        "TYR",
-        "VAL",
-        "CYX",
-        "HID",
-        "HIE",
-        "HIP",
-        "ASPL",
-        "GLUL",
-        "LYSL",
-        "NMG",
-        "NMA",
-        "MVA",
-        "MLE",
-    }
-
     chain_sizes = []
     for chain in topology.chains():
-        n_protein = sum(1 for r in chain.residues() if r.name in amino_acids)
+        n_protein = sum(1 for r in chain.residues() if r.name in PROTEIN_RESIDUES)
         if n_protein > 0:
             chain_sizes.append((chain.id, n_protein))
 
@@ -386,40 +353,6 @@ def strip_heterogens(
     """
     import numpy as np
 
-    amino_acids = {
-        "ALA",
-        "ARG",
-        "ASN",
-        "ASP",
-        "CYS",
-        "GLN",
-        "GLU",
-        "GLY",
-        "HIS",
-        "ILE",
-        "LEU",
-        "LYS",
-        "MET",
-        "PHE",
-        "PRO",
-        "SER",
-        "THR",
-        "TRP",
-        "TYR",
-        "VAL",
-        "CYX",
-        "HID",
-        "HIE",
-        "HIP",
-        "ASPL",
-        "GLUL",
-        "LYSL",
-        "NMG",
-        "NMA",
-        "MVA",
-        "MLE",
-    }
-
     protein_chain_ids = {c for c in (peptide_chain, receptor_chain) if c}
     protein_pos = (
         np.array(
@@ -440,7 +373,7 @@ def strip_heterogens(
     for res in topology.residues():
         if res.chain.id in protein_chain_ids:
             continue
-        if res.name in amino_acids:
+        if res.name in PROTEIN_RESIDUES:
             continue
         # Water: always remove silently
         if res.name in _water_names:

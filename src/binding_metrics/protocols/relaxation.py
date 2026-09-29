@@ -63,6 +63,7 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
+from binding_metrics.core.residues import PROTEIN_RESIDUES
 from binding_metrics.protocols.relaxer import Relaxer
 
 logger = logging.getLogger(__name__)
@@ -632,44 +633,9 @@ class ImplicitRelaxation(Relaxer):
         """Identify peptide (smallest) and receptor (largest) protein chains."""
         self._import_openmm()
         # Amino acids only — exclude water (HOH), nucleic acids (A/C/G/T/U/I/DA/…)
-        amino_acids = {
-            "ALA",
-            "ARG",
-            "ASN",
-            "ASP",
-            "CYS",
-            "GLN",
-            "GLU",
-            "GLY",
-            "HIS",
-            "ILE",
-            "LEU",
-            "LYS",
-            "MET",
-            "PHE",
-            "PRO",
-            "SER",
-            "THR",
-            "TRP",
-            "TYR",
-            "VAL",
-            # common non-standard variants also treated as protein
-            "CYX",
-            "HID",
-            "HIE",
-            "HIP",
-            "ASPL",
-            "GLUL",
-            "LYSL",
-            "NMG",
-            "NMA",
-            "MVA",
-            "MLE",
-        }
-
         chain_sizes = []
         for chain in topology.chains():
-            n_protein = sum(1 for r in chain.residues() if r.name in amino_acids)
+            n_protein = sum(1 for r in chain.residues() if r.name in PROTEIN_RESIDUES)
             if n_protein > 0:
                 chain_sizes.append((chain.id, n_protein))
 

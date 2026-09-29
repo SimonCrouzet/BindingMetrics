@@ -65,3 +65,21 @@ VARIANT_TO_PARENT_RESIDUE: dict[str, str] = {
 #: are separate because adding a name here would change which atoms the
 #: comparison RMSD uses.
 WATER_NAMES_PDB_AMBER: frozenset[str] = frozenset({"HOH", "WAT"})
+
+#: Lactam-bridge residues whose templates ``core.cyclic`` loads (ASPL, GLUL and
+#: LYSL: the aspartate, glutamate and lysine that form the side-chain amide).
+LACTAM_TEMPLATE_RESIDUES: frozenset[str] = frozenset({"ASPL", "GLUL", "LYSL"})
+
+#: N-methylated residues whose templates ``core.nonstandard`` supplies:
+#: sarcosine (NMG) and N-methyl alanine, valine and leucine.
+N_METHYLATED_RESIDUES: frozenset[str] = frozenset({"NMG", "NMA", "MVA", "MLE"})
+
+#: Residue names that count as protein when chains are ranked by size and when
+#: heterogens are stripped. Only four AMBER variants are listed: HIN, ASH, GLH,
+#: LYN and CYM are left out.
+PROTEIN_RESIDUES: frozenset[str] = (
+    STANDARD_AMINO_ACIDS
+    | {"HID", "HIE", "HIP", "CYX"}
+    | LACTAM_TEMPLATE_RESIDUES
+    | N_METHYLATED_RESIDUES
+)
