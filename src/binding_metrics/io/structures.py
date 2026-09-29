@@ -180,7 +180,7 @@ def detect_chains_from_file(
         path: Path to CIF or PDB file.
         peptide_chain: Explicit peptide chain ID, or None to auto-detect.
         receptor_chain: Explicit receptor chain ID, or None to auto-detect.
-        verbose: If True, print detected chain info to stdout.
+        verbose: If True, log the detected chains at INFO level.
 
     Returns:
         Dict with keys:
@@ -310,14 +310,14 @@ def detect_chains_from_file(
     )
 
     if verbose:
-        print(f"  Chain detection ({path.name}):")
+        logger.info("  Chain detection (%s):", path.name)
         for c in chain_info:
             tag = ""
             if c["id"] == peptide_chain:
                 tag = "  ← peptide" + (" [auto]" if pep_auto else "")
             elif c["id"] == receptor_chain:
                 tag = "  ← receptor" + (" [auto]" if rec_auto else "")
-            print(f"    chain {c['id']}: {c['n_residues']} residues{tag}")
+            logger.info("    chain %s: %s residues%s", c["id"], c["n_residues"], tag)
 
     pep_str = str(peptide_chain) if peptide_chain else None
     rec_str = str(receptor_chain) if receptor_chain else None
@@ -441,19 +441,26 @@ def strip_heterogens(
             dists = np.linalg.norm(res_pos[:, None, :] - protein_pos[None, :, :], axis=-1)
             min_dist = float(dists.min())
             if min_dist < warn_cutoff_ang:
-                print(
-                    f"  Warning: removing heterogen {res.name}{res.id} "
-                    f"(chain {res.chain.id}) which is {min_dist:.1f} Å from "
-                    f"the protein — it may be a functional cofactor or ion. "
-                    f"Parametrize it via custom_bond_handler to keep it."
+                logger.warning(
+                    "  Warning: removing heterogen %s%s "
+                    "(chain %s) which is %.1f Å from "
+                    "the protein — it may be a functional cofactor or ion. "
+                    "Parametrize it via custom_bond_handler to keep it.",
+                    res.name,
+                    res.id,
+                    res.chain.id,
+                    min_dist,
                 )
             else:
-                print(
-                    f"  Removing distant heterogen {res.name}{res.id} "
-                    f"(chain {res.chain.id}, {min_dist:.1f} Å from protein)"
+                logger.info(
+                    "  Removing distant heterogen %s%s (chain %s, %.1f Å from protein)",
+                    res.name,
+                    res.id,
+                    res.chain.id,
+                    min_dist,
                 )
         else:
-            print(f"  Removing heterogen {res.name}{res.id} (chain {res.chain.id})")
+            logger.info("  Removing heterogen %s%s (chain %s)", res.name, res.id, res.chain.id)
         atoms_to_remove.extend(res.atoms())
 
     if report is not None:
