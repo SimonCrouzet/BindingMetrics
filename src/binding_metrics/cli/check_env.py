@@ -10,6 +10,8 @@ Exit code is 0 if all checks pass, 1 otherwise.
 import subprocess
 import sys
 
+from binding_metrics.utils import configure_logging
+
 # ---------------------------------------------------------------------------
 # Terminal colours
 # ---------------------------------------------------------------------------
@@ -313,6 +315,7 @@ CHECKS: list[tuple[str, object]] = [
 
 
 def main() -> None:
+    configure_logging()
     print(f"\n{BOLD}{'=' * 56}{RESET}")
     print(f"{BOLD}  BindingMetrics — environment check{RESET}")
     print(f"{BOLD}{'=' * 56}{RESET}")

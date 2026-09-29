@@ -514,3 +514,35 @@ class TestBatchAsModule:
         log = (tmp_path / "ycr" / "ycr.log").read_text(encoding="utf-8")
         assert "  binding-metrics-batch worker: ycr\n" in log
         assert SKIP_LINES + DOCKQ_STEP + DOCKQ_WARNING in log
+
+
+# ---------------------------------------------------------------------------
+# binding-metrics-check-env
+# ---------------------------------------------------------------------------
+
+
+class TestCheckEnvMain:
+    def _main(self, monkeypatch, checks):
+        from binding_metrics.cli import check_env
+
+        monkeypatch.setattr(check_env, "CHECKS", checks)
+        with pytest.raises(SystemExit) as exc:
+            check_env.main()
+        return exc.value.code
+
+    def test_main_installs_the_console_handlers(self, monkeypatch, package_logger):
+        assert self._main(monkeypatch, []) == 0
+        assert any(isinstance(h, _CurrentStreamHandler) for h in package_logger.handlers)
+
+    def test_summary_text_is_unchanged(self, monkeypatch, package_logger, capsys):
+        from binding_metrics.cli import check_env
+
+        code = self._main(monkeypatch, [("ok", lambda: True), ("bad", lambda: False)])
+        out = capsys.readouterr().out
+        assert code == 1
+        rule = f"{check_env.BOLD}{'=' * 56}{check_env.RESET}"
+        assert out.endswith(
+            f"{rule}\n{check_env.RED}{check_env.BOLD}  1 passed, 1 failed.{check_env.RESET}\n"
+            "  Please fix the issues above before running BindingMetrics.\n"
+            f"{rule}\n\n"
+        )
