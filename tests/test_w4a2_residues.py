@@ -261,12 +261,13 @@ class TestPrepStructureClassification:
 
 class TestSystemSets:
     def test_standard_residues_equal_the_old_literal(self):
-        assert residues.AMBER_STANDARD_RESIDUES == OLD_SYSTEM_STANDARD_RESIDUES
-        assert len(residues.AMBER_STANDARD_RESIDUES) == 36
+        # CYM (deprotonated cysteine) joined the standard variants afterwards.
+        assert residues.AMBER_STANDARD_RESIDUES == OLD_SYSTEM_STANDARD_RESIDUES | {"CYM"}
+        assert len(residues.AMBER_STANDARD_RESIDUES) == 37
 
-    def test_standard_residues_leave_out_hin_and_cym(self):
-        assert not {"HIN", "CYM"} & residues.AMBER_STANDARD_RESIDUES
-        assert residues.AMBER_STANDARD_VARIANTS == residues.AMBER_PROTONATION_VARIANTS - {"CYM"}
+    def test_standard_residues_leave_out_hin(self):
+        assert "HIN" not in residues.AMBER_STANDARD_RESIDUES
+        assert residues.AMBER_STANDARD_VARIANTS == residues.AMBER_PROTONATION_VARIANTS
 
     def test_nucleotides(self):
         assert residues.NUCLEOTIDE_RESIDUES == {"DA", "DC", "DG", "DT", "A", "C", "G", "T", "U"}
@@ -300,8 +301,8 @@ class TestGaffSkipResidues:
     def test_skip_list_equals_the_old_literal(self):
         from binding_metrics.core.gaff_ncaa import GAFF_SKIP_RESIDUES
 
-        assert GAFF_SKIP_RESIDUES == OLD_GAFF_SKIP_RESIDUES
-        assert len(GAFF_SKIP_RESIDUES) == 75
+        assert GAFF_SKIP_RESIDUES == OLD_GAFF_SKIP_RESIDUES | {"CYM"}
+        assert len(GAFF_SKIP_RESIDUES) == 76
 
     def test_cap_names_differ_from_the_terminal_caps_by_nh2_and_for(self):
         assert residues.FORCE_FIELD_CAP_NAMES == {"ACE", "NME", "FOR"}
@@ -352,8 +353,8 @@ class TestRelaxationAmberStandard:
     def test_set_equals_the_old_literal(self):
         from binding_metrics.protocols.relaxation import ImplicitRelaxation
 
-        assert ImplicitRelaxation._AMBER_STANDARD == OLD_RELAXATION_AMBER_STANDARD
-        assert len(ImplicitRelaxation._AMBER_STANDARD) == 44
+        assert ImplicitRelaxation._AMBER_STANDARD == OLD_RELAXATION_AMBER_STANDARD | {"CYM"}
+        assert len(ImplicitRelaxation._AMBER_STANDARD) == 45
 
     def test_only_residues_outside_the_set_become_gaff_molecules(self):
         pytest.importorskip("openff.toolkit")
