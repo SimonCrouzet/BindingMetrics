@@ -131,11 +131,17 @@ _EXPORTS = {
     "ImplicitRelaxation": "binding_metrics.protocols.relaxation",
     "RelaxationConfig": "binding_metrics.protocols.relaxation",
     "RelaxationResult": "binding_metrics.protocols.relaxation",
+    "Relaxer": "binding_metrics.protocols.relaxer",
+    # Pipeline API
+    "run_pipeline": "binding_metrics.cli.run",
+    "run_batch": "binding_metrics.cli.batch",
 }
 
 __getattr__, __dir__ = _lazy_exports(__name__, _EXPORTS, globals())
 
 if TYPE_CHECKING:
+    from binding_metrics.cli.batch import run_batch
+    from binding_metrics.cli.run import run_pipeline
     from binding_metrics.core.forcefields import ForceFieldConfig, get_forcefield
     from binding_metrics.core.simulation import MDSimulation, SimulationConfig, run_simulation
     from binding_metrics.core.system import prepare_system
@@ -166,6 +172,7 @@ if TYPE_CHECKING:
         RelaxationConfig,
         RelaxationResult,
     )
+    from binding_metrics.protocols.relaxer import Relaxer
 
 # pyproject.toml is the one place the version is written; an installed package reads
 # it back from its metadata. A source tree that was never installed has no metadata.
@@ -192,6 +199,10 @@ __all__ = [
     "ImplicitRelaxation",
     "RelaxationConfig",
     "RelaxationResult",
+    "Relaxer",
+    # Pipeline API
+    "run_pipeline",
+    "run_batch",
     # Metrics
     "compute_interaction_energy",
     "compute_structure_rmsd",
