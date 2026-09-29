@@ -77,6 +77,19 @@ def _require_chains_present(
     raise ChainNotFoundError(f"{named} not found; available: {listing}")
 
 
+def _merge_reason(target: dict, extra: dict, label: str) -> None:
+    """Move ``extra["reason"]`` into ``target["reason"]`` as ``"<label>: <reason>"``.
+
+    Metric dicts merged into one flat namespace (OpenFold, then the EvoBind
+    metrics that reuse its output) each carry an optional ``reason``; a plain
+    ``dict.update`` would let the last one erase the diagnosis of the first.
+    Reasons are joined with ``"; "``, and nothing is added when ``extra`` has none.
+    """
+    reason = extra.pop("reason", None)
+    if reason:
+        target["reason"] = "; ".join(filter(None, [target.get("reason"), f"{label}: {reason}"]))
+
+
 def _warn(msg: str) -> None:
     logger.warning("  [warning] %s", msg)
 
@@ -469,14 +482,14 @@ def run_pipeline(
 
                     # Primary score on the OF3 prediction
                     try:
-                        of_metrics.update(
-                            compute_evobind_score(
-                                of_structure,
-                                plddt_per_atom=plddt,
-                                binder_chain=peptide_chain,
-                                receptor_chain=receptor_chain,
-                            )
+                        evobind = compute_evobind_score(
+                            of_structure,
+                            plddt_per_atom=plddt,
+                            binder_chain=peptide_chain,
+                            receptor_chain=receptor_chain,
                         )
+                        _merge_reason(of_metrics, evobind, "evobind")
+                        of_metrics.update(evobind)
                     except Exception as e:
                         _warn(f"EvoBind score failed: {e}")
                         of_metrics["evobind_error"] = str(e)
@@ -485,15 +498,15 @@ def run_pipeline(
                     # input design pose? Large ΔCOM = OF3 places the binder
                     # elsewhere → design pose not supported by the prediction.
                     try:
-                        of_metrics.update(
-                            compute_evobind_adversarial_check(
-                                design_structure_path=input_path,
-                                afm_structure_path=of_structure,
-                                binder_chain=peptide_chain,
-                                receptor_chain=receptor_chain,
-                                afm_plddt_per_atom=plddt,
-                            )
+                        adversarial = compute_evobind_adversarial_check(
+                            design_structure_path=input_path,
+                            afm_structure_path=of_structure,
+                            binder_chain=peptide_chain,
+                            receptor_chain=receptor_chain,
+                            afm_plddt_per_atom=plddt,
                         )
+                        _merge_reason(of_metrics, adversarial, "evobind adversarial")
+                        of_metrics.update(adversarial)
                     except Exception as e:
                         _warn(f"EvoBind adversarial check failed: {e}")
                         of_metrics["adversarial_error"] = str(e)

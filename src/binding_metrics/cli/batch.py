@@ -56,7 +56,13 @@ from typing import Optional
 
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
 from binding_metrics.cli import add_random_seed_arg
-from binding_metrics.cli.run import ALL_METRICS, _collect_failures, _parse_metrics, run_pipeline
+from binding_metrics.cli.run import (
+    ALL_METRICS,
+    _collect_failures,
+    _merge_reason,
+    _parse_metrics,
+    run_pipeline,
+)
 from binding_metrics.provenance import collect_provenance
 from binding_metrics.utils import configure_logging
 
@@ -348,23 +354,23 @@ def _run_batched_openfold(
                         compute_evobind_score,
                     )
 
-                    of_metrics.update(
-                        compute_evobind_score(
-                            of_structure,
-                            plddt_per_atom=plddt,
-                            binder_chain=pchain,
-                            receptor_chain=rchain,
-                        )
+                    evobind = compute_evobind_score(
+                        of_structure,
+                        plddt_per_atom=plddt,
+                        binder_chain=pchain,
+                        receptor_chain=rchain,
                     )
-                    of_metrics.update(
-                        compute_evobind_adversarial_check(
-                            design_structure_path=sid_to_input[sid],
-                            afm_structure_path=of_structure,
-                            binder_chain=pchain,
-                            receptor_chain=rchain,
-                            afm_plddt_per_atom=plddt,
-                        )
+                    _merge_reason(of_metrics, evobind, "evobind")
+                    of_metrics.update(evobind)
+                    adversarial = compute_evobind_adversarial_check(
+                        design_structure_path=sid_to_input[sid],
+                        afm_structure_path=of_structure,
+                        binder_chain=pchain,
+                        receptor_chain=rchain,
+                        afm_plddt_per_atom=plddt,
                     )
+                    _merge_reason(of_metrics, adversarial, "evobind adversarial")
+                    of_metrics.update(adversarial)
                 except Exception as e:
                     of_metrics["evobind_error"] = str(e)
 

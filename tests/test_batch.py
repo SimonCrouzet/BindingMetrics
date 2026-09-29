@@ -486,3 +486,81 @@ class TestUpdateSampleJson:
         assert of["marker"] == _json_default(object)
         assert of["marker"].startswith("<class")
         assert of["x"] == 2.5
+
+
+class TestBatchedOpenFoldReasons:
+    """The EvoBind ``reason`` keys must not overwrite the OpenFold one (issue #25)."""
+
+    @staticmethod
+    def _run(tmp_path, monkeypatch, of_metrics, evobind, adversarial):
+        from binding_metrics.metrics import evobind as evobind_module
+        from binding_metrics.metrics import openfold
+
+        monkeypatch.setattr(openfold, "run_openfold_batched", lambda **kw: tmp_path)
+        monkeypatch.setattr(openfold, "compute_openfold_metrics", lambda **kw: dict(of_metrics))
+        monkeypatch.setattr(evobind_module, "compute_evobind_score", lambda *a, **kw: dict(evobind))
+        monkeypatch.setattr(
+            evobind_module, "compute_evobind_adversarial_check", lambda **kw: dict(adversarial)
+        )
+        rows = [{"sample_id": "s1", "batch_status": "ok"}]
+        batch._run_batched_openfold(
+            rows=rows,
+            sid_to_input={"s1": EXAMPLE_1YCR},
+            output_dir=tmp_path,
+            openfold_mode="score",
+            openfold_conda_env=None,
+            peptide_chain="B",
+            receptor_chain="A",
+        )
+        return rows[0]
+
+    def test_all_three_reasons_are_kept_and_labelled(self, tmp_path, monkeypatch):
+        row = self._run(
+            tmp_path,
+            monkeypatch,
+            {"structure_path": "of3.cif", "reason": "binder pLDDT: none in file"},
+            {"evobind_score": 0.0, "reason": "mean binder pLDDT is zero or not finite"},
+            {"delta_com": 3.0, "reason": "mean binder pLDDT in the AFM model is zero"},
+        )
+        assert row["openfold_reason"] == (
+            "binder pLDDT: none in file; "
+            "evobind: mean binder pLDDT is zero or not finite; "
+            "evobind adversarial: mean binder pLDDT in the AFM model is zero"
+        )
+        assert row["openfold_evobind_score"] == 0.0
+        assert row["openfold_delta_com"] == 3.0
+
+    def test_no_reason_column_when_nothing_failed(self, tmp_path, monkeypatch):
+        row = self._run(
+            tmp_path,
+            monkeypatch,
+            {"structure_path": "of3.cif", "iptm": 0.8},
+            {"evobind_score": 1.0},
+            {"delta_com": 0.5},
+        )
+        assert "openfold_reason" not in row
+        assert row["openfold_iptm"] == 0.8
+
+    def test_evobind_reason_alone_is_labelled(self, tmp_path, monkeypatch):
+        row = self._run(
+            tmp_path,
+            monkeypatch,
+            {"structure_path": "of3.cif"},
+            {"reason": "mean binder pLDDT is zero or not finite"},
+            {},
+        )
+        assert row["openfold_reason"] == "evobind: mean binder pLDDT is zero or not finite"
+
+
+class TestMergeReason:
+    def test_joins_with_semicolons_and_removes_the_key_from_extra(self):
+        target = {"reason": "a"}
+        extra = {"x": 1, "reason": "b"}
+        batch._merge_reason(target, extra, "lab")
+        assert target == {"reason": "a; lab: b"}
+        assert extra == {"x": 1}
+
+    def test_missing_reason_changes_nothing(self):
+        target = {"iptm": 0.5}
+        batch._merge_reason(target, {"x": 1}, "lab")
+        assert target == {"iptm": 0.5}

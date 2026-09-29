@@ -267,3 +267,52 @@ class TestStructuralQcWarning:
         with caplog.at_level(logging.INFO, logger="binding_metrics"):
             self._run(tmp_path, monkeypatch, self._relaxer_reporting(qc_passed))
         assert "Structural QC failed" not in caplog.text
+
+
+class TestOpenFoldReasons:
+    """EvoBind ``reason`` keys are labelled and appended, never overwrite (issue #25)."""
+
+    @staticmethod
+    def _run(tmp_path, monkeypatch, of_metrics, evobind, adversarial):
+        from binding_metrics.metrics import evobind as evobind_module
+        from binding_metrics.metrics import openfold
+
+        monkeypatch.setattr(openfold, "run_openfold_scoring", lambda **kw: tmp_path)
+        monkeypatch.setattr(openfold, "compute_openfold_metrics", lambda **kw: dict(of_metrics))
+        monkeypatch.setattr(evobind_module, "compute_evobind_score", lambda *a, **kw: dict(evobind))
+        monkeypatch.setattr(
+            evobind_module, "compute_evobind_adversarial_check", lambda **kw: dict(adversarial)
+        )
+        return run_pipeline(
+            EXAMPLE_1YCR,
+            tmp_path,
+            skip_prep=True,
+            skip_relax=True,
+            metrics=frozenset({"openfold"}),
+        )["openfold"]
+
+    def test_reasons_of_all_three_dicts_survive(self, tmp_path, monkeypatch):
+        of = self._run(
+            tmp_path,
+            monkeypatch,
+            {"structure_path": "of3.cif", "reason": "interface PDE: size mismatch"},
+            {"evobind_score": 0.0, "reason": "mean binder pLDDT is zero or not finite"},
+            {"delta_com": 3.0, "reason": "mean binder pLDDT in the AFM model is zero"},
+        )
+        assert of["reason"] == (
+            "interface PDE: size mismatch; "
+            "evobind: mean binder pLDDT is zero or not finite; "
+            "evobind adversarial: mean binder pLDDT in the AFM model is zero"
+        )
+        assert of["evobind_score"] == 0.0
+        assert of["delta_com"] == 3.0
+
+    def test_no_reason_key_when_nothing_failed(self, tmp_path, monkeypatch):
+        of = self._run(
+            tmp_path,
+            monkeypatch,
+            {"structure_path": "of3.cif"},
+            {"evobind_score": 1.0},
+            {"delta_com": 0.5},
+        )
+        assert "reason" not in of
