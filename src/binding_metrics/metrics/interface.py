@@ -451,7 +451,7 @@ def compute_interface_metrics(
         sasa_pep = _per_atom_sasa(peptide_atoms, probe_radius, sasa_fn, vdw_fn)
         sasa_rec = _per_atom_sasa(receptor_atoms, probe_radius, sasa_fn, vdw_fn)
         sasa_cpx = _per_atom_sasa(complex_atoms, probe_radius, sasa_fn, vdw_fn)
-    except Exception as e:  # kept broad: one bad structure must not abort a batch (see reason)
+    except Exception as e:  # noqa: BLE001 - one bad structure must not abort a batch; see reason
         logger.warning(f"  Warning: SASA computation failed: {e}")
         result["reason"] = f"SASA computation failed: {type(e).__name__}: {e}"
         return result
@@ -488,7 +488,7 @@ def compute_interface_metrics(
     try:
         hbond_result = compute_hbonds(atoms, design_chain, receptor_chain, hetero=hetero)
         saltbridge_result = compute_saltbridges(atoms, design_chain, receptor_chain, hetero=hetero)
-    except Exception as e:  # kept broad: one bad structure must not abort a batch (see reason)
+    except Exception as e:  # noqa: BLE001 - one bad structure must not abort a batch; see reason
         logger.warning(f"  Warning: H-bond/salt bridge computation failed: {e}")
         hbond_result = {"hbonds": 0, "hbond_energy": 0.0}
         saltbridge_result = {"saltbridges": 0, "saltbridges_bidentate": 0, "saltbridge_energy": 0.0}

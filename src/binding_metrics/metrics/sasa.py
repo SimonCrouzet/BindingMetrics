@@ -232,7 +232,7 @@ def compute_delta_sasa_static(
         sasa_receptor = _total_sasa(receptor_atoms)
         sasa_complex = _total_sasa(complex_atoms)
         delta_sasa = sasa_peptide + sasa_receptor - sasa_complex
-    except Exception as e:  # kept broad: one bad structure must not abort a batch (see reason)
+    except Exception as e:  # noqa: BLE001 - one bad structure must not abort a batch; see reason
         logger.warning(f"  Warning: biotite SASA computation failed: {e}")
         delta_sasa = sasa_peptide = sasa_receptor = sasa_complex = np.nan
         reason = f"SASA computation failed: {type(e).__name__}: {e}"
