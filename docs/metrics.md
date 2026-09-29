@@ -248,6 +248,19 @@ binding-metrics-energy --input-dir designs/ --glob-pattern "*.cif" --modes relax
 
 The CLI computes all three modes when `--modes` is omitted. Further flags: `--solvent-model {obc2,gbn2}`, `--relaxed-min-steps-restrained`, `--relaxed-min-steps-full`, `--after-md-duration-ps`, `--after-md-timestep-fs`, `--after-md-temperature-k`, `--ph`, `--random-seed INT|none`, `--binder-chain`, `--target-chain`.
 
+### Reserved interface: MLFF interaction energy
+
+`compute_mlff_interaction_energy(structure_path, binder_chain=None, receptor_chain=None, *, backend="uma", pocket=None, unit="kcal_mol", hetero="ignore", hydrogens="keep", target_chain=None)` — `binding_metrics.metrics.mlff_energy`
+
+The function checks its arguments and raises `NotImplementedError`: no backend exists yet. It is not in the metric registry ([§16](#16-metric-registry)), so code that runs the registered metrics never calls it; it is registered when a backend lands. Importing the module needs no MLFF package, OpenMM or torch.
+
+It will compute a static-pocket interaction energy from a pretrained machine-learned force field, after Ryczko et al. (2026, ChemRxiv preprint): the pocket around the binder is cut out and capped, and E(pocket complex) − E(binder) − E(receptor pocket) is evaluated at the geometry of the complex, with no relaxation. The result keys will be `mlff_interaction_energy_<unit>` (`_kcal_mol` by default; `unit` also takes `"kj_mol"` and `"ev"`), `backend`, `weights_licence`, `n_atoms_complex`, `n_atoms_binder`, `n_atoms_receptor`, `pocket_cutoff_angstrom` and, only when the energy is NaN, `reason`.
+
+- It complements E_int above and does not replace it. E_int includes generalised Born solvation and the solvent treatment of the reference protocol is not known, so the two values may not be comparable.
+- The reference benchmarks congeneric small-molecule series. Peptides, D-amino acids, N-methylated and phosphorylated residues and macrocycles are unvalidated, and a pocket cropper with capping, which does not exist yet, is needed before any of them can be scored.
+- The weights of a model are not part of this package and are never bundled. UMA weights are gated under the FAIR Chemistry License v1 (acceptable-use policy and acknowledgement duty). The licence of each backend is `MLFFBackend.weights_licence` and appears in the result.
+- Backends: `MLFFBackend` (abstract `energy_ev(atoms, *, charge, spin)` in eV), `PocketSpec`, `register_backend`, `get_backend` and `available_backends`. The names `uma`, `mace`, `orb` and `aimnet2` are placeholders: they are known, are never listed as available, and raise `NotImplementedError` that names the backend and the reference.
+
 ---
 
 ## 6. ramachandran & omega planarity
@@ -862,3 +875,4 @@ The registry's `headline_key` and `direction` name the score of a metric that ha
 - The OpenFold3 Team (2025). OpenFold3-preview. https://github.com/aqlaboratory/openfold-3, doi:10.5281/zenodo.19001000
 - Abramson et al. (2024). Accurate structure prediction of biomolecular interactions with AlphaFold 3. *Nature* 630, 493–500.
 - Bryant et al. (2025). EvoBind. *Communications Chemistry*. https://doi.org/10.1038/s42004-025-01601-3
+- Ryczko et al. (2026). Machine-learning force-field scoring rivals free-energy perturbation for congeneric ligand ranking across public benchmarks. ChemRxiv preprint, doi:10.26434/chemrxiv.15008810 (v2, 20 Sep 2026).

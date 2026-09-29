@@ -301,8 +301,8 @@ def compute_mlff_interaction_energy(
     How it relates to the rest of the package. The energy complements
     :func:`binding_metrics.metrics.energy.compute_interaction_energy` (ff14SB with
     implicit solvent, kJ/mol) as a second, independent column and does not replace
-    it. The two treat solvent and charges differently, so their values are not
-    numerically comparable.
+    it. E_int includes generalised Born solvation and the solvent treatment of the
+    reference protocol is not known, so the two values may not be comparable.
 
     Limits of validation. The reference benchmarks congeneric small-molecule series.
     Peptides, D-amino acids, N-methylated and phosphorylated residues and macrocycles
