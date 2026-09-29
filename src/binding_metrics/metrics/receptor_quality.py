@@ -32,7 +32,7 @@ from typing import Optional
 import numpy as np
 
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
-from binding_metrics.utils import backfill_auth_columns
+from binding_metrics.utils import backfill_auth_columns, configure_logging
 
 # ---------------------------------------------------------------------------
 # Lazy imports
@@ -1273,6 +1273,7 @@ def _write_csv(result: dict, output_path: Path) -> None:
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser(
         description=(
             "Assess receptor structural quality: Ramachandran, rotamer outliers, "

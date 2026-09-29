@@ -43,6 +43,8 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from binding_metrics.utils import configure_logging
+
 # DockQ-score thresholds for CAPRI quality classes (Basu & Wallner 2016).
 # These bins are the standard shortcut mapping from a DockQ score to the CAPRI
 # Incorrect / Acceptable / Medium / High categories.
@@ -210,6 +212,7 @@ def compute_dockq_metrics(
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser(
         description=(
             "Reference-based CAPRI accuracy of a predicted complex via DockQ "

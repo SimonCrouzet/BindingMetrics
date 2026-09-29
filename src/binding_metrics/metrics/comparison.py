@@ -18,6 +18,8 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.utils import configure_logging
+
 
 def _get_coords(
     structure,
@@ -238,6 +240,7 @@ def compute_structure_rmsd(
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser(
         description="Compute RMSD between two structures (e.g. initial vs. relaxed)"
     )

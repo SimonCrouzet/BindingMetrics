@@ -17,7 +17,7 @@ from typing import Literal, Optional
 
 import numpy as np
 
-from binding_metrics.utils import backfill_auth_columns
+from binding_metrics.utils import backfill_auth_columns, configure_logging
 
 # ---------------------------------------------------------------------------
 # Lazy imports
@@ -1094,6 +1094,7 @@ def compute_buried_void_volume(
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser(
         description="Compute backbone geometry, shape complementarity, and void metrics"
     )

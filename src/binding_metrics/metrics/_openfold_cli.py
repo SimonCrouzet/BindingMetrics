@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from binding_metrics.utils import configure_logging
+
 
 def _add_parse_args(p, include_chain_args: bool = False) -> None:
     """Add common parse/metrics arguments to a subparser."""
@@ -128,6 +130,7 @@ def _print_metrics(metrics: dict, seed: int, sample: int) -> None:
 
 
 def main():
+    configure_logging()
     from binding_metrics.metrics import openfold as of
 
     parser = argparse.ArgumentParser(

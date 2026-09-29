@@ -22,7 +22,7 @@ from typing import Optional
 import numpy as np
 
 from binding_metrics.metrics.polar_contacts import l_equivalent_residue_names
-from binding_metrics.utils import backfill_auth_columns
+from binding_metrics.utils import backfill_auth_columns, configure_logging
 
 # Formal partial charges assigned to ionisable atoms at pH 7, keyed by L-residue name
 # (D-amino acids are mapped to their L counterpart before the lookup).
@@ -268,6 +268,7 @@ def compute_coulomb_cross_chain(
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser(description="Compute cross-chain Coulomb electrostatic energy")
     parser.add_argument("--input", "-i", type=Path, required=True, help="Input CIF/PDB file")
     parser.add_argument(
