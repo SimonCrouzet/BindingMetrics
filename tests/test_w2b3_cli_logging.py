@@ -253,6 +253,27 @@ class TestLogToFile:
         log.info("after the context")
         assert capsys.readouterr().out == "after the context\n"
 
+    def test_fire_and_forget_redirect_captures_records_too(
+        self, tmp_path, monkeypatch, package_logger, capsys
+    ):
+        """``_apply_log_redirect`` (used by binding-metrics-openfold) swaps the streams for good."""
+        import atexit
+
+        from binding_metrics.cli import _apply_log_redirect
+
+        restore = []
+        monkeypatch.setattr(atexit, "register", restore.append)
+        configure_logging()
+        path = tmp_path / "of.log"
+        _apply_log_redirect(path)
+        try:
+            logging.getLogger("binding_metrics.metrics.openfold").info("scoring started")
+        finally:
+            (undo,) = restore
+            undo()
+        assert path.read_text(encoding="utf-8") == "scoring started\n"
+        assert capsys.readouterr() == ("", "")
+
     def test_a_log_file_opened_in_append_mode_keeps_earlier_records(self, tmp_path, package_logger):
         configure_logging()
         log = logging.getLogger("binding_metrics.cli.batch")
