@@ -65,6 +65,8 @@ from typing import Optional, Union
 
 import numpy as np
 
+from binding_metrics.core.residues import WATER_NAMES_WITH_H2O
+
 logger = logging.getLogger(__name__)
 
 # --- Limits -----------------------------------------------------------------
@@ -107,7 +109,7 @@ BOND_LENGTH_MAX_ANGSTROM = 2.5
 CHIRALITY_MIN_VOLUME_ANGSTROM3 = 0.5
 
 #: Residue names excluded from the heavy-atom checks.
-WATER_NAMES = frozenset({"HOH", "WAT", "H2O"})
+WATER_NAMES = WATER_NAMES_WITH_H2O
 
 #: Rows of the pairwise distance matrix computed at once; bounds memory to
 #: about ``_CHUNK_ROWS * n_atoms * 8`` bytes.

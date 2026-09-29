@@ -47,6 +47,9 @@ OLD_SYSTEM_WATER_NAMES = frozenset({"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"})
 # core.system.get_system_info: local ``ion_names``.
 OLD_SYSTEM_ION_NAMES = frozenset({"NA", "CL", "K", "MG", "CA", "ZN"})
 
+# protocols.qc.WATER_NAMES.
+OLD_QC_WATER_NAMES = frozenset({"HOH", "WAT", "H2O"})
+
 # core.gaff_ncaa.GAFF_SKIP_RESIDUES: standard residues and variants, curated templates,
 # phospho residues, caps, nucleotides, waters and ions.
 OLD_GAFF_SKIP_RESIDUES = frozenset(
@@ -304,3 +307,20 @@ class TestGaffSkipResidues:
         topology.addAtom("N1", app.element.nitrogen, residue)
 
         assert _is_ncaa(residue) is is_ncaa
+
+
+class TestQcWaterNames:
+    def test_qc_water_names_equal_the_old_literal(self):
+        from binding_metrics.protocols import qc
+
+        assert qc.WATER_NAMES == OLD_QC_WATER_NAMES
+        assert residues.WATER_NAMES_WITH_H2O == OLD_QC_WATER_NAMES
+
+    def test_snapshot_marks_hoh_wat_and_h2o_as_water_but_not_sol_or_tip3(self):
+        from binding_metrics.protocols.qc import AtomSnapshot
+
+        topology, positions = _build_topology({"A": ["ALA", "HOH", "WAT", "H2O", "SOL", "TIP3"]})
+
+        snapshot = AtomSnapshot.from_topology(topology, positions)
+
+        assert snapshot.is_water.tolist() == [False, True, True, True, False, False]
