@@ -1486,7 +1486,7 @@ def load_extra_xmls(ff, bond_info_list: list) -> None:
             seen.add(xml_str)
             tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xml")
             try:
-                with os.fdopen(tmp_fd, "w") as fh:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
                     fh.write(xml_str)
                 ff.loadFile(tmp_path)
             finally:

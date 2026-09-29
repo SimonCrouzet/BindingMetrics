@@ -644,7 +644,7 @@ def load_nonstandard_xmls(ff, info: NonstandardInfo) -> None:
     for xml_str in info.extra_ff_xmls:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xml")
         try:
-            with os.fdopen(tmp_fd, "w") as fh:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
                 fh.write(xml_str)
             ff.loadFile(tmp_path)
         finally:

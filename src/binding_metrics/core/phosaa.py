@@ -157,7 +157,7 @@ def build_hydrogen_definitions_xml() -> str:
 
 def _write_temp(xml_string: str, suffix: str) -> str:
     fd, path = tempfile.mkstemp(suffix=suffix)
-    with os.fdopen(fd, "w") as fh:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(xml_string)
     return path
 

@@ -162,7 +162,9 @@ def _delete_zero_coord_atoms(fixer) -> "PDBFixer":
     modeller = Modeller(fixer.topology, fixer.positions)
     modeller.delete([all_atoms[i] for i in atoms_at_origin])
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".cif", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".cif", delete=False, encoding="utf-8"
+    ) as tmp:
         PDBxFile.writeFile(modeller.topology, modeller.positions, tmp)
         tmp_path = tmp.name
     try:
@@ -185,7 +187,9 @@ def _topology_to_fixer(topology, positions) -> "PDBFixer":
         )
     from openmm.app import PDBxFile
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".cif", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".cif", delete=False, encoding="utf-8"
+    ) as tmp:
         PDBxFile.writeFile(topology, positions, tmp)
         tmp_path = tmp.name
     try:
