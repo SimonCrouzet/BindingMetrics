@@ -110,7 +110,7 @@ Hydrogen and deuterium atoms are dropped before the areas are computed (`hydroge
 
 The published values are given per Å² of accessible area (C +16, S +21, neutral N/O −6, O(−) −24, N(+) −50 cal/mol/Å²). ΔG_int is the solvation part of binding, so each value enters with the opposite sign and per Å² of buried area. Hydrogen, phosphorus, selenium and halogens carry no parameter. Charged atoms are those of the salt-bridge list in §3, so D-amino acids count through their L counterpart.
 
-`delta_g_int` is uncalibrated. PISA adds explicit hydrogen-bond and salt-bridge terms, which this package reports as separate keys, and the parameters are not fitted to any data set used here. No threshold or affinity relation has been established for it, so read it as a relative score between designs of one target. On the bundled complexes it is −11.05 (1YCR), −6.11 (1CWA) and −4.97 (3P8F) kcal/mol.
+`delta_g_int` is uncalibrated. PISA adds explicit hydrogen-bond and salt-bridge terms, which this package reports as separate keys, and the parameters are not fitted to any data set used here. No threshold or affinity relation has been established for it, so read it as a relative score between designs of one target. On the deposited files of the bundled complexes (heavy atoms, waters removed) it is −11.05 (1YCR), −6.11 (1CWA) and −4.97 (3P8F) kcal/mol; on their relaxed structures it is −10.50, −6.79 and −5.43 kcal/mol.
 
 ### `compute_delta_sasa_static(cif_path, peptide_chain, receptor_chain, probe_radius=1.4, *, binder_chain=None, target_chain=None, hetero="ignore", hydrogens="ignore")`
 
@@ -318,7 +318,7 @@ binding-metrics-geometry --metric omega --input complex.cif [--binder-chain B]
 
 `compute_shape_complementarity(cif_path, peptide_chain=None, receptor_chain=None, n_dots=150, interface_cutoff=6.0, buried_cutoff=2.4, normal_radius=6.0, weight=0.5, *, binder_chain=None, target_chain=None, hetero="ignore")` — `binding_metrics.metrics.geometry`
 
-A dot-and-normal approximation of the Sc score of Lawrence & Colman (1993). It is not a port of the CCP4 `sc` program, so do not compare its values numerically with `sc` output; compare values computed here with each other.
+A dot-and-normal approximation of the Sc score of Lawrence & Colman (1993). It is not a port of the CCP4 `sc` program, so do not compare its values numerically with `sc` output; compare values computed here with each other. The surface is built from every atom that is present after the `hetero` filter, hydrogens included, so compare complexes with the same protonation state: MDM2-p53 (1YCR) gives 0.632 on the deposited file, 0.628 after relaxation with hydrogens and 0.664 with the hydrogens of the relaxed structure removed.
 
 | key | type | unit | description |
 |-----|------|------|-------------|
