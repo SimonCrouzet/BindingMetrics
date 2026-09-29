@@ -461,9 +461,13 @@ def _interface_pae_stats(
 
     Slices the full PAE (predicted aligned error) matrix to the
     binder×receptor token sub-matrix and returns summary statistics and the
-    raw slice. PAE at token (i, j) is the expected position error of token i
-    when the prediction is aligned on token j; the interface block therefore
-    reports how confidently the binder is placed relative to the receptor.
+    raw slice. PAE at token (i, j) is the expected position error of token j
+    when the prediction is aligned on token i (the row is the alignment frame,
+    the column the scored token, as in AlphaFold's per-alignment sums). The raw
+    binder-rows by receptor-columns slice therefore describes how well the
+    receptor tokens are placed when the structure is aligned on the binder; the
+    mean and maximum are taken over both blocks and do not depend on the
+    orientation.
 
     Args:
         pae: Full PAE matrix, shape ``(n_tokens, n_tokens)``.
