@@ -46,11 +46,11 @@ def _import_scipy():
         from scipy.spatial import cKDTree
 
         return cKDTree, label
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "scipy is required for shape complementarity and void volume metrics. "
             "Install with: pip install binding-metrics[biotite]"
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
