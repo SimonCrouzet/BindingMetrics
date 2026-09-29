@@ -451,9 +451,9 @@ def _update_sample_json(sample_dir: Path, sid: str, of_metrics: dict) -> None:
     if not json_path.exists():
         return
     try:
-        data = json.loads(json_path.read_text())
+        data = json.loads(json_path.read_text(encoding="utf-8"))
         data["openfold"] = of_metrics
-        json_path.write_text(json.dumps(data, indent=2, default=_json_default))
+        json_path.write_text(json.dumps(data, indent=2, default=_json_default), encoding="utf-8")
     except Exception as e:  # noqa: BLE001 - non-critical, the CSV row has the data anyway
         logger.warning("  %s: could not update %s: %s", sid, json_path.name, e)
 
@@ -986,7 +986,7 @@ def main():
 
     import csv
 
-    with open(args.output_csv, "w", newline="") as fh:
+    with open(args.output_csv, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for row in rows:

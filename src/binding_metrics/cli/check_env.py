@@ -93,6 +93,7 @@ def _check_openfold() -> bool:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if result.returncode == 0:
         _ok(
@@ -110,6 +111,7 @@ def _check_openfold() -> bool:
         [conda, "env", "list"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     env_exists = _OPENFOLD_CONDA_ENV in (env_check.stdout + env_check.stderr)
 
@@ -170,6 +172,7 @@ def _check_mdtraj() -> bool:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if result.returncode == 0:
         version = result.stdout.strip()
@@ -214,6 +217,7 @@ def _check_openmm() -> bool:
         [sys.executable, "-m", "openmm.testInstallation"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     output = result.stdout + result.stderr
 
