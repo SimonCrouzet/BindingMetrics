@@ -134,6 +134,7 @@ def compute_delta_sasa_static(
     binder_chain: Optional[str] = None,
     target_chain: Optional[str] = None,
     hetero: Literal["ignore", "keep"] = "ignore",
+    hydrogens: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Compute delta SASA (buried surface area on binding) for a static structure.
 
@@ -161,6 +162,11 @@ def compute_delta_sasa_static(
             dropped. "keep" uses every atom with the chain ID; atoms without
             a defined SASA (water, ions) then count as zero area instead of
             turning the sums into NaN.
+        hydrogens: "ignore" (default) drops hydrogen and deuterium atoms
+            before the areas are computed, so the buried area refers to heavy
+            atoms whatever the protonation of the input (see
+            ``interface.filter_hydrogens``). "keep" includes them in the
+            surface.
 
     Returns:
         Dictionary with keys:
@@ -172,7 +178,11 @@ def compute_delta_sasa_static(
               chain, failed SASA); the areas are then 0.0 for an empty chain
               and NaN for a failed calculation.
     """
-    from binding_metrics.metrics.interface import SASA_POINT_NUMBER, filter_hetero_atoms
+    from binding_metrics.metrics.interface import (
+        SASA_POINT_NUMBER,
+        filter_hetero_atoms,
+        filter_hydrogens,
+    )
 
     peptide_chain = resolve_chain_role(
         "peptide_chain", peptide_chain, "binder_chain", binder_chain, required=True
@@ -185,7 +195,7 @@ def compute_delta_sasa_static(
     from biotite.structure.sasa import sasa as biotite_sasa
 
     atoms = load_structure(cif_path, purpose="static SASA")
-    atoms = filter_hetero_atoms(atoms, hetero)
+    atoms = filter_hydrogens(filter_hetero_atoms(atoms, hetero), hydrogens)
 
     peptide_mask = atoms.chain_id == peptide_chain
     receptor_mask = atoms.chain_id == receptor_chain

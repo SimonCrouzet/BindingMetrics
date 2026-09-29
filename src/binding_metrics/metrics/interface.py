@@ -41,6 +41,10 @@ from binding_metrics.utils import configure_logging
 logger = logging.getLogger(__name__)
 
 _HETERO_MODES = ("ignore", "keep")
+_HYDROGEN_MODES = ("ignore", "keep")
+
+# Hydrogen and its isotope deuterium: the elements that ``hydrogens="ignore"`` drops.
+_HYDROGEN_ELEMENTS = ("H", "D")
 
 # Polymer residues that biotite's CCD-based amino-acid filter does not know are
 # the AMBER/OpenMM protonation variants (AMBER_VARIANTS_OUTSIDE_CCD) and the
@@ -129,6 +133,35 @@ def filter_hetero_atoms(atoms, hetero: Literal["ignore", "keep"] = "ignore"):
     res_names = np.char.upper(np.char.strip(atoms.res_name.astype(str)))
     polymer = _amino_acid_mask(atoms) | np.isin(res_names, list(TERMINAL_CAP_NAMES))
     return atoms[polymer]
+
+
+def filter_hydrogens(atoms, hydrogens: Literal["ignore", "keep"] = "ignore"):
+    """Apply the hydrogen policy of the area-based interface metrics.
+
+    The Eisenberg-McLachlan parameters describe the accessible area of heavy
+    atoms, and PISA computes buried area on heavy atoms. With explicit
+    hydrogens the surface of a carbon or nitrogen is partly taken by its
+    attached H atoms, which carry no parameter, so the area of the
+    parameterised atoms shrinks while the total still counts the H atoms.
+    Dropping them makes the areas independent of how the input was protonated.
+
+    Args:
+        atoms: biotite AtomArray.
+        hydrogens: "ignore" removes every hydrogen and deuterium atom (element
+            H or D). "keep" returns the input unchanged.
+
+    Returns:
+        The AtomArray to take the areas from.
+
+    Raises:
+        ValueError: If ``hydrogens`` is not "ignore" or "keep".
+    """
+    if hydrogens not in _HYDROGEN_MODES:
+        raise ValueError(f"hydrogens must be one of {_HYDROGEN_MODES}, got {hydrogens!r}")
+    if hydrogens == "keep":
+        return atoms
+    elements = np.char.upper(np.char.strip(atoms.element.astype(str)))
+    return atoms[~np.isin(elements, _HYDROGEN_ELEMENTS)]
 
 
 def detect_interface_chains(
@@ -299,6 +332,7 @@ def compute_interface_metrics(
     binder_chain: Optional[str] = None,
     target_chain: Optional[str] = None,
     hetero: Literal["ignore", "keep"] = "ignore",
+    hydrogens: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Compute binding interface metrics for a protein complex.
 
@@ -330,6 +364,14 @@ def compute_interface_metrics(
         binder_chain: Alias of ``design_chain``; different IDs in both raise
             ``ValueError``.
         target_chain: Alias of ``receptor_chain``, same rule.
+        hydrogens: "ignore" (default) drops hydrogen and deuterium atoms
+            before the per-atom areas are computed, so every area, the
+            polar/apolar partition and ΔG_int refer to heavy atoms whatever the
+            protonation of the input (see :func:`filter_hydrogens`). "keep"
+            uses the atoms left by the ``hetero`` filter; the total area then
+            includes the H atoms, which are in neither the polar nor the
+            apolar mask. Hydrogen-bond and salt-bridge counts do not depend on
+            this setting.
 
     Returns:
         Dictionary with keys:
@@ -385,7 +427,7 @@ def compute_interface_metrics(
 
     cif_path = Path(cif_path)
     atoms = load_biotite_structure(cif_path)
-    chain_source = filter_hetero_atoms(atoms, hetero)
+    chain_source = filter_hydrogens(filter_hetero_atoms(atoms, hetero), hydrogens)
 
     if design_chain is None or receptor_chain is None:
         auto_pep, auto_rec = detect_interface_chains(chain_source, design_chain)
@@ -569,6 +611,16 @@ def main():
             "chain ID"
         ),
     )
+    parser.add_argument(
+        "--hydrogens",
+        choices=_HYDROGEN_MODES,
+        default="ignore",
+        help=(
+            "Hydrogens and deuterium: 'ignore' drops them before the areas are computed, so "
+            "areas and ΔG_int refer to heavy atoms whatever the input protonation (default), "
+            "'keep' includes them in the surface"
+        ),
+    )
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(parser)
@@ -585,6 +637,7 @@ def main():
             probe_radius=args.probe_radius,
             interface_threshold=args.threshold,
             hetero=args.hetero,
+            hydrogens=args.hydrogens,
         )
 
         print("\nInterface summary:")
