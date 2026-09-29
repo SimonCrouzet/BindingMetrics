@@ -18,7 +18,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
     `rmsd_design` 6.80 -> 0.00 A. It also reads only the first model of a multi-model file.
   - Relaxation: `rmsd_md_final`, `receptor_rmsd_md_final` and `receptor_drift_mean` use the same routine.
 - **Waters, ions and ligands are dropped by default (#14).** `hetero="ignore"` keeps amino-acid atoms,
-  AMBER protonation variants and ACE/NME/NH2 caps. `hetero="keep"` restores the old inputs.
+  AMBER protonation variants and ACE/NME/NH2 caps. `hetero="keep"` selects every atom of the chain as before;
+  water and ion atoms have no SASA and count as zero area, where they used to make the sum NaN.
   - ΔSASA: 1CWA `delta_sasa` NaN -> 985.4 A^2, 3P8F NaN -> 1508.3 A^2. 1YCR has no waters and is unchanged.
   - H-bonds: 1CWA 6 -> 5 (`hbond_energy` -10.56 -> -8.22 kcal/mol), 3P8F 11 -> 9 (-20.42 -> -16.67).
   - Shape complementarity: `sc` 1CWA 0.722 -> 0.750, 3P8F 0.732 -> 0.738.
@@ -42,8 +43,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - **GAFF bond orders of non-canonical residues (#38).** Bond orders were perceived on a graph without
   hydrogens and came out single. They now come from the wwPDB Chemical Component Dictionary in biotite.
   - 1CWA: MeBmt has 17 hydrogens, not 19, and its CE=CZ bond relaxes to 1.340 A, not 1.544 A (crystal 1.336 A).
-  - 1CWA `raw_interaction_energy` -268.4 -> -280.2 kJ/mol, `relaxed_interaction_energy` -280.9 -> -297.4
-    kJ/mol (`--md-duration-ps 0`).
+  - 1CWA `raw_interaction_energy` -268.4 -> -280.2 kJ/mol, `relaxed_interaction_energy` -280.9 -> -298.6
+    kJ/mol (`--md-duration-ps 0`, seed 1, CUDA).
   - The backbone C=O of 0EH and MK8 (3V3B) was read as C-OH.
   - IAM (1XY4): PDBFixer lists the IAM-THR peptide bond twice, so the capped molecule got two caps on the backbone C
     and IAM fell back to single bonds. A bond that the topology lists twice is capped once, and IAM takes the
@@ -85,16 +86,15 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - **Warnings of `compute_openfold_metrics`** name the line that called it.
 - **Structural QC bond lengths (#44).** The `bond_lengths` check took its bond list from input distances, so
   atoms that PDBFixer had rebuilt inside a clash counted as bonds, and a relaxation that resolved the clash
-  failed the check. Bonds now come from the topology (from the residue templates of the Chemical Component
-  Dictionary for a file) and are measured in the relaxed structure only; bonds already over 2.5 A in the input
-  are named in `detail`. The limits are unchanged.
+  failed the check. Bonds now come from the topology and are measured in the relaxed structure only; the
+  limits are unchanged, and a bond already over 2.5 A in the input is named in `detail`.
   - `bond_lengths` on the example runs: 1QJB fail (3 of 1932 bonds) -> pass; 4KRL_relaxed fail (29 of 2613)
-    -> pass; `qc_passed` False -> True for both. The longest real bonds are 1.82 A (Met C-S) and 2.05 A
-    (disulfide); the old maxima (2.39 A for 1YCR, 2.25 A for 3P8F) were non-bonded pairs.
+    -> pass; `qc_passed` False -> True for both.
+  - The longest real bonds are 1.82 A (Met C-S) and 2.05 A (disulfide); the old maxima (2.39 A for 1YCR,
+    2.25 A for 3P8F) were non-bonded pairs.
 - **The relaxation and the interaction energy use the peptide-receptor pair only (#42).** Every other
-  protein chain is removed after `strip_heterogens`, with a warning that names it; before, it stayed in
-  E_complex but not in the isolated components, and a chain that had lost its caps could not be built. There
-  is no option to keep it: a receptor of several chains has to be reduced to one before it goes in.
+  protein chain is removed after `strip_heterogens`, with a warning that names it. Before, it stayed in
+  E_complex but not in the isolated components, and a chain that had lost its caps could not be built.
   - 1QJB (peptide Q, receptor A; chains B and S removed): `relaxed_interaction_energy` -41065.6 -> -546.0
     kJ/mol and `potential_energy_minimized` -80432.4 -> -39984.3 kJ/mol (`--md-duration-ps 0`). The .cif and
     the .pdb file agree to all digits.
@@ -108,8 +108,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
   - 1QJB.pdb prepped: chains A B C D -> A B Q S. The relaxed CIF of a PDB input carries the input's chain
     IDs and residue numbers, no longer the letters A, B, ... and 1, 2, ....
   - `peptide_chain_label` of `detect_chains_from_file` is the chain ID OpenMM gives the file: the label ID
-    only when the file has more label IDs than author IDs. A file with swapped label and author letters and no
-    water (the protein-only 4KRL) returned the other chain.
+    only when the file has more label IDs than author IDs. A protein-only mmCIF whose label and author
+    letters are swapped (4KRL without waters and ligands) returned the other chain.
 - **Raw mmCIF with different label and author numbering (#40).** OpenMM matches the `_struct_conn` rows
   by label numbering and the atoms by author numbering, so a covalent link was dropped, and a residue
   such as phosphoserine loaded without any bond. 1QJB.cif: HIS6 C to SEP7 N absent -> present, and SEP
@@ -118,8 +118,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - **Peptide bonds next to a non-standard residue (#43).** `patch_cyclic_topology` rebuilds the bonds of a
   residue that OpenMM loaded without any, and the peptide bonds beside it, in every protein chain, the
   receptor included. 6SBA as a PDB file without CONECT records for P1L (S-palmitoyl-cysteine): "No template
-  found for residue 144 (LEU)" -> minimised -32300.7 kJ/mol, as from the mmCIF. P1L is parameterised by
-  the GAFF2 route, so the run takes 4.5 minutes instead of failing.
+  found for residue 144 (LEU)" -> minimised -32300.7 kJ/mol, as from the mmCIF. P1L goes through the
+  GAFF2 route, whose charge calculation runs at every system build and takes minutes.
 - **`CYM` is a standard residue (#34).** A deprotonated cysteine was listed under `kept_nonstandard`, and the
   GAFF2 route and the heterogen scan of the relaxation treated it as a new residue. 1YCR with one CYS renamed
   CYM: `kept_nonstandard` `['CYM (chain A)']` -> `[]`.
@@ -146,16 +146,19 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - `results["prep"]` reports `removed_heterogens`, `n_removed_waters`, `kept_nonstandard`,
   `n_missing_atoms_rebuilt` and `n_missing_residue_gaps` (#28).
 - `results["prep"]["chain_breaks"]` lists the consecutive residues of a chain whose C and N atoms are more
-  than 2.0 A apart (`chain`, `residue_before`, `residue_after`, `c_n_distance_angstrom`), and prep and
-  relaxation log a warning. OpenMM bonds the two residues by name and the relaxation closes the gap; nothing
-  else changes. 1QJB chain A, residues 68 and 73: 7.45 A. In 5WGD the relaxation inverted the C-alpha of
-  residue A:460, next to a gap of 11.4 A, and the structural QC `chirality` check flags it (#45).
+  than 2.0 A apart, and prep and relaxation log a warning. OpenMM bonds the two residues by name and the
+  relaxation closes the gap; nothing else changes (#45).
+  - 1QJB chain A, residues 68 and 73: 7.45 A. In 5WGD the relaxation inverted the C-alpha of residue A:460,
+    next to a gap of 11.4 A, and the structural QC `chirality` check flags it.
 - `results["relax"]["dropped_protein_chains"]` and `RelaxationResult.dropped_protein_chains`: the protein
   chains removed because they are neither the peptide nor the receptor (#42).
 - `find_chain_breaks`, `drop_other_protein_chains` and `reconstruct_nonstandard_residue_bonds`, and the
   keyword-only `residues` argument of `reconstruct_intraresidue_bonds`.
 - `ncaa_bond_order_source`, `{residue: "ccd" or "single_bonds"}`, in `results["prep"]` and
   `results["relax"]` (#38).
+- `parameterize_ncaa_residues` warns for each residue with an acid, phosphate, sulfate, primary amine or
+  guanidine group, which the GAFF2 route builds neutral. Its third return value is a `NcaaTemplateList`, a
+  list with `net_charge_by_residue`, `neutral_ionizable_groups` and `bond_order_source_by_residue` (#28, #38).
 - Structural QC of the relaxed structure: `qc_passed`, `qc_failed_checks` and `qc_checks` in
   `results["relax"]`, and a warning line when a check fails (#26).
 - `platform`, `precision` and `platform_fallback_reason` in `results["relax"]` (#27).
@@ -178,6 +181,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - `binding_metrics.utils.configure_logging` for entry points and scripts (#22).
 - `environment.lock.yml` (exact versions of the development environment), a pre-commit configuration
   with ruff pinned to the CI version, and monthly Dependabot updates of the GitHub Actions (#36).
+- A CI job that runs the static metrics with OpenMM blocked, and a `ruff` configuration that also
+  enforces flake8-bugbear and the blind-except rule (`B905` stays off) (#21, #36).
 
 ### Changed
 
@@ -194,6 +199,9 @@ Values from earlier versions differ in the cases below. A change reads "before -
   sets live in `core/residues.py`. Public names and import paths are unchanged (#34).
 - The `report` and `all` extras no longer list matplotlib, which nothing imports. The `openfold` extra
   installs `openfold3` (it named a distribution `openfold`), and `openfold3` is an alias (#36).
+- Broad `except Exception` blocks catch the errors they expect, or say in a comment why they stay
+  broad. Those that passed silently log a warning or debug record. `compute_hbonds`, the platform probe
+  of `MDSimulation` and the scorecard of the report no longer hide an unexpected error (#25).
 
 ### Fixed
 
@@ -205,6 +213,9 @@ Values from earlier versions differ in the cases below. A change reads "before -
   and two failed `addHydrogens` attempts raise `RuntimeError` (#27).
 - A failed minimisation no longer leaves the backbone restraint in the system, where its energy was
   added to a later `after_md` evaluation (#27).
+- `compute_interaction_energy` lists each failed mode in `error_message` as `"<mode>: <reason>"`; it stayed
+  None when `success` was False (#25). Without OpenMM it names the `simulation` extra (#21).
+- The help of `binding-metrics-batch --metrics` lists `dockq`, which the option already accepted (#30).
 - `--small-molecules` accepts `auto` or `none`. A typo used to register each character as a SMILES (#27).
 - Without gemmi, `save_cif` logs a warning and `extract_model_to_tempfile` raises `ImportError` for a CIF;
   both used to degrade without a message (#28).
