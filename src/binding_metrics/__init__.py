@@ -26,8 +26,8 @@ _EXTRA_FOR_DEPENDENCY = {
     "scipy": "static",
     "DockQ": "dockq",
     "openfold": "openfold",
+    "openfold3": "openfold",
     "pandas": "report",
-    "matplotlib": "report",
     "markdown": "report",
 }
 # No pip requirement exists for these; environment.yml provides them.
