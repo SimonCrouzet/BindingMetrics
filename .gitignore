@@ -225,6 +225,7 @@ temp/
 structures/
 # Manuscript / paper working files (audit, preprint, validation) - not published
 manuscripts/
+notes/
 
 # Client / private target data - must never be published (IP hygiene)
 MC1R*
@@ -235,3 +236,27 @@ archive/
 results/
 compiled_cache.db
 *design_spec*
+
+# Internal notes, scratch and temporary files: local only, never published.
+# (notes/ and manuscripts/ are listed above; the rest is generic litter.)
+tmp/
+scratch/
+runs/
+outputs/
+*.tmp
+*.bak
+*.orig
+*.rej
+*.swp
+*~
+nohup.out
+*.tgz
+*.tar.gz
+/TODO*.md
+/NOTES*.md
+.idea/
+.DS_Store
+
+# Empty local placeholder scripts (never used by the repo or CI).
+/test.sh
+/docker/test.sh
