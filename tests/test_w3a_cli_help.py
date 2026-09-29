@@ -450,9 +450,10 @@ GOLDEN = {
                 None,
                 False,
                 "['electrostatics', 'energy', 'geometry', 'interface', 'openfold']",
-                "Comma-separated list of metrics to compute. Valid: "
+                "Comma-separated list of metrics to compute. Valid: dockq, "
                 "electrostatics, energy, geometry, interface, openfold. "
-                "Default: all.",
+                "Default: all reference-free metrics; 'dockq' is enabled by "
+                "--reference-dir.",
             ),
             "--energy-modes": (
                 "Metrics",

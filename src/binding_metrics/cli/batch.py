@@ -63,6 +63,7 @@ from binding_metrics._constants import (
 from binding_metrics.cli import add_openfold_seeds_arg, add_random_seed_arg
 from binding_metrics.cli.run import (
     ALL_METRICS,
+    KNOWN_METRICS,
     _collect_failures,
     _merge_reason,
     _parse_metrics,
@@ -537,8 +538,8 @@ def main():
         metavar="METRICS",
         help=(
             "Comma-separated list of metrics to compute. "
-            f"Valid: {', '.join(sorted(ALL_METRICS))}. "
-            "Default: all."
+            f"Valid: {', '.join(sorted(KNOWN_METRICS))}. "
+            "Default: all reference-free metrics; 'dockq' is enabled by --reference-dir."
         ),
     )
     metrics_group.add_argument(
