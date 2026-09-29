@@ -491,6 +491,157 @@ class TestTokenOffsetCheck:
 
 
 # ---------------------------------------------------------------------------
+# Tests: reason strings for values that could not be computed
+# ---------------------------------------------------------------------------
+
+
+def _write_dimer_run(tmp_path, n_plddt=7, pde_tokens=7, pae_tokens=7, structure=True):
+    """Run directory for chains A (4 residues) and B (3 residues), one atom per residue.
+
+    ``pde_tokens`` / ``pae_tokens`` of None leave the matrix out of the confidences file.
+    """
+    pdbx = pytest.importorskip("biotite.structure.io.pdbx")
+    atoms = _protein_ligand_atoms()
+    atoms = atoms[atoms.chain_id != "L"]
+    conf = {"plddt": np.full(n_plddt, 90.0), "gpde": 1.0}
+    if pde_tokens is not None:
+        conf["pde"] = np.full((pde_tokens, pde_tokens), 2.0)
+    if pae_tokens is not None:
+        conf["pae"] = np.full((pae_tokens, pae_tokens), 3.0)
+    root = _make_seed_dir(tmp_path, "dim", agg=_default_agg(n_chains=2), conf=conf)
+    model = root / "dim" / "seed_1" / "dim_seed_1_sample_1_model.cif"
+    if structure:
+        cif = pdbx.CIFFile()
+        pdbx.set_structure(cif, atoms)
+        cif.write(str(model))
+    else:
+        model.unlink()
+    return root
+
+
+class TestFailureReasons:
+    def test_complete_run_has_no_reason(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = _write_dimer_run(tmp_path)
+        metrics = compute_openfold_metrics(root, "dim", binder_chain="B", receptor_chain="A")
+        assert "reason" not in metrics
+        assert metrics["mean_interface_pde"] == pytest.approx(2.0)
+
+    def test_missing_output_directory(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        metrics = compute_openfold_metrics(tmp_path / "nowhere", "q")
+        assert "no confidence files found for query 'q'" in metrics["reason"]
+
+    def test_missing_aggregated_file(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        _make_seed_dir(tmp_path, "q", agg=None, conf=_default_conf())
+        assert compute_openfold_metrics(tmp_path, "q")["reason"] == (
+            "aggregated confidences file not found"
+        )
+
+    def test_missing_per_atom_file(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        _make_seed_dir(tmp_path, "q", agg=_default_agg(), conf=None)
+        assert compute_openfold_metrics(tmp_path, "q")["reason"] == (
+            "per-atom confidences file not found"
+        )
+
+    def test_missing_structure_when_a_binder_chain_is_requested(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = _write_dimer_run(tmp_path, structure=False)
+        metrics = compute_openfold_metrics(root, "dim", binder_chain="B", receptor_chain="A")
+        assert "structure file not found" in metrics["reason"]
+        assert np.isnan(metrics["binder_avg_plddt"])
+
+    def test_missing_matrices(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = _write_dimer_run(tmp_path, pde_tokens=None, pae_tokens=None)
+        metrics = compute_openfold_metrics(root, "dim", binder_chain="B", receptor_chain="A")
+        assert "interface PDE: no PDE matrix" in metrics["reason"]
+        assert "interface PAE: no PAE matrix" in metrics["reason"]
+        assert metrics["binder_avg_plddt"] == pytest.approx(90.0)
+
+    def test_plddt_that_does_not_match_the_atom_count(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = _write_dimer_run(tmp_path, n_plddt=10)
+        with pytest.warns(UserWarning, match="binder pLDDT skipped"):
+            metrics = compute_openfold_metrics(root, "dim", binder_chain="B", receptor_chain="A")
+        assert "binder pLDDT: plddt_per_atom length (10)" in metrics["reason"]
+        assert np.isnan(metrics["binder_avg_plddt"])
+        # the interface blocks do not depend on the pLDDT array
+        assert metrics["mean_interface_pde"] == pytest.approx(2.0)
+
+    def test_reference_with_a_different_binder_length(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        pdbx = pytest.importorskip("biotite.structure.io.pdbx")
+        atoms = _protein_ligand_atoms()
+        reference = atoms[(atoms.chain_id == "A") | ((atoms.chain_id == "B") & (atoms.res_id < 3))]
+        ref_cif = pdbx.CIFFile()
+        pdbx.set_structure(ref_cif, reference)
+        ref_path = tmp_path / "ref.cif"
+        ref_cif.write(str(ref_path))
+
+        root = _write_dimer_run(tmp_path / "run")
+        with pytest.warns(UserWarning, match="binder RMSD skipped"):
+            metrics = compute_openfold_metrics(
+                root,
+                "dim",
+                binder_chain="B",
+                receptor_chain="A",
+                reference_structure_path=ref_path,
+            )
+        assert "binder RMSD: Binder Cα count mismatch" in metrics["reason"]
+        assert np.isnan(metrics["binder_ca_rmsd"])
+
+    def test_missing_reference_file(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = _write_dimer_run(tmp_path)
+        with pytest.warns(UserWarning, match="binder RMSD skipped"):
+            metrics = compute_openfold_metrics(
+                root,
+                "dim",
+                binder_chain="B",
+                reference_structure_path=tmp_path / "absent.cif",
+            )
+        assert metrics["reason"].startswith("binder RMSD:")
+
+    def test_unparseable_structure_is_recorded(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = _make_seed_dir(tmp_path, "bad", agg=_default_agg(), conf=_default_conf())
+        # the stub written by _make_seed_dir is not a CIF a parser can read
+        with pytest.warns(UserWarning, match="structural analysis failed"):
+            metrics = compute_openfold_metrics(root, "bad", binder_chain="B", receptor_chain="A")
+        assert metrics["reason"].startswith("structural analysis failed:")
+        assert metrics["avg_plddt"] == pytest.approx(87.5)  # scalar metrics survive
+
+    def test_unexpected_errors_are_reported_by_the_outer_guard_not_swallowed_silently(
+        self, tmp_path, monkeypatch
+    ):
+        from binding_metrics.metrics import openfold
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(openfold, "_binder_plddt_per_residue", _boom)
+        root = _write_dimer_run(tmp_path)
+        with pytest.warns(UserWarning, match="structural analysis failed"):
+            metrics = openfold.compute_openfold_metrics(
+                root, "dim", binder_chain="B", receptor_chain="A"
+            )
+        assert "RuntimeError: boom" in metrics["reason"]
+
+
+# ---------------------------------------------------------------------------
 # Tests: seeds in the query JSON and the seed index
 # ---------------------------------------------------------------------------
 

@@ -22,6 +22,11 @@ Output files per prediction (seed S, sample M):
 References:
   Ahdritz et al. (2024) OpenFold3: An open-source, trainable implementation
   of AlphaFold3. GitHub: github.com/aqlaboratory/openfold-3
+  Abramson et al. (2024) Accurate structure prediction of biomolecular
+  interactions with AlphaFold 3. Nature 630:493-500. Defines the outputs parsed
+  here (pLDDT, PAE, PDE, pTM, ipTM) and the tokenisation that the interface
+  PDE/PAE slicing relies on: one token per standard residue, one per heavy atom
+  for ligands and modified residues.
 
 Usage (Python API):
     from binding_metrics import compute_openfold_metrics
@@ -669,8 +674,12 @@ def compute_openfold_metrics(
             timing (dict): runtime entries from timing.json, empty if absent
 
         Failures:
-            reason (str): present only when a requested value could not be
-                computed (it stays NaN); names the analysis and the cause.
+            reason (str): present only when a value could not be computed (it
+                keeps its NaN or None sentinel). Names each affected analysis
+                and its cause, separated by "; ": missing output files, a
+                missing model structure, a pLDDT or PDE/PAE array that does not
+                fit the structure, a binder RMSD mismatch, or a structure that
+                could not be parsed.
     """
     if seed_index is not None:
         seed = seed_index
@@ -717,6 +726,16 @@ def compute_openfold_metrics(
         "timing": {},
     }
 
+    if files["confidences_aggregated"] is None and files["confidences"] is None:
+        reasons.append(
+            f"no confidence files found for query '{query_name}' "
+            f"(seed index {seed}, sample {sample}) in {output_dir}"
+        )
+    elif files["confidences_aggregated"] is None:
+        reasons.append("aggregated confidences file not found")
+    elif files["confidences"] is None:
+        reasons.append("per-atom confidences file not found")
+
     # --- Aggregated confidence (scalar metrics) ---
     if files["confidences_aggregated"] is not None:
         agg = _parse_confidences_aggregated(files["confidences_aggregated"])
@@ -751,6 +770,8 @@ def compute_openfold_metrics(
 
     # --- Per-chain structural analysis ---
     # Requires binder_chain; uses the predicted model CIF.
+    if binder_chain is not None and files["structure"] is None:
+        reasons.append("structure file not found; per-chain values not computed")
     if binder_chain is not None and files["structure"] is not None:
         try:
             pred_atoms = _load_atoms(files["structure"])
@@ -765,10 +786,13 @@ def compute_openfold_metrics(
                     result["binder_avg_plddt"] = (
                         float(per_res.mean()) if per_res.size > 0 else float("nan")
                     )
-                except Exception as exc:
+                except ValueError as exc:  # pLDDT length differs from the atom count
                     warnings.warn(
                         f"compute_openfold_metrics: per-residue binder pLDDT skipped: {exc}"
                     )
+                    reasons.append(f"binder pLDDT: {exc}")
+            elif files["confidences"] is not None:
+                reasons.append("binder pLDDT: no per-atom pLDDT in the confidences file")
 
             # Interface PDE statistics (binder × receptor token block)
             if receptor_chain is not None:
@@ -785,9 +809,11 @@ def compute_openfold_metrics(
                         result["max_interface_pde"] = pde_stats["max_interface_pde"]
                         if include_matrices:
                             result["pde_interface"] = pde_stats["pde_interface"]
-                    except Exception as exc:
+                    except ValueError as exc:  # missing chain or token/residue mismatch
                         warnings.warn(f"compute_openfold_metrics: interface PDE skipped: {exc}")
                         reasons.append(f"interface PDE: {exc}")
+                elif files["confidences"] is not None:
+                    reasons.append("interface PDE: no PDE matrix in the confidences file")
 
                 # Interface PAE statistics (binder × receptor token block)
                 pae_src = result.get("pae")
@@ -802,9 +828,11 @@ def compute_openfold_metrics(
                         result["max_interface_pae"] = pae_stats["max_interface_pae"]
                         if include_matrices:
                             result["pae_interface"] = pae_stats["pae_interface"]
-                    except Exception as exc:
+                    except ValueError as exc:  # missing chain or token/residue mismatch
                         warnings.warn(f"compute_openfold_metrics: interface PAE skipped: {exc}")
                         reasons.append(f"interface PAE: {exc}")
+                elif files["confidences"] is not None:
+                    reasons.append("interface PAE: no PAE matrix in the confidences file")
 
             # Binder Cα RMSD vs. reference structure
             if reference_structure_path is not None:
@@ -813,11 +841,15 @@ def compute_openfold_metrics(
                     result["binder_ca_rmsd"] = _binder_ca_rmsd(
                         pred_atoms, ref_atoms, binder_chain, receptor_chain
                     )
-                except Exception as exc:
+                except (ValueError, OSError) as exc:  # Cα count mismatch or unreadable file
                     warnings.warn(f"compute_openfold_metrics: binder RMSD skipped: {exc}")
+                    reasons.append(f"binder RMSD: {exc}")
 
         except Exception as exc:
+            # Broad on purpose: the model file is external input and structure parsers
+            # raise several exception types. Values computed so far are kept.
             warnings.warn(f"compute_openfold_metrics: structural analysis failed: {exc}")
+            reasons.append(f"structural analysis failed: {type(exc).__name__}: {exc}")
 
     if reasons:
         result["reason"] = "; ".join(reasons)
