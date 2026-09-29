@@ -288,11 +288,12 @@ class TestComputeStructureRmsd:
         """Exercise the len(coords1) != len(coords2) atom-matching branch.
 
         ``test_same_structure_zero_rmsd`` compares a file to itself, so atom counts
-        are equal and the fast direct-Kabsch path is taken — the atom-matching
-        branch (match on (chain,res,atom) when counts differ) is never covered by
-        any test. Comparing raw 1YCR to its prepped variant (hydrogens added →
-        different atom count) drives that branch on real data and must return
-        finite, non-None RMSDs rather than erroring or silently yielding None.
+        are equal and the fast direct-Kabsch path is taken. ``TestMatchedRmsd``
+        covers the atom-matching branch (match on (chain,res,atom) when counts
+        differ) on synthetic arrays only. Comparing raw 1YCR to its prepped
+        variant (hydrogens added → different atom count) drives that branch on
+        real data and must return finite, non-None RMSDs rather than erroring or
+        silently yielding None.
         """
         if not EXAMPLE_CIF.exists():
             pytest.skip("Test CIF not available")

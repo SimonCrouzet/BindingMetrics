@@ -1,4 +1,4 @@
-"""Failed energy modes are reported in ``error_message`` instead of only printed.
+"""Failed energy modes are recorded in ``error_message`` instead of only being logged.
 
 The OpenMM simulation is replaced by a stub so each failure can be injected at a
 chosen step (minimisation, MD, subsystem evaluation) without a GPU or a

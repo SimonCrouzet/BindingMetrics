@@ -63,7 +63,7 @@ def test_module_imports_without_openmm(blocked_import_run):
 
 
 def test_fallback_seed_matches_core_system(blocked_import_run):
-    """Without OpenMM the module uses a copy of the seed default; it must not drift."""
+    """Without OpenMM the module has the seed default that ``core.system`` re-exports."""
     pytest.importorskip("openmm")
     from binding_metrics.core.system import DEFAULT_RANDOM_SEED
 

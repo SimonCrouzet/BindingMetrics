@@ -1,8 +1,9 @@
-"""Exception handling in the metrics modules: chained causes, narrowed catches, warnings.
+"""Exception handling in the metrics modules: chained causes, deliberate broad catches, warnings.
 
 The metrics behave as before; these tests pin what a caller can observe when an optional
 dependency is missing or a step fails: the raised error names the original one as its
-cause, and a failure that is caught on purpose leaves a record.
+cause, and a failure that is caught on purpose (per-structure or per-mode isolation)
+leaves a record whatever the exception type.
 """
 
 import importlib
