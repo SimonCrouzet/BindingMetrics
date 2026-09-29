@@ -1,8 +1,59 @@
 """Shared utility helpers (no heavy top-level imports)."""
 
 import logging
+import sys
 
 logger = logging.getLogger(__name__)
+
+_PACKAGE_LOGGER = "binding_metrics"
+
+
+class _CurrentStreamHandler(logging.StreamHandler):
+    """Stream handler that writes to whatever ``sys.<stream_name>`` is at emit time.
+
+    ``cli.log_to_file`` replaces ``sys.stdout`` and ``sys.stderr`` for the duration
+    of a run; a handler that kept the stream it was created with would keep
+    writing to the console after that swap.
+    """
+
+    def __init__(self, stream_name: str, level: int = logging.NOTSET):
+        self._stream_name = stream_name
+        super().__init__()
+        self.setLevel(level)
+
+    @property
+    def stream(self):
+        return getattr(sys, self._stream_name)
+
+    @stream.setter
+    def stream(self, value) -> None:
+        # StreamHandler.__init__ assigns a stream; the live sys attribute wins.
+        pass
+
+
+def configure_logging(level: int = logging.INFO) -> None:
+    """Send ``binding_metrics`` log records to the console, once, from a CLI entry point.
+
+    Library code logs through ``logging.getLogger(__name__)`` and never prints;
+    a command-line ``main()`` calls this first so those records keep appearing
+    exactly where the former ``print`` calls put them: records up to WARNING on
+    stdout, ERROR and above on stderr, with the bare message and no prefix.
+    Calling it again only updates the level, so nested entry points are safe.
+
+    Args:
+        level: Threshold for the package logger (default INFO).
+    """
+    package_logger = logging.getLogger(_PACKAGE_LOGGER)
+    package_logger.setLevel(level)
+    if any(isinstance(h, _CurrentStreamHandler) for h in package_logger.handlers):
+        return
+    formatter = logging.Formatter("%(message)s")
+    to_stdout = _CurrentStreamHandler("stdout")
+    to_stdout.addFilter(lambda record: record.levelno < logging.ERROR)
+    to_stderr = _CurrentStreamHandler("stderr", level=logging.ERROR)
+    for handler in (to_stdout, to_stderr):
+        handler.setFormatter(formatter)
+        package_logger.addHandler(handler)
 
 
 def extend_report(report: dict, key: str, values: list) -> None:
