@@ -3,6 +3,18 @@
 Both metrics return a small dict containing an energy estimate (kcal/mol,
 primary signal) plus interpretable count(s) (supplementary). See
 ``docs/metrics.md`` for the full description and rationale.
+
+The energies are heuristic scores built for ranking designs: their functional
+forms and constants are not fitted to measured energies, so they should not be
+compared with force-field or experimental free energies.
+
+References:
+    Baker & Hubbard, Prog. Biophys. Mol. Biol. 44:97-179 (1984): geometric
+        hydrogen-bond criterion.
+    Barlow & Thornton, J. Mol. Biol. 168:867-885 (1983): ion pairs in proteins,
+        with a 4 Å heavy-atom criterion.
+    Krissinel & Henrick, J. Mol. Biol. 372:774-797 (2007): interior dielectric
+        constant of about 4 for macromolecular electrostatics.
 """
 
 import warnings
@@ -11,15 +23,16 @@ from typing import Literal, Optional
 
 import numpy as np
 
-# Coulomb constant in kcal/mol when distance is in Å and charges in e
+# e²/(4π ε0) in kcal·Å/(mol·e²)
 _COULOMB_K = 332.0637133
 
-# Effective interior dielectric used by the salt-bridge energy.
-# Matches ``compute_coulomb_cross_chain`` so the two metrics are comparable.
+# Effective interior dielectric (Krissinel & Henrick 2007). Matches
+# ``compute_coulomb_cross_chain`` so the two metrics are comparable.
 _DIELECTRIC = 4.0
 
-# H-bond energy scale: chosen so an ideal H-bond (d_HA = 2.0 Å, θ_DHA = 180°)
-# evaluates to ~ -2.5 kcal/mol — the conventional protein H-bond strength.
+# Package-chosen scale, not a fitted constant: an ideal H-bond (d_HA = 2.0 Å,
+# θ_DHA = 180°) evaluates to -2.5 kcal/mol, in the range usually quoted for a
+# protein H-bond.
 _HBOND_K = 5.0
 
 
@@ -123,9 +136,10 @@ def compute_hbonds(
 ) -> dict:
     """Detect cross-chain hydrogen bonds and score them.
 
-    Uses biotite's Baker-Hubbard detector (default: H-acceptor distance ≤ 2.5 Å,
-    D-H···A angle ≥ 120°). If the input has no explicit hydrogens, hydride is
-    used to add them after building a BondList.
+    Uses biotite's Baker-Hubbard detector (Baker & Hubbard 1984; biotite
+    defaults: H-acceptor distance ≤ 2.5 Å, D-H···A angle ≥ 120°). If the input
+    has no explicit hydrogens, hydride is used to add them after building a
+    BondList.
 
     Triplets returned by biotite are deduplicated to unique cross-chain
     ``(donor_heavy, acceptor_heavy)`` pairs so that e.g. ARG NH1's two
@@ -136,6 +150,13 @@ def compute_hbonds(
 
         E = -k_hb * cos²(180° - θ_DHA) / d_HA
         k_hb = 5.0 kcal·Å/mol  (ideal d=2.0, θ=180° → -2.5 kcal/mol)
+
+    This form is a heuristic score (bent contacts are down-weighted smoothly
+    and short contacts count more), not a published H-bond potential.
+
+    If ``atoms`` has no BondList or charge annotation and ``hetero="keep"``,
+    both are added to the caller's array in place; ``hetero="ignore"`` works
+    on a filtered copy and leaves it untouched.
 
     Parameters
     ----------
@@ -189,7 +210,6 @@ def compute_hbonds(
 
     d_HA = np.linalg.norm(coords[h_idx] - coords[a_idx], axis=-1)
 
-    # Dedupe: keep the shortest-distance triplet per unique (donor_heavy, acceptor_heavy) pair.
     best: dict[tuple[int, int], int] = {}
     for k, (di, ai) in enumerate(zip(d_idx, a_idx)):
         key = (int(di), int(ai))
@@ -282,7 +302,9 @@ def compute_saltbridges(
 
     A cross-chain residue pair (one positive side chain, one negative side
     chain) is considered a salt bridge if at least one positive-atom /
-    negative-atom contact falls in ``(distance_min, distance_max)`` Å.
+    negative-atom contact falls in ``(distance_min, distance_max)`` Å. The
+    upper bound of 5.5 Å is a permissive choice of this package; the usual
+    heavy-atom criterion for an ion pair is 4 Å (Barlow & Thornton 1983).
 
     Charged-atom allowlist (D-amino acids are matched through their L
     counterpart, e.g. DLY as LYS):
@@ -302,7 +324,9 @@ def compute_saltbridges(
                = -83.02 / r_min  kcal/mol  (unit charges)
 
     A bidentate bridge naturally scores stronger because r_min is the
-    shorter of the two contacts.
+    shorter of the two contacts. Like the H-bond energy, this is a
+    heuristic ranking score: unit charges, one uniform dielectric, no
+    screening by solvent or ions.
 
     Parameters
     ----------
@@ -355,7 +379,6 @@ def compute_saltbridges(
     if not np.any(valid):
         return empty
 
-    # Aggregate atom-pair contacts to residue-pair level.
     pos_res_keys = list(
         zip(
             pos_atoms.chain_id.tolist(),
@@ -371,9 +394,7 @@ def compute_saltbridges(
         )
     )
 
-    # For each (pos_res, neg_res) that has any qualifying contact:
-    #   r_min = closest qualifying atom-pair distance
-    #   n_contacts = number of qualifying atom-pair contacts
+    # r_min feeds the energy; the contact count decides bidentate.
     pair_rmin: dict[tuple, float] = {}
     pair_count: dict[tuple, int] = {}
 
@@ -389,7 +410,6 @@ def compute_saltbridges(
     n_pairs = len(pair_rmin)
     n_bidentate = sum(1 for c in pair_count.values() if c >= 2)
 
-    # E_pair = q_pos * q_neg * COULOMB_K / (eps * r_min); unit charges of opposite sign.
     energy = -_COULOMB_K / _DIELECTRIC * sum(1.0 / r for r in pair_rmin.values())
 
     return {
