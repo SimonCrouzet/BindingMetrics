@@ -12,6 +12,13 @@ Usage:
         --workers 4 \\
         [all the same options as binding-metrics-run]
 
+Sample status (CSV column ``batch_status``)
+-------------------------------------------
+``ok`` (all steps completed), ``partial`` (the pipeline finished but a step
+failed; see ``batch_failed_steps`` and ``batch_failed_reasons``) or ``error``
+(the worker raised; see ``batch_error``). The exit code is non-zero only when
+no sample has status ``ok``.
+
 Concurrency model (--workers > 1)
 ----------------------------------
 Workers are OS processes (ProcessPoolExecutor), not threads. This means:
@@ -43,7 +50,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
-from binding_metrics.cli.run import ALL_METRICS, _parse_metrics, run_pipeline
+from binding_metrics.cli.run import ALL_METRICS, _collect_failures, _parse_metrics, run_pipeline
 
 _STRUCTURE_SUFFIXES = {".cif", ".pdb", ".mmcif"}
 
@@ -95,7 +102,17 @@ def _run_one(
     log_file: Optional[Path],
     reference_path: Optional[Path] = None,
 ) -> dict:
-    """Run the pipeline for a single structure and return a flat results dict."""
+    """Run the pipeline for a single structure and return a flat results dict.
+
+    The row carries ``batch_status``:
+
+    * ``"ok"``: every requested step completed.
+    * ``"partial"``: the pipeline finished but at least one step reported an
+      error or ``success=False`` (same rule as ``binding-metrics-run``). The
+      step names go to ``batch_failed_steps`` (``;``-joined) and
+      ``step: reason`` pairs to ``batch_failed_reasons`` (``|``-joined).
+    * ``"error"``: the worker itself raised; the cause is in ``batch_error``.
+    """
     from binding_metrics.cli import log_to_file
     from binding_metrics.protocols.report import _flatten, write_report
 
@@ -148,9 +165,16 @@ def _run_one(
         results["batch_error"] = error_msg
 
     flat = _flatten(results)
-    flat["batch_status"] = "error" if error_msg else "ok"
+    failures = [] if error_msg else _collect_failures(results)
     if error_msg:
+        flat["batch_status"] = "error"
         flat["batch_error"] = error_msg
+    elif failures:
+        flat["batch_status"] = "partial"
+        flat["batch_failed_steps"] = ";".join(step for step, _ in failures)
+        flat["batch_failed_reasons"] = " | ".join(f"{step}: {why}" for step, why in failures)
+    else:
+        flat["batch_status"] = "ok"
     return flat
 
 
@@ -562,6 +586,7 @@ def main():
     # Map sample_id → input_path for the batched OF3 call later
     sid_to_input: dict[str, Path] = {}
     n_ok = 0
+    n_partial = 0  # finished, but at least one pipeline step failed
     n_err = 0
 
     if args.workers == 1:
@@ -579,6 +604,9 @@ def main():
             if status == "ok":
                 n_ok += 1
                 print(f"  -> ok  ({flat.get('total_elapsed_s', '?')}s)", flush=True)
+            elif status == "partial":
+                n_partial += 1
+                print(f"  -> PARTIAL: failed steps: {flat.get('batch_failed_steps')}", flush=True)
             else:
                 n_err += 1
                 print(f"  -> ERROR: {flat.get('batch_error', '?')}", flush=True)
@@ -614,6 +642,13 @@ def main():
                         print(
                             f"[{done}/{len(input_files)}] {sid} -> ok "
                             f"({flat.get('total_elapsed_s', '?')}s)",
+                            flush=True,
+                        )
+                    elif status == "partial":
+                        n_partial += 1
+                        print(
+                            f"[{done}/{len(input_files)}] {sid} -> PARTIAL: "
+                            f"failed steps: {flat.get('batch_failed_steps')}",
                             flush=True,
                         )
                     else:
@@ -666,11 +701,14 @@ def main():
 
     elapsed = round(time.time() - t_batch_start, 1)
     print(f"\n{'#' * 60}")
-    print(f"  DONE in {elapsed}s — {n_ok} ok, {n_err} error(s)")
+    partial_note = f", {n_partial} with failed steps" if n_partial else ""
+    print(f"  DONE in {elapsed}s — {n_ok} ok, {n_err} error(s){partial_note}")
     print(f"  Results: {args.output_csv}")
     print(f"{'#' * 60}\n")
 
-    sys.exit(1 if n_err and n_ok == 0 else 0)
+    # Non-zero only when no sample completed cleanly, as before; a sample whose
+    # steps failed counts as not completed.
+    sys.exit(1 if (n_err or n_partial) and n_ok == 0 else 0)
 
 
 if __name__ == "__main__":

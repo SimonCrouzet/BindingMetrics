@@ -4,8 +4,13 @@ Focus on the DockQ reference-matching logic (input sample → native structure b
 filename stem), which is pure and testable without running the pipeline.
 """
 
+import csv
+import sys
 from pathlib import Path
 
+import pytest
+
+from binding_metrics.cli import batch
 from binding_metrics.cli.batch import _build_reference_map, _run_one
 
 EXAMPLE_1YCR = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
@@ -101,3 +106,115 @@ class TestRunOneChains:
         row = _run_one(**_worker_kwargs(tmp_path, peptide_chain="B", receptor_chain="A"))
         assert row["batch_status"] == "ok"
         assert row["sample_id"] == "example_linear_p53_1YCR"
+
+
+class TestRunOneFailedSteps:
+    """A sample whose pipeline step failed must not be reported as ok."""
+
+    def _run(self, tmp_path, monkeypatch, pipeline_results):
+        monkeypatch.setattr(batch, "run_pipeline", lambda **_: dict(pipeline_results))
+        return _run_one(**_worker_kwargs(tmp_path, sample_id="s1"))
+
+    def test_clean_pipeline_is_ok(self, tmp_path, monkeypatch):
+        row = self._run(
+            tmp_path,
+            monkeypatch,
+            {
+                "sample_id": "s1",
+                "energy": {"success": True, "relaxed_interaction_energy": -3.0},
+                "interface": {"skipped": True},
+            },
+        )
+        assert row["batch_status"] == "ok"
+        assert "batch_failed_steps" not in row
+
+    def test_step_error_makes_the_sample_partial(self, tmp_path, monkeypatch):
+        row = self._run(
+            tmp_path,
+            monkeypatch,
+            {
+                "sample_id": "s1",
+                "energy": {"error": "no template for residue BMT"},
+                "geometry": {"error": "empty chain"},
+                "interface": {"delta_sasa": 1200.0},
+            },
+        )
+        assert row["batch_status"] == "partial"
+        assert row["batch_failed_steps"] == "energy;geometry"
+        assert "energy: no template for residue BMT" in row["batch_failed_reasons"]
+        assert "geometry: empty chain" in row["batch_failed_reasons"]
+        assert "batch_error" not in row
+        assert row["interface_delta_sasa"] == 1200.0  # the good step is kept
+
+    def test_success_false_makes_the_sample_partial(self, tmp_path, monkeypatch):
+        row = self._run(
+            tmp_path,
+            monkeypatch,
+            {"sample_id": "s1", "relax": {"success": False, "error_message": "KeyError: 'N'"}},
+        )
+        assert row["batch_status"] == "partial"
+        assert row["batch_failed_steps"] == "relax"
+
+    def test_worker_exception_stays_an_error(self, tmp_path, monkeypatch):
+        def boom(**_):
+            raise RuntimeError("kaboom")
+
+        monkeypatch.setattr(batch, "run_pipeline", boom)
+        row = _run_one(**_worker_kwargs(tmp_path, sample_id="s1"))
+        assert row["batch_status"] == "error"
+        assert row["batch_error"] == "RuntimeError: kaboom"
+        assert "batch_failed_steps" not in row
+
+
+def _run_main(monkeypatch, tmp_path, rows_by_sample):
+    """Run ``batch.main`` with a stubbed worker; return (exit_code, csv_rows)."""
+    input_dir = tmp_path / "in"
+    input_dir.mkdir()
+    for name in rows_by_sample:
+        (input_dir / f"{name}.cif").write_text("data_x\n")
+    out_csv = tmp_path / "out" / "metrics.csv"
+
+    def fake_run_one(input_path, **_):
+        return dict(rows_by_sample[input_path.stem], sample_id=input_path.stem)
+
+    monkeypatch.setattr(batch, "_run_one", fake_run_one)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["binding-metrics-batch", "-i", str(input_dir), "--output-csv", str(out_csv)]
+        + ["--metrics", "energy"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        batch.main()
+    with open(out_csv, newline="") as fh:
+        return exc.value.code, list(csv.DictReader(fh))
+
+
+class TestMainStatusAccounting:
+    def test_partial_samples_are_not_counted_ok(self, tmp_path, monkeypatch, capsys):
+        code, rows = _run_main(
+            monkeypatch,
+            tmp_path,
+            {
+                "a": {"batch_status": "ok"},
+                "b": {"batch_status": "partial", "batch_failed_steps": "energy"},
+            },
+        )
+        out = capsys.readouterr().out
+        assert code == 0  # one sample is fully ok
+        assert "1 ok, 0 error(s), 1 with failed steps" in out
+        assert {r["sample_id"]: r["batch_status"] for r in rows} == {"a": "ok", "b": "partial"}
+        assert {r["sample_id"]: r["batch_failed_steps"] for r in rows} == {"a": "", "b": "energy"}
+
+    def test_exit_code_is_nonzero_when_no_sample_is_fully_ok(self, tmp_path, monkeypatch):
+        code, _ = _run_main(
+            monkeypatch,
+            tmp_path,
+            {"a": {"batch_status": "partial", "batch_failed_steps": "relax"}},
+        )
+        assert code == 1
+
+    def test_banner_is_unchanged_without_partial_samples(self, tmp_path, monkeypatch, capsys):
+        code, _ = _run_main(monkeypatch, tmp_path, {"a": {"batch_status": "ok"}})
+        assert code == 0
+        assert "1 ok, 0 error(s)\n" in capsys.readouterr().out
