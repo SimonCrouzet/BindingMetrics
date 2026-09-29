@@ -58,6 +58,13 @@ class TestDAminoAcidRegistry:
         for d_code, l_name in D_AA_MAP.items():
             assert l_name in standard, f"{d_code} → {l_name} is not a standard L-AA"
 
+    def test_d_methionine_is_med_not_dme(self):
+        # CCD "MED" is D-methionine; "DME" is decamethonium, a ligand.
+        assert D_AA_MAP["MED"] == "MET"
+        assert is_d_residue("MED") is True
+        assert "DME" not in D_AA_MAP
+        assert is_d_residue("DME") is False
+
     def test_no_glycine(self):
         # Glycine is achiral; no D-form in the registry
         assert "DGY" not in D_AA_MAP
@@ -294,6 +301,15 @@ class TestDetectNonstandard:
         assert len(info.d_residues) == 2
         assert len(info.nmethyl_residues) == 1
         assert info.nmethyl_residues[0]["template_name"] == "MLE"
+
+    def test_detects_d_methionine_by_ccd_code(self):
+        topology = _make_minimal_topology(["GLY", "MED", "GLY"])
+        info = detect_nonstandard(topology, "A")
+        assert [(e["original_name"], e["l_name"]) for e in info.d_residues] == [("MED", "MET")]
+
+    def test_decamethonium_is_not_a_d_residue(self):
+        topology = _make_minimal_topology(["GLY", "DME", "GLY"])
+        assert detect_nonstandard(topology, "A").is_empty
 
     def test_standard_residues_ignored(self):
         topology = _make_minimal_topology(["ALA", "GLY", "LEU", "PRO"])

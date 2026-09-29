@@ -70,7 +70,7 @@ D_AA_MAP: dict[str, str] = {
     "DIL": "ILE",  # D-isoleucine
     "DLE": "LEU",  # D-leucine
     "DLY": "LYS",  # D-lysine
-    "DME": "MET",  # D-methionine
+    "MED": "MET",  # D-methionine (CCD "DME" is decamethonium, not an amino acid)
     "DPN": "PHE",  # D-phenylalanine
     "DPR": "PRO",  # D-proline
     "DSN": "SER",  # D-serine
