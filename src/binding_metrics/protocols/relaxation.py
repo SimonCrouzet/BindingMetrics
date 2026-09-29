@@ -1635,6 +1635,8 @@ def _run_one(
 
 
 def main():
+    from binding_metrics.cli import small_molecules_arg
+
     parser = argparse.ArgumentParser(
         description="Implicit solvent MD relaxation for protein complexes",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1675,7 +1677,7 @@ def main():
     )
     parser.add_argument(
         "--small-molecules",
-        type=str,
+        type=small_molecules_arg,
         default="auto",
         help="Non-standard residue parameterisation. 'auto' (default) "
         "builds GAFF2 ExternalBond templates for every exotic NCAA; "
@@ -1720,9 +1722,6 @@ def main():
 
     if args.all_models and args.sample_id is not None:
         parser.error("--sample-id cannot be used with --all-models (IDs are auto-generated)")
-
-    if args.small_molecules is not None and args.small_molecules.lower() == "none":
-        args.small_molecules = None
 
     if args.random_seed.strip().lower() in ("none", "random", "off"):
         seed = None
