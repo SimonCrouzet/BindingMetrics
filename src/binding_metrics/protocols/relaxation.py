@@ -43,7 +43,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+from binding_metrics._constants import DEFAULT_RANDOM_SEED
 
 logger = logging.getLogger(__name__)
 

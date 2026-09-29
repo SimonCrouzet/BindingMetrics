@@ -3,17 +3,34 @@
 import logging
 import tempfile
 from pathlib import Path
-from typing import Optional
-
-from openmm import app
-from openmm.app import PDBFile
+from typing import TYPE_CHECKING, Optional
 
 from binding_metrics.utils import add_to_report, backfill_auth_columns, extend_report
+
+if TYPE_CHECKING:
+    from openmm.app import PDBFile
 
 logger = logging.getLogger(__name__)
 
 
-def load_complex(pdb_path: str | Path) -> PDBFile:
+def __getattr__(name: str):
+    """Resolve ``app`` and ``PDBFile``, which this module imported at load time (PEP 562).
+
+    OpenMM is imported inside the functions that need it, so that chain detection
+    and CIF writing work on an install without the ``simulation`` extra.
+    """
+    if name == "app":
+        from openmm import app
+
+        return app
+    if name == "PDBFile":
+        from openmm.app import PDBFile
+
+        return PDBFile
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def load_complex(pdb_path: str | Path) -> "PDBFile":
     """Load a PDB file containing a molecular complex.
 
     Args:
@@ -26,6 +43,8 @@ def load_complex(pdb_path: str | Path) -> PDBFile:
         FileNotFoundError: If the PDB file doesn't exist
         ValueError: If the file cannot be parsed
     """
+    from openmm.app import PDBFile
+
     pdb_path = Path(pdb_path)
     if not pdb_path.exists():
         raise FileNotFoundError(f"PDB file not found: {pdb_path}")
@@ -49,6 +68,8 @@ def get_chain_atom_indices(
     Returns:
         List of atom indices (0-based) belonging to the specified chains
     """
+    from openmm.app import PDBFile
+
     pdb = PDBFile(str(pdb_path))
     topology = pdb.topology
 
@@ -75,6 +96,8 @@ def load_structure(path: str | Path) -> tuple:
         FileNotFoundError: If the file doesn't exist
         ValueError: If the format is unsupported or parsing fails
     """
+    from openmm.app import PDBFile, PDBxFile
+
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Structure file not found: {path}")
@@ -82,8 +105,6 @@ def load_structure(path: str | Path) -> tuple:
     suffix = path.suffix.lower()
     try:
         if suffix in (".cif", ".mmcif"):
-            from openmm.app import PDBxFile
-
             struct = PDBxFile(str(path))
         elif suffix == ".pdb":
             struct = PDBFile(str(path))
@@ -468,6 +489,8 @@ def strip_heterogens(
         add_to_report(report, "n_removed_waters", n_removed_waters)
 
     if atoms_to_remove:
+        from openmm import app
+
         modeller = app.Modeller(topology, positions)
         modeller.delete(atoms_to_remove)
         topology, positions = modeller.topology, modeller.positions
@@ -857,6 +880,8 @@ def _append_missing_conect(topology, output_path: Path) -> None:
     Only bonds OpenMM did not already write are appended, so no bond is
     declared twice.
     """
+    from openmm.app import PDBFile
+
     written = set()
     for atom1, atom2 in topology.bonds():
         standard = PDBFile._standardResidues
@@ -943,6 +968,8 @@ def save_structure(
         )
         save_cif(topology, positions, output_path, source_cif_path=src)
     elif suffix == ".pdb":
+        from openmm.app import PDBFile
+
         with open(output_path, "w") as f:
             PDBFile.writeFile(topology, positions, f)
         _append_missing_conect(topology, output_path)
@@ -1163,6 +1190,8 @@ def get_residue_info(pdb_path: str | Path) -> list[dict]:
     Returns:
         List of dictionaries with residue information
     """
+    from openmm.app import PDBFile
+
     pdb = PDBFile(str(pdb_path))
     topology = pdb.topology
 
