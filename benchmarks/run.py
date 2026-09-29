@@ -47,6 +47,7 @@ Results are written to benchmarks/results/<timestamp>.{json,md}.
 
 import argparse
 import json
+import logging
 import statistics
 import sys
 import time
@@ -62,6 +63,8 @@ from binding_metrics.metrics.registry import (
     MetricSpec,
     metrics_by_input_type,
 )
+
+logger = logging.getLogger(__name__)
 
 # MD parameters that can be overridden per-entry in the manifest "md" dict.
 # Maps manifest key → RelaxationConfig attribute name (they're the same here).
@@ -142,8 +145,8 @@ def compute_structure_properties(path: Path, design_chain: Optional[str] = None)
             props["n_residues_peptide"] = int(len(np.unique(atoms[atoms.chain_id == pep].res_id)))
         if rec is not None:
             props["n_residues_receptor"] = int(len(np.unique(atoms[atoms.chain_id == rec].res_id)))
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - properties are informational; the timing still runs
+        logger.warning("Could not detect the interface chains of %s: %s", path, exc)
 
     return props
 
@@ -178,8 +181,8 @@ def compute_trajectory_properties(traj_path: Path, top_path: Path, entry: dict) 
             )
             props["receptor_indices"] = sel.tolist()
 
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - properties are informational; the timing still runs
+        logger.warning("Could not read the trajectory properties of %s: %s", traj_path, exc)
     return props
 
 
@@ -283,7 +286,9 @@ def _fn_argnames(spec: MetricSpec) -> set[str]:
     try:
         fn = spec.load()
         return set(inspect.signature(fn).parameters)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - importing a metric can fail in many ways
+        # The benchmark of this metric calls spec.load() again and records the error.
+        logger.debug("Could not inspect the arguments of %s: %s", spec.name, exc)
         return set()
 
 
@@ -295,7 +300,7 @@ def bench_static_metric(spec: MetricSpec, path: Path, props: dict, n_runs: int) 
         fn = spec.load()
         times = _time_calls(fn, n_runs=n_runs, **kwargs)
         return _stats(times)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - one failing metric must not stop the benchmark
         return {"error": str(exc)}
 
 
@@ -309,7 +314,7 @@ def bench_trajectory_metric(
         fn = spec.load()
         times = _time_calls(fn, n_runs=n_runs, **kwargs)
         return _stats(times)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - one failing metric must not stop the benchmark
         return {"error": str(exc)}
 
 
@@ -338,7 +343,7 @@ def bench_md_simulation(path: Path, md_params: dict, output_dir: Path) -> dict:
             "total_time_s": (result.minimization_time_s or 0) + (result.md_time_s or 0),
             "md_params": md_params,
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - one failing MD run must not stop the benchmark
         return {"error": str(exc)}
 
 
