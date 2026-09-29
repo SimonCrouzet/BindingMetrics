@@ -96,7 +96,7 @@ class PeptideBindingProtocol(BaseProtocol):
         PDBFile.writeFile(
             modeller.topology,
             modeller.positions,
-            open(self._topology_path, "w"),
+            open(self._topology_path, "w", encoding="utf-8"),
         )
 
         # Set up simulation
