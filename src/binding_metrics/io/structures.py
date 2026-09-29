@@ -82,10 +82,110 @@ def get_chain_atom_indices(
     return indices
 
 
+#: ``_struct_conn.conn_type_id`` values that OpenMM's PDBxFile turns into bonds.
+_STRUCT_CONN_BOND_TYPES = ("covale", "disulf", "modres")
+
+
+def _restore_struct_conn_bonds(path: Path, topology) -> int:
+    """Add the ``_struct_conn`` bonds that ``PDBxFile`` failed to resolve.
+
+    ``PDBxFile`` keys every atom by ``auth_seq_id`` (and, in most files, by
+    ``auth_asym_id``) but looks the two partners of a ``_struct_conn`` row up by
+    ``ptnr*_label_seq_id`` and ``ptnr*_label_asym_id``. The numberings differ
+    whenever a chain does not start at residue 1 (the 1QJB peptide has label
+    numbers 4 and 5 for author numbers 6 and 7), so the row matches nothing and
+    the bond is dropped without a message. That is fatal for a link into a
+    non-standard residue such as phosphoserine: ``createStandardBonds`` only
+    knows the standard residue types, so the HIS-SEP peptide bond exists nowhere
+    else and the force field later reports "bonds are different".
+
+    Partners are matched through ``_atom_site.id``, which OpenMM keeps as
+    ``Atom.id``. The author columns of ``_struct_conn`` are used when present
+    (wwPDB files always have them) and the label columns otherwise. A partner
+    that matches no atom, or more than one, is skipped.
+
+    Returns the number of bonds added.
+    """
+    try:
+        import gemmi
+    except ImportError:
+        logger.info(
+            "gemmi is not installed: covalent links of %s whose label and author residue "
+            "numbers differ are not restored. Install with: pip install binding-metrics[structure]",
+            path.name,
+        )
+        return 0
+    try:
+        block = gemmi.cif.read(str(path))[0]
+    except (RuntimeError, ValueError, IndexError):
+        return 0  # PDBxFile has already parsed the file; nothing more to add here
+
+    for scheme in ("auth", "label"):
+        # Only the author numbering can carry an insertion code.
+        conn_ins_cols = ["?pdbx_ptnr1_PDB_ins_code", "?pdbx_ptnr2_PDB_ins_code"]
+        site_ins_cols = ["?pdbx_PDB_ins_code"]
+        if scheme == "label":
+            conn_ins_cols = site_ins_cols = []
+        partner_cols = [f"ptnr{n}_{scheme}_{col}" for n in "12" for col in ("asym_id", "seq_id")]
+        conn = block.find(
+            "_struct_conn.",
+            ["conn_type_id", *partner_cols, "ptnr1_label_atom_id", "ptnr2_label_atom_id"]
+            + conn_ins_cols,
+        )
+        site = block.find(
+            "_atom_site.",
+            ["id", f"{scheme}_asym_id", f"{scheme}_seq_id", "label_atom_id"] + site_ins_cols,
+        )
+        if conn and site:
+            break
+    else:
+        return 0
+
+    def _ins_code(table, row, col: int) -> str:
+        """Insertion code, or "" when the column is absent or null."""
+        if col >= len(row) or not table.has_column(col) or row.str(col) in ("?", "."):
+            return ""
+        return row.str(col)
+
+    atom_by_id = {str(atom.id): atom for atom in topology.atoms()}
+    atoms_by_key: dict[tuple, list] = {}
+    for row in site:
+        atom = atom_by_id.get(row.str(0))
+        if atom is not None:  # alternate locations and later models have no Atom
+            key = (row.str(1), row.str(2), _ins_code(site, row, 4), row.str(3))
+            atoms_by_key.setdefault(key, []).append(atom)
+
+    existing = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
+    added = 0
+    for row in conn:
+        if row.str(0)[:6] not in _STRUCT_CONN_BOND_TYPES:
+            continue
+        partners = []
+        for n, ins_col in ((0, 7), (1, 8)):
+            key = (
+                row.str(1 + 2 * n),
+                row.str(2 + 2 * n),
+                _ins_code(conn, row, ins_col),
+                row.str(5 + n),
+            )
+            partners.append(atoms_by_key.get(key, []))
+        if len(partners[0]) != 1 or len(partners[1]) != 1:
+            continue  # absent, or ambiguous (label numbering of a branched entity)
+        atom1, atom2 = partners[0][0], partners[1][0]
+        pair = frozenset((atom1.index, atom2.index))
+        if atom1.index != atom2.index and pair not in existing:
+            topology.addBond(atom1, atom2)
+            existing.add(pair)
+            added += 1
+    return added
+
+
 def load_structure(path: str | Path) -> tuple:
     """Load a structure file (PDB or CIF) and return (topology, positions).
 
-    Supports .pdb, .cif, and .mmcif formats.
+    Supports .pdb, .cif, and .mmcif formats. For a CIF, the ``covale``, ``disulf``
+    and ``modres`` rows of ``_struct_conn`` are bonded even when the label and
+    author numbering of the file differ (with gemmi installed).
 
     Args:
         path: Path to the structure file
@@ -107,6 +207,9 @@ def load_structure(path: str | Path) -> tuple:
     try:
         if suffix in (".cif", ".mmcif"):
             struct = PDBxFile(str(path))
+            n_restored = _restore_struct_conn_bonds(path, struct.topology)
+            if n_restored:
+                logger.debug("%s: restored %d _struct_conn bond(s)", path.name, n_restored)
         elif suffix == ".pdb":
             struct = PDBFile(str(path))
         else:
@@ -728,8 +831,14 @@ def save_cif(
         # ── Patch the output CIF ──────────────────────────────────────────────────
         out_table = output_block.find(
             "_atom_site.",
-            ["auth_asym_id", "auth_seq_id", "auth_atom_id", "label_asym_id"],
+            ["auth_asym_id", "auth_seq_id", "auth_atom_id", "label_asym_id", "label_seq_id"],
         )
+        # (chain, residue number) as OpenMM wrote them -> the residue number written
+        # below. PDBxFile.writeFile puts the same 1-based number in label_seq_id and
+        # in the _struct_conn partners; both must follow the auth_seq_id rewrite, or
+        # OpenMM (which keys atoms by auth_seq_id and _struct_conn partners by
+        # label_seq_id) cannot match a bond of a non-standard residue on reload.
+        renumbered: dict[tuple, str] = {}
         if out_table and out_to_auth:
             o_res_idx: dict[str, int] = {}
             o_prev_key: dict[str, tuple] = {}
@@ -767,6 +876,26 @@ def save_cif(
                     taken.add(candidate)
                     assigned[res_id] = candidate
                 row[1] = assigned[res_id]  # auth_seq_id → original, or unique
+                row[4] = assigned[res_id]  # label_seq_id → same, see `renumbered`
+                renumbered[(out_ch, seq)] = assigned[res_id]
+
+        # Patch the _struct_conn residue numbers first: the chain patch below
+        # replaces the OpenMM chain letters this lookup is keyed on.
+        for chain_col, seq_col in (
+            ("ptnr1_label_asym_id", "ptnr1_label_seq_id"),
+            ("ptnr2_label_asym_id", "ptnr2_label_seq_id"),
+        ):
+            try:
+                for row in output_block.find("_struct_conn.", [chain_col, seq_col]):
+                    row[1] = renumbered.get((row[0], row[1]), row[1])
+            except (RuntimeError, IndexError, ValueError) as exc:
+                logger.warning(
+                    "cannot restore residue numbers in _struct_conn.%s of %s (%s: %s)",
+                    seq_col,
+                    output_path.name,
+                    type(exc).__name__,
+                    exc,
+                )
 
         # Patch _struct_conn chain IDs (PDBxFile writes label_asym_id with
         # sequential letters; auth_asym_id variants may also appear).
