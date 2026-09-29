@@ -9,6 +9,7 @@ extra to install.
 """
 
 import importlib
+import importlib.metadata
 import importlib.util
 from typing import TYPE_CHECKING
 
@@ -166,7 +167,12 @@ if TYPE_CHECKING:
         RelaxationResult,
     )
 
-__version__ = "0.1.0"
+# pyproject.toml is the one place the version is written; an installed package reads
+# it back from its metadata. A source tree that was never installed has no metadata.
+try:
+    __version__ = importlib.metadata.version("binding-metrics")
+except importlib.metadata.PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     # Core
