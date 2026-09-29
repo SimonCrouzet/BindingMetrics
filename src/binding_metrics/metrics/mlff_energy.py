@@ -158,6 +158,21 @@ class MLFFBackend(ABC):
 class _PlaceholderBackend(MLFFBackend):
     """A backend name that is reserved and has no adapter: asking for it raises."""
 
+    # TODO(mlff): a real adapter subclasses MLFFBackend (not this class), sets name and
+    #   weights_licence, and calls register_backend, which then replaces the placeholder.
+    #   Each adapter has to:
+    #   - import its package inside __init__ (never at module level) and report the missing
+    #     package or weights in is_available(), so available_backends() stays cheap and
+    #     never raises;
+    #   - fetch the weights on first use into the user's cache, after the user has accepted
+    #     the licence; never ship or vendor them (see weights_licence);
+    #   - take the device from the caller (cuda by default, as the rest of the package) and
+    #     load the model once per instance;
+    #   - implement energy_ev(atoms, *, charge, spin) by putting charge and spin on the ASE
+    #     atoms and returning the potential energy in eV, with no unit conversion (the
+    #     conversion to kcal/mol and kJ/mol happens once, in compute_mlff_interaction_energy);
+    #   - record the model name and version it ran (checkpoint id) so the result can carry it.
+
     def __init__(self) -> None:
         raise NotImplementedError(
             f"MLFF backend {self.name!r} is a placeholder: there is no adapter for it yet, "
@@ -243,6 +258,13 @@ def available_backends() -> list[str]:
 
 @register_backend
 class _UMABackend(_PlaceholderBackend):
+    # TODO(mlff): implement with fairchem-core (MIT package): load a UMA predictor and wrap it
+    #   in FAIRChemCalculator with the molecular task (the OMol25 task, whose energies come
+    #   with a charge and a spin); the checkpoint names seen so far are uma-s-1.2.1 and
+    #   uma-m-1.1 (TO VERIFY the current names, the task name and how charge and spin are
+    #   passed, atoms.info["charge"] and atoms.info["spin"]). The weights are gated on
+    #   Hugging Face: the user must accept the FAIR Chemistry License and be logged in, and
+    #   the acknowledgement duty of the licence must be honoured in the docs and the output.
     name = "uma"
     # Terms as stated on the UMA model card, huggingface.co/facebook/UMA (checked 2026-09-29).
     weights_licence = (
@@ -253,18 +275,30 @@ class _UMABackend(_PlaceholderBackend):
 
 @register_backend
 class _MACEBackend(_PlaceholderBackend):
+    # TODO(mlff): implement with mace-torch (MIT package). Pick a molecular model, not a
+    #   materials one (MACE-MP): TO VERIFY which released MACE checkpoint was trained on
+    #   OMol25-like data and how it takes charge and spin. TO VERIFY the licence of the chosen
+    #   weights before setting weights_licence; no weight licence was checked for MACE.
     name = "mace"
     weights_licence = _UNVERIFIED_LICENCE
 
 
 @register_backend
 class _OrbBackend(_PlaceholderBackend):
+    # TODO(mlff): implement with orb-models (Apache-2.0 package): load a molecular Orb
+    #   checkpoint and its ASE calculator. TO VERIFY which checkpoint handles charged and
+    #   open-shell systems and how it takes charge and spin, and the licence of the weights;
+    #   no weight licence was checked for Orb.
     name = "orb"
     weights_licence = _UNVERIFIED_LICENCE
 
 
 @register_backend
 class _AIMNet2Backend(_PlaceholderBackend):
+    # TODO(mlff): implement with the AIMNet2 ASE calculator. TO VERIFY the package name, the
+    #   licence of the code and the weights, and the element and charge range: AIMNet2 covers
+    #   a limited set of elements and total charges, so is_available() or energy_ev() must
+    #   refuse an atom set outside it with a clear message instead of returning a number.
     name = "aimnet2"
     weights_licence = _UNVERIFIED_LICENCE
 
@@ -274,6 +308,22 @@ def _require_chain_id(argument: str, value: Optional[str]) -> None:
         raise ValueError(f"{argument} must be a non-empty chain ID or None, got {value!r}")
 
 
+# TODO(mlff): when a backend lands and this function computes an energy:
+#   - register it in metrics/registry.py as a MetricSpec: input_type "static_structure",
+#     chain_mode "interface", direction "lower", requires_gpu True, cost_class "model"
+#     (the registry docs describe it as a structure-prediction run: TO VERIFY it fits an
+#     MLFF energy, or extend that description), unit "kcal/mol", headline_key
+#     "mlff_interaction_energy_kcal_mol", and requires_extras
+#     set to a new "mlff" extra declared in pyproject.toml (fairchem-core, mace-torch,
+#     orb-models, ase; check the extra against the registry contract tests);
+#   - remove the function from _NOT_METRICS in tests/test_registry.py;
+#   - add the lazy export in metrics/__init__.py and a pointer in README.md;
+#   - add tests with a tiny real backend or a mocked one (a fake MLFFBackend returning fixed
+#     energies, as tests/test_mlff_energy.py does) that check the three-term arithmetic, the
+#     unit conversion, the NaN-plus-reason path and the returned keys;
+#   - update the docs/metrics.md subsection and add a CHANGELOG entry;
+#   - turn the "reserved interface" wording of this docstring and of the module into a
+#     description of what the function does.
 def compute_mlff_interaction_energy(
     structure_path: str | Path,
     binder_chain: Optional[str] = None,
@@ -369,6 +419,49 @@ def compute_mlff_interaction_energy(
     if pocket is not None and not isinstance(pocket, PocketSpec):
         raise TypeError(f"pocket must be a PocketSpec or None, got {type(pocket).__name__}")
 
+    # TODO(mlff): pocket cropper with capping, the missing piece. Load the structure with
+    #   load_structure, apply the hetero and hydrogens filters (filter_hetero_atoms and
+    #   filter_hydrogens in metrics/interface.py), then select the binder atoms plus every
+    #   receptor residue with an atom within pocket.cutoff_angstrom of any binder atom, as
+    #   whole residues (add waters only when pocket.include_waters). Where a peptide bond is
+    #   cut at the pocket boundary, close it with a hydrogen along the cut bond when
+    #   pocket.cap == "hydrogen" (a fixed N-H or C-H bond length: TO VERIFY the value and
+    #   whether the reference caps with hydrogens or with ACE/NME groups). The three
+    #   energies must come from ONE pocket: E(complex) is the whole pocket, E(binder) and
+    #   E(receptor) are its two parts at the same coordinates with the same caps, so the
+    #   cap atoms of a cut receptor residue belong to the receptor term only. Count the atoms
+    #   of each part for n_atoms_complex, n_atoms_binder and n_atoms_receptor.
+    #
+    # TODO(mlff): energies. Call backend.energy_ev three times (complex, binder, receptor;
+    #   the calls are independent, so batch them where the backend allows it), form
+    #   E(complex) - E(binder) - E(receptor) in eV and multiply by _ENERGY_UNIT_PER_EV[unit].
+    #   On any failure return NaN under mlff_interaction_energy_<unit> with a `reason`.
+    #
+    # TODO(mlff): charge and spin per part. An MLFF energy needs the total charge of every
+    #   evaluated part. Sum the formal charges at the pH implied by pocket.protonation:
+    #   ionisable residues (Asp, Glu, Lys, Arg, His by its protonation state, N- and
+    #   C-terminus), phospho residues (-2 for a dianionic phosphate; TO VERIFY the state at
+    #   the chosen pH), the cap atoms (neutral), and any ligand or ion kept by hetero="keep".
+    #   Pass spin 1 (closed shell) unless the input says otherwise. The energy depends on the
+    #   charge assignment, and MLFFs trained on OMol25 are reported, by the ChemRxiv paper
+    #   and by independent tests, to over-bind. Calibrate and validate against the
+    #   implicit-solvent compute_interaction_energy (registered as
+    #   structure_interaction_energy) on the bundled complexes in data/ (1YCR, 1CWA, 3P8F,
+    #   1XY4, 3V3B) before the values are shown next to E_int.
+    #
+    # TODO(mlff): solvent. The treatment in the reference protocol (gas phase, an implicit
+    #   correction, explicit waters in the pocket) is unknown: the full text of the ChemRxiv
+    #   paper has not been read. Read it, decide between a gas-phase energy and an implicit
+    #   correction, and state the choice in this docstring and in docs/metrics.md, since
+    #   E_int carries generalised Born solvation and the two values are otherwise not
+    #   comparable.
+    #
+    # TODO(mlff): validation. None of the sources validates the method on peptide-protein
+    #   complexes, D-amino acids, N-methylated residues, phospho residues or macrocycles
+    #   (the reference uses congeneric small-molecule series). Build a small benchmark from
+    #   the bundled complexes and public affinity data, check that the D-amino acid and
+    #   N-methyl cases give the same energy as their L and NH counterparts up to the expected
+    #   difference, and record the outcome in docs/metrics.md before any claim is made.
     get_backend(backend)  # a placeholder raises NotImplementedError here
     raise NotImplementedError(
         f"compute_mlff_interaction_energy has no pocket cropper with capping yet, so backend "
