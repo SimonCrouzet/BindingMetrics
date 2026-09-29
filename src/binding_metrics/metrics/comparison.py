@@ -56,7 +56,11 @@ def _get_coords(
 
 
 def _kabsch_rmsd(coords1: np.ndarray, coords2: np.ndarray) -> float:
-    """Compute Kabsch-aligned RMSD between two coordinate sets.
+    """Compute Kabsch-aligned RMSD between two coordinate sets (Kabsch, 1976).
+
+    The optimal proper rotation is found by SVD of the covariance matrix; a
+    reflection is never allowed (the determinant correction flips the last
+    singular direction).
 
     Args:
         coords1: Reference coordinates, shape (N, 3)
@@ -75,7 +79,9 @@ def _kabsch_rmsd(coords1: np.ndarray, coords2: np.ndarray) -> float:
         Vt[-1, :] *= -1
         R = Vt.T @ U.T
 
-    p_rot = p @ R
+    # R is the rotation for column vectors (q ~ R @ p_i); the coordinates are
+    # row vectors, so the same rotation is applied as p @ R.T.
+    p_rot = p @ R.T
     return float(np.sqrt(np.mean(np.sum((p_rot - q) ** 2, axis=1))))
 
 

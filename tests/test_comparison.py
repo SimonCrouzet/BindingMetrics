@@ -20,6 +20,14 @@ EXAMPLE_CIF = Path("data/example_linear_p53_1YCR.pdb")
 EXAMPLE_CIF2 = Path("data/example_bicyclic_sfti1_3P8F.cif")
 
 
+def _rotation_matrix(axis, angle_rad: float) -> np.ndarray:
+    """Rodrigues rotation matrix for column vectors (apply to rows as ``p @ R.T``)."""
+    k = np.asarray(axis, dtype=float)
+    k = k / np.linalg.norm(k)
+    cross = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+    return np.eye(3) + np.sin(angle_rad) * cross + (1 - np.cos(angle_rad)) * cross @ cross
+
+
 class TestKabschRmsd:
     """Tests for the Kabsch RMSD helper."""
 
@@ -40,6 +48,56 @@ class TestKabschRmsd:
         coords = rng.random((10, 3))
         perturbed = coords + rng.random((10, 3)) * 0.5
         assert _kabsch_rmsd(coords, perturbed) > 0.0
+
+    @pytest.mark.parametrize("seed", [0, 1, 2, 3, 4])
+    def test_rigidly_rotated_and_translated_copy_is_zero(self, seed):
+        """A rigid-body copy of a point set superposes exactly.
+
+        Regression: the rotation was applied as ``p @ R`` instead of
+        ``p @ R.T``, so any pair that was not already co-oriented came back
+        with an RMSD of 1-2 Angstrom instead of 0.
+        """
+        rng = np.random.default_rng(seed)
+        coords = rng.normal(size=(50, 3)) * 5.0
+        rotation = _rotation_matrix(rng.normal(size=3), rng.uniform(0.3, 3.0))
+        moved = coords @ rotation.T + rng.normal(size=3) * 10.0
+        assert _kabsch_rmsd(coords, moved) < 1e-6
+        # symmetric in its arguments
+        assert _kabsch_rmsd(moved, coords) < 1e-6
+
+    @pytest.mark.parametrize("angle_deg", [5.0, 60.0, 90.0, 179.0])
+    def test_known_rotation_angle_is_zero(self, angle_deg):
+        """A pure rotation about z by a known angle gives zero, including 5 degrees.
+
+        Before the fix a 5 degree rotation of a unit-normal cloud reported
+        an RMSD of about 0.22.
+        """
+        rng = np.random.default_rng(7)
+        coords = rng.normal(size=(30, 3))
+        rotation = _rotation_matrix([0.0, 0.0, 1.0], np.deg2rad(angle_deg))
+        assert _kabsch_rmsd(coords, coords @ rotation.T) < 1e-9
+
+    def test_known_nonzero_rmsd_survives_rotation(self):
+        """Stretching a rectangle by 0.5 A per end atom gives RMSD 0.5 in any pose.
+
+        The identity is the optimal superposition of a rectangle on its
+        symmetric stretched copy, so the value is known in closed form.
+        """
+        rectangle = np.array(
+            [[-2.0, -1.0, 0.0], [2.0, -1.0, 0.0], [2.0, 1.0, 0.0], [-2.0, 1.0, 0.0]]
+        )
+        stretched = rectangle * np.array([2.5 / 2.0, 1.0, 1.0])
+        rotation = _rotation_matrix([1.0, 2.0, 3.0], 1.1)
+        moved = stretched @ rotation.T + np.array([4.0, -7.0, 2.0])
+        assert _kabsch_rmsd(rectangle, stretched) == pytest.approx(0.5, abs=1e-9)
+        assert _kabsch_rmsd(rectangle, moved) == pytest.approx(0.5, abs=1e-9)
+
+    def test_mirror_image_is_not_superposed(self):
+        """Only proper rotations are allowed: a chiral set never matches its mirror image."""
+        rng = np.random.default_rng(3)
+        coords = rng.normal(size=(20, 3)) * 3.0
+        mirrored = coords * np.array([-1.0, 1.0, 1.0])
+        assert _kabsch_rmsd(coords, mirrored) > 0.5
 
 
 class TestMatchedRmsd:
