@@ -19,6 +19,7 @@ from binding_metrics.provenance import collect_provenance
 
 ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK = ROOT / "benchmarks" / "run.py"
+TEST_RUNNER = ROOT / "scripts" / "run_tests.py"
 P53_MDM2 = ROOT / "data" / "example_linear_p53_1YCR.pdb"
 
 # A catch that isolates one step must hold for any exception type the step can raise.
@@ -181,3 +182,19 @@ class TestBenchmarkRun:
         result = benchmark.bench_md_simulation(P53_MDM2, {}, tmp_path)
 
         assert result == {"error": str(failure)}
+
+
+class TestTestRunnerScript:
+    def test_gpu_probe_failure_is_reported_as_cpu(self, monkeypatch, capsys):
+        if not TEST_RUNNER.exists():
+            pytest.skip("scripts/run_tests.py is not part of this checkout")
+        spec = importlib.util.spec_from_file_location("bm_run_tests_w4a2", TEST_RUNNER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        monkeypatch.setitem(sys.modules, "openmm", None)  # makes `import openmm` raise
+
+        module.check_environment()
+
+        output = capsys.readouterr().out
+        assert "GPU" in output
+        assert "probe failed (ModuleNotFoundError), using CPU" in output
