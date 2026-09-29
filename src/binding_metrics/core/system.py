@@ -505,7 +505,7 @@ def repair_ca_hydrogen_chirality(topology, positions, verbose: bool = True):
         repaired.append(f"{res.name}{res.id}/{res.chain.id}")
 
     if repaired and verbose:
-        print(f"  Repaired {len(repaired)} wrong-side Cα hydrogen(s): {', '.join(repaired)}")
+        log.info("  Repaired %d wrong-side Cα hydrogen(s): %s", len(repaired), ", ".join(repaired))
     # Vec3, not bare tuples: downstream consumers index positions as p.x/p.y/p.z.
     return unit.Quantity([Vec3(*map(float, p)) for p in pos], unit.nanometer)
 
