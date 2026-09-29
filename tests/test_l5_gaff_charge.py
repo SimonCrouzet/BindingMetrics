@@ -1,9 +1,9 @@
 """Ionisable groups that GAFF template generation builds in the neutral form.
 
-Bond-order perception in :mod:`binding_metrics.core.gaff_ncaa` runs at total charge
-0, so a carboxylic acid, phosphate, sulfate, primary amine or guanidine comes out
-uncharged even though it is ionised at pH 7.4. The generator warns about it and
-records the residue in ``NcaaTemplateList.neutral_ionizable_groups``.
+Template generation in :mod:`binding_metrics.core.gaff_ncaa` builds the residue at
+total charge 0, so a carboxylic acid, phosphate, sulfate, primary amine or guanidine
+comes out uncharged even though it is ionised at pH 7.4. The generator warns about it
+and records the residue in ``NcaaTemplateList.neutral_ionizable_groups``.
 """
 
 import logging
@@ -52,10 +52,6 @@ class TestNeutralIonizableGroups:
             ("CCCN", [("primary amine", 1)]),  # ornithine
             ("CC(=O)O", [("carboxylic acid", -1)]),  # aspartate
             ("CCCNC(=N)N", [("guanidine", 1)]),  # arginine
-            # Perception on a hydrogen-free residue keeps every bond single:
-            ("CC(O)O", [("carboxylic acid", -1)]),  # aspartate as C(OH)2
-            ("CCCNC(N)N", [("guanidine", 1)]),  # arginine as C(NH2)3
-            ("COP(O)(O)(O)O", [("phosphate (two acidic OH)", -2)]),  # phosphate, single bonds
             ("COP(=O)(O)O", [("phosphate (two acidic OH)", -2)]),  # phosphoserine
             ("COP(=O)(O)OC", [("phosphate (one acidic OH)", -1)]),  # phosphodiester
             ("Cc1ccc(OS(=O)(=O)O)cc1", [("sulfate or sulfonic acid", -1)]),  # sulfotyrosine
@@ -74,10 +70,25 @@ class TestNeutralIonizableGroups:
             "CCC[NH3+]",  # already ammonium in the perceived graph
             "CCCNC(=[NH2+])N",  # already guanidinium in the perceived graph
             "CCNC(=O)C",  # acylated amine
+            "CC(=O)OC",  # ester: no acidic OH
+            "CC(=O)NC(=N)N",  # acylguanidine: not basic
+            "CC(=O)N",  # primary amide
         ],
     )
     def test_no_group_no_warning(self, side_chain):
         assert _groups(side_chain) == []
+
+    @pytest.mark.parametrize(
+        "side_chain, absent_label",
+        [
+            ("CC(O)O", "carboxylic acid"),  # aspartate with every bond single: C(OH)2
+            ("CCCNC(N)N", "guanidine"),  # arginine with every bond single: C(NH2)3
+            ("COP(O)(O)(O)O", "phosphate (two acidic OH)"),  # phosphate with every bond single
+        ],
+    )
+    def test_single_bond_spelling_is_not_read_as_the_group(self, side_chain, absent_label):
+        """A residue built with single bonds only has its own warning; the group is not claimed."""
+        assert absent_label not in [label for label, _ in _groups(side_chain)]
 
     def test_backbone_carbonyl_is_never_reported(self):
         """With the C-terminal cap missing, the backbone C(=O)OH is not a side-chain acid."""

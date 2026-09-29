@@ -399,20 +399,19 @@ def _perceive_bond_orders(mol):
 #: Order matters: a group claims its atoms, so the two-OH phosphate is matched
 #: before the one-OH pattern and guanidine before primary amine.
 #:
-#: Bonds are written ``~`` (any order) on purpose. Perception on a residue without
-#: hydrogens often keeps every bond single, which turns C(=O)OH into C(OH)2 and
-#: C(=NH)(NH2)2 into C(NH2)3; the patterns accept both spellings so the warning
-#: still fires on such a graph.
+#: The patterns describe the neutral group with its real bond orders (C(=O)OH,
+#: C(=NH)(NH2)2). A residue built with single bonds only (see
+#: ``BOND_ORDER_SOURCE_SINGLE_BONDS``) has C(OH)2 and C(NH2)3 instead, which none of
+#: them match; that residue is reported by its own warning.
+_GUANIDINE_NITROGEN = "N+0;!$(N-[#6]=O);!$(N-a);!$(N-C#N)"
 _IONIZABLE_GROUPS = (
-    ("phosphate (two acidic OH)", "[#15](~[OX2H1])(~[OX2H1])~[#8]", -2),
-    ("phosphate (one acidic OH)", "[#15](~[#8])(~[#8])~[OX2H1]", -1),
-    ("sulfate or sulfonic acid", "[#16](~[#8])(~[#8])~[OX2H1]", -1),
-    ("carboxylic acid", "[#6;X3,X4]([#6])(~[OX1,$([OX2H1])])~[OX2H1]", -1),
+    ("phosphate (two acidic OH)", "[#15](=[OX1])([OX2H1])([OX2H1])[#8]", -2),
+    ("phosphate (one acidic OH)", "[#15](=[OX1])([#8])([#8])[OX2H1]", -1),
+    ("sulfate or sulfonic acid", "[#16](=[OX1])(=[OX1])[OX2H1]", -1),
+    ("carboxylic acid", "[#6X3]([#6])(=[OX1])[OX2H1]", -1),
     (
         "guanidine",
-        "[#6;X3,X4;!a]"
-        + "(~[N+0;!$(N-[#6]=O);!$(N-a);!$(N-C#N)])" * 2
-        + "~[N+0;!$(N-[#6]=O);!$(N-a);!$(N-C#N)]",
+        f"[#6X3;!a](=[{_GUANIDINE_NITROGEN}])(-[{_GUANIDINE_NITROGEN}])-[{_GUANIDINE_NITROGEN}]",
         +1,
     ),
     ("primary amine", "[NX3;H2;!$(N-[#6]=[O,S,N]);!$(N-a);!$(N-[#7,#8,#15,#16])][CX4]", +1),
