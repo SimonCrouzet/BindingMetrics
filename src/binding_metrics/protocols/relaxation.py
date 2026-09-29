@@ -50,6 +50,7 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
+from binding_metrics.protocols.relaxer import Relaxer
 
 logger = logging.getLogger(__name__)
 
@@ -407,7 +408,7 @@ class RelaxationResult:
         return d
 
 
-class ImplicitRelaxation:
+class ImplicitRelaxation(Relaxer):
     """Implicit solvent MD relaxation for protein complexes.
 
     Runs multi-stage energy minimization followed by an optional short MD

@@ -114,6 +114,20 @@ _SCRIPT = textwrap.dedent(
 
 
     @check
+    def relaxer_contract_imports_and_can_be_subclassed():
+        from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
+        from binding_metrics.protocols.relaxer import Relaxer
+
+        class Stub(Relaxer):
+            def run(self, input_path, output_dir, sample_id=None):
+                raise NotImplementedError
+
+        assert isinstance(Stub(), Relaxer)
+        assert issubclass(ImplicitRelaxation, Relaxer)
+        assert isinstance(ImplicitRelaxation(RelaxationConfig()), Relaxer)
+
+
+    @check
     def relaxation_run_names_the_missing_package():
         from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
 
@@ -141,6 +155,7 @@ CHECKS = [
     "openmm_names_are_resolved_on_demand",
     "load_structure_still_needs_openmm",
     "relaxation_module_imports",
+    "relaxer_contract_imports_and_can_be_subclassed",
     "relaxation_run_names_the_missing_package",
     "no_openmm_module_was_imported",
 ]

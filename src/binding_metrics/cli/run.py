@@ -35,6 +35,7 @@ from binding_metrics.cli import add_openfold_seeds_arg, md_save_interval_for
 from binding_metrics.cli import seed_arg as _seed_arg
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.metrics.registry import get_metric
+from binding_metrics.protocols.relaxer import Relaxer
 from binding_metrics.provenance import collect_provenance
 from binding_metrics.utils import configure_logging
 
@@ -166,6 +167,7 @@ def run_pipeline(
     *,
     binder_chain: Optional[str] = None,
     target_chain: Optional[str] = None,
+    relaxer: Optional[Relaxer] = None,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -176,6 +178,10 @@ def run_pipeline(
             when None; an ID that is not in the structure raises ``ChainNotFoundError``.
         binder_chain, target_chain: Aliases of ``peptide_chain`` and ``receptor_chain``
             (keyword-only). Both spellings with different IDs raise ``ValueError``.
+        relaxer: A ``Relaxer`` to run in place of the default ``ImplicitRelaxation``
+            (keyword-only). It carries its own configuration, so ``md_duration_ps``,
+            ``device`` and the chain IDs are not passed to it; ``random_seed`` still
+            seeds prep and the energy step. Ignored when ``skip_relax`` is true.
         random_seed: Seed for hydrogen placement and MD; ``None`` for fresh randomness.
         openfold_seeds: Seed values written to the OpenFold3 query JSON; ``None``
             keeps the OpenFold default. Separate from ``random_seed``.
@@ -303,27 +309,29 @@ def run_pipeline(
     relaxed_path: Optional[Path] = None
     if not skip_relax:
         _step("Relaxation (implicit MD)")
-        if device == "cpu" and md_duration_ps > 0:
-            logger.warning(
-                "\n  *** WARNING: running MD on CPU is extremely slow and not recommended. ***\n"
-                "  *** For production use, run on a CUDA-capable GPU (--device cuda).   ***\n"
-                "  *** Use --md-duration-ps 0 to minimize only if GPU is unavailable.   ***\n"
-            )
-        from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
+        if relaxer is None:
+            if device == "cpu" and md_duration_ps > 0:
+                logger.warning(
+                    "\n  *** WARNING: running MD on CPU is extremely slow "
+                    "and not recommended. ***\n"
+                    "  *** For production use, run on a CUDA-capable GPU (--device cuda).   ***\n"
+                    "  *** Use --md-duration-ps 0 to minimize only if GPU is unavailable.   ***\n"
+                )
+            from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
 
-        config = RelaxationConfig(
-            md_duration_ps=md_duration_ps,
-            md_save_interval_ps=md_save_interval_for(md_duration_ps),
-            device=device,
-            peptide_chain_id=peptide_chain_label,
-            receptor_chain_id=receptor_chain_label,
-            cyclic_bond_hints=cyclic_bond_hints or None,
-            # Auto-parameterise any non-canonical residue (e.g. cyclosporin's
-            # BMT/ABA) with GAFF2 ExternalBond templates so relaxation builds.
-            small_molecules="auto",
-            random_seed=random_seed,
-        )
-        relaxer = ImplicitRelaxation(config)
+            config = RelaxationConfig(
+                md_duration_ps=md_duration_ps,
+                md_save_interval_ps=md_save_interval_for(md_duration_ps),
+                device=device,
+                peptide_chain_id=peptide_chain_label,
+                receptor_chain_id=receptor_chain_label,
+                cyclic_bond_hints=cyclic_bond_hints or None,
+                # Auto-parameterise any non-canonical residue (e.g. cyclosporin's
+                # BMT/ABA) with GAFF2 ExternalBond templates so relaxation builds.
+                small_molecules="auto",
+                random_seed=random_seed,
+            )
+            relaxer = ImplicitRelaxation(config)
         t0 = time.time()
         relax_result = relaxer.run(prepped_path, output_dir, sample_id=sample_id)
         elapsed = time.time() - t0
