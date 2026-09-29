@@ -190,6 +190,7 @@ def compute_dockq_metrics(
             full_cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         if proc.returncode != 0:
             raise RuntimeError(
@@ -199,7 +200,7 @@ def compute_dockq_metrics(
             )
 
         try:
-            data = json.loads(json_path.read_text())
+            data = json.loads(json_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError(
                 f"Could not read DockQ JSON output at {json_path}: {exc}\n"

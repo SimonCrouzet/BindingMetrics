@@ -869,7 +869,9 @@ def _receptor_energy(
 
     tmp_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False, mode="w") as tmp:
+        with tempfile.NamedTemporaryFile(
+            suffix=".pdb", delete=False, mode="w", encoding="utf-8"
+        ) as tmp:
             tmp_path = Path(tmp.name)
         out_pdb = pdb_io.PDBFile()
         pdb_io.set_structure(out_pdb, chain_atoms)
@@ -1255,7 +1257,7 @@ def _write_csv(result: dict, output_path: Path) -> None:
     if not rows:
         return
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w", newline="") as f:
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
@@ -1413,7 +1415,7 @@ def main():
             if suffix == ".csv":
                 _write_csv(result, args.output)
             else:
-                with open(args.output, "w") as f:
+                with open(args.output, "w", encoding="utf-8") as f:
                     json.dump(result, f, indent=2, default=_json_default)
             print(f"\n  Results written to: {args.output}")
 

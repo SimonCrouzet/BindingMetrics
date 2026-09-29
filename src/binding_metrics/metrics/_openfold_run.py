@@ -72,7 +72,7 @@ def _write_runner_yaml(
         content = "".join(lines)
 
     yaml_path = output_dir / "runner_config.yaml"
-    yaml_path.write_text(content)
+    yaml_path.write_text(content, encoding="utf-8")
     return yaml_path
 
 
@@ -195,7 +195,9 @@ def _write_a3m_self_alignment(
     """
     n = len(sequence)
     template_header = f"{entry_id}_{chain_id}/{1}-{n}"
-    output_path.write_text(f">{query_id}/1-{n}\n{sequence}\n>{template_header}\n{sequence}\n")
+    output_path.write_text(
+        f">{query_id}/1-{n}\n{sequence}\n>{template_header}\n{sequence}\n", encoding="utf-8"
+    )
 
 
 def prepare_refolding_query(
@@ -316,7 +318,7 @@ def prepare_refolding_query(
         },
     }
     query_json_path = output_dir / f"{query_name}_query.json"
-    query_json_path.write_text(json.dumps(query, indent=2))
+    query_json_path.write_text(json.dumps(query, indent=2), encoding="utf-8")
     return query_json_path
 
 
@@ -442,7 +444,7 @@ def prepare_scoring_query(
         },
     }
     query_json_path = output_dir / f"{query_name}_query.json"
-    query_json_path.write_text(json.dumps(query, indent=2))
+    query_json_path.write_text(json.dumps(query, indent=2), encoding="utf-8")
     return query_json_path
 
 
@@ -539,7 +541,9 @@ def prepare_batched_scoring_queries(
         }
 
     query_json_path = output_dir / "batch_query.json"
-    query_json_path.write_text(json.dumps({"seeds": seed_values, "queries": queries}, indent=2))
+    query_json_path.write_text(
+        json.dumps({"seeds": seed_values, "queries": queries}, indent=2), encoding="utf-8"
+    )
     return query_json_path
 
 
@@ -607,5 +611,7 @@ def prepare_batched_refolding_queries(
         }
 
     query_json_path = output_dir / "batch_query.json"
-    query_json_path.write_text(json.dumps({"seeds": seed_values, "queries": queries}, indent=2))
+    query_json_path.write_text(
+        json.dumps({"seeds": seed_values, "queries": queries}, indent=2), encoding="utf-8"
+    )
     return query_json_path

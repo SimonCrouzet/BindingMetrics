@@ -164,7 +164,7 @@ def _parse_confidences_aggregated(path: Path) -> dict:
         sample_ranking_score, chain_ptm (dict), chain_pair_iptm (dict),
         bespoke_iptm (dict).
     """
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         raw = json.load(fh)
 
     def _f(key):
@@ -207,7 +207,7 @@ def _parse_confidences(path: Path) -> dict:
         data = np.load(path, allow_pickle=True)
         raw = {k: data[k] for k in data.files}
     else:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             raw = json.load(fh)
 
     def _arr(key):
@@ -233,7 +233,7 @@ def _parse_confidences(path: Path) -> dict:
 
 def _parse_timing(path: Path) -> dict:
     """Parse ``timing.json``."""
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         return json.load(fh)
 
 
