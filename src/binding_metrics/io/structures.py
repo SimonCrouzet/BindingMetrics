@@ -812,13 +812,13 @@ def _rename_internal_residues_to_standard(cif_path: Path) -> None:
     """
     import re
 
-    content = cif_path.read_text()
+    content = cif_path.read_text(encoding="utf-8")
     new_content = content
     for internal, standard in _FF_INTERNAL_RESIDUE_RENAMES:
         if internal in new_content:
             new_content = re.sub(rf"\b{internal}\b", standard, new_content)
     if new_content != content:
-        cif_path.write_text(new_content)
+        cif_path.write_text(new_content, encoding="utf-8")
 
 
 def _ids_fit_cif(topology) -> bool:
@@ -875,7 +875,7 @@ def save_cif(
         # Without a source CIF to read the caller's IDs from, the topology's own
         # chain IDs and residue numbers are the only ones there are. PDBxFile
         # would replace them with A, B, C... and 1, 2, 3...
-        with open(output_path, "w") as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             PDBxFile.writeFile(topology, positions, f, keepIds=_ids_fit_cif(topology))
         # PDBxFile only writes disulfide bonds to _struct_conn; patch in any
         # other non-sequential intra-chain covalent bonds (e.g. head-to-tail).
@@ -893,14 +893,16 @@ def save_cif(
             output_path,
             source_cif_path,
         )
-        with open(output_path, "w") as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             PDBxFile.writeFile(topology, positions, f)
         _rename_internal_residues_to_standard(output_path)
         return
 
     # Write fresh OpenMM CIF — correct atoms and H, but with label chain IDs
     # and 1-based sequential auth_seq_id.
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".cif", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".cif", delete=False, encoding="utf-8"
+    ) as tmp:
         tmp_path = Path(tmp.name)
         PDBxFile.writeFile(topology, positions, tmp)
 
@@ -1139,7 +1141,7 @@ def _append_missing_conect(topology, output_path: Path) -> None:
     if not missing:
         return
 
-    lines = output_path.read_text().splitlines(keepends=True)
+    lines = output_path.read_text(encoding="utf-8").splitlines(keepends=True)
 
     # Map topology atom order onto the serial numbers OpenMM actually wrote,
     # by reading them back rather than re-deriving its numbering (which skips
@@ -1168,7 +1170,9 @@ def _append_missing_conect(topology, output_path: Path) -> None:
             insert_at = idx
         elif lines[idx].strip():
             break
-    output_path.write_text("".join(lines[:insert_at] + conect + lines[insert_at:]))
+    output_path.write_text(
+        "".join(lines[:insert_at] + conect + lines[insert_at:]), encoding="utf-8"
+    )
 
 
 def save_structure(
@@ -1199,7 +1203,7 @@ def save_structure(
     elif suffix == ".pdb":
         from openmm.app import PDBFile
 
-        with open(output_path, "w") as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             PDBFile.writeFile(topology, positions, f)
         _append_missing_conect(topology, output_path)
     else:
