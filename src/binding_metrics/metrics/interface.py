@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 
 _HETERO_MODES = ("ignore", "keep")
 
+# Polymer residues that biotite's CCD-based amino-acid filter does not know:
+# AMBER/OpenMM protonation variants and the terminal capping groups. Structures
+# that come from MD or from other modelling tools carry them, and dropping them
+# would remove residues of the chain instead of the surrounding solvent.
+_AMBER_VARIANT_NAMES = frozenset({"HID", "HIE", "HIN", "CYX", "ASH"})
+_CAP_NAMES = frozenset({"ACE", "NME", "NH2"})
+
 # Eisenberg-McLachlan atomic solvation parameters (kcal/mol/Å²).
 # Negative = apolar/hydrophobic (burial is favorable).
 # Positive = polar/hydrophilic (burial is unfavorable).
@@ -86,10 +93,11 @@ def filter_hetero_atoms(atoms, hetero: Literal["ignore", "keep"] = "ignore"):
 
     Args:
         atoms: biotite AtomArray.
-        hetero: "ignore" keeps only amino-acid atoms, using
+        hetero: "ignore" keeps the polymer: amino-acid atoms selected with
             ``biotite.structure.filter_amino_acids`` (this includes D- and
-            other non-canonical peptide-linking residues); "keep" returns the
-            input unchanged.
+            other non-canonical peptide-linking residues), the AMBER
+            protonation variants (HID, HIE, HIN, CYX, ASH) and the ACE, NME
+            and NH2 capping groups. "keep" returns the input unchanged.
 
     Returns:
         The AtomArray to use for chain selection.
@@ -102,7 +110,13 @@ def filter_hetero_atoms(atoms, hetero: Literal["ignore", "keep"] = "ignore"):
     if hetero == "keep":
         return atoms
     struc, _, _, _, _ = _import_biotite()
-    return atoms[struc.filter_amino_acids(atoms)]
+    res_names = np.char.upper(np.char.strip(atoms.res_name.astype(str)))
+    polymer = (
+        struc.filter_amino_acids(atoms)
+        | np.isin(res_names, list(_AMBER_VARIANT_NAMES))
+        | np.isin(res_names, list(_CAP_NAMES))
+    )
+    return atoms[polymer]
 
 
 def detect_interface_chains(
@@ -287,11 +301,12 @@ def compute_interface_metrics(
         probe_radius: Solvent probe radius in Å (default 1.4 Å = water)
         interface_threshold: Minimum residue buried SASA (Å²) to classify
             a residue as an interface residue (default 0.5 Å²)
-        hetero: "ignore" (default) keeps only amino-acid atoms before the
-            chain selection, so waters, ions, ligands and glycans that carry
-            a protein chain ID are dropped. "keep" uses every atom with the
-            chain ID as before; atoms without a defined SASA (water, ions)
-            then count as zero area instead of turning the sums into NaN.
+        hetero: "ignore" (default) keeps only the polymer before the chain
+            selection (see :func:`filter_hetero_atoms`), so waters, ions,
+            ligands and glycans that carry a protein chain ID are dropped.
+            "keep" uses every atom with the chain ID as before; atoms without
+            a defined SASA (water, ions) then count as zero area instead of
+            turning the sums into NaN.
 
     Returns:
         Dictionary with keys:
@@ -508,8 +523,9 @@ def main():
         choices=_HETERO_MODES,
         default="ignore",
         help=(
-            "Heteroatoms (waters, ions, ligands, glycans): 'ignore' keeps only amino-acid "
-            "atoms (default), 'keep' uses every atom carrying the chain ID"
+            "Heteroatoms (waters, ions, ligands, glycans): 'ignore' keeps only the polymer "
+            "(amino acids and terminal caps, default), 'keep' uses every atom carrying the "
+            "chain ID"
         ),
     )
     from binding_metrics.cli import add_log_file_arg

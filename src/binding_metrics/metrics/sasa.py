@@ -145,11 +145,12 @@ def compute_delta_sasa_static(
         peptide_chain: Chain ID of the peptide
         receptor_chain: Chain ID of the receptor
         probe_radius: Solvent probe radius in Ångström (default 1.4 = water)
-        hetero: "ignore" (default) keeps only amino-acid atoms before the chain
-            selection, so waters, ions, ligands and glycans that carry a
-            protein chain ID are dropped. "keep" uses every atom with the chain
-            ID; atoms without a defined SASA (water, ions) then count as zero
-            area instead of turning the sums into NaN.
+        hetero: "ignore" (default) keeps only the polymer before the chain
+            selection (see ``interface.filter_hetero_atoms``), so waters,
+            ions, ligands and glycans that carry a protein chain ID are
+            dropped. "keep" uses every atom with the chain ID; atoms without
+            a defined SASA (water, ions) then count as zero area instead of
+            turning the sums into NaN.
 
     Returns:
         Dictionary with keys:

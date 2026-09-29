@@ -135,6 +135,30 @@ class TestFilterHeteroAtoms:
             compute_interface_metrics(P53_MDM2, hetero="drop")
 
 
+class TestPolymerVariantsSurviveIgnore:
+    """AMBER protonation variants and terminal caps belong to the chain, not to the solvent."""
+
+    def test_variants_and_caps_are_kept_and_solvent_is_dropped(self):
+        atoms = load_biotite_structure(P53_MDM2)[:8].copy()
+        atoms.res_name[:] = ["HIE", "HID", "CYX", "ASH", "ACE", "NME", "NH2", "HOH"]
+        kept = filter_hetero_atoms(atoms, "ignore")
+        assert list(kept.res_name) == ["HIE", "HID", "CYX", "ASH", "ACE", "NME", "NH2"]
+
+    def test_histidine_variant_names_do_not_change_the_interface(self, tmp_path):
+        atoms = load_biotite_structure(P53_MDM2)
+        histidines = atoms.res_name == "HIS"
+        assert histidines.sum() > 0
+        atoms.res_name[histidines] = "HIE"
+        path = tmp_path / "p53_hie.pdb"
+        pdb_file = pdb_io.PDBFile()
+        pdb_io.set_structure(pdb_file, atoms)
+        pdb_file.write(str(path))
+
+        result = compute_interface_metrics(path, "B", "A")
+        assert result["delta_sasa"] == pytest.approx(P53_DELTA_SASA, rel=1e-6)
+        assert result["delta_g_int"] == pytest.approx(P53_DELTA_G_INT, rel=1e-5)
+
+
 class TestReason:
     def test_missing_chain_keeps_nan_and_explains(self):
         result = compute_interface_metrics(P53_MDM2, design_chain="Z", receptor_chain="A")
