@@ -246,6 +246,8 @@ def _chain_token_offsets(atoms) -> dict[str, tuple[int, int]]:
 
     Preserves the order chains first appear in the structure, which matches
     the PAE matrix token ordering (same order as the query JSON chains).
+    The one-token-per-residue assumption fails for ligands and modified
+    residues; :func:`_check_token_offsets` compares the result with the matrix.
 
     Returns:
         Dict ``{chain_id: (start, end)}`` where ``end = start + n_residues``.
@@ -261,6 +263,41 @@ def _chain_token_offsets(atoms) -> dict[str, tuple[int, int]]:
         offsets[chain_id] = (offset, offset + n_res)
         offset += n_res
     return offsets
+
+
+def _check_token_offsets(
+    offsets: dict[str, tuple[int, int]],
+    matrix: np.ndarray,
+    matrix_name: str,
+) -> None:
+    """Raise ``ValueError`` unless residue-based token offsets fit ``matrix``.
+
+    ``_chain_token_offsets`` assumes one token per residue. AlphaFold3-style
+    models use one token per standard residue but one per heavy atom for
+    ligands and modified residues, so a structure with such components has
+    fewer residues than the matrix has tokens and every offset after the first
+    such component would slice the wrong block. Only an exact match is trusted.
+
+    Args:
+        offsets: Result of :func:`_chain_token_offsets`.
+        matrix: PDE or PAE matrix.
+        matrix_name: ``"PDE"`` or ``"PAE"``, for the error message.
+
+    Raises:
+        ValueError: If the matrix is not square or its size differs from the
+            total residue count.
+    """
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+        raise ValueError(f"{matrix_name} matrix must be square, got shape {matrix.shape}.")
+    n_tokens = matrix.shape[0]
+    n_residues = max((end for _, end in offsets.values()), default=0)
+    if n_tokens != n_residues:
+        per_chain = ", ".join(f"{cid}: {end - start}" for cid, (start, end) in offsets.items())
+        raise ValueError(
+            f"{matrix_name} matrix has {n_tokens} tokens but the structure has {n_residues} "
+            f"residues ({per_chain}). Residue-based chain offsets do not apply, probably "
+            "because a ligand, ion or modified residue is tokenised per atom."
+        )
 
 
 def _binder_plddt_per_residue(
@@ -380,11 +417,16 @@ def _interface_pde_stats(
             ``max_interface_pde`` (float): Max PDE over the interface slice (Å).
             ``n_binder_tokens`` (int): Binder residue token count.
             ``n_receptor_tokens`` (int): Receptor residue token count.
+
+    Raises:
+        ValueError: If a chain is not in the structure, or the matrix size does
+            not equal the residue count (see :func:`_check_token_offsets`).
     """
     offsets = _chain_token_offsets(atoms)
     missing = [c for c in (binder_chain, receptor_chain) if c not in offsets]
     if missing:
         raise ValueError(f"Chains not found in structure: {missing}")
+    _check_token_offsets(offsets, pde, "PDE")
     b0, b1 = offsets[binder_chain]
     r0, r1 = offsets[receptor_chain]
     sub = pde[b0:b1, r0:r1]
@@ -424,11 +466,16 @@ def _interface_pae_stats(
             ``max_interface_pae`` (float): Max PAE over the interface slice (Å).
             ``n_binder_tokens`` (int): Binder residue token count.
             ``n_receptor_tokens`` (int): Receptor residue token count.
+
+    Raises:
+        ValueError: If a chain is not in the structure, or the matrix size does
+            not equal the residue count (see :func:`_check_token_offsets`).
     """
     offsets = _chain_token_offsets(atoms)
     missing = [c for c in (binder_chain, receptor_chain) if c not in offsets]
     if missing:
         raise ValueError(f"Chains not found in structure: {missing}")
+    _check_token_offsets(offsets, pae, "PAE")
     b0, b1 = offsets[binder_chain]
     r0, r1 = offsets[receptor_chain]
     # PAE is asymmetric; average the binder→receptor and receptor→binder blocks
@@ -471,7 +518,9 @@ def compute_interface_pae(
 
     Raises:
         ValueError: If the confidences file has no PAE matrix (the run did not
-            enable the PAE head / persist full confidences).
+            enable the PAE head / persist full confidences), or if the matrix
+            size does not equal the structure's residue count (a ligand or
+            modified residue makes the token count differ).
     """
     conf = _parse_confidences(Path(confidences_path))
     pae = conf.get("pae")
@@ -574,6 +623,10 @@ def compute_openfold_metrics(
             binder_avg_plddt (float): mean pLDDT over all binder residues
 
         Interface PDE / PAE [requires binder_chain + receptor_chain]:
+            The block is located with one token per residue. When the matrix
+            size differs from the structure's residue count (a ligand, ion or
+            modified residue is tokenised per atom), the interface values stay
+            NaN, a warning is issued and ``reason`` says why.
             mean_interface_pde (float): mean PDE over binder×receptor tokens (Å)
             max_interface_pde (float): max PDE over binder×receptor tokens (Å)
             pde_interface (np.ndarray | None): raw PDE slice, shape
@@ -591,9 +644,14 @@ def compute_openfold_metrics(
 
         Timing:
             timing (dict): runtime entries from timing.json, empty if absent
+
+        Failures:
+            reason (str): present only when a requested value could not be
+                computed (it stays NaN); names the analysis and the cause.
     """
     output_dir = Path(output_dir)
     files = _find_prediction_files(output_dir, query_name, seed=seed, sample=sample)
+    reasons: list[str] = []
 
     result: dict = {
         "query_name": query_name,
@@ -704,6 +762,7 @@ def compute_openfold_metrics(
                             result["pde_interface"] = pde_stats["pde_interface"]
                     except Exception as exc:
                         warnings.warn(f"compute_openfold_metrics: interface PDE skipped: {exc}")
+                        reasons.append(f"interface PDE: {exc}")
 
                 # Interface PAE statistics (binder × receptor token block)
                 pae_src = result.get("pae")
@@ -720,6 +779,7 @@ def compute_openfold_metrics(
                             result["pae_interface"] = pae_stats["pae_interface"]
                     except Exception as exc:
                         warnings.warn(f"compute_openfold_metrics: interface PAE skipped: {exc}")
+                        reasons.append(f"interface PAE: {exc}")
 
             # Binder Cα RMSD vs. reference structure
             if reference_structure_path is not None:
@@ -734,6 +794,8 @@ def compute_openfold_metrics(
         except Exception as exc:
             warnings.warn(f"compute_openfold_metrics: structural analysis failed: {exc}")
 
+    if reasons:
+        result["reason"] = "; ".join(reasons)
     return result
 
 

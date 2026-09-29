@@ -365,6 +365,132 @@ class TestInterfacePaeStats:
 
 
 # ---------------------------------------------------------------------------
+# Tests: token offsets against the PDE/PAE matrix size
+# ---------------------------------------------------------------------------
+
+
+def _protein_ligand_atoms():
+    """Chains A (4 residues), B (3 residues) and a 5-atom ligand chain L (one residue)."""
+    struc = pytest.importorskip("biotite.structure")
+    atoms = []
+
+    def add(chain, res_id, res_name, atom_name, xyz, hetero=False):
+        atoms.append(
+            struc.Atom(
+                xyz,
+                chain_id=chain,
+                res_id=res_id,
+                res_name=res_name,
+                atom_name=atom_name,
+                element="C",
+                hetero=hetero,
+            )
+        )
+
+    for i in range(4):
+        add("A", i + 1, "ALA", "CA", [3.8 * i, 0.0, 0.0])
+    for i in range(3):
+        add("B", i + 1, "ALA", "CA", [3.8 * i, 5.0, 0.0])
+    for k in range(5):
+        add("L", 1, "LIG", f"C{k + 1}", [3.8 * k, 10.0, 0.0], hetero=True)
+    return struc.array(atoms)
+
+
+class TestTokenOffsetCheck:
+    """AF3-style models tokenise a ligand per atom: 4 + 3 residue tokens + 5 ligand tokens."""
+
+    @pytest.mark.parametrize(
+        "name, func", [("PAE", "_interface_pae_stats"), ("PDE", "_interface_pde_stats")]
+    )
+    def test_ligand_chain_shifts_the_token_count_and_is_rejected(self, name, func):
+        from binding_metrics.metrics import openfold
+
+        atoms = _protein_ligand_atoms()
+        matrix = np.zeros((12, 12))  # 4 + 3 + 5 tokens
+        with pytest.raises(ValueError, match=rf"{name} matrix has 12 tokens .* 8 residues"):
+            getattr(openfold, func)(matrix, atoms, binder_chain="B", receptor_chain="A")
+
+    def test_message_names_the_residue_count_of_every_chain(self):
+        from binding_metrics.metrics.openfold import _interface_pae_stats
+
+        with pytest.raises(ValueError, match=r"A: 4, B: 3, L: 1"):
+            _interface_pae_stats(np.zeros((12, 12)), _protein_ligand_atoms(), "B", "A")
+
+    def test_matrix_matching_the_residue_count_is_sliced_as_before(self):
+        from binding_metrics.metrics.openfold import _interface_pae_stats, _interface_pde_stats
+
+        atoms = _protein_ligand_atoms()
+        matrix = np.zeros((8, 8))  # one token per residue, ligand as one residue
+        matrix[4:7, 0:4] = 6.0
+        pae = _interface_pae_stats(matrix, atoms, "B", "A")
+        pde = _interface_pde_stats(matrix, atoms, "B", "A")
+        assert pae["pae_interface"].shape == (3, 4)
+        assert pde["mean_interface_pde"] == pytest.approx(6.0)
+
+    def test_matrix_smaller_than_the_residue_count_is_rejected(self):
+        from binding_metrics.metrics.openfold import _interface_pde_stats
+
+        with pytest.raises(ValueError, match="PDE matrix has 6 tokens"):
+            _interface_pde_stats(np.zeros((6, 6)), _protein_ligand_atoms(), "B", "A")
+
+    def test_non_square_matrix_is_rejected(self):
+        from binding_metrics.metrics.openfold import _interface_pae_stats
+
+        with pytest.raises(ValueError, match="must be square"):
+            _interface_pae_stats(np.zeros((8, 5)), _protein_ligand_atoms(), "B", "A")
+
+    def _write_run(self, tmp_path, n_tokens):
+        pdbx = pytest.importorskip("biotite.structure.io.pdbx")
+        atoms = _protein_ligand_atoms()
+        conf = {
+            "plddt": np.full(atoms.array_length(), 90.0),
+            "gpde": 1.0,
+            "pde": np.full((n_tokens, n_tokens), 2.0),
+            "pae": np.full((n_tokens, n_tokens), 3.0),
+        }
+        root = _make_seed_dir(tmp_path, "lig", agg=_default_agg(n_chains=2), conf=conf)
+        cif = pdbx.CIFFile()
+        pdbx.set_structure(cif, atoms)
+        cif.write(str(root / "lig" / "seed_1" / "lig_seed_1_sample_1_model.cif"))
+        return root
+
+    def test_compute_openfold_metrics_leaves_interface_values_nan_with_a_reason(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = self._write_run(tmp_path, n_tokens=12)
+        with pytest.warns(UserWarning, match="interface PDE skipped"):
+            metrics = compute_openfold_metrics(root, "lig", binder_chain="B", receptor_chain="A")
+        assert np.isnan(metrics["mean_interface_pde"])
+        assert np.isnan(metrics["mean_interface_pae"])
+        assert "PDE matrix has 12 tokens" in metrics["reason"]
+        assert "PAE matrix has 12 tokens" in metrics["reason"]
+        # values that do not depend on the token layout are still reported
+        assert metrics["binder_avg_plddt"] == pytest.approx(90.0)
+
+    def test_no_reason_key_when_offsets_fit(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = self._write_run(tmp_path, n_tokens=8)
+        metrics = compute_openfold_metrics(root, "lig", binder_chain="B", receptor_chain="A")
+        assert metrics["mean_interface_pde"] == pytest.approx(2.0)
+        assert metrics["mean_interface_pae"] == pytest.approx(3.0)
+        assert "reason" not in metrics
+
+    def test_compute_interface_pae_raises_for_a_ligand_complex(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_interface_pae
+
+        root = self._write_run(tmp_path, n_tokens=12)
+        seed_dir = root / "lig" / "seed_1"
+        with pytest.raises(ValueError, match="PAE matrix has 12 tokens"):
+            compute_interface_pae(
+                seed_dir / "lig_seed_1_sample_1_confidences.json",
+                seed_dir / "lig_seed_1_sample_1_model.cif",
+                binder_chain="B",
+                receptor_chain="A",
+            )
+
+
+# ---------------------------------------------------------------------------
 # Tests: _write_runner_yaml
 # ---------------------------------------------------------------------------
 
