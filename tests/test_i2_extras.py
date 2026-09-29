@@ -15,7 +15,7 @@ def extras() -> dict:
     pyproject = ROOT / "pyproject.toml"
     if not pyproject.exists():
         pytest.skip("pyproject.toml not found")
-    return tomllib.loads(pyproject.read_text())["project"]["optional-dependencies"]
+    return tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["optional-dependencies"]
 
 
 def _distribution(requirement: str) -> str:

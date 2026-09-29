@@ -42,10 +42,12 @@ def fake_antechamber(monkeypatch):
 
     def fake(args, workdir):
         sdf = Path(workdir, "molecule.sdf")
-        calls.append({"args": list(args), "sdf": sdf.read_text() if sdf.exists() else None})
+        calls.append(
+            {"args": list(args), "sdf": sdf.read_text(encoding="utf-8") if sdf.exists() else None}
+        )
         if "charges.txt" in args:
             n_atoms = _atom_count(calls[0]["sdf"])
-            Path(workdir, "charges.txt").write_text(" ".join(["0.01"] * n_atoms))
+            Path(workdir, "charges.txt").write_text(" ".join(["0.01"] * n_atoms), encoding="utf-8")
 
     monkeypatch.setattr(gaff_ncaa, "_run_antechamber", fake)
     return calls
@@ -88,7 +90,7 @@ class TestAm1bccCommand:
     def test_wrong_number_of_charges_is_an_error(self, monkeypatch):
         def fake(args, workdir):
             if "charges.txt" in args:
-                Path(workdir, "charges.txt").write_text("0.1 0.2")
+                Path(workdir, "charges.txt").write_text("0.1 0.2", encoding="utf-8")
 
         monkeypatch.setattr(gaff_ncaa, "_run_antechamber", fake)
         with pytest.raises(RuntimeError, match="2 AM1-BCC charges for 12 atoms"):
@@ -104,9 +106,9 @@ class TestConformerSeed:
 
         def fake(args, workdir):
             if "molecule.sdf" in args:
-                sdf_texts.append(Path(workdir, "molecule.sdf").read_text())
+                sdf_texts.append(Path(workdir, "molecule.sdf").read_text(encoding="utf-8"))
             if "charges.txt" in args:
-                Path(workdir, "charges.txt").write_text(" ".join(["0.0"] * 12))
+                Path(workdir, "charges.txt").write_text(" ".join(["0.0"] * 12), encoding="utf-8")
 
         monkeypatch.setattr(gaff_ncaa, "_run_antechamber", fake)
         gaff_ncaa._am1bcc_charges(openff_molecule.from_smiles("CCCO"), **kwargs)
@@ -181,7 +183,7 @@ def two_propanol_builds():
     def spy(args, workdir):
         original(args, workdir)
         if "bcc" in args:
-            outputs.append(Path(workdir, "sqm.out").read_text())
+            outputs.append(Path(workdir, "sqm.out").read_text(encoding="utf-8"))
 
     molecule = openff_molecule.from_smiles("CCCO")
     gaff_ncaa._run_antechamber = spy
@@ -294,13 +296,15 @@ class TestTheChargeConformerHasTheInputStereochemistry:
 
         def fake(args, workdir):
             if "molecule.sdf" in args:
-                sdf_texts.append(Path(workdir, "molecule.sdf").read_text())
+                sdf_texts.append(Path(workdir, "molecule.sdf").read_text(encoding="utf-8"))
             if "charges.txt" in args:
                 # Non-zero charges: all-zero ones make the template generator run its own
                 # AM1-BCC calculation.
                 n_atoms = _atom_count(sdf_texts[0])
                 charges = np.linspace(-0.01, 0.01, n_atoms)
-                Path(workdir, "charges.txt").write_text(" ".join(str(q) for q in charges))
+                Path(workdir, "charges.txt").write_text(
+                    " ".join(str(q) for q in charges), encoding="utf-8"
+                )
 
         monkeypatch.setattr(gaff_ncaa, "_run_antechamber", fake)
         topology, positions, residue = _aba_between_two_neighbours(smiles)

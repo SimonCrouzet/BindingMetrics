@@ -570,7 +570,13 @@ def _run_antechamber(args: list, workdir: str) -> None:
     env = dict(os.environ)
     env.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
     proc = subprocess.run(
-        ["antechamber", *args], cwd=workdir, env=env, capture_output=True, text=True, check=False
+        ["antechamber", *args],
+        cwd=workdir,
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     if proc.returncode != 0:
         tail = (proc.stdout + proc.stderr).strip().splitlines()[-5:]
@@ -645,7 +651,9 @@ def _am1bcc_charges(molecule, random_seed: Optional[int] = DEFAULT_RANDOM_SEED) 
             + ["-fo", "mol2", "-c", "wc", "-cf", "charges.txt", "-pf", "yes"],
             workdir,
         )
-        charges = np.array(Path(workdir, "charges.txt").read_text().split(), dtype=float)
+        charges = np.array(
+            Path(workdir, "charges.txt").read_text(encoding="utf-8").split(), dtype=float
+        )
 
     if charges.shape != (molecule.n_atoms,):
         raise RuntimeError(
@@ -991,7 +999,7 @@ def _inject_boundary_terms(
 def _load_ffxml(ff, ffxml_string: str) -> None:
     fd, path = tempfile.mkstemp(suffix=".xml")
     try:
-        with os.fdopen(fd, "w") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(ffxml_string)
         ff.loadFile(path)
     finally:

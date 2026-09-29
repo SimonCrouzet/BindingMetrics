@@ -64,7 +64,7 @@ class TestCyclicTopologySection:
 
         results_path = write_report(results, tmp_path, "3P8F", fmt="json", summary=True)
 
-        assert "## Cyclic topology" in (tmp_path / "3P8F_report.md").read_text()
-        assert json.loads(results_path.read_text())["relax"]["peptide_cyclic_bonds"] == (
-            SFTI1_CLOSURES
-        )
+        assert "## Cyclic topology" in (tmp_path / "3P8F_report.md").read_text(encoding="utf-8")
+        assert json.loads(results_path.read_text(encoding="utf-8"))["relax"][
+            "peptide_cyclic_bonds"
+        ] == (SFTI1_CLOSURES)
