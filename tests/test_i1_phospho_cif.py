@@ -467,3 +467,32 @@ class TestStapledPeptideOnChainC:
         with pytest.raises(GaffReachedError) as reached:
             prep_structure(topology, positions)
         assert reached.value.args[0] == ["C"]
+
+
+class TestChainLabelMatchesOpenMM:
+    """``peptide_chain_label`` must name the chain OpenMM built, whichever column it used.
+
+    OpenMM names chains by ``label_asym_id`` only when the file has more label IDs than
+    author IDs (a water or ligand gets a label ID of its own); otherwise by the author ID.
+    """
+
+    @pytest.mark.parametrize("water_of_auth", [None, "A"], ids=["author_ids", "label_ids"])
+    def test_label_names_the_chain_with_the_expected_residue_count(self, tmp_path, water_of_auth):
+        from openmm.app import PDBxFile
+
+        from binding_metrics.io.structures import detect_chains_from_file
+
+        if not PHOSPHO_PDB.exists():
+            pytest.skip("bundled phospho example not found")
+        # auth B is the 8-residue chain (label A); auth A is the 5-residue chain (label B).
+        cif = _write_mmcif(
+            tmp_path / "swapped.cif",
+            [("A", "B", 8, 0.0), ("B", "A", 5, 30.0)],
+            water_of_auth=water_of_auth,
+        )
+        info = detect_chains_from_file(cif, peptide_chain="B", receptor_chain="A", verbose=False)
+        residues = {
+            c.id: sum(1 for _ in c.residues()) for c in PDBxFile(str(cif)).topology.chains()
+        }
+        assert residues[info["peptide_chain_label"]] == 8
+        assert residues[info["receptor_chain_label"]] == 5

@@ -312,11 +312,14 @@ def detect_chains_from_file(
                 ``auth_asym_id`` in a CIF)
             receptor_chain (str): resolved receptor chain ID (author ID); None
                 when the file has a single protein chain
-            peptide_chain_label (str): the peptide chain ID as OpenMM sees it
-                (``label_asym_id`` in a CIF), which OpenMM-based steps need. It
-                equals ``peptide_chain`` for PDB files and for CIFs whose author
-                and label IDs agree, and when the mapping cannot be built (a
-                warning is logged then).
+            peptide_chain_label (str): the peptide chain ID as OpenMM sees it, which
+                OpenMM-based steps need. OpenMM's PDBxFile names the chains by
+                ``label_asym_id`` when the file has more distinct label IDs than
+                author IDs (waters and ligands each get their own label ID), and
+                by the author ID otherwise. It equals ``peptide_chain`` for PDB
+                files, for CIFs whose author and label IDs agree, for CIFs with
+                as many author IDs as label IDs, and when the mapping cannot be
+                built (a warning is logged then).
             receptor_chain_label (str): same for the receptor chain
             peptide_n_residues (int): number of residues in peptide chain
             receptor_n_residues (int): number of residues in receptor chain
@@ -333,8 +336,9 @@ def detect_chains_from_file(
     suffix = path.suffix.lower()
 
     # Build auth→label chain ID mapping for CIF files.
-    # biotite uses auth_asym_id by default; OpenMM uses label_asym_id.
-    # When they differ, OpenMM-based steps need the label ID.
+    # biotite uses auth_asym_id by default; OpenMM uses label_asym_id when the file
+    # has more label IDs than author IDs, and auth_asym_id otherwise. OpenMM-based
+    # steps need the ID OpenMM used.
     # We restrict the mapping to CA atoms so that ligand/water label chains
     # (which share the same auth chain as the protein) don't overwrite the
     # protein label.
@@ -353,6 +357,10 @@ def detect_chains_from_file(
                     a_str, l_str = str(auth), str(label)
                     if a_str not in auth_to_label:  # first occurrence wins
                         auth_to_label[a_str] = l_str
+            if len(set(label_ids)) <= len(set(auth_ids)):
+                # OpenMM's PDBxFile keeps the author IDs unless there are strictly
+                # more label IDs; a label ID would then name another chain.
+                auth_to_label = {}
         except (KeyError, ValueError) as exc:
             # Without the label/auth pair the mapping stays empty, and the label
             # chain IDs handed to OpenMM-based steps fall back to the author IDs.
