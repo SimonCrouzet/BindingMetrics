@@ -10,6 +10,7 @@ import openmm.unit as unit
 from openmm.app import ForceField, Modeller, PDBFile
 
 from binding_metrics.core.forcefields import get_forcefield
+from binding_metrics.utils import add_to_report, extend_report
 
 log = logging.getLogger(__name__)
 
@@ -158,8 +159,10 @@ def _delete_zero_coord_atoms(fixer) -> "PDBFixer":
 def _topology_to_fixer(topology, positions) -> "PDBFixer":
     """Write topology+positions to a temp CIF and load with PDBFixer.
 
-    CIF preserves residue numbers and chain IDs through the roundtrip;
-    PDB format truncates residue numbers and may lose chain information.
+    CIF keeps atom and residue names and handles residue numbers beyond the
+    PDB limit of 9999; PDB format truncates them. Neither keeps the caller's
+    residue numbers or chain IDs: PDBxFile.writeFile renumbers residues from 1
+    in each chain and assigns chain IDs A, B, C, ... in order.
     """
     if not HAS_PDBFIXER:
         raise ImportError(
@@ -254,6 +257,61 @@ _METAL_ELEMENTS = {
 }
 
 _WATER_NAMES = {"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"}
+
+#: Longest C(i)-N(i+1) distance still read as a peptide bond. A real amide bond
+#: is about 1.33 A; one missing residue puts the neighbours at 3.8 A or more, so
+#: 2.0 A separates the two cases with room for poor geometry.
+_PEPTIDE_BOND_MAX_ANGSTROM = 2.0
+
+
+def _count_residue_gaps(topology, positions) -> int:
+    """Count places where a chain skips residues (unresolved loops).
+
+    A gap is a pair of consecutive amino-acid residues in one chain whose residue
+    numbers jump by more than 1 and whose C and N atoms are not bonded. The
+    distance test keeps a chain that is merely renumbered from being counted.
+    When the C or N atom is absent, or sits at the origin as a placeholder, the
+    numbering jump alone decides.
+
+    Call it on the topology as loaded from the file. PDBFixer's own
+    ``missingResidues`` cannot serve: it reads the sequence records of the input
+    file, which the topology-to-CIF round trip in :func:`_topology_to_fixer` does
+    not carry, and that round trip also renumbers residues from 1 in each chain.
+    """
+    import numpy as np
+
+    coords_angstrom = np.array(positions.value_in_unit(unit.nanometer)) * 10.0
+
+    def _coords_or_none(index):
+        if index is None:
+            return None
+        xyz = coords_angstrom[index]
+        return None if np.abs(xyz).max() < 1e-6 else xyz  # origin = placeholder
+
+    n_gaps = 0
+    for chain in topology.chains():
+        previous = None
+        for res in chain.residues():
+            atoms = {a.name: a.index for a in res.atoms()}
+            if "CA" not in atoms:
+                continue  # water, ion, ligand or nucleotide
+            if previous is not None:
+                try:
+                    jump = int(res.id) - int(previous[0].id)
+                except ValueError:
+                    jump = 1  # non-numeric residue id: cannot judge
+                if jump > 1:
+                    c_xyz = _coords_or_none(previous[1].get("C"))
+                    n_xyz = _coords_or_none(atoms.get("N"))
+                    bonded = (
+                        c_xyz is not None
+                        and n_xyz is not None
+                        and np.linalg.norm(c_xyz - n_xyz) < _PEPTIDE_BOND_MAX_ANGSTROM
+                    )
+                    if not bonded:
+                        n_gaps += 1
+            previous = (res, atoms)
+    return n_gaps
 
 
 def _add_hydrogens_cyclic(
@@ -446,6 +504,7 @@ def prep_structure(
     canonicalize: bool = False,
     rebuild_zero_coord_atoms: bool = True,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+    report: Optional[dict] = None,
 ) -> tuple:
     """Fix missing residues/atoms and add hydrogens in one PDBFixer pass.
 
@@ -467,6 +526,22 @@ def prep_structure(
             jitter and PDBFixer's atom-rebuild minimization). A fixed int (the
             default) makes prep reproducible; ``None`` opts into fresh
             randomness.
+        report: Optional dict filled in place with what prep changed. Lists
+            and counts accumulate when one dict is passed to several calls.
+            Keys:
+
+            * ``removed_heterogens`` (list[str]): ``"NAME (chain X)"`` for each
+              removed non-water heterogen (free ligands, additives, glycans).
+            * ``n_removed_waters`` (int): water molecules removed (0 when
+              ``keep_water`` is True).
+            * ``kept_nonstandard`` (list[str]): non-standard residues and metal
+              ions that were kept.
+            * ``n_missing_atoms_rebuilt`` (int): heavy atoms PDBFixer added,
+              including atoms deleted as origin placeholders and terminal OXT.
+            * ``n_missing_residue_gaps`` (int): chain positions where residues
+              are unresolved and were left as a gap, not rebuilt.
+
+            Behaviour is identical when ``report`` is None.
 
     Returns:
         Tuple of (topology, positions) with repaired and protonated structure
@@ -477,12 +552,20 @@ def prep_structure(
     # after addMissingAtoms via _rebuild_connect_records.
     custom_bonds = _extract_custom_bonds(topology)
 
+    # Residue numbers and chain IDs do not survive the PDBFixer round trip, so
+    # read the numbering gaps and the caller's chain IDs off the input topology.
+    input_chain_ids = [chain.id for chain in topology.chains()]
+    n_residue_gaps = _count_residue_gaps(topology, positions)
+
     fixer = _topology_to_fixer(topology, positions)
 
     if rebuild_zero_coord_atoms:
         fixer = _delete_zero_coord_atoms(fixer)
 
     fixer.findMissingResidues()
+    # PDBFixer's own list is empty on this path (see _count_residue_gaps) but
+    # would be authoritative if sequence records existed.
+    n_residue_gaps = max(n_residue_gaps, len(fixer.missingResidues))
     fixer.findNonstandardResidues()
 
     if canonicalize:
@@ -510,7 +593,9 @@ def prep_structure(
     # integrator, so an unseeded call makes prep irreproducible for any
     # structure with missing side-chain atoms. addMissingAtoms(seed=None) leaves
     # the integrator unseeded (fresh randomness), matching random_seed=None.
+    n_atoms_before_rebuild = fixer.topology.getNumAtoms()
     fixer.addMissingAtoms(seed=random_seed)
+    n_atoms_rebuilt = fixer.topology.getNumAtoms() - n_atoms_before_rebuild
 
     # Detect and register all non-standard bonds from the rebuilt geometry
     # (SS bonds, CYS→CYX rename). Must run after addMissingAtoms so that
@@ -527,33 +612,47 @@ def prep_structure(
     residues_to_remove = []
     kept_nonstandard: list = []
     removed_heterogens: list = []
+    n_removed_waters = 0
+
+    # PDBFixer regenerates chain IDs (A, B, C, ...); name chains by the caller's IDs
+    # when the chain count survived the round trip.
+    keep_input_ids = fixer.topology.getNumChains() == len(input_chain_ids)
 
     for chain in fixer.topology.chains():
+        chain_label = input_chain_ids[chain.index] if keep_input_ids else chain.id
         for res in chain.residues():
             if res.name in _STANDARD_RESIDUES:
                 continue
 
             elements = {atom.element.symbol for atom in res.atoms() if atom.element is not None}
             if elements & _METAL_ELEMENTS:
-                kept_nonstandard.append(f"{res.name} (metal, chain {chain.id})")
+                kept_nonstandard.append(f"{res.name} (metal, chain {chain_label})")
                 continue
 
             if res.name in _WATER_NAMES:
                 if not keep_water:
                     residues_to_remove.append(res)
+                    n_removed_waters += 1
                 continue
 
             if chain.id in protein_chains:
-                kept_nonstandard.append(f"{res.name} (chain {chain.id})")
+                kept_nonstandard.append(f"{res.name} (chain {chain_label})")
                 continue
 
-            removed_heterogens.append(f"{res.name} (chain {chain.id})")
+            removed_heterogens.append(f"{res.name} (chain {chain_label})")
             residues_to_remove.append(res)
 
     if kept_nonstandard:
         log.info("Kept non-standard residues: %s", ", ".join(kept_nonstandard))
     if removed_heterogens:
         log.info("Removed heterogens: %s", ", ".join(removed_heterogens))
+
+    if report is not None:
+        extend_report(report, "removed_heterogens", removed_heterogens)
+        add_to_report(report, "n_removed_waters", n_removed_waters)
+        extend_report(report, "kept_nonstandard", kept_nonstandard)
+        add_to_report(report, "n_missing_atoms_rebuilt", n_atoms_rebuilt)
+        add_to_report(report, "n_missing_residue_gaps", n_residue_gaps)
 
     if residues_to_remove:
         modeller = Modeller(fixer.topology, fixer.positions)

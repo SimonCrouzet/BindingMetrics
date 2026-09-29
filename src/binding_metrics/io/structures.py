@@ -7,7 +7,7 @@ from typing import Optional
 from openmm import app
 from openmm.app import PDBFile
 
-from binding_metrics.utils import backfill_auth_columns
+from binding_metrics.utils import add_to_report, backfill_auth_columns, extend_report
 
 
 def load_complex(pdb_path: str | Path) -> PDBFile:
@@ -318,6 +318,7 @@ def strip_heterogens(
     peptide_chain: Optional[str],
     receptor_chain: Optional[str],
     warn_cutoff_ang: float = 8.0,
+    report: Optional[dict] = None,
 ):
     """Remove non-protein residues from topology, warning if close to the interface.
 
@@ -328,6 +329,14 @@ def strip_heterogens(
         receptor_chain: Receptor chain ID to preserve.
         warn_cutoff_ang: Distance threshold in Å; heterogens within this distance
             trigger a warning before removal.
+        report: Optional dict filled in place with what was removed. Lists and
+            counts accumulate when one dict is passed to several calls. Keys:
+
+            * ``removed_heterogens`` (list[str]): ``"NAME (chain X)"`` for each
+              removed non-water heterogen (ligands, ions, glycans).
+            * ``n_removed_waters`` (int): water molecules removed.
+
+            Behaviour is identical when ``report`` is None.
 
     Returns:
         Tuple (topology, positions) with heterogens removed.
@@ -383,6 +392,8 @@ def strip_heterogens(
     _water_names = {"HOH", "WAT", "TIP", "TIP3", "SOL"}
 
     atoms_to_remove = []
+    removed_heterogens: list[str] = []
+    n_removed_waters = 0
     for res in topology.residues():
         if res.chain.id in protein_chain_ids:
             continue
@@ -391,7 +402,9 @@ def strip_heterogens(
         # Water: always remove silently
         if res.name in _water_names:
             atoms_to_remove.extend(res.atoms())
+            n_removed_waters += 1
             continue
+        removed_heterogens.append(f"{res.name} (chain {res.chain.id})")
         # Other heterogens: warn if close to protein (may be a cofactor/ion)
         res_pos = (
             np.array(
@@ -420,6 +433,10 @@ def strip_heterogens(
         else:
             print(f"  Removing heterogen {res.name}{res.id} (chain {res.chain.id})")
         atoms_to_remove.extend(res.atoms())
+
+    if report is not None:
+        extend_report(report, "removed_heterogens", removed_heterogens)
+        add_to_report(report, "n_removed_waters", n_removed_waters)
 
     if atoms_to_remove:
         modeller = app.Modeller(topology, positions)
