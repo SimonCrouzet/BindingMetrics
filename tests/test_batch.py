@@ -426,3 +426,36 @@ class TestProvenanceColumns:
         assert row["batch_status"] == "ok"
         assert row["provenance_seed"] == "13"
         assert row["provenance_schema_version"] == "1"
+
+
+class TestUpdateSampleJson:
+    """OpenFold results are merged into the per-sample JSON as real numbers."""
+
+    def test_numpy_values_are_written_as_numbers_not_strings(self, tmp_path):
+        import json
+
+        import numpy as np
+
+        (tmp_path / "s1_results.json").write_text(json.dumps({"sample_id": "s1"}))
+        batch._update_sample_json(
+            tmp_path,
+            "s1",
+            {
+                "iptm": np.float32(0.5),
+                "n_tokens": np.int64(120),
+                "confident": np.bool_(True),
+                "plddt_per_atom": np.array([91.25, 88.5], dtype=np.float32),
+                "structure_path": Path("of3") / "s1_model.cif",
+            },
+        )
+        data = json.loads((tmp_path / "s1_results.json").read_text())
+        of = data["openfold"]
+        assert data["sample_id"] == "s1"  # the existing report is kept
+        assert of["iptm"] == 0.5 and isinstance(of["iptm"], float)
+        assert of["n_tokens"] == 120 and isinstance(of["n_tokens"], int)
+        assert of["confident"] is True
+        assert of["plddt_per_atom"] == [91.25, 88.5]
+        assert of["structure_path"] == str(Path("of3") / "s1_model.cif")
+
+    def test_unknown_objects_still_fall_back_to_str(self):
+        assert batch._json_default(object).startswith("<class")

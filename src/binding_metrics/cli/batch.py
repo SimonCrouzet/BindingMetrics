@@ -375,6 +375,21 @@ def _run_batched_openfold(
             rows[idx]["openfold_error"] = str(e)
 
 
+def _json_default(obj):
+    """``json.dumps`` hook: numpy scalars and arrays become numbers, paths strings.
+
+    ``default=str`` turned an ``np.float32`` such as an ipTM into the *string*
+    ``"0.83"`` and a per-atom pLDDT array into a truncated text repr.
+    """
+    import numpy as np
+
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return str(obj)
+
+
 def _update_sample_json(sample_dir: Path, sid: str, of_metrics: dict) -> None:
     """Merge OpenFold results into an existing per-sample JSON report."""
     import json
@@ -385,7 +400,7 @@ def _update_sample_json(sample_dir: Path, sid: str, of_metrics: dict) -> None:
     try:
         data = json.loads(json_path.read_text())
         data["openfold"] = of_metrics
-        json_path.write_text(json.dumps(data, indent=2, default=str))
+        json_path.write_text(json.dumps(data, indent=2, default=_json_default))
     except Exception:
         pass  # non-critical — CSV has the data anyway
 
