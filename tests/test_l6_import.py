@@ -1,12 +1,9 @@
 """``metrics/energy.py`` does not need OpenMM until a function that uses it runs.
 
 The blocked-import checks run in a subprocess so the fake "OpenMM is not
-installed" state cannot leak into the rest of the test session.
-
-The subprocess stubs the parent packages ``binding_metrics`` and
-``binding_metrics.metrics`` (their ``__init__`` files still import OpenMM
-through other modules) so that only ``energy.py`` and what it imports at module
-level are exercised.
+installed" state cannot leak into the rest of the test session. The plain
+``from binding_metrics.metrics import energy`` runs there, so the parent
+packages' ``__init__`` files are part of what is checked.
 """
 
 import subprocess
@@ -18,10 +15,7 @@ import pytest
 _BLOCKED_IMPORT_SCRIPT = textwrap.dedent(
     """
     import importlib.abc
-    import importlib.util
-    import os
     import sys
-    import types
 
 
     class _BlockOpenMM(importlib.abc.MetaPathFinder):
@@ -32,15 +26,6 @@ _BLOCKED_IMPORT_SCRIPT = textwrap.dedent(
 
 
     sys.meta_path.insert(0, _BlockOpenMM())
-
-    package_dir = list(importlib.util.find_spec("binding_metrics").submodule_search_locations)[0]
-    for name, path in (
-        ("binding_metrics", package_dir),
-        ("binding_metrics.metrics", os.path.join(package_dir, "metrics")),
-    ):
-        stub = types.ModuleType(name)
-        stub.__path__ = [path]
-        sys.modules[name] = stub
 
     from binding_metrics.metrics import energy
 
