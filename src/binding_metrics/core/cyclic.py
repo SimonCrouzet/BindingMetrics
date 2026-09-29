@@ -50,6 +50,7 @@ from binding_metrics.core.residues import (
     BACKBONE_HEAVY_ATOM_NAMES,
     CUSTOM_HYDROGEN_RESIDUES,
     CYSTEINE_NAMES,
+    STANDARD_AMINO_ACIDS,
 )
 
 # ---------------------------------------------------------------------------
@@ -345,13 +346,15 @@ def _residues_with_internal_bonds(topology) -> set:
     return {b.atom1.residue.index for b in topology.bonds() if b.atom1.residue is b.atom2.residue}
 
 
-def _bond_bare_residues(topology, pos: np.ndarray, residues, existing: set) -> set:
+def _bond_bare_residues(
+    topology, pos: np.ndarray, residues, existing: set, bonded_residues: set
+) -> set:
     """Bond, by covalent radii, each residue of ``residues`` that has no internal bond.
 
-    ``existing`` is the set of bonded atom-index pairs and is updated in place.
-    Returns the indices of the residues that gained a bond.
+    ``existing`` is the set of bonded atom-index pairs and is updated in place;
+    ``bonded_residues`` holds the indices of the residues that already have an
+    internal bond. Returns the indices of the residues that gained a bond.
     """
-    bonded_residues = _residues_with_internal_bonds(topology)
     restored: set = set()
     for res in residues:
         if res.index in bonded_residues:
@@ -400,7 +403,59 @@ def reconstruct_intraresidue_bonds(
         residues = _peptide_residues(topology, chain_id)
     existing = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
     n_before = len(existing)
-    _bond_bare_residues(topology, pos, residues, existing)
+    _bond_bare_residues(topology, pos, residues, existing, _residues_with_internal_bonds(topology))
+    return len(existing) - n_before
+
+
+def reconstruct_nonstandard_residue_bonds(
+    topology, positions, *, include_chain: Optional[str] = None
+) -> int:
+    """Restore the bonds OpenMM leaves out around non-standard residues, in every protein chain.
+
+    ``Topology.createStandardBonds`` builds nothing for a residue whose load-time
+    name it does not know (a modified residue such as S-palmitoyl-cysteine P1L, an
+    NCAA, a D-amino acid): no intra-residue bond, and no peptide bond from the
+    preceding residue's C to its N. ``PDBxFile`` takes the peptide bond from the
+    ``struct_conn`` ``covale`` rows, but it looks the partners up by
+    ``label_seq_id`` while it keys atoms by ``auth_seq_id``, so the row is dropped
+    whenever the two numberings differ (6SBA, most deposited entries). The
+    neighbouring standard residue then has an unsatisfied ``ExternalBond`` and
+    ``createSystem`` reports "bonds are different" for it, not for the residue
+    that lacks the bond.
+
+    In every chain that holds a standard amino acid this restores
+
+      * the intra-residue bonds of each residue that has none (covalent-radius
+        test, as in :func:`reconstruct_intraresidue_bonds`), and
+      * the peptide bond C(i)-N(i+1) at each junction where residue i or i+1 was
+        just restored, when the two atoms lie within ``_AMIDE_BOND_THRESH``. A
+        chain break is much longer than that, so it is not bridged.
+
+    Residues that already carry bonds are not touched, so the call is a no-op for a
+    fully standard structure. ``include_chain`` names a chain to repair even when
+    it holds no standard amino acid (a peptide made only of D-residues).
+
+    Returns the number of bonds added.
+    """
+    pos = _pos_nm(positions)
+    existing = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
+    n_before = len(existing)
+    bonded_residues = _residues_with_internal_bonds(topology)
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        if chain.id != include_chain and not any(r.name in STANDARD_AMINO_ACIDS for r in residues):
+            continue
+        restored = _bond_bare_residues(topology, pos, residues, existing, bonded_residues)
+        for previous, following in zip(residues, residues[1:]):
+            if previous.index not in restored and following.index not in restored:
+                continue
+            c_atom, n_atom = _find_atom(previous, "C"), _find_atom(following, "N")
+            if c_atom is None or n_atom is None:
+                continue
+            key = frozenset((c_atom.index, n_atom.index))
+            if key not in existing and _dist(pos, c_atom.index, n_atom.index) < _AMIDE_BOND_THRESH:
+                topology.addBond(c_atom, n_atom)
+                existing.add(key)
     return len(existing) - n_before
 
 
@@ -896,11 +951,13 @@ def patch_cyclic_topology(topology, positions, chain_id: str, hints: list = None
     except ImportError as e:
         raise ImportError("OpenMM is required for cyclic peptide patching.") from e
 
-    # Restore intra-residue bonds for any non-standard residue that lost them at
-    # load time (D-amino acids, N-methyl residues, exotic NCAA building blocks).
-    # Needed before template matching / GAFF parameterisation; no-op for a fully
-    # standard peptide.
-    reconstruct_intraresidue_bonds(topology, positions, chain_id)
+    # Restore the bonds of any non-standard residue that lost them at load time
+    # (D-amino acids, N-methyl residues, exotic NCAA building blocks), with the
+    # peptide bonds on either side. Every protein chain is repaired, not only the
+    # peptide: a receptor residue such as S-palmitoyl-cysteine breaks template
+    # matching of its neighbours the same way. Needed before template matching /
+    # GAFF parameterisation; no-op for a fully standard structure.
+    reconstruct_nonstandard_residue_bonds(topology, positions, include_chain=chain_id)
 
     info_list = detect_cyclization(topology, positions, chain_id)
     if not info_list and hints:
