@@ -81,17 +81,17 @@ class TestExtractModelWithoutGemmi:
 class TestPatchBondsWithoutGemmi:
     def test_ring_closure_bond_dropped_is_warned(self, no_gemmi, tmp_path, caplog):
         cif = tmp_path / "ring.cif"
-        cif.write_text("data_x\n")
+        cif.write_text("data_x\n", encoding="utf-8")
         with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
             _patch_nonstd_bonds_in_cif(cif, _peptide_topology(ring=True))
         messages = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME]
         assert len(messages) == 1
         assert "1 ring-closure" in messages[0] and "ring.cif" in messages[0]
-        assert cif.read_text() == "data_x\n", "the file must be left untouched"
+        assert cif.read_text(encoding="utf-8") == "data_x\n", "the file must be left untouched"
 
     def test_linear_topology_stays_quiet(self, no_gemmi, tmp_path, caplog):
         cif = tmp_path / "linear.cif"
-        cif.write_text("data_x\n")
+        cif.write_text("data_x\n", encoding="utf-8")
         with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
             _patch_nonstd_bonds_in_cif(cif, _peptide_topology(ring=False))
         assert not [r for r in caplog.records if r.name == LOGGER_NAME]

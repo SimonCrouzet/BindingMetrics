@@ -220,7 +220,7 @@ class TestNMeXMLTemplates:
         ff = get_forcefield("amber")
         fd, path = tempfile.mkstemp(suffix=".xml")
         try:
-            with os.fdopen(fd, "w") as fh:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(xml)
             ff.loadFile(path)  # must not raise KeyError on the atom type
         finally:

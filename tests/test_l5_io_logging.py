@@ -90,7 +90,7 @@ class TestBackfillAuthColumns:
 class TestDetectModels:
     def test_unreadable_file_warns_and_returns_one(self, tmp_path, caplog):
         bad = tmp_path / "garbage.cif"
-        bad.write_text("this is not a CIF file {{{")
+        bad.write_text("this is not a CIF file {{{", encoding="utf-8")
         with caplog.at_level(logging.WARNING, logger=STRUCTURES_LOGGER):
             assert detect_models(bad) == [1]
         records = _records(caplog, STRUCTURES_LOGGER)
@@ -99,7 +99,8 @@ class TestDetectModels:
     def test_non_integer_model_numbers_warn(self, tmp_path, caplog):
         bad = tmp_path / "models.cif"
         bad.write_text(
-            "data_x\nloop_\n_atom_site.id\n_atom_site.pdbx_PDB_model_num\n1 first\n2 second\n"
+            "data_x\nloop_\n_atom_site.id\n_atom_site.pdbx_PDB_model_num\n1 first\n2 second\n",
+            encoding="utf-8",
         )
         with caplog.at_level(logging.WARNING, logger=STRUCTURES_LOGGER):
             assert detect_models(bad) == [1]
@@ -107,7 +108,9 @@ class TestDetectModels:
 
     def test_missing_model_column_is_a_normal_single_model_file(self, tmp_path, caplog):
         plain = tmp_path / "single.cif"
-        plain.write_text("data_x\nloop_\n_atom_site.id\n_atom_site.label_asym_id\n1 A\n")
+        plain.write_text(
+            "data_x\nloop_\n_atom_site.id\n_atom_site.label_asym_id\n1 A\n", encoding="utf-8"
+        )
         with caplog.at_level(logging.DEBUG, logger=STRUCTURES_LOGGER):
             assert detect_models(plain) == [1]
         assert not _records(caplog, STRUCTURES_LOGGER)

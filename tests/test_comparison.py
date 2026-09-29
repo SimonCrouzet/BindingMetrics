@@ -47,7 +47,7 @@ def _write_pdb(path: Path, models: list[dict[str, np.ndarray]]) -> Path:
         if len(models) > 1:
             out.append("ENDMDL")
     out.append("END")
-    path.write_text("\n".join(out) + "\n")
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
     return path
 
 

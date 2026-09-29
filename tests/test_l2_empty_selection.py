@@ -29,7 +29,7 @@ def _write_pdb(path: Path, frames: list[list[tuple]]) -> Path:
             )
         lines.append("ENDMDL")
     lines.append("END")
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 

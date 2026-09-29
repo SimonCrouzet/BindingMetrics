@@ -36,7 +36,7 @@ def test_absent_chain_names_it_and_the_available_ones(metric):
 def test_present_chain_without_amino_acids_still_reports_a_reason(metric, tmp_path):
     """Only an absent chain raises; a chain of waters returns NaN with a reason."""
     path = tmp_path / "water.pdb"
-    path.write_text(WATER_ONLY)
+    path.write_text(WATER_ONLY, encoding="utf-8")
     result = metric(path, chain="A")
     assert "chain 'A'" in result["reason"]
 
@@ -44,6 +44,6 @@ def test_present_chain_without_amino_acids_still_reports_a_reason(metric, tmp_pa
 @pytest.mark.parametrize("metric", [compute_ramachandran, compute_omega_planarity])
 def test_absent_chain_in_a_water_only_file_lists_what_exists(metric, tmp_path):
     path = tmp_path / "water.pdb"
-    path.write_text(WATER_ONLY)
+    path.write_text(WATER_ONLY, encoding="utf-8")
     with pytest.raises(ValueError, match=r"'B'.*\['A'\]"):
         metric(path, chain="B")

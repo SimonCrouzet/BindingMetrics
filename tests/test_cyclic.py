@@ -603,7 +603,7 @@ class TestSidechainLactamEndToEnd:
         mol = chem.RemoveHs(mol)  # heavy-atom-only input
         fd, path = tempfile.mkstemp(suffix=".pdb")
         try:
-            with os.fdopen(fd, "w") as fh:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(chem.MolToPDBBlock(mol))
             pdb = PDBFile(path)
         finally:

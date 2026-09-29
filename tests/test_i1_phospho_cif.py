@@ -20,7 +20,7 @@ PHOSPHO_PDB = DATA_DIR / "example_phospho_1QJB.pdb"
 def _pdb_atoms():
     """(name, resname, resseq, element, x, y, z) of every atom of the bundled peptide."""
     atoms = []
-    for line in PHOSPHO_PDB.read_text().splitlines():
+    for line in PHOSPHO_PDB.read_text(encoding="utf-8").splitlines():
         if line.startswith(("ATOM", "HETATM")):
             atoms.append(
                 (
@@ -99,7 +99,7 @@ def _write_mmcif(path: Path, chains, links=(), water_of_auth=None):
                 f"{label} {resname_of[(label, s2)]} {s2 - first + 1} {a2} "
                 f"{auth} {resname_of[(label, s1)]} {s1} {auth} {resname_of[(label, s2)]} {s2}"
             )
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 
@@ -289,7 +289,7 @@ class TestBondsInsideNonstandardResidues:
 
         pdb = PDBFile(str(DATA_DIR / "example_linear_p53_1YCR.pdb"))
         cif = tmp_path / "p53.cif"
-        with open(cif, "w") as handle:
+        with open(cif, "w", encoding="utf-8") as handle:
             PDBxFile.writeFile(pdb.topology, pdb.positions, handle)
         assert len(list(load_structure(cif)[0].bonds())) == len(
             list(PDBxFile(str(cif)).topology.bonds())

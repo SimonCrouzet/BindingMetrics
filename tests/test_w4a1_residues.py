@@ -174,7 +174,7 @@ class TestModulesUseTheSharedSets:
 
 class TestPurePython:
     def test_module_imports_only_the_standard_library(self):
-        source = Path(residues.__file__).read_text()
+        source = Path(residues.__file__).read_text(encoding="utf-8")
         imported = {
             alias.name.split(".")[0]
             for node in ast.walk(ast.parse(source))
@@ -211,7 +211,11 @@ class TestPurePython:
             """
         )
         completed = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=120
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
         )
         assert completed.returncode == 0, completed.stderr[-1500:]
         assert json.loads(completed.stdout) == ["HOH", "WAT"]

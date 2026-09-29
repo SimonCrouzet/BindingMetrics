@@ -122,7 +122,7 @@ END
 def sample_pdb_path(sample_pdb_content: str, tmp_path: Path) -> Path:
     """Create a temporary PDB file for testing."""
     pdb_path = tmp_path / "test_complex.pdb"
-    pdb_path.write_text(sample_pdb_content)
+    pdb_path.write_text(sample_pdb_content, encoding="utf-8")
     return pdb_path
 
 

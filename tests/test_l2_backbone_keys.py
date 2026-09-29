@@ -57,7 +57,8 @@ class TestClosureFlags:
     def test_flags_are_false_when_no_chain_is_found(self, tmp_path):
         empty = tmp_path / "water.pdb"
         empty.write_text(
-            "HETATM    1  O   HOH A   1       0.000   0.000   0.000  1.00  0.00           O\nEND\n"
+            "HETATM    1  O   HOH A   1       0.000   0.000   0.000  1.00  0.00           O\nEND\n",
+            encoding="utf-8",
         )
         for result in (compute_omega_planarity(empty), compute_ramachandran(empty)):
             assert result["cyclic_closure_detected"] is False
@@ -82,7 +83,8 @@ class TestCisCount:
     def test_missing_chain_gives_zero(self, tmp_path):
         empty = tmp_path / "water.pdb"
         empty.write_text(
-            "HETATM    1  O   HOH A   1       0.000   0.000   0.000  1.00  0.00           O\nEND\n"
+            "HETATM    1  O   HOH A   1       0.000   0.000   0.000  1.00  0.00           O\nEND\n",
+            encoding="utf-8",
         )
         assert compute_omega_planarity(empty)["omega_cis_count"] == 0
 

@@ -206,7 +206,7 @@ ATOM      4  CA  ASP A   1       5.000   0.000   0.000  1.00  0.00           C
 END
 """
         pdb_path = tmp_path / "synthetic.pdb"
-        pdb_path.write_text(pdb_content)
+        pdb_path.write_text(pdb_content, encoding="utf-8")
 
         from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
 
@@ -228,7 +228,7 @@ ATOM      4  CA  LYS A   1       5.000   0.000   0.000  1.00  0.00           C
 END
 """
         pdb_path = tmp_path / "repulsive.pdb"
-        pdb_path.write_text(pdb_content)
+        pdb_path.write_text(pdb_content, encoding="utf-8")
 
         from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
 
