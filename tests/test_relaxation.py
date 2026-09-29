@@ -1,6 +1,7 @@
 """Tests for the implicit solvent MD relaxation protocol."""
 
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +51,42 @@ class TestRelaxationConfig:
 
         config = RelaxationConfig(custom_bond_handler=handler)
         assert callable(config.custom_bond_handler)
+
+
+class TestRelaxationConfigValidation:
+    """__post_init__ rejects MD settings that would save no frames."""
+
+    def test_duration_shorter_than_interval_raises(self):
+        with pytest.raises(ValueError, match="md_save_interval_ps"):
+            RelaxationConfig(md_duration_ps=5.0, md_save_interval_ps=10.0)
+
+    def test_non_positive_interval_raises_when_md_runs(self):
+        with pytest.raises(ValueError, match="md_save_interval_ps"):
+            RelaxationConfig(md_duration_ps=10.0, md_save_interval_ps=0.0)
+
+    def test_minimize_only_ignores_the_interval(self):
+        RelaxationConfig(md_duration_ps=0.0, md_save_interval_ps=10.0)
+        RelaxationConfig(md_duration_ps=0.0, md_save_interval_ps=0.0)
+
+    def test_non_multiple_duration_warns_with_simulated_length(self):
+        with pytest.warns(UserWarning, match=r"not a multiple.*stops after 200 ps \(20 frames\)"):
+            RelaxationConfig(md_duration_ps=205.0, md_save_interval_ps=10.0)
+
+    @pytest.mark.parametrize(
+        "duration, interval",
+        [(200.0, 10.0), (10.0, 10.0), (0.3, 0.1), (2.0, 0.5)],
+    )
+    def test_whole_number_of_intervals_is_silent(self, duration, interval):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            RelaxationConfig(md_duration_ps=duration, md_save_interval_ps=interval)
+
+    def test_frame_count_absorbs_float_error(self):
+        from binding_metrics.protocols.relaxation import _md_frame_count
+
+        assert 0.3 / 0.1 < 3.0  # the plain int() of this would give 2
+        assert _md_frame_count(0.3, 0.1) == 3
+        assert _md_frame_count(205.0, 10.0) == 20
 
 
 class TestRelaxationResult:

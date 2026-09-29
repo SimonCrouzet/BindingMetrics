@@ -21,6 +21,7 @@ import json
 import sys
 import time
 import traceback
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -28,6 +29,15 @@ from typing import Callable, Optional
 import numpy as np
 
 from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+
+#: Slack when deciding whether ``md_duration_ps`` is a whole number of save
+#: intervals; absorbs floating-point error such as 0.3 / 0.1 = 2.9999999999999996.
+_FRAME_COUNT_TOLERANCE = 1e-9
+
+
+def _md_frame_count(duration_ps: float, save_interval_ps: float) -> int:
+    """Number of trajectory frames an MD run of ``duration_ps`` produces."""
+    return int(duration_ps / save_interval_ps + _FRAME_COUNT_TOLERANCE)
 
 
 @dataclass
@@ -44,7 +54,10 @@ class RelaxationConfig:
         md_timestep_fs: MD integration timestep in femtoseconds
         md_temperature_k: Simulation temperature in Kelvin
         md_friction: Langevin friction coefficient in 1/ps
-        md_save_interval_ps: Interval between saved trajectory frames in ps
+        md_save_interval_ps: Interval between saved trajectory frames in ps.
+            Must not exceed ``md_duration_ps`` when MD runs; a duration that is
+            not a whole number of intervals is cut to the last full one, with a
+            warning.
         ph: pH for hydrogen addition (default 7.4)
         solvent_model: Implicit solvent model ('obc2', 'gbn2')
         device: Compute device ('cuda', 'cpu')
@@ -148,6 +161,39 @@ class RelaxationConfig:
     # Ring-aware restraint protocol (active when cyclization is detected):
     #   Stage 0 — closure bond distance restraint (strong, before Stage 1)
     #   Warmup MD — backbone φ/ψ dihedral restraints (10 ps, before production)
+
+    def __post_init__(self) -> None:
+        """Reject MD settings that would produce no frames or a shorter run.
+
+        Raises:
+            ValueError: ``md_duration_ps`` is positive but ``md_save_interval_ps``
+                is not, or the duration is shorter than one save interval (the
+                run would save 0 frames and fail after the MD finished).
+        """
+        if self.md_duration_ps <= 0:
+            return
+        if self.md_save_interval_ps <= 0:
+            raise ValueError(
+                f"md_save_interval_ps must be positive when MD runs, got {self.md_save_interval_ps}"
+            )
+        n_frames = _md_frame_count(self.md_duration_ps, self.md_save_interval_ps)
+        if n_frames < 1:
+            raise ValueError(
+                f"md_duration_ps={self.md_duration_ps} is shorter than "
+                f"md_save_interval_ps={self.md_save_interval_ps}: the run would save no "
+                "frames. Lower md_save_interval_ps or lengthen md_duration_ps."
+            )
+        simulated_ps = n_frames * self.md_save_interval_ps
+        if abs(simulated_ps - self.md_duration_ps) > _FRAME_COUNT_TOLERANCE * max(
+            1.0, self.md_duration_ps
+        ):
+            warnings.warn(
+                f"md_duration_ps={self.md_duration_ps} is not a multiple of "
+                f"md_save_interval_ps={self.md_save_interval_ps}: MD stops after "
+                f"{simulated_ps:g} ps ({n_frames} frames).",
+                UserWarning,
+                stacklevel=3,
+            )
 
 
 @dataclass
@@ -1181,7 +1227,9 @@ class ImplicitRelaxation:
                 steps_per_save = int(
                     self.config.md_save_interval_ps * 1000 / self.config.md_timestep_fs
                 )
-                total_saves = int(self.config.md_duration_ps / self.config.md_save_interval_ps)
+                total_saves = _md_frame_count(
+                    self.config.md_duration_ps, self.config.md_save_interval_ps
+                )
 
                 trajectory_positions = []
                 md_energies = []
