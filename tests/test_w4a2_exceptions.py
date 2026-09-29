@@ -198,3 +198,91 @@ class TestTestRunnerScript:
         output = capsys.readouterr().out
         assert "GPU" in output
         assert "probe failed (ModuleNotFoundError), using CPU" in output
+
+
+class TestBatchOpenFold:
+    @staticmethod
+    def _run(tmp_path, monkeypatch, of_metrics=None, compute_error=None, evobind_error=None):
+        from binding_metrics.cli import batch
+        from binding_metrics.metrics import evobind, openfold
+
+        def compute(**_kwargs):
+            if compute_error is not None:
+                raise compute_error
+            return dict(of_metrics or {})
+
+        def score(*_args, **_kwargs):
+            raise evobind_error
+
+        monkeypatch.setattr(openfold, "run_openfold_batched", lambda **_kw: tmp_path)
+        monkeypatch.setattr(openfold, "compute_openfold_metrics", compute)
+        if evobind_error is not None:
+            monkeypatch.setattr(evobind, "compute_evobind_score", score)
+        rows = [{"sample_id": "s1", "batch_status": "ok"}]
+        batch._run_batched_openfold(
+            rows=rows,
+            sid_to_input={"s1": P53_MDM2},
+            output_dir=tmp_path,
+            openfold_mode="score",
+            openfold_conda_env=None,
+            peptide_chain="B",
+            receptor_chain="A",
+        )
+        return rows[0]
+
+    def test_chain_detection_failure_skips_the_sample_and_is_logged(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        from binding_metrics.cli import batch
+
+        def broken(*_args, **_kwargs):
+            raise ValueError("no chains")
+
+        monkeypatch.setattr("binding_metrics.io.structures.detect_chains_from_file", broken)
+        rows = [{"sample_id": "s1", "batch_status": "ok"}]
+        with caplog.at_level(logging.WARNING, logger="binding_metrics"):
+            batch._run_batched_openfold(
+                rows=rows,
+                sid_to_input={"s1": P53_MDM2},
+                output_dir=tmp_path,
+                openfold_mode="score",
+                openfold_conda_env=None,
+                peptide_chain=None,
+                receptor_chain=None,
+            )
+
+        assert rows == [{"sample_id": "s1", "batch_status": "ok"}]
+        assert "s1: skipped for OpenFold, chain detection failed: no chains" in caplog.text
+
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_evobind_failure_is_recorded_in_the_row(self, tmp_path, monkeypatch, failure):
+        row = self._run(
+            tmp_path, monkeypatch, of_metrics={"structure_path": "of3.cif"}, evobind_error=failure
+        )
+
+        assert row["openfold_evobind_error"] == str(failure)
+
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_metrics_failure_is_recorded_in_the_row_and_logged(
+        self, tmp_path, monkeypatch, caplog, failure
+    ):
+        with caplog.at_level(logging.WARNING, logger="binding_metrics"):
+            row = self._run(tmp_path, monkeypatch, compute_error=failure)
+
+        assert row["openfold_error"] == str(failure)
+        assert "s1: OpenFold metrics failed" in caplog.text
+
+    @pytest.mark.parametrize(
+        "content", ["{not json", "[1, 2]"], ids=["invalid-json", "not-an-object"]
+    )
+    def test_unusable_sample_report_is_left_alone_and_logged(self, tmp_path, caplog, content):
+        from binding_metrics.cli import batch
+
+        report = tmp_path / "s1_results.json"
+        report.write_text(content)
+
+        with caplog.at_level(logging.WARNING, logger="binding_metrics"):
+            batch._update_sample_json(tmp_path, "s1", {"iptm": 0.5})
+
+        assert report.read_text() == content
+        assert "s1: could not update s1_results.json" in caplog.text

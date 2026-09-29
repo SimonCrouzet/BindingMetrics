@@ -318,7 +318,8 @@ def _run_batched_openfold(
                 peptide_chain=peptide_chain,
                 receptor_chain=receptor_chain,
             )
-        except Exception:
+        except Exception as e:  # noqa: BLE001 - one unreadable input must not stop the batch
+            logger.warning("  %s: skipped for OpenFold, chain detection failed: %s", sid, e)
             continue
 
         pchain = chain_info.get("peptide_chain")
@@ -355,13 +356,13 @@ def _run_batched_openfold(
             conda_env=openfold_conda_env,
             **({"seeds": tuple(openfold_seeds)} if openfold_seeds else {}),
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - the batch call spawns a subprocess; see openfold_error
         # Warning level keeps the line on stdout, where it was printed before.
         logger.warning("  [ERROR] Batched OpenFold failed: %s", e)
         import traceback
 
         traceback.print_exc()
-        for sid, idx in sid_to_row_idx.items():
+        for idx in sid_to_row_idx.values():
             rows[idx]["openfold_error"] = str(e)
         return
 
@@ -417,7 +418,7 @@ def _run_batched_openfold(
                     )
                     _merge_reason(of_metrics, adversarial, "evobind adversarial")
                     of_metrics.update(adversarial)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - per-sample isolation; see evobind_error
                     of_metrics["evobind_error"] = str(e)
 
             # Flatten OF3 metrics into the row
@@ -435,7 +436,7 @@ def _run_batched_openfold(
                 of_metrics.get("avg_plddt", "?"),
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-sample isolation; see openfold_error
             logger.warning("  %s: OpenFold metrics failed: %s", sid, e)
             rows[idx]["openfold_error"] = str(e)
 
@@ -453,8 +454,8 @@ def _update_sample_json(sample_dir: Path, sid: str, of_metrics: dict) -> None:
         data = json.loads(json_path.read_text())
         data["openfold"] = of_metrics
         json_path.write_text(json.dumps(data, indent=2, default=_json_default))
-    except Exception:
-        pass  # non-critical — CSV has the data anyway
+    except Exception as e:  # noqa: BLE001 - non-critical, the CSV row has the data anyway
+        logger.warning("  %s: could not update %s: %s", sid, json_path.name, e)
 
 
 # ---------------------------------------------------------------------------
