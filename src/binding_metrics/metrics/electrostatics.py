@@ -172,6 +172,9 @@ def compute_coulomb_cross_chain(
                 phospho residue. Their charge, if any, is not modelled; a
                 non-zero count means the energy may be incomplete.
 
+        reason (str): present only when the energy could not be evaluated
+            (a chain was not found); the scores are then the zeros above.
+
         Features:
             charged_atoms_peptide (list[dict]): Per charged atom info for peptide;
                 each dict has residue, atom, charge, coords
@@ -200,7 +203,15 @@ def compute_coulomb_cross_chain(
     }
 
     if peptide_chain is None or receptor_chain is None:
-        return _default
+        # The all-zero default is kept for callers that sum or rank on it; ``reason``
+        # tells a 0.0 that means "not evaluated" from a genuine 0.0.
+        return {
+            **_default,
+            "reason": (
+                f"chain detection found peptide_chain={peptide_chain!r}, "
+                f"receptor_chain={receptor_chain!r}; pass both chain IDs explicitly"
+            ),
+        }
 
     pep_mask = atoms.chain_id == peptide_chain
     rec_mask = atoms.chain_id == receptor_chain
