@@ -35,10 +35,10 @@ def import_biotite(purpose: str):
         import biotite.structure as struc
         import biotite.structure.io.pdb as pdb_io
         import biotite.structure.io.pdbx as pdbx
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             f"biotite is required for {purpose}. Install with: pip install binding-metrics[biotite]"
-        )
+        ) from exc
     return struc, pdbx, pdb_io
 
 
