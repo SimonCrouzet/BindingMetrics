@@ -137,6 +137,19 @@ class TestStripHeterogensReport:
         strip_heterogens(top, pos, "B", "A", report=report)
         assert report["n_removed_waters"] == 288
 
+    def test_relaxation_forwards_the_report(self):
+        from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
+
+        top, pos = _load(CYCLOSPORIN)
+        top, pos = _add_ion(top, pos, "CL", "Cl", "X", (0.1, 0.1, 0.1))
+        relaxer = ImplicitRelaxation(RelaxationConfig())
+        report: dict = {}
+        out_top, _ = relaxer._strip_heterogens(top, pos, "B", "A", report=report)
+        assert report["n_removed_waters"] == 144
+        assert report["removed_heterogens"] == ["CL (chain X)"]
+        plain_top, _ = relaxer._strip_heterogens(top, pos, "B", "A")
+        assert plain_top.getNumAtoms() == out_top.getNumAtoms()
+
 
 @pytest.fixture(scope="module")
 def cyclosporin_report():

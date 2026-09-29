@@ -658,10 +658,14 @@ class ImplicitRelaxation:
         peptide_chain: str,
         receptor_chain: Optional[str],
         warn_cutoff_ang: float = 8.0,
+        report: Optional[dict] = None,
     ):
+        """Strip heterogens; ``report`` is filled as in ``io.structures.strip_heterogens``."""
         from binding_metrics.io.structures import strip_heterogens
 
-        return strip_heterogens(topology, positions, peptide_chain, receptor_chain, warn_cutoff_ang)
+        return strip_heterogens(
+            topology, positions, peptide_chain, receptor_chain, warn_cutoff_ang, report=report
+        )
 
     def _setup_system(self, input_path: Path):
         """Load structure, prepare topology, and create OpenMM system.
