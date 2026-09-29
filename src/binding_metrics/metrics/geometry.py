@@ -81,23 +81,18 @@ def _filter_hetero(atoms, hetero: Literal["ignore", "keep"]):
     Waters, ions and ligands frequently carry the chain ID of the protein
     chain they sit next to, so a chain-ID mask alone counts them as protein
     atoms (on 1CWA this moves Sc from 0.722 to 0.750 and the void interface
-    atom count from 153 to 123). "ignore" keeps only amino-acid atoms with
-    ``biotite.structure.filter_amino_acids``, which also covers D- and
-    non-canonical peptide-linking residues; "keep" returns the atoms as read.
-
-    Args:
-        atoms: biotite AtomArray.
-        hetero: "ignore" or "keep".
+    atom count from 153 to 123). The policy is the one shared by the
+    structure-based metrics, `interface.filter_hetero_atoms`: "ignore" keeps
+    the polymer (amino acids including D- and non-canonical residues, AMBER
+    protonation variants such as HID/HIE, and ACE/NME/NH2 caps), "keep"
+    returns the atoms as read.
 
     Raises:
         ValueError: If ``hetero`` is not one of the two modes.
     """
-    if hetero not in _HETERO_MODES:
-        raise ValueError(f"hetero must be one of {_HETERO_MODES}, got {hetero!r}")
-    if hetero == "keep":
-        return atoms
-    struc, _, _, _ = _import_biotite()
-    return atoms[struc.filter_amino_acids(atoms)]
+    from binding_metrics.metrics.interface import filter_hetero_atoms
+
+    return filter_hetero_atoms(atoms, hetero)
 
 
 _NO_CHAIN_REASON = "no chain was given and no protein chain could be auto-detected"

@@ -173,6 +173,48 @@ class TestHeteroSynthetic:
         assert kept["n_surface_dots_A"] != reference["n_surface_dots_A"]
 
 
+class TestPolymerNamesKeptUnderIgnore:
+    """AMBER protonation variants and caps are polymer, not heteroatoms.
+
+    Structures written by OpenMM or other modelling tools name histidines HID,
+    HIE or HIN; biotite's CCD amino-acid filter does not know those names, so
+    dropping "non-amino-acid" atoms with it alone would delete the residue.
+    """
+
+    @staticmethod
+    def _renamed_two_slabs(tmp_path: Path, name_a: str, name_b: str) -> Path:
+        slab_a = _slab(6, [0.0, -3.4])
+        slab_b = _slab(6, [3.4, 6.8])
+        coords = np.vstack([slab_a, slab_b])
+        n = len(coords)
+        arr = struc.AtomArray(n)
+        arr.coord = coords.astype(np.float32)
+        arr.chain_id = np.array(["A"] * len(slab_a) + ["B"] * len(slab_b))
+        arr.res_id = np.arange(1, n + 1)
+        arr.res_name = np.array([name_a] * len(slab_a) + [name_b] * len(slab_b))
+        arr.atom_name = np.array(["C"] * n)
+        arr.element = np.array(["C"] * n)
+        pdb = pdb_io.PDBFile()
+        pdb.set_structure(arr)
+        path = tmp_path / f"{name_a}_{name_b}.pdb"
+        pdb.write(str(path))
+        return path
+
+    @pytest.mark.parametrize(
+        "variant_a, variant_b", [("HIE", "ALA"), ("ALA", "HID"), ("ACE", "NME")]
+    )
+    def test_variant_residues_give_the_same_result_as_alanine(self, tmp_path, variant_a, variant_b):
+        plain = self._renamed_two_slabs(tmp_path, "ALA", "ALA")
+        variant = self._renamed_two_slabs(tmp_path, variant_a, variant_b)
+        kw = dict(peptide_chain="A", receptor_chain="B")
+        sc = compute_shape_complementarity(variant, **kw)
+        assert np.isfinite(sc["sc"])
+        _assert_same(sc, compute_shape_complementarity(plain, **kw), SC_KEYS)
+        void = compute_buried_void_volume(variant, grid_spacing=1.0, **kw)
+        assert void["n_interface_atoms"] > 0
+        _assert_same(void, compute_buried_void_volume(plain, grid_spacing=1.0, **kw), VOID_KEYS)
+
+
 class TestHeteroCli:
     def _run(self, monkeypatch, capsys, *args):
         monkeypatch.setattr(sys, "argv", ["binding-metrics-geometry", *map(str, args)])
