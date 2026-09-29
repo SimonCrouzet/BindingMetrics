@@ -194,3 +194,53 @@ class TestStructConnWithOffsetNumbering:
         assert all(row[0] == row[1] for row in site)
         conn = block.find("_struct_conn.", ["ptnr1_label_seq_id", "ptnr2_label_seq_id"])
         assert ("6", "7") in {(row[0], row[1]) for row in conn}
+
+
+class TestStripHeterogensKeepsPhosphoResidues:
+    def _two_chain_topology(self):
+        """The peptide as chain Q plus a second copy, moved 3 nm, as chain S."""
+        from openmm import unit
+        from openmm.app import Modeller
+
+        from binding_metrics.io.structures import load_structure
+
+        topology, positions = load_structure(PHOSPHO_PDB)
+        modeller = Modeller(topology, positions)
+        shifted = [p + unit.Quantity((3.0, 0.0, 0.0), unit.nanometer) for p in positions]
+        modeller.add(topology, shifted)
+        for chain in modeller.topology.chains():
+            if chain.index == 1:
+                chain.id = "S"
+        return modeller.topology, modeller.positions
+
+    def test_sep_of_an_unselected_chain_stays(self):
+        from binding_metrics.io.structures import strip_heterogens
+
+        topology, positions = self._two_chain_topology()
+        report: dict = {}
+        top, _ = strip_heterogens(
+            topology, positions, peptide_chain="Q", receptor_chain=None, report=report
+        )
+        assert sum(1 for r in top.residues() if r.name == "SEP") == 2
+        assert "removed_heterogens" not in report or not report["removed_heterogens"]
+
+    def test_a_ligand_of_an_unselected_chain_is_still_removed(self):
+        """The phospho residues are exempt; other heterogens are not."""
+        from openmm import Vec3, unit
+        from openmm.app import Modeller, Topology, element
+
+        from binding_metrics.io.structures import strip_heterogens
+
+        topology, positions = self._two_chain_topology()
+        ligand = Topology()
+        chain = ligand.addChain("L")
+        residue = ligand.addResidue("LIG", chain)
+        ligand.addAtom("C1", element.carbon, residue)
+        modeller = Modeller(topology, positions)
+        modeller.add(ligand, unit.Quantity([Vec3(9.0, 9.0, 9.0)], unit.nanometer))
+        top, _ = strip_heterogens(
+            modeller.topology, modeller.positions, peptide_chain="Q", receptor_chain=None
+        )
+        names = [r.name for r in top.residues()]
+        assert "LIG" not in names
+        assert names.count("SEP") == 2

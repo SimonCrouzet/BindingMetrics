@@ -5,7 +5,11 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from binding_metrics.core.residues import PROTEIN_RESIDUES, WATER_NAMES_STRIP_HETEROGENS
+from binding_metrics.core.residues import (
+    PHOSPHO_RESIDUES,
+    PROTEIN_RESIDUES,
+    WATER_NAMES_STRIP_HETEROGENS,
+)
 from binding_metrics.utils import add_to_report, backfill_auth_columns, extend_report
 
 if TYPE_CHECKING:
@@ -435,6 +439,10 @@ def strip_heterogens(
 ):
     """Remove non-protein residues from topology, warning if close to the interface.
 
+    Amino-acid residues and the phosphorylated residues SEP, TPO and PTR count as
+    protein and are kept in every chain, so an unselected chain is not cut where it
+    carries a phosphoserine.
+
     Args:
         topology: OpenMM Topology (post-PDBFixer).
         positions: Atom positions (OpenMM Quantity, nm).
@@ -474,8 +482,8 @@ def strip_heterogens(
     for res in topology.residues():
         if res.chain.id in protein_chain_ids:
             continue
-        if res.name in PROTEIN_RESIDUES:
-            continue
+        if res.name in PROTEIN_RESIDUES or res.name in PHOSPHO_RESIDUES:
+            continue  # peptide-linked: deleting it would cut the chain in two
         # Water: always remove silently
         if res.name in WATER_NAMES_STRIP_HETEROGENS:
             atoms_to_remove.extend(res.atoms())
