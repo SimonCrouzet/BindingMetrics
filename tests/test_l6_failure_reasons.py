@@ -33,8 +33,9 @@ class _StubContext:
 
 
 class _StubSystem:
-    def __init__(self):
+    def __init__(self, remove_error=None):
         self._forces = []
+        self._remove_error = remove_error
 
     def getNumForces(self):
         return len(self._forces)
@@ -43,6 +44,8 @@ class _StubSystem:
         self._forces.append(force)
 
     def removeForce(self, index):
+        if self._remove_error is not None:
+            raise self._remove_error
         del self._forces[index]
 
 
@@ -66,19 +69,26 @@ def _stub_simulation(minimize_error=None, step_error=None):
 def stubbed_energy(monkeypatch):
     """Patch everything below ``compute_interaction_energy`` that needs OpenMM."""
 
+    systems: list = []
+    remove_error: list = [None]
+
     def fake_create_implicit_system(topology, positions, *args, **kwargs):
-        return _StubSystem(), topology, positions, None, []
+        system = _StubSystem(remove_error[0])
+        systems.append(system)
+        return system, topology, positions, None, []
 
     monkeypatch.setattr(energy, "_create_implicit_system", fake_create_implicit_system)
     monkeypatch.setattr(energy, "_get_platform", lambda device="cuda": (None, {}))
 
-    def install(minimize_error=None, step_error=None, evaluate=None):
+    def install(minimize_error=None, step_error=None, evaluate=None, remove_restraint_error=None):
+        remove_error[0] = remove_restraint_error
         monkeypatch.setattr(openmm.app, "Simulation", _stub_simulation(minimize_error, step_error))
         monkeypatch.setattr(
             energy,
             "_evaluate_subsystem_energies",
             evaluate or (lambda *args, **kwargs: (-10.0, -3.0, -2.0)),
         )
+        return systems
 
     return install
 
@@ -179,6 +189,30 @@ class TestModeFailuresAreRecorded:
         result = _run(("raw",))
         assert result["success"] is False
         assert result["error_message"] == "ValueError: no template for residue XYZ"
+
+
+class TestBackboneRestraintIsDetached:
+    """A restraint left in the system would be counted in E_complex of later modes."""
+
+    def test_removed_after_successful_minimization(self, stubbed_energy):
+        systems = stubbed_energy()
+        _run(("relaxed",))
+        assert systems[0].getNumForces() == 0
+
+    def test_removed_when_minimization_fails(self, stubbed_energy):
+        systems = stubbed_energy(minimize_error=RuntimeError("minimizer diverged"))
+        _run(("raw", "after_md"))
+        assert systems[0].getNumForces() == 0
+
+    def test_failed_removal_is_reported_without_crashing(self, stubbed_energy):
+        stubbed_energy(
+            minimize_error=RuntimeError("minimizer diverged"),
+            remove_restraint_error=openmm.OpenMMException("force index out of range"),
+        )
+        result = _run(("raw", "relaxed"))
+        assert result["success"] is True
+        assert "could not remove the backbone restraint" in result["error_message"]
+        assert "minimizer diverged" in result["error_message"]
 
 
 class TestEvaluateSubsystemEnergiesFailures:

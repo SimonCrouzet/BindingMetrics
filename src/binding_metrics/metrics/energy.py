@@ -922,6 +922,7 @@ def compute_interaction_energy(
         pos_relaxed = pos_h
         if "relaxed" in modes or "after_md" in modes:
             print(f"[{sample_id}] Minimizing (backbone-restrained + unrestrained)...")
+            restraint_index = None  # force index while the restraint is in the system
             try:
                 restraint = openmm.CustomExternalForce("0.5 * k * ((x-x0)^2 + (y-y0)^2 + (z-z0)^2)")
                 restraint.addGlobalParameter(
@@ -946,8 +947,9 @@ def compute_interaction_energy(
                             "for this residue.",
                             stacklevel=2,
                         )
-                restraint_index = sys_complex.getNumForces()
+                n_forces_before = sys_complex.getNumForces()
                 sys_complex.addForce(restraint)
+                restraint_index = n_forces_before
                 simulation.context.reinitialize(preserveState=True)
 
                 simulation.minimizeEnergy(maxIterations=relaxed_min_steps_restrained)
@@ -958,6 +960,7 @@ def compute_interaction_energy(
                 pos_relaxed = state.getPositions()
 
                 sys_complex.removeForce(restraint_index)
+                restraint_index = None
                 simulation.context.reinitialize(preserveState=True)
 
                 if "relaxed" in modes:
@@ -993,6 +996,17 @@ def compute_interaction_energy(
                 _append_error_message(
                     result, f"{step}: minimization failed: {type(e).__name__}: {e}"
                 )
+                if restraint_index is not None:
+                    # A restraint left in the system would add its energy to E_complex
+                    # in the after_md evaluation.
+                    try:
+                        sys_complex.removeForce(restraint_index)
+                        simulation.context.reinitialize(preserveState=True)
+                    except openmm.OpenMMException as cleanup_error:
+                        _append_error_message(
+                            result,
+                            f"{step}: could not remove the backbone restraint: {cleanup_error}",
+                        )
 
         # --- AFTER_MD mode ---
         if "after_md" in modes:
