@@ -824,7 +824,7 @@ class TestExportHelpers:
         result["input_filename"] = "h.pdb"
         out = tmp_path / "out" / "q.csv"
         rq._write_csv(result, out)
-        lines = out.read_text().strip().splitlines()
+        lines = out.read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 2  # header + one model
         header = lines[0].split(",")
         for column in (

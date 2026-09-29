@@ -149,14 +149,18 @@ class TestOpenfold:
         seed_dir.mkdir(parents=True)
         prefix = "run_seed_1_sample_1"
         aggregated = {"avg_plddt": 87.5, "ptm": 0.88, "iptm": 0.76}
-        (seed_dir / f"{prefix}_confidences_aggregated.json").write_text(json.dumps(aggregated))
+        (seed_dir / f"{prefix}_confidences_aggregated.json").write_text(
+            json.dumps(aggregated), encoding="utf-8"
+        )
         # Wrong sizes on purpose: 10 pLDDT values for 5 atoms, 12-token matrices for 5 tokens.
         confidences = {
             "plddt": [90.0] * 10,
             "pde": np.ones((12, 12)).tolist(),
             "pae": np.ones((12, 12)).tolist(),
         }
-        (seed_dir / f"{prefix}_confidences.json").write_text(json.dumps(confidences))
+        (seed_dir / f"{prefix}_confidences.json").write_text(
+            json.dumps(confidences), encoding="utf-8"
+        )
         model = seed_dir / f"{prefix}_model.cif"
         if readable_structure:
             pdbx = pytest.importorskip("biotite.structure.io.pdbx")
@@ -181,7 +185,7 @@ class TestOpenfold:
             pdbx.set_structure(cif, atoms)
             cif.write(str(model))
         else:
-            model.write_text("# stub CIF\n")
+            model.write_text("# stub CIF\n", encoding="utf-8")
         return tmp_path
 
     def test_structural_failure_warning_points_at_the_caller(self, tmp_path):

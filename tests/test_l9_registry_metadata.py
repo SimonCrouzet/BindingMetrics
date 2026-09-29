@@ -180,7 +180,7 @@ class TestRequiresExtras:
         pyproject = REPO_ROOT / "pyproject.toml"
         if not pyproject.exists():
             pytest.skip("pyproject.toml not found")
-        data = tomllib.loads(pyproject.read_text())
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
         return set(data["project"]["optional-dependencies"])
 
     @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
@@ -207,20 +207,24 @@ def complex_pdb(tmp_path_factory) -> Path:
     """1YCR without heteroatoms: chain A = MDM2 (receptor), chain B = p53 peptide."""
     if not EXAMPLE_1YCR.exists():
         pytest.skip(f"bundled example not found: {EXAMPLE_1YCR}")
-    lines = [ln for ln in EXAMPLE_1YCR.read_text().splitlines(True) if ln.startswith("ATOM")]
+    lines = [
+        ln
+        for ln in EXAMPLE_1YCR.read_text(encoding="utf-8").splitlines(True)
+        if ln.startswith("ATOM")
+    ]
     out = tmp_path_factory.mktemp("l9_meta") / "complex.pdb"
-    out.write_text("".join(lines) + "END\n")
+    out.write_text("".join(lines) + "END\n", encoding="utf-8")
     return out
 
 
 @pytest.fixture(scope="module")
 def two_frame_pdb(complex_pdb) -> Path:
     """The complex written as two identical models: a trajectory and its topology in one file."""
-    lines = complex_pdb.read_text().splitlines(True)
+    lines = complex_pdb.read_text(encoding="utf-8").splitlines(True)
     atoms = [ln for ln in lines if ln.startswith("ATOM")]
     text = "".join(f"MODEL     {i:>4}\n" + "".join(atoms) + "ENDMDL\n" for i in (1, 2))
     out = complex_pdb.parent / "two_frames.pdb"
-    out.write_text(text + "END\n")
+    out.write_text(text + "END\n", encoding="utf-8")
     return out
 
 
@@ -367,7 +371,9 @@ class TestHeadlineKeysAreReal:
             for c in np.unique(atoms.chain_id)
         )
         confidences = tmp_path / "sample_confidences.json"
-        confidences.write_text(json.dumps({"pae": np.full((n_tokens, n_tokens), 2.5).tolist()}))
+        confidences.write_text(
+            json.dumps({"pae": np.full((n_tokens, n_tokens), 2.5).tolist()}), encoding="utf-8"
+        )
         result = _call(
             "interface_pae",
             confidences_path=str(confidences),

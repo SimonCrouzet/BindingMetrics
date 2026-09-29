@@ -387,7 +387,7 @@ class TestReportJson:
                 "path": Path("out/relaxed.cif"),
             },
         }
-        data = json.loads(self._write(tmp_path, results).read_text())
+        data = json.loads(self._write(tmp_path, results).read_text(encoding="utf-8"))
         assert data["relax"]["energy"] == 1.5 and isinstance(data["relax"]["energy"], float)
         assert data["relax"]["count"] == 3 and isinstance(data["relax"]["count"], int)
         assert data["relax"]["flag"] is True
@@ -399,7 +399,9 @@ class TestReportJson:
             def __str__(self):
                 return "odd-value"
 
-        data = json.loads(self._write(tmp_path, {"sample_id": "s", "odd": Odd()}).read_text())
+        data = json.loads(
+            self._write(tmp_path, {"sample_id": "s", "odd": Odd()}).read_text(encoding="utf-8")
+        )
         assert data["odd"] == "odd-value"
 
     def test_nonfinite_fields_lists_dotted_paths(self, tmp_path):
@@ -412,7 +414,7 @@ class TestReportJson:
             "electrostatics": {"coulomb_energy_kJ": -np.inf},
         }
         path = self._write(tmp_path, results)
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         assert sorted(data["nonfinite_fields"]) == [
             "electrostatics.coulomb_energy_kJ",
             "geometry.ramachandran.per_residue[1].phi",
@@ -421,20 +423,22 @@ class TestReportJson:
         assert results["nonfinite_fields"] == data["nonfinite_fields"]
 
     def test_nan_tokens_are_left_as_they_were(self, tmp_path):
-        text = self._write(tmp_path, {"sample_id": "s", "x": {"y": float("nan")}}).read_text()
+        text = self._write(tmp_path, {"sample_id": "s", "x": {"y": float("nan")}}).read_text(
+            encoding="utf-8"
+        )
         assert '"y": NaN' in text
 
     def test_no_nonfinite_gives_an_empty_list_and_rewriting_is_stable(self, tmp_path):
         results = {"sample_id": "s", "relax": {"energy": -5.0}}
-        first = json.loads(self._write(tmp_path, results).read_text())
-        second = json.loads(self._write(tmp_path, results).read_text())
+        first = json.loads(self._write(tmp_path, results).read_text(encoding="utf-8"))
+        second = json.loads(self._write(tmp_path, results).read_text(encoding="utf-8"))
         assert first["nonfinite_fields"] == [] == second["nonfinite_fields"]
 
     def test_csv_output_has_no_new_column(self, tmp_path):
         path = self._write(
             tmp_path, {"sample_id": "s", "relax": {"energy": float("nan")}}, fmt="csv"
         )
-        header = path.read_text().splitlines()[0].split(",")
+        header = path.read_text(encoding="utf-8").splitlines()[0].split(",")
         assert "nonfinite_fields" not in header
 
     def test_relaxation_json_writer_uses_the_same_encoder(self, tmp_path):
@@ -448,5 +452,5 @@ class TestReportJson:
 
         target = tmp_path / "relax.json"
         _run_one(StubRelaxer(), tmp_path / "in.cif", tmp_path, "s", target, None)
-        data = json.loads(target.read_text())
+        data = json.loads(target.read_text(encoding="utf-8"))
         assert data["potential_energy_minimized"] == -12.5

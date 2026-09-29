@@ -276,9 +276,13 @@ def complex_pdb(tmp_path_factory) -> Path:
     """1YCR with heteroatoms removed: chain A = MDM2 (receptor), chain B = p53 peptide."""
     if not EXAMPLE_1YCR.exists():
         pytest.skip(f"bundled example not found: {EXAMPLE_1YCR}")
-    lines = [ln for ln in EXAMPLE_1YCR.read_text().splitlines(True) if ln.startswith("ATOM")]
+    lines = [
+        ln
+        for ln in EXAMPLE_1YCR.read_text(encoding="utf-8").splitlines(True)
+        if ln.startswith("ATOM")
+    ]
     out = tmp_path_factory.mktemp("l9") / "1ycr_atoms.pdb"
-    out.write_text("".join(lines) + "END\n")
+    out.write_text("".join(lines) + "END\n", encoding="utf-8")
     return out
 
 

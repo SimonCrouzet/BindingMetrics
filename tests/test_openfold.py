@@ -32,18 +32,22 @@ def _make_seed_dir(
     seed_dir.mkdir(parents=True, exist_ok=True)
 
     if agg is not None:
-        (seed_dir / f"{prefix}_confidences_aggregated.json").write_text(json.dumps(agg))
+        (seed_dir / f"{prefix}_confidences_aggregated.json").write_text(
+            json.dumps(agg), encoding="utf-8"
+        )
 
     if conf is not None:
         # Serialise numpy arrays as lists for JSON
         serialisable = {k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()}
-        (seed_dir / f"{prefix}_confidences.json").write_text(json.dumps(serialisable))
+        (seed_dir / f"{prefix}_confidences.json").write_text(
+            json.dumps(serialisable), encoding="utf-8"
+        )
 
     # Minimal stub structure file
-    (seed_dir / f"{prefix}_model.cif").write_text("# stub CIF\n")
+    (seed_dir / f"{prefix}_model.cif").write_text("# stub CIF\n", encoding="utf-8")
 
     if timing is not None:
-        (seed_dir / "timing.json").write_text(json.dumps(timing))
+        (seed_dir / "timing.json").write_text(json.dumps(timing), encoding="utf-8")
 
     return tmp_path
 
@@ -137,7 +141,7 @@ class TestParseConfidencesAggregated:
 
         agg = _default_agg(n_chains=2)
         path = tmp_path / "agg.json"
-        path.write_text(json.dumps(agg))
+        path.write_text(json.dumps(agg), encoding="utf-8")
         result = _parse_confidences_aggregated(path)
 
         assert result["avg_plddt"] == pytest.approx(87.5)
@@ -153,7 +157,7 @@ class TestParseConfidencesAggregated:
         from binding_metrics.metrics.openfold import _parse_confidences_aggregated
 
         path = tmp_path / "agg_nopae.json"
-        path.write_text(json.dumps({"avg_plddt": 72.0, "gpde": 2.1}))
+        path.write_text(json.dumps({"avg_plddt": 72.0, "gpde": 2.1}), encoding="utf-8")
         result = _parse_confidences_aggregated(path)
 
         assert result["avg_plddt"] == pytest.approx(72.0)
@@ -174,7 +178,10 @@ class TestParseConfidences:
         conf = _default_conf(n_atoms=15, n_tokens=5, with_pde=True)
         path = tmp_path / "conf.json"
         path.write_text(
-            json.dumps({k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()})
+            json.dumps(
+                {k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()}
+            ),
+            encoding="utf-8",
         )
         result = _parse_confidences(path)
 
@@ -191,7 +198,10 @@ class TestParseConfidences:
         conf = _default_conf(with_pde=False)
         path = tmp_path / "conf_nopde.json"
         path.write_text(
-            json.dumps({k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()})
+            json.dumps(
+                {k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()}
+            ),
+            encoding="utf-8",
         )
         result = _parse_confidences(path)
 
@@ -665,7 +675,7 @@ class TestQuerySeeds:
         pytest.importorskip("gemmi")
 
     def _seeds(self, query_json: Path):
-        return json.loads(query_json.read_text())["seeds"]
+        return json.loads(query_json.read_text(encoding="utf-8"))["seeds"]
 
     def test_scoring_query_defaults_to_42(self, tmp_path):
         from binding_metrics.metrics.openfold import prepare_scoring_query
@@ -807,7 +817,7 @@ class TestWriteRunnerYaml:
         yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled", "low_mem"])
 
         assert yaml_path.exists()
-        content = yaml_path.read_text()
+        content = yaml_path.read_text(encoding="utf-8")
         assert "predict" in content
         assert "pae_enabled" in content
         assert "low_mem" in content
@@ -817,7 +827,7 @@ class TestWriteRunnerYaml:
         from binding_metrics.metrics.openfold import _write_runner_yaml
 
         yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled"])
-        content = yaml_path.read_text()
+        content = yaml_path.read_text(encoding="utf-8")
 
         assert "pae_enabled" in content
         assert "low_mem" not in content
@@ -827,7 +837,7 @@ class TestWriteRunnerYaml:
         from binding_metrics.metrics.openfold import _write_runner_yaml
 
         yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled", "low_mem"])
-        content = yaml_path.read_text()
+        content = yaml_path.read_text(encoding="utf-8")
         for p in ("predict", "pae_enabled", "low_mem"):
             assert p in content
 
@@ -855,13 +865,15 @@ requires_example_pdb = pytest.mark.skipif(
 
 def _count_pdb_atoms(pdb_path: Path) -> int:
     return sum(
-        1 for line in pdb_path.read_text().splitlines() if line.startswith(("ATOM  ", "HETATM"))
+        1
+        for line in pdb_path.read_text(encoding="utf-8").splitlines()
+        if line.startswith(("ATOM  ", "HETATM"))
     )
 
 
 def _count_pdb_residues(pdb_path: Path) -> int:
     residues = set()
-    for line in pdb_path.read_text().splitlines():
+    for line in pdb_path.read_text(encoding="utf-8").splitlines():
         if line.startswith(("ATOM  ", "HETATM")):
             try:
                 residues.add((line[21], int(line[22:26])))
@@ -873,7 +885,7 @@ def _count_pdb_residues(pdb_path: Path) -> int:
 def _pdb_chains(pdb_path: Path) -> set:
     return {
         line[21]
-        for line in pdb_path.read_text().splitlines()
+        for line in pdb_path.read_text(encoding="utf-8").splitlines()
         if line.startswith(("ATOM  ", "HETATM"))
     }
 
@@ -913,7 +925,9 @@ def _make_openfold3_dir_from_pdb(
             "chain_pair_iptm": {f"({chains[0]}, {chains[1]})": 0.73} if len(chains) >= 2 else {},
             "bespoke_iptm": {},
         }
-    (seed_dir / f"{prefix}_confidences_aggregated.json").write_text(json.dumps(agg))
+    (seed_dir / f"{prefix}_confidences_aggregated.json").write_text(
+        json.dumps(agg), encoding="utf-8"
+    )
 
     if with_conf_json:
         rng = np.random.default_rng(42)
@@ -922,9 +936,9 @@ def _make_openfold3_dir_from_pdb(
             "pde": rng.uniform(0, 8, (n_residues, n_residues)).tolist(),
             "gpde": 1.45,
         }
-        (seed_dir / f"{prefix}_confidences.json").write_text(json.dumps(conf))
+        (seed_dir / f"{prefix}_confidences.json").write_text(json.dumps(conf), encoding="utf-8")
 
-    (seed_dir / "timing.json").write_text(json.dumps({"inference": 38.4}))
+    (seed_dir / "timing.json").write_text(json.dumps({"inference": 38.4}), encoding="utf-8")
     return tmp_path
 
 
@@ -945,7 +959,7 @@ class TestRealWorldIntegration:
             "gpde": 1.2,
         }
         path = tmp_path / "conf.json"
-        path.write_text(json.dumps(conf))
+        path.write_text(json.dumps(conf), encoding="utf-8")
 
         result = _parse_confidences(path)
 

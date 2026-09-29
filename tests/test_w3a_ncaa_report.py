@@ -56,7 +56,10 @@ class TestResultField:
         row = RelaxationResult(sample_id="x", success=True, ncaa_bond_order_source=SOURCES)
         results = {"sample_id": "x", "relax": row.to_dict()}
         path = write_report(results, tmp_path, "x", fmt="json")
-        assert json.loads(path.read_text())["relax"]["ncaa_bond_order_source"] == SOURCES
+        assert (
+            json.loads(path.read_text(encoding="utf-8"))["relax"]["ncaa_bond_order_source"]
+            == SOURCES
+        )
         flat = _flatten(results)
         assert flat["relax_ncaa_bond_order_source_XYZ"] == "single_bonds"
         assert flat["relax_ncaa_bond_order_source_BMT"] == "ccd"
