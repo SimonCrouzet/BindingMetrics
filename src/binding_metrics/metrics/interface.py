@@ -6,6 +6,12 @@ follows the PISA approach of Krissinel & Henrick (J. Mol. Biol. 372:774-797,
 2007) using Eisenberg-McLachlan atomic solvation parameters (Nature
 319:199-203, 1986).
 
+Areas come from the Shrake-Rupley algorithm (J. Mol. Biol. 79:351-371, 1973)
+as implemented in biotite, with a 1.4 Å water probe and biotite's
+single-radius van der Waals table by element (documented there as Mantina et
+al., J. Phys. Chem. A 113:5806-5812, 2009; 1.8 Å for an element without an
+entry). Water and monoatomic ions are not part of the surface.
+
 Usage:
     binding-metrics-interface --input complex.cif --design-chain A
 """
@@ -364,9 +370,13 @@ def compute_interface_metrics(
                 residue, chain, res_name, res_id, buried_sasa,
                 delta_g_res, polar_area, apolar_area
 
-        Interactions:
+        Interactions (heuristic ranking scores, see ``polar_contacts``):
             hbonds (int): cross-chain hydrogen bonds
-            saltbridges (int): cross-chain salt bridges
+            hbond_energy (float, kcal/mol, ≤ 0): sum of H-bond pair scores
+            saltbridges (int): cross-chain salt-bridge residue pairs
+            saltbridges_bidentate (int): pairs with at least two atom contacts
+            saltbridge_energy (float, kcal/mol, ≤ 0): sum of pair Coulomb
+                scores at ε = 4
 
         reason (str): present only when a value could not be computed. An empty
             chain after the ``hetero`` filter or a failed SASA leaves the areas
@@ -441,7 +451,6 @@ def compute_interface_metrics(
         )
         return result
 
-    # Per-atom SASA for each component
     try:
         sasa_pep = _per_atom_sasa(peptide_atoms, probe_radius, sasa_fn, vdw_fn)
         sasa_rec = _per_atom_sasa(receptor_atoms, probe_radius, sasa_fn, vdw_fn)
@@ -456,19 +465,18 @@ def compute_interface_metrics(
     sasa_pep_in_cpx = sasa_cpx[complex_atoms.chain_id == design_chain]
     sasa_rec_in_cpx = sasa_cpx[complex_atoms.chain_id == receptor_chain]
 
-    # Buried SASA per atom (clamped ≥ 0 to avoid numerical noise)
+    # Clamp at 0: the isolated and complex areas are sampled independently, so a
+    # buried atom can come out marginally negative.
     buried_pep = np.maximum(sasa_pep - sasa_pep_in_cpx, 0.0)
     buried_rec = np.maximum(sasa_rec - sasa_rec_in_cpx, 0.0)
 
     delta_sasa = float(buried_pep.sum() + buried_rec.sum())
 
-    # Solvation energy: ΔG_int = Σ_i γ_i × ΔA_i
     delta_g_int = float(
         np.dot(_gamma_array(peptide_atoms), buried_pep)
         + np.dot(_gamma_array(receptor_atoms), buried_rec)
     )
 
-    # Polar / apolar buried area
     polar_area = float(
         np.dot(_polar_mask(peptide_atoms), buried_pep)
         + np.dot(_polar_mask(receptor_atoms), buried_rec)
@@ -478,11 +486,9 @@ def compute_interface_metrics(
         + np.dot(_apolar_mask(receptor_atoms), buried_rec)
     )
 
-    # Per-residue data
     per_res_pep = _collect_per_residue(peptide_atoms, buried_pep, interface_threshold)
     per_res_rec = _collect_per_residue(receptor_atoms, buried_rec, interface_threshold)
 
-    # H-bonds and salt bridges
     try:
         hbond_result = compute_hbonds(atoms, design_chain, receptor_chain, hetero=hetero)
         saltbridge_result = compute_saltbridges(atoms, design_chain, receptor_chain, hetero=hetero)

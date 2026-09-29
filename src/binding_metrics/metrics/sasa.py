@@ -1,4 +1,9 @@
-"""Solvent accessible surface area calculations."""
+"""Solvent accessible surface area calculations.
+
+The trajectory functions use mdtraj's ``shrake_rupley`` (radii in nm); the
+static function uses biotite. Both implement the Shrake-Rupley algorithm
+(J. Mol. Biol. 79:351-371, 1973).
+"""
 
 from pathlib import Path
 from typing import Literal
@@ -46,21 +51,17 @@ def calculate_buried_sasa(
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
 
-    # Calculate SASA for the complex
     sasa_complex = md.shrake_rupley(traj, probe_radius=probe_radius)
     sasa_complex_total = sasa_complex.sum(axis=1)
 
-    # Calculate SASA for ligand alone
     ligand_traj = traj.atom_slice(ligand_indices)
     sasa_ligand = md.shrake_rupley(ligand_traj, probe_radius=probe_radius)
     sasa_ligand_total = sasa_ligand.sum(axis=1)
 
-    # Calculate SASA for receptor alone
     receptor_traj = traj.atom_slice(receptor_indices)
     sasa_receptor = md.shrake_rupley(receptor_traj, probe_radius=probe_radius)
     sasa_receptor_total = sasa_receptor.sum(axis=1)
 
-    # Buried SASA = isolated components - complex
     buried_sasa = sasa_ligand_total + sasa_receptor_total - sasa_complex_total
 
     return buried_sasa
@@ -83,7 +84,9 @@ def calculate_interface_sasa(
         probe_radius: Probe radius in nm
 
     Returns:
-        Dictionary with SASA arrays for ligand, receptor, complex, and buried
+        Dictionary with per-frame SASA arrays of shape (n_frames,) in nm^2:
+        "ligand" and "receptor" (each alone), "complex", and "buried"
+        (ligand + receptor - complex)
     """
     if md is None:
         raise ImportError(
@@ -93,16 +96,13 @@ def calculate_interface_sasa(
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
 
-    # Complex SASA
     sasa_complex = md.shrake_rupley(traj, probe_radius=probe_radius)
     sasa_complex_total = sasa_complex.sum(axis=1)
 
-    # Ligand SASA
     ligand_traj = traj.atom_slice(ligand_indices)
     sasa_ligand = md.shrake_rupley(ligand_traj, probe_radius=probe_radius)
     sasa_ligand_total = sasa_ligand.sum(axis=1)
 
-    # Receptor SASA
     receptor_traj = traj.atom_slice(receptor_indices)
     sasa_receptor = md.shrake_rupley(receptor_traj, probe_radius=probe_radius)
     sasa_receptor_total = sasa_receptor.sum(axis=1)
