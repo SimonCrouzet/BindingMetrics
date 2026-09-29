@@ -162,7 +162,7 @@ def compute_delta_sasa_static(
               chain, failed SASA); the areas are then 0.0 for an empty chain
               and NaN for a failed calculation.
     """
-    from binding_metrics.metrics.interface import filter_hetero_atoms
+    from binding_metrics.metrics.interface import SASA_POINT_NUMBER, filter_hetero_atoms
 
     try:
         import biotite.structure.io.pdbx as pdbx
@@ -221,7 +221,7 @@ def compute_delta_sasa_static(
         per_atom = biotite_sasa(
             atom_array,
             probe_radius=probe_radius,
-            point_number=960,
+            point_number=SASA_POINT_NUMBER,
             vdw_radii=_get_radii(atom_array),
         )
         return float(np.nansum(per_atom))

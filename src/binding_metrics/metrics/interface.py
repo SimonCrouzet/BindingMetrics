@@ -53,6 +53,11 @@ _SOLVATION_PARAMS: dict[str, float] = {
 
 _KCAL_TO_KJ = 4.184
 
+# Points sampled on each atom sphere by the Shrake-Rupley algorithm (Shrake &
+# Rupley, J. Mol. Biol. 79:351-371, 1973). More points reduce the sampling noise
+# of the per-atom areas at linear cost.
+SASA_POINT_NUMBER = 960
+
 
 def _import_biotite():
     """Lazy import of required biotite modules."""
@@ -186,7 +191,7 @@ def _get_vdw_radii(atoms, vdw_fn) -> np.ndarray:
 
 
 def _per_atom_sasa(atoms, probe_radius, sasa_fn, vdw_fn) -> np.ndarray:
-    """Per-atom Shrake-Rupley SASA (Å²) with 960 points per atom.
+    """Per-atom Shrake-Rupley SASA (Å²), SASA_POINT_NUMBER points per atom.
 
     biotite returns NaN for atoms it does not sample: water, monoatomic ions
     and atoms with non-finite coordinates. Those atoms neither occlude nor
@@ -194,7 +199,9 @@ def _per_atom_sasa(atoms, probe_radius, sasa_fn, vdw_fn) -> np.ndarray:
     poison the sums built from this array.
     """
     radii = _get_vdw_radii(atoms, vdw_fn)
-    per_atom = sasa_fn(atoms, probe_radius=probe_radius, vdw_radii=radii, point_number=960)
+    per_atom = sasa_fn(
+        atoms, probe_radius=probe_radius, vdw_radii=radii, point_number=SASA_POINT_NUMBER
+    )
     return np.where(np.isfinite(per_atom), per_atom, 0.0)
 
 
