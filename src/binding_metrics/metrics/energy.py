@@ -13,12 +13,35 @@ try:
 except ImportError:
     md = None
 
-import openmm
-import openmm.unit as unit
-from openmm.app import ForceField, PDBFile
+# OpenMM is imported inside the functions that use it, so this module can be
+# imported (and its CLI parser built) on installs without OpenMM.
+try:
+    from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+except ImportError:
+    # core.system imports OpenMM at module level. Without OpenMM the value is
+    # duplicated here; tests/test_l6_import.py checks that the two stay equal.
+    DEFAULT_RANDOM_SEED = 1
 
-from binding_metrics.core.forcefields import get_forcefield
-from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+
+def __getattr__(name: str):
+    """Resolve the OpenMM names this module used to import eagerly (PEP 562)."""
+    if name == "openmm":
+        import openmm
+
+        return openmm
+    if name == "unit":
+        import openmm.unit as unit
+
+        return unit
+    if name in ("ForceField", "PDBFile"):
+        import openmm.app
+
+        return getattr(openmm.app, name)
+    if name == "get_forcefield":
+        from binding_metrics.core.forcefields import get_forcefield
+
+        return get_forcefield
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def calculate_interaction_energy(
@@ -51,6 +74,12 @@ def calculate_interaction_energy(
             "mdtraj is required for energy calculations. "
             "Install with: pip install binding-metrics[analysis]"
         )
+
+    import openmm
+    import openmm.unit as unit
+    from openmm.app import PDBFile
+
+    from binding_metrics.core.forcefields import get_forcefield
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
 
@@ -150,6 +179,12 @@ def calculate_component_energies(
             "Install with: pip install binding-metrics[analysis]"
         )
 
+    import openmm
+    import openmm.unit as unit
+    from openmm.app import PDBFile
+
+    from binding_metrics.core.forcefields import get_forcefield
+
     traj = md.load(str(trajectory_path), top=str(topology_path))
     pdb = PDBFile(str(topology_path))
     forcefield = get_forcefield(forcefield_name)
@@ -241,6 +276,9 @@ def _create_implicit_system(
         for non-canonical residues (empty when there are none). Callers that build
         separate subsystem force fields must reload these XMLs.
     """
+    import openmm
+    from openmm.app import ForceField
+
     from binding_metrics.core.cyclic import (
         get_addh_variants,
         load_extra_xmls,
@@ -335,6 +373,7 @@ def _repair_orphaned_cys(
     and directly inserts HG into a rebuilt topology at a geometric position along
     the CB→SG bond direction.
     """
+    import openmm.unit as unit
     from openmm.app import Element, Topology
 
     _SH_BOND_NM = 0.134  # S–H bond length
@@ -413,6 +452,9 @@ def _repair_orphaned_cys(
 
 def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None, ncaa_xmls=None):
     """Build an OpenMM system for a topology that already contains hydrogens."""
+    import openmm
+    from openmm.app import ForceField
+
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
     from binding_metrics.core import phosaa
@@ -436,6 +478,8 @@ def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None, ncaa
 
 def _get_platform(device: str = "cuda"):
     """Get the best available OpenMM platform."""
+    import openmm
+
     if device == "cuda":
         try:
             platform = openmm.Platform.getPlatformByName("CUDA")
@@ -454,6 +498,8 @@ def _evaluate_potential_energy(
     Args:
         min_iterations: Optional brief minimization before evaluation (0 = none).
     """
+    import openmm
+    import openmm.unit as unit
     from openmm.app import Simulation
 
     integrator = openmm.VerletIntegrator(0.001 * unit.picoseconds)
@@ -468,6 +514,7 @@ def _evaluate_potential_energy(
 
 def _extract_chain(topology, positions, chain_id: str):
     """Extract a single chain as a new (topology, positions) pair."""
+    import openmm.unit as unit
     from openmm.app import Topology
 
     new_topology = Topology()
@@ -521,6 +568,8 @@ def _evaluate_subsystem_energies(
     Returns:
         (e_complex, e_peptide, e_receptor) with None values on failure.
     """
+    import openmm.unit as unit
+
     try:
         simulation.context.setPositions(positions)
         e_c = (
@@ -636,6 +685,9 @@ def compute_interaction_energy(
             mode that came back as None can be explained even when ``success``
             is True.
     """
+    import openmm
+    import openmm.unit as unit
+
     from binding_metrics.io.structures import detect_chains, load_structure
 
     input_path = Path(input_path)
