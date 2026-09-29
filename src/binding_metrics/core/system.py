@@ -33,6 +33,20 @@ except ImportError:
 #: ``random_seed=None`` through the configs to opt back into fresh randomness.
 DEFAULT_RANDOM_SEED = 1
 
+#: Coordinates (nm) this close to 0 on every axis mark a placeholder atom written
+#: by pipelines that do not model it, not a real position.
+_ORIGIN_PLACEHOLDER_TOL_NM = 1e-6
+
+#: Equilibrium Cα–HA bond length (nm) in ff14SB (``protein-CX``/``protein-H1``
+#: bond in ``amber14/protein.ff14SB.xml``; Maier et al., J. Chem. Theory Comput.
+#: 2015, 11, 3696-3713). A repaired HA is placed at this distance so the
+#: ``constraints=HBonds`` constraint starts at its rest length.
+_CA_HA_BOND_NM = 0.109
+
+#: Below this norm the three unit vectors N, C, CB around a Cα sum to nothing:
+#: the tripod is planar and has no fourth tetrahedral vertex to point HA at.
+_DEGENERATE_TRIPOD_NORM = 1e-6
+
 
 def _extract_custom_bonds(topology) -> list:
     """Capture non-sequential intra-chain bonds that PDBxFile.writeFile drops.
@@ -137,7 +151,7 @@ def _delete_zero_coord_atoms(fixer) -> "PDBFixer":
     atoms_at_origin = [
         i
         for i, pos in enumerate(fixer.positions)
-        if abs(pos.x) < 1e-6 and abs(pos.y) < 1e-6 and abs(pos.z) < 1e-6
+        if max(abs(pos.x), abs(pos.y), abs(pos.z)) < _ORIGIN_PLACEHOLDER_TOL_NM
     ]
     if not atoms_at_origin:
         return fixer
@@ -259,8 +273,9 @@ _METAL_ELEMENTS = {
 _WATER_NAMES = {"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"}
 
 #: Longest C(i)-N(i+1) distance still read as a peptide bond. A real amide bond
-#: is about 1.33 A; one missing residue puts the neighbours at 3.8 A or more, so
-#: 2.0 A separates the two cases with room for poor geometry.
+#: is about 1.33 A (Engh and Huber, Acta Cryst. A47, 392-400, 1991); one missing
+#: residue puts the neighbours at 3.8 A or more, so 2.0 A separates the two cases
+#: with room for poor geometry.
 _PEPTIDE_BOND_MAX_ANGSTROM = 2.0
 
 
@@ -280,13 +295,15 @@ def _count_residue_gaps(topology, positions) -> int:
     """
     import numpy as np
 
-    coords_angstrom = np.array(positions.value_in_unit(unit.nanometer)) * 10.0
+    coords_nm = np.array(positions.value_in_unit(unit.nanometer))
 
-    def _coords_or_none(index):
+    def _coords_angstrom_or_none(index):
         if index is None:
             return None
-        xyz = coords_angstrom[index]
-        return None if np.abs(xyz).max() < 1e-6 else xyz  # origin = placeholder
+        xyz = coords_nm[index]
+        if np.abs(xyz).max() < _ORIGIN_PLACEHOLDER_TOL_NM:
+            return None
+        return xyz * 10.0
 
     n_gaps = 0
     for chain in topology.chains():
@@ -301,8 +318,8 @@ def _count_residue_gaps(topology, positions) -> int:
                 except ValueError:
                     jump = 1  # non-numeric residue id: cannot judge
                 if jump > 1:
-                    c_xyz = _coords_or_none(previous[1].get("C"))
-                    n_xyz = _coords_or_none(atoms.get("N"))
+                    c_xyz = _coords_angstrom_or_none(previous[1].get("C"))
+                    n_xyz = _coords_angstrom_or_none(atoms.get("N"))
                     bonded = (
                         c_xyz is not None
                         and n_xyz is not None
@@ -485,9 +502,9 @@ def repair_ca_hydrogen_chirality(topology, positions, verbose: bool = True):
             continue  # opposite faces — correct
         u = sum((x - ca) / np.linalg.norm(x - ca) for x in (n, c, cb))
         norm = np.linalg.norm(u)
-        if norm < 1e-6:
+        if norm < _DEGENERATE_TRIPOD_NORM:
             continue  # degenerate planar tripod
-        pos[idx["HA"]] = ca - u / norm * 0.109  # ideal 4th tetrahedral vertex
+        pos[idx["HA"]] = ca - u / norm * _CA_HA_BOND_NM  # ideal 4th tetrahedral vertex
         repaired.append(f"{res.name}{res.id}/{res.chain.id}")
 
     if repaired and verbose:

@@ -38,6 +38,18 @@ GAFF2 is a *general* small-molecule force field — this is a pragmatic approxim
 for exotic building blocks (e.g. BMT/ABA in cyclosporin A), not a substitute for
 purpose-built RESP-fitted parameters.  Residues already covered by curated templates
 (NMG/NMA/MVA/MLE, the ASPL/GLUL/LYSL lactams, CYX) are skipped here.
+
+References
+----------
+* GAFF: Wang, J., Wolf, R.M., Caldwell, J.W., Kollman, P.A., Case, D.A.
+  Development and testing of a general amber force field. J. Comput. Chem. 2004,
+  25, 1157-1174 (GAFF2 is the AmberTools revision of it, shipped as
+  ``gaff-2.2.20`` in ``openmmforcefields``).
+* AM1-BCC charges: Jakalian, A., Bush, B.L., Jack, D.B., Bayly, C.I. J. Comput.
+  Chem. 2000, 21, 132-146 (method) and Jakalian, A., Jack, D.B., Bayly, C.I.
+  J. Comput. Chem. 2002, 23, 1623-1641 (parameterisation and validation).
+* ff14SB backbone types kept on the NCAA backbone: Maier, J.A. et al. J. Chem.
+  Theory Comput. 2015, 11, 3696-3713.
 """
 
 from __future__ import annotations

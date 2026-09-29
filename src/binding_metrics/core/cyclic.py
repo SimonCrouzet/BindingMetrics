@@ -48,10 +48,19 @@ import numpy as np
 
 # ---------------------------------------------------------------------------
 # Threshold constants (nm)
+#
+# Cut-offs for reading covalent bonds off coordinates. They are heuristics with a
+# margin over ideal geometry, because predicted models can close a ring with a
+# stretched bond that a crystal-quality cut-off would miss.
 # ---------------------------------------------------------------------------
-_AMIDE_BOND_THRESH = 0.20  # N–C amide bond detection
-_DISULFIDE_THRESH = 0.26  # S–S disulfide detection
-_SUSPECT_THRESH = 0.22  # any short inter-residue contact (potential cyclic)
+#: Amide C-N is 0.133 nm (Engh and Huber, Acta Cryst. A47, 392-400, 1991). 0.20 nm
+#: accepts a stretched closure bond and stays below the 0.32 nm of a van der
+#: Waals N...C contact.
+_AMIDE_BOND_THRESH = 0.20
+#: A disulfide S-S bond is about 0.203 nm long (Engh and Huber, as above); 0.26 nm
+#: leaves room for poor geometry while excluding the van der Waals contact of
+#: two unbonded sulfurs (0.36 nm).
+_DISULFIDE_THRESH = 0.26
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +303,8 @@ def _peptide_residues(topology, chain_id: str):
     raise ValueError(f"Chain '{chain_id}' not found in topology.")
 
 
-# Covalent radii in nm (Cordero et al. 2008; subset covering biomolecules).
+# Covalent radii in nm (Cordero et al., Dalton Trans. 2008, 2832-2838; subset
+# covering biomolecules).
 _COVALENT_RADII_NM = {
     "H": 0.031,
     "C": 0.076,
@@ -308,7 +318,12 @@ _COVALENT_RADII_NM = {
     "I": 0.139,
     "SE": 0.120,
 }
+#: Radius (nm) for an element missing from the table, close to the carbon value.
 _DEFAULT_COVALENT_RADIUS_NM = 0.077
+#: Two atoms are bonded when closer than the sum of their covalent radii times
+#: this factor. A heuristic. For C-C the cut-off is 0.198 nm against a 0.154 nm
+#: bond and a 1,3 distance of about 0.25 nm; for C-S it is 0.235 nm against a
+#: 0.182 nm bond. The 30 % margin absorbs coordinate noise in predicted models.
 _COVALENT_TOLERANCE = 1.3
 
 

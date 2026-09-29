@@ -32,6 +32,17 @@ therefore adapts the shipped file rather than re-deriving anything:
 
 All charges, bonded terms and phosphate LJ values are phosaa's own, unchanged —
 only atom-type *names* are rewritten, which does not affect the physics.
+
+References
+----------
+* phosaa14SB (the file adapted here): Raguette, L.E. et al. phosaa14SB and
+  phosaa19SB: Updated Amber Force Field Parameters for Phosphorylated Amino
+  Acids. J. Chem. Theory Comput. 2024, 20, 7199-7209.
+* The earlier phosaa10 set that phosaa14SB updates: Homeyer, N., Horn, A.H.C.,
+  Lanig, H., Sticht, H. J. Mol. Model. 2006, 12, 281; Steinbrecher, T., Latzer,
+  J., Case, D.A. J. Chem. Theory Comput. 2012, 8, 4405-4412.
+* Both are quoted from the ``<Reference>`` entries of the ``openmmforcefields``
+  XML files.
 """
 
 from __future__ import annotations
