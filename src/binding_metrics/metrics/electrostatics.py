@@ -1,7 +1,15 @@
 """Electrostatic cross-chain Coulomb energy for protein complexes.
 
 Computes a simplified Coulomb interaction energy between formal charges
-on ionisable residues across the peptide/receptor interface at pH 7.
+on ionisable residues across the peptide/receptor interface at pH 7:
+
+    E = (k / ε) Σ q_i q_j / r_ij   over cross-chain charged-atom pairs with r_ij < cutoff
+
+with one uniform dielectric ε = 4 (the interior dielectric of a macromolecule,
+Krissinel & Henrick, J. Mol. Biol. 372:774-797, 2007). It is a heuristic ranking
+score: formal charges from residue names, no pKa shifts, no chain termini, no
+solvent screening, and a package-chosen 12 Å cutoff. Do not read it as a
+binding free energy.
 
 Usage:
     binding-metrics-electrostatics --input complex.cif --design-chain A
@@ -230,22 +238,18 @@ def compute_coulomb_cross_chain(
         result["charged_atoms_receptor"] = info_rec
         return result
 
-    # Vectorised pairwise distances: (n_pep, n_rec)
     diff = pos_pep[:, np.newaxis, :] - pos_rec[np.newaxis, :, :]  # (n_pep, n_rec, 3)
     r = np.linalg.norm(diff, axis=-1)  # (n_pep, n_rec)
 
     within_cutoff = r < cutoff_ang
-    # Avoid division by zero (shouldn't happen cross-chain but be safe)
+    # Coincident atoms would divide by zero; treat them as outside the cutoff.
     r_safe = np.where(within_cutoff & (r > 0), r, np.inf)
 
-    # Charge product matrix
     qq = q_pep[:, np.newaxis] * q_rec[np.newaxis, :]  # (n_pep, n_rec)
 
-    # Energy sum over pairs within cutoff
     e_matrix = np.where(within_cutoff, qq / r_safe, 0.0)
     coulomb_kJ = float(np.sum(e_matrix) * _COULOMB_KJ_ANG_MOL / dielectric)
 
-    # Count pairs
     within_mask = within_cutoff & (r > 0)
     n_charged_pairs = int(np.sum(within_mask))
     n_attractive = int(np.sum(within_mask & (qq < 0)))
