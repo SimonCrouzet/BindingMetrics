@@ -253,8 +253,12 @@ def run_pipeline(
     _require_chains_present(chain_info, peptide_chain, receptor_chain)
     peptide_chain = chain_info["peptide_chain"]  # auth_asym_id (biotite)
     receptor_chain = chain_info["receptor_chain"]
-    peptide_chain_label = chain_info["peptide_chain_label"]  # label_asym_id (OpenMM)
+    peptide_chain_label = chain_info["peptide_chain_label"]  # as OpenMM names it
     receptor_chain_label = chain_info["receptor_chain_label"]
+    # The chain IDs OpenMM gives the input file. The two labels above become those of
+    # the prepped file below, which is another file with other names.
+    input_peptide_chain_label = peptide_chain_label
+    input_receptor_chain_label = receptor_chain_label
     results["chains"] = chain_info
 
     # ------------------------------------------------------------------- Prep
@@ -319,7 +323,7 @@ def run_pipeline(
         from binding_metrics.io.structures import load_structure
 
         _orig_topo, _orig_pos = load_structure(input_path)
-        cyclic_bond_hints = detect_cyclization(_orig_topo, _orig_pos, peptide_chain_label)
+        cyclic_bond_hints = detect_cyclization(_orig_topo, _orig_pos, input_peptide_chain_label)
         if cyclic_bond_hints:
             logger.info(
                 "  Cyclic bond hints from original file: %s",
@@ -374,8 +378,6 @@ def run_pipeline(
             logger.warning("\n[FAILED] Relaxation failed: %s", relax_result.error_message)
             logger.info("  Continuing with prepped input for downstream steps...")
             relaxed_path = prepped_path
-            working_peptide = peptide_chain_label
-            working_receptor = receptor_chain_label
         else:
             # Prefer MD-final structure; fall back to minimized
             if relax_result.md_final_structure_path:
@@ -383,21 +385,21 @@ def run_pipeline(
             else:
                 relaxed_path = Path(relax_result.minimized_structure_path)
             logger.info("\n  Relaxed structure: %s", relaxed_path)
-            # OpenMM writes the relaxed CIF using label IDs as both auth and label,
-            # so all downstream steps should use the label IDs.
-            working_peptide = peptide_chain_label
-            working_receptor = receptor_chain_label
     else:
         # Prefer PDBFixer-prepped structure (proper termini, removed heterogens)
         # over raw input; fall back to raw only if prep was skipped or failed.
         relaxed_path = prepped_path if prepped_path != input_path else input_path
-        working_peptide = peptide_chain_label
-        working_receptor = receptor_chain_label
         logger.info(
             "\n  [skip] Relaxation skipped — using %s input for downstream steps.",
             "prepped" if relaxed_path != input_path else "raw",
         )
         results["relax"] = {"skipped": True}
+
+    # The metrics below read ``relaxed_path``. Those that use biotite name the chains
+    # by author ID. The input has its own author IDs; a prepped or relaxed file is
+    # written from the input CIF with those author IDs restored and repeated as its
+    # label IDs. So the author IDs of the input name the chains in every case.
+    working_peptide, working_receptor = peptide_chain, receptor_chain
 
     # ------------------------------------------------------------------ Energy
     if "energy" in metrics:
@@ -405,10 +407,25 @@ def run_pipeline(
         try:
             from binding_metrics.metrics.energy import compute_interaction_energy
 
+            # The energy reads the file through OpenMM, which names the chains as
+            # detect_chains_from_file reports for that file.
+            if relaxed_path == input_path:
+                openmm_peptide = input_peptide_chain_label
+                openmm_receptor = input_receptor_chain_label
+            else:
+                openmm_ids = detect_chains_from_file(
+                    relaxed_path,
+                    peptide_chain=peptide_chain,
+                    receptor_chain=receptor_chain,
+                    verbose=False,
+                )
+                openmm_peptide = openmm_ids["peptide_chain_label"]
+                openmm_receptor = openmm_ids["receptor_chain_label"]
+
             energy = compute_interaction_energy(
                 relaxed_path,
-                peptide_chain=peptide_chain_label,
-                receptor_chain=receptor_chain_label,
+                peptide_chain=openmm_peptide,
+                receptor_chain=openmm_receptor,
                 device=device,
                 sample_id=sample_id,
                 modes=energy_modes,
