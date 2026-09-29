@@ -94,6 +94,13 @@ def load_biotite_structure(cif_path: str | Path):
         return pdb_io.get_structure(pdb_file, model=1)
 
 
+def _amino_acid_mask(atoms) -> np.ndarray:
+    """Atoms of amino-acid residues: CCD peptide-linking residues plus AMBER variants."""
+    struc, _, _, _, _ = _import_biotite()
+    res_names = np.char.upper(np.char.strip(atoms.res_name.astype(str)))
+    return struc.filter_amino_acids(atoms) | np.isin(res_names, list(_AMBER_VARIANT_NAMES))
+
+
 def filter_hetero_atoms(atoms, hetero: Literal["ignore", "keep"] = "ignore"):
     """Apply the heteroatom policy of the structure-based metrics.
 
@@ -120,13 +127,8 @@ def filter_hetero_atoms(atoms, hetero: Literal["ignore", "keep"] = "ignore"):
         raise ValueError(f"hetero must be one of {_HETERO_MODES}, got {hetero!r}")
     if hetero == "keep":
         return atoms
-    struc, _, _, _, _ = _import_biotite()
     res_names = np.char.upper(np.char.strip(atoms.res_name.astype(str)))
-    polymer = (
-        struc.filter_amino_acids(atoms)
-        | np.isin(res_names, list(_AMBER_VARIANT_NAMES))
-        | np.isin(res_names, list(_CAP_NAMES))
-    )
+    polymer = _amino_acid_mask(atoms) | np.isin(res_names, list(_CAP_NAMES))
     return atoms[polymer]
 
 
@@ -135,8 +137,11 @@ def detect_interface_chains(
 ) -> tuple[Optional[str], Optional[str]]:
     """Identify peptide and receptor chains from a biotite AtomArray.
 
-    Standard amino acid residues are used to identify protein chains.
-    The smallest protein chain is taken as the peptide, the largest as receptor.
+    A chain is a protein chain if it has amino-acid atoms: standard, D- and
+    other non-canonical peptide-linking residues (biotite's
+    ``filter_amino_acids``) and the AMBER protonation variants. Waters, ions and
+    ligands that share a chain ID are not counted towards its size. The smallest
+    protein chain is taken as the peptide, the largest as receptor.
 
     Args:
         atoms: biotite AtomArray
@@ -145,47 +150,11 @@ def detect_interface_chains(
     Returns:
         Tuple of (peptide_chain_id, receptor_chain_id)
     """
-    amino_acids = {
-        "ALA",
-        "ARG",
-        "ASN",
-        "ASP",
-        "CYS",
-        "GLN",
-        "GLU",
-        "GLY",
-        "HIS",
-        "ILE",
-        "LEU",
-        "LYS",
-        "MET",
-        "PHE",
-        "PRO",
-        "SER",
-        "THR",
-        "TRP",
-        "TYR",
-        "VAL",
-        "MSE",
-        "SEC",
-        "PYL",
-        "HYP",
-        "MLY",
-        "SEP",
-        "TPO",
-        "PTR",
-    }
-
-    chain_ids = np.unique(atoms.chain_id)
+    amino_acid_atoms = atoms[_amino_acid_mask(atoms)]
     protein_chains = []
-
-    for chain_id in chain_ids:
-        chain_atoms = atoms[atoms.chain_id == chain_id]
-        res_names = {str(r).strip().upper() for r in np.unique(chain_atoms.res_name)}
-        if res_names & amino_acids:
-            n_res = len(np.unique(chain_atoms.res_id))
-            if n_res > 0:
-                protein_chains.append((chain_id, n_res))
+    for chain_id in np.unique(amino_acid_atoms.chain_id):
+        chain_atoms = amino_acid_atoms[amino_acid_atoms.chain_id == chain_id]
+        protein_chains.append((chain_id, len(np.unique(chain_atoms.res_id))))
 
     if not protein_chains:
         return None, None
