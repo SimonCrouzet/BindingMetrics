@@ -50,7 +50,9 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+from binding_metrics.cli import add_random_seed_arg
 from binding_metrics.cli.run import ALL_METRICS, _collect_failures, _parse_metrics, run_pipeline
+from binding_metrics.core.system import DEFAULT_RANDOM_SEED
 
 _STRUCTURE_SUFFIXES = {".cif", ".pdb", ".mmcif"}
 
@@ -111,6 +113,7 @@ def _run_one(
     openfold_conda_env: Optional[str],
     log_file: Optional[Path],
     reference_path: Optional[Path] = None,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
     """Run the pipeline for a single structure and return a flat results dict.
 
@@ -165,6 +168,7 @@ def _run_one(
                 reference_path=reference_path,
                 openfold_mode=openfold_mode,
                 openfold_conda_env=openfold_conda_env,
+                random_seed=random_seed,
             )
             results["total_elapsed_s"] = round(time.time() - t0, 1)
 
@@ -468,6 +472,11 @@ def main():
         default=200.0,
         help="MD duration in ps (0 = minimize only, default: 200)",
     )
+    add_random_seed_arg(
+        relax_group,
+        "every stochastic step of each sample (hydrogen placement, MD velocities "
+        "and thermostat); the same seed is used for all samples",
+    )
 
     metrics_group = parser.add_argument_group("Metrics")
     metrics_group.add_argument(
@@ -597,6 +606,7 @@ def main():
         openfold_mode=args.openfold_mode,
         openfold_conda_env=args.openfold_conda_env,
         log_file=args.log_file,  # None → per-sample log inside sample dir
+        random_seed=args.random_seed,
     )
 
     # ------------------------------------------------------------------ Run

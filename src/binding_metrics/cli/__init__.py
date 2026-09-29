@@ -6,6 +6,7 @@ import argparse
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Optional
 
 
 @contextmanager
@@ -75,6 +76,38 @@ def add_log_file_arg(parser) -> None:
         default=None,
         metavar="PATH",
         help="Redirect all output (stdout + stderr) to this file",
+    )
+
+
+def seed_arg(value: str) -> Optional[int]:
+    """Parse ``--random-seed``: an integer, or ``none``/``random``/``off`` for fresh randomness."""
+    if value.strip().lower() in ("none", "random", "off"):
+        return None
+    return int(value)
+
+
+def add_random_seed_arg(parser, what: str) -> None:
+    """Add ``--random-seed INT|none`` to an argparse parser.
+
+    The default is the library-wide ``DEFAULT_RANDOM_SEED``, so a CLI run is
+    reproducible unless the user asks for fresh randomness with ``none``.
+
+    Args:
+        parser: Parser or argument group to add the flag to.
+        what: Which stochastic steps the seed drives, worded for the help text
+            (for example ``"ion placement"``).
+    """
+    from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+
+    parser.add_argument(
+        "--random-seed",
+        type=seed_arg,
+        default=DEFAULT_RANDOM_SEED,
+        metavar="INT|none",
+        help=(
+            f"Seed for {what}. A fixed integer makes the run reproducible "
+            "(default: %(default)s); pass 'none' for fresh randomness each run."
+        ),
     )
 
 

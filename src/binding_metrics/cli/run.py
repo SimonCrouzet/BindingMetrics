@@ -20,6 +20,7 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
+from binding_metrics.cli import seed_arg as _seed_arg
 from binding_metrics.core.system import DEFAULT_RANDOM_SEED
 from binding_metrics.provenance import collect_provenance
 
@@ -28,13 +29,6 @@ ALL_METRICS = frozenset({"energy", "interface", "geometry", "electrostatics", "o
 # part of the default set; they are auto-enabled when a reference is supplied.
 REFERENCE_METRICS = frozenset({"dockq"})
 KNOWN_METRICS = ALL_METRICS | REFERENCE_METRICS
-
-
-def _seed_arg(value: str) -> Optional[int]:
-    """Parse --random-seed: an integer, or 'none'/'random' for fresh randomness."""
-    if value.strip().lower() in ("none", "random", "off"):
-        return None
-    return int(value)
 
 
 class ChainNotFoundError(ValueError):

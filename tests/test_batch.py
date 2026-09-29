@@ -304,3 +304,64 @@ class TestSharedLogFile:
         with pytest.raises(SystemExit):
             batch.main()
         assert shared.read_text() == ""
+
+
+class TestRandomSeed:
+    def _seen_seeds(self, tmp_path, monkeypatch, extra_args):
+        """Run batch.main over two samples and collect the seed each worker got."""
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        for name in ("a", "b"):
+            (input_dir / f"{name}.cif").write_text("data_x\n")
+        seeds = []
+
+        def fake_run_one(input_path, random_seed, **_):
+            seeds.append(random_seed)
+            return {"sample_id": input_path.stem, "batch_status": "ok"}
+
+        monkeypatch.setattr(batch, "_run_one", fake_run_one)
+        argv = [
+            "binding-metrics-batch",
+            "-i",
+            str(input_dir),
+            "--output-csv",
+            str(tmp_path / "m.csv"),
+        ]
+        monkeypatch.setattr(sys, "argv", argv + extra_args)
+        with pytest.raises(SystemExit):
+            batch.main()
+        return seeds
+
+    def test_default_is_the_library_default_seed(self, tmp_path, monkeypatch):
+        from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+
+        assert self._seen_seeds(tmp_path, monkeypatch, []) == [DEFAULT_RANDOM_SEED] * 2
+
+    def test_explicit_seed_reaches_every_worker(self, tmp_path, monkeypatch):
+        assert self._seen_seeds(tmp_path, monkeypatch, ["--random-seed", "7"]) == [7, 7]
+
+    @pytest.mark.parametrize("value", ["none", "random", "OFF"])
+    def test_none_asks_for_fresh_randomness(self, tmp_path, monkeypatch, value):
+        assert self._seen_seeds(tmp_path, monkeypatch, ["--random-seed", value]) == [None, None]
+
+    def test_worker_passes_the_seed_to_the_pipeline_and_records_it(self, tmp_path, monkeypatch):
+        received = {}
+
+        def fake_pipeline(**kwargs):
+            received.update(kwargs)
+            return {"sample_id": "s1", "provenance": {"seed": kwargs["random_seed"]}}
+
+        monkeypatch.setattr(batch, "run_pipeline", fake_pipeline)
+        _run_one(**_worker_kwargs(tmp_path, sample_id="s1", random_seed=11))
+        assert received["random_seed"] == 11
+        report = (tmp_path / "s1" / "s1_results.json").read_text()
+        assert '"seed": 11' in report
+
+    def test_worker_default_matches_the_pipeline_default(self):
+        import inspect
+
+        from binding_metrics.cli.run import run_pipeline
+
+        worker_default = inspect.signature(_run_one).parameters["random_seed"].default
+        pipeline_default = inspect.signature(run_pipeline).parameters["random_seed"].default
+        assert worker_default == pipeline_default
