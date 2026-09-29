@@ -42,10 +42,12 @@ def test_alias_names_are_the_role_names_or_none(spec):
     assert spec.target_chain_arg in (None, "target_chain")
 
 
-@pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
+@pytest.mark.parametrize(
+    "spec",
+    [s for s in METRICS if s.binder_chain_arg or s.target_chain_arg],
+    ids=lambda s: s.name,
+)
 def test_declared_aliases_are_parameters_of_the_function(spec):
-    if not (spec.binder_chain_arg or spec.target_chain_arg):
-        pytest.skip("no alias declared")
     try:
         function = spec.load()
     except ImportError as exc:

@@ -127,6 +127,20 @@ def cli(request):
     return request.param
 
 
+_WITH_BINDER = [c for c in CLIS if c[6]]
+_WITH_TARGET = [c for c in CLIS if c[7]]
+
+
+@pytest.fixture(params=_WITH_BINDER, ids=[c[0] for c in _WITH_BINDER])
+def binder_cli(request):
+    return request.param
+
+
+@pytest.fixture(params=_WITH_TARGET, ids=[c[0] for c in _WITH_TARGET])
+def target_cli(request):
+    return request.param
+
+
 def test_old_flags_still_work(cli, monkeypatch):
     _, module, function, base, binder_key, target_key, binder_flag, target_flag = cli
     argv = list(base)
@@ -170,10 +184,8 @@ def test_both_spellings_with_the_same_id_are_accepted(cli, monkeypatch):
 
 
 @pytest.mark.parametrize("order", ["old_first", "alias_first"])
-def test_conflicting_binder_spellings_are_a_usage_error(cli, monkeypatch, capsys, order):
-    _, module, function, base, _, _, binder_flag, _ = cli
-    if not binder_flag:
-        pytest.skip("no binder role in this CLI")
+def test_conflicting_binder_spellings_are_a_usage_error(binder_cli, monkeypatch, capsys, order):
+    _, module, function, base, _, _, binder_flag, _ = binder_cli
     pair = [binder_flag, "B", "--binder-chain", "C"]
     if order == "alias_first":
         pair = ["--binder-chain", "C", binder_flag, "B"]
@@ -187,10 +199,8 @@ def test_conflicting_binder_spellings_are_a_usage_error(cli, monkeypatch, capsys
     assert "--binder-chain" in err and binder_flag in err
 
 
-def test_conflicting_target_spellings_are_a_usage_error(cli, monkeypatch, capsys):
-    _, module, function, base, _, _, _, target_flag = cli
-    if not target_flag:
-        pytest.skip("no target role in this CLI")
+def test_conflicting_target_spellings_are_a_usage_error(target_cli, monkeypatch, capsys):
+    _, module, function, base, _, _, _, target_flag = target_cli
     mod = importlib.import_module(module)
     monkeypatch.setattr(mod, function, _stub)
     monkeypatch.setattr(sys, "argv", ["prog", *base, target_flag, "A", "--target-chain", "C"])

@@ -147,8 +147,28 @@ CASES = {
 }
 
 
+def _names_where(attribute):
+    """Case names whose function has the given role (parametrize only what applies)."""
+    return sorted(name for name, make in CASES.items() if getattr(make(), attribute))
+
+
 @pytest.fixture(params=sorted(CASES))
 def case(request):
+    return CASES[request.param]()
+
+
+@pytest.fixture(params=_names_where("binder"))
+def binder_case(request):
+    return CASES[request.param]()
+
+
+@pytest.fixture(params=_names_where("target"))
+def target_case(request):
+    return CASES[request.param]()
+
+
+@pytest.fixture(params=_names_where("required"))
+def required_case(request):
     return CASES[request.param]()
 
 
@@ -179,27 +199,21 @@ def test_alias_and_old_name_with_the_same_id_are_accepted(case):
     _assert_same(case.call(**both), case.call(**_legacy(case)))
 
 
-def test_conflicting_binder_ids_are_a_value_error(case):
-    if not case.binder:
-        pytest.skip("no binder role in this function")
-    chains = {**_legacy(case), "binder_chain": "Z"}
+def test_conflicting_binder_ids_are_a_value_error(binder_case):
+    chains = {**_legacy(binder_case), "binder_chain": "Z"}
     with pytest.raises(ValueError, match="binder_chain"):
-        case.call(**chains)
+        binder_case.call(**chains)
 
 
-def test_conflicting_target_ids_are_a_value_error(case):
-    if not case.target:
-        pytest.skip("no target role in this function")
-    chains = {**_legacy(case), "target_chain": "Z"}
+def test_conflicting_target_ids_are_a_value_error(target_case):
+    chains = {**_legacy(target_case), "target_chain": "Z"}
     with pytest.raises(ValueError, match="target_chain"):
-        case.call(**chains)
+        target_case.call(**chains)
 
 
-def test_missing_chains_raise_type_error_where_they_are_mandatory(case):
-    if not case.required:
-        pytest.skip("chains are optional in this function")
+def test_missing_chains_raise_type_error_where_they_are_mandatory(required_case):
     with pytest.raises(TypeError, match="missing required"):
-        case.call()
+        required_case.call()
 
 
 def test_aliases_are_keyword_only(case):
