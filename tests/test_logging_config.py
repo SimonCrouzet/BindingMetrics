@@ -87,3 +87,14 @@ def test_a_user_script_named_main_is_not_touched(package_logger, capsys, monkeyp
     assert not any(
         isinstance(h, _CurrentStreamHandler) for h in logging.getLogger("__main__").handlers
     )
+
+
+def test_warnings_can_be_sent_to_stderr(package_logger, capsys):
+    """For commands whose stdout is a JSON payload."""
+    configure_logging(logging.INFO, warnings_to_stderr=True)
+    log = logging.getLogger("binding_metrics.x")
+    log.info("progress")
+    log.warning("careful")
+    out, err = capsys.readouterr()
+    assert out == "progress\n"
+    assert err == "careful\n"

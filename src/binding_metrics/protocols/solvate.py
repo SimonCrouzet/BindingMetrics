@@ -22,7 +22,7 @@ def main() -> None:
     from binding_metrics.utils import configure_logging
 
     # stdout carries the JSON summary that scripts parse, so INFO records stay off it.
-    configure_logging(logging.WARNING)
+    configure_logging(logging.WARNING, warnings_to_stderr=True)
 
     parser = argparse.ArgumentParser(
         description="Add explicit solvent and ions to a structure.",

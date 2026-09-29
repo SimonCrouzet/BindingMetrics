@@ -31,7 +31,7 @@ class _CurrentStreamHandler(logging.StreamHandler):
         pass
 
 
-def configure_logging(level: int = logging.INFO) -> None:
+def configure_logging(level: int = logging.INFO, *, warnings_to_stderr: bool = False) -> None:
     """Send ``binding_metrics`` log records to the console, once, from a CLI entry point.
 
     Library code logs through ``logging.getLogger(__name__)`` and never prints;
@@ -47,6 +47,9 @@ def configure_logging(level: int = logging.INFO) -> None:
 
     Args:
         level: Threshold for the package logger (default INFO).
+        warnings_to_stderr: Send WARNING records to stderr as well, for commands
+            whose stdout is a machine-readable payload (a JSON summary) that a
+            library warning must not precede.
     """
     loggers = [logging.getLogger(_PACKAGE_LOGGER)]
     main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
@@ -54,17 +57,18 @@ def configure_logging(level: int = logging.INFO) -> None:
         loggers.append(logging.getLogger("__main__"))
     for target in loggers:
         target.setLevel(level)
-        _attach_console_handlers(target)
+        _attach_console_handlers(target, warnings_to_stderr)
 
 
-def _attach_console_handlers(target: logging.Logger) -> None:
+def _attach_console_handlers(target: logging.Logger, warnings_to_stderr: bool) -> None:
     """Add the stdout/stderr handlers to ``target`` unless they are already there."""
     if any(isinstance(h, _CurrentStreamHandler) for h in target.handlers):
         return
     formatter = logging.Formatter("%(message)s")
+    stderr_from = logging.WARNING if warnings_to_stderr else logging.ERROR
     to_stdout = _CurrentStreamHandler("stdout")
-    to_stdout.addFilter(lambda record: record.levelno < logging.ERROR)
-    to_stderr = _CurrentStreamHandler("stderr", level=logging.ERROR)
+    to_stdout.addFilter(lambda record: record.levelno < stderr_from)
+    to_stderr = _CurrentStreamHandler("stderr", level=stderr_from)
     for handler in (to_stdout, to_stderr):
         handler.setFormatter(formatter)
         target.addHandler(handler)
