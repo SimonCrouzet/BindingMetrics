@@ -4,8 +4,9 @@
 Runs each metric N times on every input in a dataset directory, collects
 wall-clock timing statistics, and saves results as JSON + Markdown.
 
-All metrics are discovered from ``binding_metrics.metrics.registry.METRICS``
-— adding a metric to the registry automatically makes it appear here.
+The metric specs come from ``binding_metrics.metrics.registry.METRICS``; the
+metrics timed are the explicit list ``_BENCHMARKED_METRICS``, so a metric added to
+the registry does not change what is timed until it is listed there.
 
 Usage:
     python benchmarks/run.py --dataset /path/to/benchmark/data
@@ -605,7 +606,49 @@ def save_results(
 # Entry point
 # ---------------------------------------------------------------------------
 
-_ALL_METRIC_NAMES = [m.name for m in METRICS]
+#: The metrics this script times: the 18 specs the registry held before it grew to 28
+#: (issue #30), so result files stay comparable with earlier ones. An explicit list,
+#: because the registry metadata cannot separate them from the newer specs:
+#: ``delta_sasa_static`` has the same ``input_type``, ``cost_class`` ("static") and
+#: ``requires_gpu`` as the static metrics listed here.
+_BENCHMARKED_METRICS = frozenset(
+    {
+        # static_structure
+        "interface",
+        "coulomb",
+        "ramachandran",
+        "omega",
+        "shape_complementarity",
+        "void_volume",
+        "structure_rmsd",
+        "dockq",
+        # trajectory
+        "interaction_energy",
+        "component_energies",
+        "rmsd",
+        "rmsf",
+        "ligand_rmsd",
+        "receptor_drift",
+        "buried_sasa",
+        "contacts",
+        # md_simulation, and the OpenFold reader (not timed by the loops below)
+        "md_implicit",
+        "openfold",
+    }
+)
+
+_ALL_METRIC_NAMES = [m.name for m in METRICS if m.name in _BENCHMARKED_METRICS]
+
+
+def select_specs(input_type: InputType, requested: Optional[list[str]] = None) -> list[MetricSpec]:
+    """Specs of one input type that this script times, in registry order.
+
+    ``requested`` optionally restricts them to the names given with ``--metrics``.
+    """
+    specs = [s for s in metrics_by_input_type(input_type) if s.name in _BENCHMARKED_METRICS]
+    if requested:
+        specs = [s for s in specs if s.name in requested]
+    return specs
 
 
 def main():
@@ -653,14 +696,14 @@ def main():
     manifest = load_manifest(args.dataset)
 
     # Select specs matching requested input types and optional metric filter
-    def _select(input_type: InputType) -> list[MetricSpec]:
-        specs = metrics_by_input_type(input_type)
-        if args.metrics:
-            specs = [s for s in specs if s.name in args.metrics]
-        return specs
-
-    static_specs = _select("static_structure") if "static_structure" in args.input_types else []
-    traj_specs = _select("trajectory") if "trajectory" in args.input_types else []
+    static_specs = (
+        select_specs("static_structure", args.metrics)
+        if "static_structure" in args.input_types
+        else []
+    )
+    traj_specs = (
+        select_specs("trajectory", args.metrics) if "trajectory" in args.input_types else []
+    )
     run_md = "md_simulation" in args.input_types
 
     static_entries = manifest.get("structures", [])
