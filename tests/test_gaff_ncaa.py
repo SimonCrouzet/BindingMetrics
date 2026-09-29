@@ -191,6 +191,40 @@ class TestGaffTemplateGeneration:
         assert ncaa_xmls.bond_order_source_by_residue == {"BMT": "ccd", "ABA": "ccd"}
 
     @staticmethod
+    def _rebuilt_xml(cyclosporin_ncaa_result, residue_name):
+        """Template of ``residue_name`` built a second time, next to the one the fixture made."""
+        from binding_metrics.core.gaff_ncaa import (
+            _amber_backbone_types,
+            _generate_residue_template,
+            _pos_to_angstrom,
+        )
+
+        topology, positions, ff, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        residue = next(r for r in topology.residues() if r.name == residue_name)
+        rebuilt = _generate_residue_template(
+            residue,
+            topology,
+            _pos_to_angstrom(positions),
+            "gaff-2.2.20",
+            _amber_backbone_types(ff),
+        )[0]
+        first = next(
+            x for x in ncaa_xmls if ET.fromstring(x).find(".//Residue").get("name") == residue_name
+        )
+        return first, rebuilt
+
+    def test_a_second_build_of_abu_is_identical(self, cyclosporin_ncaa_result):
+        """Same residue, same seed: same charges and atom types, byte for byte."""
+        first, rebuilt = self._rebuilt_xml(cyclosporin_ncaa_result, "ABA")
+        assert rebuilt == first
+
+    @pytest.mark.slow
+    def test_a_second_build_of_mebmt_is_identical(self, cyclosporin_ncaa_result):
+        """MeBmt is the residue whose charges used to change between builds (sqm timing)."""
+        first, rebuilt = self._rebuilt_xml(cyclosporin_ncaa_result, "BMT")
+        assert rebuilt == first
+
+    @staticmethod
     def _template(ncaa_xmls, residue_name):
         for xml in ncaa_xmls:
             root = ET.fromstring(xml)
@@ -426,7 +460,10 @@ def stubbed_template_step(monkeypatch):
     """Run ``parameterize_ncaa_residues`` on three fake residues: BMT twice and ABA."""
     from binding_metrics.core import gaff_ncaa
 
-    def generate(res, topology, pos_A, gaff_version, backbone_amber):
+    seeds: list = []
+
+    def generate(res, topology, pos_A, gaff_version, backbone_amber, random_seed=None):
+        seeds.append(random_seed)
         if res.name == "ABA":
             raise RuntimeError("antechamber not found")
         hydrogens = [("H1", "C1", (0, 0, 0)), ("H2", "C2", (0, 0, 0))]
@@ -449,6 +486,7 @@ def stubbed_template_step(monkeypatch):
     def run(**kwargs):
         return parameterize_ncaa_residues(topology, [None] * 3, ff=None, **kwargs)
 
+    run.seeds = seeds
     return run
 
 
@@ -460,6 +498,18 @@ class TestTemplateStepLogging:
         records = [r for r in caplog.records if r.name == "binding_metrics.core.gaff_ncaa"]
         assert [r.getMessage() for r in records] == _EXPECTED_LINES
         assert [r.levelname for r in records] == ["WARNING", "INFO", "WARNING", "WARNING"]
+
+    def test_random_seed_reaches_every_template_build(self, stubbed_template_step):
+        from binding_metrics._constants import DEFAULT_RANDOM_SEED
+
+        stubbed_template_step()
+        assert stubbed_template_step.seeds == [DEFAULT_RANDOM_SEED] * 3
+        stubbed_template_step.seeds.clear()
+        stubbed_template_step(random_seed=7)
+        assert stubbed_template_step.seeds == [7] * 3
+        stubbed_template_step.seeds.clear()
+        stubbed_template_step(random_seed=None)
+        assert stubbed_template_step.seeds == [None] * 3
 
     def test_verbose_false_stays_silent(self, stubbed_template_step, caplog):
         with caplog.at_level("INFO", logger="binding_metrics"):

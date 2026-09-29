@@ -811,6 +811,7 @@ class ImplicitRelaxation(Relaxer):
                 positions,
                 ff,
                 gaff_version=self.config.small_molecule_ff,
+                random_seed=self.config.random_seed,
             )
             self._ncaa_bond_order_source = dict(
                 getattr(ncaa_xmls, "bond_order_source_by_residue", {})

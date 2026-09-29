@@ -375,7 +375,9 @@ def _add_hydrogens_cyclic(
     # GAFF2 ExternalBond templates for exotic NCAAs (BMT/ABA/…): generates and
     # loads their templates and injects their hydrogens so addHydrogens (whose
     # internal createSystem would otherwise fail on "No template") succeeds.
-    topology, positions, ncaa_xmls = parameterize_ncaa_residues(topology, positions, ff)
+    topology, positions, ncaa_xmls = parameterize_ncaa_residues(
+        topology, positions, ff, random_seed=random_seed
+    )
     sources = getattr(ncaa_xmls, "bond_order_source_by_residue", {})
     if report is not None and sources:
         report.setdefault("ncaa_bond_order_source", {}).update(sources)

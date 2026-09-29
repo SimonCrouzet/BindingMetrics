@@ -390,7 +390,9 @@ def _create_implicit_system(
 
     # GAFF2 ExternalBond templates for exotic NCAAs (BMT/ABA/…). This rebuilds
     # the topology to inject their hydrogens, so it must run before addHydrogens.
-    topology, positions, ncaa_xmls = parameterize_ncaa_residues(topology, positions, ff)
+    topology, positions, ncaa_xmls = parameterize_ncaa_residues(
+        topology, positions, ff, random_seed=random_seed
+    )
     extra_xmls.extend(ncaa_xmls)
 
     from openmm.app import Modeller

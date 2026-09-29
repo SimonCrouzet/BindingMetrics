@@ -72,6 +72,7 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics._constants import DEFAULT_RANDOM_SEED
 from binding_metrics.core.residues import (
     AMBER_STANDARD_VARIANTS,
     BACKBONE_HEAVY_ATOM_NAMES,
@@ -537,8 +538,128 @@ def _lookup_gaff_proper(propers, classes):
     return None
 
 
+#: sqm keywords that ``antechamber -c bcc`` writes for AM1-BCC (AmberTools 24), without
+#: ``qmcharge``, which antechamber adds from ``-nc``. ``-ek`` replaces the whole set, so
+#: the defaults are repeated here and only ``diag_routine`` is added.
+_SQM_AM1BCC_KEYWORDS = "qm_theory='AM1', grms_tol=0.0005, scfconv=1.d-10, ndiis_attempts=700"
+
+#: ``diag_routine=1`` selects sqm's own diagonaliser. With the default (0) sqm times
+#: seven diagonalisation routines at start-up and keeps the fastest, so the routine, and
+#: with it the rounding of every SCF step, depends on the load of the machine.
+_SQM_DIAG_ROUTINE_INTERNAL = 1
+
+#: RDKit's ETKDG prune threshold (Å) that the OpenFF toolkit uses for the AM1-BCC conformer.
+_AM1BCC_CONFORMER_RMS_CUTOFF_ANGSTROM = 0.25
+
+
+def _run_antechamber(args: list, workdir: str) -> None:
+    """Run ``antechamber`` in ``workdir`` on one thread; raise ``RuntimeError`` on failure.
+
+    sqm spreads a 40-atom molecule over every core the BLAS library offers and gains
+    nothing: one thread takes as long, without the busy-waiting of the others.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("antechamber") is None:
+        raise RuntimeError(
+            "antechamber (AmberTools) is not on PATH; it is needed for the AM1-BCC charges "
+            "of non-canonical residues. Install with: conda install -c conda-forge ambertools"
+        )
+    env = dict(os.environ)
+    env.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
+    proc = subprocess.run(
+        ["antechamber", *args], cwd=workdir, env=env, capture_output=True, text=True, check=False
+    )
+    if proc.returncode != 0:
+        tail = (proc.stdout + proc.stderr).strip().splitlines()[-5:]
+        raise RuntimeError(f"antechamber failed ({' '.join(args[:6])} ...): " + " | ".join(tail))
+
+
+def _am1bcc_charges(molecule, random_seed: Optional[int] = DEFAULT_RANDOM_SEED) -> np.ndarray:
+    """AM1-BCC partial charges (in e) of an OpenFF molecule, identical from run to run.
+
+    Follows the protocol of ``AmberToolsToolkitWrapper.assign_partial_charges("am1bcc")``
+    (Jakalian et al. 2000, 2002): one RDKit ETKDG conformer, pruned at 0.25 Å, then
+    ``antechamber -c bcc``, which minimises the geometry with AM1 in sqm and adds the bond
+    charge corrections. Two things differ from the toolkit call, both to make the result
+    reproducible:
+
+    * The conformer is embedded with ``random_seed`` (the toolkit fixes it at 1, which is
+      the default here, so the default conformer is the toolkit's). ``None`` draws a new
+      conformer per call. The charges depend on the conformer; the molecule built here has
+      no stereochemistry, so the seed also decides which stereoisomer is embedded, and the
+      charges of MeBmt differ by up to 0.024 e between seeds 1 and 2.
+    * sqm's diagonaliser is fixed (see ``_SQM_DIAG_ROUTINE_INTERNAL``). With the toolkit
+      call sqm chose it by timing, and one of the choices ended the AM1 minimisation of a
+      flexible molecule in another geometry: the AM1-BCC charges of MeBmt (cyclosporin A)
+      differed by up to 0.013 e from one build to the next (up to 9e-4 e in the template,
+      once the charge of the removed caps is spread over the residue).
+
+    The charges are shifted evenly to sum to the total formal charge, as the toolkit does.
+
+    Raises:
+        RuntimeError: RDKit cannot embed the molecule, antechamber is missing or fails, or
+            it returns a different number of charges than there are atoms.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from openff.units import Quantity, unit
+    from rdkit.Chem import AllChem
+
+    total_charge = int(round(molecule.total_charge.m_as(unit.elementary_charge)))
+    rdmol = molecule.to_rdkit()
+    seed = -1 if random_seed is None else int(random_seed)  # RDKit: a negative seed is random
+    embed_args = {
+        "numConfs": 1,
+        "pruneRmsThresh": _AM1BCC_CONFORMER_RMS_CUTOFF_ANGSTROM,
+        "randomSeed": seed,
+    }
+    conformer_ids = AllChem.EmbedMultipleConfs(rdmol, **embed_args)
+    if not len(conformer_ids):
+        # The toolkit's fallback for molecules that fail with the default embedding.
+        conformer_ids = AllChem.EmbedMultipleConfs(rdmol, useRandomCoords=True, **embed_args)
+    if not len(conformer_ids):
+        raise RuntimeError("RDKit could not embed a conformer for the AM1-BCC charge calculation")
+    coordinates = rdmol.GetConformer(int(conformer_ids[0])).GetPositions()
+
+    with_conformer = type(molecule)(molecule)
+    with_conformer.clear_conformers()
+    with_conformer.add_conformer(Quantity(coordinates, unit.angstrom))
+
+    with tempfile.TemporaryDirectory() as workdir:
+        with_conformer.to_file(str(Path(workdir, "molecule.sdf")), file_format="sdf")
+        sqm_keywords = f"{_SQM_AM1BCC_KEYWORDS}, diag_routine={_SQM_DIAG_ROUTINE_INTERNAL}"
+        _run_antechamber(
+            ["-i", "molecule.sdf", "-fi", "sdf", "-o", "charged.mol2", "-fo", "mol2"]
+            + ["-pf", "yes", "-dr", "n", "-c", "bcc", "-nc", str(total_charge)]
+            + ["-ek", sqm_keywords],
+            workdir,
+        )
+        # Second call only reads the charges out of the mol2 file.
+        _run_antechamber(
+            ["-dr", "n", "-i", "charged.mol2", "-fi", "mol2", "-o", "charges2.mol2"]
+            + ["-fo", "mol2", "-c", "wc", "-cf", "charges.txt", "-pf", "yes"],
+            workdir,
+        )
+        charges = np.array(Path(workdir, "charges.txt").read_text().split(), dtype=float)
+
+    if charges.shape != (molecule.n_atoms,):
+        raise RuntimeError(
+            f"antechamber returned {charges.size} AM1-BCC charges for {molecule.n_atoms} atoms"
+        )
+    return charges + (total_charge - charges.sum()) / molecule.n_atoms
+
+
 def _generate_residue_template(
-    res, topology, pos_A, gaff_version: str, backbone_amber: Optional[dict] = None
+    res,
+    topology,
+    pos_A,
+    gaff_version: str,
+    backbone_amber: Optional[dict] = None,
+    *,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ):
     """Build one hybrid amber-backbone / GAFF-sidechain ExternalBond template.
 
@@ -558,8 +679,12 @@ def _generate_residue_template(
     :func:`_neutral_ionizable_groups`), and ``single_bond_reason`` is empty when the
     bond orders come from the Chemical Component Dictionary, else the reason the
     residue was built with single bonds only. Returns ``None`` on failure.
+
+    ``random_seed`` seeds the conformer of the AM1-BCC charge calculation (see
+    :func:`_am1bcc_charges`); the same residue graph and seed give the same template.
     """
     from openff.toolkit import Molecule
+    from openff.units import Quantity, unit
     from openmmforcefields.generators import GAFFTemplateGenerator
     from rdkit import Chem
 
@@ -584,6 +709,10 @@ def _generate_residue_template(
             keep_h.append((atom.GetIdx(), nbrs[0]))
 
     off = Molecule.from_rdkit(mh, allow_undefined_stereo=True, hydrogens_are_explicit=True)
+    # Charges from here, not from GAFFTemplateGenerator: its own AM1-BCC call lets sqm pick
+    # the diagonaliser by timing (see _am1bcc_charges). The generator keeps charges that are
+    # already set on the molecule and only adds the GAFF2 types and bonded parameters.
+    off.partial_charges = Quantity(_am1bcc_charges(off, random_seed), unit.elementary_charge)
     gaff = GAFFTemplateGenerator(molecules=[off], forcefield=gaff_version)
     ffxml = gaff.generate_residue_template(off)
 
@@ -927,7 +1056,13 @@ class NcaaTemplateList(list):
 
 
 def parameterize_ncaa_residues(
-    topology, positions, ff, *, gaff_version: str = "gaff-2.2.20", verbose: bool = True
+    topology,
+    positions,
+    ff,
+    *,
+    gaff_version: str = "gaff-2.2.20",
+    verbose: bool = True,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ):
     """Generate + load GAFF ExternalBond templates for exotic NCAA residues.
 
@@ -947,6 +1082,11 @@ def parameterize_ncaa_residues(
         gaff_version: GAFF2 version string for ``GAFFTemplateGenerator``.
         verbose: Log a one-line summary per generated template, and the warnings
             of the template step, through the module logger.
+        random_seed: Seed of the conformer that the AM1-BCC charge calculation
+            starts from. The same residue graph and seed give the same template in
+            every process and at every pipeline step; the default matches the
+            conformer the OpenFF toolkit has always used. ``None`` draws a new
+            conformer per call, so the charges can differ between calls.
 
     Returns:
         ``(topology, positions, ncaa_ffxmls)`` — the (possibly rebuilt) topology
@@ -989,7 +1129,9 @@ def parameterize_ncaa_residues(
 
     for res in ncaa_residues:
         try:
-            result = _generate_residue_template(res, topology, pos_A, gaff_version, backbone_amber)
+            result = _generate_residue_template(
+                res, topology, pos_A, gaff_version, backbone_amber, random_seed=random_seed
+            )
         except Exception as exc:  # noqa: BLE001 - per-residue isolation; the residue is skipped
             if verbose:
                 logger.warning("  [warning] GAFF NCAA template failed for '%s': %s", res.name, exc)
