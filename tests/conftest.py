@@ -45,6 +45,25 @@ def requires_cuda(item):
 BEST_PLATFORM = "CUDA" if HAS_CUDA else "CPU"
 
 
+@pytest.fixture(autouse=True)
+def _restore_package_logging():
+    """Undo what a CLI ``main()`` run inside a test leaves on the package loggers.
+
+    ``configure_logging`` attaches console handlers and sets a level; without this
+    they would survive into later tests and add lines to their captured output.
+    """
+    import logging
+
+    tracked = [logging.getLogger(name) for name in ("binding_metrics", "__main__")]
+    saved = [(lg, lg.level, list(lg.handlers)) for lg in tracked]
+    yield
+    for lg, level, handlers in saved:
+        lg.setLevel(level)
+        for handler in list(lg.handlers):
+            if handler not in handlers:
+                lg.removeHandler(handler)
+
+
 # Path to real example PDB for integration tests
 EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
 
