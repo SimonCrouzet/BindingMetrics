@@ -72,7 +72,18 @@ from typing import Optional
 
 import numpy as np
 
-from binding_metrics.core.residues import METAL_ELEMENTS
+from binding_metrics.core.residues import (
+    AMBER_STANDARD_VARIANTS,
+    FORCE_FIELD_CAP_NAMES,
+    ION_NAMES_COMMON,
+    LACTAM_TEMPLATE_RESIDUES,
+    METAL_ELEMENTS,
+    N_METHYLATED_RESIDUES,
+    NUCLEOTIDE_RESIDUES,
+    PHOSPHO_RESIDUES,
+    STANDARD_AMINO_ACIDS,
+    WATER_NAMES_ALL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,92 +91,24 @@ logger = logging.getLogger(__name__)
 # Anything NOT in this set (and with >1 heavy atom, non-metal) is treated as an
 # exotic NCAA and parameterised with GAFF2.
 GAFF_SKIP_RESIDUES = frozenset(
-    {
-        # Canonical amino acids + protonation variants
-        "ALA",
-        "ARG",
-        "ASN",
-        "ASP",
-        "CYS",
-        "GLN",
-        "GLU",
-        "GLY",
-        "HIS",
-        "ILE",
-        "LEU",
-        "LYS",
-        "MET",
-        "PHE",
-        "PRO",
-        "SER",
-        "THR",
-        "TRP",
-        "TYR",
-        "VAL",
-        "CYX",
-        "HID",
-        "HIE",
-        "HIP",
-        "HIN",
-        "LYN",
-        "ASH",
-        "GLH",
-        # Curated non-standard templates (nonstandard.py / cyclic.py)
-        "NMG",
-        "NMA",
-        "MVA",
-        "MLE",
-        "ASPL",
-        "GLUL",
-        "LYSL",
-        # Phosphorylated residues — handled by core.phosaa (AMBER phosaa
-        # params). GAFF perceives these at neutral charge and would protonate
-        # the phosphate to net 0, destroying the −2 charge; they MUST skip
-        # the GAFF path.
-        "SEP",
-        "TPO",
-        "PTR",
-        "S1P",
-        "T1P",
-        "Y1P",
-        "H1D",
-        "H2D",
-        "H1E",
-        "H2E",
-        # Capping groups
-        "ACE",
-        "NME",
-        "FOR",
-        # Nucleotides
-        "DA",
-        "DC",
-        "DG",
-        "DT",
-        "A",
-        "C",
-        "G",
-        "T",
-        "U",
-        # Water / ions
-        "HOH",
-        "WAT",
-        "H2O",
-        "SOL",
-        "TIP",
-        "TIP3",
-        "NA",
-        "CL",
-        "K",
-        "MG",
-        "CA",
-        "ZN",
-        "LI",
-        "RB",
-        "CS",
-        "FE",
-        "MN",
-        "CU",
-    }
+    # Canonical amino acids + protonation variants (CYM is not listed)
+    STANDARD_AMINO_ACIDS
+    | AMBER_STANDARD_VARIANTS
+    # Curated non-standard templates (nonstandard.py / cyclic.py)
+    | N_METHYLATED_RESIDUES
+    | LACTAM_TEMPLATE_RESIDUES
+    # Phosphorylated residues — handled by core.phosaa (AMBER phosaa
+    # params). GAFF perceives these at neutral charge and would protonate
+    # the phosphate to net 0, destroying the −2 charge; they MUST skip
+    # the GAFF path.
+    | PHOSPHO_RESIDUES
+    | {"S1P", "T1P", "Y1P", "H1D", "H2D", "H1E", "H2E"}
+    | FORCE_FIELD_CAP_NAMES
+    | NUCLEOTIDE_RESIDUES
+    # Water / ions
+    | WATER_NAMES_ALL
+    | ION_NAMES_COMMON
+    | {"LI", "RB", "CS", "FE", "MN", "CU"}
 )
 
 

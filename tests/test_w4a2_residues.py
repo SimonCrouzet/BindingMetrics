@@ -47,6 +47,20 @@ OLD_SYSTEM_WATER_NAMES = frozenset({"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"})
 # core.system.get_system_info: local ``ion_names``.
 OLD_SYSTEM_ION_NAMES = frozenset({"NA", "CL", "K", "MG", "CA", "ZN"})
 
+# core.gaff_ncaa.GAFF_SKIP_RESIDUES: standard residues and variants, curated templates,
+# phospho residues, caps, nucleotides, waters and ions.
+OLD_GAFF_SKIP_RESIDUES = frozenset(
+    (
+        "ALA ARG ASN ASP CYS GLN GLU GLY HIS ILE LEU LYS MET PHE PRO SER THR TRP TYR VAL "
+        "CYX HID HIE HIP HIN LYN ASH GLH "
+        "NMG NMA MVA MLE ASPL GLUL LYSL "
+        "SEP TPO PTR S1P T1P Y1P H1D H2D H1E H2E "
+        "ACE NME FOR "
+        "DA DC DG DT A C G T U "
+        "HOH WAT H2O SOL TIP TIP3 NA CL K MG CA ZN LI RB CS FE MN CU"
+    ).split()
+)
+
 
 def _build_topology(chains):
     """Topology with one carbon atom per residue; ``chains`` maps chain id to residue names."""
@@ -255,3 +269,38 @@ class TestSystemSets:
 
         assert info["n_waters"] == 2
         assert info["n_ions"] == 6
+
+
+class TestGaffSkipResidues:
+    def test_skip_list_equals_the_old_literal(self):
+        from binding_metrics.core.gaff_ncaa import GAFF_SKIP_RESIDUES
+
+        assert GAFF_SKIP_RESIDUES == OLD_GAFF_SKIP_RESIDUES
+        assert len(GAFF_SKIP_RESIDUES) == 75
+
+    def test_cap_names_differ_from_the_terminal_caps_by_nh2_and_for(self):
+        assert residues.FORCE_FIELD_CAP_NAMES == {"ACE", "NME", "FOR"}
+        assert "NH2" in residues.TERMINAL_CAP_NAMES
+        assert "NH2" not in residues.FORCE_FIELD_CAP_NAMES
+
+    @pytest.mark.parametrize(
+        ("residue_name", "is_ncaa"),
+        [
+            ("ACE", False),
+            ("S1P", False),
+            ("MLE", False),
+            ("LIG", True),
+        ],
+    )
+    def test_multi_atom_residues_are_ncaa_unless_their_name_is_skipped(self, residue_name, is_ncaa):
+        pytest.importorskip("openmm")
+        from openmm import app
+
+        from binding_metrics.core.gaff_ncaa import _is_ncaa
+
+        topology = app.Topology()
+        residue = topology.addResidue(residue_name, topology.addChain(id="A"))
+        topology.addAtom("C1", app.element.carbon, residue)
+        topology.addAtom("N1", app.element.nitrogen, residue)
+
+        assert _is_ncaa(residue) is is_ncaa

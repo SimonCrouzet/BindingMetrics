@@ -111,6 +111,11 @@ NUCLEOTIDE_RESIDUES: frozenset[str] = frozenset({"DA", "DC", "DG", "DT", "A", "C
 #: this set.
 AMBER_STANDARD_VARIANTS: frozenset[str] = AMBER_PROTONATION_VARIANTS - {"CYM"}
 
+#: Capping residues the GAFF skip list and the relaxation heterogen scan leave to
+#: the force field: acetyl (ACE), N-methylamide (NME) and formyl (FOR). NH2 is
+#: not in it, unlike ``TERMINAL_CAP_NAMES``.
+FORCE_FIELD_CAP_NAMES: frozenset[str] = frozenset({"ACE", "NME", "FOR"})
+
 #: Ions that solvation and the force field handle by name (NA, CL, K, MG, CA,
 #: ZN).
 ION_NAMES_COMMON: frozenset[str] = frozenset({"NA", "CL", "K", "MG", "CA", "ZN"})
