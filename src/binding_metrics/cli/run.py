@@ -215,8 +215,11 @@ def run_pipeline(
         ``{"error": message}``.
 
         ``prep`` records what preparation changed: ``removed_heterogens``,
-        ``n_removed_waters``, ``kept_nonstandard``, ``n_missing_atoms_rebuilt``
-        and ``n_missing_residue_gaps`` (see ``core.system.prep_structure``).
+        ``n_removed_waters``, ``kept_nonstandard``, ``n_missing_atoms_rebuilt``,
+        ``n_missing_residue_gaps`` and ``chain_breaks`` (see
+        ``core.system.prep_structure``). ``relax`` lists under
+        ``dropped_protein_chains`` the protein chains, other than the peptide and
+        the receptor, that the relaxation removed.
 
         ``prep`` and ``relax`` carry ``ncaa_bond_order_source`` when non-canonical
         residues were parameterised: ``{residue name: "ccd" or "single_bonds"}``,
