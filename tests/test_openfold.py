@@ -1026,3 +1026,42 @@ class TestRealWorldIntegration:
             assert c in metrics["chain_ptm"]
         pair_key = f"({chains[0]}, {chains[1]})"
         assert pair_key in metrics["chain_pair_iptm"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: names that moved out of openfold.py stay importable from it
+# ---------------------------------------------------------------------------
+
+
+class TestModuleLayout:
+    def test_console_script_target_is_the_cli_entry_point(self):
+        from binding_metrics.metrics import _openfold_cli, openfold
+
+        assert openfold.main is _openfold_cli.main
+
+    @pytest.mark.parametrize("name", ["_add_parse_args", "_add_query_seeds_arg", "_print_metrics"])
+    def test_cli_helpers_remain_importable_from_openfold(self, name):
+        from binding_metrics.metrics import _openfold_cli, openfold
+
+        assert getattr(openfold, name) is getattr(_openfold_cli, name)
+
+    def test_cli_resolves_functions_on_the_openfold_module(self, tmp_path, monkeypatch):
+        """Patching ``openfold.<name>`` redirects the command line, as before the move."""
+        from binding_metrics.metrics import openfold
+
+        called = {}
+
+        def _fake_prepare(**kwargs):
+            called.update(kwargs)
+            return tmp_path / "q.json"
+
+        monkeypatch.setattr(openfold, "prepare_scoring_query", _fake_prepare)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["prog", "prepare-scoring-query", "--complex", "c.cif", "--receptor-chain", "A"]
+            + ["--binder-chain", "B", "--query-name", "q", "--output-dir", str(tmp_path)]
+            + ["--seeds", "3"],
+        )
+        openfold.main()
+        assert called["seeds"] == [3]
+        assert called["query_name"] == "q"
