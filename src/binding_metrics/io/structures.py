@@ -184,11 +184,22 @@ def detect_chains_from_file(
 
     Returns:
         Dict with keys:
-            peptide_chain (str): resolved peptide chain ID
-            receptor_chain (str): resolved receptor chain ID
+            peptide_chain (str): resolved peptide chain ID (author ID,
+                ``auth_asym_id`` in a CIF)
+            receptor_chain (str): resolved receptor chain ID (author ID); None
+                when the file has a single protein chain
+            peptide_chain_label (str): the peptide chain ID as OpenMM sees it
+                (``label_asym_id`` in a CIF), which OpenMM-based steps need. It
+                equals ``peptide_chain`` for PDB files and for CIFs whose author
+                and label IDs agree, and when the mapping cannot be built (a
+                warning is logged then).
+            receptor_chain_label (str): same for the receptor chain
             peptide_n_residues (int): number of residues in peptide chain
             receptor_n_residues (int): number of residues in receptor chain
             all_chains (list[dict]): all protein chains with id and n_residues
+
+        A chain ID passed in ``peptide_chain`` or ``receptor_chain`` is returned
+        as given, even when it is not in the file; its residue count is then None.
     """
     import biotite.structure as struc
     import biotite.structure.io.pdb as pdb_io
@@ -218,8 +229,16 @@ def detect_chains_from_file(
                     a_str, l_str = str(auth), str(label)
                     if a_str not in auth_to_label:  # first occurrence wins
                         auth_to_label[a_str] = l_str
-        except Exception:
-            pass  # not all CIF files have both columns; mapping stays empty
+        except (KeyError, ValueError) as exc:
+            # Without the label/auth pair the mapping stays empty, and the label
+            # chain IDs handed to OpenMM-based steps fall back to the author IDs.
+            logger.warning(
+                "%s: cannot map author chain IDs to label chain IDs (%s: %s); "
+                "assuming they are identical",
+                path.name,
+                type(exc).__name__,
+                exc,
+            )
     else:
         f = pdb_io.PDBFile.read(str(path))
         atoms = pdb_io.get_structure(f, model=1)
@@ -686,11 +705,18 @@ def save_cif(
         label_to_auth: dict[str, str] = {}
         # (source_auth_chain, heavy-atom res_idx) → original auth_seq_id
         seq_map: dict[tuple, str] = {}
-        try:
-            src_table = source_block.find(
-                "_atom_site.",
-                ["label_asym_id", "auth_asym_id", "auth_seq_id", "auth_atom_id"],
+        source_columns = ["label_asym_id", "auth_asym_id", "auth_seq_id", "auth_atom_id"]
+        absent = [c for c in source_columns if not source_block.find_loop(f"_atom_site.{c}")]
+        if absent:
+            logger.warning(
+                "%s lacks _atom_site column(s) %s: chain IDs and residue numbers of %s "
+                "cannot be restored from it",
+                Path(source_cif_path).name,
+                ", ".join(absent),
+                output_path.name,
             )
+        try:
+            src_table = source_block.find("_atom_site.", source_columns)
             s_prev_auth = ""
             s_prev_seq = ""
             s_res_idx = -1
@@ -707,8 +733,15 @@ def save_cif(
                     key = (auth, s_res_idx)
                     if key not in seq_map:
                         seq_map[key] = seq
-        except Exception:
-            pass
+        except (RuntimeError, IndexError, ValueError) as exc:
+            logger.warning(
+                "cannot read the source residue numbering of %s (%s: %s); residue numbers "
+                "of %s are not restored",
+                Path(source_cif_path).name,
+                type(exc).__name__,
+                exc,
+                output_path.name,
+            )
 
         # output sequential letter → original auth chain ID
         topo_chain_ids = [c.id for c in topology.chains()]
@@ -718,8 +751,14 @@ def save_cif(
                 ch = row[0]
                 if ch not in seen_out_chains:
                     seen_out_chains.append(ch)
-        except Exception:
-            pass
+        except (RuntimeError, IndexError, ValueError) as exc:
+            logger.warning(
+                "cannot read the chain IDs OpenMM wrote to %s (%s: %s); original chain "
+                "IDs are not restored",
+                output_path.name,
+                type(exc).__name__,
+                exc,
+            )
         out_to_auth: dict[str, str] = {
             out_ch: label_to_auth.get(topo_ch, topo_ch)
             for out_ch, topo_ch in zip(seen_out_chains, topo_chain_ids)
@@ -781,8 +820,14 @@ def save_cif(
                     sc_table = output_block.find("_struct_conn.", [col])
                     for row in sc_table:
                         row[0] = out_to_auth.get(row[0], row[0])
-                except Exception:
-                    pass
+                except (RuntimeError, IndexError, ValueError) as exc:
+                    logger.warning(
+                        "cannot restore original chain IDs in _struct_conn.%s of %s (%s: %s)",
+                        col,
+                        output_path.name,
+                        type(exc).__name__,
+                        exc,
+                    )
 
         output_doc.write_file(str(output_path))
         _patch_nonstd_bonds_in_cif(output_path, topology)
@@ -901,8 +946,9 @@ def save_structure(
 def detect_models(path: str | Path) -> list[int]:
     """Read pdbx_PDB_model_num from a CIF and return sorted model numbers.
 
-    Returns ``[1]`` for single-model CIFs (no ``pdbx_PDB_model_num`` column),
-    PDB files, or on any read error.
+    Returns ``[1]`` for single-model CIFs (no ``pdbx_PDB_model_num`` column) and
+    for PDB files. It also returns ``[1]``, with a logged warning, when the file
+    cannot be read or biotite is not installed.
 
     Args:
         path: Path to the structure file.
@@ -914,15 +960,32 @@ def detect_models(path: str | Path) -> list[int]:
     if path.suffix.lower() not in (".cif", ".mmcif"):
         return [1]
     try:
+        import biotite
         import biotite.structure.io.pdbx as pdbx
+    except ImportError:
+        logger.warning(
+            "biotite is not installed: %s is treated as a single-model file. Install "
+            "with: pip install binding-metrics[biotite]",
+            path.name,
+        )
+        return [1]
 
+    try:
         f = pdbx.CIFFile.read(str(path))
         atom_site = f.block["atom_site"]
         col = atom_site["pdbx_PDB_model_num"].as_array()
         unique = sorted({int(v) for v in col})
-        return unique if unique else [1]
-    except (KeyError, Exception):
+    except KeyError:
+        return [1]  # no atom_site category or model column: a single-model file
+    except (ValueError, OSError, biotite.InvalidFileError) as exc:
+        logger.warning(
+            "cannot read model numbers from %s (%s: %s); assuming a single model",
+            path.name,
+            type(exc).__name__,
+            exc,
+        )
         return [1]
+    return unique if unique else [1]
 
 
 def extract_model_to_tempfile(path: Path, model_num: int) -> Path:
