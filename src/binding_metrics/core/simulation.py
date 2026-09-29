@@ -145,7 +145,7 @@ class MDSimulation:
             for name in ["CUDA", "OpenCL", "CPU"]:
                 try:
                     return Platform.getPlatformByName(name)
-                except Exception:
+                except openmm.OpenMMException:  # platform not registered or not usable here
                     continue
             return Platform.getPlatformByName("Reference")
         return Platform.getPlatformByName(self.config.platform)

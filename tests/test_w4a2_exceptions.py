@@ -433,3 +433,50 @@ class TestGaffNcaa:
 
         assert rdkit_chem.MolToSmiles(perceived) == "CCO"
         assert caplog.text.count("Bond-order perception failed") == 2
+
+
+class TestSimulationPlatform:
+    @staticmethod
+    def _simulation():
+        from unittest.mock import MagicMock
+
+        from binding_metrics.core.simulation import MDSimulation, SimulationConfig
+
+        return MDSimulation(MagicMock(), MagicMock(), SimulationConfig(platform="auto"))
+
+    def test_auto_skips_platforms_openmm_does_not_have(self, monkeypatch):
+        import openmm
+        from openmm import Platform
+
+        def only_cpu(name):
+            if name != "CPU":
+                raise openmm.OpenMMException(f"There is no registered Platform called {name}")
+            return "cpu-platform"
+
+        monkeypatch.setattr(Platform, "getPlatformByName", only_cpu)
+
+        assert self._simulation()._get_platform() == "cpu-platform"
+
+    def test_auto_falls_back_to_the_reference_platform(self, monkeypatch):
+        import openmm
+        from openmm import Platform
+
+        def only_reference(name):
+            if name != "Reference":
+                raise openmm.OpenMMException(f"There is no registered Platform called {name}")
+            return "reference-platform"
+
+        monkeypatch.setattr(Platform, "getPlatformByName", only_reference)
+
+        assert self._simulation()._get_platform() == "reference-platform"
+
+    def test_an_unexpected_error_is_not_swallowed(self, monkeypatch):
+        from openmm import Platform
+
+        def broken(_name):
+            raise RuntimeError("driver crashed")
+
+        monkeypatch.setattr(Platform, "getPlatformByName", broken)
+
+        with pytest.raises(RuntimeError, match="driver crashed"):
+            self._simulation()._get_platform()
