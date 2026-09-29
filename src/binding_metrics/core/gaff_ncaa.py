@@ -400,6 +400,7 @@ def _build_capped_molecule(res, topology, pos_A):
     cap_indices: set = set()
     ext_atom_names: list = []
     cap_partner: dict = {}
+    capped_pairs: set = set()
     for bond in topology.bonds():
         a1, a2 = bond.atom1, bond.atom2
         in1, in2 = a1.index in res_atom_indices, a2.index in res_atom_indices
@@ -409,6 +410,11 @@ def _build_capped_molecule(res, topology, pos_A):
         outer = a2 if in1 else a1
         if inner.index not in rd_idx:
             continue  # boundary atom is not a heavy atom we model (defensive)
+        # PDBFixer can list one bond twice (the 1XY4 IAM-THR peptide bond). A
+        # second cap on the same atom gave the backbone C a valence of 5.
+        if (inner.index, outer.index) in capped_pairs:
+            continue
+        capped_pairs.add((inner.index, outer.index))
         cap = rw.AddAtom(Chem.Atom(6))  # carbon cap → clean sp2/sp3 perception
         rw.AddBond(rd_idx[inner.index], cap, Chem.BondType.SINGLE)
         coords.append(pos_A[outer.index])
