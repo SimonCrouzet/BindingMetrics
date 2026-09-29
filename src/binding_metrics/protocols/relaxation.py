@@ -752,7 +752,12 @@ class ImplicitRelaxation:
                 with deterministic_hydrogen_placement(seed):
                     modeller.addHydrogens(pH=self.config.ph, variants=addh_variants)
             except Exception as e2:
-                print(f"  Warning: addHydrogens failed: {e2}")
+                logger.error("addHydrogens failed with and without the force field (%s; %s)", e, e2)
+                # Continuing would hand createSystem an un-protonated topology
+                # and surface as an unrelated template error.
+                raise RuntimeError(
+                    f"addHydrogens failed with and without the force field: {e2}"
+                ) from e2
         topology, positions = modeller.topology, modeller.positions
 
         # addHydrogens can strand a Cα H on the wrong face (random jitter +

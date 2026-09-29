@@ -170,6 +170,21 @@ class TestImplicitRelaxation:
         assert relaxer._platform_used == "CPU"
         assert "no CUDA driver in this test" in relaxer._platform_fallback_reason
 
+    def test_addhydrogens_failure_raises_and_logs(self, tmp_path, prepped_example_cif, caplog):
+        """Both addHydrogens attempts failing stops the run with a clear error."""
+        from unittest import mock
+
+        from openmm import app
+
+        config = RelaxationConfig(md_duration_ps=0.0, device="cpu")
+        with mock.patch.object(app.Modeller, "addHydrogens", side_effect=ValueError("boom")):
+            with caplog.at_level("ERROR", logger="binding_metrics.protocols.relaxation"):
+                result = ImplicitRelaxation(config).run(prepped_example_cif, tmp_path / "out")
+        assert not result.success
+        assert "addHydrogens failed with and without the force field" in result.error_message
+        assert "boom" in result.error_message
+        assert "addHydrogens failed" in caplog.text
+
     @requires_cuda
     @pytest.mark.integration
     def test_run_minimize_only_cif(self, tmp_path: Path, prepped_example_cif):
