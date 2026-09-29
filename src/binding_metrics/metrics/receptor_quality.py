@@ -33,6 +33,13 @@ import numpy as np
 
 from binding_metrics.utils import backfill_auth_columns
 
+try:
+    from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+except ImportError:
+    # core.system imports OpenMM at module level. Without OpenMM the value is
+    # duplicated here; tests/test_receptor_quality.py checks that the two stay equal.
+    DEFAULT_RANDOM_SEED = 1
+
 # ---------------------------------------------------------------------------
 # Lazy imports
 # ---------------------------------------------------------------------------
@@ -780,12 +787,18 @@ def _receptor_energy(
     chain_atoms,
     solvent_model: str = "obc2",
     device: str = "cuda",
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
     """Compute absolute AMBER ff14SB potential energy for a receptor chain.
 
     Writes receptor atoms to a temp PDB, prepares with PDBFixer (if available),
     adds hydrogens, builds an AMBER ff14SB + implicit solvent system, and
     evaluates potential energy at the input geometry (no minimization).
+
+    Stochastic steps (PDBFixer's rebuild of missing atoms and the jitter of new
+    hydrogens) are seeded with ``random_seed``, so the same input gives the same
+    energy; ``None`` leaves them unseeded. With ``device="cuda"`` the final
+    single-point evaluation uses mixed precision, which is not bit-reproducible.
     """
     _nan = {
         "energy_kJ_mol": np.nan,
@@ -796,6 +809,7 @@ def _receptor_energy(
 
     try:
         openmm, unit, ForceField, Modeller, PDBFile, Simulation = _import_openmm()
+        from binding_metrics.core.system import deterministic_hydrogen_placement
     except ImportError as e:
         return {**_nan, "error": str(e)}
 
@@ -821,25 +835,33 @@ def _receptor_energy(
 
         gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
 
-        if has_pdbfixer:
-            fixer = PDBFixer(filename=str(tmp_path))
-            fixer.findMissingResidues()
-            fixer.findNonstandardResidues()
-            fixer.replaceNonstandardResidues()
-            fixer.removeHeterogens(keepWater=False)
-            fixer.findMissingAtoms()
-            fixer.addMissingAtoms()
-            fixer.addMissingHydrogens(7.4)
-            topology, positions = fixer.topology, fixer.positions
-        else:
-            pdb = PDBFile(str(tmp_path))
-            ff_tmp = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
-            mod = Modeller(pdb.topology, pdb.positions)
-            try:
-                mod.addHydrogens(ff_tmp, pH=7.4)
-            except Exception:
-                mod.addHydrogens(ff_tmp)
-            topology, positions = mod.topology, mod.positions
+        # Modeller.addHydrogens offsets each new hydrogen with Python's global
+        # random module and settles it with a short minimisation on the fastest
+        # platform. The seed and the Reference platform (double precision,
+        # single-threaded) make that step, and so the single-point energy below,
+        # repeatable.
+        placement_platform = openmm.Platform.getPlatformByName("Reference")
+        with deterministic_hydrogen_placement(random_seed):
+            if has_pdbfixer:
+                fixer = PDBFixer(filename=str(tmp_path))
+                fixer.findMissingResidues()
+                fixer.findNonstandardResidues()
+                fixer.replaceNonstandardResidues()
+                fixer.removeHeterogens(keepWater=False)
+                fixer.findMissingAtoms()
+                fixer.addMissingAtoms(seed=random_seed)
+                # Same call as PDBFixer.addMissingHydrogens(7.4), with the platform pinned.
+                mod = Modeller(fixer.topology, fixer.positions)
+                mod.addHydrogens(pH=7.4, platform=placement_platform)
+            else:
+                pdb = PDBFile(str(tmp_path))
+                ff_tmp = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
+                mod = Modeller(pdb.topology, pdb.positions)
+                try:
+                    mod.addHydrogens(ff_tmp, pH=7.4, platform=placement_platform)
+                except Exception:
+                    mod.addHydrogens(ff_tmp, platform=placement_platform)
+        topology, positions = mod.topology, mod.positions
 
         ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
         system = ff.createSystem(
@@ -896,6 +918,7 @@ def _score_model(
     device: str,
     model_index: int,
     exclude_bonded: bool = True,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
     """Compute all quality metrics for one model."""
     struc, _, _ = _import_biotite()
@@ -936,7 +959,9 @@ def _score_model(
     cbeta = _cbeta_deviations(rec_atoms)
     bbgeom = _backbone_geometry(rec_atoms)
     bfact = _bfactor_stats(rec_atoms)
-    energy = _receptor_energy(rec_atoms, solvent_model=solvent_model, device=device)
+    energy = _receptor_energy(
+        rec_atoms, solvent_model=solvent_model, device=device, random_seed=random_seed
+    )
 
     mp_score = _molprobity_score(
         clash.get("clashscore", np.nan),
@@ -972,6 +997,7 @@ def compute_receptor_quality(
     device: str = "cuda",
     *,
     exclude_bonded: bool = True,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
     """Compute MolProbity-style structural quality metrics for a receptor chain.
 
@@ -990,6 +1016,12 @@ def compute_receptor_quality(
             closures, lactams, staples, peptide bonds across numbering gaps) and
             N/O hydrogen-bond pairs out of the clash count (default True). False
             restores the earlier count, which scored them as clashes.
+        random_seed: Seed for the stochastic steps of the energy term
+            (hydrogen placement and PDBFixer's rebuild of missing atoms).
+            Defaults to the package-wide ``DEFAULT_RANDOM_SEED`` so repeated
+            calls agree; ``None`` gives fresh randomness. The energy is a single
+            point at the input geometry, so it is the term most exposed to the
+            hydrogen jitter.
 
     Returns:
         Dictionary with keys:
@@ -1034,6 +1066,7 @@ def compute_receptor_quality(
             device,
             idx + 1,
             exclude_bonded=exclude_bonded,
+            random_seed=random_seed,
         )
         for idx, atoms in enumerate(all_models)
     ]
@@ -1197,8 +1230,9 @@ def main():
         default=None,
         help="Write results to file. Extension determines format: .csv or .json",
     )
-    from binding_metrics.cli import add_log_file_arg
+    from binding_metrics.cli import add_log_file_arg, add_random_seed_arg
 
+    add_random_seed_arg(parser, "hydrogen placement and atom rebuilding in the energy term")
     add_log_file_arg(parser)
     args = parser.parse_args()
 
@@ -1213,6 +1247,7 @@ def main():
             clash_cutoff=args.clash_cutoff,
             solvent_model=args.solvent_model,
             device=args.device,
+            random_seed=args.random_seed,
         )
         result["input_filename"] = args.input.name
 

@@ -591,6 +591,82 @@ class TestReceptorEnergyErrorPath:
 
 
 # ---------------------------------------------------------------------------
+# Energy wrapper: seeding
+# ---------------------------------------------------------------------------
+
+
+class TestReceptorEnergySeeding:
+    def test_default_seed_mirrors_the_package_default(self):
+        pytest.importorskip("openmm")
+        from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+
+        assert rq.DEFAULT_RANDOM_SEED == DEFAULT_RANDOM_SEED
+
+    def test_repeated_calls_give_identical_energy(self):
+        pytest.importorskip("openmm")
+        atoms = _helix(6)
+        first = rq._receptor_energy(atoms)
+        second = rq._receptor_energy(atoms)
+        assert first["error"] is None and second["error"] is None
+        assert np.isfinite(first["energy_kJ_mol"])
+        assert first["energy_kJ_mol"] == pytest.approx(second["energy_kJ_mol"], rel=1e-6)
+        assert first["n_atoms_with_h"] == second["n_atoms_with_h"]
+
+    def test_explicit_seed_is_repeatable_and_leaves_the_global_rng_alone(self):
+        import random
+
+        pytest.importorskip("openmm")
+        atoms = _helix(6)
+        first = rq._receptor_energy(atoms, random_seed=7)
+        random.seed(123)
+        state = random.getstate()
+        second = rq._receptor_energy(atoms, random_seed=7)
+        assert random.getstate() == state
+        assert first["energy_kJ_mol"] == pytest.approx(second["energy_kJ_mol"], rel=1e-6)
+
+    def test_seed_reaches_the_energy_term_from_the_public_api(self, tmp_path, monkeypatch):
+        seen = []
+
+        def _spy(atoms, solvent_model="obc2", device="cuda", random_seed="unset"):
+            seen.append(random_seed)
+            return {
+                "energy_kJ_mol": -1.0,
+                "energy_per_residue_kJ_mol": -1.0,
+                "n_atoms_with_h": 1,
+                "error": None,
+            }
+
+        monkeypatch.setattr(rq, "_receptor_energy", _spy)
+        pdb = pdb_io.PDBFile()
+        pdb_io.set_structure(pdb, _serine_helix(5))
+        path = tmp_path / "h.pdb"
+        pdb.write(str(path))
+
+        rq.compute_receptor_quality(path)
+        rq.compute_receptor_quality(path, random_seed=11)
+        rq.compute_receptor_quality(path, random_seed=None)
+        assert seen == [rq.DEFAULT_RANDOM_SEED, 11, None]
+
+    @pytest.mark.parametrize(
+        "argv, expected",
+        [([], "default"), (["--random-seed", "9"], 9), (["--random-seed", "none"], None)],
+    )
+    def test_cli_random_seed_flag(self, tmp_path, monkeypatch, argv, expected):
+        pytest.importorskip("openmm")
+        seen = {}
+
+        def _fake(path, **kwargs):
+            seen.update(kwargs)
+            return {"receptor_chain": None, "n_models": 0, "models": [], "error": "stop"}
+
+        monkeypatch.setattr(rq, "compute_receptor_quality", _fake)
+        monkeypatch.setattr("sys.argv", ["prog", "--input", str(tmp_path / "x.pdb"), *argv])
+        rq.main()
+        want = rq.DEFAULT_RANDOM_SEED if expected == "default" else expected
+        assert seen["random_seed"] == want
+
+
+# ---------------------------------------------------------------------------
 # Aggregation, dispatcher and public API
 # ---------------------------------------------------------------------------
 
