@@ -1,16 +1,36 @@
+# The Dockerfile does `COPY .`, so everything not listed here is baked into an
+# image layer. Keep the private and untracked paths of .gitignore listed here
+# too: a local build that is pushed by hand would otherwise publish them.
+# Patterns starting with ** match at any depth, like the slash-less patterns
+# of .gitignore; a bare `*.zip` here would only match the context root.
 .git
 .claude/
 .github/
 .vscode/
-*.zip
-structures/
 tests/
 build/
+dist/
+data/*/
+CLAUDE.md
+.env
+.pypirc
+
+# Private working material and client data (IP hygiene, see .gitignore).
+manuscripts/
+notes/
+structures/
 archive/
 results/
-data/*/
 compiled_cache.db
-*.egg-info/
-__pycache__/
+**/MC1R*
+**/*_inverse_folded
+**/*design_spec*
+
+# Large archives, logs and tool caches.
+**/*.zip
+**/*.log
+.ruff_cache/
 .pytest_cache/
-*.pyc
+**/*.egg-info/
+**/__pycache__/
+**/*.pyc
