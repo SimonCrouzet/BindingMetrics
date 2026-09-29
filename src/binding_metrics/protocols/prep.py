@@ -15,6 +15,8 @@ import logging
 import sys
 from pathlib import Path
 
+from binding_metrics._constants import DEFAULT_PH
+
 
 def main() -> None:
     from binding_metrics.utils import configure_logging
@@ -32,7 +34,7 @@ def main() -> None:
     parser.add_argument(
         "--output", "-o", type=Path, required=True, help="Output structure (.pdb, .cif, .mmcif)"
     )
-    parser.add_argument("--ph", type=float, default=7.4, help="pH for hydrogen placement")
+    parser.add_argument("--ph", type=float, default=DEFAULT_PH, help="pH for hydrogen placement")
     parser.add_argument(
         "--keep-water", action="store_true", help="Retain crystallographic water molecules"
     )

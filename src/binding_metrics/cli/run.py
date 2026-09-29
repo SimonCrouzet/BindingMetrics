@@ -25,7 +25,12 @@ import traceback
 from pathlib import Path
 from typing import Optional, Sequence
 
-from binding_metrics._constants import DEFAULT_RANDOM_SEED
+from binding_metrics._constants import (
+    DEFAULT_DEVICE,
+    DEFAULT_MD_DURATION_PS,
+    DEFAULT_PH,
+    DEFAULT_RANDOM_SEED,
+)
 from binding_metrics.cli import add_openfold_seeds_arg, md_save_interval_for
 from binding_metrics.cli import seed_arg as _seed_arg
 from binding_metrics.provenance import collect_provenance
@@ -105,13 +110,13 @@ def run_pipeline(
     sample_id: Optional[str] = None,
     # prep
     skip_prep: bool = False,
-    ph: float = 7.4,
+    ph: float = DEFAULT_PH,
     keep_water: bool = False,
     canonicalize: bool = False,
     # relax
     skip_relax: bool = False,
-    md_duration_ps: float = 200.0,
-    device: str = "cuda",
+    md_duration_ps: float = DEFAULT_MD_DURATION_PS,
+    device: str = DEFAULT_DEVICE,
     peptide_chain: Optional[str] = None,
     receptor_chain: Optional[str] = None,
     # metrics
@@ -591,7 +596,10 @@ def main():
         help="Sample identifier (defaults to input file stem)",
     )
     parser.add_argument(
-        "--device", choices=["cuda", "cpu"], default="cuda", help="Compute device (default: cuda)"
+        "--device",
+        choices=["cuda", "cpu"],
+        default=DEFAULT_DEVICE,
+        help=f"Compute device (default: {DEFAULT_DEVICE})",
     )
     parser.add_argument(
         "--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)"
@@ -619,7 +627,10 @@ def main():
         "--skip-prep", action="store_true", help="Skip PDBFixer prep; run relax on raw input"
     )
     prep_group.add_argument(
-        "--ph", type=float, default=7.4, help="pH for hydrogen placement during prep (default: 7.4)"
+        "--ph",
+        type=float,
+        default=DEFAULT_PH,
+        help=f"pH for hydrogen placement during prep (default: {DEFAULT_PH})",
     )
     prep_group.add_argument(
         "--keep-water",
@@ -644,8 +655,8 @@ def main():
     relax_group.add_argument(
         "--md-duration-ps",
         type=float,
-        default=200.0,
-        help="MD duration in ps (0 = minimize only, default: 200)",
+        default=DEFAULT_MD_DURATION_PS,
+        help=f"MD duration in ps (0 = minimize only, default: {DEFAULT_MD_DURATION_PS:g})",
     )
     relax_group.add_argument(
         "--random-seed",

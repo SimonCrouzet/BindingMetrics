@@ -43,7 +43,13 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from binding_metrics._constants import DEFAULT_RANDOM_SEED
+from binding_metrics._constants import (
+    DEFAULT_DEVICE,
+    DEFAULT_MD_DURATION_PS,
+    DEFAULT_MD_SAVE_INTERVAL_PS,
+    DEFAULT_PH,
+    DEFAULT_RANDOM_SEED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,16 +154,16 @@ class RelaxationConfig:
     min_tolerance: float = 1.0
     restraint_strength: float = 100.0
 
-    md_duration_ps: float = 200.0
+    md_duration_ps: float = DEFAULT_MD_DURATION_PS
     md_timestep_fs: float = 2.0
     md_temperature_k: float = 300.0
     md_friction: float = 1.0
-    md_save_interval_ps: float = 10.0
+    md_save_interval_ps: float = DEFAULT_MD_SAVE_INTERVAL_PS
 
-    ph: float = 7.4
+    ph: float = DEFAULT_PH
 
     solvent_model: str = "obc2"
-    device: str = "cuda"
+    device: str = DEFAULT_DEVICE
 
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED
     """Seed for every stochastic step (hydrogen placement, MD initial velocities
@@ -1673,17 +1679,28 @@ def main():
     parser.add_argument("--input", "-i", type=Path, required=True, help="Input CIF or PDB file")
     parser.add_argument("--output-dir", "-o", type=Path, required=True, help="Output directory")
     parser.add_argument(
-        "--md-duration-ps", type=float, default=200.0, help="MD duration in ps (0 to minimize only)"
+        "--md-duration-ps",
+        type=float,
+        default=DEFAULT_MD_DURATION_PS,
+        help="MD duration in ps (0 to minimize only)",
     )
     parser.add_argument(
-        "--md-save-interval-ps", type=float, default=10.0, help="Frame save interval in ps"
+        "--md-save-interval-ps",
+        type=float,
+        default=DEFAULT_MD_SAVE_INTERVAL_PS,
+        help="Frame save interval in ps",
     )
     parser.add_argument(
         "--temperature", type=float, default=300.0, help="Simulation temperature in K"
     )
-    parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda", help="Compute device")
     parser.add_argument(
-        "--ph", type=float, default=7.4, help="pH for hydrogen addition (default 7.4)"
+        "--device", choices=["cuda", "cpu"], default=DEFAULT_DEVICE, help="Compute device"
+    )
+    parser.add_argument(
+        "--ph",
+        type=float,
+        default=DEFAULT_PH,
+        help=f"pH for hydrogen addition (default {DEFAULT_PH})",
     )
     parser.add_argument(
         "--solvent-model", choices=["obc2", "gbn2"], default="obc2", help="Implicit solvent model"

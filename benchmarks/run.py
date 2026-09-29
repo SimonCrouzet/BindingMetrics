@@ -53,6 +53,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from binding_metrics._constants import DEFAULT_DEVICE, DEFAULT_MD_DURATION_PS
 from binding_metrics.metrics.registry import (
     METRICS,
     ChainMode,
@@ -462,8 +463,8 @@ def run_md_benchmarks(entries: list[dict], output_dir: Path) -> list[dict]:
         props = compute_structure_properties(path, entry.get("design_chain"))
         print(
             f"  atoms={props['n_atoms']}  res_total={props['n_residues_total']}  "
-            f"md_duration_ps={md_params.get('md_duration_ps', 200)}  "
-            f"device={md_params.get('device', 'cuda')}"
+            f"md_duration_ps={md_params.get('md_duration_ps', DEFAULT_MD_DURATION_PS):g}  "
+            f"device={md_params.get('device', DEFAULT_DEVICE)}"
         )
 
         record: dict = {

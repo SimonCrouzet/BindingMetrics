@@ -10,8 +10,9 @@ import openmm.unit as unit
 from openmm.app import ForceField, Modeller, PDBFile
 
 from binding_metrics._constants import (
-    DEFAULT_RANDOM_SEED,
-)  # re-exported: callers import it from here
+    DEFAULT_PH,
+    DEFAULT_RANDOM_SEED,  # re-exported: callers import it from here
+)
 from binding_metrics.core.forcefields import get_forcefield
 from binding_metrics.utils import add_to_report, extend_report
 
@@ -513,7 +514,7 @@ def repair_ca_hydrogen_chirality(topology, positions, verbose: bool = True):
 def prep_structure(
     topology,
     positions,
-    ph: float = 7.4,
+    ph: float = DEFAULT_PH,
     keep_water: bool = False,
     canonicalize: bool = False,
     rebuild_zero_coord_atoms: bool = True,
@@ -755,7 +756,7 @@ def prepare_system(
     positive_ion: str = "Na+",
     negative_ion: str = "Cl-",
     fix: bool = True,
-    ph: float = 7.4,
+    ph: float = DEFAULT_PH,
     *,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> Modeller:

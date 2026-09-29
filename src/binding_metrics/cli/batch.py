@@ -54,7 +54,12 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, Sequence
 
-from binding_metrics._constants import DEFAULT_RANDOM_SEED
+from binding_metrics._constants import (
+    DEFAULT_DEVICE,
+    DEFAULT_MD_DURATION_PS,
+    DEFAULT_PH,
+    DEFAULT_RANDOM_SEED,
+)
 from binding_metrics.cli import add_openfold_seeds_arg, add_random_seed_arg
 from binding_metrics.cli.run import (
     ALL_METRICS,
@@ -473,7 +478,10 @@ def main():
 
     # Forwarded single-run options
     parser.add_argument(
-        "--device", choices=["cuda", "cpu"], default="cuda", help="Compute device (default: cuda)"
+        "--device",
+        choices=["cuda", "cpu"],
+        default=DEFAULT_DEVICE,
+        help=f"Compute device (default: {DEFAULT_DEVICE})",
     )
     parser.add_argument(
         "--peptide-chain",
@@ -491,7 +499,10 @@ def main():
     prep_group = parser.add_argument_group("Preparation")
     prep_group.add_argument("--skip-prep", action="store_true", help="Skip PDBFixer prep")
     prep_group.add_argument(
-        "--ph", type=float, default=7.4, help="pH for hydrogen placement during prep (default: 7.4)"
+        "--ph",
+        type=float,
+        default=DEFAULT_PH,
+        help=f"pH for hydrogen placement during prep (default: {DEFAULT_PH})",
     )
     prep_group.add_argument(
         "--keep-water",
@@ -509,8 +520,8 @@ def main():
     relax_group.add_argument(
         "--md-duration-ps",
         type=float,
-        default=200.0,
-        help="MD duration in ps (0 = minimize only, default: 200)",
+        default=DEFAULT_MD_DURATION_PS,
+        help=f"MD duration in ps (0 = minimize only, default: {DEFAULT_MD_DURATION_PS:g})",
     )
     add_random_seed_arg(
         relax_group,
