@@ -350,10 +350,14 @@ class RelaxationResult:
         failed += [f"md_final:{name}" for name in (self.qc.get("md_final") or {}).get("failed", [])]
         return failed
 
-    def _qc_check_rows(self) -> Optional[list]:
-        """One row per QC check (a list, so the CSV flattening leaves it out)."""
+    def _qc_check_rows(self) -> list:
+        """One row per QC check (a list, so the CSV flattening leaves it out).
+
+        Empty, not None, when QC did not run: the flattening turns a None into a
+        column of its own, which would then exist only for failed runs.
+        """
         if not self.qc:
-            return None
+            return []
         rows = []
         for stage, block in (("minimized", self.qc), ("md_final", self.qc.get("md_final"))):
             for name, check in ((block or {}).get("checks") or {}).items():

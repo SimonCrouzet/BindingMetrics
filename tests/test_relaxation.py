@@ -110,6 +110,18 @@ class TestRelaxationResult:
         assert "rmsd_md_final" in d
         assert "minimization_time_s" in d
 
+    def test_qc_columns_without_qc_leave_no_stray_csv_column(self):
+        """A run that never reached QC has qc_passed None and an empty check list."""
+        from binding_metrics.protocols.report import _flatten
+
+        row = RelaxationResult(sample_id="test", success=False).to_dict()
+        assert row["qc_passed"] is None
+        assert row["qc_failed_checks"] == ""
+        assert row["qc_checks"] == []
+        flat = _flatten({"sample_id": "test", "relax": row})
+        assert "relax_qc_checks" not in flat
+        assert flat["relax_qc_passed"] is None
+
     def test_to_dict_platform_keys_default_to_none(self):
         d = RelaxationResult(sample_id="test", success=True).to_dict()
         assert d["platform"] is None
