@@ -18,6 +18,7 @@ platform) so a result can be tied to the code and settings that produced it.
 """
 
 import argparse
+import logging
 import sys
 import time
 import traceback
@@ -27,6 +28,12 @@ from typing import Optional
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
 from binding_metrics.cli import seed_arg as _seed_arg
 from binding_metrics.provenance import collect_provenance
+from binding_metrics.utils import configure_logging
+
+# Named explicitly: ``python -m binding_metrics.cli.run`` executes this file as
+# ``__main__``, and a logger called ``__main__`` would sit outside the package
+# logger that ``configure_logging`` sets up, so its INFO lines would be lost.
+logger = logging.getLogger("binding_metrics.cli.run")
 
 ALL_METRICS = frozenset({"energy", "interface", "geometry", "electrostatics", "openfold"})
 # Reference-based metrics require a native structure (--reference) and are not
@@ -70,13 +77,12 @@ def _require_chains_present(
 
 
 def _warn(msg: str) -> None:
-    print(f"  [warning] {msg}", flush=True)
+    logger.warning("  [warning] %s", msg)
 
 
 def _step(name: str) -> None:
-    print(f"\n{'=' * 60}", flush=True)
-    print(f"  Step: {name}", flush=True)
-    print(f"{'=' * 60}", flush=True)
+    bar = "=" * 60
+    logger.info("\n%s\n  Step: %s\n%s", bar, name, bar)
 
 
 def run_pipeline(
@@ -177,7 +183,7 @@ def run_pipeline(
                 )
                 prepped_path = output_dir / f"{sample_id}_cleaned.cif"
                 save_structure(topology, positions, prepped_path, source_path=input_path)
-                print(f"  Prepped structure: {prepped_path}")
+                logger.info("  Prepped structure: %s", prepped_path)
                 results["prep"] = {"output": str(prepped_path), "ph": ph, "keep_water": keep_water}
                 # save_cif preserves original auth IDs and aligns label IDs to match,
                 # so downstream OpenMM steps will see the original chain IDs.
@@ -195,7 +201,7 @@ def run_pipeline(
             prepped_path = input_path
             results["prep"] = {"error": str(e)}
     else:
-        print("\n  [skip] Prep skipped — using raw input.")
+        logger.info("\n  [skip] Prep skipped — using raw input.")
         results["prep"] = {"skipped": True}
 
     # ------------------------------------------------------------------ Relax
@@ -209,9 +215,9 @@ def run_pipeline(
         _orig_topo, _orig_pos = load_structure(input_path)
         cyclic_bond_hints = detect_cyclization(_orig_topo, _orig_pos, peptide_chain_label)
         if cyclic_bond_hints:
-            print(
-                f"  Cyclic bond hints from original file: "
-                f"{[b.cyclic_type for b in cyclic_bond_hints]}"
+            logger.info(
+                "  Cyclic bond hints from original file: %s",
+                [b.cyclic_type for b in cyclic_bond_hints],
             )
     except Exception:
         # The hints are best effort. Without them relaxation detects cyclisation
@@ -222,11 +228,10 @@ def run_pipeline(
     if not skip_relax:
         _step("Relaxation (implicit MD)")
         if device == "cpu" and md_duration_ps > 0:
-            print(
+            logger.warning(
                 "\n  *** WARNING: running MD on CPU is extremely slow and not recommended. ***\n"
                 "  *** For production use, run on a CUDA-capable GPU (--device cuda).   ***\n"
-                "  *** Use --md-duration-ps 0 to minimize only if GPU is unavailable.   ***\n",
-                flush=True,
+                "  *** Use --md-duration-ps 0 to minimize only if GPU is unavailable.   ***\n"
             )
         from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
 
@@ -252,8 +257,8 @@ def run_pipeline(
         results["provenance"]["platform"] = results["relax"].get("platform")
 
         if not relax_result.success:
-            print(f"\n[FAILED] Relaxation failed: {relax_result.error_message}")
-            print("  Continuing with prepped input for downstream steps...")
+            logger.warning("\n[FAILED] Relaxation failed: %s", relax_result.error_message)
+            logger.info("  Continuing with prepped input for downstream steps...")
             relaxed_path = prepped_path
             working_peptide = peptide_chain_label
             working_receptor = receptor_chain_label
@@ -263,7 +268,7 @@ def run_pipeline(
                 relaxed_path = Path(relax_result.md_final_structure_path)
             else:
                 relaxed_path = Path(relax_result.minimized_structure_path)
-            print(f"\n  Relaxed structure: {relaxed_path}")
+            logger.info("\n  Relaxed structure: %s", relaxed_path)
             # OpenMM writes the relaxed CIF using label IDs as both auth and label,
             # so all downstream steps should use the label IDs.
             working_peptide = peptide_chain_label
@@ -274,10 +279,9 @@ def run_pipeline(
         relaxed_path = prepped_path if prepped_path != input_path else input_path
         working_peptide = peptide_chain_label
         working_receptor = receptor_chain_label
-        print(
-            f"\n  [skip] Relaxation skipped — using "
-            f"{'prepped' if relaxed_path != input_path else 'raw'} input "
-            "for downstream steps."
+        logger.info(
+            "\n  [skip] Relaxation skipped — using %s input for downstream steps.",
+            "prepped" if relaxed_path != input_path else "raw",
         )
         results["relax"] = {"skipped": True}
 
@@ -390,7 +394,7 @@ def run_pipeline(
                 results["dockq"] = dockq
                 score = dockq.get("dockq")
                 if score is not None:
-                    print(f"  DockQ: {score:.3f} ({dockq.get('capri_class')})")
+                    logger.info(f"  DockQ: {score:.3f} ({dockq.get('capri_class')})")
             except Exception as e:
                 _warn(f"DockQ failed: {e}")
                 traceback.print_exc()
@@ -533,6 +537,7 @@ def _parse_metrics(value: str) -> frozenset:
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser(
         description="Run the full binding-metrics pipeline on a single structure.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
