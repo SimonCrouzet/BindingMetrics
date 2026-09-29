@@ -1,10 +1,47 @@
-"""Central registry of all implemented metrics.
+"""Registry of the metric functions, and what a consumer may rely on.
 
-Each MetricSpec describes one metric: how to import it, what kind of input
-it expects, which chain arguments it accepts, and which file formats it supports.
+Each ``MetricSpec`` describes one metric function without importing it: where it
+lives, what input it takes, how chains are passed, and how to read and schedule
+the result. ``METRICS`` lists the specs, ``get_metric`` looks one up by name and
+``metrics_by_input_type`` filters by input type. The functions are the API of
+the package; the registry is the adapter that lets a generic caller drive them
+without knowing their signatures, so metrics have no common base class.
 
-This module is the single source of truth for metric discovery. Tools such as
-the benchmark runner iterate METRICS rather than hardcoding function names.
+What a consumer may rely on
+---------------------------
+* The field names ``name``, ``import_path``, ``description``, ``input_type``,
+  ``chain_mode``, ``formats``, ``path_arg``, ``secondary_path_arg``,
+  ``chain_arg``, ``peptide_chain_arg`` and ``receptor_chain_arg`` keep their
+  meaning, and the values of the existing entries are pinned by a contract test.
+  The registry grows by adding entries, input types and optional fields, so a
+  consumer skips an input type it does not know instead of failing on it.
+* ``spec.call(**kwargs)`` imports the function on first use and calls it with
+  exactly those keyword arguments. It adds, renames and validates nothing, and
+  returns what the function returns.
+* Loading is lazy. This module imports no metric module; a spec imports its
+  function when ``load`` or ``call`` runs. Both raise ``ImportError`` when an
+  optional dependency is missing, and ``requires_extras`` names the extras to
+  install.
+* The metadata fields ``headline_key``, ``direction``, ``unit``, ``cost_class``,
+  ``requires_extras`` and ``requires_gpu`` are optional. None (or an empty
+  tuple) means "not declared", never a guess.
+
+Building a call from a spec
+---------------------------
+Start with ``{spec.path_arg: <primary input>}``. Add
+``{spec.secondary_path_arg: <second path>}`` when it is set. Then, by
+``chain_mode``: ``single`` puts the chain in ``spec.chain_arg``; ``interface``
+and ``interface_2paths`` put the binder in ``spec.peptide_chain_arg`` and the
+target in ``spec.receptor_chain_arg``, each only when it is not None. Every
+other parameter keeps the function's own default. Inputs the spec does not
+declare are the caller's to supply: trajectory metrics also take a
+``topology_path``, and the interface ones receive atom-index lists
+(``ligand_indices``, ``receptor_indices``) where static metrics take chain IDs;
+``evobind_score`` takes a ``plddt_per_atom`` array.
+
+Not registered: the ``run_openfold*`` and ``prepare_*`` functions (they start or
+prepare a model job and return no metric), the command-line ``main`` functions,
+and helpers such as ``capri_class`` and ``detect_interface_chains``.
 
 Input types
 -----------
@@ -13,6 +50,8 @@ static_structure
     Chain assignment is optional — metrics auto-detect if not provided.
 trajectory
     Requires a trajectory file AND a topology file (e.g. MDTraj-based metrics).
+md_simulation
+    Takes a single structure file and runs a relaxation or MD protocol on it.
 openfold_json
     Reads an OpenFold3 output directory / JSON file; no structure file needed
     (except ``interface_pae``, which also takes the predicted structure).
@@ -58,7 +97,7 @@ CostClass = Literal["static", "structural", "md", "model"]
 #: Allowed values of ``MetricSpec.direction``.
 DIRECTIONS: tuple[str, ...] = ("higher_is_better", "lower_is_better")
 
-#: Allowed values of ``MetricSpec.cost_class``, cheapest first.
+#: Allowed values of ``MetricSpec.cost_class``, in rough order of cost.
 COST_CLASSES: tuple[str, ...] = ("static", "structural", "md", "model")
 
 #: Allowed values of ``MetricSpec.unit``. Spelled in ASCII so the strings survive
@@ -86,10 +125,16 @@ KNOWN_UNITS: frozenset[str] = frozenset(
 class MetricSpec:
     """Specification for a single metric function.
 
+    A spec is immutable and holds names only: the function is imported when
+    ``load`` or ``call`` runs. The kwarg names (``path_arg`` and the ``*_arg``
+    fields) are the names of real parameters of the function; a test checks
+    them against ``inspect.signature``.
+
     Attributes
     ----------
     name:
-        Short identifier used as a key (e.g. in benchmark output).
+        Short identifier used as a key (e.g. in benchmark output). Unique in
+        ``METRICS``.
     import_path:
         ``"module.path:function_name"`` — resolved lazily so optional
         dependencies (openmm, mdtraj, …) are never imported just by loading
@@ -97,21 +142,26 @@ class MetricSpec:
     description:
         One-line human-readable description.
     input_type:
-        Category of input this metric expects.
+        Category of input this metric expects (see the module docstring).
     chain_mode:
         How chain identifiers are passed to the function.
     formats:
-        File formats accepted by this metric (relevant for static_structure).
+        File formats accepted by this metric (relevant for static_structure);
+        empty when the metric reads no structure file.
     path_arg:
-        Name of the kwarg that receives the primary file path.
+        Name of the kwarg that receives the primary input: a file path, a
+        directory for ``openfold``, or the ``AtomArray`` for ``atom_array``
+        metrics.
     secondary_path_arg:
         Name of the kwarg for a second path (``interface_2paths`` only).
     chain_arg:
         Kwarg name for single-chain metrics.
     peptide_chain_arg:
-        Kwarg name for the peptide / designed chain.
+        Kwarg name for the peptide / designed chain (the binder). For
+        trajectory metrics it receives the ligand atom indices.
     receptor_chain_arg:
-        Kwarg name for the receptor chain.
+        Kwarg name for the receptor chain (the target). For trajectory metrics
+        it receives the receptor atom indices.
     headline_key:
         For a metric that returns a dict, the key that ``direction`` and
         ``unit`` describe; a dotted path (``"summary.molprobity_score"``)
@@ -164,19 +214,36 @@ class MetricSpec:
     requires_gpu: bool = False
 
     def load(self) -> Callable:
-        """Import and return the metric function (lazy)."""
+        """Import the module and return the metric function.
+
+        Raises:
+            ImportError: The module, or an optional dependency it needs, is not
+                installed (``requires_extras`` names the extras).
+            AttributeError: The module has no function of that name.
+        """
         module_path, fn_name = self.import_path.split(":")
         mod = importlib.import_module(module_path)
         return getattr(mod, fn_name)
 
     def call(self, **kwargs: Any) -> Any:
-        """Call the metric function with the given keyword arguments."""
+        """Call the metric function with exactly the given keyword arguments.
+
+        Nothing is added, renamed or checked here: the function's own defaults
+        apply and its result (or its exception) comes back unchanged. See the
+        module docstring for how to build ``kwargs`` from the spec fields.
+        """
         return self.load()(**kwargs)
 
 
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
+#
+# Adding a metric: append a MetricSpec, fill direction/unit/cost_class/
+# requires_extras (None where the reading is unclear) and run tests/test_registry.py
+# and tests/test_l9_registry_*.py. They fail when a public compute_*/calculate_*
+# function has no entry, when a declared kwarg is not a parameter of the function,
+# and when a metadata value is outside the allowed sets.
 
 METRICS: list[MetricSpec] = [
     # --- Static structure metrics -------------------------------------------
@@ -658,12 +725,18 @@ METRICS: list[MetricSpec] = [
     ),
 ]
 
-# Fast lookup by name
+# Fast lookup by name. Built from METRICS at import time, so it is a snapshot:
+# append to METRICS only in this module, above this line.
 METRICS_BY_NAME: dict[str, MetricSpec] = {m.name: m for m in METRICS}
 
 
 def get_metric(name: str) -> MetricSpec:
-    """Return the MetricSpec for *name*, raising KeyError if not found."""
+    """Return the ``MetricSpec`` registered under *name*.
+
+    Raises:
+        KeyError: No metric has that name; the message lists the available
+            names.
+    """
     try:
         return METRICS_BY_NAME[name]
     except KeyError:
@@ -672,5 +745,8 @@ def get_metric(name: str) -> MetricSpec:
 
 
 def metrics_by_input_type(input_type: InputType) -> list[MetricSpec]:
-    """Return all metrics of a given input type."""
+    """Return the specs of one input type, in registry order.
+
+    The list is empty for an input type no metric uses; nothing is raised.
+    """
     return [m for m in METRICS if m.input_type == input_type]
