@@ -75,8 +75,8 @@ LACTAM_TEMPLATE_RESIDUES: frozenset[str] = frozenset({"ASPL", "GLUL", "LYSL"})
 N_METHYLATED_RESIDUES: frozenset[str] = frozenset({"NMG", "NMA", "MVA", "MLE"})
 
 #: Residue names that count as protein when chains are ranked by size and when
-#: heterogens are stripped. Only four AMBER variants are listed: HIN, ASH, GLH,
-#: LYN and CYM are left out.
+#: heterogens are stripped. Of the AMBER variants only HID, HIE, HIP and CYX are
+#: listed; HIN, ASH, GLH, LYN and CYM are left out.
 PROTEIN_RESIDUES: frozenset[str] = (
     STANDARD_AMINO_ACIDS
     | {"HID", "HIE", "HIP", "CYX"}
@@ -107,8 +107,7 @@ METAL_ELEMENTS: frozenset[str] = frozenset(
 NUCLEOTIDE_RESIDUES: frozenset[str] = frozenset({"DA", "DC", "DG", "DT", "A", "C", "G", "T", "U"})
 
 #: AMBER protonation and disulfide variants that the preparation code counts as
-#: standard residues: ``AMBER_PROTONATION_VARIANTS`` without CYM, which is not in
-#: this set.
+#: standard residues: ``AMBER_PROTONATION_VARIANTS`` without CYM.
 AMBER_STANDARD_VARIANTS: frozenset[str] = AMBER_PROTONATION_VARIANTS - {"CYM"}
 
 #: Capping residues the GAFF skip list and the relaxation heterogen scan leave to
@@ -122,8 +121,8 @@ ION_NAMES_COMMON: frozenset[str] = frozenset({"NA", "CL", "K", "MG", "CA", "ZN"}
 
 #: Standard amino acids, the AMBER variants and nucleotides of AMBER ff14SB, as
 #: ``core.system.prep_structure`` reads them: anything else is a metal, water,
-#: kept non-standard residue or heterogen to strip. HIN is not in it, unlike
-#: ``AMBER_STANDARD_VARIANTS``.
+#: kept non-standard residue or heterogen to strip. Unlike
+#: ``AMBER_STANDARD_VARIANTS`` it leaves out HIN.
 AMBER_STANDARD_RESIDUES: frozenset[str] = (
     STANDARD_AMINO_ACIDS | (AMBER_STANDARD_VARIANTS - {"HIN"}) | NUCLEOTIDE_RESIDUES
 )
