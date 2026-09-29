@@ -39,7 +39,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
   - 1CWA: MeBmt has 17 hydrogens, not 19, and its CE=CZ bond relaxes to 1.340 A, not 1.544 A (crystal 1.336 A).
   - 1CWA `raw_interaction_energy` -268.4 -> -280.2 kJ/mol, `relaxed_interaction_energy` -280.9 -> -297.4
     kJ/mol (`--md-duration-ps 0`).
-  - The ring of IAM (1XY4) was cyclohexane and is aromatic now. The C=O of 0EH and MK8 (3V3B) was read as C-OH.
+  - The backbone C=O of 0EH and MK8 (3V3B) was read as C-OH. IAM (1XY4) keeps the single-bond fallback, because its
+    dictionary bond orders do not sanitise in RDKit; `ncaa_bond_order_source` reports it as `single_bonds`.
 - **D-amino-acid and N-methyl names survive prep and relax (#15).** The relaxed CIF of 1CWA had
   `ALA ... NMG` where the input has `DAL ... SAR`; it now keeps the input names.
 - **Ligand RMSD (#37).** `calculate_ligand_rmsd` fitted the ligand a second time and returned 0 for a
