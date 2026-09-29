@@ -17,7 +17,11 @@ from typing import Literal, Optional
 
 import numpy as np
 
-from binding_metrics.metrics.polar_contacts import _NEGATIVE_ATOMS, _POSITIVE_ATOMS
+from binding_metrics.metrics.polar_contacts import (
+    _NEGATIVE_ATOMS,
+    _POSITIVE_ATOMS,
+    l_equivalent_residue_names,
+)
 from binding_metrics.utils import backfill_auth_columns
 
 logger = logging.getLogger(__name__)
@@ -230,11 +234,12 @@ def _solvation_types(atoms) -> np.ndarray:
     Returns an array of "C", "S", "N/O" (neutral), "O-" (carboxylate oxygen),
     "N+" (Lys NZ, Arg NE/NH1/NH2, HIP ring nitrogens) or "" for atoms that carry
     no parameter (hydrogen, phosphorus, selenium, halogens). The charged atoms are
-    those of the salt-bridge allowlists in ``polar_contacts``, so both metrics
+    those of the salt-bridge allowlists in ``polar_contacts`` (D-residues through
+    their L counterpart, phosphate oxygens of SEP/TPO/PTR as O(-)), so both metrics
     agree on which groups are charged. Termini are typed as neutral N/O.
     """
     elements = np.char.upper(np.char.strip(atoms.element.astype(str)))
-    res_names = np.char.upper(np.char.strip(atoms.res_name.astype(str)))
+    res_names = l_equivalent_residue_names(atoms.res_name)
     atom_names = np.char.strip(atoms.atom_name.astype(str))
 
     types = np.full(len(atoms), "", dtype="<U3")

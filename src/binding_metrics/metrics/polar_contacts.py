@@ -6,6 +6,7 @@ primary signal) plus interpretable count(s) (supplementary). See
 """
 
 import warnings
+from functools import lru_cache
 from typing import Literal
 
 import numpy as np
@@ -195,8 +196,12 @@ def compute_hbonds(
     }
 
 
-# Side-chain charged-atom allowlists.
+# Side-chain charged-atom allowlists (L-residue names; D-residues are mapped to their
+# L counterpart first, see ``l_equivalent_residue_names``).
 # HIS / HID / HIE are intentionally excluded — see docs/metrics.md.
+# SEP/TPO/PTR are the phosphorylated residues of the AMBER phosaa set used by the
+# relaxation step (core/phosaa.py): a phosphate monoester carrying net -2 at pH 7,
+# shared by the three non-bridging oxygens.
 _POSITIVE_ATOMS: set[tuple[str, str]] = {
     ("LYS", "NZ"),
     ("ARG", "NH1"),
@@ -210,7 +215,42 @@ _NEGATIVE_ATOMS: set[tuple[str, str]] = {
     ("ASP", "OD2"),
     ("GLU", "OE1"),
     ("GLU", "OE2"),
+    ("SEP", "O1P"),
+    ("SEP", "O2P"),
+    ("SEP", "O3P"),
+    ("TPO", "O1P"),
+    ("TPO", "O2P"),
+    ("TPO", "O3P"),
+    ("PTR", "O1P"),
+    ("PTR", "O2P"),
+    ("PTR", "O3P"),
 }
+
+
+@lru_cache(maxsize=1)
+def _d_to_l_residue_names() -> dict[str, str]:
+    # Imported on first use so that importing this module does not pull in the
+    # simulation stack that ``binding_metrics.core`` may load.
+    from binding_metrics.core.nonstandard import D_AA_MAP
+
+    return dict(D_AA_MAP)
+
+
+def l_equivalent_residue_names(res_names) -> np.ndarray:
+    """Upper-case, stripped residue names with D-amino-acid codes mapped to L.
+
+    D-amino acids keep the side-chain atom names of their L counterpart (DLY has
+    NZ, DAR has NH1/NH2, DAS has OD1/OD2), so charge tables written for L names
+    apply after this mapping. The D-code registry is
+    ``binding_metrics.core.nonstandard.D_AA_MAP``.
+    """
+    names = np.char.upper(np.char.strip(np.asarray(res_names).astype(str)))
+    if names.size == 0:
+        return names
+    mapping = _d_to_l_residue_names()
+    unique, inverse = np.unique(names, return_inverse=True)
+    mapped = np.array([mapping.get(name, name) for name in unique])
+    return mapped[inverse]
 
 
 def compute_saltbridges(
@@ -228,9 +268,11 @@ def compute_saltbridges(
     chain) is considered a salt bridge if at least one positive-atom /
     negative-atom contact falls in ``(distance_min, distance_max)`` Å.
 
-    Charged-atom allowlist:
+    Charged-atom allowlist (D-amino acids are matched through their L
+    counterpart, e.g. DLY as LYS):
         positive: LYS NZ, ARG NH1/NH2/NE, HIP ND1/NE2
-        negative: ASP OD1/OD2, GLU OE1/OE2
+        negative: ASP OD1/OD2, GLU OE1/OE2, and the non-bridging phosphate
+                  oxygens O1P/O2P/O3P of SEP, TPO and PTR
 
     Plain HIS, HID and HIE are treated as neutral (no pKa lookup performed).
     HIP is the AMBER name for the doubly-protonated, +1 form. After
@@ -265,7 +307,7 @@ def compute_saltbridges(
     pos_mask = np.zeros(len(atoms), dtype=bool)
     neg_mask = np.zeros(len(atoms), dtype=bool)
 
-    res_names = np.char.upper(np.char.strip(atoms.res_name.astype(str)))
+    res_names = l_equivalent_residue_names(atoms.res_name)
     atom_names = np.char.strip(atoms.atom_name.astype(str))
 
     for i in range(len(atoms)):
