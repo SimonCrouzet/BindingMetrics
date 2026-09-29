@@ -385,3 +385,92 @@ class TestCyclosporinRelaxSanity:
                 d = float(np.linalg.norm(p[i] - p[j]))
                 min_d = min(min_d, d)
         assert min_d > 0.8, f"egregious clash: closest non-bonded heavy pair {min_d:.2f} Å"
+
+
+# ---------------------------------------------------------------------------
+# Log output of the template step (no antechamber: the template builders are stubbed)
+# ---------------------------------------------------------------------------
+
+_STUB_TEMPLATE = (
+    '<ForceField><Residues><Residue name="X">'
+    '<Atom name="C1" type="c3" charge="0.06"/><Atom name="C2" type="c3" charge="0.04"/>'
+    "</Residue></Residues></ForceField>"
+)
+
+# What the step used to print, one line per event, in order.
+_EXPECTED_LINES = [
+    "  [warning] could not read ff14SB backbone types; "
+    "NCAA backbones stay on GAFF (junctions may be under-parameterised).",
+    "  Auto-GAFF2: 'BMT' template generated (2 H, net charge +0.1000)",
+    "  [warning] 'BMT' instance differs from first template; reusing first (H 1 vs 2).",
+    "  [warning] GAFF NCAA template failed for 'ABA': antechamber not found",
+]
+
+
+class _FakeResidue:
+    def __init__(self, name, index):
+        self.name = name
+        self.index = index
+
+
+class _FakeTopology:
+    def __init__(self, residues):
+        self._residues = residues
+
+    def residues(self):
+        return iter(self._residues)
+
+
+@pytest.fixture
+def stubbed_template_step(monkeypatch):
+    """Run ``parameterize_ncaa_residues`` on three fake residues: BMT twice and ABA."""
+    from binding_metrics.core import gaff_ncaa
+
+    def generate(res, topology, pos_A, gaff_version, backbone_amber):
+        if res.name == "ABA":
+            raise RuntimeError("antechamber not found")
+        hydrogens = [("H1", "C1", (0, 0, 0)), ("H2", "C2", (0, 0, 0))]
+        if res.index == 1:  # the second BMT is perceived with one hydrogen fewer
+            hydrogens = hydrogens[:1]
+        return _STUB_TEMPLATE, hydrogens, [], None
+
+    monkeypatch.setattr(gaff_ncaa, "_is_ncaa", lambda res: True)
+    monkeypatch.setattr(gaff_ncaa, "_pos_to_angstrom", lambda positions: np.zeros((3, 3)))
+    monkeypatch.setattr(gaff_ncaa, "_amber_backbone_types", lambda ff: None)
+    monkeypatch.setattr(gaff_ncaa, "_generate_residue_template", generate)
+    monkeypatch.setattr(gaff_ncaa, "_load_ffxml", lambda ff, ffxml: None)
+    monkeypatch.setattr(
+        gaff_ncaa, "_rebuild_topology_with_injected_h", lambda top, pos, h: (top, pos)
+    )
+    topology = _FakeTopology(
+        [_FakeResidue("BMT", 0), _FakeResidue("BMT", 1), _FakeResidue("ABA", 2)]
+    )
+
+    def run(**kwargs):
+        return parameterize_ncaa_residues(topology, [None] * 3, ff=None, **kwargs)
+
+    return run
+
+
+@requires_ommff
+class TestTemplateStepLogging:
+    def test_events_reach_the_module_logger_at_their_level(self, stubbed_template_step, caplog):
+        with caplog.at_level("INFO", logger="binding_metrics"):
+            stubbed_template_step()
+        records = [r for r in caplog.records if r.name == "binding_metrics.core.gaff_ncaa"]
+        assert [r.getMessage() for r in records] == _EXPECTED_LINES
+        assert [r.levelname for r in records] == ["WARNING", "INFO", "WARNING", "WARNING"]
+
+    def test_verbose_false_stays_silent(self, stubbed_template_step, caplog):
+        with caplog.at_level("INFO", logger="binding_metrics"):
+            stubbed_template_step(verbose=False)
+        assert not [r for r in caplog.records if r.name == "binding_metrics.core.gaff_ncaa"]
+
+    def test_console_text_matches_the_former_prints(self, stubbed_template_step, capsys):
+        from binding_metrics.utils import configure_logging
+
+        configure_logging()
+        stubbed_template_step()
+        captured = capsys.readouterr()
+        assert captured.out == "\n".join(_EXPECTED_LINES) + "\n"
+        assert captured.err == ""

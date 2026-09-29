@@ -1027,7 +1027,8 @@ def parameterize_ncaa_residues(
         positions: OpenMM positions (nm).
         ff: OpenMM ForceField to load the generated templates into.
         gaff_version: GAFF2 version string for ``GAFFTemplateGenerator``.
-        verbose: Print a one-line summary per generated template.
+        verbose: Log a one-line summary per generated template, and the warnings
+            of the template step, through the module logger.
 
     Returns:
         ``(topology, positions, ncaa_ffxmls)`` — the (possibly rebuilt) topology
@@ -1059,7 +1060,7 @@ def parameterize_ncaa_residues(
     # hardcoded) used to retype the NCAA protein backbone so junctions match ff14SB.
     backbone_amber = _amber_backbone_types(ff)
     if backbone_amber is None and verbose:
-        print(
+        logger.warning(
             "  [warning] could not read ff14SB backbone types; "
             "NCAA backbones stay on GAFF (junctions may be under-parameterised)."
         )
@@ -1073,7 +1074,7 @@ def parameterize_ncaa_residues(
             result = _generate_residue_template(res, topology, pos_A, gaff_version, backbone_amber)
         except Exception as exc:
             if verbose:
-                print(f"  [warning] GAFF NCAA template failed for '{res.name}': {exc}")
+                logger.warning("  [warning] GAFF NCAA template failed for '%s': %s", res.name, exc)
             result = None
         if result is None:
             continue
@@ -1113,18 +1114,22 @@ def parameterize_ncaa_residues(
                     round(net) + sum(c for _, c in neutral_groups),
                 )
             if verbose:
-                print(
-                    f"  Auto-GAFF2: '{res.name}' template generated "
-                    f"({len(h_inject)} H, net charge {net:+.4f})"
+                logger.info(
+                    "  Auto-GAFF2: '%s' template generated (%d H, net charge %+.4f)",
+                    res.name,
+                    len(h_inject),
+                    net,
                 )
         elif h_names != expected_h.get(res.name):
             # A second instance perceived differently — reuse the first template
             # but warn; createSystem will surface a mismatch if truly incompatible.
             if verbose:
-                print(
-                    f"  [warning] '{res.name}' instance differs from first "
-                    f"template; reusing first (H {len(h_names)} vs "
-                    f"{len(expected_h.get(res.name, ()))})."
+                logger.warning(
+                    "  [warning] '%s' instance differs from first "
+                    "template; reusing first (H %d vs %d).",
+                    res.name,
+                    len(h_names),
+                    len(expected_h.get(res.name, ())),
                 )
 
     if not h_by_res:
