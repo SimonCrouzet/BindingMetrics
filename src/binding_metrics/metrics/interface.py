@@ -87,7 +87,8 @@ def load_biotite_structure(cif_path: str | Path):
         backfill_auth_columns(pdbx_file)
         try:
             return pdbx.get_structure(pdbx_file, model=1, extra_fields=["charge"])
-        except Exception:
+        except (KeyError, ValueError):
+            # Missing or malformed pdbx_formal_charge column: the charge annotation is optional.
             return pdbx.get_structure(pdbx_file, model=1)
     else:
         pdb_file = pdb_io.PDBFile.read(str(path))
@@ -360,9 +361,10 @@ def compute_interface_metrics(
             hbonds (int): cross-chain hydrogen bonds
             saltbridges (int): cross-chain salt bridges
 
-        reason (str): present only when the areas could not be computed (empty
-            chain after the ``hetero`` filter, failed SASA); the affected
-            values stay NaN.
+        reason (str): present only when a value could not be computed. An empty
+            chain after the ``hetero`` filter or a failed SASA leaves the areas
+            and ΔG_int NaN; a failed H-bond step leaves hbonds at 0 (a 0 that
+            then does not mean "no H-bonds").
     """
     from binding_metrics.metrics.polar_contacts import compute_hbonds, compute_saltbridges
 
@@ -437,7 +439,7 @@ def compute_interface_metrics(
         sasa_pep = _per_atom_sasa(peptide_atoms, probe_radius, sasa_fn, vdw_fn)
         sasa_rec = _per_atom_sasa(receptor_atoms, probe_radius, sasa_fn, vdw_fn)
         sasa_cpx = _per_atom_sasa(complex_atoms, probe_radius, sasa_fn, vdw_fn)
-    except Exception as e:
+    except Exception as e:  # kept broad: one bad structure must not abort a batch (see reason)
         print(f"  Warning: SASA computation failed: {e}")
         result["reason"] = f"SASA computation failed: {type(e).__name__}: {e}"
         return result
@@ -477,10 +479,15 @@ def compute_interface_metrics(
     try:
         hbond_result = compute_hbonds(atoms, design_chain, receptor_chain, hetero=hetero)
         saltbridge_result = compute_saltbridges(atoms, design_chain, receptor_chain, hetero=hetero)
-    except Exception as e:
+    except Exception as e:  # kept broad: one bad structure must not abort a batch (see reason)
         print(f"  Warning: H-bond/salt bridge computation failed: {e}")
         hbond_result = {"hbonds": 0, "hbond_energy": 0.0}
         saltbridge_result = {"saltbridges": 0, "saltbridges_bidentate": 0, "saltbridge_energy": 0.0}
+        polar_reason = f"H-bond/salt bridge computation failed: {type(e).__name__}: {e}"
+    else:
+        polar_reason = hbond_result.get("reason")
+    if polar_reason is not None:
+        result["reason"] = polar_reason
 
     result.update(
         {

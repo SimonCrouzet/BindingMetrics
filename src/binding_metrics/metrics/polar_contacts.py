@@ -7,7 +7,7 @@ primary signal) plus interpretable count(s) (supplementary). See
 
 import warnings
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 
@@ -63,10 +63,15 @@ def _prepare_for_hydride(atoms, structure_mod):
 
 
 def _add_hydrogens_if_needed(atoms, structure_mod):
-    """Add explicit hydrogens via hydride iff the structure has none yet."""
+    """Add explicit hydrogens via hydride iff the structure has none yet.
+
+    Returns ``(atoms, reason)``. ``reason`` is None unless hydride failed on a
+    structure that needed hydrogens; the H-bond count is then 0 for want of
+    hydrogens, not because no bond exists.
+    """
     n_h = int(np.sum(atoms.element == "H"))
     if n_h > 0:
-        return atoms
+        return atoms, None
 
     hydride = _import_hydride()
     if hydride is None:
@@ -75,20 +80,20 @@ def _add_hydrogens_if_needed(atoms, structure_mod):
             "H-bonds will be undercounted. Install with: pip install binding-metrics[biotite]",
             stacklevel=2,
         )
-        return atoms
+        return atoms, None
 
     atoms = _prepare_for_hydride(atoms, structure_mod)
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             atoms_h, _ = hydride.add_hydrogen(atoms)
-        return atoms_h
-    except Exception as e:
-        warnings.warn(
-            f"hydride.add_hydrogen failed ({type(e).__name__}: {e}); H-bonds may be undercounted",
-            stacklevel=2,
-        )
-        return atoms
+        return atoms_h, None
+    except (ValueError, KeyError, structure_mod.BadStructureError) as e:
+        # ValueError: non-finite coordinates; BadStructureError: residues hydride cannot
+        # complete. Either way the structure has no hydrogens to build H-bonds from.
+        message = f"hydride.add_hydrogen failed ({type(e).__name__}: {e})"
+        warnings.warn(f"{message}; H-bonds may be undercounted", stacklevel=2)
+        return atoms, message
 
 
 def _angle_deg(a, b, c):
@@ -100,6 +105,13 @@ def _angle_deg(a, b, c):
     denom = np.maximum(n1 * n2, 1e-12)
     cos_t = np.clip(np.sum(v1 * v2, axis=-1) / denom, -1.0, 1.0)
     return np.degrees(np.arccos(cos_t))
+
+
+def _no_hbonds(reason: Optional[str]) -> dict:
+    result = {"hbond_energy": 0.0, "hbonds": 0}
+    if reason is not None:
+        result["reason"] = reason
+    return result
 
 
 def compute_hbonds(
@@ -137,23 +149,27 @@ def compute_hbonds(
     dict with keys:
         hbond_energy : float  — sum of pair energies, kcal/mol (≤ 0)
         hbonds       : int    — number of unique cross-chain heavy-atom pairs
+        reason       : str    — only when hydrogens could not be built or the
+                                detector failed; the count is then 0 for that
+                                reason rather than a measured absence of H-bonds
     """
     from binding_metrics.metrics.interface import filter_hetero_atoms
 
     structure, _, _, _ = _import_biotite()
     atoms = filter_hetero_atoms(atoms, hetero)
-    atoms = _add_hydrogens_if_needed(atoms, structure)
+    atoms, hydrogen_reason = _add_hydrogens_if_needed(atoms, structure)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         try:
             triplets = structure.hbond(atoms)
-        except Exception as e:
-            warnings.warn(f"biotite.hbond failed ({type(e).__name__}: {e})", stacklevel=2)
-            return {"hbond_energy": 0.0, "hbonds": 0}
+        except (ValueError, IndexError, structure.BadStructureError) as e:
+            message = f"biotite.hbond failed ({type(e).__name__}: {e})"
+            warnings.warn(message, stacklevel=2)
+            return {"hbond_energy": 0.0, "hbonds": 0, "reason": message}
 
     if len(triplets) == 0:
-        return {"hbond_energy": 0.0, "hbonds": 0}
+        return _no_hbonds(hydrogen_reason)
 
     chain_id = atoms.chain_id
     coords = atoms.coord
@@ -165,7 +181,7 @@ def compute_hbonds(
     )
     triplets = triplets[cross]
     if len(triplets) == 0:
-        return {"hbond_energy": 0.0, "hbonds": 0}
+        return _no_hbonds(hydrogen_reason)
 
     d_idx = triplets[:, 0]
     h_idx = triplets[:, 1]
