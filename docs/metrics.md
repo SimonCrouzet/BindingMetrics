@@ -40,7 +40,7 @@ binding-metrics-run --input complex.cif --output-dir results/
 
 **binder and target.** Every structure metric works on two single chains. The binder is the peptide or design chain, the target is the receptor. Functions name the binder `peptide_chain`, `design_chain` or `chain` and the target `receptor_chain`; each also takes the keyword-only aliases `binder_chain` and `target_chain`. Giving both spellings with different chain IDs raises `ValueError`. The command-line tools accept `--binder-chain` and `--target-chain` next to the older flags (`--peptide-chain`, `--design-chain`, `--chain`, `--receptor-chain`). `binding-metrics-geometry` reads `--binder-chain` as `--chain` for Ramachandran and omega, and as `--peptide-chain` for shape complementarity and void volume.
 
-**chain auto-detection.** Where a chain is optional, the metric functions take the smallest protein chain as binder and the largest as target. A protein chain is a chain with amino-acid atoms; D-amino acids and other non-canonical peptide-linking residues count, and waters or ligands that share the chain ID do not. `binding-metrics-run` and `-batch` resolve the chains once with `detect_chains_from_file` ([§19](#19-io-utilities)), which picks the target by Cα contacts when a file has more than two protein chains, and pass them to every step. `compute_interaction_energy` detects chains from the OpenMM topology by residue name (standard residues, `HID`, `HIE`, `HIP`, `CYX`, and the lactam and N-methyl templates), so a chain made of other residues, an all-D peptide for instance, needs explicit chain IDs there.
+**chain auto-detection.** Where a chain is optional, the metric functions take the smallest protein chain as binder and the largest as target. A protein chain is a chain with amino-acid atoms; D-amino acids and other non-canonical peptide-linking residues count, and waters or ligands that share the chain ID do not. `binding-metrics-run` and `-batch` resolve the chains once with `detect_chains_from_file` ([§19](#19-io-utilities)), which picks the target by Cα contacts when a file has more than two protein chains, and pass them to every step. `compute_interaction_energy` detects chains from the OpenMM topology with `io.structures.detect_chains`, which counts every amino-acid residue: the standard residues and the AMBER variants, the D-amino acids, the phospho residues and, with biotite installed, the peptide-linking components of the Chemical Component Dictionary. An all-D peptide is found as well.
 
 **heteroatoms.** Waters, ions, ligands and glycans often carry the chain ID of a neighbouring protein chain. The keyword `hetero` (default `"ignore"`) decides what a chain ID selects. `"ignore"` keeps polymer atoms only: amino-acid residues as biotite's `filter_amino_acids` defines them (D-amino acids and other peptide-linking residues included), the AMBER variants `HID`, `HIE`, `HIN`, `CYX` and `ASH`, and the caps `ACE`, `NME` and `NH2`. `"keep"` uses every atom of the chain; atoms without a defined SASA (water, ions) then count as zero area. `hetero` exists on `compute_interface_metrics`, `compute_delta_sasa_static`, `compute_hbonds`, `compute_saltbridges`, `compute_shape_complementarity` and `compute_buried_void_volume`, and as `--hetero {ignore,keep}` on `binding-metrics-interface` and `binding-metrics-geometry`. The other metrics do not take it.
 
@@ -234,6 +234,7 @@ The `after_md` duration is the argument `after_md_duration_ps` (10 ps). The 200 
 - force field: ff14SB (Maier et al. 2015) through `amber14-all.xml`; implicit solvent: OBC2 (Onufriev et al. 2004) or GBn2 (Nguyen et al. 2013) from OpenMM's `implicit/obc2.xml` and `implicit/gbn2.xml` (solute dielectric 1, solvent 78.5, OpenMM's nonpolar surface term included); no cutoff; bonds to hydrogen constrained
 - hydrogens are added once, at `ph`, and shared by the modes. If the pH-aware call fails, hydrogens are added again without a pH (OpenMM's default 7.0)
 - residues outside the binder and target chains that are not amino acids (waters, ions, ligands) are stripped, with a warning when one lies within 8 Å of the protein. Waters or ligands that carry the ID of the binder or target chain are not touched here, and `binding-metrics-run` removes them in its prep step
+- protein chains other than the binder and the target are removed as well, and a warning names each of them. E_complex would otherwise contain a chain that the isolated terms leave out. The relaxation does the same and lists the IDs under `dropped_protein_chains` ([§15](#15-pipeline-results-and-provenance)); [`nonstandard.md`](nonstandard.md#other-protein-chains) gives the reason. A receptor of several chains has to be reduced to one before it goes in
 - cyclic peptides: the closure bond is patched from custom templates; CYS–CYS disulfides are renamed CYX before `addHydrogens`, and a CYX whose partner lies on the other chain is converted back to CYS for the per-chain terms
 - non-canonical residues: D-amino acids and N-methylated residues use the templates of [`nonstandard.md`](nonstandard.md); other residues get GAFF2 templates; phosphorylated residues use the AMBER phosaa parameters
 - the seed drives hydrogen placement, the Langevin noise and the initial velocities; `random_seed=None` draws fresh randomness. CUDA runs in mixed precision, which is not bit-reproducible, so GPU energies from one seed can differ in the last digits
@@ -645,7 +646,7 @@ binding-metrics-receptor-quality --input receptor.pdb --output quality.csv    # 
 
 A metric that did not run is `{"skipped": True}`; one that failed is `{"error": message}`, and the command exits with 1 when any step failed.
 
-**prep.** `output`, `ph`, `keep_water`, plus the report of preparation: `removed_heterogens` (list of `"NAME (chain X)"`), `n_removed_waters`, `kept_nonstandard` (non-standard residues and metal ions that were kept), `n_missing_atoms_rebuilt` and `n_missing_residue_gaps`. For a cyclic peptide with residues that needed a GAFF template, `ncaa_bond_order_source` says where each residue's bond orders came from: `"ccd"` (Chemical Component Dictionary) or `"single_bonds"` (fallback, see [`nonstandard.md`](nonstandard.md)).
+**prep.** `output`, `ph`, `keep_water`, plus the report of preparation: `removed_heterogens` (list of `"NAME (chain X)"`), `n_removed_waters`, `kept_nonstandard` (non-standard residues and metal ions that were kept), `n_missing_atoms_rebuilt`, `n_missing_residue_gaps` and `chain_breaks`. Each entry of `chain_breaks` is `{"chain", "residue_before", "residue_after", "c_n_distance_angstrom"}`: two consecutive residues of a chain whose C and N atoms are more than 2.0 Å apart in the input. Prep logs a warning for each and leaves them as they are; the relaxation bonds the two residues by name and closes the gap. For a cyclic peptide with residues that needed a GAFF template, `ncaa_bond_order_source` says where each residue's bond orders came from: `"ccd"` (Chemical Component Dictionary) or `"single_bonds"` (fallback, see [`nonstandard.md`](nonstandard.md)).
 
 **relax.** `RelaxationResult.to_dict()`, plus `elapsed_s`:
 
@@ -660,6 +661,7 @@ A metric that did not run is `{"skipped": True}`; one that failed is `{"error": 
 | `pep_rec_com_distance_delta` | Å | change of the binder–receptor Cα centre-of-mass distance, minimised to last frame; positive = separating |
 | `minimized_structure_path`, `md_final_structure_path` | — | saved CIF files |
 | `peptide_cyclic_bonds` | — | closure bonds detected in the binder |
+| `dropped_protein_chains` | — | IDs of the protein chains, other than the binder and the target, that the relaxation removed (empty list when none) |
 | `platform`, `precision`, `platform_fallback_reason` | — | OpenMM platform used (`CUDA` or `CPU`), its precision, and why CUDA was not used when it was requested |
 | `qc_passed`, `qc_failed_checks`, `qc_checks` | — | structural QC (below) |
 | `ncaa_bond_order_source` | — | as under `prep` |
@@ -672,7 +674,7 @@ The MD-based keys are `None` when `--md-duration-ps 0`.
 2. `rmsd`: heavy-atom RMSD to the input below 5 Å (minimised structure only)
 3. `coordinates_finite`: no NaN or infinite coordinate
 4. `min_heavy_distance`: no two heavy atoms of different residues closer than 0.8 Å (fused atoms; this is not a clash score)
-5. `bond_lengths`: every heavy-atom bond perceived in the input (0.9 to 2.1 Å) stays within 0.5 to 2.5 Å
+5. `bond_lengths`: every heavy-atom bond of the topology (of the residue templates of the Chemical Component Dictionary when QC reads a file) stays within 0.5 to 2.5 Å in the relaxed structure; a bond that was already longer than 2.5 Å in the input is named in `detail` and does not fail the check
 6. `chirality`: no Cα stereocentre changed sign
 7. `composition`: no heavy atom added, dropped or renamed
 
@@ -797,16 +799,17 @@ The registry's `headline_key` and `direction` name the score of a metric that ha
 `binding_metrics.io.structures`. The loaders below use OpenMM; `detect_chains_from_file` needs only biotite.
 
 - `load_structure(path) → (topology, positions)`: reads a `.pdb`, `.cif` or `.mmcif` file into an OpenMM topology and positions.
-- `detect_chains(topology) → (peptide_chain, receptor_chain)`: smallest and largest protein chain of an OpenMM topology, by residue name; a single chain gives `(chain, None)`.
+- `detect_chains(topology) → (peptide_chain, receptor_chain)`: smallest and largest protein chain of an OpenMM topology, by the number of amino-acid residues (the residue set is listed under chain auto-detection in [§1](#1-conventions)); a single chain gives `(chain, None)`.
 - `detect_chains_from_file(path, peptide_chain=None, receptor_chain=None, verbose=True) → dict`: biotite-based detection and the function the pipeline uses. For two protein chains the smaller is the peptide and the larger the receptor. For more than two, the receptor is the chain with the most Cα atoms within 8 Å of the peptide, not the largest. Explicit chain IDs are returned as given, even when they are not in the file (the pipeline checks them and raises `ChainNotFoundError`).
-- `save_cif(topology, positions, output_path, source_cif_path=None)`: writes a CIF and, given a source CIF, restores the author chain IDs and residue numbers. Without gemmi it logs a warning and keeps OpenMM's sequential IDs.
+- `save_cif(topology, positions, output_path, source_cif_path=None)`: writes a CIF and, given a source CIF, restores the author chain IDs and residue numbers. Without gemmi it logs a warning and keeps OpenMM's sequential IDs. Without a source CIF it writes the topology's own chain IDs and residue numbers when the chain IDs are unique and alphanumeric and the residue numbers are integers, so relaxing a PDB input writes the chain IDs of the input; otherwise it uses OpenMM's letters and sequential numbers.
+- `drop_other_protein_chains(topology, positions, peptide_chain, receptor_chain, report=None)`: deletes every protein chain other than the two named, after `strip_heterogens`; nothing is removed unless both chains are given and present. `report["dropped_protein_chains"]` receives the removed IDs.
 
 `detect_chains_from_file` returns:
 
 | key | description |
 |-----|-------------|
 | `peptide_chain`, `receptor_chain` | author chain IDs (`auth_asym_id` in a CIF); `receptor_chain` is None for a file with one protein chain |
-| `peptide_chain_label`, `receptor_chain_label` | the IDs as OpenMM sees them (`label_asym_id`), used by the OpenMM-based steps; equal to the author IDs for PDB files |
+| `peptide_chain_label`, `receptor_chain_label` | the IDs as OpenMM names the chains, used by the OpenMM-based steps: the label ID (`label_asym_id`) when the file has more label IDs than author IDs (waters and ligands each get a label ID), the author ID otherwise; equal to the author IDs for PDB files |
 | `peptide_n_residues`, `receptor_n_residues` | residue counts |
 | `all_chains` | every protein chain as `{"id", "n_residues"}`, smallest first |
 
