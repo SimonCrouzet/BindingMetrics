@@ -23,7 +23,7 @@ from typing import Literal, Optional
 
 import numpy as np
 
-from binding_metrics.metrics._common import resolve_chain_role
+from binding_metrics.metrics._common import import_biotite, resolve_chain_role
 
 # e²/(4π ε0) in kcal·Å/(mol·e²)
 _COULOMB_K = 332.0637133
@@ -39,18 +39,11 @@ _HBOND_K = 5.0
 
 
 def _import_biotite():
-    try:
-        import biotite.structure as structure
-        import biotite.structure.io.pdbx as pdbx
-        from biotite.structure.info import vdw_radius_single
-        from biotite.structure.sasa import sasa
+    structure, pdbx, _ = import_biotite("H-bond/salt bridge metrics")
+    from biotite.structure.info import vdw_radius_single
+    from biotite.structure.sasa import sasa
 
-        return structure, pdbx, sasa, vdw_radius_single
-    except ImportError:
-        raise ImportError(
-            "biotite is required for H-bond/salt bridge metrics. "
-            "Install with: pip install binding-metrics[biotite]"
-        )
+    return structure, pdbx, sasa, vdw_radius_single
 
 
 def _import_hydride():

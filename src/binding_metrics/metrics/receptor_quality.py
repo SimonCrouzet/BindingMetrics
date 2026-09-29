@@ -32,8 +32,13 @@ from typing import Optional
 import numpy as np
 
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
-from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
-from binding_metrics.utils import backfill_auth_columns, configure_logging
+from binding_metrics.metrics._common import (
+    ChainAliasAction,
+    import_biotite,
+    load_structure,
+    resolve_chain_role,
+)
+from binding_metrics.utils import configure_logging
 
 # ---------------------------------------------------------------------------
 # Lazy imports
@@ -41,17 +46,7 @@ from binding_metrics.utils import backfill_auth_columns, configure_logging
 
 
 def _import_biotite():
-    try:
-        import biotite.structure as struc
-        import biotite.structure.io.pdb as pdb_io
-        import biotite.structure.io.pdbx as pdbx
-
-        return struc, pdbx, pdb_io
-    except ImportError:
-        raise ImportError(
-            "biotite is required for receptor quality metrics. "
-            "Install with: pip install binding-metrics[biotite]"
-        )
+    return import_biotite("receptor quality metrics")
 
 
 def _import_scipy():
@@ -87,16 +82,8 @@ def _import_openmm():
 
 def _load_all_models(path: Path) -> list:
     """Load all models from a PDB or CIF file as a list of AtomArrays."""
-    struc, pdbx, pdb_io = _import_biotite()
-    suffix = path.suffix.lower()
-
-    if suffix in (".cif", ".mmcif"):
-        f = pdbx.CIFFile.read(str(path))
-        backfill_auth_columns(f)
-        structure = pdbx.get_structure(f)
-    else:
-        f = pdb_io.PDBFile.read(str(path))
-        structure = pdb_io.get_structure(f)
+    struc, _, _ = _import_biotite()
+    structure = load_structure(path, model=None, purpose="receptor quality metrics")
 
     if isinstance(structure, struc.AtomArrayStack):
         return [structure[i] for i in range(structure.shape[0])]

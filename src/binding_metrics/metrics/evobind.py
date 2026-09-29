@@ -47,8 +47,7 @@ from typing import Optional
 
 import numpy as np
 
-from binding_metrics.metrics._common import resolve_chain_role
-from binding_metrics.utils import backfill_auth_columns
+from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
 
 # ---------------------------------------------------------------------------
 # Internal helpers: coordinate extraction
@@ -56,30 +55,13 @@ from binding_metrics.utils import backfill_auth_columns
 
 
 def _import_biotite():
-    try:
-        import biotite.structure as struc
-        import biotite.structure.io.pdbx as pdbx
-
-        return struc, pdbx
-    except ImportError:
-        raise ImportError(
-            "biotite is required for EvoBind metrics. "
-            "Install with: pip install binding-metrics[biotite]"
-        )
+    struc, pdbx, _ = import_biotite("EvoBind metrics")
+    return struc, pdbx
 
 
 def _load_atoms(path: Path):
     """Load an AtomArray from a CIF or PDB file (model 1)."""
-    struc, pdbx = _import_biotite()
-    path = Path(path)
-    if path.suffix.lower() in (".cif", ".mmcif"):
-        f = pdbx.CIFFile.read(str(path))
-        backfill_auth_columns(f)
-        return pdbx.get_structure(f, model=1)
-    import biotite.structure.io.pdb as pdb_io
-
-    f = pdb_io.PDBFile.read(str(path))
-    return pdb_io.get_structure(f, model=1)
+    return load_structure(path, purpose="EvoBind metrics")
 
 
 def _cb_atoms(atoms, chain_id: str):

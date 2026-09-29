@@ -21,9 +21,15 @@ from typing import Optional
 
 import numpy as np
 
-from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
+from binding_metrics.metrics._common import (
+    KJ_TO_KCAL,
+    ChainAliasAction,
+    import_biotite,
+    load_structure,
+    resolve_chain_role,
+)
 from binding_metrics.metrics.polar_contacts import l_equivalent_residue_names
-from binding_metrics.utils import backfill_auth_columns, configure_logging
+from binding_metrics.utils import configure_logging
 
 # Formal partial charges assigned to ionisable atoms at pH 7, keyed by L-residue name
 # (D-amino acids are mapped to their L counterpart before the lookup).
@@ -57,35 +63,17 @@ _RECOGNISED_RESIDUES = frozenset(
 # Coulomb constant: e²/(4πε₀) × N_A = 1389.35 kJ·Å/mol·e²
 # Assumes distances in Ångströms; returns energy in kJ/mol.
 _COULOMB_KJ_ANG_MOL: float = 1389.35
-_KJ_TO_KCAL: float = 1.0 / 4.184
+_KJ_TO_KCAL: float = KJ_TO_KCAL
 
 
 def _import_biotite():
     """Lazy import of required biotite modules."""
-    try:
-        import biotite.structure as struc
-        import biotite.structure.io.pdb as pdb_io
-        import biotite.structure.io.pdbx as pdbx
-
-        return struc, pdbx, pdb_io
-    except ImportError:
-        raise ImportError(
-            "biotite is required for electrostatics metrics. "
-            "Install with: pip install binding-metrics[biotite]"
-        )
+    return import_biotite("electrostatics metrics")
 
 
 def _load_structure(path: Path):
     """Load a PDB or CIF file as a biotite AtomArray."""
-    struc, pdbx, pdb_io = _import_biotite()
-    suffix = path.suffix.lower()
-    if suffix in (".cif", ".mmcif"):
-        pdbx_file = pdbx.CIFFile.read(str(path))
-        backfill_auth_columns(pdbx_file)
-        return pdbx.get_structure(pdbx_file, model=1)
-    else:
-        pdb_file = pdb_io.PDBFile.read(str(path))
-        return pdb_io.get_structure(pdb_file, model=1)
+    return load_structure(path, purpose="electrostatics metrics")
 
 
 def _collect_charged_atoms(chain_atoms) -> tuple[np.ndarray, np.ndarray, list[dict], int, int]:

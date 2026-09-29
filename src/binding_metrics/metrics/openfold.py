@@ -63,7 +63,7 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from binding_metrics.metrics._common import resolve_chain_role
+from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
 from binding_metrics.metrics._openfold_cli import (  # noqa: F401  (re-exported)
     _add_parse_args,
     _add_query_seeds_arg,
@@ -84,7 +84,6 @@ from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     prepare_refolding_query,
     prepare_scoring_query,
 )
-from binding_metrics.utils import backfill_auth_columns
 
 # ---------------------------------------------------------------------------
 # Output file discovery
@@ -245,30 +244,13 @@ def _parse_timing(path: Path) -> dict:
 
 def _import_biotite_struc():
     """Lazy import of biotite structure modules."""
-    try:
-        import biotite.structure as struc
-        import biotite.structure.io.pdbx as pdbx
-
-        return struc, pdbx
-    except ImportError:
-        raise ImportError(
-            "biotite is required for per-chain structural analysis. "
-            "Install with: pip install binding-metrics[biotite]"
-        )
+    struc, pdbx, _ = import_biotite("per-chain structural analysis")
+    return struc, pdbx
 
 
 def _load_atoms(path: Path):
     """Load an AtomArray from a CIF or PDB file using biotite (model 1)."""
-    _, pdbx = _import_biotite_struc()
-    path = Path(path)
-    if path.suffix.lower() in (".cif", ".mmcif"):
-        f = pdbx.CIFFile.read(str(path))
-        backfill_auth_columns(f)
-        return pdbx.get_structure(f, model=1)
-    import biotite.structure.io.pdb as pdb_io
-
-    f = pdb_io.PDBFile.read(str(path))
-    return pdb_io.get_structure(f, model=1)
+    return load_structure(path, purpose="per-chain structural analysis")
 
 
 def _chain_token_offsets(atoms) -> dict[str, tuple[int, int]]:

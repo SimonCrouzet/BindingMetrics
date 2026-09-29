@@ -11,8 +11,7 @@ from typing import Literal, Optional
 
 import numpy as np
 
-from binding_metrics.metrics._common import resolve_chain_role
-from binding_metrics.utils import backfill_auth_columns
+from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
 
 logger = logging.getLogger(__name__)
 
@@ -181,27 +180,11 @@ def compute_delta_sasa_static(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
     )
-    try:
-        import biotite.structure.io.pdbx as pdbx
-        from biotite.structure.info import vdw_radius_single
-        from biotite.structure.sasa import sasa as biotite_sasa
-    except ImportError:
-        raise ImportError(
-            "biotite is required for static SASA. "
-            "Install with: pip install binding-metrics[biotite]"
-        )
+    import_biotite("static SASA")
+    from biotite.structure.info import vdw_radius_single
+    from biotite.structure.sasa import sasa as biotite_sasa
 
-    path = Path(cif_path)
-    if path.suffix.lower() in (".cif", ".mmcif"):
-        pdbx_file = pdbx.CIFFile.read(str(path))
-        backfill_auth_columns(pdbx_file)
-        atoms = pdbx.get_structure(pdbx_file, model=1)
-    else:
-        import biotite.structure.io.pdb as pdb_io
-
-        pdb_file = pdb_io.PDBFile.read(str(path))
-        atoms = pdb_io.get_structure(pdb_file, model=1)
-
+    atoms = load_structure(cif_path, purpose="static SASA")
     atoms = filter_hetero_atoms(atoms, hetero)
 
     peptide_mask = atoms.chain_id == peptide_chain

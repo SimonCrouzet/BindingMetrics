@@ -19,10 +19,12 @@ import numpy as np
 
 from binding_metrics.metrics._common import (
     ChainAliasAction,
+    import_biotite,
+    load_structure,
     resolve_chain_role,
     resolve_cli_chain_alias,
 )
-from binding_metrics.utils import backfill_auth_columns, configure_logging
+from binding_metrics.utils import configure_logging
 
 # ---------------------------------------------------------------------------
 # Lazy imports
@@ -31,18 +33,10 @@ from binding_metrics.utils import backfill_auth_columns, configure_logging
 
 def _import_biotite():
     """Lazy import of required biotite modules."""
-    try:
-        import biotite.structure as struc
-        import biotite.structure.io.pdb as pdb_io
-        import biotite.structure.io.pdbx as pdbx
-        from biotite.structure.info import vdw_radius_single
+    struc, pdbx, pdb_io = import_biotite("geometry metrics")
+    from biotite.structure.info import vdw_radius_single
 
-        return struc, pdbx, pdb_io, vdw_radius_single
-    except ImportError:
-        raise ImportError(
-            "biotite is required for geometry metrics. "
-            "Install with: pip install binding-metrics[biotite]"
-        )
+    return struc, pdbx, pdb_io, vdw_radius_single
 
 
 def _import_scipy():
@@ -66,15 +60,7 @@ def _import_scipy():
 
 def _load_structure(path: Path):
     """Load a PDB or CIF file as a biotite AtomArray."""
-    struc, pdbx, pdb_io, _ = _import_biotite()
-    suffix = path.suffix.lower()
-    if suffix in (".cif", ".mmcif"):
-        pdbx_file = pdbx.CIFFile.read(str(path))
-        backfill_auth_columns(pdbx_file)
-        return pdbx.get_structure(pdbx_file, model=1)
-    else:
-        pdb_file = pdb_io.PDBFile.read(str(path))
-        return pdb_io.get_structure(pdb_file, model=1)
+    return load_structure(path, purpose="geometry metrics")
 
 
 _HETERO_MODES = ("ignore", "keep")

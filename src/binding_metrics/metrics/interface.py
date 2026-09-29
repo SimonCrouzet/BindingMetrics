@@ -23,13 +23,19 @@ from typing import Literal, Optional
 
 import numpy as np
 
-from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
+from binding_metrics.metrics._common import (
+    KCAL_TO_KJ,
+    ChainAliasAction,
+    import_biotite,
+    load_structure,
+    resolve_chain_role,
+)
 from binding_metrics.metrics.polar_contacts import (
     _NEGATIVE_ATOMS,
     _POSITIVE_ATOMS,
     l_equivalent_residue_names,
 )
-from binding_metrics.utils import backfill_auth_columns, configure_logging
+from binding_metrics.utils import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +64,7 @@ _SOLVATION_PARAMS: dict[str, float] = {
     "N+": +0.050,
 }
 
-_KCAL_TO_KJ = 4.184
+_KCAL_TO_KJ = KCAL_TO_KJ
 
 # Points sampled on each atom sphere by the Shrake-Rupley algorithm (Shrake &
 # Rupley, J. Mol. Biol. 79:351-371, 1973). More points reduce the sampling noise
@@ -68,19 +74,11 @@ SASA_POINT_NUMBER = 960
 
 def _import_biotite():
     """Lazy import of required biotite modules."""
-    try:
-        import biotite.structure as struc
-        import biotite.structure.io.pdb as pdb_io
-        import biotite.structure.io.pdbx as pdbx
-        from biotite.structure.info import vdw_radius_single
-        from biotite.structure.sasa import sasa as biotite_sasa
+    struc, pdbx, pdb_io = import_biotite("interface metrics")
+    from biotite.structure.info import vdw_radius_single
+    from biotite.structure.sasa import sasa as biotite_sasa
 
-        return struc, pdbx, pdb_io, biotite_sasa, vdw_radius_single
-    except ImportError:
-        raise ImportError(
-            "biotite is required for interface metrics. "
-            "Install with: pip install binding-metrics[biotite]"
-        )
+    return struc, pdbx, pdb_io, biotite_sasa, vdw_radius_single
 
 
 def load_biotite_structure(cif_path: str | Path):
@@ -92,19 +90,7 @@ def load_biotite_structure(cif_path: str | Path):
     Returns:
         biotite AtomArray
     """
-    _, pdbx, pdb_io, _, _ = _import_biotite()
-    path = Path(cif_path)
-    if path.suffix.lower() in (".cif", ".mmcif"):
-        pdbx_file = pdbx.CIFFile.read(str(path))
-        backfill_auth_columns(pdbx_file)
-        try:
-            return pdbx.get_structure(pdbx_file, model=1, extra_fields=["charge"])
-        except (KeyError, ValueError):
-            # Missing or malformed pdbx_formal_charge column: the charge annotation is optional.
-            return pdbx.get_structure(pdbx_file, model=1)
-    else:
-        pdb_file = pdb_io.PDBFile.read(str(path))
-        return pdb_io.get_structure(pdb_file, model=1)
+    return load_structure(cif_path, charge=True, purpose="interface metrics")
 
 
 def _amino_acid_mask(atoms) -> np.ndarray:
