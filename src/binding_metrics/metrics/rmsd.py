@@ -1,6 +1,8 @@
 """RMSD calculations for structural stability analysis."""
 
+import warnings
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -9,12 +11,36 @@ try:
 except ImportError:
     md = None
 
+_ON_EMPTY_MODES = ("warn", "raise")
+
+
+def _report_empty_selection(message: str, on_empty: str) -> None:
+    """Warn or raise for an atom selection that matched nothing.
+
+    A zero-filled result reads as a perfect fit or as no contacts, so the
+    caller has to be told that nothing was evaluated. ``stacklevel=3`` points
+    the warning at the caller of the public function.
+
+    Raises:
+        ValueError: If ``on_empty`` is "raise" (message is the error text).
+    """
+    if on_empty == "raise":
+        raise ValueError(message)
+    warnings.warn(message, RuntimeWarning, stacklevel=3)
+
+
+def _check_on_empty(on_empty: str) -> None:
+    if on_empty not in _ON_EMPTY_MODES:
+        raise ValueError(f"on_empty must be one of {_ON_EMPTY_MODES}, got {on_empty!r}")
+
 
 def calculate_rmsd(
     trajectory_path: str | Path,
     topology_path: str | Path,
     atom_indices: list[int] | None = None,
     reference_frame: int = 0,
+    *,
+    on_empty: Literal["warn", "raise"] = "warn",
 ) -> np.ndarray:
     """Calculate RMSD relative to reference frame.
 
@@ -22,12 +48,23 @@ def calculate_rmsd(
         trajectory_path: Path to trajectory file
         topology_path: Path to topology file
         atom_indices: Atom indices to include in RMSD calculation.
-            If None, uses all non-water, non-ion heavy atoms.
+            If None, uses the mdtraj selection ``protein and not type H``.
+            That selection knows the standard residue names only, so a chain
+            made of unrecognised non-canonical residues matches nothing.
         reference_frame: Frame index to use as reference (default 0)
+        on_empty: What to do when the selection contains no atoms. "warn"
+            (default) emits a ``RuntimeWarning`` naming the selection and
+            returns zeros, the historical result, which is not a real RMSD;
+            "raise" raises ``ValueError`` instead.
 
     Returns:
         Array of RMSD values (in nm) for each frame
+
+    Raises:
+        ValueError: If ``on_empty`` is not "warn" or "raise", or is "raise"
+            and the selection is empty.
     """
+    _check_on_empty(on_empty)
     if md is None:
         raise ImportError(
             "mdtraj is required for RMSD calculations. "
@@ -36,12 +73,18 @@ def calculate_rmsd(
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
 
-    # Select atoms if not specified
     if atom_indices is None:
-        # Select protein heavy atoms (exclude water and ions)
+        selection = "default selection 'protein and not type H'"
         atom_indices = traj.topology.select("protein and not type H")
+    else:
+        selection = "atom_indices"
 
     if len(atom_indices) == 0:
+        _report_empty_selection(
+            f"calculate_rmsd: {selection} matched no atoms; returning zeros for "
+            f"{traj.n_frames} frames, which is not an RMSD",
+            on_empty,
+        )
         return np.zeros(traj.n_frames)
 
     # Slice to selected atoms

@@ -1,8 +1,11 @@
 """Interface contact analysis."""
 
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
+
+from binding_metrics.metrics.rmsd import _check_on_empty, _report_empty_selection
 
 try:
     import mdtraj as md
@@ -16,11 +19,17 @@ def calculate_contacts(
     ligand_indices: list[int],
     receptor_indices: list[int],
     cutoff: float = 0.45,
+    *,
+    on_empty: Literal["warn", "raise"] = "warn",
 ) -> np.ndarray:
     """Calculate the number of interface contacts per frame.
 
-    A contact is defined as any heavy atom pair (ligand-receptor)
-    within the cutoff distance.
+    A contact is one (ligand atom, receptor atom) pair closer than the
+    cutoff. The atoms counted are exactly the ones whose indices are passed:
+    nothing is filtered, so hydrogens (and atoms of co-labelled waters) are
+    counted whenever their indices are in the lists, and the count then
+    depends on the protonation state of the input. Pass heavy-atom indices
+    for a count that does not.
 
     Args:
         trajectory_path: Path to trajectory file
@@ -28,10 +37,20 @@ def calculate_contacts(
         ligand_indices: Atom indices of the ligand
         receptor_indices: Atom indices of the receptor
         cutoff: Distance cutoff in nm (default 0.45 nm = 4.5 A)
+        on_empty: What to do when ``ligand_indices`` or ``receptor_indices``
+            is empty. "warn" (default) emits a ``RuntimeWarning`` naming the
+            empty selection and returns zeros, the historical result, which
+            means "nothing evaluated" and not "no contacts"; "raise" raises
+            ``ValueError`` instead.
 
     Returns:
-        Array of contact counts for each frame
+        Array of contact counts (float64) for each frame
+
+    Raises:
+        ValueError: If ``on_empty`` is not "warn" or "raise", or is "raise"
+            and a selection is empty.
     """
+    _check_on_empty(on_empty)
     if md is None:
         raise ImportError(
             "mdtraj is required for contact analysis. "
@@ -47,14 +66,24 @@ def calculate_contacts(
             pairs.append((lig_idx, rec_idx))
 
     if not pairs:
+        empty = [
+            name
+            for name, indices in (
+                ("ligand_indices", ligand_indices),
+                ("receptor_indices", receptor_indices),
+            )
+            if len(indices) == 0
+        ]
+        _report_empty_selection(
+            f"calculate_contacts: {' and '.join(empty)} contain no atoms; returning zero "
+            f"contacts for {traj.n_frames} frames, which means nothing was evaluated",
+            on_empty,
+        )
         return np.zeros(traj.n_frames)
 
     pairs = np.array(pairs)
 
-    # Calculate distances
     distances = md.compute_distances(traj, pairs)
-
-    # Count contacts per frame
     contacts = (distances < cutoff).sum(axis=1)
 
     return contacts.astype(np.float64)
