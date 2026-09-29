@@ -63,7 +63,15 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
-from binding_metrics.core.residues import PROTEIN_RESIDUES
+from binding_metrics.core.residues import (
+    AMBER_STANDARD_VARIANTS,
+    FORCE_FIELD_CAP_NAMES,
+    ION_NAMES_COMMON,
+    LACTAM_TEMPLATE_RESIDUES,
+    PROTEIN_RESIDUES,
+    STANDARD_AMINO_ACIDS,
+    WATER_NAMES_WITH_H2O,
+)
 from binding_metrics.protocols.relaxer import Relaxer
 
 logger = logging.getLogger(__name__)
@@ -490,58 +498,20 @@ class ImplicitRelaxation(Relaxer):
                 result.append(Molecule.from_rdkit(m, allow_undefined_stereo=True))
         return result
 
-    # Standard AMBER ff14SB residue names — these are handled by the base FF.
+    # Residue names the base force field or a curated template already covers, so
+    # none needs GAFF2. Residues, waters and ions share this set on purpose.
     _AMBER_STANDARD = frozenset(
-        {
-            # Canonical amino acids + protonation variants
-            "ALA",
-            "ARG",
-            "ASN",
-            "ASP",
-            "CYS",
-            "GLN",
-            "GLU",
-            "GLY",
-            "HIS",
-            "ILE",
-            "LEU",
-            "LYS",
-            "MET",
-            "PHE",
-            "PRO",
-            "SER",
-            "THR",
-            "TRP",
-            "TYR",
-            "VAL",
-            "CYX",
-            "HID",
-            "HIE",
-            "HIP",
-            "HIN",
-            "LYN",
-            "ASH",
-            "GLH",
-            # Our custom lactam residues
-            "ASPL",
-            "GLUL",
-            "LYSL",
-            # Common capping groups and ions
-            "ACE",
-            "NME",
-            "NMA",
-            "FOR",
-            # Water / ions
-            "HOH",
-            "WAT",
-            "H2O",
-            "NA",
-            "CL",
-            "K",
-            "MG",
-            "CA",
-            "ZN",
-        }
+        # Canonical amino acids + protonation variants (CYM is not listed)
+        STANDARD_AMINO_ACIDS
+        | AMBER_STANDARD_VARIANTS
+        # Our custom lactam residues
+        | LACTAM_TEMPLATE_RESIDUES
+        # Common capping groups and ions; NMA is the only N-methylated
+        # residue listed
+        | FORCE_FIELD_CAP_NAMES
+        | {"NMA"}
+        | WATER_NAMES_WITH_H2O
+        | ION_NAMES_COMMON
     )
 
     @classmethod

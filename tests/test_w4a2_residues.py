@@ -50,6 +50,15 @@ OLD_SYSTEM_ION_NAMES = frozenset({"NA", "CL", "K", "MG", "CA", "ZN"})
 # protocols.qc.WATER_NAMES.
 OLD_QC_WATER_NAMES = frozenset({"HOH", "WAT", "H2O"})
 
+# protocols.relaxation.ImplicitRelaxation._AMBER_STANDARD.
+OLD_RELAXATION_AMBER_STANDARD = frozenset(
+    (
+        "ALA ARG ASN ASP CYS GLN GLU GLY HIS ILE LEU LYS MET PHE PRO SER THR TRP TYR VAL "
+        "CYX HID HIE HIP HIN LYN ASH GLH ASPL GLUL LYSL ACE NME NMA FOR "
+        "HOH WAT H2O NA CL K MG CA ZN"
+    ).split()
+)
+
 # core.gaff_ncaa.GAFF_SKIP_RESIDUES: standard residues and variants, curated templates,
 # phospho residues, caps, nucleotides, waters and ions.
 OLD_GAFF_SKIP_RESIDUES = frozenset(
@@ -324,3 +333,31 @@ class TestQcWaterNames:
         snapshot = AtomSnapshot.from_topology(topology, positions)
 
         assert snapshot.is_water.tolist() == [False, True, True, True, False, False]
+
+
+class TestRelaxationAmberStandard:
+    def test_set_equals_the_old_literal(self):
+        from binding_metrics.protocols.relaxation import ImplicitRelaxation
+
+        assert ImplicitRelaxation._AMBER_STANDARD == OLD_RELAXATION_AMBER_STANDARD
+        assert len(ImplicitRelaxation._AMBER_STANDARD) == 44
+
+    def test_only_residues_outside_the_set_become_gaff_molecules(self):
+        pytest.importorskip("openff.toolkit")
+        pytest.importorskip("rdkit")
+        from openmm import app
+
+        from binding_metrics.protocols.relaxation import ImplicitRelaxation
+
+        topology = app.Topology()
+        chain = topology.addChain(id="A")
+        for name in ["ALA", "HIN", "NMA", "ACE", "HOH", "NA"]:
+            topology.addAtom("C1", app.element.carbon, topology.addResidue(name, chain))
+        ligand = topology.addResidue("LIG", chain)
+        first = topology.addAtom("C1", app.element.carbon, ligand)
+        second = topology.addAtom("N1", app.element.nitrogen, ligand)
+        topology.addBond(first, second)
+
+        molecules = ImplicitRelaxation._discover_heterogens(topology)
+
+        assert [molecule.n_atoms for molecule in molecules] == [2]
