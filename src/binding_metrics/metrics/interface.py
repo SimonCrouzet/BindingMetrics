@@ -11,12 +11,17 @@ Usage:
 """
 
 import argparse
+import logging
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
 
 from binding_metrics.utils import backfill_auth_columns
+
+logger = logging.getLogger(__name__)
+
+_HETERO_MODES = ("ignore", "keep")
 
 # Eisenberg-McLachlan atomic solvation parameters (kcal/mol/Å²).
 # Negative = apolar/hydrophobic (burial is favorable).
@@ -69,6 +74,35 @@ def load_biotite_structure(cif_path: str | Path):
     else:
         pdb_file = pdb_io.PDBFile.read(str(path))
         return pdb_io.get_structure(pdb_file, model=1)
+
+
+def filter_hetero_atoms(atoms, hetero: Literal["ignore", "keep"] = "ignore"):
+    """Apply the heteroatom policy of the structure-based metrics.
+
+    Waters, ions, ligands and glycans often carry the chain ID of the protein
+    chain they sit next to. Selecting atoms by chain ID alone then counts them
+    as protein atoms, and biotite reports NaN SASA for waters and monoatomic
+    ions, which turned every area sum into NaN.
+
+    Args:
+        atoms: biotite AtomArray.
+        hetero: "ignore" keeps only amino-acid atoms, using
+            ``biotite.structure.filter_amino_acids`` (this includes D- and
+            other non-canonical peptide-linking residues); "keep" returns the
+            input unchanged.
+
+    Returns:
+        The AtomArray to use for chain selection.
+
+    Raises:
+        ValueError: If ``hetero`` is not "ignore" or "keep".
+    """
+    if hetero not in _HETERO_MODES:
+        raise ValueError(f"hetero must be one of {_HETERO_MODES}, got {hetero!r}")
+    if hetero == "keep":
+        return atoms
+    struc, _, _, _, _ = _import_biotite()
+    return atoms[struc.filter_amino_acids(atoms)]
 
 
 def detect_interface_chains(
@@ -157,8 +191,16 @@ def _get_vdw_radii(atoms, vdw_fn) -> np.ndarray:
 
 
 def _per_atom_sasa(atoms, probe_radius, sasa_fn, vdw_fn) -> np.ndarray:
+    """Per-atom Shrake-Rupley SASA (Å²) with 960 points per atom.
+
+    biotite returns NaN for atoms it does not sample: water, monoatomic ions
+    and atoms with non-finite coordinates. Those atoms neither occlude nor
+    expose surface in biotite's model, so they count as 0.0 here and cannot
+    poison the sums built from this array.
+    """
     radii = _get_vdw_radii(atoms, vdw_fn)
-    return sasa_fn(atoms, probe_radius=probe_radius, vdw_radii=radii, point_number=960)
+    per_atom = sasa_fn(atoms, probe_radius=probe_radius, vdw_radii=radii, point_number=960)
+    return np.where(np.isfinite(per_atom), per_atom, 0.0)
 
 
 def _gamma_array(atoms) -> np.ndarray:
@@ -226,6 +268,8 @@ def compute_interface_metrics(
     receptor_chain: Optional[str] = None,
     probe_radius: float = 1.4,
     interface_threshold: float = 0.5,
+    *,
+    hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Compute binding interface metrics for a protein complex.
 
@@ -243,6 +287,11 @@ def compute_interface_metrics(
         probe_radius: Solvent probe radius in Å (default 1.4 Å = water)
         interface_threshold: Minimum residue buried SASA (Å²) to classify
             a residue as an interface residue (default 0.5 Å²)
+        hetero: "ignore" (default) keeps only amino-acid atoms before the
+            chain selection, so waters, ions, ligands and glycans that carry
+            a protein chain ID are dropped. "keep" uses every atom with the
+            chain ID as before; atoms without a defined SASA (water, ions)
+            then count as zero area instead of turning the sums into NaN.
 
     Returns:
         Dictionary with keys:
@@ -261,7 +310,7 @@ def compute_interface_metrics(
             delta_g_int_kJ (kJ/mol)
             polar_area (Å²): buried area from N and O atoms
             apolar_area (Å²): buried area from C and S atoms
-            fraction_polar: polar_area / delta_sasa
+            fraction_polar: polar_area / delta_sasa (NaN when nothing is buried)
 
         Interface residues:
             n_interface_residues_peptide (int)
@@ -275,6 +324,10 @@ def compute_interface_metrics(
         Interactions:
             hbonds (int): cross-chain hydrogen bonds
             saltbridges (int): cross-chain salt bridges
+
+        reason (str): present only when the areas could not be computed (empty
+            chain after the ``hetero`` filter, failed SASA); the affected
+            values stay NaN.
     """
     from binding_metrics.metrics.polar_contacts import compute_hbonds, compute_saltbridges
 
@@ -282,9 +335,10 @@ def compute_interface_metrics(
 
     cif_path = Path(cif_path)
     atoms = load_biotite_structure(cif_path)
+    chain_source = filter_hetero_atoms(atoms, hetero)
 
     if design_chain is None or receptor_chain is None:
-        auto_pep, auto_rec = detect_interface_chains(atoms, design_chain)
+        auto_pep, auto_rec = detect_interface_chains(chain_source, design_chain)
         design_chain = design_chain or auto_pep
         receptor_chain = receptor_chain or auto_rec
 
@@ -319,16 +373,28 @@ def compute_interface_metrics(
             "Pass --design-chain / --receptor-chain explicitly."
         )
 
-    peptide_mask = atoms.chain_id == design_chain
-    receptor_mask = atoms.chain_id == receptor_chain
+    peptide_mask = chain_source.chain_id == design_chain
+    receptor_mask = chain_source.chain_id == receptor_chain
     complex_mask = peptide_mask | receptor_mask
 
-    peptide_atoms = atoms[peptide_mask]
-    receptor_atoms = atoms[receptor_mask]
-    complex_atoms = atoms[complex_mask]
+    peptide_atoms = chain_source[peptide_mask]
+    receptor_atoms = chain_source[receptor_mask]
+    complex_atoms = chain_source[complex_mask]
 
     if len(peptide_atoms) == 0 or len(receptor_atoms) == 0:
         print(f"  Warning: Empty chain(s) in {cif_path}")
+        empty_chains = [
+            chain
+            for chain, chain_atoms in (
+                (design_chain, peptide_atoms),
+                (receptor_chain, receptor_atoms),
+            )
+            if len(chain_atoms) == 0
+        ]
+        result["reason"] = (
+            f"no atoms left for chain(s) {empty_chains} (hetero={hetero!r}); "
+            "interface values are undefined"
+        )
         return result
 
     # Per-atom SASA for each component
@@ -338,6 +404,7 @@ def compute_interface_metrics(
         sasa_cpx = _per_atom_sasa(complex_atoms, probe_radius, sasa_fn, vdw_fn)
     except Exception as e:
         print(f"  Warning: SASA computation failed: {e}")
+        result["reason"] = f"SASA computation failed: {type(e).__name__}: {e}"
         return result
 
     # Split complex SASA back by chain — complex_atoms preserves the original
@@ -436,6 +503,15 @@ def main():
         default=0.5,
         help="Min buried SASA per residue to count as interface residue (Å², default 0.5)",
     )
+    parser.add_argument(
+        "--hetero",
+        choices=_HETERO_MODES,
+        default="ignore",
+        help=(
+            "Heteroatoms (waters, ions, ligands, glycans): 'ignore' keeps only amino-acid "
+            "atoms (default), 'keep' uses every atom carrying the chain ID"
+        ),
+    )
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(parser)
@@ -451,6 +527,7 @@ def main():
             receptor_chain=args.receptor_chain,
             probe_radius=args.probe_radius,
             interface_threshold=args.threshold,
+            hetero=args.hetero,
         )
 
         print("\nInterface summary:")
@@ -477,6 +554,9 @@ def main():
         for key in scalar_keys:
             val = metrics[key]
             print(f"  {key}: {val:.3f}" if isinstance(val, float) else f"  {key}: {val}")
+
+        if "reason" in metrics:
+            print(f"\n  Reason: {metrics['reason']}")
 
         print(f"\n  Interface residues (peptide): {metrics['interface_residues_peptide']}")
         print(f"  Interface residues (receptor): {metrics['interface_residues_receptor']}")

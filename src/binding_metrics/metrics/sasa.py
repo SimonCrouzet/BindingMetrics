@@ -1,6 +1,7 @@
 """Solvent accessible surface area calculations."""
 
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -126,6 +127,8 @@ def compute_delta_sasa_static(
     peptide_chain: str,
     receptor_chain: str,
     probe_radius: float = 1.4,
+    *,
+    hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Compute delta SASA (buried surface area on binding) for a static structure.
 
@@ -142,6 +145,11 @@ def compute_delta_sasa_static(
         peptide_chain: Chain ID of the peptide
         receptor_chain: Chain ID of the receptor
         probe_radius: Solvent probe radius in Ångström (default 1.4 = water)
+        hetero: "ignore" (default) keeps only amino-acid atoms before the chain
+            selection, so waters, ions, ligands and glycans that carry a
+            protein chain ID are dropped. "keep" uses every atom with the chain
+            ID; atoms without a defined SASA (water, ions) then count as zero
+            area instead of turning the sums into NaN.
 
     Returns:
         Dictionary with keys:
@@ -149,7 +157,12 @@ def compute_delta_sasa_static(
             - sasa_peptide (float, Å²)
             - sasa_receptor (float, Å²)
             - sasa_complex (float, Å²)
+            - reason (str): only when a value could not be computed (empty
+              chain, failed SASA); the areas are then 0.0 for an empty chain
+              and NaN for a failed calculation.
     """
+    from binding_metrics.metrics.interface import filter_hetero_atoms
+
     try:
         import biotite.structure.io.pdbx as pdbx
         from biotite.structure.info import vdw_radius_single
@@ -171,6 +184,8 @@ def compute_delta_sasa_static(
         pdb_file = pdb_io.PDBFile.read(str(path))
         atoms = pdb_io.get_structure(pdb_file, model=1)
 
+    atoms = filter_hetero_atoms(atoms, hetero)
+
     peptide_mask = atoms.chain_id == peptide_chain
     receptor_mask = atoms.chain_id == receptor_chain
     complex_mask = peptide_mask | receptor_mask
@@ -185,6 +200,10 @@ def compute_delta_sasa_static(
             "sasa_peptide": 0.0,
             "sasa_receptor": 0.0,
             "sasa_complex": 0.0,
+            "reason": (
+                f"peptide chain {peptide_chain!r} or receptor chain {receptor_chain!r} "
+                f"has no atoms (hetero={hetero!r})"
+            ),
         }
 
     def _get_radii(atom_array):
@@ -195,39 +214,34 @@ def compute_delta_sasa_static(
             radii.append(r if r is not None else 1.8)
         return np.array(radii, dtype=float)
 
+    def _total_sasa(atom_array) -> float:
+        # biotite marks atoms it does not sample (water, monoatomic ions) with NaN;
+        # they carry no area, so nansum keeps them from poisoning the total.
+        per_atom = biotite_sasa(
+            atom_array,
+            probe_radius=probe_radius,
+            point_number=960,
+            vdw_radii=_get_radii(atom_array),
+        )
+        return float(np.nansum(per_atom))
+
+    reason = None
     try:
-        sasa_peptide = float(
-            biotite_sasa(
-                peptide_atoms,
-                probe_radius=probe_radius,
-                point_number=960,
-                vdw_radii=_get_radii(peptide_atoms),
-            ).sum()
-        )
-        sasa_receptor = float(
-            biotite_sasa(
-                receptor_atoms,
-                probe_radius=probe_radius,
-                point_number=960,
-                vdw_radii=_get_radii(receptor_atoms),
-            ).sum()
-        )
-        sasa_complex = float(
-            biotite_sasa(
-                complex_atoms,
-                probe_radius=probe_radius,
-                point_number=960,
-                vdw_radii=_get_radii(complex_atoms),
-            ).sum()
-        )
+        sasa_peptide = _total_sasa(peptide_atoms)
+        sasa_receptor = _total_sasa(receptor_atoms)
+        sasa_complex = _total_sasa(complex_atoms)
         delta_sasa = sasa_peptide + sasa_receptor - sasa_complex
     except Exception as e:
         print(f"  Warning: biotite SASA computation failed: {e}")
         delta_sasa = sasa_peptide = sasa_receptor = sasa_complex = np.nan
+        reason = f"SASA computation failed: {type(e).__name__}: {e}"
 
-    return {
+    result = {
         "delta_sasa": delta_sasa,
         "sasa_peptide": sasa_peptide,
         "sasa_receptor": sasa_receptor,
         "sasa_complex": sasa_complex,
     }
+    if reason is not None:
+        result["reason"] = reason
+    return result
