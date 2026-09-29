@@ -4,6 +4,11 @@ Usage:
     binding-metrics-solvate --input cleaned.cif --output solvated.pdb
     binding-metrics-solvate --input cleaned.pdb --output solvated.pdb
                             --padding 1.2 --ionic-strength 0.1
+    binding-metrics-solvate --input cleaned.cif --output solvated.pdb --random-seed 7
+
+Ion placement is seeded by default, so the same input and seed give the same ion
+positions; ``--random-seed none`` draws fresh randomness. The summary JSON echoes
+the seed used.
 """
 
 import argparse
@@ -37,8 +42,9 @@ def main() -> None:
     )
     parser.add_argument("--positive-ion", default="Na+", help="Positive ion type")
     parser.add_argument("--negative-ion", default="Cl-", help="Negative ion type")
-    from binding_metrics.cli import add_log_file_arg
+    from binding_metrics.cli import add_log_file_arg, add_random_seed_arg
 
+    add_random_seed_arg(parser, "ion placement (which water molecules become ions)")
     add_log_file_arg(parser)
     args = parser.parse_args()
 
@@ -66,6 +72,7 @@ def main() -> None:
             ionic_strength=args.ionic_strength,
             positive_ion=args.positive_ion,
             negative_ion=args.negative_ion,
+            random_seed=args.random_seed,
         )
 
         save_structure(modeller.topology, modeller.positions, args.output, source_path=args.input)
@@ -77,6 +84,7 @@ def main() -> None:
             "forcefield": args.forcefield,
             "padding_nm": args.padding,
             "ionic_strength_M": args.ionic_strength,
+            "random_seed": args.random_seed,
             **info,
         }
         print(json.dumps(summary, indent=2))

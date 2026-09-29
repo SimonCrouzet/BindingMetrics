@@ -8,6 +8,7 @@ import pytest
 
 from binding_metrics.core.system import DEFAULT_RANDOM_SEED, HAS_PDBFIXER
 from binding_metrics.protocols import prep as prep_cli
+from binding_metrics.protocols import solvate as solvate_cli
 
 EXAMPLE_1YCR = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
 
@@ -56,3 +57,57 @@ class TestPrepSeed:
             outputs[name] = out.read_text()
         assert outputs["a"] == outputs["b"]
         assert outputs["a"] != outputs["c"]
+
+
+@pytest.fixture
+def prepped_peptide(tmp_path) -> Path:
+    """The 13-residue p53 peptide of 1YCR (chain B), protonated: a cheap solvation input."""
+    atoms = [
+        line
+        for line in EXAMPLE_1YCR.read_text().splitlines()
+        if line.startswith("ATOM") and line[21] == "B"
+    ]
+    raw = tmp_path / "peptide_raw.pdb"
+    raw.write_text("\n".join(atoms) + "\nEND\n")
+    out = tmp_path / "peptide.pdb"
+    from binding_metrics.core.system import prep_structure
+    from binding_metrics.io.structures import load_structure, save_structure
+
+    topology, positions = load_structure(raw)
+    topology, positions = prep_structure(topology, positions, random_seed=1)
+    save_structure(topology, positions, out, source_path=raw)
+    return out
+
+
+def _run_solvate(monkeypatch, capsys, src, out_path, *extra):
+    argv = ["binding-metrics-solvate", "-i", str(src), "-o", str(out_path), "--padding", "0.6"]
+    monkeypatch.setattr(sys, "argv", argv + list(extra))
+    solvate_cli.main()
+    return json.loads(capsys.readouterr().out)
+
+
+@requires_pdbfixer
+class TestSolvateSeed:
+    def test_seed_is_echoed_and_defaults_to_the_library_seed(
+        self, monkeypatch, capsys, tmp_path, prepped_peptide
+    ):
+        default = _run_solvate(monkeypatch, capsys, prepped_peptide, tmp_path / "d.pdb")
+        assert default["random_seed"] == DEFAULT_RANDOM_SEED
+        fresh = _run_solvate(
+            monkeypatch, capsys, prepped_peptide, tmp_path / "f.pdb", "--random-seed", "none"
+        )
+        assert fresh["random_seed"] is None
+
+    def test_same_seed_places_the_same_ions_and_another_seed_does_not(
+        self, monkeypatch, capsys, tmp_path, prepped_peptide
+    ):
+        ions = {}
+        for name, seed in (("a", "3"), ("b", "3"), ("c", "4")):
+            out = tmp_path / f"{name}.pdb"
+            summary = _run_solvate(monkeypatch, capsys, prepped_peptide, out, "--random-seed", seed)
+            assert summary["n_ions"] > 0
+            ions[name] = [
+                line[30:54] for line in out.read_text().splitlines() if line[12:16].strip() == "Na"
+            ]
+        assert ions["a"] and ions["a"] == ions["b"]
+        assert ions["a"] != ions["c"]
