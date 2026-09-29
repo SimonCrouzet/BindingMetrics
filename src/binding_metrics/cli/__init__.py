@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -75,3 +76,30 @@ def add_log_file_arg(parser) -> None:
         metavar="PATH",
         help="Redirect all output (stdout + stderr) to this file",
     )
+
+
+_SMALL_MOLECULES_CHOICES = ("auto", "none")
+
+
+def small_molecules_arg(value: str):
+    """Parse ``--small-molecules``: ``"auto"``, or ``"none"`` (returned as ``None``).
+
+    Any other string is rejected. ``RelaxationConfig.small_molecules`` iterates
+    a string it does not recognise character by character and treats each
+    character as a SMILES, so a typo such as ``aut`` would register methane
+    and other fragments as "small molecules" instead of failing. Explicit
+    SMILES lists are a Python-API feature (``RelaxationConfig(small_molecules=[...])``)
+    and are not accepted on the command line.
+
+    Use as ``type=small_molecules_arg`` in an argparse argument; the value is
+    matched case-insensitively.
+
+    Raises:
+        argparse.ArgumentTypeError: for anything but ``auto`` / ``none``.
+    """
+    choice = str(value).strip().lower()
+    if choice not in _SMALL_MOLECULES_CHOICES:
+        raise argparse.ArgumentTypeError(
+            f"invalid value {value!r}: expected one of {', '.join(_SMALL_MOLECULES_CHOICES)}"
+        )
+    return None if choice == "none" else choice
