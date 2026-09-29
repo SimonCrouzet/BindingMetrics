@@ -164,3 +164,60 @@ class TestProvenanceInResults:
             assert (
                 json.loads(path.read_text())["provenance"]["seed"] == results["provenance"]["seed"]
             )
+
+
+class _RecordingRelaxer:
+    """Stands in for ``ImplicitRelaxation``: records the config, relaxes nothing."""
+
+    configs: list = []
+
+    def __init__(self, config):
+        self.config = config
+        type(self).configs.append(config)
+
+    def run(self, input_path, output_dir, sample_id=None):
+        from binding_metrics.protocols.relaxation import RelaxationResult
+
+        return RelaxationResult(sample_id=sample_id, success=False, error_message="stub")
+
+
+@pytest.fixture
+def recorded_configs(monkeypatch):
+    monkeypatch.setattr(_RecordingRelaxer, "configs", [])
+    monkeypatch.setattr(
+        "binding_metrics.protocols.relaxation.ImplicitRelaxation", _RecordingRelaxer
+    )
+    return _RecordingRelaxer.configs
+
+
+class TestShortMdDuration:
+    """A short ``--md-duration-ps`` must not trip the RelaxationConfig validation."""
+
+    def _relax(self, tmp_path, md_duration_ps):
+        return run_pipeline(
+            EXAMPLE_1YCR,
+            tmp_path,
+            skip_prep=True,
+            md_duration_ps=md_duration_ps,
+            metrics=frozenset(),
+        )
+
+    @pytest.mark.parametrize("duration", [1.0, 5.0, 9.5])
+    def test_duration_below_the_default_interval_saves_one_frame(
+        self, tmp_path, recorded_configs, duration
+    ):
+        self._relax(tmp_path, duration)
+        (config,) = recorded_configs
+        assert config.md_duration_ps == duration
+        assert config.md_save_interval_ps == duration
+
+    def test_minimise_only_stays_valid(self, tmp_path, recorded_configs):
+        self._relax(tmp_path, 0.0)
+        (config,) = recorded_configs
+        assert config.md_duration_ps == 0.0
+        assert config.md_save_interval_ps == 10.0
+
+    @pytest.mark.parametrize("duration", [10.0, 200.0])
+    def test_longer_runs_keep_the_default_interval(self, tmp_path, recorded_configs, duration):
+        self._relax(tmp_path, duration)
+        assert recorded_configs[0].md_save_interval_ps == 10.0

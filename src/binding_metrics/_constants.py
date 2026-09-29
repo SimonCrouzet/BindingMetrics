@@ -9,3 +9,6 @@
 #: hydrogen placement — repair_ca_hydrogen_chirality exists to fix those. Pass
 #: ``random_seed=None`` through the configs to opt back into fresh randomness.
 DEFAULT_RANDOM_SEED = 1
+
+#: Default interval in ps between saved MD frames in the relaxation protocol.
+DEFAULT_MD_SAVE_INTERVAL_PS = 10.0

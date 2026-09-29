@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
+from binding_metrics._constants import DEFAULT_MD_SAVE_INTERVAL_PS
+
 
 @contextmanager
 def log_to_file(log_file, mode: str = "w"):
@@ -109,6 +111,19 @@ def add_random_seed_arg(parser, what: str) -> None:
             "(default: %(default)s); pass 'none' for fresh randomness each run."
         ),
     )
+
+
+def md_save_interval_for(md_duration_ps: float) -> float:
+    """Frame interval in ps for a pipeline relaxation whose MD lasts ``md_duration_ps``.
+
+    ``RelaxationConfig`` refuses an MD run shorter than one save interval. The
+    pipeline CLIs have no interval flag, so a short ``--md-duration-ps`` (below
+    the default interval) saves one frame at the end of the run instead of
+    failing. ``0`` (minimise only) and longer runs keep the default interval.
+    """
+    if md_duration_ps > 0:
+        return min(DEFAULT_MD_SAVE_INTERVAL_PS, md_duration_ps)
+    return DEFAULT_MD_SAVE_INTERVAL_PS
 
 
 _SMALL_MOLECULES_CHOICES = ("auto", "none")

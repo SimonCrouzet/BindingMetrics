@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
+from binding_metrics.cli import md_save_interval_for
 from binding_metrics.cli import seed_arg as _seed_arg
 from binding_metrics.provenance import collect_provenance
 from binding_metrics.utils import configure_logging
@@ -237,6 +238,7 @@ def run_pipeline(
 
         config = RelaxationConfig(
             md_duration_ps=md_duration_ps,
+            md_save_interval_ps=md_save_interval_for(md_duration_ps),
             device=device,
             peptide_chain_id=peptide_chain_label,
             receptor_chain_id=receptor_chain_label,
