@@ -126,3 +126,41 @@ class TestRunPipelineChains:
         )
         assert results["chains"]["peptide_n_residues"] == 13
         assert results["chains"]["receptor_n_residues"] == 85
+
+
+class TestProvenanceInResults:
+    def _run(self, tmp_path, **kwargs):
+        return run_pipeline(
+            EXAMPLE_1YCR, tmp_path, skip_prep=True, skip_relax=True, metrics=frozenset(), **kwargs
+        )
+
+    def test_provenance_block_is_recorded_with_the_seed(self, tmp_path):
+        prov = self._run(tmp_path, random_seed=42)["provenance"]
+        assert prov["seed"] == 42
+        assert prov["schema_version"] == 1
+        assert isinstance(prov["package_version"], str)
+
+    def test_default_seed_is_recorded(self, tmp_path):
+        from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+
+        assert self._run(tmp_path)["provenance"]["seed"] == DEFAULT_RANDOM_SEED
+
+    def test_fresh_randomness_is_recorded_as_none(self, tmp_path):
+        assert self._run(tmp_path, random_seed=None)["provenance"]["seed"] is None
+
+    def test_provenance_is_not_a_failed_step(self, tmp_path):
+        assert _collect_failures(self._run(tmp_path)) == []
+
+    @pytest.mark.parametrize("fmt", ["json", "csv"])
+    def test_report_writers_accept_the_block(self, tmp_path, fmt):
+        import json
+
+        from binding_metrics.protocols.report import write_report
+
+        results = self._run(tmp_path)
+        path = write_report(results, tmp_path, "s", fmt=fmt, summary=True)
+        assert path.exists()
+        if fmt == "json":
+            assert (
+                json.loads(path.read_text())["provenance"]["seed"] == results["provenance"]["seed"]
+            )

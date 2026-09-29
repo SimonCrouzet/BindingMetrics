@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+from binding_metrics.provenance import collect_provenance
 
 ALL_METRICS = frozenset({"energy", "interface", "geometry", "electrostatics", "openfold"})
 # Reference-based metrics require a native structure (--reference) and are not
@@ -106,12 +107,36 @@ def run_pipeline(
     # reproducibility
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
-    """Run the full pipeline and return a results dict."""
+    """Run the full pipeline and return a results dict.
+
+    Args:
+        input_path: Complex structure (CIF or PDB).
+        output_dir: Directory for intermediate files; created when missing.
+        peptide_chain, receptor_chain: Explicit chain IDs (auth IDs). Auto-detected
+            when None; an ID that is not in the structure raises ``ChainNotFoundError``.
+        random_seed: Seed for hydrogen placement and MD; ``None`` for fresh randomness.
+        The remaining arguments mirror the ``binding-metrics-run`` flags.
+
+    Returns:
+        Dict with ``sample_id``, ``input``, ``provenance`` (see
+        ``binding_metrics.provenance.collect_provenance``), ``chains``, ``prep``,
+        ``relax``, and one entry per metric (``energy``, ``interface``,
+        ``geometry``, ``electrostatics``, ``dockq``, ``openfold``). A metric that
+        did not run is ``{"skipped": True}``; one that failed is
+        ``{"error": message}``.
+
+    Raises:
+        ChainNotFoundError: a requested chain ID does not exist in the structure.
+    """
     if sample_id is None:
         sample_id = input_path.stem
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    results: dict = {"sample_id": sample_id, "input": str(input_path)}
+    results: dict = {
+        "sample_id": sample_id,
+        "input": str(input_path),
+        "provenance": collect_provenance(seed=random_seed),
+    }
 
     # ---------------------------------------------------------- Chain detection
     from binding_metrics.io.structures import detect_chains_from_file
@@ -223,6 +248,8 @@ def run_pipeline(
 
         results["relax"] = relax_result.to_dict()
         results["relax"]["elapsed_s"] = round(elapsed, 1)
+        # The platform OpenMM actually ran on, when the relaxation reports it.
+        results["provenance"]["platform"] = results["relax"].get("platform")
 
         if not relax_result.success:
             print(f"\n[FAILED] Relaxation failed: {relax_result.error_message}")
