@@ -107,8 +107,9 @@ METAL_ELEMENTS: frozenset[str] = frozenset(
 NUCLEOTIDE_RESIDUES: frozenset[str] = frozenset({"DA", "DC", "DG", "DT", "A", "C", "G", "T", "U"})
 
 #: AMBER protonation and disulfide variants that the preparation code counts as
-#: standard residues: ``AMBER_PROTONATION_VARIANTS`` without CYM.
-AMBER_STANDARD_VARIANTS: frozenset[str] = AMBER_PROTONATION_VARIANTS - {"CYM"}
+#: standard residues: all of ``AMBER_PROTONATION_VARIANTS``, CYM included (amber14
+#: has a CYM template, so it needs no GAFF2 parameters).
+AMBER_STANDARD_VARIANTS: frozenset[str] = AMBER_PROTONATION_VARIANTS
 
 #: Capping residues the GAFF skip list and the relaxation heterogen scan leave to
 #: the force field: acetyl (ACE), N-methylamide (NME) and formyl (FOR). NH2 is

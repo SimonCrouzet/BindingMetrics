@@ -507,7 +507,7 @@ class ImplicitRelaxation(Relaxer):
     # Residue names the base force field or a curated template already covers, so
     # none needs GAFF2. Residues, waters and ions share this set on purpose.
     _AMBER_STANDARD = frozenset(
-        # Canonical amino acids + protonation variants (CYM is not listed)
+        # Canonical amino acids + protonation variants (CYM included)
         STANDARD_AMINO_ACIDS
         | AMBER_STANDARD_VARIANTS
         # Our custom lactam residues
