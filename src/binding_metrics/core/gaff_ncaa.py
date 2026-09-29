@@ -92,7 +92,7 @@ logger = logging.getLogger(__name__)
 # Anything NOT in this set (and with >1 heavy atom, non-metal) is treated as an
 # exotic NCAA and parameterised with GAFF2.
 GAFF_SKIP_RESIDUES = frozenset(
-    # Canonical amino acids + protonation variants (CYM is not listed)
+    # Canonical amino acids + protonation variants (CYM included)
     STANDARD_AMINO_ACIDS
     | AMBER_STANDARD_VARIANTS
     # Curated non-standard templates (nonstandard.py / cyclic.py)
