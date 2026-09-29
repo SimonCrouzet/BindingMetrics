@@ -33,7 +33,7 @@ def parsed(monkeypatch, tmp_path):
             entry = run.main
         elif cli == "batch":
             (tmp_path / "in").mkdir(exist_ok=True)
-            (tmp_path / "in" / "a.cif").write_text("data_x\n")
+            (tmp_path / "in" / "a.cif").write_text("data_x\n", encoding="utf-8")
 
             def fake_run_one(input_path, **kwargs):
                 seen.update(kwargs)
@@ -183,7 +183,9 @@ class TestBatchWorkerAliases:
         row = self._row(tmp_path, binder_chain="B", target_chain="A")
         assert row["batch_status"] == "ok"
         report = json.loads(
-            (tmp_path / row["sample_id"] / f"{row['sample_id']}_results.json").read_text()
+            (tmp_path / row["sample_id"] / f"{row['sample_id']}_results.json").read_text(
+                encoding="utf-8"
+            )
         )
         assert (report["chains"]["peptide_chain"], report["chains"]["receptor_chain"]) == ("B", "A")
 

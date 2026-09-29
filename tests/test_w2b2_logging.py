@@ -308,7 +308,7 @@ class TestWriteReportLogging:
         from binding_metrics.protocols import report
 
         results = tmp_path / "s_results.json"
-        results.write_text(json.dumps({"sample_id": "s"}))
+        results.write_text(json.dumps({"sample_id": "s"}), encoding="utf-8")
         monkeypatch.setattr(
             sys, "argv", ["binding-metrics-report", "--results", str(results), "--summary"]
         )

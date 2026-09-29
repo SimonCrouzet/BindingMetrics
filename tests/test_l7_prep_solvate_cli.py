@@ -54,7 +54,7 @@ class TestPrepSeed:
         for name, seed in (("a", "3"), ("b", "3"), ("c", "4")):
             out = tmp_path / f"{name}.pdb"
             _run_prep(monkeypatch, capsys, out, "--random-seed", seed)
-            outputs[name] = out.read_text()
+            outputs[name] = out.read_text(encoding="utf-8")
         assert outputs["a"] == outputs["b"]
         assert outputs["a"] != outputs["c"]
 
@@ -64,11 +64,11 @@ def prepped_peptide(tmp_path) -> Path:
     """The 13-residue p53 peptide of 1YCR (chain B), protonated: a cheap solvation input."""
     atoms = [
         line
-        for line in EXAMPLE_1YCR.read_text().splitlines()
+        for line in EXAMPLE_1YCR.read_text(encoding="utf-8").splitlines()
         if line.startswith("ATOM") and line[21] == "B"
     ]
     raw = tmp_path / "peptide_raw.pdb"
-    raw.write_text("\n".join(atoms) + "\nEND\n")
+    raw.write_text("\n".join(atoms) + "\nEND\n", encoding="utf-8")
     out = tmp_path / "peptide.pdb"
     from binding_metrics.core.system import prep_structure
     from binding_metrics.io.structures import load_structure, save_structure
@@ -107,7 +107,9 @@ class TestSolvateSeed:
             summary = _run_solvate(monkeypatch, capsys, prepped_peptide, out, "--random-seed", seed)
             assert summary["n_ions"] > 0
             ions[name] = [
-                line[30:54] for line in out.read_text().splitlines() if line[12:16].strip() == "Na"
+                line[30:54]
+                for line in out.read_text(encoding="utf-8").splitlines()
+                if line[12:16].strip() == "Na"
             ]
         assert ions["a"] and ions["a"] == ions["b"]
         assert ions["a"] != ions["c"]

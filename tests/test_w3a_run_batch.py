@@ -37,7 +37,7 @@ def structures(tmp_path):
 def broken(tmp_path):
     path = tmp_path / "in" / "broken.cif"
     path.parent.mkdir(exist_ok=True)
-    path.write_text("this is not a structure\n")
+    path.write_text("this is not a structure\n", encoding="utf-8")
     return path
 
 
@@ -232,10 +232,10 @@ class TestArguments:
     def test_a_shared_log_file_is_truncated_at_the_start(self, tmp_path, monkeypatch):
         shared = tmp_path / "logs" / "all.log"
         shared.parent.mkdir()
-        shared.write_text("STALE\n")
+        shared.write_text("STALE\n", encoding="utf-8")
         monkeypatch.setattr(batch, "_run_one", lambda **kw: {"batch_status": "ok"})
         run_batch([Path("a.cif")], tmp_path, log_file=shared, **CHEAP)
-        assert shared.read_text() == ""
+        assert shared.read_text(encoding="utf-8") == ""
 
 
 class _InlineExecutor:
@@ -266,7 +266,7 @@ class TestCommandLineOnRunBatch:
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         for name in ("a", "b"):
-            (input_dir / f"{name}.cif").write_text("data_x\n")
+            (input_dir / f"{name}.cif").write_text("data_x\n", encoding="utf-8")
         out_csv = tmp_path / "m.csv"
         monkeypatch.setattr(batch, "_run_one", worker)
         monkeypatch.setattr(batch, "ProcessPoolExecutor", _InlineExecutor)
@@ -274,7 +274,7 @@ class TestCommandLineOnRunBatch:
         monkeypatch.setattr(sys, "argv", [*argv, "--workers", str(workers), "--metrics", "energy"])
         with pytest.raises(SystemExit) as exit_request:
             batch.main()
-        with open(out_csv, newline="") as handle:
+        with open(out_csv, newline="", encoding="utf-8") as handle:
             return exit_request.value.code, list(csv.DictReader(handle))
 
     @staticmethod

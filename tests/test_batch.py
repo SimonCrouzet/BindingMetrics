@@ -30,7 +30,7 @@ def _restore_package_logger():
 
 
 def _touch(path: Path) -> Path:
-    path.write_text("REMARK dummy\n")
+    path.write_text("REMARK dummy\n", encoding="utf-8")
     return path
 
 
@@ -184,7 +184,7 @@ def _run_main(monkeypatch, tmp_path, rows_by_sample):
     input_dir = tmp_path / "in"
     input_dir.mkdir()
     for name in rows_by_sample:
-        (input_dir / f"{name}.cif").write_text("data_x\n")
+        (input_dir / f"{name}.cif").write_text("data_x\n", encoding="utf-8")
     out_csv = tmp_path / "out" / "metrics.csv"
 
     def fake_run_one(input_path, **_):
@@ -199,7 +199,7 @@ def _run_main(monkeypatch, tmp_path, rows_by_sample):
     )
     with pytest.raises(SystemExit) as exc:
         batch.main()
-    with open(out_csv, newline="") as fh:
+    with open(out_csv, newline="", encoding="utf-8") as fh:
         return exc.value.code, list(csv.DictReader(fh))
 
 
@@ -246,7 +246,9 @@ class TestPerSampleLog:
         configure_logging()  # what batch.main() (or a pool worker) does before a sample runs
         monkeypatch.setattr(batch, "run_pipeline", lambda **_: {"sample_id": "s1"})
         _run_one(**_worker_kwargs(tmp_path, sample_id="s1"))
-        assert "binding-metrics-batch worker: s1" in (tmp_path / "s1" / "s1.log").read_text()
+        assert "binding-metrics-batch worker: s1" in (tmp_path / "s1" / "s1.log").read_text(
+            encoding="utf-8"
+        )
 
     def test_flag_is_accepted_and_reported_ignored_with_log_file(
         self, tmp_path, monkeypatch, capsys
@@ -254,7 +256,7 @@ class TestPerSampleLog:
         rows = {"a": {"batch_status": "ok"}}
         input_dir = tmp_path / "in"
         input_dir.mkdir()
-        (input_dir / "a.cif").write_text("data_x\n")
+        (input_dir / "a.cif").write_text("data_x\n", encoding="utf-8")
         monkeypatch.setattr(
             batch, "_run_one", lambda input_path, **_: dict(rows["a"], sample_id="a")
         )
@@ -288,10 +290,10 @@ class TestSharedLogFile:
             print("first")
         with log_to_file(log, mode="a"):
             print("second")
-        assert log.read_text().split() == ["first", "second"]
+        assert log.read_text(encoding="utf-8").split() == ["first", "second"]
         with log_to_file(log):  # default mode still starts afresh
             print("third")
-        assert log.read_text().split() == ["third"]
+        assert log.read_text(encoding="utf-8").split() == ["third"]
 
     def test_every_sample_stays_in_a_shared_log_file(self, tmp_path, monkeypatch):
         configure_logging()
@@ -299,16 +301,16 @@ class TestSharedLogFile:
         shared = tmp_path / "logs" / "all.log"
         for sid in ("s1", "s2"):
             _run_one(**_worker_kwargs(tmp_path, sample_id=sid, log_file=shared))
-        text = shared.read_text()
+        text = shared.read_text(encoding="utf-8")
         assert "worker: s1" in text
         assert "worker: s2" in text
 
     def test_main_starts_the_shared_log_file_afresh(self, tmp_path, monkeypatch):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
-        (input_dir / "a.cif").write_text("data_x\n")
+        (input_dir / "a.cif").write_text("data_x\n", encoding="utf-8")
         shared = tmp_path / "all.log"
-        shared.write_text("STALE LOG FROM AN EARLIER RUN\n")
+        shared.write_text("STALE LOG FROM AN EARLIER RUN\n", encoding="utf-8")
         monkeypatch.setattr(batch, "_run_one", lambda input_path, **_: {"batch_status": "ok"})
         monkeypatch.setattr(
             sys,
@@ -318,7 +320,7 @@ class TestSharedLogFile:
         )
         with pytest.raises(SystemExit):
             batch.main()
-        assert shared.read_text() == ""
+        assert shared.read_text(encoding="utf-8") == ""
 
 
 class TestRandomSeed:
@@ -327,7 +329,7 @@ class TestRandomSeed:
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         for name in ("a", "b"):
-            (input_dir / f"{name}.cif").write_text("data_x\n")
+            (input_dir / f"{name}.cif").write_text("data_x\n", encoding="utf-8")
         seeds = []
 
         def fake_run_one(input_path, random_seed, **_):
@@ -369,7 +371,7 @@ class TestRandomSeed:
         monkeypatch.setattr(batch, "run_pipeline", fake_pipeline)
         _run_one(**_worker_kwargs(tmp_path, sample_id="s1", random_seed=11))
         assert received["random_seed"] == 11
-        report = (tmp_path / "s1" / "s1_results.json").read_text()
+        report = (tmp_path / "s1" / "s1_results.json").read_text(encoding="utf-8")
         assert '"seed": 11' in report
 
     def test_worker_default_matches_the_pipeline_default(self):
@@ -421,7 +423,7 @@ class TestProvenanceColumns:
     def test_provenance_columns_reach_the_csv(self, tmp_path, monkeypatch):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
-        (input_dir / "a.cif").write_text("data_x\n")
+        (input_dir / "a.cif").write_text("data_x\n", encoding="utf-8")
         out_csv = tmp_path / "m.csv"
         monkeypatch.setattr(
             batch,
@@ -436,7 +438,7 @@ class TestProvenanceColumns:
         with pytest.raises(SystemExit) as exc:
             batch.main()
         assert exc.value.code == 0
-        with open(out_csv, newline="") as fh:
+        with open(out_csv, newline="", encoding="utf-8") as fh:
             (row,) = list(csv.DictReader(fh))
         assert row["batch_status"] == "ok"
         assert row["provenance_seed"] == "13"
@@ -451,7 +453,7 @@ class TestUpdateSampleJson:
 
         import numpy as np
 
-        (tmp_path / "s1_results.json").write_text(json.dumps({"sample_id": "s1"}))
+        (tmp_path / "s1_results.json").write_text(json.dumps({"sample_id": "s1"}), encoding="utf-8")
         batch._update_sample_json(
             tmp_path,
             "s1",
@@ -463,7 +465,7 @@ class TestUpdateSampleJson:
                 "structure_path": Path("of3") / "s1_model.cif",
             },
         )
-        data = json.loads((tmp_path / "s1_results.json").read_text())
+        data = json.loads((tmp_path / "s1_results.json").read_text(encoding="utf-8"))
         of = data["openfold"]
         assert data["sample_id"] == "s1"  # the existing report is kept
         assert of["iptm"] == 0.5 and isinstance(of["iptm"], float)
@@ -480,9 +482,9 @@ class TestUpdateSampleJson:
 
         from binding_metrics.protocols.report import _json_default
 
-        (tmp_path / "s1_results.json").write_text("{}")
+        (tmp_path / "s1_results.json").write_text("{}", encoding="utf-8")
         batch._update_sample_json(tmp_path, "s1", {"marker": object, "x": np.float64(2.5)})
-        of = json.loads((tmp_path / "s1_results.json").read_text())["openfold"]
+        of = json.loads((tmp_path / "s1_results.json").read_text(encoding="utf-8"))["openfold"]
         assert of["marker"] == _json_default(object)
         assert of["marker"].startswith("<class")
         assert of["x"] == 2.5
@@ -599,7 +601,7 @@ class TestOpenFoldSeeds:
     def test_main_forwards_the_flag(self, tmp_path, monkeypatch):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
-        (input_dir / "a.cif").write_text("data_x\n")
+        (input_dir / "a.cif").write_text("data_x\n", encoding="utf-8")
         seen = []
         monkeypatch.setattr(batch, "_run_one", lambda input_path, **_: {"batch_status": "ok"})
         monkeypatch.setattr(

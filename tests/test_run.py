@@ -163,7 +163,8 @@ class TestProvenanceInResults:
         assert path.exists()
         if fmt == "json":
             assert (
-                json.loads(path.read_text())["provenance"]["seed"] == results["provenance"]["seed"]
+                json.loads(path.read_text(encoding="utf-8"))["provenance"]["seed"]
+                == results["provenance"]["seed"]
             )
 
 

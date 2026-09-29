@@ -220,7 +220,7 @@ class TestBatchCli:
 
         input_dir = tmp_path / "in"
         input_dir.mkdir()
-        (input_dir / "a.cif").write_text("data_x\n")
+        (input_dir / "a.cif").write_text("data_x\n", encoding="utf-8")
         seen = {}
 
         def fake_run_one(input_path, **kwargs):

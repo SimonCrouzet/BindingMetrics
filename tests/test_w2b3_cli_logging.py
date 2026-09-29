@@ -295,6 +295,7 @@ class TestRunAsModule:
             + ["--skip-prep", "--skip-relax", "--metrics", "dockq"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=300,
         )
         assert proc.returncode == 0, proc.stderr
@@ -392,7 +393,7 @@ class TestBatchMain:
     def _argv(self, tmp_path, *extra):
         input_dir = tmp_path / "in"
         input_dir.mkdir(exist_ok=True)
-        (input_dir / "a.cif").write_text("data_x\n")
+        (input_dir / "a.cif").write_text("data_x\n", encoding="utf-8")
         return [
             "binding-metrics-batch",
             "-i",
@@ -528,6 +529,7 @@ class TestBatchAsModule:
             + ["--skip-prep", "--skip-relax", "--metrics", "dockq"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=300,
         )
         assert proc.returncode == 0, proc.stderr

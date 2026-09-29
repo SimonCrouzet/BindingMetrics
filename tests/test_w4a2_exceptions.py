@@ -280,12 +280,12 @@ class TestBatchOpenFold:
         from binding_metrics.cli import batch
 
         report = tmp_path / "s1_results.json"
-        report.write_text(content)
+        report.write_text(content, encoding="utf-8")
 
         with caplog.at_level(logging.WARNING, logger="binding_metrics"):
             batch._update_sample_json(tmp_path, "s1", {"iptm": 0.5})
 
-        assert report.read_text() == content
+        assert report.read_text(encoding="utf-8") == content
         assert "s1: could not update s1_results.json" in caplog.text
 
 
