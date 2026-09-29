@@ -186,6 +186,60 @@ class TestGaffTemplateGeneration:
         assert all(abs(q) < 1e-3 for q in ncaa_xmls.net_charge_by_residue.values())
         assert ncaa_xmls.neutral_ionizable_groups == {}
 
+    def test_bond_orders_come_from_the_component_dictionary(self, cyclosporin_ncaa_result):
+        _, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        assert ncaa_xmls.bond_order_source_by_residue == {"BMT": "ccd", "ABA": "ccd"}
+
+    @staticmethod
+    def _template(ncaa_xmls, residue_name):
+        for xml in ncaa_xmls:
+            root = ET.fromstring(xml)
+            resel = root.find(".//Residue")
+            if resel.get("name") == residue_name:
+                return root, resel
+        raise AssertionError(f"no template for {residue_name}")
+
+    def test_bmt_template_carries_the_alkene(self, cyclosporin_ncaa_result):
+        """MeBmt (C10H19NO3 as a free acid) has 17 H in the chain and a CE=CZ double bond.
+
+        With every bond perceived single the template had 19 H and typed the alkene
+        carbons as sp3 (c3).
+        """
+        _, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        _, resel = self._template(ncaa_xmls, "BMT")
+        types = {a.get("name"): a.get("type") for a in resel.findall("Atom")}
+        hydrogens = [name for name in types if name.startswith("H")]
+
+        assert len(hydrogens) == 17
+        sp2_carbon_types = {"c2", "ce", "cf"}
+        assert types["CE"] in sp2_carbon_types and types["CZ"] in sp2_carbon_types
+        for name in ("CB", "CG2", "CD1", "CD2", "CH", "CN"):
+            assert types[name] == "c3", f"{name} is sp3 in MeBmt"
+
+    def test_aba_template_is_saturated(self, cyclosporin_ncaa_result):
+        _, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        _, resel = self._template(ncaa_xmls, "ABA")
+        types = {a.get("name"): a.get("type") for a in resel.findall("Atom")}
+
+        assert sum(name.startswith("H") for name in types) == 7
+        assert types["CB"] == "c3" and types["CG"] == "c3"
+
+    def test_backbone_carbonyl_is_a_carbonyl_without_extra_hydrogens(self, cyclosporin_ncaa_result):
+        """No hydrogen on the backbone C or O, and a carbonyl-sized charge on C and O."""
+        _, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        for name in ("BMT", "ABA"):
+            _, resel = self._template(ncaa_xmls, name)
+            bonded_to_backbone_co = {
+                (b.get("atomName1"), b.get("atomName2")) for b in resel.findall("Bond")
+            }
+            for atom1, atom2 in bonded_to_backbone_co:
+                for backbone, other in ((atom1, atom2), (atom2, atom1)):
+                    if backbone in ("C", "O"):
+                        assert not other.startswith("H"), f"{name}: H on backbone {backbone}"
+            charges = {a.get("name"): float(a.get("charge")) for a in resel.findall("Atom")}
+            assert charges["C"] > 0.4, f"{name} carbonyl carbon charge {charges['C']:.2f}"
+            assert charges["O"] < -0.4, f"{name} carbonyl oxygen charge {charges['O']:.2f}"
+
     def test_template_atom_names_match_topology_residue(self, cyclosporin_ncaa_result):
         topology, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
         # Every heavy-atom name in the topology NCAA residue must appear in its

@@ -90,7 +90,13 @@ class TestNeutralIonizableGroups:
 
 
 def _prepared_peptide(renames: dict):
-    """1YCR with the named residues (index -> new name) renamed to non-canonical codes."""
+    """1YCR with the named residues (index -> new name) renamed to non-canonical codes.
+
+    The new names must be real Chemical Component Dictionary codes whose atoms match
+    the residue (the D-amino acids DLY, DAS, DAR and DLE have the atom names of
+    LYS, ASP, ARG and LEU), so that the bond orders come from the dictionary as they
+    do for any exotic residue in a PDB file.
+    """
     from openmm.app import ForceField
 
     from binding_metrics.io.structures import load_structure
@@ -123,30 +129,37 @@ class TestParameterizeReportsCharge:
         pytest.importorskip("pdbfixer")
 
     @pytest.mark.parametrize(
-        "source_residue, expected_group",
-        [("LYS", "primary amine"), ("ASP", "carboxylic acid"), ("ARG", "guanidine")],
+        "source_residue, ncaa_code, expected_group",
+        [
+            ("LYS", "DLY", "primary amine"),
+            ("ASP", "DAS", "carboxylic acid"),
+            ("ARG", "DAR", "guanidine"),
+        ],
     )
-    def test_ionisable_residue_warns_and_is_recorded(self, caplog, source_residue, expected_group):
-        topology, positions, ff = _prepared_peptide({_first_index(source_residue): "XXX"})
+    def test_ionisable_residue_warns_and_is_recorded(
+        self, caplog, source_residue, ncaa_code, expected_group
+    ):
+        topology, positions, ff = _prepared_peptide({_first_index(source_residue): ncaa_code})
         with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
             _, _, templates = parameterize_ncaa_residues(topology, positions, ff, verbose=False)
 
         assert isinstance(templates, NcaaTemplateList) and isinstance(templates, list)
         assert len(templates) == 1
-        assert templates.net_charge_by_residue == {"XXX": pytest.approx(0.0, abs=1e-9)}
-        assert templates.neutral_ionizable_groups == {"XXX": [expected_group]}
+        assert templates.net_charge_by_residue == {ncaa_code: pytest.approx(0.0, abs=1e-9)}
+        assert templates.neutral_ionizable_groups == {ncaa_code: [expected_group]}
         messages = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME]
         assert len(messages) == 1
-        assert "'XXX'" in messages[0] and expected_group in messages[0]
+        assert f"'{ncaa_code}'" in messages[0] and expected_group in messages[0]
         assert "assumed neutral" in messages[0]
 
     def test_neutral_side_chain_is_silent(self, caplog):
-        topology, positions, ff = _prepared_peptide({_first_index("LEU"): "XXX"})
+        topology, positions, ff = _prepared_peptide({_first_index("LEU"): "DLE"})
         with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
             _, _, templates = parameterize_ncaa_residues(topology, positions, ff, verbose=False)
         assert len(templates) == 1
-        assert templates.net_charge_by_residue == {"XXX": pytest.approx(0.0, abs=1e-9)}
+        assert templates.net_charge_by_residue == {"DLE": pytest.approx(0.0, abs=1e-9)}
         assert templates.neutral_ionizable_groups == {}
+        assert templates.bond_order_source_by_residue == {"DLE": "ccd"}
         assert not [r for r in caplog.records if r.name == LOGGER_NAME]
 
     def test_without_ncaa_the_list_is_empty_but_typed(self):

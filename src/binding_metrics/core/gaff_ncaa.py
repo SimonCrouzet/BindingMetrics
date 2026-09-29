@@ -21,8 +21,14 @@ Per non-canonical residue the generator:
    bonds, adding a carbon *cap* atom at each external bond (a bond with exactly one
    endpoint inside the residue — backbone N/C and any cyclic-closure atom),
    positioned at the external partner's coordinate.
-2. Perceives bond orders from the 3D geometry
-   (``rdDetermineBonds.DetermineBondOrders``), then sanitises and adds explicit H.
+2. Takes bond orders from the wwPDB Chemical Component Dictionary (bundled with
+   biotite, so no network access) by residue and atom name, neutralises the
+   ionisable groups, sanitises and adds explicit H. The RDKit molecule has no
+   hydrogens, so bond orders cannot be recovered from its connectivity or its
+   geometry: valence-based perception (``rdDetermineBonds``) leaves every bond
+   single there and would turn an alkene into an alkane. A residue that is not in
+   the dictionary, or whose atoms disagree with its entry, falls back to that
+   single-bond graph and is reported (``NcaaTemplateList.bond_order_source_by_residue``).
 3. Runs ``GAFFTemplateGenerator.generate_residue_template`` to obtain GAFF atom
    types, bonded parameters and AM1-BCC charges.
 4. Rewrites the ``<Residue>`` block: renames it to the real residue name, gives the
@@ -50,13 +56,17 @@ References
   J. Comput. Chem. 2002, 23, 1623-1641 (parameterisation and validation).
 * ff14SB backbone types kept on the NCAA backbone: Maier, J.A. et al. J. Chem.
   Theory Comput. 2015, 11, 3696-3713.
+* Chemical Component Dictionary (bond orders and formal charges): Westbrook, J.D.
+  et al. Bioinformatics 2015, 31, 1274-1278.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import tempfile
+import warnings
 import xml.etree.ElementTree as ET
 from typing import Optional
 
@@ -216,12 +226,154 @@ def _is_ncaa(res) -> bool:
     return True
 
 
-def _perceive_bond_orders(mol):
-    """Return a sanitised copy of ``mol`` with bond orders perceived from geometry.
+#: Bond-order source recorded per residue in ``NcaaTemplateList.bond_order_source_by_residue``.
+BOND_ORDER_SOURCE_CCD = "ccd"
+BOND_ORDER_SOURCE_SINGLE_BONDS = "single_bonds"
 
-    Tries charged-fragment perception first (best chemistry), then radical-free
-    neutral perception, then a plain single-bond sanitisation as a last resort.
-    ``mol`` must already carry a 3D conformer and single-bond connectivity.
+_CCD_BOND_ORDER = {
+    "SINGLE": 1,
+    "DOUBLE": 2,
+    "TRIPLE": 3,
+    # The CCD stores aromatic rings as one Kekule structure; RDKit re-aromatises it.
+    "AROMATIC_SINGLE": 1,
+    "AROMATIC_DOUBLE": 2,
+    "AROMATIC_TRIPLE": 3,
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _ccd_heavy_atom_chemistry(res_name: str):
+    """Heavy-atom chemistry of a wwPDB Chemical Component Dictionary entry.
+
+    Reads the dictionary that ships with biotite (``biotite.structure.info``), so
+    no network access is needed.
+
+    Returns ``(atoms, bonds)`` with ``atoms = {atom_name: (element_symbol,
+    formal_charge)}`` and ``bonds = {frozenset({name1, name2}): order}`` (order 1,
+    2 or 3), both restricted to non-hydrogen atoms. Returns ``None`` if the name is
+    not in the dictionary, if biotite is unavailable, or if the entry has a bond
+    type without a plain order (quadruple, unspecified).
+    """
+    try:
+        from biotite.structure import info
+
+        ccd_bonds = info.bonds_in_residue(res_name)
+        with warnings.catch_warnings():
+            # Entries without ideal coordinates make biotite warn; only names,
+            # elements and charges are read here.
+            warnings.simplefilter("ignore", UserWarning)
+            component = info.residue(res_name) if ccd_bonds else None
+    except Exception as exc:  # biotite missing, or too old to expose the dictionary
+        logger.debug("Chemical Component Dictionary lookup failed for '%s': %s", res_name, exc)
+        return None
+    if not ccd_bonds:
+        return None  # biotite returns an empty dict for a name it does not know
+
+    atoms = {
+        str(name): (str(element).upper(), int(charge))
+        for name, element, charge in zip(component.atom_name, component.element, component.charge)
+        if str(element).upper() not in ("H", "D")
+    }
+    bonds: dict = {}
+    for (name1, name2), bond_type in ccd_bonds.items():
+        if name1 not in atoms or name2 not in atoms:
+            continue  # a bond to a hydrogen
+        order = _CCD_BOND_ORDER.get(bond_type.name)
+        if order is None:
+            return None
+        bonds[frozenset((name1, name2))] = order
+    return atoms, bonds
+
+
+def _ccd_bond_orders(mol, atom_names: dict, res_name: str):
+    """Set bond orders and formal charges of a residue's heavy atoms from the CCD.
+
+    ``mol`` is the capped, hydrogen-free molecule from :func:`_build_capped_molecule`
+    and ``atom_names`` maps its residue atom indices to topology atom names; cap
+    atoms are not in ``atom_names`` and keep their single bonds.
+
+    The dictionary entry is used only if it describes the same molecule: every atom
+    name must exist with the same element, and the bonds between named atoms must
+    be the same set. That guards against a residue code reused for a different
+    compound (``UNL``, or a code chosen by a design tool).
+
+    The dictionary lists ionisable groups in their deposited protonation state.
+    They are neutralised (:class:`rdkit.Chem.MolStandardize.rdMolStandardize.Uncharger`)
+    so the template keeps the neutral convention of the generator, where
+    :func:`_neutral_ionizable_groups` reports the groups that ionise at pH 7.4. What
+    cannot be neutralised (quaternary ammonium, nitro) keeps its charge.
+
+    Returns ``(mol, "")`` on success, or ``(None, reason)``.
+    """
+    from rdkit import Chem
+    from rdkit.Chem.MolStandardize import rdMolStandardize
+
+    chemistry = _ccd_heavy_atom_chemistry(res_name)
+    if chemistry is None:
+        return None, f"'{res_name}' is not in the Chemical Component Dictionary"
+    ccd_atoms, ccd_bonds = chemistry
+
+    rw = Chem.RWMol(mol)
+    for idx, name in atom_names.items():
+        entry = ccd_atoms.get(name)
+        if entry is None:
+            return None, f"atom '{name}' is not in the dictionary entry for '{res_name}'"
+        element, charge = entry
+        if rw.GetAtomWithIdx(idx).GetSymbol().upper() != element:
+            return None, f"atom '{name}' is not a {element} in the entry for '{res_name}'"
+        rw.GetAtomWithIdx(idx).SetFormalCharge(charge)
+
+    bond_orders = {1: Chem.BondType.SINGLE, 2: Chem.BondType.DOUBLE, 3: Chem.BondType.TRIPLE}
+    seen: set = set()
+    for bond in rw.GetBonds():
+        i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        if i not in atom_names or j not in atom_names:
+            continue  # bond to a cap
+        key = frozenset((atom_names[i], atom_names[j]))
+        order = ccd_bonds.get(key)
+        if order is None:
+            return None, f"bond {'-'.join(sorted(key))} is not in the entry for '{res_name}'"
+        bond.SetBondType(bond_orders[order])
+        seen.add(key)
+    present = set(atom_names.values())
+    absent = [key for key in ccd_bonds if key <= present and key not in seen]
+    if absent:
+        return None, f"bond {'-'.join(sorted(absent[0]))} of the entry for '{res_name}' is missing"
+
+    try:
+        perceived = rw.GetMol()
+        Chem.SanitizeMol(perceived)
+        neutral = rdMolStandardize.Uncharger().uncharge(perceived)
+        Chem.SanitizeMol(neutral)
+    except Exception as exc:  # RDKit raises several exception types for a bad valence
+        return None, f"the dictionary bond orders do not sanitise in RDKit ({exc})"
+    return neutral, ""
+
+
+def _perceive_residue_bond_orders(mol, atom_names: dict, res_name: str):
+    """Sanitised copy of ``mol`` with the residue's bond orders and charges.
+
+    Uses the Chemical Component Dictionary (:func:`_ccd_bond_orders`). If that
+    cannot describe the residue, falls back to :func:`_perceive_bond_orders`, which
+    keeps every bond single on this hydrogen-free molecule.
+
+    Returns ``(mol, fallback_reason)``; ``fallback_reason`` is empty when the
+    dictionary was used, else it says why it could not be.
+    """
+    perceived, reason = _ccd_bond_orders(mol, atom_names, res_name)
+    if perceived is not None:
+        return perceived, ""
+    return _perceive_bond_orders(mol), reason
+
+
+def _perceive_bond_orders(mol):
+    """Return a sanitised copy of ``mol`` with bond orders perceived from valence.
+
+    Tries charged-fragment perception first, then radical-free neutral perception,
+    then a plain single-bond sanitisation as a last resort. ``mol`` must carry a
+    3D conformer and single-bond connectivity. Only valence rules are applied (the
+    conformer is not read), so on a molecule without hydrogens every atom can
+    absorb its missing valence as hydrogens and every bond stays single.
     """
     from rdkit import Chem
     from rdkit.Chem import rdDetermineBonds
@@ -481,12 +633,14 @@ def _generate_residue_template(
     backbone class with a GAFF sidechain class) are emitted explicitly with the
     GAFF force constants so nothing is silently dropped by ``createSystem``.
 
-    Returns ``(ffxml_string, h_inject, neutral_groups)`` where ``h_inject`` is a
-    list of ``(h_name, parent_atom_name, position_nm_ndarray)`` for the hydrogens
-    that must be injected into the topology residue, and ``neutral_groups`` lists
-    the ``(label, charge)`` of side-chain groups that ionise at pH 7.4 but were
-    built neutral (see :func:`_neutral_ionizable_groups`). Returns ``None`` on
-    failure.
+    Returns ``(ffxml_string, h_inject, neutral_groups, single_bond_reason)`` where
+    ``h_inject`` is a list of ``(h_name, parent_atom_name, position_nm_ndarray)``
+    for the hydrogens that must be injected into the topology residue,
+    ``neutral_groups`` lists the ``(label, charge)`` of side-chain groups that
+    ionise at pH 7.4 but were built neutral (see
+    :func:`_neutral_ionizable_groups`), and ``single_bond_reason`` is empty when the
+    bond orders come from the Chemical Component Dictionary, else the reason the
+    residue was built with single bonds only. Returns ``None`` on failure.
     """
     from openff.toolkit import Molecule
     from openmmforcefields.generators import GAFFTemplateGenerator
@@ -495,7 +649,7 @@ def _generate_residue_template(
     mol, rd_res_names, cap_indices, ext_atom_names, cap_partner = _build_capped_molecule(
         res, topology, pos_A
     )
-    mol = _perceive_bond_orders(mol)
+    mol, single_bond_reason = _perceive_residue_bond_orders(mol, rd_res_names, res.name)
     mh = Chem.AddHs(mol, addCoords=True)
     hconf = mh.GetConformer()
     neutral_groups = _neutral_ionizable_groups(mh, rd_res_names, cap_indices)
@@ -526,10 +680,11 @@ def _generate_residue_template(
         return None
 
     # --- Identify backbone atoms and drop spurious backbone-carbonyl hydrogens ---
-    # The carbon cap hides the C=O double bond, so GAFF perceives the backbone
-    # carbonyl as an sp3 alcohol and adds a spurious H on C and an -OH on O. Those
-    # hydrogens have no place on a real peptide carbonyl: drop them and let the
-    # amber C/O types (and the ff14SB C–O bond + carbonyl improper) describe it.
+    # With bond orders from the dictionary the backbone C=O is a carbonyl and none
+    # of this fires. On the single-bond fallback the backbone carbonyl is an sp3
+    # alcohol and gets a spurious H on C and an -OH on O. Those hydrogens have no
+    # place on a real peptide carbonyl: drop them and let the amber C/O types (and
+    # the ff14SB C–O bond + carbonyl improper) describe it.
     retype = backbone_amber or {}
     bb_heavy = {j for j, nm in rd_res_names.items() if nm in _BACKBONE_HEAVY and nm in retype}
     amide_h: set = set()
@@ -635,7 +790,7 @@ def _generate_residue_template(
         h_inject.append(
             (new_name[h_idx], rd_res_names[parent], np.array([p.x, p.y, p.z]) / 10.0)  # Å → nm
         )
-    return ffxml_out, h_inject, neutral_groups
+    return ffxml_out, h_inject, neutral_groups, single_bond_reason
 
 
 def _inject_boundary_terms(
@@ -839,12 +994,19 @@ class NcaaTemplateList(list):
             acid, phosphate, sulfate, primary amine, guanidine) yet were
             parameterised in the neutral form. Residues without such a group are
             absent.
+        bond_order_source_by_residue: ``{residue name: "ccd" or "single_bonds"}``.
+            ``"ccd"`` means the bond orders come from the Chemical Component
+            Dictionary. ``"single_bonds"`` means the residue was not found there
+            (or disagrees with its entry) and was built with every bond single, so
+            its unsaturation, aromaticity and hydrogen count are unreliable; a
+            warning is logged for each of those.
     """
 
     def __init__(self, *args):
         super().__init__(*args)
         self.net_charge_by_residue: dict = {}
         self.neutral_ionizable_groups: dict = {}
+        self.bond_order_source_by_residue: dict = {}
 
 
 def parameterize_ncaa_residues(
@@ -916,7 +1078,7 @@ def parameterize_ncaa_residues(
             result = None
         if result is None:
             continue
-        ffxml, h_inject, neutral_groups = result
+        ffxml, h_inject, neutral_groups, single_bond_reason = result
         h_by_res[res.index] = h_inject
         h_names = tuple(h[0] for h in h_inject)
 
@@ -927,6 +1089,18 @@ def parameterize_ncaa_residues(
             ncaa_ffxmls.append(ffxml)
             net = _template_net_charge(ffxml)
             ncaa_ffxmls.net_charge_by_residue[res.name] = round(net, 4)  # drop XML rounding noise
+            ncaa_ffxmls.bond_order_source_by_residue[res.name] = (
+                BOND_ORDER_SOURCE_SINGLE_BONDS if single_bond_reason else BOND_ORDER_SOURCE_CCD
+            )
+            if single_bond_reason:
+                logger.warning(
+                    "GAFF NCAA '%s' is built with single bonds only (%s), so double "
+                    "bonds, aromatic rings and the hydrogen count are unreliable. Use "
+                    "the Chemical Component Dictionary residue code and atom names to "
+                    "get the right chemistry.",
+                    res.name,
+                    single_bond_reason,
+                )
             if neutral_groups:
                 ncaa_ffxmls.neutral_ionizable_groups[res.name] = [g for g, _ in neutral_groups]
                 logger.warning(
