@@ -222,6 +222,18 @@ class TestEvobindScore:
         res = compute_evobind_score(path, np.zeros(16), binder_chain="B", receptor_chain="A")
         assert res["mean_plddt_binder"] == 0.0
         assert res["evobind_score"] is None
+        assert res["reason"] == "mean binder pLDDT is zero or not finite"
+
+    def test_nan_plddt_gives_no_score_with_a_reason(self, tmp_path):
+        path = _line_complex(tmp_path)
+        res = compute_evobind_score(path, np.full(16, np.nan), "B", "A")
+        assert res["evobind_score"] is None
+        assert "reason" in res
+
+    def test_no_reason_when_the_score_is_computed_or_not_requested(self, tmp_path):
+        path = _line_complex(tmp_path)
+        assert "reason" not in compute_evobind_score(path, np.full(16, 80.0), "B", "A")
+        assert "reason" not in compute_evobind_score(path, None, "B", "A")
 
     def test_score_is_inversely_proportional_to_plddt(self, tmp_path):
         path = _line_complex(tmp_path)
@@ -341,6 +353,14 @@ class TestAdversarialCheck:
         res = compute_evobind_adversarial_check(a, b, "B", "A")
         assert res["afm_mean_plddt_binder"] is None
         assert res["evobind_adversarial_score"] is None
+        assert "reason" not in res
+
+    def test_zero_plddt_gives_no_score_with_a_reason(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb")
+        b = _helix_complex(tmp_path, "afm.pdb")
+        res = compute_evobind_adversarial_check(a, b, "B", "A", afm_plddt_per_atom=np.zeros(32))
+        assert res["evobind_adversarial_score"] is None
+        assert "zero or not finite" in res["reason"]
 
     def test_partial_receptor_overlap_counts_common_residues(self, tmp_path):
         a = _helix_complex(tmp_path, "design.pdb", n_rec=10)

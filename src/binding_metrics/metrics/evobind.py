@@ -266,6 +266,16 @@ def compute_evobind_score(
         evobind_score (float | None):
             Primary EvoBind score: ``if_dist_pep_to_rec / (mean_plddt / 100)``.
             None when ``plddt_per_atom`` is not provided or mean_plddt is zero.
+        reason (str):
+            Present only when ``plddt_per_atom`` was given but the score could
+            not be computed (mean pLDDT zero or not finite).
+
+    Raises:
+        ValueError: If the binder or receptor chain has no Cβ/Cα atoms, or
+            ``receptor_interface_residues`` matches no receptor residue.
+
+    Reference:
+        Bryant et al. 2025, Commun. Chem. (doi:10.1038/s42004-025-01601-3).
     """
     atoms = _load_atoms(Path(structure_path))
 
@@ -324,6 +334,8 @@ def compute_evobind_score(
         result["mean_plddt_binder"] = mean_plddt
         if mean_plddt > 0 and np.isfinite(mean_plddt):
             result["evobind_score"] = if_dist_pep_to_rec / (mean_plddt / 100.0)
+        else:
+            result["reason"] = "mean binder pLDDT is zero or not finite"
 
     return result
 
@@ -412,6 +424,17 @@ def compute_evobind_adversarial_check(
         evobind_adversarial_score (float | None):
             Combined adversarial score.  None if ``afm_plddt_per_atom`` is
             not provided or the mean pLDDT is zero.
+        reason (str):
+            Present only when ``afm_plddt_per_atom`` was given but the score
+            could not be computed (mean pLDDT zero or not finite).
+
+    Raises:
+        ValueError: If a chain has no Cα/Cβ atoms in either structure, fewer
+            than three receptor Cα atoms can be paired, or the residue names of
+            the paired residues disagree beyond ``max_resname_mismatch_fraction``.
+
+    Reference:
+        Bryant et al. 2025, Commun. Chem. (doi:10.1038/s42004-025-01601-3).
     """
     struc, _ = _import_biotite()
 
@@ -575,5 +598,7 @@ def compute_evobind_adversarial_check(
             result["evobind_adversarial_score"] = (
                 afm_mean_if_dist * (100.0 / afm_mean_plddt) * delta_com
             )
+        else:
+            result["reason"] = "mean binder pLDDT in the AFM model is zero or not finite"
 
     return result
