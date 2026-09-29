@@ -110,6 +110,12 @@ class TestRelaxationResult:
         assert "rmsd_md_final" in d
         assert "minimization_time_s" in d
 
+    def test_to_dict_platform_keys_default_to_none(self):
+        d = RelaxationResult(sample_id="test", success=True).to_dict()
+        assert d["platform"] is None
+        assert d["precision"] is None
+        assert d["platform_fallback_reason"] is None
+
     def test_to_dict_rmsf_json(self):
         """to_dict() should serialize per-residue RMSF as JSON string."""
         result = RelaxationResult(
@@ -139,6 +145,31 @@ class TestImplicitRelaxation:
         assert relaxer.config is config
         assert not relaxer._openmm_imported
 
+    def test_get_platform_records_cpu(self):
+        relaxer = ImplicitRelaxation(RelaxationConfig(device="cpu", md_duration_ps=0.0))
+        platform, _ = relaxer._get_platform()
+        assert platform.getName() == "CPU"
+        assert relaxer._platform_used == "CPU"
+        assert relaxer._precision_used is None
+        assert relaxer._platform_fallback_reason is None
+
+    def test_cuda_failure_falls_back_to_cpu_and_is_recorded(self, monkeypatch):
+        import openmm
+
+        real_lookup = openmm.Platform.getPlatformByName
+
+        def lookup(name):
+            if name == "CUDA":
+                raise RuntimeError("no CUDA driver in this test")
+            return real_lookup(name)
+
+        monkeypatch.setattr(openmm.Platform, "getPlatformByName", staticmethod(lookup))
+        relaxer = ImplicitRelaxation(RelaxationConfig(device="cuda", md_duration_ps=0.0))
+        platform, _ = relaxer._get_platform()
+        assert platform.getName() == "CPU"
+        assert relaxer._platform_used == "CPU"
+        assert "no CUDA driver in this test" in relaxer._platform_fallback_reason
+
     @requires_cuda
     @pytest.mark.integration
     def test_run_minimize_only_cif(self, tmp_path: Path, prepped_example_cif):
@@ -157,6 +188,9 @@ class TestImplicitRelaxation:
         assert result.minimized_structure_path is not None
         assert Path(result.minimized_structure_path).exists()
         assert result.md_final_structure_path is None
+        assert result.platform == "CUDA"
+        assert result.precision == "mixed"
+        assert result.platform_fallback_reason is None
 
     @requires_cuda
     @pytest.mark.slow
@@ -216,6 +250,9 @@ class TestImplicitRelaxation:
         relaxer = ImplicitRelaxation(config)
         result = relaxer.run(prepped_example_cif, tmp_path / "out")
         assert result.success, result.error_message
+        assert result.platform == "CPU"
+        assert result.platform_fallback_reason is None
+        assert result.to_dict()["platform"] == "CPU"
 
     @pytest.mark.integration
     def test_kabsch_rmsd_identical(self):

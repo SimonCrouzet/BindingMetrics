@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import json
+import logging
 import sys
 import time
 import traceback
@@ -29,6 +30,8 @@ from typing import Callable, Optional
 import numpy as np
 
 from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+
+logger = logging.getLogger(__name__)
 
 #: Slack when deciding whether ``md_duration_ps`` is a whole number of save
 #: intervals; absorbs floating-point error such as 0.3 / 0.1 = 2.9999999999999996.
@@ -219,6 +222,12 @@ class RelaxationResult:
         md_time_s: Wall time for MD simulation in seconds
         minimized_structure_path: Path to saved minimized structure CIF
         md_final_structure_path: Path to saved final MD frame CIF
+        peptide_cyclic_bonds: Detected closure bonds of a cyclic peptide
+        platform: OpenMM platform the run used ("CUDA" or "CPU")
+        precision: Numeric precision on that platform ("mixed" on CUDA, None
+            where OpenMM reports none)
+        platform_fallback_reason: Why CUDA was not used, when CUDA was requested
+            and the run fell back to CPU
     """
 
     sample_id: str
@@ -247,6 +256,14 @@ class RelaxationResult:
     # Each entry: {"type": str, "atom1": "chain:res_idx:atom", "atom2": ...}
     peptide_cyclic_bonds: Optional[list] = None
 
+    # OpenMM platform the run actually used ("CUDA" or "CPU") and its numeric
+    # precision ("mixed" on CUDA; None where OpenMM reports no precision, as on
+    # the CPU platform). ``platform_fallback_reason`` is set only when CUDA was
+    # requested and the run fell back to CPU.
+    platform: Optional[str] = None
+    precision: Optional[str] = None
+    platform_fallback_reason: Optional[str] = None
+
     def to_dict(self) -> dict:
         """Convert result to a flat dictionary for CSV export."""
         d = {
@@ -267,6 +284,9 @@ class RelaxationResult:
             "minimized_structure_path": self.minimized_structure_path,
             "md_final_structure_path": self.md_final_structure_path,
             "peptide_cyclic_bonds": self.peptide_cyclic_bonds,
+            "platform": self.platform,
+            "precision": self.precision,
+            "platform_fallback_reason": self.platform_fallback_reason,
         }
         if self.peptide_rmsf_per_residue is not None:
             d["peptide_rmsf_per_residue"] = json.dumps(self.peptide_rmsf_per_residue)
@@ -302,6 +322,10 @@ class ImplicitRelaxation:
         # Set by _setup_system: detection result for D-amino acids and N-methyl
         # residues, so run() can restore their names before saving.
         self._ns_info = None
+        # Set by _get_platform, copied into the result by run().
+        self._platform_used: Optional[str] = None
+        self._precision_used: Optional[str] = None
+        self._platform_fallback_reason: Optional[str] = None
 
     @staticmethod
     def _coerce_molecules(molecules: list) -> list:
@@ -1002,8 +1026,15 @@ class ImplicitRelaxation:
         simulation.context.reinitialize(preserveState=True)
 
     def _get_platform(self):
-        """Get the OpenMM compute platform, falling back to CPU if CUDA fails."""
+        """Get the OpenMM compute platform, falling back to CPU if CUDA fails.
+
+        Besides returning ``(platform, properties)``, records what was chosen in
+        ``self._platform_used``, ``self._precision_used`` and
+        ``self._platform_fallback_reason`` so :meth:`run` can put them in the
+        result.
+        """
         self._import_openmm()
+        self._platform_fallback_reason = None
         if self.config.device == "cuda":
             try:
                 platform = openmm.Platform.getPlatformByName("CUDA")
@@ -1015,10 +1046,16 @@ class ImplicitRelaxation:
                 _ctx = openmm.Context(_sys, openmm.VerletIntegrator(0.001), platform)
                 del _ctx, _sys
                 print("  Platform: CUDA (mixed precision)")
+                self._platform_used = "CUDA"
+                self._precision_used = properties["CudaPrecision"]
                 return platform, properties
             except Exception as e:
+                logger.warning("CUDA requested but unavailable, falling back to CPU: %s", e)
+                self._platform_fallback_reason = f"{type(e).__name__}: {e}"
                 print(f"  Warning: CUDA unavailable ({e}), falling back to CPU.")
         print("  Platform: CPU")
+        self._platform_used = "CPU"
+        self._precision_used = None
         return openmm.Platform.getPlatformByName("CPU"), {}
 
     def run(
@@ -1093,6 +1130,9 @@ class ImplicitRelaxation:
                 integrator.setRandomNumberSeed(self.config.random_seed)
 
             platform, properties = self._get_platform()
+            result.platform = self._platform_used
+            result.precision = self._precision_used
+            result.platform_fallback_reason = self._platform_fallback_reason
             simulation = app.Simulation(topology, system, integrator, platform, properties)
             simulation.context.setPositions(positions)
 
