@@ -265,8 +265,9 @@ def run_simulation(
     pdb = PDBFile(str(pdb_path))
     forcefield = get_forcefield(forcefield_name)
 
-    # Prepare system
-    modeller = prepare_system(pdb, forcefield=forcefield)
+    # Prepare system; hydrogen and ion placement use the same seed as the MD run.
+    seed = config.random_seed if config is not None else DEFAULT_RANDOM_SEED
+    modeller = prepare_system(pdb, forcefield=forcefield, random_seed=seed)
 
     # Run simulation
     sim = MDSimulation(modeller, forcefield, config)

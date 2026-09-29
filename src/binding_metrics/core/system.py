@@ -369,6 +369,10 @@ def deterministic_hydrogen_placement(seed: Optional[int] = DEFAULT_RANDOM_SEED):
     randomness elsewhere in the caller's process. Pass ``seed=None`` to leave
     the global RNG untouched and get fresh randomness (opt-in via the configs'
     ``random_seed``).
+
+    The same block also seeds any other OpenMM ``Modeller`` step that draws from
+    the global ``random`` module, notably the ion placement in
+    ``Modeller.addSolvent`` (see :func:`solvate`).
     """
     if seed is None:
         yield
@@ -591,8 +595,14 @@ def solvate(
     ionic_strength: float = 0.15,
     positive_ion: str = "Na+",
     negative_ion: str = "Cl-",
+    *,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> Modeller:
     """Add explicit solvent and ions with periodic boundary conditions.
+
+    Ion placement is stochastic: ``Modeller.addSolvent`` replaces randomly
+    chosen water molecules with ions, drawing from Python's global ``random``.
+    This step is seeded, so the same input and seed give the same ion positions.
 
     Args:
         topology: OpenMM Topology
@@ -603,6 +613,8 @@ def solvate(
         ionic_strength: Salt concentration in M
         positive_ion: Positive ion type
         negative_ion: Negative ion type
+        random_seed: Seed for ion placement. A fixed int (the default) makes
+            the placement reproducible; ``None`` opts into fresh randomness.
 
     Returns:
         Modeller with solvated and ionized system
@@ -610,13 +622,14 @@ def solvate(
     if forcefield is None:
         forcefield = get_forcefield(forcefield_name)
     modeller = Modeller(topology, positions)
-    modeller.addSolvent(
-        forcefield,
-        padding=padding * unit.nanometer,
-        ionicStrength=ionic_strength * unit.molar,
-        positiveIon=positive_ion,
-        negativeIon=negative_ion,
-    )
+    with deterministic_hydrogen_placement(random_seed):
+        modeller.addSolvent(
+            forcefield,
+            padding=padding * unit.nanometer,
+            ionicStrength=ionic_strength * unit.molar,
+            positiveIon=positive_ion,
+            negativeIon=negative_ion,
+        )
     return modeller
 
 
@@ -630,8 +643,13 @@ def prepare_system(
     negative_ion: str = "Cl-",
     fix: bool = True,
     ph: float = 7.4,
+    *,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> Modeller:
     """Prepare a molecular system for simulation: fix+protonate → solvate.
+
+    Hydrogen placement, atom rebuilding and ion placement are seeded by
+    ``random_seed``, so the same input gives the same prepared system.
 
     Args:
         pdb: Loaded PDB file with the molecular structure
@@ -643,6 +661,9 @@ def prepare_system(
         negative_ion: Negative ion type for neutralization
         fix: If True and pdbfixer is available, fix missing atoms and protonate
         ph: pH for hydrogen placement when fix=True (default 7.4)
+        random_seed: Seed for every stochastic step (hydrogen placement, PDBFixer
+            atom rebuild, ion placement). A fixed int (the default) makes the
+            preparation reproducible; ``None`` opts into fresh randomness.
 
     Returns:
         Modeller object with solvated and ionized system
@@ -650,11 +671,12 @@ def prepare_system(
     topology, positions = pdb.topology, pdb.positions
 
     if fix and HAS_PDBFIXER:
-        topology, positions = prep_structure(topology, positions, ph=ph)
+        topology, positions = prep_structure(topology, positions, ph=ph, random_seed=random_seed)
     else:
         ff = forcefield if forcefield is not None else get_forcefield(forcefield_name)
         tmp_modeller = Modeller(topology, positions)
-        tmp_modeller.addHydrogens(ff)
+        with deterministic_hydrogen_placement(random_seed):
+            tmp_modeller.addHydrogens(ff, platform=_hydrogen_placement_platform())
         topology, positions = tmp_modeller.topology, tmp_modeller.positions
 
     return solvate(
@@ -666,6 +688,7 @@ def prepare_system(
         ionic_strength=ionic_strength,
         positive_ion=positive_ion,
         negative_ion=negative_ion,
+        random_seed=random_seed,
     )
 
 
