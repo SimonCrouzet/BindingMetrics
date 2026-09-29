@@ -330,7 +330,7 @@ class TestPolarContacts:
         import unittest.mock as mock
 
         dummy_cif = tmp_path / "dummy.cif"
-        dummy_cif.write_text("data_dummy\n")
+        dummy_cif.write_text("data_dummy\n", encoding="utf-8")
 
         with mock.patch.dict(sys.modules, {"biotite": None, "biotite.structure": None}):
             with pytest.raises(ImportError, match="biotite"):

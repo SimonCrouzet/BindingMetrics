@@ -43,6 +43,8 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from binding_metrics.utils import configure_logging
+
 # DockQ-score thresholds for CAPRI quality classes (Basu & Wallner 2016).
 # These bins are the standard shortcut mapping from a DockQ score to the CAPRI
 # Incorrect / Acceptable / Medium / High categories.
@@ -188,6 +190,7 @@ def compute_dockq_metrics(
             full_cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         if proc.returncode != 0:
             raise RuntimeError(
@@ -197,7 +200,7 @@ def compute_dockq_metrics(
             )
 
         try:
-            data = json.loads(json_path.read_text())
+            data = json.loads(json_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError(
                 f"Could not read DockQ JSON output at {json_path}: {exc}\n"
@@ -210,6 +213,7 @@ def compute_dockq_metrics(
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser(
         description=(
             "Reference-based CAPRI accuracy of a predicted complex via DockQ "

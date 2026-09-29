@@ -1,5 +1,6 @@
 """Tests for compute_coulomb_cross_chain in metrics/electrostatics.py."""
 
+import importlib.util
 from pathlib import Path
 
 import numpy as np
@@ -8,13 +9,8 @@ import pytest
 EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
 
 requires_biotite = pytest.mark.skipif(
-    not pytest.importorskip("biotite", reason="biotite not installed"),
-    reason="biotite not installed",
+    importlib.util.find_spec("biotite") is None, reason="biotite not installed"
 )
-
-
-def _skip_if_no_biotite():
-    pytest.importorskip("biotite")
 
 
 class TestCoulombCrossChain:
@@ -46,9 +42,9 @@ class TestCoulombCrossChain:
             with pytest.raises(ImportError, match="biotite"):
                 _import_biotite()
 
+    @requires_biotite
     def test_with_example_pdb(self):
         """Should compute Coulomb energy for example_linear_p53_1YCR.pdb chains B and A."""
-        _skip_if_no_biotite()
         if not EXAMPLE_PDB_PATH.exists():
             pytest.skip(f"Example PDB not found: {EXAMPLE_PDB_PATH}")
 
@@ -71,9 +67,9 @@ class TestCoulombCrossChain:
         }
         assert expected_keys.issubset(set(result.keys()))
 
+    @requires_biotite
     def test_energy_is_finite(self):
         """Coulomb energy should be a finite float for valid input."""
-        _skip_if_no_biotite()
         if not EXAMPLE_PDB_PATH.exists():
             pytest.skip(f"Example PDB not found: {EXAMPLE_PDB_PATH}")
 
@@ -88,9 +84,9 @@ class TestCoulombCrossChain:
         assert np.isfinite(result["coulomb_energy_kJ"])
         assert np.isfinite(result["coulomb_energy_kcal"])
 
+    @requires_biotite
     def test_energy_kcal_vs_kj_conversion(self):
         """kcal/mol and kJ/mol values should have correct 4.184 ratio."""
-        _skip_if_no_biotite()
         if not EXAMPLE_PDB_PATH.exists():
             pytest.skip(f"Example PDB not found: {EXAMPLE_PDB_PATH}")
 
@@ -106,9 +102,9 @@ class TestCoulombCrossChain:
         kcal = result["coulomb_energy_kcal"]
         assert kcal == pytest.approx(kJ / 4.184, rel=1e-4)
 
+    @requires_biotite
     def test_charged_atoms_have_expected_format(self):
         """Charged atom dicts should contain required keys."""
-        _skip_if_no_biotite()
         if not EXAMPLE_PDB_PATH.exists():
             pytest.skip(f"Example PDB not found: {EXAMPLE_PDB_PATH}")
 
@@ -127,9 +123,9 @@ class TestCoulombCrossChain:
             assert "coords" in info
             assert len(info["coords"]) == 3
 
+    @requires_biotite
     def test_n_attractive_plus_repulsive_leq_total(self):
         """Attractive + repulsive pairs should not exceed total charged pairs."""
-        _skip_if_no_biotite()
         if not EXAMPLE_PDB_PATH.exists():
             pytest.skip(f"Example PDB not found: {EXAMPLE_PDB_PATH}")
 
@@ -143,9 +139,9 @@ class TestCoulombCrossChain:
 
         assert result["n_attractive"] + result["n_repulsive"] <= result["n_charged_pairs"]
 
+    @requires_biotite
     def test_auto_chain_detection(self):
         """Should auto-detect chains when not specified."""
-        _skip_if_no_biotite()
         if not EXAMPLE_PDB_PATH.exists():
             pytest.skip(f"Example PDB not found: {EXAMPLE_PDB_PATH}")
 
@@ -160,9 +156,9 @@ class TestCoulombCrossChain:
             result_explicit["coulomb_energy_kJ"], rel=1e-4
         )
 
+    @requires_biotite
     def test_cutoff_reduces_pairs(self):
         """Smaller cutoff should reduce number of charged pairs."""
-        _skip_if_no_biotite()
         if not EXAMPLE_PDB_PATH.exists():
             pytest.skip(f"Example PDB not found: {EXAMPLE_PDB_PATH}")
 
@@ -177,9 +173,9 @@ class TestCoulombCrossChain:
 
         assert result_small["n_charged_pairs"] <= result_large["n_charged_pairs"]
 
+    @requires_biotite
     def test_dielectric_scales_energy(self):
         """Doubling dielectric constant should halve the energy."""
-        _skip_if_no_biotite()
         if not EXAMPLE_PDB_PATH.exists():
             pytest.skip(f"Example PDB not found: {EXAMPLE_PDB_PATH}")
 
@@ -198,9 +194,9 @@ class TestCoulombCrossChain:
                 result_d4["coulomb_energy_kJ"] / 2.0, rel=1e-3
             )
 
+    @requires_biotite
     def test_synthetic_attractive_pair(self, tmp_path: Path):
         """Synthetic structure: one LYS NZ and one ASP OD1 should be attractive."""
-        _skip_if_no_biotite()
         # Build minimal PDB with one charged pair at ~5 Å distance
         pdb_content = """\
 ATOM      1  NZ  LYS B   1       0.000   0.000   0.000  1.00  0.00           N
@@ -210,7 +206,7 @@ ATOM      4  CA  ASP A   1       5.000   0.000   0.000  1.00  0.00           C
 END
 """
         pdb_path = tmp_path / "synthetic.pdb"
-        pdb_path.write_text(pdb_content)
+        pdb_path.write_text(pdb_content, encoding="utf-8")
 
         from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
 
@@ -221,9 +217,9 @@ END
         assert result["n_attractive"] >= 1
         assert result["coulomb_energy_kJ"] < 0.0, "LYS-ASP should be attractive (negative energy)"
 
+    @requires_biotite
     def test_synthetic_repulsive_pair(self, tmp_path: Path):
         """Synthetic structure: two LYS NZ groups should be repulsive."""
-        _skip_if_no_biotite()
         pdb_content = """\
 ATOM      1  NZ  LYS B   1       0.000   0.000   0.000  1.00  0.00           N
 ATOM      2  CA  LYS B   1      -1.000   0.000   0.000  1.00  0.00           C
@@ -232,7 +228,7 @@ ATOM      4  CA  LYS A   1       5.000   0.000   0.000  1.00  0.00           C
 END
 """
         pdb_path = tmp_path / "repulsive.pdb"
-        pdb_path.write_text(pdb_content)
+        pdb_path.write_text(pdb_content, encoding="utf-8")
 
         from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
 

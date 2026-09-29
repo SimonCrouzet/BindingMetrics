@@ -9,6 +9,12 @@ and multi-model PDB/CIF files (all models scored independently).
 The receptor chain is identified as the largest protein chain by residue count.
 This module is self-contained and does not depend on the main pipeline.
 
+The validation terms follow MolProbity (Chen et al. 2010, Acta Cryst. D66:12-21;
+Williams et al. 2018, Protein Sci. 27:293-315) but are lighter approximations:
+the clashscore counts heavy-atom overlaps only (no hydrogens), the rotamer term
+is a chi1-only check, and the composite score is therefore indicative rather than
+comparable to published MolProbity values.
+
 Usage:
     binding-metrics-receptor-quality --input receptor.pdb
     binding-metrics-receptor-quality --input complex.cif --receptor-chain A
@@ -25,7 +31,14 @@ from typing import Optional
 
 import numpy as np
 
-from binding_metrics.utils import backfill_auth_columns
+from binding_metrics._constants import DEFAULT_RANDOM_SEED
+from binding_metrics.metrics._common import (
+    ChainAliasAction,
+    import_biotite,
+    load_structure,
+    resolve_chain_role,
+)
+from binding_metrics.utils import configure_logging
 
 # ---------------------------------------------------------------------------
 # Lazy imports
@@ -33,17 +46,7 @@ from binding_metrics.utils import backfill_auth_columns
 
 
 def _import_biotite():
-    try:
-        import biotite.structure as struc
-        import biotite.structure.io.pdb as pdb_io
-        import biotite.structure.io.pdbx as pdbx
-
-        return struc, pdbx, pdb_io
-    except ImportError:
-        raise ImportError(
-            "biotite is required for receptor quality metrics. "
-            "Install with: pip install binding-metrics[biotite]"
-        )
+    return import_biotite("receptor quality metrics")
 
 
 def _import_scipy():
@@ -51,11 +54,11 @@ def _import_scipy():
         from scipy.spatial import cKDTree
 
         return cKDTree
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "scipy is required for clashscore computation. "
             "Install with: pip install binding-metrics[biotite]"
-        )
+        ) from exc
 
 
 def _import_openmm():
@@ -65,11 +68,11 @@ def _import_openmm():
         from openmm.app import ForceField, Modeller, PDBFile, Simulation
 
         return openmm, unit, ForceField, Modeller, PDBFile, Simulation
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "openmm is required for energy computation. "
             "Install with: pip install binding-metrics[simulation]"
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -79,16 +82,8 @@ def _import_openmm():
 
 def _load_all_models(path: Path) -> list:
     """Load all models from a PDB or CIF file as a list of AtomArrays."""
-    struc, pdbx, pdb_io = _import_biotite()
-    suffix = path.suffix.lower()
-
-    if suffix in (".cif", ".mmcif"):
-        f = pdbx.CIFFile.read(str(path))
-        backfill_auth_columns(f)
-        structure = pdbx.get_structure(f)
-    else:
-        f = pdb_io.PDBFile.read(str(path))
-        structure = pdb_io.get_structure(f)
+    struc, _, _ = _import_biotite()
+    structure = load_structure(path, model=None, purpose="receptor quality metrics")
 
     if isinstance(structure, struc.AtomArrayStack):
         return [structure[i] for i in range(structure.shape[0])]
@@ -174,7 +169,20 @@ def _vdw(element: str) -> float:
 
 
 def _ramachandran(chain_atoms) -> dict:
-    """Compute Ramachandran backbone dihedral quality for a single AtomArray."""
+    """Ramachandran backbone dihedral quality for a single AtomArray.
+
+    Each residue with both phi and psi is placed in a favoured, allowed or
+    outlier region of the Ramachandran plot (``geometry._classify_ramachandran``;
+    D-residues are scored on the mirrored plot). The regions are simplified
+    boxes, not the density contours of MolProbity's Top8000 data (Lovell et al.
+    2003, Proteins 50:437; Williams et al. 2018).
+
+    Returns:
+        ``favoured_pct``, ``allowed_pct``, ``outlier_pct`` (float, NaN when
+        nothing was evaluated), ``favoured_count``, ``allowed_count``,
+        ``outlier_count`` and ``n_evaluated`` (int), and ``reason`` (str) only
+        when nothing could be evaluated.
+    """
     from binding_metrics.core.nonstandard import is_d_residue
     from binding_metrics.metrics.geometry import _classify_ramachandran
 
@@ -191,8 +199,9 @@ def _ramachandran(chain_atoms) -> dict:
 
     try:
         phi_rad, psi_rad, _ = struc.dihedral_backbone(chain_atoms)
-    except Exception:
-        return _empty
+    except (IndexError, struc.BadStructureError) as exc:
+        # biotite cannot build the backbone when N, CA or C atoms are missing.
+        return {**_empty, "reason": f"backbone dihedrals unavailable: {type(exc).__name__}"}
 
     phi_deg = np.degrees(phi_rad)
     psi_deg = np.degrees(psi_rad)
@@ -211,7 +220,7 @@ def _ramachandran(chain_atoms) -> dict:
 
     n_eval = sum(counts.values())
     if n_eval == 0:
-        return _empty
+        return {**_empty, "reason": "no residue with both phi and psi"}
 
     return {
         "favoured_pct": 100.0 * counts["favoured"] / n_eval,
@@ -229,11 +238,171 @@ def _ramachandran(chain_atoms) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _clashscore(chain_atoms, clash_cutoff: float = 0.4) -> dict:
-    """Compute clashscore: bad steric clashes per 1000 heavy atoms.
+# Covalent radii (Å; Cordero et al. 2008, Dalton Trans. 2832). They only decide
+# whether two atoms of one residue are bonded, so a generous margin is harmless:
+# every same-residue pair is already exempt from the clash count.
+_COVALENT_RADII: dict[str, float] = {
+    "C": 0.76,
+    "N": 0.71,
+    "O": 0.66,
+    "S": 1.05,
+    "P": 1.07,
+    "SE": 1.20,
+    "F": 0.57,
+    "CL": 1.02,
+    "BR": 1.20,
+    "I": 1.39,
+}
+_COVALENT_DEFAULT_RADIUS = 1.0
+_COVALENT_TOLERANCE_ANGSTROM = 0.4
 
-    Pairs within the same residue or adjacent residues (|Δres_id| ≤ 1, same
-    chain) are excluded as they are primarily bonded or 1-3 neighbours.
+# Peptide bond between residues that follow each other in the chain. Read off
+# the coordinates rather than from residue numbers, so that numbering gaps
+# (chymotrypsin numbering skips 149 and 218) do not turn a peptide bond into a
+# clash. Same value as the amide threshold in ``core.cyclic``.
+_PEPTIDE_BOND_MAX_ANGSTROM = 2.0
+
+# Longest distance at which two atoms of residues that are not sequence
+# neighbours count as one covalent link: disulfide, head-to-tail closure,
+# lactam and isopeptide bridges, hydrocarbon staples, thioethers, lactones.
+# Only these element pairs can form a link, so a close C...C or N...O contact is
+# never explained away. S-S and N-C match the thresholds of ``core.cyclic``.
+# The N-C limit is generous because NMR models of lactams stretch the bond (1XY4
+# has 1.89 Å).
+_CROSSLINK_MAX_ANGSTROM: dict[frozenset, float] = {
+    frozenset(("S", "S")): 2.6,
+    frozenset(("C", "N")): 2.0,
+    frozenset(("C", "C")): 1.9,
+    frozenset(("C", "S")): 2.2,
+    frozenset(("C", "O")): 1.9,
+}
+
+# Atoms separated by at most this many covalent bonds are not scored against
+# each other (the usual 1-2, 1-3 and 1-4 exclusion; a heavy-atom-only score
+# has no hydrogens to tell a gauche 1-4 contact from a clash).
+_MAX_EXCLUDED_BOND_SEPARATION = 3
+
+# N/O pairs closer than the sum of their vdW radii (3.0-3.1 Å) are hydrogen
+# bonds, not clashes, down to this distance; heavy atoms alone cannot see the
+# hydrogen, so 2.5 Å (the short end of strong N...O and O...O bonds) is used as
+# the floor.
+_HBOND_HETEROATOMS = ("N", "O")
+_HBOND_MIN_DISTANCE_ANGSTROM = 2.5
+
+
+def _covalent_reach(
+    heavy,
+    heavy_elements: np.ndarray,
+    coords: np.ndarray,
+    pairs: np.ndarray,
+    distances: np.ndarray,
+):
+    """Sparse matrix (scipy CSR), nonzero for heavy-atom pairs within three covalent bonds.
+
+    The bond graph joins (1) atoms of one residue closer than the sum of their
+    covalent radii plus a margin, (2) the C and N of consecutive residues that
+    are within peptide-bond distance, and (3) atoms of non-neighbouring
+    residues that form a covalent link (see ``_CROSSLINK_MAX_ANGSTROM``).
+    ``pairs`` are the candidate atom index pairs from the spatial search and
+    ``distances`` their lengths.
+    """
+    from scipy import sparse
+
+    struc, _, _ = _import_biotite()
+    n_atoms = len(heavy)
+    starts = struc.get_residue_starts(heavy)
+    residue_of = np.zeros(n_atoms, dtype=np.int64)
+    residue_of[starts[1:]] = 1
+    residue_of = np.cumsum(residue_of)
+
+    i, j = pairs[:, 0], pairs[:, 1]
+    res_i, res_j = residue_of[i], residue_of[j]
+    same_residue = res_i == res_j
+    same_chain = heavy.chain_id[i] == heavy.chain_id[j]
+    names = np.asarray(heavy.atom_name)
+
+    radius = np.array(
+        [_COVALENT_RADII.get(e, _COVALENT_DEFAULT_RADIUS) for e in heavy_elements], dtype=float
+    )
+    intra = same_residue & (distances <= radius[i] + radius[j] + _COVALENT_TOLERANCE_ANGSTROM)
+
+    peptide = (
+        same_chain
+        & (distances <= _PEPTIDE_BOND_MAX_ANGSTROM)
+        & (
+            ((res_j == res_i + 1) & (names[i] == "C") & (names[j] == "N"))
+            | ((res_i == res_j + 1) & (names[j] == "C") & (names[i] == "N"))
+        )
+    )
+
+    # Longest link distance per element pair, looked up through element codes so the
+    # per-pair work stays in numpy (a receptor has about ten candidate pairs per atom).
+    symbols = sorted(set(heavy_elements))
+    code_of = {symbol: k for k, symbol in enumerate(symbols)}
+    codes = np.array([code_of[e] for e in heavy_elements])
+    limit_table = np.zeros((len(symbols), len(symbols)))
+    for pair_symbols, limit in _CROSSLINK_MAX_ANGSTROM.items():
+        members = sorted(pair_symbols)  # one member for a homonuclear pair such as S-S
+        if members[0] in code_of and members[-1] in code_of:
+            first, second = code_of[members[0]], code_of[members[-1]]
+            limit_table[first, second] = limit_table[second, first] = limit
+    crosslink = ~same_residue & (distances <= limit_table[codes[i], codes[j]])
+
+    bonded = pairs[intra | peptide | crosslink]
+    adjacency = sparse.coo_matrix(
+        (np.ones(len(bonded), dtype=np.int32), (bonded[:, 0], bonded[:, 1])),
+        shape=(n_atoms, n_atoms),
+    )
+    adjacency = (adjacency + adjacency.T).tocsr()
+    adjacency.data[:] = 1
+
+    reach = adjacency.copy()
+    frontier = adjacency
+    for _ in range(_MAX_EXCLUDED_BOND_SEPARATION - 1):
+        frontier = frontier @ adjacency
+        reach = reach + frontier
+    return reach.tocsr()
+
+
+def _clashscore(
+    chain_atoms,
+    clash_cutoff: float = 0.4,
+    exclude_bonded: bool = True,
+    exempt_hbond_pairs: bool = True,
+) -> dict:
+    """Heavy-atom overlap clashscore: clashing atom pairs per 1000 heavy atoms.
+
+    Two heavy atoms clash when the sum of their van der Waals radii exceeds
+    their distance by at least ``clash_cutoff`` Å (the 0.4 Å of Word et al. 1999;
+    Chen et al. 2010). This is not MolProbity's clashscore: MolProbity adds
+    hydrogens with Reduce and evaluates all-atom contacts with Probe
+    (Williams et al. 2018), which also resolves hydrogen bonds from the
+    hydrogen position. Here hydrogens are ignored, so the value is an
+    approximation that is usually higher than MolProbity's for the same model.
+
+    A pair is not scored when
+
+    - both atoms lie in the same residue or in residues whose numbers differ by
+      at most one (same chain), as before;
+    - ``exclude_bonded`` is true and the atoms are separated by at most three
+      covalent bonds, following the peptide bond by coordinates, and disulfide,
+      head-to-tail, lactam, staple and similar links by distance (see
+      ``_CROSSLINK_MAX_ANGSTROM``);
+    - ``exempt_hbond_pairs`` is true and the pair is N/O to N/O at
+      2.5 Å or more (a hydrogen bond, not an overlap).
+
+    With both switches off the result equals the earlier definition, which
+    counted disulfides, cyclic closures and N...O hydrogen bonds as clashes.
+
+    Returns:
+        ``clashscore`` (float, NaN below two heavy atoms), ``n_clashes`` (int)
+        and ``n_heavy_atoms`` (int); ``reason`` (str) only when the score could
+        not be computed.
+
+    References:
+        Word et al. 1999, J. Mol. Biol. 285:1735 (all-atom contact analysis);
+        Chen et al. 2010, Acta Cryst. D66:12; Williams et al. 2018, Protein Sci.
+        27:293 (MolProbity clashscore).
     """
     cKDTree = _import_scipy()
 
@@ -244,7 +413,12 @@ def _clashscore(chain_atoms, clash_cutoff: float = 0.4) -> dict:
     n_heavy = len(heavy)
 
     if n_heavy < 2:
-        return {"clashscore": np.nan, "n_clashes": 0, "n_heavy_atoms": n_heavy}
+        return {
+            "clashscore": np.nan,
+            "n_clashes": 0,
+            "n_heavy_atoms": n_heavy,
+            "reason": "fewer than two heavy atoms",
+        }
 
     coords = heavy.coord
     tree = cKDTree(coords)
@@ -252,15 +426,27 @@ def _clashscore(chain_atoms, clash_cutoff: float = 0.4) -> dict:
 
     n_clashes = 0
     if len(pairs) > 0:
+        i, j = pairs[:, 0], pairs[:, 1]
         chain_ids = heavy.chain_id
-        res_ids = heavy.res_id
-        for i, j in pairs:
-            if chain_ids[i] == chain_ids[j] and abs(int(res_ids[i]) - int(res_ids[j])) <= 1:
-                continue
-            dist = float(np.linalg.norm(coords[i] - coords[j]))
-            overlap = _vdw(heavy_elements[i]) + _vdw(heavy_elements[j]) - dist
-            if overlap >= clash_cutoff:
-                n_clashes += 1
+        res_ids = heavy.res_id.astype(np.int64)
+        coords64 = coords.astype(np.float64)
+        distances = np.linalg.norm(coords64[i] - coords64[j], axis=1)
+        radii = np.array([_vdw(e) for e in heavy_elements])
+
+        neighbours = (chain_ids[i] == chain_ids[j]) & (np.abs(res_ids[i] - res_ids[j]) <= 1)
+        is_clash = ~neighbours & (radii[i] + radii[j] - distances >= clash_cutoff)
+
+        if exempt_hbond_pairs:
+            polar = np.isin(heavy_elements, _HBOND_HETEROATOMS)
+            is_clash &= ~(polar[i] & polar[j] & (distances >= _HBOND_MIN_DISTANCE_ANGSTROM))
+
+        if exclude_bonded and is_clash.any():
+            reach = _covalent_reach(heavy, heavy_elements, coords, pairs, distances)
+            candidates = pairs[is_clash]
+            bonded = np.asarray(reach[candidates[:, 0], candidates[:, 1]]).ravel() > 0
+            is_clash[np.flatnonzero(is_clash)[bonded]] = False
+
+        n_clashes = int(is_clash.sum())
 
     return {
         "clashscore": float(1000.0 * n_clashes / n_heavy),
@@ -348,7 +534,12 @@ def _rotamer_quality(chain_atoms) -> dict:
     Residues without χ1 (GLY, ALA) are skipped.
 
     Note: this is a χ1-only approximation. Full rotamer validation requires
-    the backbone-dependent Dunbrack rotamer library.
+    the backbone-dependent Dunbrack rotamer library (Shapovalov & Dunbrack 2011,
+    Structure 19:844; used by MolProbity via Lovell et al. 2000, Proteins 40:389).
+
+    Returns:
+        ``outlier_count`` and ``n_evaluated`` (int), ``outlier_pct`` (float,
+        NaN when no residue has a χ1), and ``reason`` (str) only in that case.
     """
     struc, _, _ = _import_biotite()
 
@@ -363,17 +554,14 @@ def _rotamer_quality(chain_atoms) -> dict:
             continue
 
         # Dihedral N-CA-CB-X
-        try:
-            chi1_rad = float(
-                struc.dihedral(
-                    atoms["N"],
-                    atoms["CA"],
-                    atoms["CB"],
-                    atoms[terminal],
-                )
+        chi1_rad = float(
+            struc.dihedral(
+                atoms["N"],
+                atoms["CA"],
+                atoms["CB"],
+                atoms[terminal],
             )
-        except Exception:
-            continue
+        )
 
         chi1_deg = float(np.degrees(chi1_rad))
         n_evaluated += 1
@@ -381,7 +569,12 @@ def _rotamer_quality(chain_atoms) -> dict:
             n_outliers += 1
 
     if n_evaluated == 0:
-        return {"outlier_count": 0, "outlier_pct": np.nan, "n_evaluated": 0}
+        return {
+            "outlier_count": 0,
+            "outlier_pct": np.nan,
+            "n_evaluated": 0,
+            "reason": "no residue with a complete chi1 dihedral",
+        }
 
     return {
         "outlier_count": n_outliers,
@@ -431,8 +624,15 @@ def _ideal_cbeta(n: np.ndarray, ca: np.ndarray, c: np.ndarray) -> Optional[np.nd
 def _cbeta_deviations(chain_atoms, threshold: float = 0.25) -> dict:
     """Count Cβ deviations > threshold Å from their ideal backbone-derived position.
 
-    Follows MolProbity convention: deviations > 0.25 Å indicate backbone distortion.
-    GLY is skipped (no Cβ).
+    Follows MolProbity convention: deviations > 0.25 Å indicate backbone distortion
+    (Lovell et al. 2003, Proteins 50:437). GLY is skipped (no Cβ). MolProbity
+    derives the ideal Cβ from the side-chain-dependent Cα geometry; here it comes
+    from the backbone N, CA, C with tetrahedral geometry, so values differ slightly.
+
+    Returns:
+        ``cb_deviation_count`` and ``cb_n_evaluated`` (int), ``cb_deviation_pct``
+        (float, NaN when no residue was evaluated), and ``reason`` (str) only in
+        that case.
     """
     n_evaluated = 0
     n_deviating = 0
@@ -452,11 +652,14 @@ def _cbeta_deviations(chain_atoms, threshold: float = 0.25) -> dict:
         if dev > threshold:
             n_deviating += 1
 
-    return {
+    result = {
         "cb_deviation_count": n_deviating,
         "cb_n_evaluated": n_evaluated,
         "cb_deviation_pct": 100.0 * n_deviating / n_evaluated if n_evaluated > 0 else np.nan,
     }
+    if n_evaluated == 0:
+        result["reason"] = "no residue with N, CA, C and CB"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -498,12 +701,19 @@ def _angle_deg(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
 def _backbone_geometry(chain_atoms) -> dict:
     """Check backbone bond lengths and angles against Engh & Huber ideal values.
 
-    Flags bonds and angles deviating > 4σ from ideal as 'bad'.
+    Flags bonds and angles deviating > 4σ from ideal as 'bad' (Engh & Huber
+    1991, Acta Cryst. A47:392; the criterion MolProbity applies).
     Inter-residue C–N bonds are skipped when the distance exceeds 2.5 Å
     (chain break or model gap).
+
+    Returns:
+        ``bad_bonds``, ``total_bonds``, ``bad_angles``, ``total_angles`` (int),
+        ``bad_bonds_pct`` and ``bad_angles_pct`` (float, NaN when the total is
+        zero), and ``reason`` (str) only when no bond or no angle could be
+        evaluated.
     """
     residues = []
-    for res_name, atoms in _iter_residues(chain_atoms):
+    for _, atoms in _iter_residues(chain_atoms):
         residues.append(atoms)
 
     bad_bonds = 0
@@ -564,7 +774,7 @@ def _backbone_geometry(chain_atoms) -> dict:
                         if abs(ang - ideal) > thresh:
                             bad_angles += 1
 
-    return {
+    result = {
         "bad_bonds": bad_bonds,
         "total_bonds": total_bonds,
         "bad_bonds_pct": 100.0 * bad_bonds / total_bonds if total_bonds > 0 else np.nan,
@@ -572,6 +782,9 @@ def _backbone_geometry(chain_atoms) -> dict:
         "total_angles": total_angles,
         "bad_angles_pct": 100.0 * bad_angles / total_angles if total_angles > 0 else np.nan,
     }
+    if total_bonds == 0 or total_angles == 0:
+        result["reason"] = "no complete backbone bond or angle found"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -591,8 +804,11 @@ def _molprobity_score(
     Penalty terms activate above baseline noise levels (0.2% rama, 2% rotamer).
 
     Note: rotamer term uses simplified χ1 classification, not the full Dunbrack
-    library, so the score is indicative rather than directly comparable to the
-    published MolProbity values.
+    library, and the clashscore counts heavy-atom overlaps only (Williams et al.
+    2018 describe the all-atom original), so the score is indicative rather than
+    directly comparable to published MolProbity values.
+
+    Returns NaN when any input is not finite.
     """
     if not all(np.isfinite(v) for v in (clashscore, rama_outlier_pct, rota_outlier_pct)):
         return np.nan
@@ -613,12 +829,18 @@ def _receptor_energy(
     chain_atoms,
     solvent_model: str = "obc2",
     device: str = "cuda",
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
     """Compute absolute AMBER ff14SB potential energy for a receptor chain.
 
     Writes receptor atoms to a temp PDB, prepares with PDBFixer (if available),
     adds hydrogens, builds an AMBER ff14SB + implicit solvent system, and
     evaluates potential energy at the input geometry (no minimization).
+
+    Stochastic steps (PDBFixer's rebuild of missing atoms and the jitter of new
+    hydrogens) are seeded with ``random_seed``, so the same input gives the same
+    energy; ``None`` leaves them unseeded. With ``device="cuda"`` the final
+    single-point evaluation uses mixed precision, which is not bit-reproducible.
     """
     _nan = {
         "energy_kJ_mol": np.nan,
@@ -629,6 +851,7 @@ def _receptor_energy(
 
     try:
         openmm, unit, ForceField, Modeller, PDBFile, Simulation = _import_openmm()
+        from binding_metrics.core.system import deterministic_hydrogen_placement
     except ImportError as e:
         return {**_nan, "error": str(e)}
 
@@ -646,7 +869,9 @@ def _receptor_energy(
 
     tmp_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False, mode="w") as tmp:
+        with tempfile.NamedTemporaryFile(
+            suffix=".pdb", delete=False, mode="w", encoding="utf-8"
+        ) as tmp:
             tmp_path = Path(tmp.name)
         out_pdb = pdb_io.PDBFile()
         pdb_io.set_structure(out_pdb, chain_atoms)
@@ -654,25 +879,30 @@ def _receptor_energy(
 
         gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
 
-        if has_pdbfixer:
-            fixer = PDBFixer(filename=str(tmp_path))
-            fixer.findMissingResidues()
-            fixer.findNonstandardResidues()
-            fixer.replaceNonstandardResidues()
-            fixer.removeHeterogens(keepWater=False)
-            fixer.findMissingAtoms()
-            fixer.addMissingAtoms()
-            fixer.addMissingHydrogens(7.4)
-            topology, positions = fixer.topology, fixer.positions
-        else:
-            pdb = PDBFile(str(tmp_path))
-            ff_tmp = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
-            mod = Modeller(pdb.topology, pdb.positions)
-            try:
-                mod.addHydrogens(ff_tmp, pH=7.4)
-            except Exception:
-                mod.addHydrogens(ff_tmp)
-            topology, positions = mod.topology, mod.positions
+        # Modeller.addHydrogens offsets each new hydrogen with Python's global
+        # random module and settles it with a short minimisation on the fastest
+        # platform. The seed and the Reference platform (double precision,
+        # single-threaded) make that step, and so the single-point energy below,
+        # repeatable.
+        placement_platform = openmm.Platform.getPlatformByName("Reference")
+        with deterministic_hydrogen_placement(random_seed):
+            if has_pdbfixer:
+                fixer = PDBFixer(filename=str(tmp_path))
+                fixer.findMissingResidues()
+                fixer.findNonstandardResidues()
+                fixer.replaceNonstandardResidues()
+                fixer.removeHeterogens(keepWater=False)
+                fixer.findMissingAtoms()
+                fixer.addMissingAtoms(seed=random_seed)
+                # Same call as PDBFixer.addMissingHydrogens(7.4), with the platform pinned.
+                mod = Modeller(fixer.topology, fixer.positions)
+                mod.addHydrogens(pH=7.4, platform=placement_platform)
+            else:
+                pdb = PDBFile(str(tmp_path))
+                ff_tmp = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
+                mod = Modeller(pdb.topology, pdb.positions)
+                mod.addHydrogens(ff_tmp, pH=7.4, platform=placement_platform)
+        topology, positions = mod.topology, mod.positions
 
         ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
         system = ff.createSystem(
@@ -681,15 +911,14 @@ def _receptor_energy(
             constraints=openmm.app.HBonds,
         )
 
-        try:
-            if device == "cuda":
+        platform = openmm.Platform.getPlatformByName("CPU")
+        props = {}
+        if device == "cuda":
+            try:
                 platform = openmm.Platform.getPlatformByName("CUDA")
                 props = {"CudaPrecision": "mixed"}
-            else:
-                raise Exception("cpu requested")
-        except Exception:
-            platform = openmm.Platform.getPlatformByName("CPU")
-            props = {}
+            except openmm.OpenMMException:
+                pass  # no CUDA platform registered: evaluate on the CPU platform
 
         integrator = openmm.VerletIntegrator(0.001 * unit.picoseconds)
         sim = Simulation(topology, system, integrator, platform, props)
@@ -708,7 +937,10 @@ def _receptor_energy(
             "error": None,
         }
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - one term of a multi-metric report; recorded in "error"
+        # Broad on purpose: PDBFixer, OpenMM and the force field raise many exception
+        # types on unusual input, so a failure is recorded in ``error`` instead of
+        # aborting the other terms.
         return {**_nan, "error": f"{type(e).__name__}: {e}"}
 
     finally:
@@ -728,6 +960,8 @@ def _score_model(
     solvent_model: str,
     device: str,
     model_index: int,
+    exclude_bonded: bool = True,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
     """Compute all quality metrics for one model."""
     struc, _, _ = _import_biotite()
@@ -761,12 +995,16 @@ def _score_model(
     n_heavy = int(np.sum(~np.isin(elements, ["H", "D", ""])))
 
     rama = _ramachandran(rec_atoms)
-    clash = _clashscore(rec_atoms, clash_cutoff)
+    clash = _clashscore(
+        rec_atoms, clash_cutoff, exclude_bonded=exclude_bonded, exempt_hbond_pairs=exclude_bonded
+    )
     rota = _rotamer_quality(rec_atoms)
     cbeta = _cbeta_deviations(rec_atoms)
     bbgeom = _backbone_geometry(rec_atoms)
     bfact = _bfactor_stats(rec_atoms)
-    energy = _receptor_energy(rec_atoms, solvent_model=solvent_model, device=device)
+    energy = _receptor_energy(
+        rec_atoms, solvent_model=solvent_model, device=device, random_seed=random_seed
+    )
 
     mp_score = _molprobity_score(
         clash.get("clashscore", np.nan),
@@ -774,7 +1012,7 @@ def _score_model(
         rota.get("outlier_pct", np.nan),
     )
 
-    return {
+    result = {
         "model_index": model_index,
         "n_residues": n_res,
         "n_heavy_atoms": n_heavy,
@@ -787,6 +1025,15 @@ def _score_model(
         "energy": energy,
         "molprobity_score": mp_score,
     }
+    if not np.isfinite(mp_score):
+        undefined = [
+            f"{name}: {term['reason']}"
+            for name, term in (("clashscore", clash), ("ramachandran", rama), ("rotamers", rota))
+            if "reason" in term
+        ]
+        detail = "; ".join(undefined) or "a term is not finite"
+        result["reason"] = f"molprobity_score undefined ({detail})"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +1047,10 @@ def compute_receptor_quality(
     clash_cutoff: float = 0.4,
     solvent_model: str = "obc2",
     device: str = "cuda",
+    *,
+    exclude_bonded: bool = True,
+    random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """Compute MolProbity-style structural quality metrics for a receptor chain.
 
@@ -814,6 +1065,18 @@ def compute_receptor_quality(
         clash_cutoff: Minimum VDW overlap in Å to count as a clash (default 0.4 Å).
         solvent_model: Implicit solvent for energy: 'obc2' or 'gbn2'.
         device: Compute device for energy: 'cuda' or 'cpu'.
+        exclude_bonded: Leave covalently linked atom pairs (disulfides, cyclic
+            closures, lactams, staples, peptide bonds across numbering gaps) and
+            N/O hydrogen-bond pairs out of the clash count (default True). False
+            restores the earlier count, which scored them as clashes.
+        random_seed: Seed for the stochastic steps of the energy term
+            (hydrogen placement and PDBFixer's rebuild of missing atoms).
+            Defaults to the package-wide ``DEFAULT_RANDOM_SEED`` so repeated
+            calls agree; ``None`` gives fresh randomness. The energy is a single
+            point at the input geometry, so it is the term most exposed to the
+            hydrogen jitter.
+        target_chain: Alias of ``receptor_chain``; different IDs in both raise
+            ``ValueError``.
 
     Returns:
         Dictionary with keys:
@@ -824,17 +1087,33 @@ def compute_receptor_quality(
         Per-model results — models (list[dict]), each with:
             model_index (int), n_residues (int), n_heavy_atoms (int)
             ramachandran: favoured/allowed/outlier counts and %, n_evaluated
-            clashes: clashscore, n_clashes, n_heavy_atoms
+            clashes: clashscore, n_clashes, n_heavy_atoms  [heavy-atom overlap, see _clashscore]
             rotamers: outlier_count, outlier_pct, n_evaluated  [χ1 simplified]
             cbeta: cb_deviation_count, cb_n_evaluated, cb_deviation_pct
             backbone_geometry: bad/total bonds+angles and %
             b_factors: mean/max/min/std, n_high_b_residues (>60 Å²)
-            energy: energy_kJ_mol, energy_per_residue_kJ_mol, n_atoms_with_h
-            molprobity_score (float): composite score (lower = better)
+            energy: energy_kJ_mol, energy_per_residue_kJ_mol, n_atoms_with_h,
+                error (None on success, else "ExceptionType: message")
+            molprobity_score (float): composite score (lower = better); NaN when
+                the clashscore, Ramachandran or rotamer term is undefined
+                (for example a chain without any χ1 residue)
+
+            Every term dict above carries a ``reason`` string only when its
+            value could not be computed; the value then keeps its NaN sentinel.
 
         Aggregate summary (mean over models):
             summary (dict) — all scalar metrics averaged; best_model_index
+
+        A structure without a protein chain returns ``error`` (str) instead.
+
+    References:
+        Chen et al. 2010, Acta Cryst. D66:12 and Williams et al. 2018, Protein
+        Sci. 27:293 (MolProbity); Engh & Huber 1991, Acta Cryst. A47:392
+        (backbone geometry); Lovell et al. 2003, Proteins 50:437 (Cβ deviation).
     """
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain
+    )
     path = Path(path)
     all_models = _load_all_models(path)
 
@@ -850,7 +1129,16 @@ def compute_receptor_quality(
         }
 
     model_results = [
-        _score_model(atoms, receptor_chain, clash_cutoff, solvent_model, device, idx + 1)
+        _score_model(
+            atoms,
+            receptor_chain,
+            clash_cutoff,
+            solvent_model,
+            device,
+            idx + 1,
+            exclude_bonded=exclude_bonded,
+            random_seed=random_seed,
+        )
         for idx, atoms in enumerate(all_models)
     ]
 
@@ -969,7 +1257,7 @@ def _write_csv(result: dict, output_path: Path) -> None:
     if not rows:
         return
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w", newline="") as f:
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
@@ -981,6 +1269,7 @@ def _write_csv(result: dict, output_path: Path) -> None:
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser(
         description=(
             "Assess receptor structural quality: Ramachandran, rotamer outliers, "
@@ -997,6 +1286,8 @@ def main():
     )
     parser.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         default=None,
         help="Receptor chain ID (auto-detects largest chain if omitted)",
@@ -1013,8 +1304,9 @@ def main():
         default=None,
         help="Write results to file. Extension determines format: .csv or .json",
     )
-    from binding_metrics.cli import add_log_file_arg
+    from binding_metrics.cli import add_log_file_arg, add_random_seed_arg
 
+    add_random_seed_arg(parser, "hydrogen placement and atom rebuilding in the energy term")
     add_log_file_arg(parser)
     args = parser.parse_args()
 
@@ -1029,6 +1321,7 @@ def main():
             clash_cutoff=args.clash_cutoff,
             solvent_model=args.solvent_model,
             device=args.device,
+            random_seed=args.random_seed,
         )
         result["input_filename"] = args.input.name
 
@@ -1122,7 +1415,7 @@ def main():
             if suffix == ".csv":
                 _write_csv(result, args.output)
             else:
-                with open(args.output, "w") as f:
+                with open(args.output, "w", encoding="utf-8") as f:
                     json.dump(result, f, indent=2, default=_json_default)
             print(f"\n  Results written to: {args.output}")
 

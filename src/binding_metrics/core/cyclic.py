@@ -46,12 +46,28 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.core.residues import (
+    BACKBONE_HEAVY_ATOM_NAMES,
+    CUSTOM_HYDROGEN_RESIDUES,
+    CYSTEINE_NAMES,
+    STANDARD_AMINO_ACIDS,
+)
+
 # ---------------------------------------------------------------------------
 # Threshold constants (nm)
+#
+# Cut-offs for reading covalent bonds off coordinates. They are heuristics with a
+# margin over ideal geometry, because predicted models can close a ring with a
+# stretched bond that a crystal-quality cut-off would miss.
 # ---------------------------------------------------------------------------
-_AMIDE_BOND_THRESH = 0.20  # N–C amide bond detection
-_DISULFIDE_THRESH = 0.26  # S–S disulfide detection
-_SUSPECT_THRESH = 0.22  # any short inter-residue contact (potential cyclic)
+#: Amide C-N is 0.133 nm (Engh and Huber, Acta Cryst. A47, 392-400, 1991). 0.20 nm
+#: accepts a stretched closure bond and stays below the 0.32 nm of a van der
+#: Waals N...C contact.
+_AMIDE_BOND_THRESH = 0.20
+#: A disulfide S-S bond is about 0.203 nm long (Engh and Huber, as above); 0.26 nm
+#: leaves room for poor geometry while excluding the van der Waals contact of
+#: two unbonded sulfurs (0.36 nm).
+_DISULFIDE_THRESH = 0.26
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +310,8 @@ def _peptide_residues(topology, chain_id: str):
     raise ValueError(f"Chain '{chain_id}' not found in topology.")
 
 
-# Covalent radii in nm (Cordero et al. 2008; subset covering biomolecules).
+# Covalent radii in nm (Cordero et al., Dalton Trans. 2008, 2832-2838; subset
+# covering biomolecules).
 _COVALENT_RADII_NM = {
     "H": 0.031,
     "C": 0.076,
@@ -308,11 +325,54 @@ _COVALENT_RADII_NM = {
     "I": 0.139,
     "SE": 0.120,
 }
+#: Radius (nm) for an element missing from the table, close to the carbon value.
 _DEFAULT_COVALENT_RADIUS_NM = 0.077
+#: Two atoms are bonded when closer than the sum of their covalent radii times
+#: this factor. A heuristic. For C-C the cut-off is 0.198 nm against a 0.154 nm
+#: bond and a 1,3 distance of about 0.25 nm; for C-S it is 0.235 nm against a
+#: 0.182 nm bond. The 30 % margin absorbs coordinate noise in predicted models.
 _COVALENT_TOLERANCE = 1.3
 
 
-def reconstruct_intraresidue_bonds(topology, positions, chain_id: str) -> int:
+def _within_covalent_range(pos: np.ndarray, atom_a, atom_b) -> bool:
+    """True when two atoms are closer than ``_COVALENT_TOLERANCE`` times their covalent radii."""
+    radius_a = _COVALENT_RADII_NM.get(atom_a.element.symbol.upper(), _DEFAULT_COVALENT_RADIUS_NM)
+    radius_b = _COVALENT_RADII_NM.get(atom_b.element.symbol.upper(), _DEFAULT_COVALENT_RADIUS_NM)
+    return _dist(pos, atom_a.index, atom_b.index) < (radius_a + radius_b) * _COVALENT_TOLERANCE
+
+
+def _residues_with_internal_bonds(topology) -> set:
+    """Indices of the residues that have at least one bond between two of their own atoms."""
+    return {b.atom1.residue.index for b in topology.bonds() if b.atom1.residue is b.atom2.residue}
+
+
+def _bond_bare_residues(
+    topology, pos: np.ndarray, residues, existing: set, bonded_residues: set
+) -> set:
+    """Bond, by covalent radii, each residue of ``residues`` that has no internal bond.
+
+    ``existing`` is the set of bonded atom-index pairs and is updated in place;
+    ``bonded_residues`` holds the indices of the residues that already have an
+    internal bond. Returns the indices of the residues that gained a bond.
+    """
+    restored: set = set()
+    for res in residues:
+        if res.index in bonded_residues:
+            continue  # standard residue (or already reconstructed): leave alone
+        atoms = [a for a in res.atoms() if a.element is not None]
+        for i, atom_i in enumerate(atoms):
+            for atom_j in atoms[i + 1 :]:
+                key = frozenset((atom_i.index, atom_j.index))
+                if key not in existing and _within_covalent_range(pos, atom_i, atom_j):
+                    topology.addBond(atom_i, atom_j)
+                    existing.add(key)
+                    restored.add(res.index)
+    return restored
+
+
+def reconstruct_intraresidue_bonds(
+    topology, positions, chain_id: str, *, residues: Optional[list] = None
+) -> int:
     """Add missing intra-residue covalent bonds for residues that have none.
 
     OpenMM's ``createStandardBonds`` (run when a structure is loaded) only builds
@@ -332,39 +392,71 @@ def reconstruct_intraresidue_bonds(topology, positions, chain_id: str) -> int:
     backbone / cyclic-closure bonds are never touched.  It is a no-op for a fully
     standard peptide (e.g. 3P8F), whose residues already carry their bonds.
 
+    ``residues`` (keyword-only), when given, replaces the lookup of ``chain_id``:
+    it is the list of residues to repair, for a topology in which two chains share
+    an ID.
+
     Returns the number of bonds added.
     """
     pos = _pos_nm(positions)
-    residues = _peptide_residues(topology, chain_id)
+    if residues is None:
+        residues = _peptide_residues(topology, chain_id)
     existing = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
-    added = 0
-    for res in residues:
-        atoms = list(res.atoms())
-        if len(atoms) < 2:
+    n_before = len(existing)
+    _bond_bare_residues(topology, pos, residues, existing, _residues_with_internal_bonds(topology))
+    return len(existing) - n_before
+
+
+def reconstruct_nonstandard_residue_bonds(
+    topology, positions, *, include_chain: Optional[str] = None
+) -> int:
+    """Restore the bonds OpenMM leaves out around non-standard residues, in every protein chain.
+
+    ``Topology.createStandardBonds`` builds nothing for a residue whose load-time
+    name it does not know (a modified residue such as S-palmitoyl-cysteine P1L, an
+    NCAA, a D-amino acid): no intra-residue bond, and no peptide bond from the
+    preceding residue's C to its N. ``PDBxFile`` takes the peptide bond from the
+    ``struct_conn`` ``covale`` rows, but it looks the partners up by
+    ``label_seq_id`` while it keys atoms by ``auth_seq_id``, so the row is dropped
+    whenever the two numberings differ (6SBA, most deposited entries). The
+    neighbouring standard residue then has an unsatisfied ``ExternalBond`` and
+    ``createSystem`` reports "bonds are different" for it, not for the residue
+    that lacks the bond.
+
+    In every chain that holds a standard amino acid this restores
+
+      * the intra-residue bonds of each residue that has none (covalent-radius
+        test, as in :func:`reconstruct_intraresidue_bonds`), and
+      * the peptide bond C(i)-N(i+1) at each junction where residue i or i+1 was
+        just restored, when the two atoms lie within ``_AMIDE_BOND_THRESH``. A
+        chain break is much longer than that, so it is not bridged.
+
+    Residues that already carry bonds are not touched, so the call is a no-op for a
+    fully standard structure. ``include_chain`` names a chain to repair even when
+    it holds no standard amino acid (a peptide made only of D-residues).
+
+    Returns the number of bonds added.
+    """
+    pos = _pos_nm(positions)
+    existing = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
+    n_before = len(existing)
+    bonded_residues = _residues_with_internal_bonds(topology)
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        if chain.id != include_chain and not any(r.name in STANDARD_AMINO_ACIDS for r in residues):
             continue
-        idx_set = {a.index for a in atoms}
-        has_intra = any(
-            b.atom1.index in idx_set and b.atom2.index in idx_set for b in topology.bonds()
-        )
-        if has_intra:
-            continue  # standard residue (or already reconstructed) — leave alone
-        for i in range(len(atoms)):
-            ai = atoms[i]
-            if ai.element is None:
+        restored = _bond_bare_residues(topology, pos, residues, existing, bonded_residues)
+        for previous, following in zip(residues, residues[1:]):
+            if previous.index not in restored and following.index not in restored:
                 continue
-            ra = _COVALENT_RADII_NM.get(ai.element.symbol.upper(), _DEFAULT_COVALENT_RADIUS_NM)
-            for j in range(i + 1, len(atoms)):
-                aj = atoms[j]
-                if aj.element is None:
-                    continue
-                rb = _COVALENT_RADII_NM.get(aj.element.symbol.upper(), _DEFAULT_COVALENT_RADIUS_NM)
-                if _dist(pos, ai.index, aj.index) < (ra + rb) * _COVALENT_TOLERANCE:
-                    key = frozenset((ai.index, aj.index))
-                    if key not in existing:
-                        topology.addBond(ai, aj)
-                        existing.add(key)
-                        added += 1
-    return added
+            c_atom, n_atom = _find_atom(previous, "C"), _find_atom(following, "N")
+            if c_atom is None or n_atom is None:
+                continue
+            key = frozenset((c_atom.index, n_atom.index))
+            if key not in existing and _dist(pos, c_atom.index, n_atom.index) < _AMIDE_BOND_THRESH:
+                topology.addBond(c_atom, n_atom)
+                existing.add(key)
+    return len(existing) - n_before
 
 
 def _find_atom(residue, name: str):
@@ -377,7 +469,7 @@ def _find_atom(residue, name: str):
 
 #: Backbone atom names — a cross-link touching one of these is not a side-chain
 #: staple.
-_BACKBONE_ATOM_NAMES = frozenset({"N", "CA", "C", "O", "OXT"})
+_BACKBONE_ATOM_NAMES = BACKBONE_HEAVY_ATOM_NAMES | {"OXT"}
 
 
 def _is_hydrocarbon_staple_bond(ai, aj) -> bool:
@@ -811,7 +903,7 @@ def rename_disulfide_cys_to_cyx(topology, positions):
 
     to_remove_hg = []
     for res in topology.residues():
-        if res.name not in ("CYS", "CYX"):
+        if res.name not in CYSTEINE_NAMES:
             continue
         sg = next((a for a in res.atoms() if a.name == "SG"), None)
         if sg is not None and sg.index in ss_bonded_sg:
@@ -859,11 +951,13 @@ def patch_cyclic_topology(topology, positions, chain_id: str, hints: list = None
     except ImportError as e:
         raise ImportError("OpenMM is required for cyclic peptide patching.") from e
 
-    # Restore intra-residue bonds for any non-standard residue that lost them at
-    # load time (D-amino acids, N-methyl residues, exotic NCAA building blocks).
-    # Needed before template matching / GAFF parameterisation; no-op for a fully
-    # standard peptide.
-    reconstruct_intraresidue_bonds(topology, positions, chain_id)
+    # Restore the bonds of any non-standard residue that lost them at load time
+    # (D-amino acids, N-methyl residues, exotic NCAA building blocks), with the
+    # peptide bonds on either side. Every protein chain is repaired, not only the
+    # peptide: a receptor residue such as S-palmitoyl-cysteine breaks template
+    # matching of its neighbours the same way. Needed before template matching /
+    # GAFF parameterisation; no-op for a fully standard structure.
+    reconstruct_nonstandard_residue_bonds(topology, positions, include_chain=chain_id)
 
     info_list = detect_cyclization(topology, positions, chain_id)
     if not info_list and hints:
@@ -1368,9 +1462,8 @@ def get_addh_variants(topology, bond_info_list: list, chain_id: str) -> list:
     # disulfide partners (e.g. a receptor CYS renamed to CYX) are also covered.
     # Only override None entries so the head_to_tail/lactam terminal
     # assignments above are not disturbed.
-    _custom_h_residues = ("CYX", "ASPL", "GLUL", "LYSL", "NMG", "NMA", "MVA", "MLE")
     for res in topology.residues():
-        if res.name in _custom_h_residues and variants[res.index] is None:
+        if res.name in CUSTOM_HYDROGEN_RESIDUES and variants[res.index] is None:
             h_spec = _internal_h_list(res.name)
             if h_spec is not None:
                 variants[res.index] = h_spec
@@ -1393,7 +1486,7 @@ def load_extra_xmls(ff, bond_info_list: list) -> None:
             seen.add(xml_str)
             tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xml")
             try:
-                with os.fdopen(tmp_fd, "w") as fh:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
                     fh.write(xml_str)
                 ff.loadFile(tmp_path)
             finally:

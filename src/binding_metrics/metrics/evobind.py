@@ -47,7 +47,8 @@ from typing import Optional
 
 import numpy as np
 
-from binding_metrics.utils import backfill_auth_columns
+from binding_metrics.core.residues import VARIANT_TO_PARENT_RESIDUE
+from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
 
 # ---------------------------------------------------------------------------
 # Internal helpers: coordinate extraction
@@ -55,30 +56,13 @@ from binding_metrics.utils import backfill_auth_columns
 
 
 def _import_biotite():
-    try:
-        import biotite.structure as struc
-        import biotite.structure.io.pdbx as pdbx
-
-        return struc, pdbx
-    except ImportError:
-        raise ImportError(
-            "biotite is required for EvoBind metrics. "
-            "Install with: pip install binding-metrics[biotite]"
-        )
+    struc, pdbx, _ = import_biotite("EvoBind metrics")
+    return struc, pdbx
 
 
 def _load_atoms(path: Path):
     """Load an AtomArray from a CIF or PDB file (model 1)."""
-    struc, pdbx = _import_biotite()
-    path = Path(path)
-    if path.suffix.lower() in (".cif", ".mmcif"):
-        f = pdbx.CIFFile.read(str(path))
-        backfill_auth_columns(f)
-        return pdbx.get_structure(f, model=1)
-    import biotite.structure.io.pdb as pdb_io
-
-    f = pdb_io.PDBFile.read(str(path))
-    return pdb_io.get_structure(f, model=1)
+    return load_structure(path, purpose="EvoBind metrics")
 
 
 def _cb_atoms(atoms, chain_id: str):
@@ -149,6 +133,23 @@ def _auto_interface_mask(
     return dists.min(axis=1) < cutoff
 
 
+def _resname_mismatch_fraction(atoms_a, atoms_b) -> float:
+    """Fraction of paired atoms whose residue names differ (pair k = atom k of each array).
+
+    Protonation-state variants of one amino acid (HID/HIE/HIP, CYX, ASH, ...)
+    count as the same residue. Returns 0.0 for empty input.
+    """
+    if atoms_a.array_length() == 0:
+        return 0.0
+
+    def _canonical(atoms):
+        return [
+            VARIANT_TO_PARENT_RESIDUE.get(str(r).strip(), str(r).strip()) for r in atoms.res_name
+        ]
+
+    return float(np.mean([a != b for a, b in zip(_canonical(atoms_a), _canonical(atoms_b))]))
+
+
 def _per_residue_plddt(
     plddt_per_atom: np.ndarray,
     atoms,
@@ -181,9 +182,11 @@ def compute_evobind_score(
     structure_path: str | Path,
     plddt_per_atom: Optional[np.ndarray],
     binder_chain: str,
-    receptor_chain: str,
+    receptor_chain: Optional[str] = None,
     receptor_interface_residues: Optional[list[int]] = None,
     interface_cutoff_angstrom: float = 8.0,
+    *,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """Compute the primary EvoBind design score for a single predicted structure.
 
@@ -202,13 +205,16 @@ def compute_evobind_score(
         plddt_per_atom: Per-atom pLDDT [0–100], shape (n_atoms,), from the
             same prediction. If None only distance metrics are returned.
         binder_chain: Chain ID of the designed binder/peptide.
-        receptor_chain: Chain ID of the receptor/target.
+        receptor_chain: Chain ID of the receptor/target. Required, through
+            this parameter or ``target_chain``.
         receptor_interface_residues: Explicit list of receptor residue numbers
             that define the binding interface. If None the interface is
             auto-detected as receptor residues whose Cβ lies within
             ``interface_cutoff_angstrom`` Å of any binder Cβ.
         interface_cutoff_angstrom: Distance cutoff (Å) for auto-detection
             (default 8.0, matching the EvoBind CB-contact threshold).
+        target_chain: Alias of ``receptor_chain``; different IDs in both raise
+            ``ValueError``.
 
     Returns:
         Dictionary with keys:
@@ -224,13 +230,30 @@ def compute_evobind_score(
             Average of the two asymmetric distances above.
         n_interface_receptor_residues (int):
             Number of receptor residues used as the interface.
+        interface_fallback_used (bool):
+            True when no receptor Cβ lay within ``interface_cutoff_angstrom`` of
+            a binder Cβ and the whole receptor was used as the interface. The
+            distances then describe the binder against the entire receptor.
         mean_plddt_binder (float | None):
             Mean per-residue pLDDT of the binder chain [0–100].
             None when ``plddt_per_atom`` is not provided.
         evobind_score (float | None):
             Primary EvoBind score: ``if_dist_pep_to_rec / (mean_plddt / 100)``.
             None when ``plddt_per_atom`` is not provided or mean_plddt is zero.
+        reason (str):
+            Present only when ``plddt_per_atom`` was given but the score could
+            not be computed (mean pLDDT zero or not finite).
+
+    Raises:
+        ValueError: If the binder or receptor chain has no Cβ/Cα atoms, or
+            ``receptor_interface_residues`` matches no receptor residue.
+
+    Reference:
+        Bryant et al. 2025, Commun. Chem. (doi:10.1038/s42004-025-01601-3).
     """
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
     atoms = _load_atoms(Path(structure_path))
 
     pep_cb = _cb_atoms(atoms, binder_chain)
@@ -246,13 +269,21 @@ def compute_evobind_score(
     rec_res_ids = rec_cb.res_id  # one per residue by construction of _cb_atoms
 
     # Determine receptor interface residues
+    interface_fallback_used = False
     if receptor_interface_residues is not None:
         if_mask = np.isin(rec_res_ids, receptor_interface_residues)
+        if not if_mask.any():
+            raise ValueError(
+                f"None of receptor_interface_residues {list(receptor_interface_residues)} "
+                f"is a residue number of receptor chain '{receptor_chain}'."
+            )
     else:
         if_mask = _auto_interface_mask(rec_cb_coords, pep_cb_coords, interface_cutoff_angstrom)
         if not if_mask.any():
-            # No residues within cutoff — use the full receptor as fallback
+            # Nothing within the cutoff: the whole receptor stands in for the
+            # interface, which turns the score into a binder-to-receptor distance.
             if_mask = np.ones(len(rec_res_ids), dtype=bool)
+            interface_fallback_used = True
 
     rec_if_coords = rec_cb_coords[if_mask]
 
@@ -269,6 +300,7 @@ def compute_evobind_score(
         "if_dist_rec_to_pep": if_dist_rec_to_pep,
         "if_dist_symmetric": if_dist_symmetric,
         "n_interface_receptor_residues": int(if_mask.sum()),
+        "interface_fallback_used": interface_fallback_used,
         "mean_plddt_binder": None,
         "evobind_score": None,
     }
@@ -279,6 +311,8 @@ def compute_evobind_score(
         result["mean_plddt_binder"] = mean_plddt
         if mean_plddt > 0 and np.isfinite(mean_plddt):
             result["evobind_score"] = if_dist_pep_to_rec / (mean_plddt / 100.0)
+        else:
+            result["reason"] = "mean binder pLDDT is zero or not finite"
 
     return result
 
@@ -287,9 +321,12 @@ def compute_evobind_adversarial_check(
     design_structure_path: str | Path,
     afm_structure_path: str | Path,
     binder_chain: str,
-    receptor_chain: str,
+    receptor_chain: Optional[str] = None,
     afm_plddt_per_atom: Optional[np.ndarray] = None,
     interface_cutoff_angstrom: float = 8.0,
+    max_resname_mismatch_fraction: float = 0.5,
+    *,
+    target_chain: Optional[str] = None,
 ) -> dict:
     """EvoBind adversarial check: consistency between two structure predictions.
 
@@ -317,11 +354,20 @@ def compute_evobind_adversarial_check(
             AlphaFold-Multimer or OpenFold3 standard complex scoring.
         binder_chain: Chain ID of the binder in **both** structures.
         receptor_chain: Chain ID of the receptor in **both** structures.
+            Required, through this parameter or ``target_chain``.
         afm_plddt_per_atom: Per-atom pLDDT [0–100] from the AFM prediction,
             shape (n_atoms,). Used to compute the pLDDT-weighted adversarial
             score.  If None, only geometric metrics are returned.
         interface_cutoff_angstrom: Distance cutoff (Å) used to identify
             receptor interface residues from the design structure (default 8.0).
+        max_resname_mismatch_fraction: Residues are paired between the two
+            structures by residue number, or by position when the numberings do
+            not overlap. If more than this fraction of the paired receptor (or
+            binder) residues have different residue names (histidine and
+            cysteine protonation variants count as equal), the pairing is
+            rejected with a ValueError (default 0.5).
+        target_chain: Alias of ``receptor_chain``; different IDs in both raise
+            ``ValueError``.
 
     Returns:
         Dictionary with keys:
@@ -329,6 +375,18 @@ def compute_evobind_adversarial_check(
         delta_com_angstrom (float):
             Peptide CoM displacement (Å) between the two predictions after
             receptor Cα superposition.  Large values indicate disagreement.
+        n_superposition_residues (int):
+            Receptor residues matched by residue number. 0 to 2 when the
+            structures share no numbering and positional pairing was used
+            instead; see ``n_superposition_atoms`` for the real count.
+        n_superposition_atoms (int):
+            Receptor Cα atoms used for the superposition, whichever pairing
+            was applied.
+        receptor_pairing, binder_pairing (str):
+            ``"residue_number"`` or ``"position"``: how residues were paired
+            for the superposition and for the binder centre of mass.
+        receptor_resname_mismatch_fraction, binder_resname_mismatch_fraction (float):
+            Fraction of paired residues with different residue names.
         afm_if_dist_pep_to_rec (float):
             Mean closest-approach distance from binder Cβ to receptor
             interface Cβ in the AFM structure (Å).
@@ -337,13 +395,32 @@ def compute_evobind_adversarial_check(
             binder Cβ in the AFM structure (Å).
         afm_mean_if_dist (float):
             Symmetric interface distance in the AFM prediction (Å).
+        interface_fallback_used (bool):
+            True when the design structure has no receptor Cβ within
+            ``interface_cutoff_angstrom`` of a binder Cβ, or none of its
+            interface residue numbers exist in the AFM structure; the whole
+            receptor was then used as the interface.
         afm_mean_plddt_binder (float | None):
             Mean per-residue pLDDT of the binder in the AFM prediction.
             None if ``afm_plddt_per_atom`` is not provided.
         evobind_adversarial_score (float | None):
             Combined adversarial score.  None if ``afm_plddt_per_atom`` is
             not provided or the mean pLDDT is zero.
+        reason (str):
+            Present only when ``afm_plddt_per_atom`` was given but the score
+            could not be computed (mean pLDDT zero or not finite).
+
+    Raises:
+        ValueError: If a chain has no Cα/Cβ atoms in either structure, fewer
+            than three receptor Cα atoms can be paired, or the residue names of
+            the paired residues disagree beyond ``max_resname_mismatch_fraction``.
+
+    Reference:
+        Bryant et al. 2025, Commun. Chem. (doi:10.1038/s42004-025-01601-3).
     """
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
     struc, _ = _import_biotite()
 
     design_atoms = _load_atoms(Path(design_structure_path))
@@ -357,10 +434,12 @@ def compute_evobind_adversarial_check(
 
     common_rec_res = np.intersect1d(design_rec_ca.res_id, afm_rec_ca.res_id)
     if len(common_rec_res) >= 3:
+        receptor_pairing = "residue_number"
         design_rec_ca_matched = design_rec_ca[np.isin(design_rec_ca.res_id, common_rec_res)]
         afm_rec_ca_matched = afm_rec_ca[np.isin(afm_rec_ca.res_id, common_rec_res)]
     else:
         # Fall back to positional pairing (e.g. OF3 renumbered from 1)
+        receptor_pairing = "position"
         n = min(design_rec_ca.array_length(), afm_rec_ca.array_length())
         if n < 3:
             raise ValueError(
@@ -369,6 +448,17 @@ def compute_evobind_adversarial_check(
             )
         design_rec_ca_matched = design_rec_ca[:n]
         afm_rec_ca_matched = afm_rec_ca[:n]
+
+    # Numbers alone can pair unrelated residues (a design numbered 100-200
+    # against a prediction renumbered from 1); residue names catch that.
+    receptor_mismatch = _resname_mismatch_fraction(design_rec_ca_matched, afm_rec_ca_matched)
+    if receptor_mismatch > max_resname_mismatch_fraction:
+        raise ValueError(
+            f"{receptor_mismatch:.0%} of the receptor residues paired for superposition "
+            f"(by {receptor_pairing}) have different residue names in the two structures "
+            f"(limit {max_resname_mismatch_fraction:.0%}); the residue numbering or the "
+            "chain contents probably do not correspond."
+        )
 
     # superimpose(reference, mobile) → (superimposed_mobile, transform)
     _, transform = struc.superimpose(afm_rec_ca_matched, design_rec_ca_matched)
@@ -387,10 +477,12 @@ def compute_evobind_adversarial_check(
     # pairing when numbering schemes differ (e.g. OF3 renumbers from 1).
     common_pep_res = np.intersect1d(design_pep_ca.res_id, afm_pep_ca.res_id)
     if len(common_pep_res) >= 1:
+        binder_pairing = "residue_number"
         design_pep_ca_matched = design_pep_ca[np.isin(design_pep_ca.res_id, common_pep_res)]
         afm_pep_ca_matched = afm_pep_ca[np.isin(afm_pep_ca.res_id, common_pep_res)]
     else:
         # No residue-number overlap — pair positionally up to the shorter length
+        binder_pairing = "position"
         n = min(design_pep_ca.array_length(), afm_pep_ca.array_length())
         if n == 0:
             raise ValueError(
@@ -398,6 +490,15 @@ def compute_evobind_adversarial_check(
             )
         design_pep_ca_matched = design_pep_ca[:n]
         afm_pep_ca_matched = afm_pep_ca[:n]
+
+    binder_mismatch = _resname_mismatch_fraction(design_pep_ca_matched, afm_pep_ca_matched)
+    if binder_mismatch > max_resname_mismatch_fraction:
+        raise ValueError(
+            f"{binder_mismatch:.0%} of the binder residues paired for the centre of mass "
+            f"(by {binder_pairing}) have different residue names in the two structures "
+            f"(limit {max_resname_mismatch_fraction:.0%}); the residue numbering or the "
+            "chain contents probably do not correspond."
+        )
 
     # Apply receptor superposition transform to design binder Cα
     design_pep_ca_in_afm_frame = transform.apply(design_pep_ca_matched).coord
@@ -420,11 +521,13 @@ def compute_evobind_adversarial_check(
             f"No Cβ/Cα atoms found for receptor chain '{receptor_chain}' in design structure."
         )
 
+    interface_fallback_used = False
     if_mask = _auto_interface_mask(
         design_rec_cb.coord, design_pep_cb.coord, interface_cutoff_angstrom
     )
     if not if_mask.any():
         if_mask = np.ones(design_rec_cb.array_length(), dtype=bool)
+        interface_fallback_used = True
     if_res_ids = design_rec_cb.res_id[if_mask]
 
     # Map those interface residue numbers to the AFM structure
@@ -436,7 +539,9 @@ def compute_evobind_adversarial_check(
 
     afm_if_mask = np.isin(afm_rec_cb.res_id, if_res_ids)
     if not afm_if_mask.any():
+        # The interface residue numbers do not exist in the AFM model.
         afm_if_mask = np.ones(afm_rec_cb.array_length(), dtype=bool)
+        interface_fallback_used = True
     afm_rec_if_coords = afm_rec_cb.coord[afm_if_mask]
 
     afm_pep_cb = _cb_atoms(afm_atoms, binder_chain)
@@ -457,9 +562,15 @@ def compute_evobind_adversarial_check(
     result: dict = {
         "delta_com_angstrom": delta_com,
         "n_superposition_residues": int(len(common_rec_res)),
+        "n_superposition_atoms": int(design_rec_ca_matched.array_length()),
+        "receptor_pairing": receptor_pairing,
+        "binder_pairing": binder_pairing,
+        "receptor_resname_mismatch_fraction": receptor_mismatch,
+        "binder_resname_mismatch_fraction": binder_mismatch,
         "afm_if_dist_pep_to_rec": afm_if_dist_pep_to_rec,
         "afm_if_dist_rec_to_pep": afm_if_dist_rec_to_pep,
         "afm_mean_if_dist": afm_mean_if_dist,
+        "interface_fallback_used": interface_fallback_used,
         "afm_mean_plddt_binder": None,
         "evobind_adversarial_score": None,
     }
@@ -472,5 +583,7 @@ def compute_evobind_adversarial_check(
             result["evobind_adversarial_score"] = (
                 afm_mean_if_dist * (100.0 / afm_mean_plddt) * delta_com
             )
+        else:
+            result["reason"] = "mean binder pLDDT in the AFM model is zero or not finite"
 
     return result

@@ -91,6 +91,10 @@ class TestPackageImports:
             "ImplicitRelaxation",
             "RelaxationConfig",
             "RelaxationResult",
+            "Relaxer",
+            # Pipeline API
+            "run_pipeline",
+            "run_batch",
             # Metrics (existing)
             "compute_interaction_energy",
             "compute_structure_rmsd",

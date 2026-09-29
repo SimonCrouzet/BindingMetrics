@@ -6,7 +6,9 @@ D-amino acids use the same AMBER ff14SB bonded parameters as their L counterpart
 (bond lengths, angles, torsion terms are chirality-independent in AMBER). They are
 detected by PDB CCD residue name and renamed to their L counterpart in the OpenMM
 topology so that ``ForceField.createSystem`` can match the standard template.
-The original name is preserved in ``NonstandardInfo`` for metric reporting.
+The original name is preserved in ``NonstandardInfo`` for metric reporting, and
+:func:`restore_nonstandard_names` writes it back onto the topology before a
+structure is saved, so output files keep the D-residue names of the input.
 
 Ramachandran validation is corrected automatically: φ/ψ angles for D-residues are
 negated before region classification so that a D-α-helix (φ ≈ +57°, ψ ≈ +47°)
@@ -44,8 +46,12 @@ Supported NMe PDB codes (input → canonical template name):
     MLE       →  MLE
 """
 
+import logging
 import os
 from dataclasses import dataclass, field
+from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # D-amino acid registry  (PDB CCD 3-letter code → L counterpart residue name)
@@ -64,7 +70,7 @@ D_AA_MAP: dict[str, str] = {
     "DIL": "ILE",  # D-isoleucine
     "DLE": "LEU",  # D-leucine
     "DLY": "LYS",  # D-lysine
-    "DME": "MET",  # D-methionine
+    "MED": "MET",  # D-methionine (CCD "DME" is decamethonium, not an amino acid)
     "DPN": "PHE",  # D-phenylalanine
     "DPR": "PRO",  # D-proline
     "DSN": "SER",  # D-serine
@@ -314,11 +320,15 @@ class NonstandardInfo:
             ``template_name`` (e.g. "NMG"). Renamed in topology.
         extra_ff_xmls: AMBER XML strings to load into ForceField before
             ``createSystem`` — one per unique NMe template in use.
+        chain_id: Chain the ``res_idx`` values refer to (set by
+            :func:`detect_nonstandard`). :func:`restore_nonstandard_names`
+            uses it to find the residues again.
     """
 
     d_residues: list = field(default_factory=list)
     nmethyl_residues: list = field(default_factory=list)
     extra_ff_xmls: list = field(default_factory=list)
+    chain_id: Optional[str] = None
 
     @property
     def has_d_residues(self) -> bool:
@@ -455,6 +465,7 @@ def detect_nonstandard(topology, chain_id: str) -> NonstandardInfo:
         d_residues=d_list,
         nmethyl_residues=nme_list,
         extra_ff_xmls=xmls,
+        chain_id=chain_id,
     )
 
 
@@ -542,6 +553,84 @@ def patch_nonstandard(topology, positions, chain_id: str, info: NonstandardInfo)
     return topology, positions
 
 
+#: Names a patched residue can carry by the time the topology is written: the
+#: L name given by :func:`patch_nonstandard`, or one of the variants that
+#: ``Modeller.addHydrogens`` and ``rename_disulfide_cys_to_cyx`` assign later.
+_PATCHED_NAME_VARIANTS: dict[str, frozenset[str]] = {
+    "CYS": frozenset({"CYX"}),
+    "HIS": frozenset({"HID", "HIE", "HIP", "HIN"}),
+    "ASP": frozenset({"ASH"}),
+    "GLU": frozenset({"GLH"}),
+    "LYS": frozenset({"LYN"}),
+}
+
+
+def restore_nonstandard_names(
+    topology, info: NonstandardInfo, chain_id: Optional[str] = None
+) -> int:
+    """Give patched residues their original names back, in place.
+
+    :func:`patch_nonstandard` renames D-amino acids to their L counterpart
+    (DAL -> ALA) and N-methyl residues to the template name (SAR -> NMG) so the
+    force field can build the system. Written to a file, those names turn every
+    D-residue into an L-residue: the Ramachandran step keys on the residue
+    name, so it scores a D-alanine against the L regions.
+
+    The restore works per residue index: DAL and ALA both patch to ALA, so a
+    name lookup cannot tell a D-alanine from an L-alanine after the rename.
+    Call it after the system is built and before the topology is written. It
+    changes residue names only; atoms, bonds and positions are untouched.
+
+    A residue whose current name is neither the patched name nor a protonation
+    or disulfide variant of it (which means residues were added, removed or
+    reordered since detection) is left alone and logged.
+
+    Args:
+        topology: OpenMM Topology that :func:`patch_nonstandard` renamed.
+        info: NonstandardInfo from :func:`detect_nonstandard` on that chain.
+        chain_id: Chain the indices in ``info`` refer to. Defaults to
+            ``info.chain_id``.
+
+    Returns:
+        Number of residues whose original name was restored.
+    """
+    if info.is_empty:
+        return 0
+    chain_id = info.chain_id if chain_id is None else chain_id
+    if chain_id is None:
+        raise ValueError("chain_id is required when info.chain_id is not set.")
+    try:
+        residues = _peptide_residues(topology, chain_id)
+    except ValueError:
+        logger.warning(
+            "Chain '%s' not found; non-standard residue names were not restored.", chain_id
+        )
+        return 0
+
+    restored = 0
+    entries = [(e, e["l_name"]) for e in info.d_residues]
+    entries += [(e, e["template_name"]) for e in info.nmethyl_residues]
+    for entry, patched_name in entries:
+        idx = entry["res_idx"]
+        residue = residues[idx] if idx < len(residues) else None
+        allowed = {patched_name} | _PATCHED_NAME_VARIANTS.get(patched_name, frozenset())
+        if residue is None or residue.name not in allowed:
+            found = "no residue" if residue is None else residue.name
+            logger.warning(
+                "Chain %s residue index %d: expected %s, found %s; "
+                "original name %s was not restored.",
+                chain_id,
+                idx,
+                patched_name,
+                found,
+                entry["original_name"],
+            )
+            continue
+        residue.name = entry["original_name"]
+        restored += 1
+    return restored
+
+
 def load_nonstandard_xmls(ff, info: NonstandardInfo) -> None:
     """Load NMe-AA XML residue templates into a ForceField object.
 
@@ -555,7 +644,7 @@ def load_nonstandard_xmls(ff, info: NonstandardInfo) -> None:
     for xml_str in info.extra_ff_xmls:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xml")
         try:
-            with os.fdopen(tmp_fd, "w") as fh:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
                 fh.write(xml_str)
             ff.loadFile(tmp_path)
         finally:

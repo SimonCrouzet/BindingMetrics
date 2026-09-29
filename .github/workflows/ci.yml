@@ -87,3 +87,48 @@ jobs:
       - name: Check GPU tests still collect
         shell: bash -el {0}
         run: pytest -m "gpu" --collect-only -q
+
+  static-import:
+    name: Static import
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # The static (single-structure) metrics must work on a plain pip install
+      # with no OpenMM. The requirements are read from pyproject.toml (numpy plus
+      # the `static` extra) so this job cannot drift from what the extra promises;
+      # the package itself goes in with --no-deps so nothing else is pulled in.
+      - name: Install the static extra and pytest
+        run: |
+          python - > "$RUNNER_TEMP/static-requirements.txt" <<'PY'
+          import tomllib
+
+          with open("pyproject.toml", "rb") as handle:
+              project = tomllib.load(handle)["project"]
+          print("\n".join([*project["dependencies"], *project["optional-dependencies"]["static"]]))
+          PY
+          pip install -r "$RUNNER_TEMP/static-requirements.txt" pytest
+          pip install --no-deps -e .
+
+      # A dependency that starts pulling OpenMM in would make the test below
+      # meaningless, so check the premise first.
+      - name: Confirm the simulation packages are absent
+        run: |
+          python - <<'PY'
+          import importlib.util
+
+          present = [
+              name
+              for name in ("openmm", "pdbfixer", "openmmforcefields", "openff", "mdtraj")
+              if importlib.util.find_spec(name)
+          ]
+          assert not present, f"simulation packages installed: {present}"
+          PY
+
+      - name: Run the import test
+        run: pytest tests/test_w2a_import_without_openmm.py -v

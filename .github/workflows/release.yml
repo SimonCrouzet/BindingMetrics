@@ -1,0 +1,80 @@
+name: Release
+
+# Pushing a tag such as v0.1.0 builds the sdist and wheel and attaches them to a
+# GitHub Release. Nothing is published to PyPI: that stays a separate decision.
+# docker-publish.yml also reacts to v* tags and builds the semver-tagged images.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Creating a release is the only write this workflow performs. The build runs
+# in the same job, so the token is scoped to this workflow and this job only.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install build
+          python -m build
+
+      # The tag is the release name users see, so a tag that disagrees with the
+      # version baked into the wheel would publish misleading artefacts. The
+      # version is read from the built wheel so this keeps working if the version
+      # moves from pyproject.toml to a single attribute in the package.
+      - name: Check the tag matches the built version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'EOF'
+          import glob
+          import os
+          import zipfile
+
+          from packaging.version import Version
+
+          (wheel,) = glob.glob("dist/*.whl")
+          with zipfile.ZipFile(wheel) as zf:
+              name = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+              metadata = zf.read(name).decode()
+          version = next(
+              line.split(":", 1)[1].strip()
+              for line in metadata.splitlines()
+              if line.startswith("Version:")
+          )
+          tag = os.environ["TAG"]
+          # Version() applies PEP 440 normalisation, so v0.2.0-rc1 equals 0.2.0rc1.
+          if Version(tag.removeprefix("v")) != Version(version):
+              raise SystemExit(f"tag {tag} does not match built version {version}")
+          print(f"tag {tag} matches built version {version}")
+          EOF
+
+      # gh is preinstalled on GitHub-hosted runners and reads GITHUB_TOKEN.
+      # Tags containing a hyphen (v0.2.0-rc1) are marked as pre-releases.
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=()
+          if [[ "$TAG" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag \
+            "${flags[@]}"

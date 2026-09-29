@@ -31,9 +31,26 @@ simulation = ["openmm>=8.0"]  # plain CPU build; for GPU use environment.yml
 analysis   = ["mdtraj>=1.9"]
 structure  = ["pdbfixer>=1.9", "gemmi>=0.6"]
 biotite    = ["biotite>=0.41", "hydride", "scipy>=1.10"]
-openfold   = ["openfold"]
+# Everything the static (single-structure) metrics import: biotite for SASA,
+# interface, electrostatics, geometry and H-bond/salt-bridge counting; hydride to
+# add hydrogens for the H-bond count; gemmi for structure comparison and the
+# OpenFold/mmCIF handling; scipy for the KD-tree searches and void-volume grid
+# labelling in the geometry and receptor-quality metrics.
+static     = ["biotite>=0.41", "hydride", "gemmi>=0.6", "scipy>=1.10"]
+# OpenFold3 is imported as `openfold3` and installed with `pip install openfold3`
+# (binding-metrics-check-env, environment_openfold3.yml); the metrics call its
+# `run_openfold` command and never import it. `openfold` is the extra name that
+# the missing-dependency message of binding_metrics/__init__.py gives and
+# `openfold3` an alias for it. Both suit the dedicated OpenFold3 environment.
+openfold   = ["openfold3"]
+openfold3  = ["openfold3"]
 dockq      = ["DockQ>=2.0"]  # reference-based CAPRI metrics (MIT licensed)
-gaff       = []  # openmmforcefields + openff-toolkit are conda-forge only
+# Intentionally empty: openmmforcefields, openff-toolkit, ambertools and rdkit
+# (the GAFF2 route for non-standard residues) are conda-forge only and cannot be
+# expressed as pip requirements. Install them with environment.yml. The extra
+# stays defined so `pip install binding-metrics[gaff]` does not warn about an
+# unknown extra.
+gaff       = []
 all = [
     "openmm>=8.0",
     "mdtraj>=1.9",
@@ -41,13 +58,15 @@ all = [
     "gemmi>=0.6",
     "biotite>=0.41",
     "hydride",
+    "scipy>=1.10",
+    "DockQ>=2.0",
     "pandas>=1.5",
-    "matplotlib>=3.6",
     "markdown>=3.4",
     # openmmforcefields + openff-toolkit are conda-forge only; install via environment.yml
 ]
-report = ["pandas>=1.5", "matplotlib>=3.6", "markdown>=3.4"]
-dev    = ["pytest>=7.0", "ruff>=0.1"]
+# pandas is read by binding-metrics-energy (CSV), markdown by the HTML summary.
+report = ["pandas>=1.5", "markdown>=3.4"]
+dev    = ["pytest>=7.0", "ruff==0.15.21"]  # keep equal to ci.yml and .pre-commit-config.yaml
 
 [project.scripts]
 binding-metrics-check-env = "binding_metrics.cli.check_env:main"
@@ -78,12 +97,17 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W"]
+# B: flake8-bugbear. BLE: blind ``except Exception``, which must name why it is broad
+# (``# noqa: BLE001 - <reason>``) or catch the specific exceptions.
+select = ["B", "BLE", "E", "F", "I", "N", "W"]
 # N806/N803/N815 fight established scientific notation. Atom, residue and
 # matrix names are read against the literature (CA, CB, OD2, dG, dSASA, R_gyr),
 # and lower-casing them to satisfy pep8-naming makes the code harder to check
 # against the papers it implements.
-ignore = ["N806", "N803", "N815"]
+# B905 asks for ``strict=`` on every ``zip``. The zips here pair parallel atom
+# arrays, and each site needs its own decision: ``strict=True`` turns today's
+# silent truncation into an exception, so the rule stays off until each is reviewed.
+ignore = ["N806", "N803", "N815", "B905"]
 
 [tool.ruff.lint.per-file-ignores]
 # Re-exports: the public surface is defined by what __init__ imports.

@@ -1,5 +1,6 @@
 """Tests for the core simulation module."""
 
+from dataclasses import FrozenInstanceError
 from unittest.mock import MagicMock
 
 import pytest
@@ -31,7 +32,7 @@ class TestForceFieldConfig:
 
     def test_forcefield_config_is_frozen(self):
         """ForceFieldConfig should be immutable."""
-        with pytest.raises(Exception):  # FrozenInstanceError
+        with pytest.raises(FrozenInstanceError):
             AMBER_CONFIG.name = "modified"
 
     def test_all_configs_have_required_fields(self):

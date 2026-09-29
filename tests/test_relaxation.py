@@ -1,6 +1,7 @@
 """Tests for the implicit solvent MD relaxation protocol."""
 
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -52,6 +53,42 @@ class TestRelaxationConfig:
         assert callable(config.custom_bond_handler)
 
 
+class TestRelaxationConfigValidation:
+    """__post_init__ rejects MD settings that would save no frames."""
+
+    def test_duration_shorter_than_interval_raises(self):
+        with pytest.raises(ValueError, match="md_save_interval_ps"):
+            RelaxationConfig(md_duration_ps=5.0, md_save_interval_ps=10.0)
+
+    def test_non_positive_interval_raises_when_md_runs(self):
+        with pytest.raises(ValueError, match="md_save_interval_ps"):
+            RelaxationConfig(md_duration_ps=10.0, md_save_interval_ps=0.0)
+
+    def test_minimize_only_ignores_the_interval(self):
+        RelaxationConfig(md_duration_ps=0.0, md_save_interval_ps=10.0)
+        RelaxationConfig(md_duration_ps=0.0, md_save_interval_ps=0.0)
+
+    def test_non_multiple_duration_warns_with_simulated_length(self):
+        with pytest.warns(UserWarning, match=r"not a multiple.*stops after 200 ps \(20 frames\)"):
+            RelaxationConfig(md_duration_ps=205.0, md_save_interval_ps=10.0)
+
+    @pytest.mark.parametrize(
+        "duration, interval",
+        [(200.0, 10.0), (10.0, 10.0), (0.3, 0.1), (2.0, 0.5)],
+    )
+    def test_whole_number_of_intervals_is_silent(self, duration, interval):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            RelaxationConfig(md_duration_ps=duration, md_save_interval_ps=interval)
+
+    def test_frame_count_absorbs_float_error(self):
+        from binding_metrics.protocols.relaxation import _md_frame_count
+
+        assert 0.3 / 0.1 < 3.0  # the plain int() of this would give 2
+        assert _md_frame_count(0.3, 0.1) == 3
+        assert _md_frame_count(205.0, 10.0) == 20
+
+
 class TestRelaxationResult:
     """Tests for RelaxationResult dataclass."""
 
@@ -72,6 +109,24 @@ class TestRelaxationResult:
         assert "potential_energy_minimized" in d
         assert "rmsd_md_final" in d
         assert "minimization_time_s" in d
+
+    def test_qc_columns_without_qc_leave_no_stray_csv_column(self):
+        """A run that never reached QC has qc_passed None and an empty check list."""
+        from binding_metrics.protocols.report import _flatten
+
+        row = RelaxationResult(sample_id="test", success=False).to_dict()
+        assert row["qc_passed"] is None
+        assert row["qc_failed_checks"] == ""
+        assert row["qc_checks"] == []
+        flat = _flatten({"sample_id": "test", "relax": row})
+        assert "relax_qc_checks" not in flat
+        assert flat["relax_qc_passed"] is None
+
+    def test_to_dict_platform_keys_default_to_none(self):
+        d = RelaxationResult(sample_id="test", success=True).to_dict()
+        assert d["platform"] is None
+        assert d["precision"] is None
+        assert d["platform_fallback_reason"] is None
 
     def test_to_dict_rmsf_json(self):
         """to_dict() should serialize per-residue RMSF as JSON string."""
@@ -102,6 +157,46 @@ class TestImplicitRelaxation:
         assert relaxer.config is config
         assert not relaxer._openmm_imported
 
+    def test_get_platform_records_cpu(self):
+        relaxer = ImplicitRelaxation(RelaxationConfig(device="cpu", md_duration_ps=0.0))
+        platform, _ = relaxer._get_platform()
+        assert platform.getName() == "CPU"
+        assert relaxer._platform_used == "CPU"
+        assert relaxer._precision_used is None
+        assert relaxer._platform_fallback_reason is None
+
+    def test_cuda_failure_falls_back_to_cpu_and_is_recorded(self, monkeypatch):
+        import openmm
+
+        real_lookup = openmm.Platform.getPlatformByName
+
+        def lookup(name):
+            if name == "CUDA":
+                raise RuntimeError("no CUDA driver in this test")
+            return real_lookup(name)
+
+        monkeypatch.setattr(openmm.Platform, "getPlatformByName", staticmethod(lookup))
+        relaxer = ImplicitRelaxation(RelaxationConfig(device="cuda", md_duration_ps=0.0))
+        platform, _ = relaxer._get_platform()
+        assert platform.getName() == "CPU"
+        assert relaxer._platform_used == "CPU"
+        assert "no CUDA driver in this test" in relaxer._platform_fallback_reason
+
+    def test_addhydrogens_failure_raises_and_logs(self, tmp_path, prepped_example_cif, caplog):
+        """Both addHydrogens attempts failing stops the run with a clear error."""
+        from unittest import mock
+
+        from openmm import app
+
+        config = RelaxationConfig(md_duration_ps=0.0, device="cpu")
+        with mock.patch.object(app.Modeller, "addHydrogens", side_effect=ValueError("boom")):
+            with caplog.at_level("ERROR", logger="binding_metrics.protocols.relaxation"):
+                result = ImplicitRelaxation(config).run(prepped_example_cif, tmp_path / "out")
+        assert not result.success
+        assert "addHydrogens failed with and without the force field" in result.error_message
+        assert "boom" in result.error_message
+        assert "addHydrogens failed" in caplog.text
+
     @requires_cuda
     @pytest.mark.integration
     def test_run_minimize_only_cif(self, tmp_path: Path, prepped_example_cif):
@@ -120,6 +215,9 @@ class TestImplicitRelaxation:
         assert result.minimized_structure_path is not None
         assert Path(result.minimized_structure_path).exists()
         assert result.md_final_structure_path is None
+        assert result.platform == "CUDA"
+        assert result.precision == "mixed"
+        assert result.platform_fallback_reason is None
 
     @requires_cuda
     @pytest.mark.slow
@@ -179,6 +277,97 @@ class TestImplicitRelaxation:
         relaxer = ImplicitRelaxation(config)
         result = relaxer.run(prepped_example_cif, tmp_path / "out")
         assert result.success, result.error_message
+        assert result.platform == "CPU"
+        assert result.platform_fallback_reason is None
+        assert result.to_dict()["platform"] == "CPU"
+
+    @pytest.mark.integration
+    def test_run_attaches_structural_qc_and_it_passes(self, tmp_path: Path, prepped_example_cif):
+        """A normal minimization of 1YCR passes all seven QC checks."""
+        config = RelaxationConfig(
+            md_duration_ps=0.0,
+            device="cpu",
+            min_steps_initial=5,
+            min_steps_restrained=5,
+            min_steps_final=5,
+        )
+        result = ImplicitRelaxation(config).run(prepped_example_cif, tmp_path / "out")
+        assert result.success, result.error_message
+        assert result.qc_passed is True, result.qc["failed"]
+        checks = result.qc["checks"]
+        assert set(checks) == {
+            "energy",
+            "rmsd",
+            "coordinates_finite",
+            "min_heavy_distance",
+            "bond_lengths",
+            "chirality",
+            "composition",
+        }
+        assert all(check["evaluated"] and check["passed"] for check in checks.values())
+        assert "md_final" not in result.qc
+
+        row = result.to_dict()
+        assert row["qc_passed"] is True
+        assert row["qc_failed_checks"] == ""
+        assert {entry["check"] for entry in row["qc_checks"]} == set(checks)
+        json.dumps(row["qc_checks"])  # plain Python types only
+
+    @pytest.mark.integration
+    def test_failed_qc_is_advisory_and_reported(self, tmp_path: Path, prepped_example_cif):
+        """A failing QC check is recorded but does not flip ``success``."""
+        from binding_metrics.protocols import qc
+
+        failing = {
+            "passed": False,
+            "failed": ["chirality"],
+            "checks": {
+                "chirality": {
+                    "passed": False,
+                    "evaluated": True,
+                    "value": 1,
+                    "limit": "none inverted",
+                    "detail": "1 inverted",
+                }
+            },
+        }
+        config = RelaxationConfig(
+            md_duration_ps=0.0,
+            device="cpu",
+            min_steps_initial=5,
+            min_steps_restrained=5,
+            min_steps_final=5,
+        )
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(qc, "check_relaxed_structure", lambda *a, **k: failing)
+            result = ImplicitRelaxation(config).run(prepped_example_cif, tmp_path / "out")
+        assert result.success is True
+        assert result.qc_passed is False
+        row = result.to_dict()
+        assert row["qc_failed_checks"] == "chirality"
+        assert row["success"] is True
+
+    def test_qc_that_cannot_run_is_recorded_not_raised(self):
+        """A bug inside the QC yields ``passed=None`` with a reason."""
+        from binding_metrics.protocols import qc
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("QC bug")
+
+        relaxer = ImplicitRelaxation(RelaxationConfig())
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(qc, "check_relaxed_structure", broken)
+            patch.setattr(
+                qc.AtomSnapshot, "from_topology", classmethod(lambda cls, top, pos: object())
+            )
+            outcome = relaxer._structural_qc("sample", object(), None, None)
+        assert outcome["passed"] is None
+        assert "QC bug" in outcome["reason"]
+
+    def test_missing_reference_snapshot_is_recorded(self):
+        outcome = ImplicitRelaxation(RelaxationConfig())._structural_qc("s", None, None, None)
+        assert outcome["passed"] is None
+        assert outcome["reason"] == "no reference snapshot"
 
     @pytest.mark.integration
     def test_kabsch_rmsd_identical(self):
@@ -194,6 +383,46 @@ class TestImplicitRelaxation:
         assert abs(rmsd) < 1e-6
 
     @pytest.mark.integration
+    def test_kabsch_rmsd_rotated_copy_is_zero(self):
+        """A rigidly rotated and translated copy superposes exactly (RMSD 0)."""
+        from openmm import Vec3
+        from scipy.spatial.transform import Rotation
+
+        relaxer = ImplicitRelaxation(RelaxationConfig())
+        rng = np.random.default_rng(0)
+        coords_nm = rng.normal(size=(50, 3)) * 0.5
+        rotation = Rotation.from_rotvec(np.deg2rad(60) * np.array([1.0, 2.0, 3.0]) / np.sqrt(14.0))
+        moved_nm = rotation.apply(coords_nm) + np.array([0.3, -0.2, 0.1])
+
+        pos1 = [Vec3(*row) for row in coords_nm]
+        pos2 = [Vec3(*row) for row in moved_nm]
+        assert relaxer._compute_rmsd(pos1, pos2) < 1e-4  # Angstrom
+        assert relaxer._compute_rmsd(pos2, pos1) < 1e-4
+
+    @pytest.mark.integration
+    def test_kabsch_rmsd_matches_scipy_on_noisy_pair(self):
+        """With coordinate noise the RMSD equals scipy's optimal-rotation RMSD."""
+        from openmm import Vec3
+        from scipy.spatial.transform import Rotation
+
+        relaxer = ImplicitRelaxation(RelaxationConfig())
+        rng = np.random.default_rng(1)
+        coords_nm = rng.normal(size=(40, 3)) * 0.5
+        rotation = Rotation.from_euler("xyz", [40.0, -25.0, 70.0], degrees=True)
+        noisy_nm = rotation.apply(coords_nm) + rng.normal(size=(40, 3)) * 0.02
+
+        centered_a = coords_nm - coords_nm.mean(axis=0)
+        centered_b = noisy_nm - noisy_nm.mean(axis=0)
+        _, scipy_rssd_nm = Rotation.align_vectors(centered_b, centered_a)
+        expected_angstrom = scipy_rssd_nm / np.sqrt(len(coords_nm)) * 10.0
+
+        pos1 = [Vec3(*row) for row in coords_nm]
+        pos2 = [Vec3(*row) for row in noisy_nm]
+        assert relaxer._compute_rmsd(pos1, pos2) == pytest.approx(expected_angstrom, rel=1e-6)
+        # 0.02 nm sigma per axis -> about 0.02 * sqrt(3) nm = 3.5 A before fitting
+        assert 0.0 < expected_angstrom < 3.5
+
+    @pytest.mark.integration
     def test_rmsf_zero_for_static_trajectory(self):
         """_compute_rmsf should return 0 for identical frames."""
         config = RelaxationConfig()
@@ -206,3 +435,178 @@ class TestImplicitRelaxation:
         trajectory = [pos, pos, pos]
         rmsf = relaxer._compute_rmsf(trajectory, list(range(5)))
         assert np.allclose(rmsf, 0.0, atol=1e-6)
+
+
+CYCLOSPORIN_CIF = Path(__file__).parent.parent / "data" / "example_ncaa_cyclosporin_1CWA.cif"
+
+
+@pytest.fixture(scope="module")
+def relaxed_cyclosporin(tmp_path_factory):
+    """Minimize-only relaxation of the raw cyclosporin example (GAFF for BMT/ABA)."""
+    config = RelaxationConfig(
+        md_duration_ps=0.0,
+        min_steps_initial=50,
+        min_steps_restrained=20,
+        min_steps_final=50,
+        small_molecules="auto",
+    )
+    out = tmp_path_factory.mktemp("cyclosporin_names")
+    result = ImplicitRelaxation(config).run(CYCLOSPORIN_CIF, out)
+    assert result.success, result.error_message
+    return result
+
+
+@requires_cuda
+@pytest.mark.integration
+class TestRelaxedOutputKeepsNonstandardNames:
+    """Relaxed cyclosporin keeps its D-alanine and sarcosine names.
+
+    The force field needs DAL -> ALA and SAR -> NMG on the topology. Before the
+    names were restored, the saved file had no DAL or SAR atoms, so every
+    downstream step that keys on the residue name (Ramachandran D-residue
+    handling among them) saw an all-L peptide.
+
+    The D-alanine is the first residue of the cyclic peptide. Its phi comes
+    from the ring-closing C-N bond, which ``compute_ramachandran`` evaluates, so
+    the residue is scored under its own name and counted in ``n_d_residues``.
+    The internal sarcosine is scored too, which shows the name reaching that
+    metric.
+    """
+
+    @staticmethod
+    def _peptide_residue_names(cif_path: str) -> list:
+        import gemmi
+
+        chains = gemmi.read_structure(str(cif_path))[0]
+        peptide = min(chains, key=len)
+        return [residue.name for residue in peptide]
+
+    def test_saved_peptide_keeps_input_residue_names(self, relaxed_cyclosporin):
+        names = self._peptide_residue_names(relaxed_cyclosporin.minimized_structure_path)
+        assert names == [
+            "DAL",
+            "MLE",
+            "MLE",
+            "MVA",
+            "BMT",
+            "ABA",
+            "SAR",
+            "MLE",
+            "VAL",
+            "MLE",
+            "ALA",
+        ]
+
+    def test_ramachandran_reads_the_restored_names(self, relaxed_cyclosporin):
+        from binding_metrics.metrics.geometry import compute_ramachandran
+
+        rama = compute_ramachandran(relaxed_cyclosporin.minimized_structure_path)
+        scored = [entry["res_name"] for entry in rama["per_residue"]]
+        assert "SAR" in scored
+        assert "NMG" not in scored
+        assert "DAL" in scored
+        assert rama["n_d_residues"] == 1
+
+
+CYCLOSPORIN_PEPTIDE_NAMES = [
+    "DAL",
+    "MLE",
+    "MLE",
+    "MVA",
+    "BMT",
+    "ABA",
+    "SAR",
+    "MLE",
+    "VAL",
+    "MLE",
+    "ALA",
+]
+
+
+def _chain_residue_names(cif_path) -> list:
+    """Residue names of the smallest chain (the peptide) of a CIF file."""
+    import gemmi
+
+    model = gemmi.read_structure(str(cif_path))[0]
+    peptide = min(model, key=len)
+    return [residue.name for residue in peptide]
+
+
+@pytest.fixture(scope="module")
+def prepped_cyclosporin(tmp_path_factory):
+    """The raw cyclosporin example after ``prep_structure``, written to a CIF."""
+    pytest.importorskip("openmmforcefields", reason="GAFF templates for BMT/ABA")
+    from binding_metrics.core.system import prep_structure
+    from binding_metrics.io.structures import load_structure, save_structure
+
+    topology, positions = load_structure(str(CYCLOSPORIN_CIF))
+    topology, positions = prep_structure(topology, positions, ph=7.4)
+    prepped = tmp_path_factory.mktemp("cyclosporin_prep") / "prepped.cif"
+    save_structure(topology, positions, prepped)
+    return prepped
+
+
+@pytest.mark.integration
+class TestPrepKeepsNonstandardNames:
+    """``prep_structure`` writes cyclosporin with its input D-Ala and Sar names.
+
+    The cyclic hydrogen-placement step renames DAL to ALA and SAR to NMG for the
+    force field. The prepped file must carry the original names, otherwise the
+    relaxation step has no D-residue to detect and the relaxed output is all-L.
+    """
+
+    def test_prepped_peptide_keeps_input_residue_names(self, prepped_cyclosporin):
+        assert _chain_residue_names(prepped_cyclosporin) == CYCLOSPORIN_PEPTIDE_NAMES
+
+    def test_d_alanine_atoms_are_present(self, prepped_cyclosporin):
+        import gemmi
+
+        model = gemmi.read_structure(str(prepped_cyclosporin))[0]
+        peptide = min(model, key=len)
+        d_ala = peptide[0]
+        assert d_ala.name == "DAL"
+        assert {"N", "CA", "C", "O", "CB", "HA"} <= {atom.name for atom in d_ala}
+
+
+@pytest.fixture(scope="module")
+def relaxed_after_prep(prepped_cyclosporin, tmp_path_factory):
+    """Minimize-only relaxation of the prepped cyclosporin file."""
+    config = RelaxationConfig(
+        md_duration_ps=0.0,
+        min_steps_initial=50,
+        min_steps_restrained=20,
+        min_steps_final=50,
+        small_molecules="auto",
+    )
+    out = tmp_path_factory.mktemp("cyclosporin_prep_relax")
+    result = ImplicitRelaxation(config).run(prepped_cyclosporin, out)
+    assert result.success, result.error_message
+    return result
+
+
+@requires_cuda
+@pytest.mark.integration
+class TestPrepThenRelaxKeepsNonstandardNames:
+    """Prep followed by relaxation keeps DAL and SAR in the final CIF."""
+
+    def test_relaxed_peptide_keeps_input_residue_names(self, relaxed_after_prep):
+        names = _chain_residue_names(relaxed_after_prep.minimized_structure_path)
+        assert names == CYCLOSPORIN_PEPTIDE_NAMES
+
+    def test_ramachandran_reads_the_names_from_the_full_pipeline(self, relaxed_after_prep):
+        """Sarcosine is scored under its own name and D flags follow the names.
+
+        The D-alanine is residue 1 of the ring. Its phi comes from the
+        ring-closing C-N bond, so it is scored and ``n_d_residues`` is 1 here.
+        """
+        from binding_metrics.core.nonstandard import is_d_residue
+        from binding_metrics.metrics.geometry import compute_ramachandran
+
+        rama = compute_ramachandran(relaxed_after_prep.minimized_structure_path)
+        per_residue = rama["per_residue"]
+        scored = [entry["res_name"] for entry in per_residue]
+        assert "SAR" in scored
+        assert "NMG" not in scored
+        assert "DAL" in scored
+        assert rama["n_d_residues"] == 1
+        assert all(entry["is_d_aa"] == is_d_residue(entry["res_name"]) for entry in per_residue)

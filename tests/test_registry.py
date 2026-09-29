@@ -1,6 +1,9 @@
 """Tests for binding_metrics.metrics.registry."""
 
+import importlib
 import inspect
+import pkgutil
+import re
 
 import pytest
 
@@ -12,7 +15,14 @@ from binding_metrics.metrics.registry import (
     metrics_by_input_type,
 )
 
-_VALID_INPUT_TYPES = {"static_structure", "trajectory", "md_simulation", "openfold_json"}
+_VALID_INPUT_TYPES = {
+    "static_structure",
+    "trajectory",
+    "md_simulation",
+    "openfold_json",
+    "atom_array",
+    "predicted_structure",
+}
 _VALID_CHAIN_MODES = {"none", "single", "interface", "interface_2paths"}
 
 
@@ -80,6 +90,14 @@ class TestMetricsByInputType:
     def test_openfold_json_nonempty(self):
         specs = metrics_by_input_type("openfold_json")
         assert len(specs) > 0
+
+    def test_atom_array_nonempty(self):
+        specs = metrics_by_input_type("atom_array")
+        assert {s.name for s in specs} == {"hbonds", "saltbridges"}
+
+    def test_predicted_structure_nonempty(self):
+        specs = metrics_by_input_type("predicted_structure")
+        assert {s.name for s in specs} == {"evobind_score"}
 
     def test_all_types_partition_metrics(self):
         """Every metric appears in exactly one input_type bucket."""
@@ -218,8 +236,9 @@ class TestEveryMetricLoads:
         """Declared chain/path kwargs must be real parameters of the target fn.
 
         The registry advertises kwarg names (peptide_chain_arg, receptor_chain_arg,
-        chain_arg, secondary_path_arg) that a generic runner forwards to the metric
-        via ``spec.call(**kwargs)``. If a function renames one of those parameters,
+        chain_arg, binder_chain_arg, target_chain_arg, secondary_path_arg) that a generic
+        runner forwards to the metric via ``spec.call(**kwargs)``. If a function renames
+        one of those parameters,
         the string in the registry silently drifts and the call raises TypeError at
         runtime — exactly the declared-vs-effective gap. Class-based specs (e.g.
         md_implicit → ImplicitRelaxation) are constructed differently and skipped.
@@ -240,6 +259,8 @@ class TestEveryMetricLoads:
                 spec.chain_arg,
                 spec.peptide_chain_arg,
                 spec.receptor_chain_arg,
+                spec.binder_chain_arg,
+                spec.target_chain_arg,
             )
             if a
         ]
@@ -297,3 +318,109 @@ class TestTrajectorySpecs:
             assert spec.chain_mode == "interface", f"{name}: expected interface chain_mode"
             assert spec.peptide_chain_arg is not None
             assert spec.receptor_chain_arg is not None
+
+
+# ---------------------------------------------------------------------------
+# Coverage: every public metric function has a registry entry
+# ---------------------------------------------------------------------------
+
+_METRIC_FUNCTION_PATTERN = re.compile(r"^(compute|calculate)_")
+
+# Public ``compute_*`` / ``calculate_*`` functions that are deliberately not metrics.
+# Map "module:function" to the reason. Keep this empty unless a function really is
+# a helper: a new metric belongs in the registry.
+_NOT_METRICS: dict[str, str] = {}
+
+
+def _metric_modules() -> list[str]:
+    import binding_metrics.metrics as metrics_pkg
+
+    return sorted(
+        f"{metrics_pkg.__name__}.{info.name}"
+        for info in pkgutil.iter_modules(metrics_pkg.__path__)
+        if info.name != "registry"
+    )
+
+
+class TestRegistryCoverage:
+    """A metric function that is not registered is invisible to every registry consumer."""
+
+    @pytest.mark.parametrize("module_name", _metric_modules())
+    def test_every_public_metric_function_is_registered(self, module_name):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError as e:
+            pytest.skip(f"{module_name}: optional dependency not installed — {e}")
+
+        registered = {m.import_path for m in METRICS}
+        missing = [
+            f"{module_name}:{name}"
+            for name, fn in inspect.getmembers(module, inspect.isfunction)
+            if fn.__module__ == module_name
+            and _METRIC_FUNCTION_PATTERN.match(name)
+            and f"{module_name}:{name}" not in registered
+            and f"{module_name}:{name}" not in _NOT_METRICS
+        ]
+        assert not missing, (
+            f"public metric functions without a registry entry: {missing}. "
+            "Add a MetricSpec, or list the function in _NOT_METRICS with the reason."
+        )
+
+    def test_package_exports_are_registered(self):
+        """Every metric function re-exported by ``binding_metrics.metrics`` is registered."""
+        import binding_metrics.metrics as metrics_pkg
+
+        registered_names = {m.import_path.split(":")[1] for m in METRICS}
+        exported = [n for n in metrics_pkg.__all__ if _METRIC_FUNCTION_PATTERN.match(n)]
+        missing = [n for n in exported if n not in registered_names]
+        assert not missing, f"exported metric functions without a registry entry: {missing}"
+
+    def test_not_metrics_entries_are_documented(self):
+        for target, reason in _NOT_METRICS.items():
+            assert ":" in target and reason.strip()
+
+
+class TestNewlyRegisteredMetrics:
+    """The ten metrics that were public but missing from the registry."""
+
+    _EXPECTED = {
+        "receptor_quality": "binding_metrics.metrics.receptor_quality:compute_receptor_quality",
+        "evobind_score": "binding_metrics.metrics.evobind:compute_evobind_score",
+        "evobind_adversarial": (
+            "binding_metrics.metrics.evobind:compute_evobind_adversarial_check"
+        ),
+        "interface_pae": "binding_metrics.metrics.openfold:compute_interface_pae",
+        "structure_interaction_energy": (
+            "binding_metrics.metrics.energy:compute_interaction_energy"
+        ),
+        "hbonds": "binding_metrics.metrics.polar_contacts:compute_hbonds",
+        "saltbridges": "binding_metrics.metrics.polar_contacts:compute_saltbridges",
+        "delta_sasa_static": "binding_metrics.metrics.sasa:compute_delta_sasa_static",
+        "interface_sasa": "binding_metrics.metrics.sasa:calculate_interface_sasa",
+        "contact_residues": "binding_metrics.metrics.contacts:calculate_contact_residues",
+    }
+
+    @pytest.mark.parametrize("name", sorted(_EXPECTED))
+    def test_registered_with_expected_import_path(self, name):
+        assert get_metric(name).import_path == self._EXPECTED[name]
+
+    def test_interaction_energy_entries_are_distinct(self):
+        """The per-frame trajectory metric and the per-structure one both stay reachable."""
+        per_frame = get_metric("interaction_energy")
+        per_structure = get_metric("structure_interaction_energy")
+        assert per_frame.import_path.endswith(":calculate_interaction_energy")
+        assert per_structure.import_path.endswith(":compute_interaction_energy")
+        assert per_frame.input_type == "trajectory"
+        assert per_structure.input_type == "md_simulation"
+
+    def test_receptor_quality_declares_only_the_receptor_role(self):
+        spec = get_metric("receptor_quality")
+        assert spec.receptor_chain_arg == "receptor_chain"
+        assert spec.peptide_chain_arg is None
+
+    def test_two_path_entries_declare_a_secondary_path(self):
+        for name in ("evobind_adversarial", "interface_pae"):
+            spec = get_metric(name)
+            assert spec.chain_mode == "interface_2paths"
+            assert spec.secondary_path_arg, f"{name}: no secondary_path_arg"
+            assert spec.secondary_path_arg != spec.path_arg

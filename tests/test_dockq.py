@@ -111,13 +111,13 @@ class TestComputeDockqInputValidation:
 
     def test_missing_model_raises(self, tmp_path):
         ref = tmp_path / "ref.pdb"
-        ref.write_text("REMARK\n")
+        ref.write_text("REMARK\n", encoding="utf-8")
         with pytest.raises(FileNotFoundError, match="Model structure not found"):
             compute_dockq_metrics(tmp_path / "nope.pdb", ref)
 
     def test_missing_reference_raises(self, tmp_path):
         model = tmp_path / "model.pdb"
-        model.write_text("REMARK\n")
+        model.write_text("REMARK\n", encoding="utf-8")
         with pytest.raises(FileNotFoundError, match="Reference structure not found"):
             compute_dockq_metrics(model, tmp_path / "nope.pdb")
 

@@ -46,6 +46,8 @@ class SimulationConfig:
     save_interval_ps: float = 10.0
     friction: float = 1.0
     nonbonded_cutoff: float = 1.0
+    # A 2 fs timestep is only stable with bonds to hydrogen constrained, which is
+    # why the default constraint is "hbonds".
     constraints: Literal["none", "hbonds", "allbonds"] = "hbonds"
     platform: Literal["CUDA", "OpenCL", "CPU", "auto"] = "auto"
     random_seed: int | None = DEFAULT_RANDOM_SEED
@@ -111,7 +113,10 @@ class MDSimulation:
                 barostat.setRandomNumberSeed(config.random_seed)
             self._system.addForce(barostat)
 
-        # Create integrator. Seed the Langevin noise for reproducibility
+        # Create integrator: Langevin dynamics with the LFMiddle discretization
+        # (Zhang, Z. et al., J. Phys. Chem. A 2019, 123, 6056-6079), which OpenMM
+        # documents as sampling the configurational ensemble more accurately than
+        # its older LangevinIntegrator. Seed the Langevin noise for reproducibility
         # (random_seed None => leave unseeded for fresh randomness).
         integrator = LangevinMiddleIntegrator(
             config.temperature * unit.kelvin,
@@ -140,7 +145,7 @@ class MDSimulation:
             for name in ["CUDA", "OpenCL", "CPU"]:
                 try:
                     return Platform.getPlatformByName(name)
-                except Exception:
+                except openmm.OpenMMException:  # platform not registered or not usable here
                     continue
             return Platform.getPlatformByName("Reference")
         return Platform.getPlatformByName(self.config.platform)
@@ -150,7 +155,9 @@ class MDSimulation:
 
         Args:
             max_iterations: Maximum minimization steps (0 for unlimited)
-            tolerance: Energy tolerance in kJ/mol/nm
+            tolerance: Minimization stops once the root-mean-square value of all
+                force components falls below this, in kJ/mol/nm. The default of 10
+                is OpenMM's own default for ``minimizeEnergy``.
         """
         if self.simulation is None:
             raise RuntimeError("Call setup() before minimize()")
@@ -265,8 +272,9 @@ def run_simulation(
     pdb = PDBFile(str(pdb_path))
     forcefield = get_forcefield(forcefield_name)
 
-    # Prepare system
-    modeller = prepare_system(pdb, forcefield=forcefield)
+    # Prepare system; hydrogen and ion placement use the same seed as the MD run.
+    seed = config.random_seed if config is not None else DEFAULT_RANDOM_SEED
+    modeller = prepare_system(pdb, forcefield=forcefield, random_seed=seed)
 
     # Run simulation
     sim = MDSimulation(modeller, forcefield, config)

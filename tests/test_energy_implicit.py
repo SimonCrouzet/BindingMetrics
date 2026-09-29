@@ -164,6 +164,8 @@ class TestComputeInteractionEnergy:
             relaxed_min_steps_full=50,
         )
         assert result["success"], result.get("error_message")
+        # A clean run reports no step failure.
+        assert result["error_message"] is None
 
     @requires_cuda
     @pytest.mark.slow
