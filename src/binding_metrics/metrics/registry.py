@@ -18,6 +18,10 @@ What a consumer may rely on
 * ``spec.call(**kwargs)`` imports the function on first use and calls it with
   exactly those keyword arguments. It adds, renames and validates nothing, and
   returns what the function returns.
+* ``binder_chain_arg`` and ``target_chain_arg`` are optional. When set, the
+  function also accepts that keyword as an alias of the binder / target chain
+  argument above, so a caller may use one spelling for every metric that has
+  the alias; the ``*_chain_arg`` fields above stay the primary names.
 * Loading is lazy. This module imports no metric module; a spec imports its
   function when ``load`` or ``call`` runs. Both raise ``ImportError`` when an
   optional dependency is missing, and ``requires_extras`` names the extras to
@@ -193,6 +197,15 @@ class MetricSpec:
     requires_gpu:
         True when the metric runs its heavy computation on a CUDA device by
         default. A scheduling hint, read before the function is imported.
+    binder_chain_arg:
+        Name of the role-alias kwarg for the binder chain, ``"binder_chain"``,
+        on a metric whose function accepts it; None where it does not (the
+        trajectory metrics take atom indices, not chains). It means what
+        ``peptide_chain_arg`` (or ``chain_arg`` for a single-chain metric)
+        means, and passing both with different IDs is a ``ValueError``.
+    target_chain_arg:
+        The same for the target chain: ``"target_chain"`` as the alias of
+        ``receptor_chain_arg``.
     """
 
     name: str
@@ -212,6 +225,8 @@ class MetricSpec:
     cost_class: Optional[CostClass] = None
     requires_extras: tuple[str, ...] = ()
     requires_gpu: bool = False
+    binder_chain_arg: Optional[str] = None
+    target_chain_arg: Optional[str] = None
 
     def load(self) -> Callable:
         """Import the module and return the metric function.
@@ -257,6 +272,8 @@ METRICS: list[MetricSpec] = [
         path_arg="cif_path",
         peptide_chain_arg="design_chain",
         receptor_chain_arg="receptor_chain",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
         # A bundle of descriptors with different directions and units: no headline.
         cost_class="static",
         requires_extras=("biotite",),
@@ -271,6 +288,8 @@ METRICS: list[MetricSpec] = [
         path_arg="cif_path",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
         headline_key="coulomb_energy_kJ",
         direction="lower_is_better",
         unit="kJ/mol",
@@ -286,6 +305,7 @@ METRICS: list[MetricSpec] = [
         formats=("pdb", "cif"),
         path_arg="cif_path",
         chain_arg="chain",
+        binder_chain_arg="binder_chain",
         headline_key="ramachandran_favoured_pct",
         direction="higher_is_better",
         unit="percent",
@@ -301,6 +321,7 @@ METRICS: list[MetricSpec] = [
         formats=("pdb", "cif"),
         path_arg="cif_path",
         chain_arg="chain",
+        binder_chain_arg="binder_chain",
         headline_key="omega_outlier_fraction",
         direction="lower_is_better",
         unit="fraction",
@@ -317,6 +338,8 @@ METRICS: list[MetricSpec] = [
         path_arg="cif_path",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
         headline_key="sc",
         direction="higher_is_better",
         unit="dimensionless",
@@ -333,6 +356,8 @@ METRICS: list[MetricSpec] = [
         path_arg="cif_path",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
         headline_key="void_volume_A3",
         direction="lower_is_better",
         unit="angstrom^3",
@@ -349,6 +374,7 @@ METRICS: list[MetricSpec] = [
         path_arg="initial_path",
         secondary_path_arg="processed_path",
         peptide_chain_arg="design_chain",
+        binder_chain_arg="binder_chain",
         headline_key="rmsd",
         direction="lower_is_better",
         unit="angstrom",
@@ -365,6 +391,8 @@ METRICS: list[MetricSpec] = [
         path_arg="cif_path",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
         headline_key="delta_sasa",
         direction="higher_is_better",
         unit="angstrom^2",
@@ -383,6 +411,7 @@ METRICS: list[MetricSpec] = [
         formats=("pdb", "cif"),
         path_arg="path",
         receptor_chain_arg="receptor_chain",
+        target_chain_arg="target_chain",
         # The composite MolProbity-style score of the per-model summary; it has no unit.
         headline_key="summary.molprobity_score",
         direction="lower_is_better",
@@ -404,6 +433,8 @@ METRICS: list[MetricSpec] = [
         secondary_path_arg="afm_structure_path",
         peptide_chain_arg="binder_chain",
         receptor_chain_arg="receptor_chain",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
         # No unit is documented: a product of two distances and a confidence ratio.
         headline_key="evobind_adversarial_score",
         direction="lower_is_better",
@@ -424,6 +455,8 @@ METRICS: list[MetricSpec] = [
         path_arg="atoms",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
         headline_key="hbond_energy",
         direction="lower_is_better",
         unit="kcal/mol",
@@ -440,6 +473,8 @@ METRICS: list[MetricSpec] = [
         path_arg="atoms",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
         headline_key="saltbridge_energy",
         direction="lower_is_better",
         unit="kcal/mol",
@@ -459,6 +494,8 @@ METRICS: list[MetricSpec] = [
         path_arg="structure_path",
         peptide_chain_arg="binder_chain",
         receptor_chain_arg="receptor_chain",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
         headline_key="evobind_score",
         direction="lower_is_better",
         unit="angstrom",
@@ -578,6 +615,7 @@ METRICS: list[MetricSpec] = [
         formats=("pdb", "cif"),
         path_arg="trajectory_path",
         chain_arg="receptor_chain",
+        target_chain_arg="target_chain",
         headline_key="drift_aligned_mean",
         direction="lower_is_better",
         unit="angstrom",
@@ -684,6 +722,8 @@ METRICS: list[MetricSpec] = [
         path_arg="input_path",
         peptide_chain_arg="peptide_chain",
         receptor_chain_arg="receptor_chain",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
         # The default modes include "relaxed"; docs/report_thresholds.md scores E_int on
         # the minimised structure.
         headline_key="relaxed_interaction_energy",
@@ -700,6 +740,8 @@ METRICS: list[MetricSpec] = [
         description="Parse OpenFold3 output: pLDDT, pAE, pTM, ipTM, GPDE, has_clash",
         input_type="openfold_json",
         chain_mode="none",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
         formats=(),
         path_arg="output_dir",
         # Bundle: pLDDT and ipTM are higher-is-better, pDE is lower-is-better.
@@ -717,6 +759,8 @@ METRICS: list[MetricSpec] = [
         secondary_path_arg="structure_path",
         peptide_chain_arg="binder_chain",
         receptor_chain_arg="receptor_chain",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
         headline_key="mean_interface_pae",
         direction="lower_is_better",
         unit="angstrom",

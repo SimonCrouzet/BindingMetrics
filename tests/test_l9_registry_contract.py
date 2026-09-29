@@ -373,6 +373,8 @@ class TestMandatoryFields:
             "chain_arg",
             "peptide_chain_arg",
             "receptor_chain_arg",
+            "binder_chain_arg",
+            "target_chain_arg",
         ):
             value = getattr(spec, field)
             assert value is None or value.isidentifier(), f"{spec.name}: {field}={value!r}"

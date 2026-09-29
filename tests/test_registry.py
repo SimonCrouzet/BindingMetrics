@@ -236,8 +236,9 @@ class TestEveryMetricLoads:
         """Declared chain/path kwargs must be real parameters of the target fn.
 
         The registry advertises kwarg names (peptide_chain_arg, receptor_chain_arg,
-        chain_arg, secondary_path_arg) that a generic runner forwards to the metric
-        via ``spec.call(**kwargs)``. If a function renames one of those parameters,
+        chain_arg, binder_chain_arg, target_chain_arg, secondary_path_arg) that a generic
+        runner forwards to the metric via ``spec.call(**kwargs)``. If a function renames
+        one of those parameters,
         the string in the registry silently drifts and the call raises TypeError at
         runtime — exactly the declared-vs-effective gap. Class-based specs (e.g.
         md_implicit → ImplicitRelaxation) are constructed differently and skipped.
@@ -258,6 +259,8 @@ class TestEveryMetricLoads:
                 spec.chain_arg,
                 spec.peptide_chain_arg,
                 spec.receptor_chain_arg,
+                spec.binder_chain_arg,
+                spec.target_chain_arg,
             )
             if a
         ]
