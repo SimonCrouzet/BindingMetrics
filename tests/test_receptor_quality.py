@@ -2,12 +2,14 @@
 
 Backbones are built in-test from ideal Engh & Huber internal coordinates
 (NeRF construction) so that phi/psi, bond lengths and Cβ positions are known
-exactly. Nothing here reads bundled data or the network.
+exactly. Only the clashscore regression tests read bundled example structures
+from ``data/``; nothing uses the network.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -18,6 +20,8 @@ import biotite.structure as struc  # noqa: E402
 import biotite.structure.io.pdb as pdb_io  # noqa: E402
 
 from binding_metrics.metrics import receptor_quality as rq  # noqa: E402
+
+DATA_DIR = Path(__file__).parent.parent / "data"
 
 # ---------------------------------------------------------------------------
 # Synthetic structure builders
@@ -74,7 +78,9 @@ def _backbone_residues(phi_psi):
     return residues
 
 
-def _chain_atoms(residues, res_names=None, chain_id="A", first_res_id=1, b_factor=None):
+def _chain_atoms(
+    residues, res_names=None, chain_id="A", first_res_id=1, b_factor=None, res_ids=None
+):
     """AtomArray from residue dicts; GLY residues lose their CB."""
     atoms = []
     for i, res in enumerate(residues):
@@ -86,7 +92,7 @@ def _chain_atoms(residues, res_names=None, chain_id="A", first_res_id=1, b_facto
                 struc.Atom(
                     xyz,
                     chain_id=chain_id,
-                    res_id=first_res_id + i,
+                    res_id=first_res_id + i if res_ids is None else res_ids[i],
                     res_name=name,
                     atom_name=atom_name,
                     element=atom_name[0],
@@ -253,6 +259,143 @@ class TestClashscore:
 
     def test_ideal_helix_has_no_clashes(self):
         assert rq._clashscore(_helix(10))["n_clashes"] == 0
+
+
+_LEGACY = {"exclude_bonded": False, "exempt_hbond_pairs": False}
+
+
+def _disulfide_atoms(res_a=3, res_b=11):
+    """Two cysteines joined by an S-S bond (2.04 A, CB-S-S 104 deg, dihedral 90 deg)."""
+    cb_a = np.zeros(3)
+    sg_a = np.array([1.82, 0.0, 0.0])
+    sg_b = _place([0.0, 1.0, 0.0], cb_a, sg_a, 2.04, 104.0, 0.0)
+    cb_b = _place(cb_a, sg_a, sg_b, 1.82, 104.0, 90.0)
+    return _atoms_at(
+        ("A", res_a, "CYS", "CB", "C", cb_a),
+        ("A", res_a, "CYS", "SG", "S", sg_a),
+        ("A", res_b, "CYS", "SG", "S", sg_b),
+        ("A", res_b, "CYS", "CB", "C", cb_b),
+    )
+
+
+class TestClashscoreCovalentAndHbondPairs:
+    def test_disulfide_and_its_neighbours_are_not_clashes(self):
+        cys = _disulfide_atoms()
+        # S-S overlaps by 1.56 A and each CB sits 3.04 A from the other sulfur
+        assert rq._clashscore(cys, **_LEGACY)["n_clashes"] == 3
+        assert rq._clashscore(cys)["n_clashes"] == 0
+        assert rq._clashscore(cys, exclude_bonded=False)["n_clashes"] == 3
+
+    def test_a_real_clash_next_to_a_disulfide_is_still_counted(self):
+        far_pair = _atoms_at(
+            ("A", 20, "ALA", "C1", "C", [10.0, 10.0, 10.0]),
+            ("A", 30, "ALA", "C2", "C", [12.8, 10.0, 10.0]),
+        )
+        res = rq._clashscore(_disulfide_atoms() + far_pair)
+        assert res["n_clashes"] == 1
+        assert res["n_heavy_atoms"] == 6
+
+    def test_non_bonded_sulfur_contact_between_cysteines_is_counted(self):
+        # two free thiols at 2.9 A (overlap 0.7 A) are not a disulfide (limit 2.6 A)
+        thiols = _atoms_at(
+            ("A", 3, "CYS", "SG", "S", [0.0, 0.0, 0.0]),
+            ("A", 11, "CYS", "SG", "S", [2.9, 0.0, 0.0]),
+        )
+        assert rq._clashscore(thiols)["n_clashes"] == 1
+
+    def test_peptide_bond_across_a_numbering_gap_is_not_a_clash(self):
+        # chymotrypsin-style numbering: residue 2 is followed by residue 4 (no 3)
+        arr = _chain_atoms(_backbone_residues([(-63.0, -43.0)] * 4), res_ids=[1, 2, 4, 5])
+        assert rq._clashscore(arr, **_LEGACY)["n_clashes"] > 0
+        assert rq._clashscore(arr)["n_clashes"] == 0
+
+    def test_hydrogen_bonded_heteroatom_pairs_are_exempt_from_2p5_angstrom(self):
+        for elements in (("N", "O"), ("O", "N"), ("O", "O")):
+            pair = _pair(2.6, elements=elements)
+            assert rq._clashscore(pair, **_LEGACY)["n_clashes"] == 1
+            assert rq._clashscore(pair)["n_clashes"] == 0
+            # the two switches are independent
+            assert rq._clashscore(pair, exclude_bonded=False)["n_clashes"] == 0
+            assert rq._clashscore(pair, exempt_hbond_pairs=False)["n_clashes"] == 1
+
+    def test_heteroatom_pair_below_2p5_angstrom_is_still_a_clash(self):
+        assert rq._clashscore(_pair(2.3, elements=("N", "O")))["n_clashes"] == 1
+
+    def test_carbon_oxygen_contact_is_not_exempt(self):
+        # C...O radii sum 3.22 A: 2.7 A overlaps by 0.52 A; only N/O pairs are H-bond candidates
+        assert rq._clashscore(_pair(2.7, elements=("C", "O")))["n_clashes"] == 1
+
+    def test_vectorised_count_matches_the_pair_loop_when_exemptions_are_off(self):
+        rng = np.random.default_rng(3)
+        xyz = rng.uniform(0.0, 10.0, size=(300, 3))
+        arr = struc.array(
+            [
+                struc.Atom(
+                    x,
+                    chain_id="AB"[k % 2],
+                    res_id=k // 5,
+                    res_name="ALA",
+                    atom_name="C1",
+                    element="CNOS"[k % 4],
+                )
+                for k, x in enumerate(xyz)
+            ]
+        )
+        for cutoff in (0.2, 0.4, 0.8):
+            expected = 0
+            for a in range(len(arr)):
+                for b in range(a + 1, len(arr)):
+                    if (
+                        arr.chain_id[a] == arr.chain_id[b]
+                        and abs(arr.res_id[a] - arr.res_id[b]) <= 1
+                    ):
+                        continue
+                    d = np.linalg.norm(arr.coord[a].astype(float) - arr.coord[b].astype(float))
+                    overlap = rq._vdw(arr.element[a]) + rq._vdw(arr.element[b]) - d
+                    expected += overlap >= cutoff
+            assert rq._clashscore(arr, cutoff, **_LEGACY)["n_clashes"] == expected
+
+
+def _amino_acid_chain(filename, chain):
+    atoms = rq._load_all_models(DATA_DIR / filename)[0]
+    return atoms[struc.filter_amino_acids(atoms) & (atoms.chain_id == chain)]
+
+
+class TestClashscoreBundledStructures:
+    # (file, chain, earlier count, count now, what the earlier pairs were)
+    @pytest.mark.parametrize(
+        "filename, chain, legacy, current",
+        [
+            # SFTI-1: head-to-tail closure (GLY1 N - ASP14 C 1.44 A) and CYS3-CYS11 disulfide
+            ("example_bicyclic_sfti1_3P8F.cif", "I", 7, 0),
+            # trypsin: 3 disulfides, 2 numbering gaps (149, 218), 19 N/O hydrogen bonds;
+            # THR62 O - ARG84 NH2 at 2.28 A remains
+            ("example_bicyclic_sfti1_3P8F.cif", "A", 34, 1),
+            # somatostatin lactam GLU4 CD - LYS10 NZ (1.89 A) and CYS2-CYS12 disulfide
+            ("example_lactam_somatostatin_1XY4.cif", "A", 6, 0),
+            # cyclosporin head-to-tail closure and a BMT OG1...O hydrogen bond
+            ("example_ncaa_cyclosporin_1CWA.cif", "C", 6, 0),
+            # hydrocarbon staple 0EH20 CAT = MK827 CE (1.39 A)
+            ("example_staple_3V3B.pdb", "C", 3, 0),
+        ],
+    )
+    def test_covalent_links_and_hydrogen_bonds_are_no_longer_clashes(
+        self, filename, chain, legacy, current
+    ):
+        atoms = _amino_acid_chain(filename, chain)
+        assert rq._clashscore(atoms, **_LEGACY)["n_clashes"] == legacy
+        assert rq._clashscore(atoms)["n_clashes"] == current
+
+    def test_sfti1_bicycle_scores_zero_and_is_reported_through_the_public_api(self, monkeypatch):
+        _fake_energy(monkeypatch)
+        path = DATA_DIR / "example_bicyclic_sfti1_3P8F.cif"
+        now = rq.compute_receptor_quality(path, receptor_chain="I")["models"][0]
+        before = rq.compute_receptor_quality(path, receptor_chain="I", exclude_bonded=False)[
+            "models"
+        ][0]
+        assert now["clashes"]["clashscore"] == 0.0
+        assert before["clashes"]["clashscore"] == pytest.approx(1000.0 * 7 / 105)
+        assert now["molprobity_score"] < before["molprobity_score"]
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,12 @@ and multi-model PDB/CIF files (all models scored independently).
 The receptor chain is identified as the largest protein chain by residue count.
 This module is self-contained and does not depend on the main pipeline.
 
+The validation terms follow MolProbity (Chen et al. 2010, Acta Cryst. D66:12-21;
+Williams et al. 2018, Protein Sci. 27:293-315) but are lighter approximations:
+the clashscore counts heavy-atom overlaps only (no hydrogens), the rotamer term
+is a chi1-only check, and the composite score is therefore indicative rather than
+comparable to published MolProbity values.
+
 Usage:
     binding-metrics-receptor-quality --input receptor.pdb
     binding-metrics-receptor-quality --input complex.cif --receptor-chain A
@@ -229,11 +235,160 @@ def _ramachandran(chain_atoms) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _clashscore(chain_atoms, clash_cutoff: float = 0.4) -> dict:
-    """Compute clashscore: bad steric clashes per 1000 heavy atoms.
+# Covalent radii (Å; Cordero et al. 2008, Dalton Trans. 2832). They only decide
+# whether two atoms of one residue are bonded, so a generous margin is harmless:
+# every same-residue pair is already exempt from the clash count.
+_COVALENT_RADII: dict[str, float] = {
+    "C": 0.76,
+    "N": 0.71,
+    "O": 0.66,
+    "S": 1.05,
+    "P": 1.07,
+    "SE": 1.20,
+    "F": 0.57,
+    "CL": 1.02,
+    "BR": 1.20,
+    "I": 1.39,
+}
+_COVALENT_DEFAULT_RADIUS = 1.0
+_COVALENT_TOLERANCE_ANGSTROM = 0.4
 
-    Pairs within the same residue or adjacent residues (|Δres_id| ≤ 1, same
-    chain) are excluded as they are primarily bonded or 1-3 neighbours.
+# Peptide bond between residues that follow each other in the chain. Read off
+# the coordinates rather than from residue numbers, so that numbering gaps
+# (chymotrypsin numbering skips 149 and 218) do not turn a peptide bond into a
+# clash. Same value as the amide threshold in ``core.cyclic``.
+_PEPTIDE_BOND_MAX_ANGSTROM = 2.0
+
+# Longest distance at which two atoms of residues that are not sequence
+# neighbours count as one covalent link: disulfide, head-to-tail closure,
+# lactam and isopeptide bridges, hydrocarbon staples, thioethers, lactones.
+# Only these element pairs can form a link, so a close C...C or N...O contact is
+# never explained away. S-S and N-C match the thresholds of ``core.cyclic``.
+# The N-C limit is generous because NMR models of lactams stretch the bond (1XY4
+# has 1.89 Å).
+_CROSSLINK_MAX_ANGSTROM: dict[frozenset, float] = {
+    frozenset(("S", "S")): 2.6,
+    frozenset(("C", "N")): 2.0,
+    frozenset(("C", "C")): 1.9,
+    frozenset(("C", "S")): 2.2,
+    frozenset(("C", "O")): 1.9,
+}
+
+# Atoms separated by at most this many covalent bonds are not scored against
+# each other (the usual 1-2, 1-3 and 1-4 exclusion; a heavy-atom-only score
+# has no hydrogens to tell a gauche 1-4 contact from a clash).
+_MAX_EXCLUDED_BOND_SEPARATION = 3
+
+# N/O pairs closer than the sum of their vdW radii (3.0-3.1 Å) are hydrogen
+# bonds, not clashes, down to this distance; heavy atoms alone cannot see the
+# hydrogen, so 2.5 Å (the short end of strong N...O and O...O bonds) is used as
+# the floor.
+_HBOND_HETEROATOMS = ("N", "O")
+_HBOND_MIN_DISTANCE_ANGSTROM = 2.5
+
+
+def _covalent_reach(
+    heavy,
+    heavy_elements: np.ndarray,
+    coords: np.ndarray,
+    pairs: np.ndarray,
+    distances: np.ndarray,
+):
+    """Sparse matrix (scipy CSR), nonzero for heavy-atom pairs within three covalent bonds.
+
+    The bond graph joins (1) atoms of one residue closer than the sum of their
+    covalent radii plus a margin, (2) the C and N of consecutive residues that
+    are within peptide-bond distance, and (3) atoms of non-neighbouring
+    residues that form a covalent link (see ``_CROSSLINK_MAX_ANGSTROM``).
+    ``pairs`` are the candidate atom index pairs from the spatial search and
+    ``distances`` their lengths.
+    """
+    from scipy import sparse
+
+    struc, _, _ = _import_biotite()
+    n_atoms = len(heavy)
+    starts = struc.get_residue_starts(heavy)
+    residue_of = np.zeros(n_atoms, dtype=np.int64)
+    residue_of[starts[1:]] = 1
+    residue_of = np.cumsum(residue_of)
+
+    i, j = pairs[:, 0], pairs[:, 1]
+    res_i, res_j = residue_of[i], residue_of[j]
+    same_residue = res_i == res_j
+    same_chain = heavy.chain_id[i] == heavy.chain_id[j]
+    names = np.asarray(heavy.atom_name)
+
+    radius = np.array(
+        [_COVALENT_RADII.get(e, _COVALENT_DEFAULT_RADIUS) for e in heavy_elements], dtype=float
+    )
+    intra = same_residue & (distances <= radius[i] + radius[j] + _COVALENT_TOLERANCE_ANGSTROM)
+
+    peptide = (
+        same_chain
+        & (distances <= _PEPTIDE_BOND_MAX_ANGSTROM)
+        & (
+            ((res_j == res_i + 1) & (names[i] == "C") & (names[j] == "N"))
+            | ((res_i == res_j + 1) & (names[j] == "C") & (names[i] == "N"))
+        )
+    )
+
+    link_limit = np.array(
+        [
+            _CROSSLINK_MAX_ANGSTROM.get(frozenset((heavy_elements[a], heavy_elements[b])), 0.0)
+            for a, b in pairs
+        ]
+    )
+    crosslink = ~same_residue & (distances <= link_limit)
+
+    bonded = pairs[intra | peptide | crosslink]
+    adjacency = sparse.coo_matrix(
+        (np.ones(len(bonded), dtype=np.int32), (bonded[:, 0], bonded[:, 1])),
+        shape=(n_atoms, n_atoms),
+    )
+    adjacency = (adjacency + adjacency.T).tocsr()
+    adjacency.data[:] = 1
+
+    reach = adjacency.copy()
+    frontier = adjacency
+    for _ in range(_MAX_EXCLUDED_BOND_SEPARATION - 1):
+        frontier = frontier @ adjacency
+        reach = reach + frontier
+    return reach.tocsr()
+
+
+def _clashscore(
+    chain_atoms,
+    clash_cutoff: float = 0.4,
+    exclude_bonded: bool = True,
+    exempt_hbond_pairs: bool = True,
+) -> dict:
+    """Heavy-atom overlap clashscore: clashing atom pairs per 1000 heavy atoms.
+
+    Two heavy atoms clash when the sum of their van der Waals radii exceeds
+    their distance by at least ``clash_cutoff`` Å (the 0.4 Å of Word et al. 1999;
+    Chen et al. 2010). This is not MolProbity's clashscore: MolProbity adds
+    hydrogens with Reduce and evaluates all-atom contacts with Probe
+    (Williams et al. 2018), which also resolves hydrogen bonds from the
+    hydrogen position. Here hydrogens are ignored, so the value is an
+    approximation that is usually higher than MolProbity's for the same model.
+
+    A pair is not scored when
+
+    - both atoms lie in the same residue or in residues whose numbers differ by
+      at most one (same chain), as before;
+    - ``exclude_bonded`` is true and the atoms are separated by at most three
+      covalent bonds, following the peptide bond by coordinates, and disulfide,
+      head-to-tail, lactam, staple and similar links by distance (see
+      ``_CROSSLINK_MAX_ANGSTROM``);
+    - ``exempt_hbond_pairs`` is true and the pair is N/O to N/O at
+      2.5 Å or more (a hydrogen bond, not an overlap).
+
+    With both switches off the result equals the earlier definition, which
+    counted disulfides, cyclic closures and N...O hydrogen bonds as clashes.
+
+    Returns:
+        ``clashscore`` (float, NaN below two heavy atoms), ``n_clashes`` (int)
+        and ``n_heavy_atoms`` (int).
     """
     cKDTree = _import_scipy()
 
@@ -252,15 +407,27 @@ def _clashscore(chain_atoms, clash_cutoff: float = 0.4) -> dict:
 
     n_clashes = 0
     if len(pairs) > 0:
+        i, j = pairs[:, 0], pairs[:, 1]
         chain_ids = heavy.chain_id
-        res_ids = heavy.res_id
-        for i, j in pairs:
-            if chain_ids[i] == chain_ids[j] and abs(int(res_ids[i]) - int(res_ids[j])) <= 1:
-                continue
-            dist = float(np.linalg.norm(coords[i] - coords[j]))
-            overlap = _vdw(heavy_elements[i]) + _vdw(heavy_elements[j]) - dist
-            if overlap >= clash_cutoff:
-                n_clashes += 1
+        res_ids = heavy.res_id.astype(np.int64)
+        coords64 = coords.astype(np.float64)
+        distances = np.linalg.norm(coords64[i] - coords64[j], axis=1)
+        radii = np.array([_vdw(e) for e in heavy_elements])
+
+        neighbours = (chain_ids[i] == chain_ids[j]) & (np.abs(res_ids[i] - res_ids[j]) <= 1)
+        is_clash = ~neighbours & (radii[i] + radii[j] - distances >= clash_cutoff)
+
+        if exempt_hbond_pairs:
+            polar = np.isin(heavy_elements, _HBOND_HETEROATOMS)
+            is_clash &= ~(polar[i] & polar[j] & (distances >= _HBOND_MIN_DISTANCE_ANGSTROM))
+
+        if exclude_bonded and is_clash.any():
+            reach = _covalent_reach(heavy, heavy_elements, coords, pairs, distances)
+            candidates = pairs[is_clash]
+            bonded = np.asarray(reach[candidates[:, 0], candidates[:, 1]]).ravel() > 0
+            is_clash[np.flatnonzero(is_clash)[bonded]] = False
+
+        n_clashes = int(is_clash.sum())
 
     return {
         "clashscore": float(1000.0 * n_clashes / n_heavy),
@@ -728,6 +895,7 @@ def _score_model(
     solvent_model: str,
     device: str,
     model_index: int,
+    exclude_bonded: bool = True,
 ) -> dict:
     """Compute all quality metrics for one model."""
     struc, _, _ = _import_biotite()
@@ -761,7 +929,9 @@ def _score_model(
     n_heavy = int(np.sum(~np.isin(elements, ["H", "D", ""])))
 
     rama = _ramachandran(rec_atoms)
-    clash = _clashscore(rec_atoms, clash_cutoff)
+    clash = _clashscore(
+        rec_atoms, clash_cutoff, exclude_bonded=exclude_bonded, exempt_hbond_pairs=exclude_bonded
+    )
     rota = _rotamer_quality(rec_atoms)
     cbeta = _cbeta_deviations(rec_atoms)
     bbgeom = _backbone_geometry(rec_atoms)
@@ -800,6 +970,8 @@ def compute_receptor_quality(
     clash_cutoff: float = 0.4,
     solvent_model: str = "obc2",
     device: str = "cuda",
+    *,
+    exclude_bonded: bool = True,
 ) -> dict:
     """Compute MolProbity-style structural quality metrics for a receptor chain.
 
@@ -814,6 +986,10 @@ def compute_receptor_quality(
         clash_cutoff: Minimum VDW overlap in Å to count as a clash (default 0.4 Å).
         solvent_model: Implicit solvent for energy: 'obc2' or 'gbn2'.
         device: Compute device for energy: 'cuda' or 'cpu'.
+        exclude_bonded: Leave covalently linked atom pairs (disulfides, cyclic
+            closures, lactams, staples, peptide bonds across numbering gaps) and
+            N/O hydrogen-bond pairs out of the clash count (default True). False
+            restores the earlier count, which scored them as clashes.
 
     Returns:
         Dictionary with keys:
@@ -824,7 +1000,7 @@ def compute_receptor_quality(
         Per-model results — models (list[dict]), each with:
             model_index (int), n_residues (int), n_heavy_atoms (int)
             ramachandran: favoured/allowed/outlier counts and %, n_evaluated
-            clashes: clashscore, n_clashes, n_heavy_atoms
+            clashes: clashscore, n_clashes, n_heavy_atoms  [heavy-atom overlap, see _clashscore]
             rotamers: outlier_count, outlier_pct, n_evaluated  [χ1 simplified]
             cbeta: cb_deviation_count, cb_n_evaluated, cb_deviation_pct
             backbone_geometry: bad/total bonds+angles and %
@@ -850,7 +1026,15 @@ def compute_receptor_quality(
         }
 
     model_results = [
-        _score_model(atoms, receptor_chain, clash_cutoff, solvent_model, device, idx + 1)
+        _score_model(
+            atoms,
+            receptor_chain,
+            clash_cutoff,
+            solvent_model,
+            device,
+            idx + 1,
+            exclude_bonded=exclude_bonded,
+        )
         for idx, atoms in enumerate(all_models)
     ]
 
