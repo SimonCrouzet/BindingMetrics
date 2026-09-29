@@ -194,6 +194,46 @@ class TestImplicitRelaxation:
         assert abs(rmsd) < 1e-6
 
     @pytest.mark.integration
+    def test_kabsch_rmsd_rotated_copy_is_zero(self):
+        """A rigidly rotated and translated copy superposes exactly (RMSD 0)."""
+        from openmm import Vec3
+        from scipy.spatial.transform import Rotation
+
+        relaxer = ImplicitRelaxation(RelaxationConfig())
+        rng = np.random.default_rng(0)
+        coords_nm = rng.normal(size=(50, 3)) * 0.5
+        rotation = Rotation.from_rotvec(np.deg2rad(60) * np.array([1.0, 2.0, 3.0]) / np.sqrt(14.0))
+        moved_nm = rotation.apply(coords_nm) + np.array([0.3, -0.2, 0.1])
+
+        pos1 = [Vec3(*row) for row in coords_nm]
+        pos2 = [Vec3(*row) for row in moved_nm]
+        assert relaxer._compute_rmsd(pos1, pos2) < 1e-4  # Angstrom
+        assert relaxer._compute_rmsd(pos2, pos1) < 1e-4
+
+    @pytest.mark.integration
+    def test_kabsch_rmsd_matches_scipy_on_noisy_pair(self):
+        """With coordinate noise the RMSD equals scipy's optimal-rotation RMSD."""
+        from openmm import Vec3
+        from scipy.spatial.transform import Rotation
+
+        relaxer = ImplicitRelaxation(RelaxationConfig())
+        rng = np.random.default_rng(1)
+        coords_nm = rng.normal(size=(40, 3)) * 0.5
+        rotation = Rotation.from_euler("xyz", [40.0, -25.0, 70.0], degrees=True)
+        noisy_nm = rotation.apply(coords_nm) + rng.normal(size=(40, 3)) * 0.02
+
+        centered_a = coords_nm - coords_nm.mean(axis=0)
+        centered_b = noisy_nm - noisy_nm.mean(axis=0)
+        _, scipy_rssd_nm = Rotation.align_vectors(centered_b, centered_a)
+        expected_angstrom = scipy_rssd_nm / np.sqrt(len(coords_nm)) * 10.0
+
+        pos1 = [Vec3(*row) for row in coords_nm]
+        pos2 = [Vec3(*row) for row in noisy_nm]
+        assert relaxer._compute_rmsd(pos1, pos2) == pytest.approx(expected_angstrom, rel=1e-6)
+        # 0.02 nm sigma per axis -> about 0.02 * sqrt(3) nm = 3.5 A before fitting
+        assert 0.0 < expected_angstrom < 3.5
+
+    @pytest.mark.integration
     def test_rmsf_zero_for_static_trajectory(self):
         """_compute_rmsf should return 0 for identical frames."""
         config = RelaxationConfig()

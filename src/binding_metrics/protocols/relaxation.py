@@ -759,6 +759,10 @@ class ImplicitRelaxation:
         pos1 -= pos1.mean(axis=0)
         pos2 -= pos2.mean(axis=0)
 
+        # Kabsch (1976): H = P^T Q = U S V^T gives R = V U^T, the rotation for
+        # COLUMN vectors (R p_i ~ q_i). The coordinates here are rows, so the
+        # rotated set is pos1 @ R.T; applying pos1 @ R rotates by the inverse
+        # and inflates the RMSD of any pair that is not already superposed.
         H = pos1.T @ pos2
         U, S, Vt = np.linalg.svd(H)
         R = Vt.T @ U.T
@@ -766,7 +770,7 @@ class ImplicitRelaxation:
             Vt[-1, :] *= -1
             R = Vt.T @ U.T
 
-        return float(np.sqrt(np.mean(np.sum((pos1 @ R - pos2) ** 2, axis=1))) * 10)
+        return float(np.sqrt(np.mean(np.sum((pos1 @ R.T - pos2) ** 2, axis=1))) * 10)
 
     def _compute_rmsf(self, trajectory_positions, atom_indices) -> np.ndarray:
         """Compute per-atom RMSF from a list of trajectory frame positions.
