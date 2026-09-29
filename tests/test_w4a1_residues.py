@@ -67,7 +67,12 @@ class TestConstantsEqualTheOldLiterals:
         assert residues.TERMINAL_CAP_NAMES == OLD_CAP_NAMES
 
     def test_variant_to_parent_residue(self):
-        assert residues.VARIANT_TO_PARENT_RESIDUE == OLD_RESNAME_EQUIVALENTS
+        # The old EvoBind table lacked HIN, which core.nonstandard already treats as
+        # a histidine variant; HIN is the one deliberate addition.
+        assert residues.VARIANT_TO_PARENT_RESIDUE == {**OLD_RESNAME_EQUIVALENTS, "HIN": "HIS"}
+
+    def test_hin_is_a_histidine_variant(self):
+        assert residues.VARIANT_TO_PARENT_RESIDUE["HIN"] == "HIS"
 
     def test_comparison_waters(self):
         assert residues.WATER_NAMES_PDB_AMBER == OLD_COMPARISON_WATERS

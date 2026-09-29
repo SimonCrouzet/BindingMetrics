@@ -48,6 +48,7 @@ VARIANT_TO_PARENT_RESIDUE: dict[str, str] = {
     "HID": "HIS",
     "HIE": "HIS",
     "HIP": "HIS",
+    "HIN": "HIS",
     "HSD": "HIS",
     "HSE": "HIS",
     "HSP": "HIS",
