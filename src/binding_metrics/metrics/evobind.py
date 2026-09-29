@@ -149,6 +149,38 @@ def _auto_interface_mask(
     return dists.min(axis=1) < cutoff
 
 
+# Residue names that differ only by protonation state or disulfide bonding
+# between force fields and prediction tools; they name the same amino acid.
+_RESNAME_EQUIVALENTS = {
+    "HID": "HIS",
+    "HIE": "HIS",
+    "HIP": "HIS",
+    "HSD": "HIS",
+    "HSE": "HIS",
+    "HSP": "HIS",
+    "CYX": "CYS",
+    "CYM": "CYS",
+    "ASH": "ASP",
+    "GLH": "GLU",
+    "LYN": "LYS",
+}
+
+
+def _resname_mismatch_fraction(atoms_a, atoms_b) -> float:
+    """Fraction of paired atoms whose residue names differ (pair k = atom k of each array).
+
+    Protonation-state variants of one amino acid (HID/HIE/HIP, CYX, ASH, ...)
+    count as the same residue. Returns 0.0 for empty input.
+    """
+    if atoms_a.array_length() == 0:
+        return 0.0
+
+    def _canonical(atoms):
+        return [_RESNAME_EQUIVALENTS.get(str(r).strip(), str(r).strip()) for r in atoms.res_name]
+
+    return float(np.mean([a != b for a, b in zip(_canonical(atoms_a), _canonical(atoms_b))]))
+
+
 def _per_residue_plddt(
     plddt_per_atom: np.ndarray,
     atoms,
@@ -303,6 +335,7 @@ def compute_evobind_adversarial_check(
     receptor_chain: str,
     afm_plddt_per_atom: Optional[np.ndarray] = None,
     interface_cutoff_angstrom: float = 8.0,
+    max_resname_mismatch_fraction: float = 0.5,
 ) -> dict:
     """EvoBind adversarial check: consistency between two structure predictions.
 
@@ -335,6 +368,12 @@ def compute_evobind_adversarial_check(
             score.  If None, only geometric metrics are returned.
         interface_cutoff_angstrom: Distance cutoff (Å) used to identify
             receptor interface residues from the design structure (default 8.0).
+        max_resname_mismatch_fraction: Residues are paired between the two
+            structures by residue number, or by position when the numberings do
+            not overlap. If more than this fraction of the paired receptor (or
+            binder) residues have different residue names (histidine and
+            cysteine protonation variants count as equal), the pairing is
+            rejected with a ValueError (default 0.5).
 
     Returns:
         Dictionary with keys:
@@ -342,6 +381,18 @@ def compute_evobind_adversarial_check(
         delta_com_angstrom (float):
             Peptide CoM displacement (Å) between the two predictions after
             receptor Cα superposition.  Large values indicate disagreement.
+        n_superposition_residues (int):
+            Receptor residues matched by residue number. 0 to 2 when the
+            structures share no numbering and positional pairing was used
+            instead; see ``n_superposition_atoms`` for the real count.
+        n_superposition_atoms (int):
+            Receptor Cα atoms used for the superposition, whichever pairing
+            was applied.
+        receptor_pairing, binder_pairing (str):
+            ``"residue_number"`` or ``"position"``: how residues were paired
+            for the superposition and for the binder centre of mass.
+        receptor_resname_mismatch_fraction, binder_resname_mismatch_fraction (float):
+            Fraction of paired residues with different residue names.
         afm_if_dist_pep_to_rec (float):
             Mean closest-approach distance from binder Cβ to receptor
             interface Cβ in the AFM structure (Å).
@@ -375,10 +426,12 @@ def compute_evobind_adversarial_check(
 
     common_rec_res = np.intersect1d(design_rec_ca.res_id, afm_rec_ca.res_id)
     if len(common_rec_res) >= 3:
+        receptor_pairing = "residue_number"
         design_rec_ca_matched = design_rec_ca[np.isin(design_rec_ca.res_id, common_rec_res)]
         afm_rec_ca_matched = afm_rec_ca[np.isin(afm_rec_ca.res_id, common_rec_res)]
     else:
         # Fall back to positional pairing (e.g. OF3 renumbered from 1)
+        receptor_pairing = "position"
         n = min(design_rec_ca.array_length(), afm_rec_ca.array_length())
         if n < 3:
             raise ValueError(
@@ -387,6 +440,17 @@ def compute_evobind_adversarial_check(
             )
         design_rec_ca_matched = design_rec_ca[:n]
         afm_rec_ca_matched = afm_rec_ca[:n]
+
+    # Numbers alone can pair unrelated residues (a design numbered 100-200
+    # against a prediction renumbered from 1); residue names catch that.
+    receptor_mismatch = _resname_mismatch_fraction(design_rec_ca_matched, afm_rec_ca_matched)
+    if receptor_mismatch > max_resname_mismatch_fraction:
+        raise ValueError(
+            f"{receptor_mismatch:.0%} of the receptor residues paired for superposition "
+            f"(by {receptor_pairing}) have different residue names in the two structures "
+            f"(limit {max_resname_mismatch_fraction:.0%}); the residue numbering or the "
+            "chain contents probably do not correspond."
+        )
 
     # superimpose(reference, mobile) → (superimposed_mobile, transform)
     _, transform = struc.superimpose(afm_rec_ca_matched, design_rec_ca_matched)
@@ -405,10 +469,12 @@ def compute_evobind_adversarial_check(
     # pairing when numbering schemes differ (e.g. OF3 renumbers from 1).
     common_pep_res = np.intersect1d(design_pep_ca.res_id, afm_pep_ca.res_id)
     if len(common_pep_res) >= 1:
+        binder_pairing = "residue_number"
         design_pep_ca_matched = design_pep_ca[np.isin(design_pep_ca.res_id, common_pep_res)]
         afm_pep_ca_matched = afm_pep_ca[np.isin(afm_pep_ca.res_id, common_pep_res)]
     else:
         # No residue-number overlap — pair positionally up to the shorter length
+        binder_pairing = "position"
         n = min(design_pep_ca.array_length(), afm_pep_ca.array_length())
         if n == 0:
             raise ValueError(
@@ -416,6 +482,15 @@ def compute_evobind_adversarial_check(
             )
         design_pep_ca_matched = design_pep_ca[:n]
         afm_pep_ca_matched = afm_pep_ca[:n]
+
+    binder_mismatch = _resname_mismatch_fraction(design_pep_ca_matched, afm_pep_ca_matched)
+    if binder_mismatch > max_resname_mismatch_fraction:
+        raise ValueError(
+            f"{binder_mismatch:.0%} of the binder residues paired for the centre of mass "
+            f"(by {binder_pairing}) have different residue names in the two structures "
+            f"(limit {max_resname_mismatch_fraction:.0%}); the residue numbering or the "
+            "chain contents probably do not correspond."
+        )
 
     # Apply receptor superposition transform to design binder Cα
     design_pep_ca_in_afm_frame = transform.apply(design_pep_ca_matched).coord
@@ -479,6 +554,11 @@ def compute_evobind_adversarial_check(
     result: dict = {
         "delta_com_angstrom": delta_com,
         "n_superposition_residues": int(len(common_rec_res)),
+        "n_superposition_atoms": int(design_rec_ca_matched.array_length()),
+        "receptor_pairing": receptor_pairing,
+        "binder_pairing": binder_pairing,
+        "receptor_resname_mismatch_fraction": receptor_mismatch,
+        "binder_resname_mismatch_fraction": binder_mismatch,
         "afm_if_dist_pep_to_rec": afm_if_dist_pep_to_rec,
         "afm_if_dist_rec_to_pep": afm_if_dist_rec_to_pep,
         "afm_mean_if_dist": afm_mean_if_dist,

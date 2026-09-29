@@ -252,11 +252,21 @@ class TestEvobindScore:
 # ---------------------------------------------------------------------------
 
 
-def _helix_complex(tmp_path, name, n_rec=12, first_rec_res=1, first_pep_res=1, pep_shift=(0, 0, 0)):
+def _helix_complex(
+    tmp_path,
+    name,
+    n_rec=12,
+    first_rec_res=1,
+    first_pep_res=1,
+    pep_shift=(0, 0, 0),
+    rec_names=None,
+    pep_names=None,
+):
     """α-helix receptor (chain A) with a short extended binder (chain B) beside it.
 
     All coordinates depend only on the residue index, so two calls with
     different ``first_*_res`` describe the same geometry under different numbering.
+    ``rec_names`` / ``pep_names`` set the residue names (default ALA).
     """
     rec_ca = _helix_ca(n_rec)
     radial = rec_ca[:, :2] / np.linalg.norm(rec_ca[:, :2], axis=1, keepdims=True)
@@ -265,8 +275,8 @@ def _helix_complex(tmp_path, name, n_rec=12, first_rec_res=1, first_pep_res=1, p
     pep_cb = pep_ca + [-1.5, 0.0, 0.0]
     return _write(
         tmp_path / name,
-        _chain("A", rec_ca, rec_cb, first_res_id=first_rec_res),
-        _chain("B", pep_ca, pep_cb, first_res_id=first_pep_res),
+        _chain("A", rec_ca, rec_cb, first_res_id=first_rec_res, res_names=rec_names),
+        _chain("B", pep_ca, pep_cb, first_res_id=first_pep_res, res_names=pep_names),
     )
 
 
@@ -372,3 +382,74 @@ class TestAdversarialCheck:
         b = _helix_complex(tmp_path, "afm.pdb", first_rec_res=1, first_pep_res=1)
         res = compute_evobind_adversarial_check(a, b, "B", "A")
         assert res["interface_fallback_used"] is True
+
+    def test_superposition_atom_count_with_matching_numbering(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb", n_rec=10)
+        b = _helix_complex(tmp_path, "afm.pdb", n_rec=12)
+        res = compute_evobind_adversarial_check(a, b, "B", "A")
+        assert res["receptor_pairing"] == "residue_number"
+        assert res["binder_pairing"] == "residue_number"
+        assert res["n_superposition_residues"] == 10
+        assert res["n_superposition_atoms"] == 10
+
+    def test_superposition_atom_count_when_pairing_falls_back_to_position(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb", first_rec_res=101, first_pep_res=201)
+        b = _helix_complex(tmp_path, "afm.pdb")
+        res = compute_evobind_adversarial_check(a, b, "B", "A")
+        assert res["receptor_pairing"] == "position"
+        assert res["binder_pairing"] == "position"
+        # the residue-number count keeps its meaning (numbers shared by both models)
+        assert res["n_superposition_residues"] < 3
+        # the atom count is what the superposition actually used
+        assert res["n_superposition_atoms"] == 12
+
+    def test_matching_residue_names_have_zero_mismatch(self, tmp_path):
+        names = ["ALA", "GLY", "SER", "LEU", "VAL", "ILE", "PHE", "TYR", "LYS", "ARG", "GLU", "ASP"]
+        a = _helix_complex(tmp_path, "design.pdb", rec_names=names)
+        b = _helix_complex(tmp_path, "afm.pdb", rec_names=names)
+        res = compute_evobind_adversarial_check(a, b, "B", "A")
+        assert res["receptor_resname_mismatch_fraction"] == 0.0
+        assert res["binder_resname_mismatch_fraction"] == 0.0
+
+    def test_histidine_and_cysteine_variants_are_not_mismatches(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb", rec_names=["HIS", "CYS"] * 6)
+        b = _helix_complex(tmp_path, "afm.pdb", rec_names=["HIE", "CYX"] * 6)
+        res = compute_evobind_adversarial_check(a, b, "B", "A")
+        assert res["receptor_resname_mismatch_fraction"] == 0.0
+
+    def test_a_few_mutations_are_reported_but_accepted(self, tmp_path):
+        names = ["ALA", "GLY", "SER", "LEU", "VAL", "ILE", "PHE", "TYR", "LYS", "ARG", "GLU", "ASP"]
+        mutated = list(names)
+        mutated[4] = "TRP"
+        a = _helix_complex(tmp_path, "design.pdb", rec_names=names)
+        b = _helix_complex(tmp_path, "afm.pdb", rec_names=mutated)
+        res = compute_evobind_adversarial_check(a, b, "B", "A")
+        assert res["receptor_resname_mismatch_fraction"] == pytest.approx(1 / 12)
+        assert res["delta_com_angstrom"] == pytest.approx(0.0, abs=1e-2)
+
+    def test_offset_numbering_with_different_residues_raises(self, tmp_path):
+        # A design numbered 106-117 of a 17-residue receptor against a prediction of the
+        # same protein renumbered from 1: numbers do not overlap, so residues are paired by
+        # position, and position k of one model is residue k+5 of the other.
+        sequence = ["ALA", "GLY", "SER", "LEU", "VAL", "ILE", "PHE", "TYR", "LYS", "ARG"]
+        sequence += ["GLU", "ASP", "ASN", "GLN", "HIS", "TRP", "PRO"]
+        a = _helix_complex(
+            tmp_path, "design.pdb", first_rec_res=106, first_pep_res=1, rec_names=sequence[5:17]
+        )
+        b = _helix_complex(tmp_path, "afm.pdb", first_rec_res=1, rec_names=sequence[0:12])
+        with pytest.raises(ValueError, match="different residue names"):
+            compute_evobind_adversarial_check(a, b, "B", "A")
+
+    def test_mismatch_limit_is_adjustable(self, tmp_path):
+        sequence = ["ALA", "GLY", "SER", "LEU", "VAL", "ILE", "PHE", "TYR", "LYS", "ARG"]
+        sequence += ["GLU", "ASP", "ASN", "GLN", "HIS", "TRP", "PRO"]
+        a = _helix_complex(tmp_path, "design.pdb", first_rec_res=106, rec_names=sequence[5:17])
+        b = _helix_complex(tmp_path, "afm.pdb", first_rec_res=1, rec_names=sequence[0:12])
+        res = compute_evobind_adversarial_check(a, b, "B", "A", max_resname_mismatch_fraction=1.0)
+        assert res["receptor_resname_mismatch_fraction"] == pytest.approx(1.0)
+
+    def test_binder_with_different_residues_raises(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb", pep_names=["ALA", "GLY", "SER", "LEU"])
+        b = _helix_complex(tmp_path, "afm.pdb", pep_names=["TRP", "PRO", "HIS", "GLN"])
+        with pytest.raises(ValueError, match="binder residues"):
+            compute_evobind_adversarial_check(a, b, "B", "A")
