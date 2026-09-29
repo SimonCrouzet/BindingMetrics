@@ -347,8 +347,14 @@ def _is_skipped(section: dict | None) -> bool:
 
 
 def _md_cyclic(relax: dict | None) -> str | None:
-    """Return a cyclic topology section, or None if linear."""
-    bonds = (relax or {}).get("cyclic_bonds")
+    """Return a cyclic topology section, or None if linear.
+
+    The closure bonds are read from ``peptide_cyclic_bonds``, the key
+    ``RelaxationResult.to_dict`` writes, or from ``cyclic_bonds`` in a result
+    assembled by hand. Each entry is ``{"type", "atom1", "atom2"}``.
+    """
+    relax = relax or {}
+    bonds = relax.get("peptide_cyclic_bonds") or relax.get("cyclic_bonds")
     if not bonds:
         return None
     lines = ["## Cyclic topology\n"]
