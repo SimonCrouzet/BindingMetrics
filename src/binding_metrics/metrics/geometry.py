@@ -142,12 +142,43 @@ def _get_vdw(element: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Task 3: Ramachandran analysis
+# Ramachandran analysis
 # ---------------------------------------------------------------------------
+
+# C(last)-N(first) distance below which a chain is taken to close head to tail
+# (a peptide C-N bond is 1.33 A; 2.0 A leaves room for strained macrocycles).
+_CLOSURE_MAX_DISTANCE = 2.0
+
+
+def _has_head_to_tail_closure(chain_atoms) -> bool:
+    """True if the last residue's C is bonded to the first residue's N.
+
+    ``biotite.structure.dihedral_backbone`` walks the chain sequentially, so
+    the φ/ψ/ω that involve the ring-closing bond of a cyclic peptide are never
+    produced. This detects such a chain so the result can say what is missing.
+    """
+    struc, _, _, _ = _import_biotite()
+    # waters and ions can carry the chain ID and would be taken as the last residue
+    chain_atoms = chain_atoms[struc.filter_amino_acids(chain_atoms)]
+    starts = struc.get_residue_starts(chain_atoms)
+    if len(starts) < 2:
+        return False
+    first = chain_atoms[starts[0] : starts[1]]
+    last = chain_atoms[starts[-1] :]
+    first_n = first.coord[first.atom_name == "N"]
+    last_c = last.coord[last.atom_name == "C"]
+    if len(first_n) == 0 or len(last_c) == 0:
+        return False
+    return bool(np.linalg.norm(first_n[0] - last_c[0]) < _CLOSURE_MAX_DISTANCE)
 
 
 def _classify_ramachandran(phi: float, psi: float, is_d: bool = False) -> Optional[str]:
-    """Classify a residue into a Ramachandran region.
+    """Classify a residue into a Ramachandran region (box approximation).
+
+    The regions are hand-drawn rectangles in the (φ, ψ) plane, not the
+    contours of MolProbity's reference distributions (Lovell et al., 2003;
+    Williams et al., 2018), and there are no separate Gly, Pro or pre-Pro
+    classes: Gly at φ > 0 is judged with the general L-amino-acid regions.
 
     For D-amino acids pass ``is_d=True``: φ/ψ are negated before region
     lookup so that the mirrored Ramachandran plot maps correctly onto the
@@ -167,7 +198,7 @@ def _classify_ramachandran(phi: float, psi: float, is_d: bool = False) -> Option
     if is_d:
         phi, psi = -phi, -psi
 
-    # Favoured regions (covers ~98% of high-quality crystallographic residues)
+    # Favoured boxes: rough stand-ins for the 98 % contour of the general case.
     in_alpha = (-90 <= phi <= -30) and (-80 <= psi <= 10)
     in_beta = (-180 <= phi <= -45) and ((90 <= psi <= 180) or (-180 <= psi <= -160))
     in_ppii = (-90 <= phi <= -50) and (120 <= psi <= 180)
@@ -175,7 +206,7 @@ def _classify_ramachandran(phi: float, psi: float, is_d: bool = False) -> Option
     if in_alpha or in_beta or in_ppii or in_l_hel:
         return "favoured"
 
-    # Allowed regions
+    # Allowed boxes: rough stand-ins for the 99.95 % contour.
     in_all_a = (-125 <= phi <= 0) and (-100 <= psi <= 30)
     in_all_b = (-180 <= phi <= -30) and ((60 <= psi <= 180) or (-180 <= psi <= -100))
     in_all_l = (0 <= phi <= 110) and (-30 <= psi <= 100)
@@ -191,9 +222,20 @@ def compute_ramachandran(
 ) -> dict:
     """Compute Ramachandran backbone dihedral quality metrics for a chain.
 
-    Evaluates phi/psi dihedral angles and classifies each residue into
-    favoured, allowed, or outlier Ramachandran regions following standard
-    MolProbity-style geometry validation criteria.
+    Evaluates phi/psi dihedral angles and classifies each residue as
+    favoured, allowed or outlier. MolProbity defines these classes as the
+    contours that hold 98 % (favoured) and 99.95 % (allowed) of a
+    high-resolution reference set, separately for general, Gly, Pro and
+    pre-Pro residues (Lovell et al., 2003; Williams et al., 2018). This
+    function uses hand-drawn rectangular regions that approximate the general
+    case only (see `_classify_ramachandran`), so its percentages are a screen
+    and will not match MolProbity's. D-residues are mirrored before the
+    lookup.
+
+    Terminal residues have no complete φ/ψ pair and are skipped. For a
+    head-to-tail cyclic peptide the residues at the ring closure are skipped
+    too, because the dihedrals are computed sequentially; see
+    ``cyclic_closure_detected`` and ``cyclic_closure_evaluated``.
 
     Type: score
 
@@ -211,6 +253,10 @@ def compute_ramachandran(
             ramachandran_outlier_count (int): Number of outlier residues
             n_residues_evaluated (int): Residues with complete backbone (excl. termini)
             n_d_residues (int): Evaluated residues that are D-amino acids
+            cyclic_closure_detected (bool): The chain's last C is bonded to
+                its first N (head-to-tail macrocycle)
+            cyclic_closure_evaluated (bool): Always False: the φ/ψ around the
+                ring-closing bond are not part of these statistics
 
         Features:
             per_residue (list[dict]): Per-residue data with keys:
@@ -236,11 +282,14 @@ def compute_ramachandran(
             "ramachandran_outlier_count": 0,
             "n_residues_evaluated": 0,
             "n_d_residues": 0,
+            "cyclic_closure_detected": False,
+            "cyclic_closure_evaluated": False,
             "per_residue": [],
             "reason": _NO_CHAIN_REASON,
         }
 
     chain_atoms = atoms[atoms.chain_id == chain]
+    closure_detected = _has_head_to_tail_closure(chain_atoms)
     phi_rad, psi_rad, _ = struc.dihedral_backbone(chain_atoms)
 
     phi_deg = np.degrees(phi_rad)
@@ -288,6 +337,8 @@ def compute_ramachandran(
             "ramachandran_outlier_count": 0,
             "n_residues_evaluated": 0,
             "n_d_residues": n_d,
+            "cyclic_closure_detected": closure_detected,
+            "cyclic_closure_evaluated": False,
             "per_residue": per_residue,
             "reason": f"chain {chain!r} has no residue with a complete phi/psi pair",
         }
@@ -299,13 +350,18 @@ def compute_ramachandran(
         "ramachandran_outlier_count": counts["outlier"],
         "n_residues_evaluated": n_eval,
         "n_d_residues": n_d,
+        "cyclic_closure_detected": closure_detected,
+        "cyclic_closure_evaluated": False,
         "per_residue": per_residue,
     }
 
 
 # ---------------------------------------------------------------------------
-# Task 4: Omega planarity
+# Omega planarity
 # ---------------------------------------------------------------------------
+
+# |omega| below this is counted as a cis peptide bond (MolProbity's cut-off).
+_CIS_OMEGA_MAX_DEG = 30.0
 
 
 def compute_omega_planarity(
@@ -314,8 +370,17 @@ def compute_omega_planarity(
 ) -> dict:
     """Compute omega dihedral planarity metrics for peptide bonds.
 
-    Trans peptide bonds should have ω ≈ 180°; cis bonds ω ≈ 0°.
-    Deviations > 15° from 180° are flagged as outliers.
+    Trans peptide bonds have ω ≈ 180°; cis bonds ω ≈ 0°. Every deviation
+    larger than 15° from 180° is flagged as an outlier, cis bonds included:
+    the 15° cut-off is this package's heuristic, and a legitimate cis-Pro or
+    N-methylated amide scores a deviation near 180° and counts as an outlier.
+    ``omega_cis_count`` reports how many of the evaluated bonds are cis so
+    that these can be told apart from twisted trans bonds.
+
+    The dihedrals are computed sequentially, so for a head-to-tail cyclic
+    peptide the closing peptide bond is not evaluated (one bond fewer in
+    ``n_bonds_evaluated``); see ``cyclic_closure_detected`` and
+    ``cyclic_closure_evaluated``.
 
     Type: score
 
@@ -332,6 +397,11 @@ def compute_omega_planarity(
             omega_outlier_fraction (float): Fraction of bonds with |dev| > 15°
             omega_outlier_count (int): Number of outlier peptide bonds
             n_bonds_evaluated (int): Number of non-NaN omega values
+            omega_cis_count (int): Evaluated bonds with |ω| < 30°
+            cyclic_closure_detected (bool): The chain's last C is bonded to
+                its first N (head-to-tail macrocycle)
+            cyclic_closure_evaluated (bool): Always False: the closing
+                peptide bond is not part of these statistics
 
         Features:
             per_residue (list[dict]): Per-residue data with keys:
@@ -354,11 +424,15 @@ def compute_omega_planarity(
             "omega_outlier_fraction": np.nan,
             "omega_outlier_count": 0,
             "n_bonds_evaluated": 0,
+            "omega_cis_count": 0,
+            "cyclic_closure_detected": False,
+            "cyclic_closure_evaluated": False,
             "per_residue": [],
             "reason": _NO_CHAIN_REASON,
         }
 
     chain_atoms = atoms[atoms.chain_id == chain]
+    closure_detected = _has_head_to_tail_closure(chain_atoms)
     _, _, omega_rad = struc.dihedral_backbone(chain_atoms)
     omega_deg = np.degrees(omega_rad)
 
@@ -397,6 +471,9 @@ def compute_omega_planarity(
             "omega_outlier_fraction": np.nan,
             "omega_outlier_count": 0,
             "n_bonds_evaluated": 0,
+            "omega_cis_count": 0,
+            "cyclic_closure_detected": closure_detected,
+            "cyclic_closure_evaluated": False,
             "per_residue": per_residue,
             "reason": f"chain {chain!r} has no peptide bond with a defined omega angle",
         }
@@ -410,12 +487,15 @@ def compute_omega_planarity(
         "omega_outlier_fraction": float(n_outlier / n_eval),
         "omega_outlier_count": n_outlier,
         "n_bonds_evaluated": n_eval,
+        "omega_cis_count": sum(abs(r["omega"]) < _CIS_OMEGA_MAX_DEG for r in per_residue),
+        "cyclic_closure_detected": closure_detected,
+        "cyclic_closure_evaluated": False,
         "per_residue": per_residue,
     }
 
 
 # ---------------------------------------------------------------------------
-# Task 5: Shape complementarity (Lawrence & Colman 1993)
+# Shape complementarity (Lawrence & Colman 1993)
 # ---------------------------------------------------------------------------
 
 
@@ -699,7 +779,7 @@ def compute_shape_complementarity(
 
 
 # ---------------------------------------------------------------------------
-# Task 6: Buried void volume
+# Buried void volume
 # ---------------------------------------------------------------------------
 
 
