@@ -43,13 +43,31 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - **GAFF bond orders of non-canonical residues (#38).** Bond orders were perceived on a graph without
   hydrogens and came out single. They now come from the wwPDB Chemical Component Dictionary in biotite.
   - 1CWA: MeBmt has 17 hydrogens, not 19, and its CE=CZ bond relaxes to 1.340 A, not 1.544 A (crystal 1.336 A).
-  - 1CWA `raw_interaction_energy` -268.4 -> -280.2 kJ/mol, `relaxed_interaction_energy` -280.9 -> -298.6
-    kJ/mol (`--md-duration-ps 0`, seed 1, CUDA).
+  - 1CWA `raw_interaction_energy` -268.4 -> -280.4 kJ/mol, `relaxed_interaction_energy` -280.9 -> -298.5
+    kJ/mol (`--md-duration-ps 0`, seed 1, CUDA; the values after the two GAFF2 charge entries below).
   - The backbone C=O of 0EH and MK8 (3V3B) was read as C-OH.
   - IAM (1XY4): PDBFixer lists the IAM-THR peptide bond twice, so the capped molecule got two caps on the backbone C
     and IAM fell back to single bonds. A bond that the topology lists twice is capped once, and IAM takes the
     dictionary bond orders: `ncaa_bond_order_source` `single_bonds` -> `ccd`, hydrogens 24 -> 18, an aromatic ring
     instead of cyclohexane.
+- **GAFF2 charges repeat from run to run.** `sqm` picked its diagonalisation routine by timing seven of
+  them at start-up, and one of them ended the AM1 minimisation of MeBmt in another geometry. The BMT template
+  charges changed by up to 9e-4 e between builds (0.013 e in the AM1-BCC output), prep, relaxation and the
+  energy step each built their own template, and the relaxed 1CWA complex changed between runs. `sqm` now runs
+  with its own diagonaliser on one thread, and the conformer that the charges start from is seeded
+  (`random_seed` of `parameterize_ncaa_residues`, default 1, set by `--random-seed`). The three steps build
+  byte-identical templates.
+  - 1CWA, four runs of one command (`--md-duration-ps 0`, seed 1, CUDA) gave three results: minimised complex
+    energy -21555.1, -21562.7 or -21563.2 kJ/mol; `relaxed_interaction_energy` -297.1, -298.6 or -298.9 kJ/mol;
+    buried area 1006.4, 1010.3 or 1007.9 A^2. After the change every run gives the same files.
+- **AM1-BCC charges of GAFF2 residues use the stereochemistry of the structure.** The residue graph had none,
+  so the conformer that `sqm` minimises was a random stereoisomer: MeBmt (BMT, 1CWA) was embedded with CA R,
+  CB S, CG2 R and a Z double bond, against S, R, R and E in the structure. Stereocentres and E/Z bonds are read
+  from the geometry now. AM1-BCC charges depend on the conformer, so a residue's charges also change with
+  `random_seed`: MeBmt differs by up to 0.065 e between seeds 1 and 2.
+  - 1CWA: BMT template charges change by up to 0.047 e and ABA by up to 0.017 e. Minimised complex energy
+    -21562.7 -> -21553.4 kJ/mol, `raw_interaction_energy` -280.2 -> -280.4, `relaxed_interaction_energy`
+    -298.6 -> -298.5, buried area 1010.3 -> 996.8 A^2, void volume 9.9 -> 4.9 A^3, `sc` 0.685 -> 0.684.
 - **D-amino-acid and N-methyl names survive prep and relax (#15).** The relaxed CIF of 1CWA had
   `ALA ... NMG` where the input has `DAL ... SAR`; it now keeps the input names.
 - **Ligand RMSD (#37).** `calculate_ligand_rmsd` fitted the ligand a second time and returned 0 for a
@@ -129,6 +147,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
 
 ### Added
 
+- `random_seed` on `parameterize_ncaa_residues` (default 1, keyword-only): the seed of the conformer that the
+  AM1-BCC charges of GAFF2 residues start from. `None` draws a new one.
 - `--config PATH` for `binding-metrics-run`, `-batch` and `-relax`: a TOML file supplies option
   defaults and command-line flags override it (#32).
 - `run_batch` runs a batch in-process with an `on_result` callback, and `binding-metrics-batch` is built
