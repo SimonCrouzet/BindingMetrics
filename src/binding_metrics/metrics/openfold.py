@@ -25,8 +25,11 @@ YAML and query preparation live in ``_openfold_run.py`` and the command line in
 ``_openfold_cli.py``; every name they define is re-exported here.
 
 References:
-  Ahdritz et al. (2024) OpenFold3: An open-source, trainable implementation
-  of AlphaFold3. GitHub: github.com/aqlaboratory/openfold-3
+  The OpenFold3 Team (2025) OpenFold3-preview. Software, doi:10.5281/zenodo.19001000,
+  github.com/aqlaboratory/openfold-3. This is the citation the repository asks
+  for; it also asks that work citing OpenFold3 cite AlphaFold 3, below. (The
+  "Ahdritz et al. 2024" OpenFold paper, Nat. Methods 21:1514, describes the
+  AlphaFold2 reimplementation, not OpenFold3.)
   Abramson et al. (2024) Accurate structure prediction of biomolecular
   interactions with AlphaFold 3. Nature 630:493-500. Defines the outputs parsed
   here (pLDDT, PAE, PDE, pTM, ipTM) and the tokenisation that the interface
