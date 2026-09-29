@@ -28,7 +28,7 @@ from binding_metrics.metrics.polar_contacts import (
     _POSITIVE_ATOMS,
     l_equivalent_residue_names,
 )
-from binding_metrics.utils import backfill_auth_columns
+from binding_metrics.utils import backfill_auth_columns, configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -436,7 +436,7 @@ def compute_interface_metrics(
     complex_atoms = chain_source[complex_mask]
 
     if len(peptide_atoms) == 0 or len(receptor_atoms) == 0:
-        print(f"  Warning: Empty chain(s) in {cif_path}")
+        logger.warning(f"  Warning: Empty chain(s) in {cif_path}")
         empty_chains = [
             chain
             for chain, chain_atoms in (
@@ -456,7 +456,7 @@ def compute_interface_metrics(
         sasa_rec = _per_atom_sasa(receptor_atoms, probe_radius, sasa_fn, vdw_fn)
         sasa_cpx = _per_atom_sasa(complex_atoms, probe_radius, sasa_fn, vdw_fn)
     except Exception as e:  # kept broad: one bad structure must not abort a batch (see reason)
-        print(f"  Warning: SASA computation failed: {e}")
+        logger.warning(f"  Warning: SASA computation failed: {e}")
         result["reason"] = f"SASA computation failed: {type(e).__name__}: {e}"
         return result
 
@@ -493,7 +493,7 @@ def compute_interface_metrics(
         hbond_result = compute_hbonds(atoms, design_chain, receptor_chain, hetero=hetero)
         saltbridge_result = compute_saltbridges(atoms, design_chain, receptor_chain, hetero=hetero)
     except Exception as e:  # kept broad: one bad structure must not abort a batch (see reason)
-        print(f"  Warning: H-bond/salt bridge computation failed: {e}")
+        logger.warning(f"  Warning: H-bond/salt bridge computation failed: {e}")
         hbond_result = {"hbonds": 0, "hbond_energy": 0.0}
         saltbridge_result = {"saltbridges": 0, "saltbridges_bidentate": 0, "saltbridge_energy": 0.0}
         polar_reason = f"H-bond/salt bridge computation failed: {type(e).__name__}: {e}"
@@ -530,6 +530,7 @@ def compute_interface_metrics(
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser(
         description="Compute binding interface metrics (SASA, ΔG_int, H-bonds, salt bridges)"
     )
