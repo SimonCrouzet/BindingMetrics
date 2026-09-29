@@ -36,6 +36,40 @@ def _seed_arg(value: str) -> Optional[int]:
     return int(value)
 
 
+class ChainNotFoundError(ValueError):
+    """A chain ID requested by the caller does not exist in the structure."""
+
+
+def _require_chains_present(
+    chain_info: dict, peptide_chain: Optional[str], receptor_chain: Optional[str]
+) -> None:
+    """Raise if an explicitly requested chain ID is absent from the structure.
+
+    ``detect_chains_from_file`` echoes explicit IDs back without checking them,
+    so a typo (``--peptide-chain Z``) would otherwise surface much later as an
+    empty selection or NaN in every step. Only IDs the caller passed are
+    checked; auto-detected ones come from ``all_chains`` by construction.
+    ``all_chains`` lists amino-acid chains, so a ligand-only chain counts as
+    absent.
+
+    Raises:
+        ChainNotFoundError: (a ``ValueError``) naming the missing chain(s) and
+            listing the available ones as ``"B (13), A (85)"`` (id and residue
+            count, smallest chain first).
+    """
+    available = chain_info["all_chains"]
+    known = {c["id"] for c in available}
+    missing = [c for c in (peptide_chain, receptor_chain) if c is not None and c not in known]
+    if not missing:
+        return
+    listing = ", ".join(f"{c['id']} ({c['n_residues']})" for c in available)
+    if len(missing) == 1:
+        named = f"chain {missing[0]!r}"
+    else:
+        named = "chains " + ", ".join(repr(c) for c in missing)
+    raise ChainNotFoundError(f"{named} not found; available: {listing}")
+
+
 def _warn(msg: str) -> None:
     print(f"  [warning] {msg}", flush=True)
 
@@ -88,6 +122,7 @@ def run_pipeline(
         receptor_chain=receptor_chain,
         verbose=True,
     )
+    _require_chains_present(chain_info, peptide_chain, receptor_chain)
     peptide_chain = chain_info["peptide_chain"]  # auth_asym_id (biotite)
     receptor_chain = chain_info["receptor_chain"]
     peptide_chain_label = chain_info["peptide_chain_label"]  # label_asym_id (OpenMM)
@@ -647,26 +682,30 @@ def main():
         print(f"{'#' * 60}")
 
         t_total = time.time()
-        results = run_pipeline(
-            input_path=args.input,
-            output_dir=args.output_dir,
-            sample_id=sample_id,
-            skip_prep=args.skip_prep,
-            ph=args.ph,
-            keep_water=args.keep_water,
-            canonicalize=args.canonicalize,
-            skip_relax=args.skip_relax,
-            md_duration_ps=args.md_duration_ps,
-            device=args.device,
-            peptide_chain=args.peptide_chain,
-            receptor_chain=args.receptor_chain,
-            metrics=metrics,
-            energy_modes=tuple(args.energy_modes),
-            reference_path=args.reference,
-            openfold_mode=args.openfold_mode,
-            openfold_conda_env=args.openfold_conda_env,
-            random_seed=args.random_seed,
-        )
+        try:
+            results = run_pipeline(
+                input_path=args.input,
+                output_dir=args.output_dir,
+                sample_id=sample_id,
+                skip_prep=args.skip_prep,
+                ph=args.ph,
+                keep_water=args.keep_water,
+                canonicalize=args.canonicalize,
+                skip_relax=args.skip_relax,
+                md_duration_ps=args.md_duration_ps,
+                device=args.device,
+                peptide_chain=args.peptide_chain,
+                receptor_chain=args.receptor_chain,
+                metrics=metrics,
+                energy_modes=tuple(args.energy_modes),
+                reference_path=args.reference,
+                openfold_mode=args.openfold_mode,
+                openfold_conda_env=args.openfold_conda_env,
+                random_seed=args.random_seed,
+            )
+        except ChainNotFoundError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
         results["total_elapsed_s"] = round(time.time() - t_total, 1)
 
         from binding_metrics.protocols.report import write_report

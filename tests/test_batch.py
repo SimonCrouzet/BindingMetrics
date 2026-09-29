@@ -6,7 +6,9 @@ filename stem), which is pure and testable without running the pipeline.
 
 from pathlib import Path
 
-from binding_metrics.cli.batch import _build_reference_map
+from binding_metrics.cli.batch import _build_reference_map, _run_one
+
+EXAMPLE_1YCR = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
 
 
 def _touch(path: Path) -> Path:
@@ -62,3 +64,40 @@ class TestBuildReferenceMap:
         assert resolved["sampleA"] is not None
         assert resolved["sampleB"] is None  # no matching reference
         assert resolved["sampleC"] is not None
+
+
+def _worker_kwargs(tmp_path, **overrides):
+    """Arguments for ``_run_one`` that reach the pipeline's chain check and stop."""
+    kwargs = dict(
+        input_path=EXAMPLE_1YCR,
+        output_dir=tmp_path,
+        sample_id=None,
+        skip_prep=True,
+        ph=7.4,
+        keep_water=False,
+        canonicalize=False,
+        skip_relax=True,
+        md_duration_ps=0.0,
+        device="cuda",
+        peptide_chain=None,
+        receptor_chain=None,
+        metrics=frozenset(),
+        energy_modes=("relaxed",),
+        openfold_mode="score",
+        openfold_conda_env=None,
+        log_file=None,
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+class TestRunOneChains:
+    def test_unknown_chain_marks_the_sample_as_error(self, tmp_path):
+        row = _run_one(**_worker_kwargs(tmp_path, peptide_chain="Z"))
+        assert row["batch_status"] == "error"
+        assert "chain 'Z' not found; available: B (13), A (85)" in row["batch_error"]
+
+    def test_valid_chains_run_to_completion(self, tmp_path):
+        row = _run_one(**_worker_kwargs(tmp_path, peptide_chain="B", receptor_chain="A"))
+        assert row["batch_status"] == "ok"
+        assert row["sample_id"] == "example_linear_p53_1YCR"
