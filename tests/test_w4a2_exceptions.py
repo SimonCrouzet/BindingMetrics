@@ -286,3 +286,104 @@ class TestBatchOpenFold:
 
         assert report.read_text() == content
         assert "s1: could not update s1_results.json" in caplog.text
+
+
+class TestRunPipelineCatches:
+    METRIC_ENTRY_POINTS = [
+        ("energy", "binding_metrics.metrics.energy", "compute_interaction_energy"),
+        ("interface", "binding_metrics.metrics.interface", "compute_interface_metrics"),
+        ("geometry", "binding_metrics.metrics.geometry", "compute_ramachandran"),
+        ("electrostatics", "binding_metrics.metrics.electrostatics", "compute_coulomb_cross_chain"),
+        ("dockq", "binding_metrics.metrics.dockq", "compute_dockq_metrics"),
+    ]
+
+    @staticmethod
+    def _run(tmp_path, metrics, **kwargs):
+        from binding_metrics.cli.run import run_pipeline
+
+        return run_pipeline(
+            P53_MDM2,
+            tmp_path,
+            skip_prep=True,
+            skip_relax=True,
+            metrics=frozenset(metrics),
+            **kwargs,
+        )
+
+    @pytest.mark.parametrize(("metric", "module", "function"), METRIC_ENTRY_POINTS)
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_failing_metric_is_recorded_and_the_run_carries_on(
+        self, tmp_path, monkeypatch, caplog, metric, module, function, failure
+    ):
+        def broken(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(f"{module}.{function}", broken)
+        with caplog.at_level(logging.WARNING, logger="binding_metrics"):
+            results = self._run(tmp_path, {metric}, reference_path=P53_MDM2)
+
+        assert results[metric] == {"error": str(failure)}
+        assert "failed" in caplog.text
+
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_failing_prep_is_recorded_and_the_raw_input_is_used(
+        self, tmp_path, monkeypatch, failure
+    ):
+        from binding_metrics.cli.run import run_pipeline
+        from binding_metrics.core import system
+
+        def broken(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(system, "prep_structure", broken)
+
+        results = run_pipeline(P53_MDM2, tmp_path, skip_relax=True, metrics=frozenset())
+
+        assert results["prep"] == {"error": str(failure)}
+        assert results["relax"] == {"skipped": True}
+
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_unreadable_cyclic_hints_are_logged_and_the_run_carries_on(
+        self, tmp_path, monkeypatch, caplog, failure
+    ):
+        def broken(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr("binding_metrics.io.structures.load_structure", broken)
+        with caplog.at_level(logging.DEBUG, logger="binding_metrics.cli.run"):
+            results = self._run(tmp_path, set())
+
+        assert results["relax"] == {"skipped": True}
+        assert "Cyclic bond hints unavailable" in caplog.text
+
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_failing_openfold_is_recorded(self, tmp_path, monkeypatch, failure):
+        from binding_metrics.metrics import openfold
+
+        def broken(**_kwargs):
+            raise failure
+
+        monkeypatch.setattr(openfold, "run_openfold_scoring", broken)
+
+        assert self._run(tmp_path, {"openfold"})["openfold"] == {"error": str(failure)}
+
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_failing_evobind_steps_are_recorded_next_to_the_openfold_metrics(
+        self, tmp_path, monkeypatch, failure
+    ):
+        from binding_metrics.metrics import evobind, openfold
+
+        def broken(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(openfold, "run_openfold_scoring", lambda **_kw: tmp_path)
+        monkeypatch.setattr(
+            openfold, "compute_openfold_metrics", lambda **_kw: {"structure_path": "of3.cif"}
+        )
+        monkeypatch.setattr(evobind, "compute_evobind_score", broken)
+        monkeypatch.setattr(evobind, "compute_evobind_adversarial_check", broken)
+
+        of_metrics = self._run(tmp_path, {"openfold"})["openfold"]
+
+        assert of_metrics["evobind_error"] == str(failure)
+        assert of_metrics["adversarial_error"] == str(failure)

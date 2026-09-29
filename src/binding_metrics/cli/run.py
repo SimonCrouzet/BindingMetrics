@@ -301,7 +301,7 @@ def run_pipeline(
                 )
                 peptide_chain_label = prepped_chain_info["peptide_chain_label"]
                 receptor_chain_label = prepped_chain_info["receptor_chain_label"]
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-step isolation; recorded in results["prep"]
             _warn(f"Prep failed: {e} — continuing with raw input")
             traceback.print_exc()
             prepped_path = input_path
@@ -325,10 +325,10 @@ def run_pipeline(
                 "  Cyclic bond hints from original file: %s",
                 [b.cyclic_type for b in cyclic_bond_hints],
             )
-    except Exception:
-        # The hints are best effort. Without them relaxation detects cyclisation
-        # from the prepped file, which may have lost the STRUCT_CONN records.
-        pass
+    except Exception as e:  # noqa: BLE001 - the hints are best effort; the failure is logged
+        # Without them relaxation detects cyclisation from the prepped file, which may
+        # have lost the STRUCT_CONN records. Debug level keeps the CLI output unchanged.
+        logger.debug("Cyclic bond hints unavailable from %s: %s", input_path, e)
 
     relaxed_path: Optional[Path] = None
     if not skip_relax:
@@ -416,7 +416,7 @@ def run_pipeline(
                 random_seed=random_seed,
             )
             results["energy"] = energy
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["energy"]
             _warn(f"Energy computation failed: {e}")
             traceback.print_exc()
             results["energy"] = {"error": str(e)}
@@ -435,7 +435,7 @@ def run_pipeline(
                 receptor_chain=working_receptor,
             )
             results["interface"] = interface
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results
             _warn(f"Interface metrics failed: {e}")
             traceback.print_exc()
             results["interface"] = {"error": str(e)}
@@ -464,7 +464,7 @@ def run_pipeline(
                 "omega": omega,
                 "shape_complementarity": sc,
             }
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results
             _warn(f"Geometry metrics failed: {e}")
             traceback.print_exc()
             results["geometry"] = {"error": str(e)}
@@ -483,7 +483,7 @@ def run_pipeline(
                 receptor_chain=working_receptor,
             )
             results["electrostatics"] = elec
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results
             _warn(f"Electrostatics failed: {e}")
             traceback.print_exc()
             results["electrostatics"] = {"error": str(e)}
@@ -509,7 +509,7 @@ def run_pipeline(
                 score = dockq.get("dockq")
                 if score is not None:
                     logger.info(f"  DockQ: {score:.3f} ({dockq.get('capri_class')})")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results
                 _warn(f"DockQ failed: {e}")
                 traceback.print_exc()
                 results["dockq"] = {"error": str(e)}
@@ -587,7 +587,7 @@ def run_pipeline(
                         )
                         _merge_reason(of_metrics, evobind, "evobind")
                         of_metrics.update(evobind)
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 - per-score isolation; see evobind_error
                         _warn(f"EvoBind score failed: {e}")
                         of_metrics["evobind_error"] = str(e)
 
@@ -604,13 +604,13 @@ def run_pipeline(
                         )
                         _merge_reason(of_metrics, adversarial, "evobind adversarial")
                         of_metrics.update(adversarial)
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 - per-check isolation; see adversarial_error
                         _warn(f"EvoBind adversarial check failed: {e}")
                         of_metrics["adversarial_error"] = str(e)
 
                 results["openfold"] = of_metrics
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results
             _warn(f"OpenFold failed: {e}")
             traceback.print_exc()
             results["openfold"] = {"error": str(e)}
