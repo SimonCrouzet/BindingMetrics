@@ -33,6 +33,7 @@ from binding_metrics._constants import (
 )
 from binding_metrics.cli import add_openfold_seeds_arg, md_save_interval_for
 from binding_metrics.cli import seed_arg as _seed_arg
+from binding_metrics.metrics.registry import get_metric
 from binding_metrics.provenance import collect_provenance
 from binding_metrics.utils import configure_logging
 
@@ -41,10 +42,41 @@ from binding_metrics.utils import configure_logging
 # logger that ``configure_logging`` sets up, so its INFO lines would be lost.
 logger = logging.getLogger("binding_metrics.cli.run")
 
-ALL_METRICS = frozenset({"energy", "interface", "geometry", "electrostatics", "openfold"})
+#: Registry input types whose functions take an in-memory object (a loaded
+#: ``AtomArray``, or a model's confidence arrays) and not a structure path, so a
+#: pipeline step cannot call them.
+_NON_PATH_INPUT_TYPES = frozenset({"atom_array", "predicted_structure"})
+
+#: Pipeline step (the name ``--metrics`` takes) -> registry metrics the step runs.
+#: The names differ from the registry's where one step calls several functions
+#: (``geometry``) or the registry name says more (``structure_interaction_energy``
+#: is the per-structure energy, ``interaction_energy`` the per-frame one).
+_STEP_METRICS = {
+    "energy": ("structure_interaction_energy",),
+    "interface": ("interface",),
+    "geometry": ("ramachandran", "omega", "shape_complementarity"),
+    "electrostatics": ("coulomb",),
+    "openfold": ("openfold",),
+}
+
+
+def _steps_taking_a_path(step_metrics: dict) -> frozenset:
+    """Steps of ``step_metrics`` whose registry metrics all read a structure path.
+
+    ``get_metric`` raises ``KeyError`` for a name the registry lacks, so a step
+    cannot silently outlive the metric it runs.
+    """
+    return frozenset(
+        step
+        for step, names in step_metrics.items()
+        if all(get_metric(name).input_type not in _NON_PATH_INPUT_TYPES for name in names)
+    )
+
+
+ALL_METRICS = _steps_taking_a_path(_STEP_METRICS)
 # Reference-based metrics require a native structure (--reference) and are not
 # part of the default set; they are auto-enabled when a reference is supplied.
-REFERENCE_METRICS = frozenset({"dockq"})
+REFERENCE_METRICS = _steps_taking_a_path({"dockq": ("dockq",)})
 KNOWN_METRICS = ALL_METRICS | REFERENCE_METRICS
 
 
