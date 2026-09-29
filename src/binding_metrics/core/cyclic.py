@@ -46,6 +46,8 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.core.residues import CUSTOM_HYDROGEN_RESIDUES, CYSTEINE_NAMES
+
 # ---------------------------------------------------------------------------
 # Threshold constants (nm)
 #
@@ -826,7 +828,7 @@ def rename_disulfide_cys_to_cyx(topology, positions):
 
     to_remove_hg = []
     for res in topology.residues():
-        if res.name not in ("CYS", "CYX"):
+        if res.name not in CYSTEINE_NAMES:
             continue
         sg = next((a for a in res.atoms() if a.name == "SG"), None)
         if sg is not None and sg.index in ss_bonded_sg:
@@ -1383,9 +1385,8 @@ def get_addh_variants(topology, bond_info_list: list, chain_id: str) -> list:
     # disulfide partners (e.g. a receptor CYS renamed to CYX) are also covered.
     # Only override None entries so the head_to_tail/lactam terminal
     # assignments above are not disturbed.
-    _custom_h_residues = ("CYX", "ASPL", "GLUL", "LYSL", "NMG", "NMA", "MVA", "MLE")
     for res in topology.residues():
-        if res.name in _custom_h_residues and variants[res.index] is None:
+        if res.name in CUSTOM_HYDROGEN_RESIDUES and variants[res.index] is None:
             h_spec = _internal_h_list(res.name)
             if h_spec is not None:
                 variants[res.index] = h_spec

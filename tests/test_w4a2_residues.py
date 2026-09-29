@@ -47,6 +47,14 @@ OLD_SYSTEM_WATER_NAMES = frozenset({"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"})
 # core.system.get_system_info: local ``ion_names``.
 OLD_SYSTEM_ION_NAMES = frozenset({"NA", "CL", "K", "MG", "CA", "ZN"})
 
+# core.cyclic.get_addh_variants: local ``_custom_h_residues`` tuple.
+OLD_CUSTOM_HYDROGEN_RESIDUES = frozenset(
+    ("CYX", "ASPL", "GLUL", "LYSL", "NMG", "NMA", "MVA", "MLE")
+)
+
+# core.cyclic.rename_disulfide_cys_to_cyx: inline ``("CYS", "CYX")``.
+OLD_CYCLIC_CYSTEINE_NAMES = frozenset(("CYS", "CYX"))
+
 # protocols.qc.WATER_NAMES.
 OLD_QC_WATER_NAMES = frozenset({"HOH", "WAT", "H2O"})
 
@@ -361,3 +369,24 @@ class TestRelaxationAmberStandard:
         molecules = ImplicitRelaxation._discover_heterogens(topology)
 
         assert [molecule.n_atoms for molecule in molecules] == [2]
+
+
+class TestCyclicNameSets:
+    def test_custom_hydrogen_residues_equal_the_old_literal(self):
+        assert residues.CUSTOM_HYDROGEN_RESIDUES == OLD_CUSTOM_HYDROGEN_RESIDUES
+
+    def test_cysteine_names_equal_the_old_literal(self):
+        assert residues.CYSTEINE_NAMES == OLD_CYCLIC_CYSTEINE_NAMES
+
+    def test_addh_variants_are_given_to_the_custom_residues_only(self):
+        from binding_metrics.core.cyclic import get_addh_variants
+
+        names = ["ALA", "CYX", "ASPL", "GLUL", "LYSL", "NMG", "NMA", "MVA", "MLE", "HIN", "CYS"]
+        topology, _ = _build_topology({"A": names})
+
+        variants = get_addh_variants(topology, [], "A")
+
+        assert [variant is not None for variant in variants] == [
+            name in residues.CUSTOM_HYDROGEN_RESIDUES for name in names
+        ]
+        assert sum(variant is not None for variant in variants) == 8

@@ -136,3 +136,11 @@ WATER_NAMES_WITH_H2O: frozenset[str] = WATER_NAMES_PDB_AMBER | {"H2O"}
 #: the water-model names. ``core.system`` uses it to classify residues and the
 #: GAFF skip list keeps solvent away from antechamber.
 WATER_NAMES_ALL: frozenset[str] = WATER_NAMES_WITH_H2O | WATER_MODEL_NAMES
+
+#: Residues that ``Modeller.addHydrogens`` cannot protonate from its own hydrogen
+#: table: CYX, the lactam residues and the N-methylated residues.
+#: ``core.cyclic.get_addh_variants`` gives each an explicit internal-form
+#: hydrogen list.
+CUSTOM_HYDROGEN_RESIDUES: frozenset[str] = (
+    frozenset({"CYX"}) | LACTAM_TEMPLATE_RESIDUES | N_METHYLATED_RESIDUES
+)
