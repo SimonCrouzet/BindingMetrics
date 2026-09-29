@@ -6,6 +6,19 @@ The metrics range from static single-structure analysis (buried SASA, hydrogen b
 
 ---
 
+## Scope and limits
+
+The package targets peptide–protein complexes first. The cyclic-peptide and non-canonical-residue handling, the examples and the scorecard bands are built around peptide binders. The chain roles, the heteroatom handling and the static metrics do not depend on the binder being a peptide, and they also run on larger binders. On the raw file of the nanobody 7D12 (122 residues) bound to EGFR domain III (205 residues; PDB 4KRL, with its glycans, waters, MES and iodide left in), the interface, shape complementarity, void volume, Ramachandran, ω and Coulomb functions took 5 to 7 s in total in two runs on a laptop CPU.
+
+Limits:
+- **Single-chain roles.** The binder and the target are one chain each. A binder of several chains (a Fab) is handled by DockQ only, which maps chains itself; the other metrics score one binder chain at a time.
+- **No antibody-specific analysis.** There is no CDR numbering (no ANARCI), and an antibody is scored like any other chain.
+- **No calibration for non-peptides.** No calibration against binder and non-binder data ships with the package, for peptides or for other binders. The scorecard bands, the shape-complementarity ranges and `delta_g_int` are heuristics.
+- **Chemistry handling is for the binder chain.** Cyclic closures and non-canonical residues are looked for in the binder chain.
+- **OpenFold3 interface PDE and PAE** need one token per residue. A prediction with ligands or modified residues gives NaN for them, with a `reason`.
+
+---
+
 ## Cyclic peptide support
 
 BindingMetrics supports **cyclic peptides**: head-to-tail (N→C amide) rings, disulfides, lactam bridges and hydrocarbon staples. The closure types it recognises are `head_to_tail`, `disulfide`, `lactam_n_asp`, `lactam_n_glu`, `lactam_c_lys`, `lactam_sc_lys_asp`, `lactam_sc_lys_glu` and `hydrocarbon_staple`, and a peptide can have several (SFTI-1 in 3P8F has a head-to-tail bond and a disulfide). Cyclisation is looked for in the binder (peptide) chain.
@@ -132,7 +145,7 @@ The environment contains:
 - openmmforcefields, openff-toolkit, RDKit and AmberTools (`antechamber` and `sqm` must be on `PATH`) for the GAFF2 parameters of non-canonical residues
 - DockQ, installed with pip, and this package in editable mode
 
-`environment.lock.yml` records the exact versions of the development environment.
+`environment.lock.yml` records the exact versions of the development environment; see [Reproducibility](#reproducibility).
 
 ### Alternative: pip
 
@@ -653,6 +666,17 @@ configure_logging(logging.INFO)
 
 ---
 
+## Reproducibility
+
+- **Seeds.** Hydrogen placement, PDBFixer's rebuilding of missing atoms, the MD initial velocities and Langevin noise, the ion placement of `binding-metrics-solvate` and the hydrogen placement in the receptor energy term of `binding-metrics-receptor-quality` are seeded. The default seed is 1. Set it with `--random-seed INT` on `binding-metrics-run`, `-batch`, `-relax`, `-energy`, `-prep`, `-solvate` and `-receptor-quality`, or with `random_seed=` in the API; `--random-seed none` draws fresh randomness, for instance to generate independent MD replicas. The static metrics have no random step.
+- **OpenFold3.** The seed above does not drive it. The query JSON carries the seed 42 unless `--openfold-seeds` is given, and the MSA server can return different alignments over time.
+- **GPU precision.** CUDA runs in mixed precision and its force reduction order is not deterministic, so energies and MD from one seed can differ in the last digits between GPU runs.
+- **Provenance.** Every results file carries the `provenance` block (package version, git sha, Python, OS, OpenMM version, platform, seed), and batch CSV rows carry it as `provenance_*` columns, so a result can be tied to the code and settings that produced it.
+- **Environments.** `environment.yml` is the specification that CI and the Dockerfile build from. `environment.lock.yml` is a snapshot of the exact versions of the development environment (`conda env create -n binding-metrics -f environment.lock.yml`, then `pip install --no-deps -e .`); neither CI nor the Dockerfile reads it, and its header says how to regenerate it. The Docker images are built from `environment.yml` (see [Docker](#docker-gpu-recommended-for-production)).
+- **Releases.** Pushing a `v*` tag builds the sdist and the wheel and attaches them to a GitHub Release. Nothing is published to PyPI.
+
+---
+
 ## Documentation
 
 - [`docs/metrics.md`](docs/metrics.md): every metric with its signature, result keys, units and algorithm notes; the pipeline results; the metric registry
@@ -675,7 +699,7 @@ If you use BindingMetrics in published work or a commercial product, crediting t
 
 ## About
 
-I'm Simon Crouzet, an independent researcher and consultant in AI/ML for molecular design and drug discovery. BindingMetrics grew out of my own need for principled, reproducible binding quality metrics in peptide design pipelines.
+I'm Simon Crouzet, an independent researcher and consultant in AI/ML for molecular design and drug discovery. BindingMetrics grew out of my own need for reproducible quality metrics in peptide design pipelines.
 
 If you find this useful, have ideas, or are working on something in the same space and want to exchange — feel free to reach out. I'm also available for project-based work in computational molecular design and ML workflow development.
 
