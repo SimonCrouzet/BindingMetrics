@@ -570,7 +570,7 @@ class ImplicitRelaxation(Relaxer):
                 )
                 result.append(mol)
                 logger.info("  Auto-GAFF2: '%s' (%s heavy atoms)", res.name, mol.n_atoms)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - one residue; RDKit and openff raise many types
                 logger.warning(
                     "  Warning: could not build GAFF2 molecule for '%s': "
                     "%s. Skipping (residue will be excluded from the system).",
@@ -842,7 +842,7 @@ class ImplicitRelaxation(Relaxer):
         try:
             with deterministic_hydrogen_placement(seed):
                 modeller.addHydrogens(ff, pH=self.config.ph, variants=addh_variants)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - OpenMM raises many types; the retry below is logged
             logger.warning(
                 "  Warning: addHydrogens(ff, pH=%s) failed (%s), "
                 "retrying without ForceField (approximate H positions)...",
@@ -1169,7 +1169,7 @@ class ImplicitRelaxation(Relaxer):
             return check_relaxed_structure(
                 reference, AtomSnapshot.from_topology(topology, positions), **kwargs
             )
-        except Exception as exc:  # advisory: a QC bug must not fail a finished relaxation
+        except Exception as exc:  # noqa: BLE001 - advisory: a QC bug must not fail a relaxation
             logger.warning("[%s] structural QC could not run: %s", sample_id, exc, exc_info=True)
             return {
                 "passed": None,
@@ -1208,7 +1208,7 @@ class ImplicitRelaxation(Relaxer):
                 self._platform_used = "CUDA"
                 self._precision_used = properties["CudaPrecision"]
                 return platform, properties
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - any CUDA failure falls back to CPU, recorded
                 logger.warning("CUDA requested but unavailable, falling back to CPU: %s", e)
                 self._platform_fallback_reason = f"{type(e).__name__}: {e}"
                 logger.warning("  Warning: CUDA unavailable (%s), falling back to CPU.", e)
@@ -1322,7 +1322,7 @@ class ImplicitRelaxation(Relaxer):
                         closure_indices_list.append(ci)
                         if omega_indices is None:
                             omega_indices = resolve_omega_atoms(topology, bi, peptide_chain)
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 - per-bond isolation, logged
                         logger.warning(
                             "[%s]   Warning: could not resolve closure atoms: %s", sample_id, e
                         )
@@ -1458,7 +1458,7 @@ class ImplicitRelaxation(Relaxer):
 
                 trajectory_positions = []
                 md_energies = []
-                for i in range(total_saves):
+                for _ in range(total_saves):
                     simulation.step(steps_per_save)
                     frame_state = simulation.context.getState(getPositions=True, getEnergy=True)
                     trajectory_positions.append(frame_state.getPositions())
@@ -1530,7 +1530,7 @@ class ImplicitRelaxation(Relaxer):
             result.qc_passed = None if None in outcomes else all(outcomes)
             result.success = True
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - one failed sample is a result, see error_message
             result.error_message = f"{type(e).__name__}: {e}"
             logger.warning("[%s] ERROR: %s", sample_id, result.error_message)
             traceback.print_exc()

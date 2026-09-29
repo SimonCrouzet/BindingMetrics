@@ -531,3 +531,96 @@ class TestReportRendering:
         text = _md_openfold({"avg_plddt": 80.0, "binder_plddt_per_residue": [90.0, 60.5, 88.0]})
 
         assert "Low binder pLDDT (< 70):** res2 (60.5)" in text
+
+
+class TestImplicitRelaxationCatches:
+    @staticmethod
+    def _relaxer(**config):
+        from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
+
+        return ImplicitRelaxation(RelaxationConfig(md_duration_ps=0.0, **config))
+
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_missing_cuda_falls_back_to_cpu_for_any_error_type(self, monkeypatch, failure):
+        import openmm
+
+        real_lookup = openmm.Platform.getPlatformByName
+
+        def lookup(name):
+            if name == "CUDA":
+                raise failure
+            return real_lookup(name)
+
+        monkeypatch.setattr(openmm.Platform, "getPlatformByName", staticmethod(lookup))
+        relaxer = self._relaxer(device="cuda")
+
+        platform, _ = relaxer._get_platform()
+
+        assert platform.getName() == "CPU"
+        assert relaxer._platform_fallback_reason == f"{type(failure).__name__}: {failure}"
+
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_qc_that_cannot_run_is_recorded_and_logged(self, monkeypatch, caplog, failure):
+        from binding_metrics.protocols import qc
+
+        def broken(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(qc, "check_relaxed_structure", broken)
+        snapshot = qc.AtomSnapshot(
+            coords=np.zeros((1, 3)),
+            atom_names=("CA",),
+            residue_keys=(("A", "1", 0),),
+            is_hydrogen=np.zeros(1, dtype=bool),
+            is_water=np.zeros(1, dtype=bool),
+        )
+        topology, positions = _one_residue_topology()
+
+        with caplog.at_level(logging.WARNING, logger="binding_metrics.protocols.relaxation"):
+            verdict = self._relaxer()._structural_qc("s1", snapshot, topology, positions)
+
+        assert verdict["passed"] is None
+        assert verdict["reason"] == f"{type(failure).__name__}: {failure}"
+        assert "s1] structural QC could not run" in caplog.text
+
+    def test_a_missing_input_is_a_failed_result_not_an_exception(self, tmp_path):
+        result = self._relaxer(device="cpu").run(tmp_path / "missing.cif", tmp_path / "out")
+
+        assert result.success is False
+        assert result.error_message.startswith("FileNotFoundError")
+
+    @pytest.mark.parametrize("failure", STEP_FAILURES, ids=lambda e: type(e).__name__)
+    def test_a_heterogen_that_cannot_become_a_molecule_is_skipped_and_logged(
+        self, monkeypatch, caplog, failure
+    ):
+        pytest.importorskip("openff.toolkit")
+        pytest.importorskip("rdkit")
+        from openff.toolkit import Molecule
+        from openmm import app
+
+        from binding_metrics.protocols.relaxation import ImplicitRelaxation
+
+        def broken(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(Molecule, "from_rdkit", staticmethod(broken))
+        topology = app.Topology()
+        residue = topology.addResidue("LIG", topology.addChain(id="A"))
+        first = topology.addAtom("C1", app.element.carbon, residue)
+        second = topology.addAtom("N1", app.element.nitrogen, residue)
+        topology.addBond(first, second)
+
+        with caplog.at_level(logging.WARNING, logger="binding_metrics.protocols.relaxation"):
+            molecules = ImplicitRelaxation._discover_heterogens(topology)
+
+        assert molecules == []
+        assert "could not build GAFF2 molecule for 'LIG'" in caplog.text
+
+
+def _one_residue_topology():
+    from openmm import Vec3, app, unit
+
+    topology = app.Topology()
+    residue = topology.addResidue("ALA", topology.addChain(id="A"))
+    topology.addAtom("CA", app.element.carbon, residue)
+    return topology, unit.Quantity([Vec3(0.0, 0.0, 0.0)], unit.nanometer)
