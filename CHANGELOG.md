@@ -43,8 +43,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - **GAFF bond orders of non-canonical residues (#38).** Bond orders were perceived on a graph without
   hydrogens and came out single. They now come from the wwPDB Chemical Component Dictionary in biotite.
   - 1CWA: MeBmt has 17 hydrogens, not 19, and its CE=CZ bond relaxes to 1.340 A, not 1.544 A (crystal 1.336 A).
-  - 1CWA `raw_interaction_energy` -268.4 -> -280.4 kJ/mol, `relaxed_interaction_energy` -280.9 -> -298.5
-    kJ/mol (`--md-duration-ps 0`, seed 1, CUDA; the values after the two GAFF2 charge entries below).
+  - 1CWA `raw_interaction_energy` -268.4 -> -299.7 kJ/mol, `relaxed_interaction_energy` -280.9 -> -299.7
+    kJ/mol (`--md-duration-ps 0`, seed 1, CUDA; the values after the GAFF2 entries below).
   - The backbone C=O of 0EH and MK8 (3V3B) was read as C-OH.
   - IAM (1XY4): PDBFixer lists the IAM-THR peptide bond twice, so the capped molecule got two caps on the backbone C
     and IAM fell back to single bonds. A bond that the topology lists twice is capped once, and IAM takes the
@@ -68,6 +68,19 @@ Values from earlier versions differ in the cases below. A change reads "before -
   - 1CWA: BMT template charges change by up to 0.047 e and ABA by up to 0.017 e. Minimised complex energy
     -21562.7 -> -21553.4 kJ/mol, `raw_interaction_energy` -280.2 -> -280.4, `relaxed_interaction_energy`
     -298.6 -> -298.5, buried area 1010.3 -> 996.8 A^2, void volume 9.9 -> 4.9 A^3, `sc` 0.685 -> 0.684.
+- **GAFF2 residues keep their relaxed hydrogens.** `parameterize_ncaa_residues` dropped the hydrogens of every
+  GAFF2 residue and injected the ones RDKit places for the heavy atoms, in prep, relaxation and the energy step.
+  The energy step therefore evaluated a relaxed structure with unrelaxed hydrogens on such a residue: the complex
+  energy of 1CWA was 124 kJ/mol above the relaxation minimum, against 0.02 kJ/mol for complexes without a GAFF2
+  residue. A residue that holds exactly its template's hydrogens (same names on the same parent atoms) now keeps
+  them and their positions; a residue without hydrogens, or with others, is built as before.
+  - 1CWA (`--md-duration-ps 0`, seed 1, CUDA), before -> after: minimised complex energy -21553.4 -> -21552.6
+    kJ/mol, energy-step `raw_e_complex` -21429.4 -> -21552.6 (gap to the minimum 124.0 -> 0.02),
+    `raw_interaction_energy` -280.4 -> -299.7, `relaxed_interaction_energy` -298.5 -> -299.7, buried area
+    996.8 -> 996.3 A^2, void volume 4.9 -> 5.6 A^3, `sc` 0.684 -> 0.685. Prep is unchanged.
+- **Charges of `small_molecules` given as a list repeat from run to run.** The listed molecules went to
+  `GAFFTemplateGenerator`, whose own AM1-BCC call had the `sqm` timing problem above. They now get the same
+  seeded, single-diagonaliser charges before the generator is built; charges set on a molecule are kept.
 - **D-amino-acid and N-methyl names survive prep and relax (#15).** The relaxed CIF of 1CWA had
   `ALA ... NMG` where the input has `DAL ... SAR`; it now keeps the input names.
 - **Ligand RMSD (#37).** `calculate_ligand_rmsd` fitted the ligand a second time and returned 0 for a
@@ -225,6 +238,7 @@ Values from earlier versions differ in the cases below. A change reads "before -
 
 ### Fixed
 
+- `core/gaff_ncaa.py` writes force-field files and reads antechamber output as UTF-8 whatever the locale.
 - Batch: `--per-sample-log` was never read, and workers overwrote a shared `--log-file` (#19). An
   exception outside the pipeline's own handling is an error row in the sequential case too.
 - A chain ID that is not in the structure raises `ChainNotFoundError` in `run_pipeline`, and
