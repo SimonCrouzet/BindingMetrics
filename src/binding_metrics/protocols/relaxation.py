@@ -228,6 +228,11 @@ class RelaxationResult:
             where OpenMM reports none)
         platform_fallback_reason: Why CUDA was not used, when CUDA was requested
             and the run fell back to CPU
+        qc: Structural QC of the relaxed structure (``{"passed", "failed",
+            "checks"}`` from ``protocols.qc.check_relaxed_structure``), with the
+            same schema under ``"md_final"`` when MD ran. Advisory.
+        qc_passed: True when every QC check passed, False when one failed, None
+            when QC did not run
     """
 
     sample_id: str
@@ -264,8 +269,38 @@ class RelaxationResult:
     precision: Optional[str] = None
     platform_fallback_reason: Optional[str] = None
 
+    # Structural QC (see protocols/qc.py). ``qc`` is the dict returned by
+    # ``check_relaxed_structure`` for the minimized structure, with the same
+    # schema under ``qc["md_final"]`` when MD ran. It is advisory: a failed
+    # check never flips ``success``. ``qc_passed`` is None when QC did not run.
+    qc: Optional[dict] = None
+    qc_passed: Optional[bool] = None
+
+    def _qc_failed_checks(self) -> list:
+        """Names of failed QC checks, ``md_final:`` prefixed for the MD frame."""
+        if not self.qc:
+            return []
+        failed = list(self.qc.get("failed", []))
+        failed += [f"md_final:{name}" for name in (self.qc.get("md_final") or {}).get("failed", [])]
+        return failed
+
+    def _qc_check_rows(self) -> Optional[list]:
+        """One row per QC check (a list, so the CSV flattening leaves it out)."""
+        if not self.qc:
+            return None
+        rows = []
+        for stage, block in (("minimized", self.qc), ("md_final", self.qc.get("md_final"))):
+            for name, check in ((block or {}).get("checks") or {}).items():
+                rows.append({"stage": stage, "check": name, **check})
+        return rows
+
     def to_dict(self) -> dict:
-        """Convert result to a flat dictionary for CSV export."""
+        """Convert result to a flat dictionary for CSV export.
+
+        ``qc_passed`` and ``qc_failed_checks`` (comma-separated names) are scalar
+        columns; ``qc_checks`` lists every check with its value and is kept for
+        the JSON output.
+        """
         d = {
             "sample_id": self.sample_id,
             "success": self.success,
@@ -287,6 +322,9 @@ class RelaxationResult:
             "platform": self.platform,
             "precision": self.precision,
             "platform_fallback_reason": self.platform_fallback_reason,
+            "qc_passed": self.qc_passed,
+            "qc_failed_checks": ",".join(self._qc_failed_checks()),
+            "qc_checks": self._qc_check_rows(),
         }
         if self.peptide_rmsf_per_residue is not None:
             d["peptide_rmsf_per_residue"] = json.dumps(self.peptide_rmsf_per_residue)
@@ -1030,6 +1068,40 @@ class ImplicitRelaxation:
             system.removeForce(i)
         simulation.context.reinitialize(preserveState=True)
 
+    @staticmethod
+    def _qc_snapshot(sample_id: str, topology, positions):
+        """Snapshot for the structural QC, or None if it cannot be built."""
+        from binding_metrics.protocols.qc import AtomSnapshot
+
+        try:
+            return AtomSnapshot.from_topology(topology, positions)
+        except (ValueError, ImportError) as exc:
+            logger.warning("[%s] structural QC snapshot failed: %s", sample_id, exc)
+            return None
+
+    def _structural_qc(self, sample_id: str, reference, topology, positions, **kwargs) -> dict:
+        """Run the structural QC of ``positions`` against ``reference``.
+
+        The QC only annotates the result, so a failure to run it is recorded as
+        ``{"passed": None, "reason": ...}`` and never fails the relaxation.
+        """
+        from binding_metrics.protocols.qc import AtomSnapshot, check_relaxed_structure
+
+        if reference is None:
+            return {"passed": None, "failed": [], "checks": {}, "reason": "no reference snapshot"}
+        try:
+            return check_relaxed_structure(
+                reference, AtomSnapshot.from_topology(topology, positions), **kwargs
+            )
+        except Exception as exc:  # advisory: a QC bug must not fail a finished relaxation
+            logger.warning("[%s] structural QC could not run: %s", sample_id, exc, exc_info=True)
+            return {
+                "passed": None,
+                "failed": [],
+                "checks": {},
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+
     def _get_platform(self):
         """Get the OpenMM compute platform, falling back to CPU if CUDA fails.
 
@@ -1141,6 +1213,15 @@ class ImplicitRelaxation:
             simulation = app.Simulation(topology, system, integrator, platform, properties)
             simulation.context.setPositions(positions)
 
+            # Reference for the structural QC: geometry and energy of the system
+            # exactly as it enters minimization.
+            qc_reference = self._qc_snapshot(sample_id, topology, positions)
+            energy_reference_kj_mol = (
+                simulation.context.getState(getEnergy=True)
+                .getPotentialEnergy()
+                .value_in_unit(unit.kilojoules_per_mole)
+            )
+
             # --- Resolve cyclic closure atom indices (post-addHydrogens) ---
             # closure_indices_list: list of (idx1, idx2) tuples, one per bond
             # omega_indices: first non-None omega from the list (for warmup dihedral)
@@ -1219,6 +1300,15 @@ class ImplicitRelaxation:
             )
             minimized_positions = state.getPositions()
             result.minimization_time_s = time.time() - min_start
+
+            result.qc = self._structural_qc(
+                sample_id,
+                qc_reference,
+                topology,
+                minimized_positions,
+                energy_kj_mol=result.potential_energy_minimized,
+                energy_before_kj_mol=energy_reference_kj_mol,
+            )
 
             # The force field needed L / template names for D-amino acids and
             # N-methyl residues (DAL -> ALA, SAR -> NMG). Put the input names
@@ -1335,6 +1425,19 @@ class ImplicitRelaxation:
                 save_cif(topology, final_positions, final_path, source_cif_path=src)
                 result.md_final_structure_path = str(final_path)
 
+                # MD legitimately moves away from the minimum, so the frame is
+                # compared with the minimized structure and has no RMSD bound.
+                result.qc["md_final"] = self._structural_qc(
+                    sample_id,
+                    self._qc_snapshot(sample_id, topology, minimized_positions),
+                    topology,
+                    final_positions,
+                    energy_kj_mol=result.potential_energy_md_avg,
+                    max_rmsd_angstrom=None,
+                )
+
+            outcomes = [result.qc["passed"], (result.qc.get("md_final") or {}).get("passed", True)]
+            result.qc_passed = None if None in outcomes else all(outcomes)
             result.success = True
 
         except Exception as e:

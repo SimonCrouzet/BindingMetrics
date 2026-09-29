@@ -270,6 +270,94 @@ class TestImplicitRelaxation:
         assert result.to_dict()["platform"] == "CPU"
 
     @pytest.mark.integration
+    def test_run_attaches_structural_qc_and_it_passes(self, tmp_path: Path, prepped_example_cif):
+        """A normal minimization of 1YCR passes all seven QC checks."""
+        config = RelaxationConfig(
+            md_duration_ps=0.0,
+            device="cpu",
+            min_steps_initial=5,
+            min_steps_restrained=5,
+            min_steps_final=5,
+        )
+        result = ImplicitRelaxation(config).run(prepped_example_cif, tmp_path / "out")
+        assert result.success, result.error_message
+        assert result.qc_passed is True, result.qc["failed"]
+        checks = result.qc["checks"]
+        assert set(checks) == {
+            "energy",
+            "rmsd",
+            "coordinates_finite",
+            "min_heavy_distance",
+            "bond_lengths",
+            "chirality",
+            "composition",
+        }
+        assert all(check["evaluated"] and check["passed"] for check in checks.values())
+        assert "md_final" not in result.qc
+
+        row = result.to_dict()
+        assert row["qc_passed"] is True
+        assert row["qc_failed_checks"] == ""
+        assert {entry["check"] for entry in row["qc_checks"]} == set(checks)
+        json.dumps(row["qc_checks"])  # plain Python types only
+
+    @pytest.mark.integration
+    def test_failed_qc_is_advisory_and_reported(self, tmp_path: Path, prepped_example_cif):
+        """A failing QC check is recorded but does not flip ``success``."""
+        from binding_metrics.protocols import qc
+
+        failing = {
+            "passed": False,
+            "failed": ["chirality"],
+            "checks": {
+                "chirality": {
+                    "passed": False,
+                    "evaluated": True,
+                    "value": 1,
+                    "limit": "none inverted",
+                    "detail": "1 inverted",
+                }
+            },
+        }
+        config = RelaxationConfig(
+            md_duration_ps=0.0,
+            device="cpu",
+            min_steps_initial=5,
+            min_steps_restrained=5,
+            min_steps_final=5,
+        )
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(qc, "check_relaxed_structure", lambda *a, **k: failing)
+            result = ImplicitRelaxation(config).run(prepped_example_cif, tmp_path / "out")
+        assert result.success is True
+        assert result.qc_passed is False
+        row = result.to_dict()
+        assert row["qc_failed_checks"] == "chirality"
+        assert row["success"] is True
+
+    def test_qc_that_cannot_run_is_recorded_not_raised(self):
+        """A bug inside the QC yields ``passed=None`` with a reason."""
+        from binding_metrics.protocols import qc
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("QC bug")
+
+        relaxer = ImplicitRelaxation(RelaxationConfig())
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(qc, "check_relaxed_structure", broken)
+            patch.setattr(
+                qc.AtomSnapshot, "from_topology", classmethod(lambda cls, top, pos: object())
+            )
+            outcome = relaxer._structural_qc("sample", object(), None, None)
+        assert outcome["passed"] is None
+        assert "QC bug" in outcome["reason"]
+
+    def test_missing_reference_snapshot_is_recorded(self):
+        outcome = ImplicitRelaxation(RelaxationConfig())._structural_qc("s", None, None, None)
+        assert outcome["passed"] is None
+        assert outcome["reason"] == "no reference snapshot"
+
+    @pytest.mark.integration
     def test_kabsch_rmsd_identical(self):
         """_compute_rmsd should return 0 for identical positions."""
         config = RelaxationConfig()
