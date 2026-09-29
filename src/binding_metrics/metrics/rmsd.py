@@ -165,9 +165,8 @@ def calculate_ligand_rmsd(
     Every frame is superposed on the reference frame using the receptor atoms
     only. The ligand RMSD is then the plain root-mean-square displacement of
     the ligand atoms in that receptor frame, with no further fit, as in the
-    CAPRI ligand RMSD (Mendez et al., 2003, Proteins 52, 51). It therefore
-    includes the rigid-body motion of the ligand relative to the receptor and
-    is 0 only when the ligand keeps its pose in the receptor frame.
+    CAPRI ligand RMSD (Mendez et al., 2003, Proteins 52, 51). The value
+    includes the rigid-body motion of the ligand relative to the receptor.
 
     Args:
         trajectory_path: Path to trajectory file

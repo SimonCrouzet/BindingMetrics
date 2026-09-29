@@ -1,9 +1,7 @@
 """Additive keys of the backbone-geometry metrics: cis count and ring-closure flags.
 
-The existing keys of linear chains must not move. The reference values below
-were taken from the bundled examples before the keys were added. For a
-head-to-tail ring the closing amide is scored too (``tests/test_w3b_cyclic_dihedrals.py``),
-so the ring values include one more peptide bond than the original ones.
+Reference values for the bundled examples. For a head-to-tail ring the closing
+amide is one of the evaluated bonds (``tests/test_w3b_cyclic_dihedrals.py``).
 """
 
 from pathlib import Path
@@ -91,7 +89,7 @@ class TestCisCount:
 
 class TestExistingKeysUnchanged:
     def test_sfti1_omega(self):
-        """13 sequential bonds as before, plus the closing bond (15.7 degrees off trans)."""
+        """13 sequential bonds plus the closing bond (15.7 degrees off trans)."""
         result = compute_omega_planarity(_need(SFTI1), chain="I")
         assert result["omega_mean_dev"] == pytest.approx(17.427454, abs=1e-5)
         assert result["omega_max_dev"] == pytest.approx(177.129636, abs=1e-5)
@@ -102,7 +100,7 @@ class TestExistingKeysUnchanged:
         assert sum(sequential) / 13 == pytest.approx(17.558478, abs=1e-5)
 
     def test_cyclosporin_omega(self):
-        """10 sequential bonds as before, plus the closing bond (6.4 degrees off trans)."""
+        """10 sequential bonds plus the closing bond (6.4 degrees off trans)."""
         result = compute_omega_planarity(_need(CYCLOSPORIN), chain="C")
         assert result["omega_mean_dev"] == pytest.approx(3.301306, abs=1e-5)
         assert result["omega_outlier_count"] == 0

@@ -38,8 +38,8 @@ P53 = (
     Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
 )  # A: MDM2, B: p53 peptide
 
-# The roles are given the wrong way round (MDM2 as binder) on purpose: auto-detection
-# would pick chain B as the binder, so an alias that was silently ignored would show.
+# Roles swapped relative to auto-detection (which picks B as binder), so an ignored
+# alias changes the result.
 BINDER_ID, TARGET_ID = "A", "B"
 
 pytestmark = pytest.mark.skipif(not P53.exists(), reason="1YCR example not bundled")
@@ -67,9 +67,9 @@ class Case:
     """One metric function and the names of its chain parameters.
 
     ``binder`` and ``target`` are the old parameter names (None when the
-    function has no such role); ``required`` marks functions whose old
-    parameters had no default before the aliases existed. ``binder_id`` and
-    ``target_id`` are the chain IDs the test passes.
+    function has no such role); ``required`` marks functions whose chains
+    are mandatory. ``binder_id`` and ``target_id`` are the chain IDs the test
+    passes.
     """
 
     def __init__(
@@ -195,9 +195,9 @@ def test_conflicting_target_ids_are_a_value_error(case):
         case.call(**chains)
 
 
-def test_a_function_that_required_its_chains_still_needs_them(case):
+def test_missing_chains_raise_type_error_where_they_are_mandatory(case):
     if not case.required:
-        pytest.skip("chains were optional before the aliases")
+        pytest.skip("chains are optional in this function")
     with pytest.raises(TypeError, match="missing required"):
         case.call()
 

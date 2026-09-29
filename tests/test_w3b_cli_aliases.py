@@ -217,7 +217,7 @@ def test_help_names_the_aliases(cli, monkeypatch, capsys):
 class TestGeometryPicksTheOldFlagOfTheMetric:
     """--binder-chain is --chain for Ramachandran/omega and --peptide-chain for Sc/void."""
 
-    def test_ramachandran_ignores_peptide_chain_as_before(self, monkeypatch):
+    def test_ramachandran_ignores_peptide_chain(self, monkeypatch):
         _, kwargs = _invoke(
             monkeypatch,
             "binding_metrics.metrics.geometry",
@@ -226,7 +226,7 @@ class TestGeometryPicksTheOldFlagOfTheMetric:
         )
         assert kwargs["chain"] is None
 
-    def test_sc_ignores_chain_as_before(self, monkeypatch):
+    def test_sc_ignores_chain(self, monkeypatch):
         _, kwargs = _invoke(
             monkeypatch,
             "binding_metrics.metrics.geometry",
@@ -248,7 +248,7 @@ class TestGeometryPicksTheOldFlagOfTheMetric:
 
 
 class TestOpenFoldCli:
-    """The OpenFold CLI already had --binder-chain; --target-chain is new."""
+    """``--target-chain`` is an alias of ``--receptor-chain``; ``--binder-chain`` is native."""
 
     def _prepare(self, monkeypatch, *chain_flags):
         from binding_metrics.metrics import openfold

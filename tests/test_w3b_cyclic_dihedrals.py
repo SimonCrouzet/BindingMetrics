@@ -66,7 +66,7 @@ class TestCyclosporin:
         assert omega["omega_outlier_count"] == 0
 
     def test_sequential_angles_are_untouched(self):
-        """Dropping the closing bond reproduces the values from before the fix."""
+        """The first 10 bonds alone give the mean deviation of a linear chain."""
         omega = compute_omega_planarity(_need(CYCLOSPORIN), chain="C")
         deviations = [r["deviation"] for r in omega["per_residue"][:-1]]
         assert sum(deviations) / len(deviations) == pytest.approx(2.992090, abs=1e-5)

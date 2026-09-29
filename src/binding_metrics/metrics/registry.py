@@ -19,9 +19,8 @@ What a consumer may rely on
   exactly those keyword arguments. It adds, renames and validates nothing, and
   returns what the function returns.
 * ``binder_chain_arg`` and ``target_chain_arg`` are optional. When set, the
-  function also accepts that keyword as an alias of the binder / target chain
-  argument above, so a caller may use one spelling for every metric that has
-  the alias; the ``*_chain_arg`` fields above stay the primary names.
+  function also accepts that keyword as an alias of its binder / target chain
+  argument.
 * Loading is lazy. This module imports no metric module; a spec imports its
   function when ``load`` or ``call`` runs. Both raise ``ImportError`` when an
   optional dependency is missing, and ``requires_extras`` names the extras to
