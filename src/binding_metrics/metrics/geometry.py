@@ -145,26 +145,107 @@ def _get_vdw(element: str) -> float:
 _CLOSURE_MAX_DISTANCE = 2.0
 
 
-def _has_head_to_tail_closure(chain_atoms) -> bool:
-    """True if the last residue's C is bonded to the first residue's N.
+def _terminal_backbone_coords(chain_atoms) -> dict[str, np.ndarray]:
+    """N, CA and C coordinates of the first and last amino-acid residue.
 
-    ``biotite.structure.dihedral_backbone`` walks the chain sequentially, so
-    the φ/ψ/ω that involve the ring-closing bond of a cyclic peptide are never
-    produced. This detects such a chain so the result can say what is missing.
+    Keys are ``"N_first"``, ``"CA_first"``, ``"C_first"``, ``"N_last"``,
+    ``"CA_last"`` and ``"C_last"``; an atom the residue lacks is left out. The
+    dict is empty when the chain has fewer than two amino-acid residues.
     """
     struc, _, _, _ = _import_biotite()
     # waters and ions can carry the chain ID and would be taken as the last residue
     chain_atoms = chain_atoms[struc.filter_amino_acids(chain_atoms)]
     starts = struc.get_residue_starts(chain_atoms)
     if len(starts) < 2:
+        return {}
+    residues = {"first": chain_atoms[starts[0] : starts[1]], "last": chain_atoms[starts[-1] :]}
+    coords = {}
+    for which, residue in residues.items():
+        for name in ("N", "CA", "C"):
+            found = residue.coord[residue.atom_name == name]
+            if len(found):
+                coords[f"{name}_{which}"] = found[0]
+    return coords
+
+
+def _has_head_to_tail_closure(chain_atoms) -> bool:
+    """True if the last residue's C is bonded to the first residue's N.
+
+    ``biotite.structure.dihedral_backbone`` walks the chain sequentially, so
+    the φ/ψ/ω that involve the ring-closing bond of a cyclic peptide are never
+    produced. This detects such a chain so they can be computed separately.
+    """
+    coords = _terminal_backbone_coords(chain_atoms)
+    if "N_first" not in coords or "C_last" not in coords:
         return False
-    first = chain_atoms[starts[0] : starts[1]]
-    last = chain_atoms[starts[-1] :]
-    first_n = first.coord[first.atom_name == "N"]
-    last_c = last.coord[last.atom_name == "C"]
-    if len(first_n) == 0 or len(last_c) == 0:
+    return bool(np.linalg.norm(coords["N_first"] - coords["C_last"]) < _CLOSURE_MAX_DISTANCE)
+
+
+def _closing_dihedrals_deg(chain_atoms) -> Optional[tuple[float, float, float]]:
+    """φ of the first residue, ψ and ω of the last residue across the ring closure.
+
+    Uses the bond between the last residue's C and the first residue's N, so
+    φ(1) = C(last)-N(1)-CA(1)-C(1), ψ(last) = N(last)-CA(last)-C(last)-N(1) and
+    ω(last) = CA(last)-C(last)-N(1)-CA(1), all in degrees.
+
+    Returns:
+        ``(phi_first, psi_last, omega_last)``, or None when the chain does not
+        close head to tail or a backbone atom of either end residue is missing.
+    """
+    struc, _, _, _ = _import_biotite()
+    if not _has_head_to_tail_closure(chain_atoms):
+        return None
+    c = _terminal_backbone_coords(chain_atoms)
+    needed = ("N_first", "CA_first", "C_first", "N_last", "CA_last", "C_last")
+    if any(key not in c for key in needed):
+        return None
+    phi_first = struc.dihedral(c["C_last"], c["N_first"], c["CA_first"], c["C_first"])
+    psi_last = struc.dihedral(c["N_last"], c["CA_last"], c["C_last"], c["N_first"])
+    omega_last = struc.dihedral(c["CA_last"], c["C_last"], c["N_first"], c["CA_first"])
+    return tuple(float(np.degrees(angle)) for angle in (phi_first, psi_last, omega_last))
+
+
+def _apply_closing_dihedrals(chain_atoms, phi_deg, psi_deg, omega_deg) -> bool:
+    """Fill the ring-closing φ, ψ and ω into the arrays from ``dihedral_backbone``.
+
+    The arrays are indexed like the chain's Cα atoms (see the callers), so the
+    first and last amino-acid residues are located through the Cα atoms that
+    belong to amino acids. The arrays are modified in place.
+
+    Returns:
+        True if the chain closes head to tail and the closing angles were set.
+    """
+    struc, _, _, _ = _import_biotite()
+    closing = _closing_dihedrals_deg(chain_atoms)
+    if closing is None:
         return False
-    return bool(np.linalg.norm(first_n[0] - last_c[0]) < _CLOSURE_MAX_DISTANCE)
+    is_amino_acid = struc.filter_amino_acids(chain_atoms)[chain_atoms.atom_name == "CA"]
+    rows = np.flatnonzero(is_amino_acid)
+    if len(rows) < 2 or rows[-1] >= len(phi_deg):
+        return False
+    phi_first, psi_last, omega_last = closing
+    phi_deg[rows[0]] = phi_first
+    psi_deg[rows[-1]] = psi_last
+    omega_deg[rows[-1]] = omega_last
+    return True
+
+
+def _backbone_dihedrals_deg(chain_atoms):
+    """φ, ψ and ω in degrees for a chain, closing a head-to-tail ring if present.
+
+    Returns:
+        ``(phi_deg, psi_deg, omega_deg, closure_detected, closure_evaluated)``;
+        the three arrays follow ``dihedral_backbone`` (indexed like the chain's
+        Cα atoms), ``closure_evaluated`` is True when the ring-closing angles
+        were computed and put into them.
+    """
+    struc, _, _, _ = _import_biotite()
+    closure_detected = _has_head_to_tail_closure(chain_atoms)
+    phi_deg, psi_deg, omega_deg = (np.degrees(a) for a in struc.dihedral_backbone(chain_atoms))
+    closure_evaluated = closure_detected and _apply_closing_dihedrals(
+        chain_atoms, phi_deg, psi_deg, omega_deg
+    )
+    return phi_deg, psi_deg, omega_deg, closure_detected, closure_evaluated
 
 
 def _classify_ramachandran(phi: float, psi: float, is_d: bool = False) -> Optional[str]:
@@ -227,10 +308,12 @@ def compute_ramachandran(
     and will not match MolProbity's. D-residues are mirrored before the
     lookup.
 
-    Terminal residues have no complete φ/ψ pair and are skipped. For a
-    head-to-tail cyclic peptide the residues at the ring closure are skipped
-    too, because the dihedrals are computed sequentially; see
-    ``cyclic_closure_detected`` and ``cyclic_closure_evaluated``.
+    Terminal residues of a linear chain have no complete φ/ψ pair and are
+    skipped. For a head-to-tail cyclic peptide (last C bonded to first N,
+    detected by a C-N distance below 2 Å) φ of the first residue and ψ of the
+    last residue are computed across the closing amide bond, so every residue
+    is evaluated; see ``cyclic_closure_detected`` and
+    ``cyclic_closure_evaluated``.
 
     Type: score
 
@@ -246,12 +329,13 @@ def compute_ramachandran(
             ramachandran_allowed_pct (float): Percentage in allowed regions
             ramachandran_outlier_pct (float): Percentage as outliers
             ramachandran_outlier_count (int): Number of outlier residues
-            n_residues_evaluated (int): Residues with complete backbone (excl. termini)
+            n_residues_evaluated (int): Residues with a complete φ/ψ pair
+                (termini excluded unless the chain is a head-to-tail ring)
             n_d_residues (int): Evaluated residues that are D-amino acids
             cyclic_closure_detected (bool): The chain's last C is bonded to
                 its first N (head-to-tail macrocycle)
-            cyclic_closure_evaluated (bool): Always False: the φ/ψ around the
-                ring-closing bond are not part of these statistics
+            cyclic_closure_evaluated (bool): True when the ring-closing φ/ψ
+                were computed and are part of these statistics
 
         Features:
             per_residue (list[dict]): Per-residue data with keys:
@@ -263,7 +347,6 @@ def compute_ramachandran(
     """
     from binding_metrics.core.nonstandard import is_d_residue
 
-    struc, _, _, _ = _import_biotite()
     cif_path = Path(cif_path)
     atoms = _load_structure(cif_path)
 
@@ -284,11 +367,7 @@ def compute_ramachandran(
         }
 
     chain_atoms = atoms[atoms.chain_id == chain]
-    closure_detected = _has_head_to_tail_closure(chain_atoms)
-    phi_rad, psi_rad, _ = struc.dihedral_backbone(chain_atoms)
-
-    phi_deg = np.degrees(phi_rad)
-    psi_deg = np.degrees(psi_rad)
+    phi_deg, psi_deg, _, closure_detected, closure_evaluated = _backbone_dihedrals_deg(chain_atoms)
 
     # dihedral_backbone yields one (phi, psi, omega) per residue, so the CA
     # atoms are used to label them; this breaks if a residue lacks a CA atom.
@@ -334,7 +413,7 @@ def compute_ramachandran(
             "n_residues_evaluated": 0,
             "n_d_residues": n_d,
             "cyclic_closure_detected": closure_detected,
-            "cyclic_closure_evaluated": False,
+            "cyclic_closure_evaluated": closure_evaluated,
             "per_residue": per_residue,
             "reason": f"chain {chain!r} has no residue with a complete phi/psi pair",
         }
@@ -347,7 +426,7 @@ def compute_ramachandran(
         "n_residues_evaluated": n_eval,
         "n_d_residues": n_d,
         "cyclic_closure_detected": closure_detected,
-        "cyclic_closure_evaluated": False,
+        "cyclic_closure_evaluated": closure_evaluated,
         "per_residue": per_residue,
     }
 
@@ -373,9 +452,9 @@ def compute_omega_planarity(
     ``omega_cis_count`` reports how many of the evaluated bonds are cis so
     that these can be told apart from twisted trans bonds.
 
-    The dihedrals are computed sequentially, so for a head-to-tail cyclic
-    peptide the closing peptide bond is not evaluated (one bond fewer in
-    ``n_bonds_evaluated``); see ``cyclic_closure_detected`` and
+    For a head-to-tail cyclic peptide (last C bonded to first N, detected by a
+    C-N distance below 2 Å) the closing peptide bond is evaluated as well and
+    is listed under the last residue; see ``cyclic_closure_detected`` and
     ``cyclic_closure_evaluated``.
 
     Type: score
@@ -396,8 +475,8 @@ def compute_omega_planarity(
             omega_cis_count (int): Evaluated bonds with |ω| < 30°
             cyclic_closure_detected (bool): The chain's last C is bonded to
                 its first N (head-to-tail macrocycle)
-            cyclic_closure_evaluated (bool): Always False: the closing
-                peptide bond is not part of these statistics
+            cyclic_closure_evaluated (bool): True when the closing peptide
+                bond's ω was computed and is part of these statistics
 
         Features:
             per_residue (list[dict]): Per-residue data with keys:
@@ -407,7 +486,6 @@ def compute_omega_planarity(
             reason (str): Only present when no peptide bond could be
                 evaluated (the deviations are then NaN); says why.
     """
-    struc, _, _, _ = _import_biotite()
     cif_path = Path(cif_path)
     atoms = _load_structure(cif_path)
 
@@ -428,9 +506,7 @@ def compute_omega_planarity(
         }
 
     chain_atoms = atoms[atoms.chain_id == chain]
-    closure_detected = _has_head_to_tail_closure(chain_atoms)
-    _, _, omega_rad = struc.dihedral_backbone(chain_atoms)
-    omega_deg = np.degrees(omega_rad)
+    _, _, omega_deg, closure_detected, closure_evaluated = _backbone_dihedrals_deg(chain_atoms)
 
     ca_mask = chain_atoms.atom_name == "CA"
     ca_atoms = chain_atoms[ca_mask]
@@ -469,7 +545,7 @@ def compute_omega_planarity(
             "n_bonds_evaluated": 0,
             "omega_cis_count": 0,
             "cyclic_closure_detected": closure_detected,
-            "cyclic_closure_evaluated": False,
+            "cyclic_closure_evaluated": closure_evaluated,
             "per_residue": per_residue,
             "reason": f"chain {chain!r} has no peptide bond with a defined omega angle",
         }
@@ -485,7 +561,7 @@ def compute_omega_planarity(
         "n_bonds_evaluated": n_eval,
         "omega_cis_count": sum(abs(r["omega"]) < _CIS_OMEGA_MAX_DEG for r in per_residue),
         "cyclic_closure_detected": closure_detected,
-        "cyclic_closure_evaluated": False,
+        "cyclic_closure_evaluated": closure_evaluated,
         "per_residue": per_residue,
     }
 
