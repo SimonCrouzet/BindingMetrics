@@ -791,7 +791,8 @@ def compute_openfold_metrics(
                     )
                 except ValueError as exc:  # pLDDT length differs from the atom count
                     warnings.warn(
-                        f"compute_openfold_metrics: per-residue binder pLDDT skipped: {exc}"
+                        f"compute_openfold_metrics: per-residue binder pLDDT skipped: {exc}",
+                        stacklevel=2,
                     )
                     reasons.append(f"binder pLDDT: {exc}")
             elif files["confidences"] is not None:
@@ -813,7 +814,9 @@ def compute_openfold_metrics(
                         if include_matrices:
                             result["pde_interface"] = pde_stats["pde_interface"]
                     except ValueError as exc:  # missing chain or token/residue mismatch
-                        warnings.warn(f"compute_openfold_metrics: interface PDE skipped: {exc}")
+                        warnings.warn(
+                            f"compute_openfold_metrics: interface PDE skipped: {exc}", stacklevel=2
+                        )
                         reasons.append(f"interface PDE: {exc}")
                 elif files["confidences"] is not None:
                     reasons.append("interface PDE: no PDE matrix in the confidences file")
@@ -832,7 +835,9 @@ def compute_openfold_metrics(
                         if include_matrices:
                             result["pae_interface"] = pae_stats["pae_interface"]
                     except ValueError as exc:  # missing chain or token/residue mismatch
-                        warnings.warn(f"compute_openfold_metrics: interface PAE skipped: {exc}")
+                        warnings.warn(
+                            f"compute_openfold_metrics: interface PAE skipped: {exc}", stacklevel=2
+                        )
                         reasons.append(f"interface PAE: {exc}")
                 elif files["confidences"] is not None:
                     reasons.append("interface PAE: no PAE matrix in the confidences file")
@@ -845,13 +850,17 @@ def compute_openfold_metrics(
                         pred_atoms, ref_atoms, binder_chain, receptor_chain
                     )
                 except (ValueError, OSError) as exc:  # Cα count mismatch or unreadable file
-                    warnings.warn(f"compute_openfold_metrics: binder RMSD skipped: {exc}")
+                    warnings.warn(
+                        f"compute_openfold_metrics: binder RMSD skipped: {exc}", stacklevel=2
+                    )
                     reasons.append(f"binder RMSD: {exc}")
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - external model file; recorded in "reason"
             # Broad on purpose: the model file is external input and structure parsers
             # raise several exception types. Values computed so far are kept.
-            warnings.warn(f"compute_openfold_metrics: structural analysis failed: {exc}")
+            warnings.warn(
+                f"compute_openfold_metrics: structural analysis failed: {exc}", stacklevel=2
+            )
             reasons.append(f"structural analysis failed: {type(exc).__name__}: {exc}")
 
     if reasons:

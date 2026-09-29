@@ -6,6 +6,7 @@ cause, and a failure that is caught on purpose leaves a record.
 """
 
 import importlib
+import json
 import sys
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from binding_metrics.metrics import (
     energy,
     geometry,
     interface,
+    openfold,
     polar_contacts,
     receptor_quality,
     sasa,
@@ -136,3 +138,73 @@ class TestEnergy:
         )
         assert result["success"] is False
         assert result["error_message"] == f"{type(failure).__name__}: {failure}"
+
+
+class TestOpenfold:
+    @staticmethod
+    def _write_run(tmp_path, *, readable_structure):
+        """An OpenFold3 output directory for a receptor A (3 residues) and binder B (2)."""
+        seed_dir = tmp_path / "run" / "seed_1"
+        seed_dir.mkdir(parents=True)
+        prefix = "run_seed_1_sample_1"
+        aggregated = {"avg_plddt": 87.5, "ptm": 0.88, "iptm": 0.76}
+        (seed_dir / f"{prefix}_confidences_aggregated.json").write_text(json.dumps(aggregated))
+        # Wrong sizes on purpose: 10 pLDDT values for 5 atoms, 12-token matrices for 5 tokens.
+        confidences = {
+            "plddt": [90.0] * 10,
+            "pde": np.ones((12, 12)).tolist(),
+            "pae": np.ones((12, 12)).tolist(),
+        }
+        (seed_dir / f"{prefix}_confidences.json").write_text(json.dumps(confidences))
+        model = seed_dir / f"{prefix}_model.cif"
+        if readable_structure:
+            pdbx = pytest.importorskip("biotite.structure.io.pdbx")
+            import biotite.structure as struc
+
+            atoms = struc.array(
+                [
+                    struc.Atom(
+                        [float(index), 0.0, 0.0],
+                        chain_id=chain,
+                        res_id=res_id,
+                        res_name="ALA",
+                        atom_name="CA",
+                        element="C",
+                    )
+                    for index, (chain, res_id) in enumerate(
+                        [("A", 1), ("A", 2), ("A", 3), ("B", 1), ("B", 2)]
+                    )
+                ]
+            )
+            cif = pdbx.CIFFile()
+            pdbx.set_structure(cif, atoms)
+            cif.write(str(model))
+        else:
+            model.write_text("# stub CIF\n")
+        return tmp_path
+
+    def test_structural_failure_warning_points_at_the_caller(self, tmp_path):
+        root = self._write_run(tmp_path, readable_structure=False)
+        with pytest.warns(UserWarning, match="structural analysis failed") as record:
+            metrics = openfold.compute_openfold_metrics(
+                root, "run", binder_chain="B", receptor_chain="A"
+            )
+        assert Path(record[0].filename) == Path(__file__)
+        assert metrics["reason"].startswith("structural analysis failed:")
+        assert metrics["avg_plddt"] == pytest.approx(87.5)
+
+    def test_per_step_warnings_point_at_the_caller(self, tmp_path):
+        root = self._write_run(tmp_path, readable_structure=True)
+        with pytest.warns(UserWarning) as record:
+            metrics = openfold.compute_openfold_metrics(
+                root,
+                "run",
+                binder_chain="B",
+                receptor_chain="A",
+                reference_structure_path=tmp_path / "absent.cif",
+            )
+        messages = [str(w.message) for w in record]
+        for step in ("binder pLDDT", "interface PDE", "interface PAE", "binder RMSD"):
+            assert any(f"{step} skipped" in message for message in messages), step
+        assert all(Path(w.filename) == Path(__file__) for w in record)
+        assert metrics["reason"].count(";") == 3
