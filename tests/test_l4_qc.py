@@ -15,8 +15,10 @@ from binding_metrics.protocols import qc
 from binding_metrics.protocols.qc import AtomSnapshot
 
 gemmi = pytest.importorskip("gemmi", reason="gemmi reads the example structure")
+pytest.importorskip("biotite", reason="biotite supplies the residue templates of a file's bonds")
 
 EXAMPLE_PDB = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+CYCLIC_CIF = Path(__file__).parent.parent / "data" / "example_bicyclic_sfti1_3P8F.cif"
 
 
 @pytest.fixture(scope="module")
@@ -40,6 +42,28 @@ def _first_residue_with_cb(snapshot: AtomSnapshot) -> tuple:
         if snapshot.atom_names[i] == "CB":
             return snapshot.residue_keys[i]
     raise AssertionError("no CB in example")
+
+
+def _nonbonded_pair(snapshot: AtomSnapshot, same_residue: bool) -> tuple:
+    """Two heavy atoms 3-4.5 A apart that share no bond, in one residue or in two."""
+    bonded = set(snapshot.bonds)
+    heavy = np.nonzero(snapshot.heavy_mask)[0]
+    for i in heavy[10:]:
+        for j in heavy[heavy > i]:
+            if (snapshot.residue_keys[i] == snapshot.residue_keys[j]) != same_residue:
+                continue
+            distance = np.linalg.norm(snapshot.coords[i] - snapshot.coords[j])
+            if 3.0 < distance < 4.5 and (int(i), int(j)) not in bonded:
+                return int(i), int(j)
+    raise AssertionError("no non-bonded pair found")
+
+
+def _bond_between(snapshot: AtomSnapshot, same_residue: bool) -> tuple:
+    """A bond of the snapshot inside one residue or between two."""
+    for i, j in snapshot.bonds[len(snapshot.bonds) // 3 :]:
+        if (snapshot.residue_keys[i] == snapshot.residue_keys[j]) == same_residue:
+            return i, j
+    raise AssertionError("no such bond")
 
 
 class TestIdenticalStructure:
@@ -150,6 +174,102 @@ class TestDamagedStructures:
         assert "changed" in check["detail"]
 
 
+class TestBondLengthsUseTheBondList:
+    """The bonds come from the topology or the residue templates, not from distances.
+
+    PDBFixer rebuilds missing atoms with little regard for their neighbours, so
+    a prepared input holds clashing atoms 1.5-2.1 A apart that are not bonded.
+    Perceiving bonds from those distances flagged the relaxation for resolving
+    the clash (ARG497 CD to ARG509 CG, 1.82 A before and 5.91 A after in 4KRL).
+    """
+
+    @pytest.mark.parametrize("same_residue", [False, True], ids=["between_residues", "in_residue"])
+    def test_a_clash_resolved_by_relaxation_is_not_a_stretched_bond(self, ycr, same_residue):
+        i, j = _nonbonded_pair(ycr, same_residue)
+        direction = ycr.coords[j] - ycr.coords[i]
+        coords = ycr.coords.copy()
+        coords[j] = ycr.coords[i] + 1.8 * direction / np.linalg.norm(direction)
+        clashing_input = _moved(ycr, coords)
+        assert (i, j) not in set(ycr.bonds)
+
+        check = qc.check_bond_lengths(clashing_input, ycr)
+
+        assert check["evaluated"] and check["passed"], check["detail"]
+        assert check["value"] < 2.0  # the longest real bond, a C-S bond, is 1.82 A
+
+    @pytest.mark.parametrize("same_residue", [True, False], ids=["in_residue", "peptide"])
+    def test_a_genuinely_stretched_bond_still_fails(self, ycr, same_residue):
+        i, j = _bond_between(ycr, same_residue)
+        direction = ycr.coords[j] - ycr.coords[i]
+        coords = ycr.coords.copy()
+        coords[j] = ycr.coords[i] + 3.2 * direction / np.linalg.norm(direction)
+
+        check = qc.check_bond_lengths(ycr, _moved(ycr, coords))
+
+        assert check["passed"] is False
+        assert check["value"] == pytest.approx(3.2, abs=0.01)
+        assert f"{ycr.atom_names[i]}" in check["detail"] and "1 of" in check["detail"]
+
+    def test_a_bond_already_stretched_in_the_input_is_reported_but_not_failed(self, ycr):
+        i, j = _bond_between(ycr, same_residue=False)
+        direction = ycr.coords[j] - ycr.coords[i]
+        coords = ycr.coords.copy()
+        coords[j] = ycr.coords[i] + 7.4 * direction / np.linalg.norm(direction)
+
+        check = qc.check_bond_lengths(_moved(ycr, coords), ycr)
+
+        assert check["passed"] is True
+        assert "already longer" in check["detail"] and "7.40" in check["detail"]
+
+    def test_file_bonds_are_chemically_sensible(self, ycr):
+        lengths = [np.linalg.norm(ycr.coords[i] - ycr.coords[j]) for i, j in ycr.bonds]
+        assert len(ycr.bonds) > 800
+        assert 1.1 < min(lengths) and max(lengths) < 2.0  # crystal geometry, no S-S in 1YCR
+
+    def test_a_chain_break_is_not_a_bond(self, tmp_path):
+        structure = gemmi.read_structure(str(EXAMPLE_PDB))
+        chain = structure[0][0]
+        for residue in list(chain)[40:]:
+            for atom in residue:
+                atom.pos = gemmi.Position(atom.pos.x + 10.0, atom.pos.y, atom.pos.z)
+        broken = tmp_path / "broken.pdb"
+        structure.write_pdb(str(broken))
+
+        whole, split = AtomSnapshot.from_file(EXAMPLE_PDB), AtomSnapshot.from_file(broken)
+
+        assert len(whole.bonds) - len(split.bonds) == 1  # the C-N link across the break
+
+    def test_head_to_tail_bond_of_a_cyclic_peptide_is_listed(self):
+        snapshot = AtomSnapshot.from_file(CYCLIC_CIF)
+        closing = [
+            (i, j)
+            for i, j in snapshot.bonds
+            if {snapshot.atom_names[i], snapshot.atom_names[j]} == {"C", "N"}
+            and abs(snapshot.residue_keys[i][1] - snapshot.residue_keys[j][1]) > 5
+        ]
+        assert len(closing) == 1
+
+    def test_protonation_variant_names_get_the_bonds_of_their_parent(self, ycr, tmp_path):
+        """HIE, CYX and the like are ligands in the dictionary, not variants."""
+        variants = {"HIS": "HIE", "CYS": "CYX", "LYS": "LYN", "ASP": "ASH", "GLU": "GLH"}
+        structure = gemmi.read_structure(str(EXAMPLE_PDB))
+        renamed = 0
+        for residue in structure[0][0]:
+            if residue.name in variants:
+                residue.name = variants[residue.name]
+                renamed += 1
+        assert renamed > 10
+        variant_file = tmp_path / "variants.pdb"
+        structure.write_pdb(str(variant_file))
+
+        assert AtomSnapshot.from_file(variant_file).bonds == ycr.bonds
+
+    def test_a_snapshot_without_bonds_is_not_evaluated(self, ycr):
+        check = qc.check_bond_lengths(dataclasses.replace(ycr, bonds=None), ycr)
+        assert check["evaluated"] is False and check["passed"] is True
+        assert "no bonds" in check["reason"]
+
+
 class TestEnergy:
     @pytest.mark.parametrize("energy", [math.nan, math.inf, -math.inf, 5.0e6, -2.0e8])
     def test_out_of_range_energy_fails(self, energy):
@@ -237,6 +357,42 @@ class TestFromTopology:
         mirrored = dataclasses.replace(before, coords=coords * np.array([1.0, 1.0, -1.0]))
         check = qc.check_chirality(before, mirrored)
         assert check["passed"] is False and check["value"] == 3
+
+
+@pytest.mark.integration
+class TestTopologyBonds:
+    def _bonded_alanines(self):
+        """The three backbones of ``_three_alanines`` with their bonds added."""
+        topology, positions, coords = _three_alanines()
+        residues = list(topology.residues())[:3]
+        atoms = [{a.name: a for a in residue.atoms()} for residue in residues]
+        for k, by_name in enumerate(atoms):
+            for name in ("N", "C", "CB"):
+                topology.addBond(by_name[name], by_name["CA"])
+            if k:
+                topology.addBond(atoms[k - 1]["C"], by_name["N"])
+        return topology, positions, coords
+
+    def test_bonds_are_the_heavy_heavy_topology_bonds(self):
+        topology, positions, _ = self._bonded_alanines()
+        snapshot = AtomSnapshot.from_topology(topology, positions)
+        assert len(snapshot.bonds) == 3 * 3 + 2  # N, C, CB to CA per residue, two peptide links
+        assert all(snapshot.heavy_mask[i] and snapshot.heavy_mask[j] for i, j in snapshot.bonds)
+
+    def test_a_clash_between_residues_is_not_a_bond_but_a_broken_bond_still_fails(self):
+        topology, positions, coords = self._bonded_alanines()
+        cb_first, cb_second = 3, 7  # CB of residue 0 and of residue 1, in atom order
+        clash = coords.copy()
+        clash[cb_first] = coords[cb_second] + np.array([1.7, 0.0, 0.0])
+        before = AtomSnapshot.from_topology(topology, clash / 10.0)
+        relaxed = AtomSnapshot.from_topology(topology, coords / 10.0)
+
+        assert qc.check_bond_lengths(before, relaxed)["passed"]
+
+        torn = coords.copy()
+        torn[cb_first] += np.array([0.0, 0.0, 3.0])  # CA-CB of residue 0 now 4.5 A
+        result = qc.check_bond_lengths(relaxed, dataclasses.replace(relaxed, coords=torn))
+        assert result["passed"] is False
 
 
 class TestFromFile:

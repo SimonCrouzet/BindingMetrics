@@ -527,7 +527,7 @@ def test_md_no_egregious_clashes(md_relaxed: MDRelaxedExample):
 @requires_cuda
 @pytest.mark.integration
 def test_md_bonds_not_broken(md_relaxed: MDRelaxedExample):
-    """MD check 4: covalent bonds stay intact (perceived from the minimized frame)."""
+    """MD check 4: covalent bonds stay intact (bond list from the residue templates)."""
     check = qc.check_bond_lengths(md_relaxed.minimized_path, md_relaxed.md_final_path)
     _assert_check(md_relaxed.name, check)
 

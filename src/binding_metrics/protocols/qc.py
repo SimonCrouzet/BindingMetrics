@@ -11,7 +11,7 @@ mistaken for a sound one:
 2. ``rmsd``: heavy-atom RMSD to the input stays below a bound.
 3. ``coordinates_finite``: no NaN or inf coordinate.
 4. ``min_heavy_distance``: no two heavy atoms of different residues overlap.
-5. ``bond_lengths``: no covalent bond of the input was stretched or broken.
+5. ``bond_lengths``: no covalent bond of the topology was stretched or broken.
 6. ``chirality``: no C-alpha stereocentre inverted (matters for D-amino acids).
 7. ``composition``: no heavy atom was added, dropped or renamed.
 
@@ -23,6 +23,14 @@ plus the identifiers needed to pair atoms between the two structures. Both
 snapshots of one comparison must come from the same loader
 (:meth:`AtomSnapshot.from_topology` or :meth:`AtomSnapshot.from_file`), because
 atoms are paired by residue key and atom name.
+
+The ``bond_lengths`` check takes its bond list from the topology, never from
+the geometry: a snapshot built from an OpenMM topology carries the topology
+bonds, and one built from a file carries the bonds of the residue templates in
+the wwPDB Chemical Component Dictionary (through biotite). Perceiving bonds
+from the input distances would count every clash between atoms that PDBFixer
+rebuilt as a bond, and a relaxation that resolves the clash would then look
+like a stretched bond. The bonds are measured in the relaxed structure only.
 
 Return schema of every ``check_*`` function::
 
@@ -47,9 +55,12 @@ Measured values on the bundled examples (short minimizations on CUDA)::
     cyclosporin -21515 kJ/mol   n/a          0.297 A      1.327 A
 
                 min bond   max bond   C-alpha centres   heavy atoms
-    1YCR        1.218 A    2.391 A     94          819
-    3P8F        1.217 A    2.247 A    225          1970
-    cyclosporin 1.219 A    2.087 A    152          1351
+    1YCR        1.218 A    1.822 A     94          819
+    3P8F        1.217 A    2.052 A    225          1970
+    cyclosporin 1.219 A    1.821 A    152          1351
+
+The longest topology bonds are the methionine C-S bond (1.82 A) and disulfides
+(2.05 A), so the 2.5 A limit keeps a margin of 0.45 A over any real bond.
 
 The limits below are wide on purpose: each passes any genuinely relaxed
 structure and fails an exploded one. They can shift across GPU models and
@@ -89,13 +100,14 @@ RMSD_MAX_ANGSTROM = 5.0
 #: included; 0.8 A sits below every real bond and above fused atoms.
 MIN_HEAVY_DISTANCE_ANGSTROM = 0.8
 
-#: A heavy-heavy pair of the input counts as a covalent bond when its length is
-#: in this window: C-C, C-N and C-O single bonds are about 1.5 A, aromatic bonds
-#: 1.39 A and S-S 2.05 A (Engh and Huber, Acta Cryst. A47, 392, 1991), while
-#: non-bonded first-shell contacts start near 2.8 A.
+#: Bonds between residues of a file snapshot (peptide C-N, disulfide S-S) exist
+#: only when the two atoms are inside this window in the file: C-N is about
+#: 1.33 A and S-S 2.05 A (Engh and Huber, Acta Cryst. A47, 392, 1991), while a
+#: chain break leaves C and N several angstrom apart. Bonds inside a residue
+#: never use the window; they come from the residue template.
 BOND_PERCEIVE_MIN_ANGSTROM = 0.9
 BOND_PERCEIVE_MAX_ANGSTROM = 2.1
-#: Allowed length of a perceived bond after relaxation: wide enough for any
+#: Allowed length of a topology bond after relaxation: wide enough for any
 #: real heavy-heavy bond with margin, tight enough to fail a stretched or
 #: broken one.
 BOND_LENGTH_MIN_ANGSTROM = 0.5
@@ -132,6 +144,10 @@ class AtomSnapshot:
             the same residue in two structures of one comparison.
         is_hydrogen: True for hydrogen and deuterium atoms.
         is_water: True for atoms of water residues.
+        bonds: Covalent bonds between heavy atoms as ``(row, row)`` pairs, taken
+            from the topology or the residue templates, never from the
+            geometry. ``None`` when no bond source was available; the
+            ``bond_lengths`` check is then not evaluated.
     """
 
     coords: np.ndarray
@@ -139,6 +155,7 @@ class AtomSnapshot:
     residue_keys: tuple
     is_hydrogen: np.ndarray
     is_water: np.ndarray
+    bonds: Optional[tuple] = None
 
     @classmethod
     def from_topology(cls, topology, positions) -> "AtomSnapshot":
@@ -173,12 +190,21 @@ class AtomSnapshot:
                     "D",
                 )
                 water[atom.index] = is_water
+        heavy = ~hydrogen & ~water
+        bonds = sorted(
+            {
+                (min(bond.atom1.index, bond.atom2.index), max(bond.atom1.index, bond.atom2.index))
+                for bond in topology.bonds()
+                if heavy[bond.atom1.index] and heavy[bond.atom2.index]
+            }
+        )
         return cls(
             coords=xyz_nm * 10.0,
             atom_names=tuple(names),
             residue_keys=tuple(keys),
             is_hydrogen=hydrogen,
             is_water=water,
+            bonds=tuple(bonds),
         )
 
     @classmethod
@@ -189,6 +215,11 @@ class AtomSnapshot:
         occurrence)``. The occurrence counter is needed because a prepared file
         can repeat a sequence number within one chain, and both structures of a
         comparison list their residues in the same order.
+
+        A file has no topology, so ``bonds`` come from residue templates (see
+        :func:`_template_bonds`) and stay ``None`` when biotite is missing.
+        Bonds that only a topology knows, such as a cyclization or a staple
+        between residues, are not in the list.
         """
         try:
             import gemmi
@@ -197,26 +228,35 @@ class AtomSnapshot:
 
         model = gemmi.read_structure(str(path))[0]
         coords, names, keys, hydrogen, water = [], [], [], [], []
+        residues: list = []
         seen: dict = {}
-        for chain in model:
+        for chain_index, chain in enumerate(model):
             for residue in chain:
                 base = (chain.name, residue.seqid.num, residue.seqid.icode)
                 occurrence = seen.get(base, 0)
                 seen[base] = occurrence + 1
                 key = base + (occurrence,)
                 is_water = residue.name in WATER_NAMES
+                heavy_rows: dict = {}
                 for atom in residue:
+                    is_hydrogen = atom.element.name in ("H", "D")
+                    if not (is_hydrogen or is_water):
+                        heavy_rows[atom.name] = len(coords)
                     coords.append((atom.pos.x, atom.pos.y, atom.pos.z))
                     names.append(atom.name)
                     keys.append(key)
-                    hydrogen.append(atom.element.name in ("H", "D"))
+                    hydrogen.append(is_hydrogen)
                     water.append(is_water)
+                if heavy_rows:
+                    residues.append((chain_index, residue.name, heavy_rows))
+        xyz = np.array(coords, dtype=float).reshape(-1, 3)
         return cls(
-            coords=np.array(coords, dtype=float).reshape(-1, 3),
+            coords=xyz,
             atom_names=tuple(names),
             residue_keys=tuple(keys),
             is_hydrogen=np.array(hydrogen, dtype=bool),
             is_water=np.array(water, dtype=bool),
+            bonds=_template_bonds(residues, xyz),
         )
 
     @property
@@ -264,6 +304,86 @@ def _format_residue(key: tuple) -> str:
     return label
 
 
+#: Force-field names of protonation variants. The Chemical Component Dictionary
+#: reads HIE, HID and the like as unrelated ligands, so they are looked up under
+#: the residue they are a variant of; the heavy-atom bonds are those of the parent.
+_TEMPLATE_ALIASES = {
+    "HID": "HIS",
+    "HIE": "HIS",
+    "HIP": "HIS",
+    "HSD": "HIS",
+    "HSE": "HIS",
+    "HSP": "HIS",
+    "CYX": "CYS",
+    "CYM": "CYS",
+    "ASH": "ASP",
+    "GLH": "GLU",
+    "LYN": "LYS",
+}
+
+
+def _template_bonds(residues: list, coords: np.ndarray) -> Optional[tuple]:
+    """Heavy-atom bonds of a structure file, from residue templates.
+
+    Bonds inside a residue are the ones the wwPDB Chemical Component Dictionary
+    lists for its name (through biotite), restricted to the atoms present. Three
+    kinds of bond between residues are added, each only when the two atoms are
+    inside the covalent window of the file: the peptide bond from C of one
+    residue (an acetyl cap included) to N of the next in the same chain, which
+    a chain break leaves out; the head-to-tail bond from C of the last residue
+    of a chain to N of its first; and disulfides between SG atoms.
+
+    Args:
+        residues: ``(chain index, residue name, {heavy atom name: row})`` per
+            non-water residue, in file order.
+        coords: (n, 3) coordinates the rows index.
+
+    Returns:
+        Sorted ``(row, row)`` pairs, or ``None`` when biotite is not installed.
+    """
+    try:
+        from biotite.structure.info import bonds_in_residue
+    except ImportError:
+        logger.warning("biotite is not installed: no bond list for the bond_lengths check")
+        return None
+
+    def in_window(row_a: int, row_b: int) -> bool:
+        length = float(np.linalg.norm(coords[row_a] - coords[row_b]))
+        return BOND_PERCEIVE_MIN_ANGSTROM <= length <= BOND_PERCEIVE_MAX_ANGSTROM
+
+    def is_amino_acid(rows: dict) -> bool:
+        return {"N", "CA", "C"} <= rows.keys()
+
+    bonds: set = set()
+    sulfurs: list = []
+    chain_ends: dict = {}
+    previous: Optional[tuple] = None
+    for chain_index, name, rows in residues:
+        for atom_a, atom_b in bonds_in_residue(_TEMPLATE_ALIASES.get(name, name)):
+            if atom_a in rows and atom_b in rows:
+                bonds.add(tuple(sorted((rows[atom_a], rows[atom_b]))))
+        if (
+            previous is not None
+            and previous[0] == chain_index
+            and "C" in previous[1]
+            and "N" in rows
+            and in_window(previous[1]["C"], rows["N"])
+        ):
+            bonds.add((previous[1]["C"], rows["N"]))
+        first, _ = chain_ends.get(chain_index, (rows, rows))
+        chain_ends[chain_index] = (first, rows)
+        if "SG" in rows:
+            sulfurs.append(rows["SG"])
+        previous = (chain_index, rows)
+    for first, last in chain_ends.values():
+        if first is not last and is_amino_acid(first) and is_amino_acid(last):
+            if in_window(last["C"], first["N"]):
+                bonds.add(tuple(sorted((last["C"], first["N"]))))
+    for k, row_a in enumerate(sulfurs):
+        bonds.update((row_a, row_b) for row_b in sulfurs[k + 1 :] if in_window(row_a, row_b))
+    return tuple(sorted(bonds))
+
+
 def _skipped(limit: str, reason: str) -> dict:
     """A check with nothing to evaluate: it does not flag a problem."""
     return _result(True, None, limit, reason, evaluated=False, reason=reason)
@@ -287,16 +407,6 @@ def _distance_block(block: np.ndarray, coords: np.ndarray) -> np.ndarray:
     for axis in range(3):
         squared += (block[:, axis, None] - coords[None, :, axis]) ** 2
     return np.sqrt(squared)
-
-
-def _pairs_within(coords: np.ndarray, low: float, high: float):
-    """Yield ``(i, j)`` index arrays for pairs i < j with low <= distance <= high."""
-    for start in range(0, len(coords), _CHUNK_ROWS):
-        dist = _distance_block(coords[start : start + _CHUNK_ROWS], coords)
-        rows, cols = np.nonzero((dist >= low) & (dist <= high))
-        rows = rows + start
-        upper = cols > rows
-        yield rows[upper], cols[upper]
 
 
 def _kabsch_rmsd(moving: np.ndarray, fixed: np.ndarray) -> float:
@@ -428,38 +538,46 @@ def check_min_heavy_distance(after: Structure) -> dict:
     )
 
 
-def check_bond_lengths(before: Structure, after: Structure) -> dict:
-    """Check 5: no covalent bond of ``before`` is stretched or broken in ``after``.
+def _format_atom(residue_key: tuple, atom_name: str) -> str:
+    return f"{_format_residue(residue_key)}:{atom_name}"
 
-    Bonds are perceived from ``before`` by distance (heavy-heavy pairs inside
-    the covalent window), so no topology is needed; the same pairs are then
-    measured in ``after``.
+
+def check_bond_lengths(before: Structure, after: Structure) -> dict:
+    """Check 5: no covalent bond of the topology is stretched or broken in ``after``.
+
+    The bond list is ``before.bonds`` (the topology bonds of an OpenMM
+    snapshot, or the residue-template bonds of a file snapshot) and the lengths
+    are measured in ``after`` only. The lengths the same bonds have in
+    ``before`` are informative: a bond that was already longer than the limit
+    there (a chain break the force field then closes, an atom PDBFixer placed
+    badly) is named in the detail but does not fail the check, because the
+    relaxation is judged on the structure it returns.
     """
-    limit = f"perceived bonds within [{BOND_LENGTH_MIN_ANGSTROM:g}, {BOND_LENGTH_MAX_ANGSTROM:g}] A"
+    limit = f"topology bonds within [{BOND_LENGTH_MIN_ANGSTROM:g}, {BOND_LENGTH_MAX_ANGSTROM:g}] A"
     b, a = _as_snapshot(before), _as_snapshot(after)
-    heavy_b = np.nonzero(b.heavy_mask)[0]
-    xyz_b = b.coords[heavy_b]
-    if not np.isfinite(xyz_b).all():
-        return _skipped(limit, "non-finite coordinates before relaxation")
+    if not b.bonds:
+        return _skipped(
+            limit,
+            "the input snapshot has no bonds (needs a topology with bonds, or biotite for a file)",
+        )
     index_a = _heavy_atom_index(a)
 
     # Atom identity is (residue key, atom name); a bond whose atoms are absent
     # from ``after`` is left to the composition check.
+    ends_b: list = []
     ends_a: list = []
-    labels: list = []
-    for rows, cols in _pairs_within(xyz_b, BOND_PERCEIVE_MIN_ANGSTROM, BOND_PERCEIVE_MAX_ANGSTROM):
-        for r, c in zip(rows, cols):
-            i, j = heavy_b[r], heavy_b[c]
-            id_i = (b.residue_keys[i], b.atom_names[i])
-            id_j = (b.residue_keys[j], b.atom_names[j])
-            if id_i in index_a and id_j in index_a:
-                ends_a.append((index_a[id_i], index_a[id_j]))
-                labels.append((id_i, id_j))
+    for i, j in b.bonds:
+        id_i = (b.residue_keys[i], b.atom_names[i])
+        id_j = (b.residue_keys[j], b.atom_names[j])
+        if id_i in index_a and id_j in index_a:
+            ends_b.append((i, j))
+            ends_a.append((index_a[id_i], index_a[id_j]))
     if not ends_a:
-        return _skipped(limit, "no heavy-heavy bonds perceived in the input")
+        return _skipped(limit, "no bond of the input found in the relaxed structure")
 
-    ends = np.array(ends_a)
-    lengths = np.linalg.norm(a.coords[ends[:, 0]] - a.coords[ends[:, 1]], axis=1)
+    pairs_b, pairs_a = np.array(ends_b), np.array(ends_a)
+    lengths = np.linalg.norm(a.coords[pairs_a[:, 0]] - a.coords[pairs_a[:, 1]], axis=1)
+    lengths_before = np.linalg.norm(b.coords[pairs_b[:, 0]] - b.coords[pairs_b[:, 1]], axis=1)
     # Distance outside the window; NaN lengths count as infinitely far out.
     excess = np.where(
         np.isfinite(lengths),
@@ -469,15 +587,29 @@ def check_bond_lengths(before: Structure, after: Structure) -> dict:
     n_bad = int((excess > 0).sum())
     finite = lengths[np.isfinite(lengths)]
     longest = float(finite.max()) if len(finite) else math.nan
+
+    def label(k: int) -> str:
+        i, j = pairs_b[k]
+        return (
+            f"{_format_atom(b.residue_keys[i], b.atom_names[i])}-"
+            f"{_format_atom(b.residue_keys[j], b.atom_names[j])}"
+        )
+
     if n_bad:
         worst = int(np.argmax(excess))
-        (res_i, atom_i), (_, atom_j) = labels[worst]
         detail = (
-            f"{n_bad} of {len(lengths)} bonds outside the limit, worst {atom_i}-{atom_j} "
-            f"in residue {_format_residue(res_i)} = {lengths[worst]:.2f} A"
+            f"{n_bad} of {len(lengths)} bonds outside the limit, worst {label(worst)} "
+            f"= {lengths[worst]:.2f} A"
         )
     else:
         detail = f"{len(lengths)} bonds, lengths {finite.min():.3f}-{longest:.3f} A"
+    long_before = np.nonzero(lengths_before > BOND_LENGTH_MAX_ANGSTROM)[0]
+    if len(long_before):
+        widest = int(long_before[np.argmax(lengths_before[long_before])])
+        detail += (
+            f"; {len(long_before)} bonds were already longer than {BOND_LENGTH_MAX_ANGSTROM:g} A "
+            f"in the input, longest {label(widest)} = {lengths_before[widest]:.2f} A"
+        )
     return _result(n_bad == 0, longest, limit, detail)
 
 
