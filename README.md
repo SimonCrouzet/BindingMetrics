@@ -8,10 +8,10 @@ The metrics range from static single-structure analysis (buried SASA, hydrogen b
 
 ## Scope and limits
 
-The package targets peptide–protein complexes first. The cyclic-peptide and non-canonical-residue handling, the examples and the scorecard bands are built around peptide binders. The chain roles, the heteroatom handling and the static metrics do not depend on the binder being a peptide, and they also run on larger binders. On the raw file of the nanobody 7D12 (122 residues) bound to EGFR domain III (205 residues; PDB 4KRL, with its glycans, waters, MES and iodide left in), the interface, shape complementarity, void volume, Ramachandran, ω and Coulomb functions took 5 to 7 s in total in two runs on a laptop CPU.
+The package targets peptide–protein complexes first. The cyclic-peptide and non-canonical-residue handling, the examples and the scorecard bands are built around peptide binders. The chain roles, the heteroatom handling and the static metrics do not depend on the binder being a peptide, and they also run on larger binders. On the raw file of the nanobody 7D12 (122 residues) bound to EGFR domain III (205 residues; PDB 4KRL, with its glycans, waters, MES and iodide left in), the interface, shape complementarity, void volume, Ramachandran, ω and Coulomb functions took 6.5 and 6.8 s in total in two runs on a CPU with 4 threads.
 
 Limits:
-- **Single-chain roles.** The binder and the target are one chain each. A binder of several chains (a Fab) is handled by DockQ only, which maps chains itself; the other metrics score one binder chain at a time.
+- **Single-chain roles.** The binder and the target are one chain each. A binder of several chains (a Fab) is handled by DockQ only, which maps chains itself; the other metrics score one binder chain at a time. The relaxation and the energy step remove every other protein chain, with a warning that names it (for example the second copy of a complex in the asymmetric unit), so a receptor of several chains has to be reduced to one before it goes in.
 - **No antibody-specific analysis.** There is no CDR numbering (no ANARCI), and an antibody is scored like any other chain.
 - **No calibration for non-peptides.** No calibration against binder and non-binder data ships with the package, for peptides or for other binders. The scorecard bands, the shape-complementarity ranges and `delta_g_int` are heuristics.
 - **Chemistry handling is for the binder chain.** Cyclic closures and non-canonical residues are looked for in the binder chain.
@@ -631,7 +631,7 @@ binding-metrics-report --results results/my_run/sample_results.json \
 
 The `--summary` flag (available on both `binding-metrics-run` and `binding-metrics-report`) writes a human-readable summary alongside the JSON/CSV output. Use `--summary-format md` (default) for Markdown or `--summary-format html` for a self-contained HTML page (needs the `report` extra). It has a section for each step (marked skipped when the step did not run), per-residue buried SASA of the peptide in the interface section, and a RAG scorecard (🟢/🟡/🔴, ⬜ for a value that was not computed). The scorecard thresholds are heuristic; see [`docs/report_thresholds.md`](docs/report_thresholds.md).
 
-The individual scoring tools take a peptide and a receptor chain through `--peptide-chain` (or `--design-chain`, `--binder-chain`) and `--receptor-chain` (or `--target-chain`); without them the smallest protein chain is the peptide and the largest the receptor. See `--help` on each command for the options.
+The individual scoring tools take the binder chain as `--binder-chain` and the target chain as `--target-chain`, each also under its older name (`--peptide-chain` or `--design-chain`, depending on the tool, and `--receptor-chain`). A tool accepts only the chains it uses: `binding-metrics-receptor-quality` takes the target and `binding-metrics-compare` the binder. Without them the smallest protein chain is the binder and the largest the target. See `--help` on each command for the options.
 
 ---
 
