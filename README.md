@@ -1,36 +1,46 @@
 # BindingMetrics
 
-**BindingMetrics** is a Python toolkit for evaluating designed peptide–protein complexes through physics-based metrics. It computes a reproducible panel of biophysical descriptors — interface geometry and energetics, structural sanity, backbone quality — to characterize, rank, and triage the peptide binders produced by structure prediction and computational design. It sits *downstream* of a design or prediction run and *upstream* of expensive experimental validation, bringing together the model's own confidence signals (parsed from OpenFold3: pLDDT, pTM, ipTM, PAE) with the physics-based descriptors those scores don't capture — because a confident model is not the same as a physically reasonable interface.
+**BindingMetrics** is a Python toolkit for evaluating designed peptide–protein complexes with physics-based metrics. It sits downstream of a design or prediction run and upstream of experimental validation. A confident model is not the same as a physically reasonable interface, so the package reports interface geometry and energetics, backbone quality and force-field interaction energies next to the confidence scores it parses from OpenFold3 (pLDDT, pTM, ipTM, PAE).
 
-Metrics span from fast static-structure analysis (buried SASA, hydrogen bonds, salt bridges, Ramachandran validation) to force-field interaction energies computed with optional energy minimization and short MD equilibration, plus structural sanity checks on the relaxed output (no explosion, no clashes, no stretched bonds, no Cα stereocenter inversion), trajectory-level receptor drift, and structure-prediction confidence scores from OpenFold3. When a native structure is available, it also computes **reference-based CAPRI accuracy** (DockQ, fnat, i-RMSD, L-RMSD) — useful for benchmarking predictions against ground truth (e.g. antibody–antigen complexes). Every stochastic step is seeded, so results are **reproducible by default** (`--random-seed none` opts into fresh randomness).
+The metrics range from static single-structure analysis (buried SASA, hydrogen bonds, salt bridges, Ramachandran and ω validation, shape complementarity, void volume) to force-field interaction energies after minimization and an optional short MD run. The relaxed output goes through a structural QC of seven checks: finite energy that did not rise, heavy-atom RMSD to the input, finite coordinates, no fused atoms, no stretched or broken bonds, no inverted Cα stereocentre, and an unchanged heavy-atom composition. It flags an exploded or corrupted structure; it is not a clash score. The package also reports receptor drift over an MD trajectory and, when a native structure is available, **reference-based CAPRI accuracy** (DockQ, fnat, i-RMSD, L-RMSD), for instance to benchmark predictions of antibody–antigen complexes. The OpenMM-based steps are seeded, so results are reproducible by default (`--random-seed none` opts into fresh randomness); see [Reproducibility](#reproducibility).
 
 ---
 
 ## Cyclic peptide support
 
-BindingMetrics has first-class support for **cyclic peptides** — both head-to-tail (N→C amide) and sidechain-anchored (lactam, disulfide) ring closures.
+BindingMetrics supports **cyclic peptides**: head-to-tail (N→C amide) rings, disulfides, lactam bridges and hydrocarbon staples. The closure types it recognises are `head_to_tail`, `disulfide`, `lactam_n_asp`, `lactam_n_glu`, `lactam_c_lys`, `lactam_sc_lys_asp`, `lactam_sc_lys_glu` and `hydrocarbon_staple`, and a peptide can have several (SFTI-1 in 3P8F has a head-to-tail bond and a disulfide). Cyclisation is looked for in the binder (peptide) chain.
 
-Cyclic connectivity is read from `_struct_conn` in the input CIF file (written by BoltzGen and other structure prediction pipelines that support cyclic designs). The pipeline:
+The closure is read from the bonds recorded in the input (`_struct_conn` records of a CIF, as written by BoltzGen and other pipelines that support cyclic designs, or CONECT records of a PDB) and from heavy-atom distances for the amide, disulfide and lactam types. The pipeline:
 
-- **Auto-detects** the cyclic bond type (`head_to_tail`, `sidechain_to_sidechain`, etc.) and the atoms involved
-- **Propagates** the bond hint through PDBFixer prep — the N→C bond is written back into `_struct_conn` of the saved `_cleaned.cif`, so downstream runs on that file also detect the cyclic topology
-- **Applies cyclic AMBER templates** (NCYS/NCYX, C-terminal patches) during hydrogen placement and system creation so force-field template matching succeeds
-- **Handles cross-chain disulfides** (e.g. peptide CYS ↔ receptor CYS) alongside the cyclic closure: PDBFixer-detected SS bonds trigger a CYS→CYX rename in-memory before `addHydrogens`, and orphaned CYX residues (whose SS partner is on the other chain, severed during per-chain energy decomposition) are automatically converted back to CYS+HG
-- **Minimizes cyclic geometry** with a dedicated closure-bond relaxation stage before global minimization
+- **Propagates** the bond hint through PDBFixer prep: the N→C bond is written back into `_struct_conn` of the saved `_cleaned.cif`, so downstream runs on that file also detect the cyclic topology
+- **Patches the topology** before hydrogens are placed (closure bond, terminal atoms PDBFixer added, lactam templates) so that force-field template matching succeeds
+- **Handles cross-chain disulfides** (for example peptide CYS with receptor CYS) alongside the cyclic closure: PDBFixer-detected SS bonds trigger a CYS→CYX rename in memory before `addHydrogens`, and orphaned CYX residues (whose SS partner is on the other chain, severed during per-chain energy decomposition) are converted back to CYS+HG
+- **Minimizes the ring** with a closure-bond relaxation stage before the global minimization, and applies backbone φ/ψ restraints that are released in steps during the first 10 ps of MD
+- **Scores the closing bond**: for a head-to-tail ring, `compute_ramachandran` and `compute_omega_planarity` include the ring-closing φ, ψ and ω
 
-No flags needed — cyclic topology is detected and applied automatically whenever the input CIF contains the relevant `_struct_conn` entries.
+No flags are needed; the topology is detected and applied automatically. Details are in [`docs/nonstandard.md`](docs/nonstandard.md).
 
 ---
 
 ## Non-canonical and D-amino-acid residues
 
-Therapeutic peptides are frequently rich in non-canonical chemistry — cyclosporin, for instance, is a head-to-tail macrocycle with a D-alanine and seven N-methylated residues. BindingMetrics handles the common cases natively, without user flags:
+Therapeutic peptides are often rich in non-canonical chemistry: cyclosporin A, for instance, is a head-to-tail macrocycle with a D-alanine and seven N-methylated residues. BindingMetrics handles these without user flags:
 
-- **D-amino acids** — all 19 chiral D-residues (PDB CCD codes) are recognised; they reuse the ff14SB bonded parameters of their L counterparts, and Ramachandran validation is made chirality-aware.
-- **N-methylated residues** — sarcosine (N-Me-Gly), N-Me-Ala, N-Me-Val, and N-Me-Leu are parameterised from curated templates.
-- **Exotic backbone-embedded residues** — residues with no AMBER template (e.g. cyclosporin's MeBmt and 2-aminobutyrate) are auto-parameterised on the fly with GAFF2. Because such a residue carries backbone (external) bonds that general small-molecule parameterisation rejects, BindingMetrics generates a residue template that records those external bonds explicitly, so backbone connectivity is preserved and force-field matching succeeds. Controlled by `--small-molecules auto` (the default in `binding-metrics-run`).
+- **D-amino acids**: the 19 codes of `D_AA_MAP` (the D form of every standard amino acid except glycine) reuse the ff14SB parameters of their L counterparts, and Ramachandran validation mirrors φ/ψ for them. The prepped and the relaxed files keep the input residue names (`DAL`, not `ALA`).
+- **N-methylated residues**: sarcosine (SAR, N-Me-Gly), N-Me-Ala, N-Me-Val and N-Me-Leu use curated templates with ForceField_NCAA RESP charges.
+- **Phosphorylated residues**: SEP, TPO and PTR use the AMBER phosaa parameters, with their net charge of −2.
+- **Other non-canonical residues** (cyclosporin's MeBmt and 2-aminobutyrate, the residues of hydrocarbon staples) are parameterised on the fly with GAFF2. Such a residue carries backbone (external) bonds that general small-molecule parameterisation rejects, so BindingMetrics generates a residue template that records them. Bond orders come from the wwPDB Chemical Component Dictionary that ships with biotite; a residue that is not in it, or does not match its entry, is built with single bonds, a warning says so, and `results["prep"]` and `results["relax"]` list it under `ncaa_bond_order_source` as `"single_bonds"`. Controlled by `--small-molecules auto` (the default in `binding-metrics-run`). The charge model has limits, in particular non-amide backbone N and H charges on these residues; see [`docs/nonstandard.md`](docs/nonstandard.md).
 
-These are exercised end-to-end by the bundled examples: `data/example_ncaa_cyclosporin_1CWA.cif` (cyclosporin A–cyclophilin A: D-Ala + N-methyl + GAFF), alongside `example_linear_p53_1YCR.pdb` (MDM2–p53, linear) and `example_bicyclic_sfti1_3P8F.cif` (SFTI-1–matriptase: head-to-tail + disulfide).
+The bundled examples in `data/`:
+
+| File | Content | Interface metrics |
+|---|---|---|
+| `example_linear_p53_1YCR.pdb` | MDM2 with the p53 peptide, linear | yes |
+| `example_bicyclic_sfti1_3P8F.cif` | SFTI-1 with matriptase: head-to-tail ring plus disulfide | yes |
+| `example_ncaa_cyclosporin_1CWA.cif` | cyclosporin A with cyclophilin A: D-Ala, N-methylation, GAFF2 residues | yes |
+| `example_lactam_somatostatin_1XY4.cif` | somatostatin analogue alone: Lys–Glu lactam, disulfide, D-Trp, IAM | no receptor |
+| `example_phospho_1QJB.pdb` | phosphopeptide alone (chain Q, SEP) | no receptor |
+| `example_staple_3V3B.pdb` | hydrocarbon-stapled p53 peptide alone (chain C, residues MK8 and 0EH) | no receptor |
 
 ---
 
@@ -83,21 +93,25 @@ binding-metrics-receptor-quality --input ensemble.cif --receptor-chain A --outpu
 
 | Category | Metric | Type | Backend |
 |---|---|---|---|
-| Interface geometry | Buried SASA Δ*A*, polar/apolar breakdown | Score | biotite |
-| Interface energetics | Solvation energy Δ*G*_int — negative = hydrophobic-driven | Score | biotite |
-| Interactions | Cross-chain H-bonds, salt bridges | Score | biotite + hydride |
-| Electrostatics | Coulomb cross-chain energy — negative = net attractive | Score | biotite + scipy |
-| Backbone geometry | Ramachandran outlier %, ω-angle deviation | Score | biotite |
-| Interface shape | Shape complementarity *S*c — 0 = flat, 1 = lock-and-key | Score | biotite + scipy |
-| Interface packing | Buried void volume — large = loose packing | Score | biotite + scipy |
-| Force-field energy | *E*_int = *E*_cpx − *E*_pep − *E*_rec (AMBER ff14SB); raw / relaxed / after MD | Score | OpenMM |
+| Interface geometry | Buried SASA Δ*A* (both partners), polar/apolar breakdown | Score | biotite |
+| Interface energetics | Solvation term Δ*G*_int (negative = burial favourable; uncalibrated) | Score | biotite |
+| Interactions | Cross-chain H-bonds, salt bridges, each with a heuristic energy score | Score | biotite + hydride |
+| Electrostatics | Coulomb cross-chain energy of formal charges — negative = net attractive | Score | biotite |
+| Backbone geometry | Ramachandran outlier %, ω-angle deviation (ring-closing bond included for head-to-tail rings) | Score | biotite |
+| Interface shape | Shape complementarity *S*c (dot-and-normal approximation) | Score | biotite + scipy |
+| Interface packing | Buried void volume — large = loose packing; depends on probe and grid | Score | biotite + scipy |
+| Force-field energy | *E*_int = *E*_cpx − *E*_pep − *E*_rec (AMBER ff14SB, implicit solvent); raw / relaxed / after MD | Score | OpenMM |
+| Structural QC | Seven pass/fail checks on the relaxed output (advisory) | Flag | OpenMM |
 | Structure comparison | All-atom and backbone RMSD (Kabsch-aligned) | Score | gemmi |
 | Reference accuracy | DockQ, fnat, fnonnat, i-RMSD, L-RMSD + CAPRI class — requires a native reference | Score | DockQ |
-| MD trajectory | Receptor backbone drift — aligned (conformational) and raw | Score | MDTraj |
-| Structure prediction | avg_pLDDT, pTM, ipTM, gPDE — OpenFold3 confidence | Score | OpenFold3 |
+| MD trajectory | Receptor backbone drift — aligned (conformational) and raw; ligand RMSD, RMSF, contacts | Score | MDTraj |
+| Receptor quality | MolProbity-style terms for a receptor chain (approximate) | Score | biotite + OpenMM |
+| Structure prediction | avg_pLDDT, pTM, ipTM, gPDE, interface PDE and PAE — OpenFold3 confidence | Score | OpenFold3 output |
 | EvoBind scoring | Interface distance / pLDDT — confidence-weighted binding score (Å) | Score | biotite |
-| EvoBind adversarial check | Δ COM between design pose and OF3 prediction after receptor superposition — flags hallucinated poses | Score | biotite |
+| EvoBind adversarial check | Δ COM between design pose and OF3 prediction after receptor superposition — a large value means the prediction places the binder elsewhere | Score | biotite |
 | All of the above | Per-residue breakdowns, per-atom arrays, per-frame series | Feature | — |
+
+Every result value is a score or a feature; the metric registry (`binding_metrics.metrics.registry`) declares the direction, unit and cost class of each metric's headline value. The full list of keys, units and algorithms is in [`docs/metrics.md`](docs/metrics.md).
 
 ---
 
