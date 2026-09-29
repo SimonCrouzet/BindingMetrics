@@ -353,13 +353,18 @@ def _covalent_reach(
         )
     )
 
-    link_limit = np.array(
-        [
-            _CROSSLINK_MAX_ANGSTROM.get(frozenset((heavy_elements[a], heavy_elements[b])), 0.0)
-            for a, b in pairs
-        ]
-    )
-    crosslink = ~same_residue & (distances <= link_limit)
+    # Longest link distance per element pair, looked up through element codes so the
+    # per-pair work stays in numpy (a receptor has about ten candidate pairs per atom).
+    symbols = sorted(set(heavy_elements))
+    code_of = {symbol: k for k, symbol in enumerate(symbols)}
+    codes = np.array([code_of[e] for e in heavy_elements])
+    limit_table = np.zeros((len(symbols), len(symbols)))
+    for pair_symbols, limit in _CROSSLINK_MAX_ANGSTROM.items():
+        members = sorted(pair_symbols)  # one member for a homonuclear pair such as S-S
+        if members[0] in code_of and members[-1] in code_of:
+            first, second = code_of[members[0]], code_of[members[-1]]
+            limit_table[first, second] = limit_table[second, first] = limit
+    crosslink = ~same_residue & (distances <= limit_table[codes[i], codes[j]])
 
     bonded = pairs[intra | peptide | crosslink]
     adjacency = sparse.coo_matrix(
