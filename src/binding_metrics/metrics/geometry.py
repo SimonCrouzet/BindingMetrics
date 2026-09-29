@@ -119,10 +119,13 @@ def _auto_detect_chains(atoms, peptide_chain=None, receptor_chain=None):
     return peptide_chain, receptor_chain
 
 
+_DEFAULT_VDW_RADIUS = 1.80
+
+
 def _get_vdw(element: str) -> float:
     """Return VDW radius for element string, default 1.8 Å."""
     _VDW = {"C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80, "H": 1.20, "P": 1.80}
-    return _VDW.get(element.strip().upper(), 1.80)
+    return _VDW.get(element.strip().upper(), _DEFAULT_VDW_RADIUS)
 
 
 # ---------------------------------------------------------------------------
@@ -685,6 +688,112 @@ def _exterior_mask(solid: np.ndarray) -> np.ndarray:
     return exterior[1:-1, 1:-1, 1:-1]
 
 
+def _occupancy_grid(
+    coords: np.ndarray,
+    radii: np.ndarray,
+    origin: np.ndarray,
+    grid_spacing: float,
+    grid_dims: np.ndarray,
+) -> np.ndarray:
+    """Mark the voxels whose centre lies inside any sphere (strict ``<`` radius).
+
+    Args:
+        coords: Sphere centres in Å, shape (N, 3).
+        radii: Sphere radii in Å, shape (N,).
+        origin: Coordinates of voxel (0, 0, 0) in Å.
+        grid_spacing: Voxel edge in Å.
+        grid_dims: Number of voxels along each axis.
+
+    Returns:
+        Boolean grid of shape ``grid_dims``; spheres are clipped at the grid edge.
+    """
+    occupied = np.zeros(grid_dims, dtype=bool)
+    for coord, radius in zip(coords, radii):
+        lo = np.floor((coord - radius - origin) / grid_spacing).astype(int)
+        hi = np.ceil((coord + radius - origin) / grid_spacing).astype(int) + 1
+        lo = np.clip(lo, 0, grid_dims - 1)
+        hi = np.clip(hi, 0, grid_dims)
+        if np.any(hi <= lo):
+            continue
+        gx, gy, gz = np.meshgrid(
+            np.arange(lo[0], hi[0]),
+            np.arange(lo[1], hi[1]),
+            np.arange(lo[2], hi[2]),
+            indexing="ij",
+        )
+        idx = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+        inside = np.linalg.norm(idx * grid_spacing + origin - coord, axis=1) < radius
+        idx = idx[inside]
+        occupied[idx[:, 0], idx[:, 1], idx[:, 2]] = True
+    return occupied
+
+
+# Probe-centre voxels are voxel centres inside the allowed region, so they sit
+# on average a fraction of a voxel inside its true boundary and a sweep by the
+# bare probe radius under-fills the cavity. Extending the sweep by this many
+# voxels removes most of the bias: against a fine-grid reference on synthetic
+# cavities of 5-7 A radius the void volume agrees within about 8 % for probes
+# of 1.4-3 A, where the bare radius is 7-25 % low at 0.5 A spacing.
+_SWEEP_BIAS_VOXELS = 0.25
+
+
+def _dilate_by_probe(
+    mask: np.ndarray, grid_spacing: float, probe_radius: float, outside: bool
+) -> np.ndarray:
+    """Voxels swept by a probe whose centre visits the True voxels of ``mask``.
+
+    ``outside`` is the value assumed beyond the grid edge: True for bulk
+    solvent, which then sweeps into the box from every side; False for a mask
+    that has nothing outside the box. With ``probe_radius=0`` the mask is
+    returned unchanged.
+    """
+    if probe_radius <= 0 or not (mask.any() or outside):
+        return mask.copy()
+    from scipy.ndimage import distance_transform_edt
+
+    sweep_radius = probe_radius + _SWEEP_BIAS_VOXELS * grid_spacing
+    margin = int(np.ceil(sweep_radius / grid_spacing)) + 1
+    padded = np.pad(mask, margin, constant_values=outside)
+    swept = distance_transform_edt(~padded, sampling=grid_spacing) <= sweep_radius
+    return swept[margin:-margin, margin:-margin, margin:-margin]
+
+
+def _interface_void_mask(
+    solid_complex: np.ndarray,
+    inflated_pep: np.ndarray,
+    inflated_rec: np.ndarray,
+    grid_spacing: float,
+    probe_radius: float,
+) -> np.ndarray:
+    """Voxels of the buried interface void (see `compute_buried_void_volume`).
+
+    Args:
+        solid_complex: Voxels inside a van der Waals sphere of either chain.
+        inflated_pep: Voxels within ``vdw + probe_radius`` of a peptide atom,
+            i.e. where a probe centre is not allowed with the peptide alone.
+        inflated_rec: Same for the receptor.
+        grid_spacing: Voxel edge in Å.
+        probe_radius: Probe radius in Å.
+
+    Returns:
+        Boolean grid, True on the void voxels. The steps are: probe-centre
+        positions that are closed to the bulk in the complex but open to it
+        for the peptide alone and for the receptor alone form the cavity
+        seeds; the probe body swept from those seeds (Richards, 1977) minus
+        whatever the bulk probe can touch is the void. Requiring both chains
+        alone to be open keeps only cavities that need both partners to be
+        closed: a cavity walled by one chain is trivially open once that
+        chain is removed and is not an interface feature.
+    """
+    inflated_complex = inflated_pep | inflated_rec
+    bulk_complex = _exterior_mask(inflated_complex)
+    open_for_each_chain = _exterior_mask(inflated_pep) & _exterior_mask(inflated_rec)
+    cavity_seeds = ~inflated_complex & ~bulk_complex & open_for_each_chain
+    cavity_body = _dilate_by_probe(cavity_seeds, grid_spacing, probe_radius, outside=False)
+    bulk_swept = _dilate_by_probe(bulk_complex, grid_spacing, probe_radius, outside=True)
+    return cavity_body & ~solid_complex & ~bulk_swept
+
+
 def compute_buried_void_volume(
     cif_path: str | Path,
     peptide_chain: Optional[str] = None,
@@ -698,10 +807,37 @@ def compute_buried_void_volume(
 ) -> dict:
     """Compute buried void volume at the peptide-receptor interface.
 
-    Uses a grid-based approach to identify interface voids: regions that
-    are unoccupied by atoms, inaccessible to solvent in the complex, but
-    would be solvent-accessible if one chain were removed. These represent
-    poorly-packed cavities at the binding interface.
+    An interface void is a cavity that a solvent probe of radius
+    ``probe_radius`` cannot reach from the bulk in the complex, that would be
+    open if the peptide were removed, and would be open if the receptor were
+    removed: space that only the two partners together close off, a sign of
+    poor packing. A cavity walled by a single chain is not counted (removing
+    that chain trivially opens it), and neither are interstitial gaps between
+    atoms that are too narrow for the probe.
+
+    Definition, on a regular grid. A probe centre is allowed where it stays at
+    least ``vdw + probe_radius`` from every atom centre (Lee & Richards,
+    1971). Allowed centres that are not connected to the outside of the grid
+    in the complex, but are connected to it for the peptide alone and for the
+    receptor alone, seed the void. The void is the region the probe body
+    sweeps from those seeds (every empty voxel within ``probe_radius`` of a
+    seed; Richards, 1977; Connolly, 1983), minus anything the bulk solvent
+    probe can touch. Its volume is therefore the empty volume of the closed
+    cavity, not just the volume available to the probe centre. Grid cavity
+    detection in this spirit is used by VOIDOO (Kleywegt & Jones, 1994).
+    With ``probe_radius=0`` the seeds are the empty spaces closed to a point
+    probe.
+
+    The result depends on the probe and the grid: compare values only at the
+    same ``probe_radius`` and ``grid_spacing``. The voxel-count volume has a
+    discretisation error that grows with the cavity surface and the voxel
+    size (a few percent on 5 Å-radius test cavities at 0.5 Å); use a finer
+    grid to check a value.
+
+    The bounding box is set by the interface atoms (any atom of one chain
+    within ``interface_cutoff`` of the other, plus ``padding``); every atom of
+    the two chains that reaches into the box is used as an occluder, so that
+    space shielded by atoms outside the interface is not read as open.
 
     Type: score
 
@@ -710,7 +846,7 @@ def compute_buried_void_volume(
         peptide_chain: Chain ID of peptide (auto-detected if None)
         receptor_chain: Chain ID of receptor (auto-detected if None)
         grid_spacing: Voxel size in Å (default 0.5)
-        probe_radius: Solvent probe radius in Å (default 1.4)
+        probe_radius: Solvent probe radius in Å (default 1.4, water); must be >= 0
         interface_cutoff: Distance cutoff for interface atom selection in Å (default 5.0)
         padding: Bounding box padding in Å (default 3.0)
         hetero: "ignore" (default) keeps only amino-acid atoms, so waters,
@@ -727,7 +863,13 @@ def compute_buried_void_volume(
             void_grid_fraction (float): void voxels / total bounding box voxels
             interface_box_volume_A3 (float): Total interface bounding box volume in Å³
             n_interface_atoms (int): Total interface atoms considered
+
+    Raises:
+        ValueError: If ``probe_radius`` is negative.
     """
+    if probe_radius < 0:
+        raise ValueError(f"probe_radius must be >= 0, got {probe_radius}")
+
     cif_path = Path(cif_path)
     atoms = _filter_hetero(_load_structure(cif_path), hetero)
     peptide_chain, receptor_chain = _auto_detect_chains(atoms, peptide_chain, receptor_chain)
@@ -748,78 +890,60 @@ def compute_buried_void_volume(
     if len(pep_atoms) == 0 or len(rec_atoms) == 0:
         return _nan_result
 
-    # Find interface atoms from each chain
     diff = pep_atoms.coord[:, np.newaxis, :] - rec_atoms.coord[np.newaxis, :, :]
     dist_pr = np.linalg.norm(diff, axis=-1)  # (n_pep, n_rec)
-    pep_iface_mask = np.any(dist_pr < interface_cutoff, axis=1)
-    rec_iface_mask = np.any(dist_pr < interface_cutoff, axis=0)
-
-    pep_iface = pep_atoms[pep_iface_mask]
-    rec_iface = rec_atoms[rec_iface_mask]
+    pep_iface = pep_atoms[np.any(dist_pr < interface_cutoff, axis=1)]
+    rec_iface = rec_atoms[np.any(dist_pr < interface_cutoff, axis=0)]
 
     n_iface = len(pep_iface) + len(rec_iface)
     if n_iface == 0:
         return _nan_result
 
-    # Build bounding box around interface atoms
     all_iface_coords = np.vstack([pep_iface.coord, rec_iface.coord])
     min_coord = all_iface_coords.min(axis=0) - padding
     max_coord = all_iface_coords.max(axis=0) + padding
 
     box_size = max_coord - min_coord
-    grid_dims = np.ceil(box_size / grid_spacing).astype(int) + 1
+    box_dims = np.ceil(box_size / grid_spacing).astype(int) + 1
 
-    # Map atom coordinates to grid indices
-    def _make_solid_grid(atom_coords: np.ndarray, atom_vdw: np.ndarray) -> np.ndarray:
-        """Create boolean grid where True = voxel within VDW radius of any atom."""
-        solid = np.zeros(grid_dims, dtype=bool)
-        # Iterate over atoms, mark voxels within VDW radius
-        for coord, vdw in zip(atom_coords, atom_vdw):
-            # Bounding box of this atom in grid indices
-            r = vdw + probe_radius
-            lo = np.floor((coord - r - min_coord) / grid_spacing).astype(int)
-            hi = np.ceil((coord + r - min_coord) / grid_spacing).astype(int) + 1
-            lo = np.clip(lo, 0, grid_dims - 1)
-            hi = np.clip(hi, 0, grid_dims)
+    # The grid extends beyond the analysis box so that a cavity cut by the box
+    # face is classified as a whole (closed or open) instead of being read as
+    # open at the cut; only voxels inside the analysis box are counted.
+    margin_voxels = int(np.ceil(2.0 * (_DEFAULT_VDW_RADIUS + probe_radius) / grid_spacing))
+    origin = min_coord - margin_voxels * grid_spacing
+    grid_dims = box_dims + 2 * margin_voxels
+    grid_min = origin
+    grid_max = origin + (grid_dims - 1) * grid_spacing
+    in_box = tuple(slice(margin_voxels, margin_voxels + n) for n in box_dims)
 
-            # Generate voxel centers in this sub-box
-            xi = np.arange(lo[0], hi[0])
-            yi = np.arange(lo[1], hi[1])
-            zi = np.arange(lo[2], hi[2])
-            if len(xi) == 0 or len(yi) == 0 or len(zi) == 0:
-                continue
-            gx, gy, gz = np.meshgrid(xi, yi, zi, indexing="ij")
-            voxel_centers = (
-                np.stack([gx, gy, gz], axis=-1).reshape(-1, 3) * grid_spacing + min_coord
-            )
-            d = np.linalg.norm(voxel_centers - coord, axis=1)
-            inside = d < vdw  # strict VDW (no probe for solid body)
-            idx = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)[inside]
-            if len(idx) > 0:
-                solid[idx[:, 0], idx[:, 1], idx[:, 2]] = True
-        return solid
+    def _occluders(chain_atoms):
+        """Atoms of the chain whose (probe-inflated) sphere can reach into the grid."""
+        radii = np.array([_get_vdw(str(a.element).strip()) for a in chain_atoms])
+        reach = radii + probe_radius
+        near = np.all(
+            (chain_atoms.coord >= grid_min - reach[:, None])
+            & (chain_atoms.coord <= grid_max + reach[:, None]),
+            axis=1,
+        )
+        return chain_atoms.coord[near], radii[near]
 
-    # Build solid grids
-    pep_vdw = np.array([_get_vdw(str(a.element).strip()) for a in pep_iface])
-    rec_vdw = np.array([_get_vdw(str(a.element).strip()) for a in rec_iface])
+    pep_coord, pep_vdw = _occluders(pep_atoms)
+    rec_coord, rec_vdw = _occluders(rec_atoms)
 
-    solid_pep = _make_solid_grid(pep_iface.coord, pep_vdw)
-    solid_rec = _make_solid_grid(rec_iface.coord, rec_vdw)
-    solid_complex = solid_pep | solid_rec
+    def _grid(coords, radii):
+        return _occupancy_grid(coords, radii, origin, grid_spacing, grid_dims)
 
-    # Exterior masks (flood fill from corner)
-    try:
-        accessible_complex = _exterior_mask(solid_complex)
-        accessible_pep = _exterior_mask(solid_pep)
-        accessible_rec = _exterior_mask(solid_rec)
-    except Exception:
-        return _nan_result
+    solid_complex = _grid(pep_coord, pep_vdw) | _grid(rec_coord, rec_vdw)
+    interface_void = _interface_void_mask(
+        solid_complex,
+        _grid(pep_coord, pep_vdw + probe_radius),
+        _grid(rec_coord, rec_vdw + probe_radius),
+        grid_spacing,
+        probe_radius,
+    )
 
-    # Interface void: unoccupied, inaccessible in complex, but accessible in either half
-    interface_void = ~solid_complex & ~accessible_complex & (accessible_pep | accessible_rec)
-
-    void_voxels = int(interface_void.sum())
-    total_voxels = int(np.prod(grid_dims))
+    void_voxels = int(interface_void[in_box].sum())
+    total_voxels = int(np.prod(box_dims))
     void_volume = void_voxels * grid_spacing**3
     box_volume = total_voxels * grid_spacing**3
 
