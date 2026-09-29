@@ -335,6 +335,9 @@ class RelaxationResult:
             the Chemical Component Dictionary (or disagrees with its entry); its
             double bonds, aromatic rings and hydrogen count are unreliable.
             Empty when no residue was parameterised this way.
+        dropped_protein_chains: IDs of the protein chains that are neither the peptide
+            nor the receptor and were removed before the system was built (see
+            ``io.structures.drop_other_protein_chains``). Empty when there were none.
     """
 
     sample_id: str
@@ -379,6 +382,7 @@ class RelaxationResult:
     qc_passed: Optional[bool] = None
 
     ncaa_bond_order_source: dict = field(default_factory=dict)
+    dropped_protein_chains: list = field(default_factory=list)
 
     def _qc_failed_checks(self) -> list:
         """Names of failed QC checks, ``md_final:`` prefixed for the MD frame."""
@@ -434,6 +438,7 @@ class RelaxationResult:
             "qc_failed_checks": ",".join(self._qc_failed_checks()),
             "qc_checks": self._qc_check_rows(),
             "ncaa_bond_order_source": dict(self.ncaa_bond_order_source),
+            "dropped_protein_chains": list(self.dropped_protein_chains),
         }
         if self.peptide_rmsf_per_residue is not None:
             d["peptide_rmsf_per_residue"] = json.dumps(self.peptide_rmsf_per_residue)
@@ -630,11 +635,18 @@ class ImplicitRelaxation(Relaxer):
         warn_cutoff_ang: float = 8.0,
         report: Optional[dict] = None,
     ):
-        """Strip heterogens; ``report`` is filled as in ``io.structures.strip_heterogens``."""
-        from binding_metrics.io.structures import strip_heterogens
+        """Strip heterogens and the protein chains outside the pair; fill ``report``.
 
-        return strip_heterogens(
+        ``report`` is filled as in ``io.structures.strip_heterogens`` and
+        ``io.structures.drop_other_protein_chains`` (``dropped_protein_chains``).
+        """
+        from binding_metrics.io.structures import drop_other_protein_chains, strip_heterogens
+
+        topology, positions = strip_heterogens(
             topology, positions, peptide_chain, receptor_chain, warn_cutoff_ang, report=report
+        )
+        return drop_other_protein_chains(
+            topology, positions, peptide_chain, receptor_chain, report=report
         )
 
     def _setup_system(self, input_path: Path):
@@ -654,6 +666,7 @@ class ImplicitRelaxation(Relaxer):
         self._import_openmm()
         self._ns_info = None
         self._ncaa_bond_order_source = {}
+        self._dropped_protein_chains = []
 
         # --- Structure loading ---
         # The input is expected to already be prepared (via binding-metrics-prep).
@@ -678,10 +691,14 @@ class ImplicitRelaxation(Relaxer):
         # --- Identify chains ---
         peptide_chain, receptor_chain = self._identify_chains(topology)
 
-        # --- Strip heterogens (non-protein residues outside the two chains) ---
+        # --- Strip heterogens (non-protein residues outside the two chains) and
+        # any third protein chain: E_complex would include it, the isolated
+        # components would not, and its termini and patches are not handled ---
+        strip_report: dict = {}
         topology, positions = self._strip_heterogens(
-            topology, positions, peptide_chain, receptor_chain
+            topology, positions, peptide_chain, receptor_chain, report=strip_report
         )
+        self._dropped_protein_chains = list(strip_report.get("dropped_protein_chains", []))
 
         # --- Force field setup ---
         gb_file = (
@@ -1249,6 +1266,7 @@ class ImplicitRelaxation(Relaxer):
             logger.info("[%s] Preparing system...", sample_id)
             system, topology, positions, bond_info = self._setup_system(input_path)
             result.ncaa_bond_order_source = dict(self._ncaa_bond_order_source)
+            result.dropped_protein_chains = list(self._dropped_protein_chains)
 
             if bond_info:
                 # atom1_id / atom2_id store (chain_id, res_idx_in_chain, atom_name)

@@ -1,5 +1,6 @@
 """Structure loading and manipulation utilities."""
 
+import functools
 import logging
 import re
 import tempfile
@@ -575,6 +576,94 @@ def strip_heterogens(
         topology, positions = modeller.topology, modeller.positions
 
     return topology, positions
+
+
+@functools.lru_cache(maxsize=1)
+def _amino_acid_names() -> frozenset:
+    """Residue names that count as amino acids when a chain is called a protein chain.
+
+    The package's own protein set (standard residues, AMBER variants, the lactam and
+    N-methyl templates), the phosphorylated residues, the D-amino acids of
+    ``core.nonstandard.D_AA_MAP`` and, with biotite installed, every peptide-linking
+    component of the Chemical Component Dictionary (the set behind
+    ``biotite.structure.filter_amino_acids``, which the interface metrics use).
+    """
+    from binding_metrics.core.nonstandard import D_AA_MAP
+
+    names = set(PROTEIN_RESIDUES) | set(PHOSPHO_RESIDUES) | set(D_AA_MAP)
+    try:
+        from biotite.structure.info import amino_acid_names
+    except ImportError:
+        pass  # the sets above still cover the residues the package parameterises
+    else:
+        names |= set(amino_acid_names())
+    return frozenset(names)
+
+
+def drop_other_protein_chains(
+    topology,
+    positions,
+    peptide_chain: Optional[str],
+    receptor_chain: Optional[str],
+    report: Optional[dict] = None,
+):
+    """Delete every protein chain that is neither the peptide nor the receptor.
+
+    The relaxation and the interaction energy describe the peptide-receptor pair. A
+    third protein chain (a second copy of the complex in the asymmetric unit, a
+    crystallisation partner) adds its own energy to the complex but not to the
+    isolated components, so E_int would mix the pair with the bystander, and its caps,
+    phosphorylated residues and lactam bridges are not patched, so the force field
+    often cannot build it. Call after :func:`strip_heterogens`. Nothing is removed
+    unless both chain IDs are given and both are in the topology. A logged warning
+    names each removed chain: a receptor made of several chains (a Fab) has to be
+    reduced to the chain that carries the interface before it goes in.
+
+    Args:
+        topology: OpenMM Topology.
+        positions: Atom positions (OpenMM Quantity, nm).
+        peptide_chain: Peptide chain ID to keep.
+        receptor_chain: Receptor chain ID to keep.
+        report: Optional dict; ``dropped_protein_chains`` (list[str]) receives the
+            IDs of the removed chains, an empty list when none was removed. Lists
+            accumulate when one dict is passed to several calls.
+
+    Returns:
+        Tuple (topology, positions) without the other protein chains.
+    """
+    kept = {peptide_chain, receptor_chain}
+    present = {chain.id for chain in topology.chains()}
+    if not (peptide_chain and receptor_chain) or not kept <= present:
+        if report is not None:
+            extend_report(report, "dropped_protein_chains", [])
+        return topology, positions
+
+    amino_acids = _amino_acid_names()
+    atoms_to_remove = []
+    dropped: list[str] = []
+    for chain in topology.chains():
+        if chain.id in kept or not any(res.name in amino_acids for res in chain.residues()):
+            continue
+        dropped.append(chain.id)
+        atoms_to_remove.extend(atom for res in chain.residues() for atom in res.atoms())
+
+    if report is not None:
+        extend_report(report, "dropped_protein_chains", dropped)
+    if not dropped:
+        return topology, positions
+
+    logger.warning(
+        "  Removing protein chain(s) %s: neither the peptide (%s) nor the receptor (%s). "
+        "The energy and the relaxation describe the peptide-receptor pair only.",
+        ", ".join(dropped),
+        peptide_chain,
+        receptor_chain,
+    )
+    from openmm import app
+
+    modeller = app.Modeller(topology, positions)
+    modeller.delete(atoms_to_remove)
+    return modeller.topology, modeller.positions
 
 
 def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:

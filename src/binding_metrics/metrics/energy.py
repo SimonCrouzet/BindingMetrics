@@ -870,9 +870,13 @@ def compute_interaction_energy(
             receptor_chain = receptor_chain or auto_rec
 
         # Explicit waters, ions and ligands do not belong in an implicit-solvent system.
-        from binding_metrics.io.structures import strip_heterogens
+        from binding_metrics.io.structures import drop_other_protein_chains, strip_heterogens
 
         topology, positions = strip_heterogens(topology, positions, peptide_chain, receptor_chain)
+        # Only the peptide-receptor pair enters E_complex and the isolated components.
+        topology, positions = drop_other_protein_chains(
+            topology, positions, peptide_chain, receptor_chain
+        )
 
         if peptide_chain is None or receptor_chain is None:
             raise ValueError("Could not identify two protein chains in structure")
