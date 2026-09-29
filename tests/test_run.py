@@ -316,3 +316,72 @@ class TestOpenFoldReasons:
             {"delta_com": 0.5},
         )
         assert "reason" not in of
+
+
+class TestOpenFoldSeeds:
+    """``--openfold-seeds`` reaches the OpenFold query; without it nothing is passed."""
+
+    @staticmethod
+    def _seen_kwargs(tmp_path, monkeypatch, mode, **pipeline_kwargs):
+        from binding_metrics.metrics import openfold
+
+        seen = {}
+
+        def record(**kwargs):
+            seen.update(kwargs)
+            return tmp_path
+
+        monkeypatch.setattr(openfold, "run_openfold_scoring", record)
+        monkeypatch.setattr(openfold, "run_openfold_refolding", record)
+        monkeypatch.setattr(openfold, "compute_openfold_metrics", lambda **kw: {})
+        run_pipeline(
+            EXAMPLE_1YCR,
+            tmp_path,
+            skip_prep=True,
+            skip_relax=True,
+            metrics=frozenset({"openfold"}),
+            openfold_mode=mode,
+            **pipeline_kwargs,
+        )
+        return seen
+
+    @pytest.mark.parametrize("mode", ["score", "refold"])
+    def test_seeds_are_forwarded_as_a_tuple(self, tmp_path, monkeypatch, mode):
+        seen = self._seen_kwargs(tmp_path, monkeypatch, mode, openfold_seeds=[7, 8])
+        assert seen["seeds"] == (7, 8)
+
+    @pytest.mark.parametrize("mode", ["score", "refold"])
+    def test_no_seed_argument_without_the_option(self, tmp_path, monkeypatch, mode):
+        assert "seeds" not in self._seen_kwargs(tmp_path, monkeypatch, mode)
+
+
+class TestRunMainOpenFoldSeedsFlag:
+    @staticmethod
+    def _parsed(monkeypatch, tmp_path, extra):
+        import sys
+
+        from binding_metrics.cli import run
+
+        captured = {}
+
+        def fake_pipeline(**kwargs):
+            captured.update(kwargs)
+            return {"sample_id": "x", "provenance": {}}
+
+        monkeypatch.setattr(run, "run_pipeline", fake_pipeline)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["binding-metrics-run", "-i", str(EXAMPLE_1YCR), "-o", str(tmp_path / "o"), *extra],
+        )
+        run.main()
+        return captured
+
+    def test_default_is_none(self, monkeypatch, tmp_path):
+        assert self._parsed(monkeypatch, tmp_path, [])["openfold_seeds"] is None
+
+    def test_values_are_integers(self, monkeypatch, tmp_path):
+        seeds = self._parsed(monkeypatch, tmp_path, ["--openfold-seeds", "3", "4"])[
+            "openfold_seeds"
+        ]
+        assert seeds == [3, 4]

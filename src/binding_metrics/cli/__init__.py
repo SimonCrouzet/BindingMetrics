@@ -126,6 +126,25 @@ def md_save_interval_for(md_duration_ps: float) -> float:
     return DEFAULT_MD_SAVE_INTERVAL_PS
 
 
+def add_openfold_seeds_arg(parser) -> None:
+    """Add ``--openfold-seeds SEED [SEED ...]`` to an argparse parser or group.
+
+    The default is ``None``: the OpenFold functions then keep their own default
+    seed, so a run without the flag writes the same query JSON as before.
+    """
+    parser.add_argument(
+        "--openfold-seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="SEED",
+        help=(
+            "Seed values written to the OpenFold3 query JSON (default: the "
+            "OpenFold module default, 42). The first seed's first sample is scored."
+        ),
+    )
+
+
 _SMALL_MOLECULES_CHOICES = ("auto", "none")
 
 

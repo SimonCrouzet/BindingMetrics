@@ -23,10 +23,10 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
-from binding_metrics.cli import md_save_interval_for
+from binding_metrics.cli import add_openfold_seeds_arg, md_save_interval_for
 from binding_metrics.cli import seed_arg as _seed_arg
 from binding_metrics.provenance import collect_provenance
 from binding_metrics.utils import configure_logging
@@ -124,6 +124,7 @@ def run_pipeline(
     openfold_conda_env: Optional[str] = None,
     # reproducibility
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+    openfold_seeds: Optional[Sequence[int]] = None,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -133,6 +134,8 @@ def run_pipeline(
         peptide_chain, receptor_chain: Explicit chain IDs (auth IDs). Auto-detected
             when None; an ID that is not in the structure raises ``ChainNotFoundError``.
         random_seed: Seed for hydrogen placement and MD; ``None`` for fresh randomness.
+        openfold_seeds: Seed values written to the OpenFold3 query JSON; ``None``
+            keeps the OpenFold default. Separate from ``random_seed``.
         The remaining arguments mirror the ``binding-metrics-run`` flags.
 
     Returns:
@@ -440,6 +443,7 @@ def run_pipeline(
                 results["openfold"] = {"skipped": True}
             else:
                 of_dir = output_dir / "openfold"
+                seed_kwargs = {"seeds": tuple(openfold_seeds)} if openfold_seeds else {}
                 if openfold_mode == "refold":
                     predictions_dir = run_openfold_refolding(
                         complex_structure_path=input_path,
@@ -448,6 +452,7 @@ def run_pipeline(
                         query_name=sample_id,
                         output_dir=of_dir,
                         conda_env=openfold_conda_env,
+                        **seed_kwargs,
                     )
                     of_metrics = compute_openfold_metrics(
                         output_dir=predictions_dir,
@@ -464,6 +469,7 @@ def run_pipeline(
                         query_name=sample_id,
                         output_dir=of_dir,
                         conda_env=openfold_conda_env,
+                        **seed_kwargs,
                     )
                     of_metrics = compute_openfold_metrics(
                         output_dir=predictions_dir,
@@ -682,6 +688,7 @@ def main():
         "(default: openfold3). Set to empty string to use "
         "the current environment if openfold3 is installed there.",
     )
+    add_openfold_seeds_arg(openfold_group)
 
     # Report
     report_group = parser.add_argument_group("Report")
@@ -755,6 +762,7 @@ def main():
                 openfold_mode=args.openfold_mode,
                 openfold_conda_env=args.openfold_conda_env,
                 random_seed=args.random_seed,
+                openfold_seeds=args.openfold_seeds,
             )
         except ChainNotFoundError as e:
             print(f"ERROR: {e}", file=sys.stderr)

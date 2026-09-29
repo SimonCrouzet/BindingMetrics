@@ -564,3 +564,56 @@ class TestMergeReason:
         target = {"iptm": 0.5}
         batch._merge_reason(target, {"x": 1}, "lab")
         assert target == {"iptm": 0.5}
+
+
+class TestOpenFoldSeeds:
+    def _run(self, tmp_path, monkeypatch, **kwargs):
+        from binding_metrics.metrics import openfold
+
+        seen = {}
+
+        def record(**kw):
+            seen.update(kw)
+            return tmp_path
+
+        monkeypatch.setattr(openfold, "run_openfold_batched", record)
+        monkeypatch.setattr(openfold, "compute_openfold_metrics", lambda **kw: {})
+        batch._run_batched_openfold(
+            rows=[{"sample_id": "s1", "batch_status": "ok"}],
+            sid_to_input={"s1": EXAMPLE_1YCR},
+            output_dir=tmp_path,
+            openfold_mode="score",
+            openfold_conda_env=None,
+            peptide_chain="B",
+            receptor_chain="A",
+            **kwargs,
+        )
+        return seen
+
+    def test_seeds_reach_the_batched_call(self, tmp_path, monkeypatch):
+        assert self._run(tmp_path, monkeypatch, openfold_seeds=[5, 6])["seeds"] == (5, 6)
+
+    def test_default_passes_no_seed_argument(self, tmp_path, monkeypatch):
+        assert "seeds" not in self._run(tmp_path, monkeypatch)
+
+    def test_main_forwards_the_flag(self, tmp_path, monkeypatch):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        (input_dir / "a.cif").write_text("data_x\n")
+        seen = []
+        monkeypatch.setattr(batch, "_run_one", lambda input_path, **_: {"batch_status": "ok"})
+        monkeypatch.setattr(
+            batch, "_run_batched_openfold", lambda **kw: seen.append(kw["openfold_seeds"])
+        )
+        argv = [
+            "binding-metrics-batch",
+            "-i",
+            str(input_dir),
+            "--output-csv",
+            str(tmp_path / "m.csv"),
+        ]
+        for extra, expected in (([], None), (["--openfold-seeds", "1", "2"], [1, 2])):
+            monkeypatch.setattr(sys, "argv", argv + ["--metrics", "openfold", *extra])
+            with pytest.raises(SystemExit):
+                batch.main()
+            assert seen[-1] == expected

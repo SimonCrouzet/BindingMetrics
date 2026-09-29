@@ -52,10 +52,10 @@ import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
-from binding_metrics.cli import add_random_seed_arg
+from binding_metrics.cli import add_openfold_seeds_arg, add_random_seed_arg
 from binding_metrics.cli.run import (
     ALL_METRICS,
     _collect_failures,
@@ -237,11 +237,14 @@ def _run_batched_openfold(
     openfold_conda_env: Optional[str],
     peptide_chain: Optional[str],
     receptor_chain: Optional[str],
+    openfold_seeds: Optional[Sequence[int]] = None,
 ) -> None:
     """Run OpenFold3 on all successful samples in a single subprocess.
 
     Modifies *rows* in-place, merging OF3 and EvoBind metrics into each
     sample's flat dict.  Also updates each sample's JSON report on disk.
+    ``openfold_seeds`` are the seed values written to the query JSON; ``None``
+    keeps the OpenFold default.
     """
     from binding_metrics.io.structures import detect_chains_from_file
     from binding_metrics.metrics.openfold import (
@@ -308,6 +311,7 @@ def _run_batched_openfold(
             output_dir=of_dir,
             mode=openfold_mode,
             conda_env=openfold_conda_env,
+            **({"seeds": tuple(openfold_seeds)} if openfold_seeds else {}),
         )
     except Exception as e:
         # Warning level keeps the line on stdout, where it was printed before.
@@ -547,6 +551,7 @@ def main():
         default="openfold3",
         help="Conda env where OpenFold3 is installed (default: openfold3)",
     )
+    add_openfold_seeds_arg(openfold_group)
 
     from binding_metrics.cli import add_log_file_arg
 
@@ -750,6 +755,7 @@ def main():
             openfold_conda_env=args.openfold_conda_env,
             peptide_chain=args.peptide_chain,
             receptor_chain=args.receptor_chain,
+            openfold_seeds=args.openfold_seeds,
         )
 
     # ------------------------------------------------------------------ Write CSV
