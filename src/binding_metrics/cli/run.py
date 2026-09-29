@@ -218,6 +218,11 @@ def run_pipeline(
         ``n_removed_waters``, ``kept_nonstandard``, ``n_missing_atoms_rebuilt``
         and ``n_missing_residue_gaps`` (see ``core.system.prep_structure``).
 
+        ``prep`` and ``relax`` carry ``ncaa_bond_order_source`` when non-canonical
+        residues were parameterised: ``{residue name: "ccd" or "single_bonds"}``,
+        where ``"single_bonds"`` marks a residue whose double bonds, aromatic
+        rings and hydrogen count are unreliable.
+
     Raises:
         ChainNotFoundError: a requested chain ID does not exist in the structure.
         ValueError: a chain is given through both spellings with different IDs.

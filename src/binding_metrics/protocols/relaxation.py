@@ -50,7 +50,7 @@ import sys
 import time
 import traceback
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -319,6 +319,12 @@ class RelaxationResult:
             same schema under ``"md_final"`` when MD ran. Advisory.
         qc_passed: True when every QC check passed, False when one failed, None
             when QC did not run
+        ncaa_bond_order_source: Where the bond orders of each auto-parameterised
+            non-canonical residue came from, ``{residue name: "ccd" or
+            "single_bonds"}``. ``"single_bonds"`` marks a residue that is not in
+            the Chemical Component Dictionary (or disagrees with its entry); its
+            double bonds, aromatic rings and hydrogen count are unreliable.
+            Empty when no residue was parameterised this way.
     """
 
     sample_id: str
@@ -361,6 +367,8 @@ class RelaxationResult:
     # check never flips ``success``. ``qc_passed`` is None when QC did not run.
     qc: Optional[dict] = None
     qc_passed: Optional[bool] = None
+
+    ncaa_bond_order_source: dict = field(default_factory=dict)
 
     def _qc_failed_checks(self) -> list:
         """Names of failed QC checks, ``md_final:`` prefixed for the MD frame."""
@@ -415,6 +423,7 @@ class RelaxationResult:
             "qc_passed": self.qc_passed,
             "qc_failed_checks": ",".join(self._qc_failed_checks()),
             "qc_checks": self._qc_check_rows(),
+            "ncaa_bond_order_source": dict(self.ncaa_bond_order_source),
         }
         if self.peptide_rmsf_per_residue is not None:
             d["peptide_rmsf_per_residue"] = json.dumps(self.peptide_rmsf_per_residue)
@@ -454,6 +463,8 @@ class ImplicitRelaxation(Relaxer):
         self._platform_used: Optional[str] = None
         self._precision_used: Optional[str] = None
         self._platform_fallback_reason: Optional[str] = None
+        # Set by _setup_system from the GAFF template step, copied into the result.
+        self._ncaa_bond_order_source: dict = {}
 
     @staticmethod
     def _coerce_molecules(molecules: list) -> list:
@@ -705,6 +716,7 @@ class ImplicitRelaxation(Relaxer):
 
         self._import_openmm()
         self._ns_info = None
+        self._ncaa_bond_order_source = {}
 
         # --- Structure loading ---
         # The input is expected to already be prepared (via binding-metrics-prep).
@@ -831,6 +843,9 @@ class ImplicitRelaxation(Relaxer):
                 positions,
                 ff,
                 gaff_version=self.config.small_molecule_ff,
+            )
+            self._ncaa_bond_order_source = dict(
+                getattr(ncaa_xmls, "bond_order_source_by_residue", {})
             )
             if ncaa_xmls:
                 logger.info(
@@ -1297,6 +1312,7 @@ class ImplicitRelaxation(Relaxer):
         try:
             logger.info("[%s] Preparing system...", sample_id)
             system, topology, positions, bond_info = self._setup_system(input_path)
+            result.ncaa_bond_order_source = dict(self._ncaa_bond_order_source)
 
             if bond_info:
                 # atom1_id / atom2_id store (chain_id, res_idx_in_chain, atom_name)

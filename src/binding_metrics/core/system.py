@@ -330,6 +330,7 @@ def _add_hydrogens_cyclic(
     custom_bonds: list,
     ph: float,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+    report: Optional[dict] = None,
 ) -> tuple:
     """Add hydrogens to a topology that contains non-sequential cyclic bonds.
 
@@ -337,6 +338,9 @@ def _add_hydrogens_cyclic(
     standard N-terminal templates that try to place H2/H3 on the N atom, which
     fails when the N is already bonded to the C-terminus carbon.  This function
     uses the cyclic-aware ForceField templates instead.
+
+    ``report``, when given, receives ``ncaa_bond_order_source`` (see
+    ``prep_structure``) for the residues that needed a GAFF template.
     """
     from openmm.app import ForceField, Modeller
 
@@ -388,7 +392,10 @@ def _add_hydrogens_cyclic(
     # GAFF2 ExternalBond templates for exotic NCAAs (BMT/ABA/…): generates and
     # loads their templates and injects their hydrogens so addHydrogens (whose
     # internal createSystem would otherwise fail on "No template") succeeds.
-    topology, positions, _ncaa_xmls = parameterize_ncaa_residues(topology, positions, ff)
+    topology, positions, ncaa_xmls = parameterize_ncaa_residues(topology, positions, ff)
+    sources = getattr(ncaa_xmls, "bond_order_source_by_residue", {})
+    if report is not None and sources:
+        report.setdefault("ncaa_bond_order_source", {}).update(sources)
 
     modeller = Modeller(topology, positions)
     addh_variants = (
@@ -555,6 +562,12 @@ def prep_structure(
               including atoms deleted as origin placeholders and terminal OXT.
             * ``n_missing_residue_gaps`` (int): chain positions where residues
               are unresolved and were left as a gap, not rebuilt.
+            * ``ncaa_bond_order_source`` (dict[str, str]): for a cyclic peptide
+              with non-canonical residues that needed a GAFF template, the
+              source of each residue's bond orders, ``"ccd"`` (Chemical
+              Component Dictionary) or ``"single_bonds"`` (the residue is not in
+              the dictionary or disagrees with it, so double bonds, aromatic
+              rings and the hydrogen count are unreliable). Absent otherwise.
 
             Behaviour is identical when ``report`` is None.
 
@@ -681,7 +694,12 @@ def prep_structure(
         # then uses cyclic FF templates for addHydrogens.  Do NOT restore bonds
         # here — patch_cyclic_topology detects and adds the bond itself.
         result_topo, result_pos = _add_hydrogens_cyclic(
-            fixer.topology, fixer.positions, custom_bonds, ph, random_seed=random_seed
+            fixer.topology,
+            fixer.positions,
+            custom_bonds,
+            ph,
+            random_seed=random_seed,
+            report=report,
         )
     else:
         # Inline of PDBFixer.addMissingHydrogens so we can pin the H-placement
