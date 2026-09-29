@@ -317,3 +317,88 @@ class TestReportNonFinite:
         row = next(line for line in summary.splitlines() if "MD RMSD" in line and "|" in line)
         assert "⬜" in row and "🔴" not in row
         assert "nan" not in row.lower()
+
+
+class TestReportJson:
+    """write_report keeps numbers as numbers and lists the non-finite fields."""
+
+    @staticmethod
+    def _write(tmp_path, results, fmt="json"):
+        from binding_metrics.protocols.report import write_report
+
+        return write_report(results, tmp_path, "sample", fmt=fmt)
+
+    def test_numpy_scalars_become_numbers_and_paths_become_strings(self, tmp_path):
+        results = {
+            "sample_id": "s",
+            "relax": {
+                "energy": np.float32(1.5),
+                "count": np.int64(3),
+                "flag": np.bool_(True),
+                "series": np.array([1.0, 2.0]),
+                "path": Path("out/relaxed.cif"),
+            },
+        }
+        data = json.loads(self._write(tmp_path, results).read_text())
+        assert data["relax"]["energy"] == 1.5 and isinstance(data["relax"]["energy"], float)
+        assert data["relax"]["count"] == 3 and isinstance(data["relax"]["count"], int)
+        assert data["relax"]["flag"] is True
+        assert data["relax"]["series"] == [1.0, 2.0]
+        assert data["relax"]["path"] == str(Path("out/relaxed.cif"))
+
+    def test_unknown_types_keep_the_str_fallback(self, tmp_path):
+        class Odd:
+            def __str__(self):
+                return "odd-value"
+
+        data = json.loads(self._write(tmp_path, {"sample_id": "s", "odd": Odd()}).read_text())
+        assert data["odd"] == "odd-value"
+
+    def test_nonfinite_fields_lists_dotted_paths(self, tmp_path):
+        results = {
+            "sample_id": "s",
+            "relax": {"rmsd_md_final": float("nan"), "energy": -5.0},
+            "geometry": {
+                "ramachandran": {"per_residue": [{"phi": 1.0}, {"phi": np.float32("inf")}]}
+            },
+            "electrostatics": {"coulomb_energy_kJ": -np.inf},
+        }
+        path = self._write(tmp_path, results)
+        data = json.loads(path.read_text())
+        assert sorted(data["nonfinite_fields"]) == [
+            "electrostatics.coulomb_energy_kJ",
+            "geometry.ramachandran.per_residue[1].phi",
+            "relax.rmsd_md_final",
+        ]
+        assert results["nonfinite_fields"] == data["nonfinite_fields"]
+
+    def test_nan_tokens_are_left_as_they_were(self, tmp_path):
+        text = self._write(tmp_path, {"sample_id": "s", "x": {"y": float("nan")}}).read_text()
+        assert '"y": NaN' in text
+
+    def test_no_nonfinite_gives_an_empty_list_and_rewriting_is_stable(self, tmp_path):
+        results = {"sample_id": "s", "relax": {"energy": -5.0}}
+        first = json.loads(self._write(tmp_path, results).read_text())
+        second = json.loads(self._write(tmp_path, results).read_text())
+        assert first["nonfinite_fields"] == [] == second["nonfinite_fields"]
+
+    def test_csv_output_has_no_new_column(self, tmp_path):
+        path = self._write(
+            tmp_path, {"sample_id": "s", "relax": {"energy": float("nan")}}, fmt="csv"
+        )
+        header = path.read_text().splitlines()[0].split(",")
+        assert "nonfinite_fields" not in header
+
+    def test_relaxation_json_writer_uses_the_same_encoder(self, tmp_path):
+        from binding_metrics.protocols.relaxation import RelaxationResult, _run_one
+
+        class StubRelaxer:
+            def run(self, input_path, output_dir, sample_id=None):
+                return RelaxationResult(
+                    sample_id="s", success=True, potential_energy_minimized=np.float32(-12.5)
+                )
+
+        target = tmp_path / "relax.json"
+        _run_one(StubRelaxer(), tmp_path / "in.cif", tmp_path, "s", target, None)
+        data = json.loads(target.read_text())
+        assert data["potential_energy_minimized"] == -12.5

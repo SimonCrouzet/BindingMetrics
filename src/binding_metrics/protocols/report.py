@@ -734,6 +734,41 @@ def _build_summary(results: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _json_default(obj: Any) -> Any:
+    """``json`` fallback for values the encoder does not know.
+
+    numpy scalars and arrays become Python numbers and lists, so a float32 leaf
+    is written as a number and not as the string ``"1.5"``. A ``Path`` becomes
+    its string. Anything else keeps the previous behaviour of ``str(obj)``.
+    """
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return str(obj)
+
+
+def _nonfinite_paths(obj: Any, prefix: str = "") -> list[str]:
+    """Dotted paths of every NaN or infinite leaf in a nested results dict.
+
+    List items are addressed as ``name[3]``. Both Python floats and numpy
+    scalars count.
+    """
+    if isinstance(obj, dict):
+        out: list[str] = []
+        for key, value in obj.items():
+            out += _nonfinite_paths(value, f"{prefix}.{key}" if prefix else str(key))
+        return out
+    if isinstance(obj, (list, tuple)):
+        out = []
+        for i, value in enumerate(obj):
+            out += _nonfinite_paths(value, f"{prefix}[{i}]")
+        return out
+    if isinstance(obj, np.ndarray):
+        return _nonfinite_paths(obj.tolist(), prefix)
+    return [prefix] if _is_nonfinite(obj) else []
+
+
 def write_report(
     results: dict,
     output_dir: Path,
@@ -754,9 +789,18 @@ def write_report(
 
     Returns:
         Path to the primary output file (JSON or CSV).
+
+    ``results["nonfinite_fields"]`` is set to the dotted paths of every NaN or
+    infinite value (``["relax.rmsd_md_final", ...]``) before writing. The JSON
+    keeps the ``NaN`` / ``Infinity`` tokens for those values, which Python's
+    ``json`` reads back but strict JSON parsers reject; the list tells a reader
+    which fields to treat as "not computed".
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    results.pop("nonfinite_fields", None)  # recomputed, so a re-written report stays exact
+    results["nonfinite_fields"] = _nonfinite_paths(results)
 
     if fmt == "csv":
         out_path = output_dir / f"{sample_id}_results.csv"
@@ -768,7 +812,7 @@ def write_report(
     else:  # json (default)
         out_path = output_dir / f"{sample_id}_results.json"
         with open(out_path, "w", encoding="utf-8") as fh:
-            json.dump(results, fh, indent=2, default=str)
+            json.dump(results, fh, indent=2, default=_json_default)
 
     if summary:
         if summary_format == "html":

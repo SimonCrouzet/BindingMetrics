@@ -1504,6 +1504,7 @@ def _run_one(
 ) -> "RelaxationResult":
     """Extract one model (if needed), run relaxation, write JSON, return result."""
     from binding_metrics.io.structures import extract_model_to_tempfile
+    from binding_metrics.protocols.report import _json_default
 
     tmp_path: Optional[Path] = None
     if model_num is not None:
@@ -1524,7 +1525,7 @@ def _run_one(
         rp = Path(results_json)
         rp.parent.mkdir(parents=True, exist_ok=True)
         with open(rp, "w", encoding="utf-8") as _fh:
-            json.dump(result.to_dict(), _fh, indent=2, default=str)
+            json.dump(result.to_dict(), _fh, indent=2, default=_json_default)
         print(f"  Results:   {rp}")
 
     if result.success:
