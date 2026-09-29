@@ -18,7 +18,7 @@ from typing import Optional
 
 import numpy as np
 
-from binding_metrics.core.residues import WATER_NAMES_PDB_AMBER
+from binding_metrics.core.residues import BACKBONE_HEAVY_ATOM_NAMES, WATER_NAMES_PDB_AMBER
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.utils import configure_logging
 
@@ -38,7 +38,6 @@ def _get_coords(
     Returns:
         Tuple of (coords array shape (N, 3), list of (chain, res_num, atom_name) keys)
     """
-    backbone_atoms = {"N", "CA", "C", "O"}
     coords = []
     keys = []
 
@@ -53,7 +52,7 @@ def _get_coords(
                 if residue.name in WATER_NAMES_PDB_AMBER:
                     continue
                 for atom in residue:
-                    if backbone_only and atom.name not in backbone_atoms:
+                    if backbone_only and atom.name not in BACKBONE_HEAVY_ATOM_NAMES:
                         continue
                     pos = atom.pos
                     coords.append([pos.x, pos.y, pos.z])

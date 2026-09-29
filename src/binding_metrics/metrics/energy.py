@@ -37,7 +37,7 @@ except ImportError:
 # OpenMM is imported inside the functions that use it, so this module can be
 # imported (and its CLI parser built) on installs without OpenMM.
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
-from binding_metrics.core.residues import CYSTEINE_NAMES
+from binding_metrics.core.residues import BACKBONE_HEAVY_ATOM_NAMES, CYSTEINE_NAMES
 from binding_metrics.metrics._common import ChainAliasAction, require_openmm, resolve_chain_role
 from binding_metrics.utils import configure_logging
 
@@ -54,7 +54,7 @@ _CONTACT_CUTOFF_ANGSTROM = 8.0
 _CLOSE_CONTACT_CUTOFF_ANGSTROM = 4.0
 # Backbone atoms held by a harmonic restraint during the first minimisation
 # stage. 100 kJ/mol/nm^2 is soft: a 0.1 nm displacement costs 0.5 kJ/mol.
-_BACKBONE_ATOM_NAMES = frozenset({"N", "CA", "C", "O"})
+_BACKBONE_ATOM_NAMES = BACKBONE_HEAVY_ATOM_NAMES
 _BACKBONE_RESTRAINT_K_KJ_MOL_NM2 = 100.0
 
 
