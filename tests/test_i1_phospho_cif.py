@@ -129,6 +129,14 @@ def _bond_names(topology):
 
 HIS_SEP = frozenset({("HIS", "6", "C"), ("SEP", "7", "N")})
 HIS_SEP_BY_NAME = frozenset({("HIS", "C"), ("SEP", "N")})
+
+
+def _n_internal_bonds(topology, residue) -> int:
+    return sum(
+        1 for b in topology.bonds() if b.atom1.residue is residue and b.atom2.residue is residue
+    )
+
+
 SEP_TYR = frozenset({("SEP", "7", "C"), ("TYR", "8", "N")})
 
 
@@ -244,3 +252,73 @@ class TestStripHeterogensKeepsPhosphoResidues:
         names = [r.name for r in top.residues()]
         assert "LIG" not in names
         assert names.count("SEP") == 2
+
+
+class TestBondsInsideNonstandardResidues:
+    """A raw mmCIF lists no bond inside SEP; the PDB file has them as CONECT records."""
+
+    def test_load_cif_gives_sep_the_bonds_the_pdb_conect_records_give(self, phospho_mmcif):
+        from binding_metrics.io.structures import load_structure
+
+        cif_top, _ = load_structure(phospho_mmcif)
+        pdb_top, _ = load_structure(PHOSPHO_PDB)
+        cif_bonds, pdb_bonds = _bond_names(cif_top), _bond_names(pdb_top)
+        assert cif_bonds == pdb_bonds
+        sep_internal = [b for b in cif_bonds if {r for r, _, _ in b} == {"SEP"}]
+        assert len(sep_internal) == 9  # N-CA, CA-CB, CA-C, C-O, CB-OG, OG-P and P-O1P/O2P/O3P
+
+    def test_every_chain_is_repaired_not_only_the_peptide(self, tmp_path):
+        """Two chains, both with a SEP: the spectator chain gets its bonds too."""
+        from binding_metrics.io.structures import load_structure
+
+        cif = _write_mmcif(
+            tmp_path / "two_chains.cif",
+            [("C", "Q", 8, 0.0), ("D", "S", 8, 30.0)],
+            links=[(0, (6, "C"), (7, "N")), (1, (6, "C"), (7, "N"))],
+        )
+        topology, _ = load_structure(cif)
+        for chain in topology.chains():
+            sep = next(r for r in chain.residues() if r.name == "SEP")
+            assert _n_internal_bonds(topology, sep) == 9, chain.id
+
+    def test_a_fully_bonded_structure_gains_no_bond(self, tmp_path):
+        """Standard residues already carry their bonds; the repair leaves them alone."""
+        from openmm.app import PDBFile, PDBxFile
+
+        from binding_metrics.io.structures import load_structure
+
+        pdb = PDBFile(str(DATA_DIR / "example_linear_p53_1YCR.pdb"))
+        cif = tmp_path / "p53.cif"
+        with open(cif, "w") as handle:
+            PDBxFile.writeFile(pdb.topology, pdb.positions, handle)
+        assert len(list(load_structure(cif)[0].bonds())) == len(
+            list(PDBxFile(str(cif)).topology.bonds())
+        )
+
+    def test_repair_takes_an_explicit_residue_list(self):
+        """``residues`` replaces the chain-ID lookup, which finds only the first chain of an ID."""
+        from openmm.app import PDBFile, Topology
+
+        from binding_metrics.core.cyclic import reconstruct_intraresidue_bonds
+
+        pdb = PDBFile(str(PHOSPHO_PDB))
+        topology, positions = pdb.topology, pdb.positions
+        sep = next(r for r in topology.residues() if r.name == "SEP")
+        assert _n_internal_bonds(topology, sep) == 9  # CONECT records
+        # Rebuild the topology without the SEP internal bonds, as a raw mmCIF loads it.
+        bare = Topology()
+        atoms = {}
+        for chain in topology.chains():
+            new_chain = bare.addChain(chain.id)
+            for res in chain.residues():
+                new_res = bare.addResidue(res.name, new_chain, res.id)
+                for atom in res.atoms():
+                    atoms[atom.index] = bare.addAtom(atom.name, atom.element, new_res)
+        for b in topology.bonds():
+            if not (b.atom1.residue is sep and b.atom2.residue is sep):
+                bare.addBond(atoms[b.atom1.index], atoms[b.atom2.index])
+        residues = [r for r in bare.residues() if r.name == "SEP"]
+        # The chain ID lookup would find the first chain of that name; the list is explicit.
+        assert (
+            reconstruct_intraresidue_bonds(bare, positions, "no-such-chain", residues=residues) == 9
+        )

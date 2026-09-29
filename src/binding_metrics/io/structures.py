@@ -184,12 +184,39 @@ def _restore_struct_conn_bonds(path: Path, topology) -> int:
     return added
 
 
+def _bond_bare_residues(topology, positions) -> int:
+    """Bond, by covalent radii, every multi-atom residue that has no bond at all.
+
+    A raw mmCIF lists no bond inside a non-standard residue (the wwPDB leaves them
+    to the Chemical Component Dictionary), and ``createStandardBonds`` knows only
+    the standard residue types, so phosphoserine and the like load as a cloud of
+    unbonded atoms. A PDB file carries them as CONECT records. Without the bonds
+    the force field cannot match the residue ("bonds are different"). The peptide
+    chain gets this repair again in ``patch_cyclic_topology``; no other chain does.
+
+    Returns the number of bonds added.
+    """
+    from binding_metrics.core.cyclic import reconstruct_intraresidue_bonds
+
+    bonded = {b.atom1.residue.index for b in topology.bonds() if b.atom1.residue is b.atom2.residue}
+    added = 0
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        if any(res.index not in bonded and sum(1 for _ in res.atoms()) > 1 for res in residues):
+            added += reconstruct_intraresidue_bonds(
+                topology, positions, chain.id, residues=residues
+            )
+    return added
+
+
 def load_structure(path: str | Path) -> tuple:
     """Load a structure file (PDB or CIF) and return (topology, positions).
 
     Supports .pdb, .cif, and .mmcif formats. For a CIF, the ``covale``, ``disulf``
     and ``modres`` rows of ``_struct_conn`` are bonded even when the label and
-    author numbering of the file differ (with gemmi installed).
+    author numbering of the file differ (with gemmi installed), and a residue
+    that the file gives no bond at all (phosphoserine, an NCAA) is bonded by
+    covalent radii, as a PDB file's CONECT records would do.
 
     Args:
         path: Path to the structure file
@@ -214,6 +241,7 @@ def load_structure(path: str | Path) -> tuple:
             n_restored = _restore_struct_conn_bonds(path, struct.topology)
             if n_restored:
                 logger.debug("%s: restored %d _struct_conn bond(s)", path.name, n_restored)
+            _bond_bare_residues(struct.topology, struct.positions)
         elif suffix == ".pdb":
             struct = PDBFile(str(path))
         else:

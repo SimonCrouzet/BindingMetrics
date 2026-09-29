@@ -333,7 +333,43 @@ _DEFAULT_COVALENT_RADIUS_NM = 0.077
 _COVALENT_TOLERANCE = 1.3
 
 
-def reconstruct_intraresidue_bonds(topology, positions, chain_id: str) -> int:
+def _within_covalent_range(pos: np.ndarray, atom_a, atom_b) -> bool:
+    """True when two atoms are closer than ``_COVALENT_TOLERANCE`` times their covalent radii."""
+    radius_a = _COVALENT_RADII_NM.get(atom_a.element.symbol.upper(), _DEFAULT_COVALENT_RADIUS_NM)
+    radius_b = _COVALENT_RADII_NM.get(atom_b.element.symbol.upper(), _DEFAULT_COVALENT_RADIUS_NM)
+    return _dist(pos, atom_a.index, atom_b.index) < (radius_a + radius_b) * _COVALENT_TOLERANCE
+
+
+def _residues_with_internal_bonds(topology) -> set:
+    """Indices of the residues that have at least one bond between two of their own atoms."""
+    return {b.atom1.residue.index for b in topology.bonds() if b.atom1.residue is b.atom2.residue}
+
+
+def _bond_bare_residues(topology, pos: np.ndarray, residues, existing: set) -> set:
+    """Bond, by covalent radii, each residue of ``residues`` that has no internal bond.
+
+    ``existing`` is the set of bonded atom-index pairs and is updated in place.
+    Returns the indices of the residues that gained a bond.
+    """
+    bonded_residues = _residues_with_internal_bonds(topology)
+    restored: set = set()
+    for res in residues:
+        if res.index in bonded_residues:
+            continue  # standard residue (or already reconstructed): leave alone
+        atoms = [a for a in res.atoms() if a.element is not None]
+        for i, atom_i in enumerate(atoms):
+            for atom_j in atoms[i + 1 :]:
+                key = frozenset((atom_i.index, atom_j.index))
+                if key not in existing and _within_covalent_range(pos, atom_i, atom_j):
+                    topology.addBond(atom_i, atom_j)
+                    existing.add(key)
+                    restored.add(res.index)
+    return restored
+
+
+def reconstruct_intraresidue_bonds(
+    topology, positions, chain_id: str, *, residues: Optional[list] = None
+) -> int:
     """Add missing intra-residue covalent bonds for residues that have none.
 
     OpenMM's ``createStandardBonds`` (run when a structure is loaded) only builds
@@ -353,39 +389,19 @@ def reconstruct_intraresidue_bonds(topology, positions, chain_id: str) -> int:
     backbone / cyclic-closure bonds are never touched.  It is a no-op for a fully
     standard peptide (e.g. 3P8F), whose residues already carry their bonds.
 
+    ``residues`` (keyword-only), when given, replaces the lookup of ``chain_id``:
+    it is the list of residues to repair, for a topology in which two chains share
+    an ID.
+
     Returns the number of bonds added.
     """
     pos = _pos_nm(positions)
-    residues = _peptide_residues(topology, chain_id)
+    if residues is None:
+        residues = _peptide_residues(topology, chain_id)
     existing = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
-    added = 0
-    for res in residues:
-        atoms = list(res.atoms())
-        if len(atoms) < 2:
-            continue
-        idx_set = {a.index for a in atoms}
-        has_intra = any(
-            b.atom1.index in idx_set and b.atom2.index in idx_set for b in topology.bonds()
-        )
-        if has_intra:
-            continue  # standard residue (or already reconstructed) — leave alone
-        for i in range(len(atoms)):
-            ai = atoms[i]
-            if ai.element is None:
-                continue
-            ra = _COVALENT_RADII_NM.get(ai.element.symbol.upper(), _DEFAULT_COVALENT_RADIUS_NM)
-            for j in range(i + 1, len(atoms)):
-                aj = atoms[j]
-                if aj.element is None:
-                    continue
-                rb = _COVALENT_RADII_NM.get(aj.element.symbol.upper(), _DEFAULT_COVALENT_RADIUS_NM)
-                if _dist(pos, ai.index, aj.index) < (ra + rb) * _COVALENT_TOLERANCE:
-                    key = frozenset((ai.index, aj.index))
-                    if key not in existing:
-                        topology.addBond(ai, aj)
-                        existing.add(key)
-                        added += 1
-    return added
+    n_before = len(existing)
+    _bond_bare_residues(topology, pos, residues, existing)
+    return len(existing) - n_before
 
 
 def _find_atom(residue, name: str):
