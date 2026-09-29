@@ -165,9 +165,10 @@ pip install ".[static,simulation]"  # plus force-field energies and relaxation
 | `analysis` | mdtraj | trajectory metrics |
 | `biotite` | biotite, hydride, scipy | the `static` extra without gemmi; structure comparison needs gemmi |
 | `dockq` | DockQ | reference-based CAPRI accuracy |
-| `report` | pandas, matplotlib, markdown | the HTML summary (`markdown`) and the CSV output of `binding-metrics-energy` (`pandas`); JSON, CSV and Markdown output of the pipeline needs none of them |
+| `report` | pandas, markdown | the HTML summary (`markdown`) and the CSV output of `binding-metrics-energy` (`pandas`); JSON, CSV and Markdown output of the pipeline needs none of them |
+| `openfold`, `openfold3` | openfold3 | the OpenFold3 distribution; two names for one extra (see [OpenFold3](#openfold3-optional)) |
 | `gaff` | nothing | placeholder: openmmforcefields, openff-toolkit, RDKit and AmberTools are conda-forge only, so use `environment.yml` |
-| `all` | openmm, mdtraj, pdbfixer, gemmi, biotite, hydride, scipy, DockQ, pandas, matplotlib, markdown | everything above except the GAFF2 stack |
+| `all` | openmm, mdtraj, pdbfixer, gemmi, biotite, hydride, scipy, DockQ, pandas, markdown | everything above except OpenFold3 and the GAFF2 stack |
 
 A residue that needs GAFF2 parameters (the MeBmt of cyclosporin A, hydrocarbon-staple residues) requires the conda-forge packages, so a pip install alone cannot parameterise it. The extras are also listed in `pyproject.toml`. A name whose dependency is missing raises an error that names the extra to install.
 
@@ -238,7 +239,7 @@ Images are rebuilt and pushed to Docker Hub automatically on every push to `main
 
 ### OpenFold3 (optional)
 
-OpenFold3 confidence scoring is optional; every other metric works without it. It requires a GPU, model weights and a compatible Python version, so it belongs in a **dedicated conda environment** named `openfold3`. No extra installs it:
+OpenFold3 confidence scoring is optional; every other metric works without it. It requires a GPU, model weights and a compatible Python version, so it belongs in a **dedicated conda environment** named `openfold3`. The `openfold` extra (alias `openfold3`) lists the `openfold3` distribution, for an environment that can hold it next to BindingMetrics. That environment runs Python 3.10 and BindingMetrics needs 3.11 or later, so install OpenFold3 on its own, as below:
 
 ```bash
 conda create -n openfold3 python=3.10
@@ -643,8 +644,8 @@ The individual scoring tools take a peptide and a receptor chain through `--pept
 | `sample_id`, `input`, `total_elapsed_s` | identifiers and wall time |
 | `provenance` | package version, git sha (when the package runs from its own checkout), Python, OS, OpenMM version, platform, seed |
 | `chains` | resolved chain IDs and residue counts |
-| `prep` | what preparation changed: `removed_heterogens`, `n_removed_waters`, `kept_nonstandard`, `n_missing_atoms_rebuilt`, `n_missing_residue_gaps`, and `ncaa_bond_order_source` for GAFF2 residues |
-| `relax` | energies, RMSD and RMSF, the OpenMM `platform`, and the structural QC: `qc_passed`, `qc_failed_checks` and (in the JSON) `qc_checks` |
+| `prep` | what preparation changed: `removed_heterogens`, `n_removed_waters`, `kept_nonstandard`, `n_missing_atoms_rebuilt`, `n_missing_residue_gaps`, `chain_breaks` (consecutive residues whose C and N atoms are more than 2 Å apart) and `ncaa_bond_order_source` for GAFF2 residues |
+| `relax` | energies, RMSD and RMSF, the OpenMM `platform`, `dropped_protein_chains` (protein chains other than the peptide and the receptor, which the relaxation removes) and the structural QC: `qc_passed`, `qc_failed_checks` and (in the JSON) `qc_checks` |
 | `energy`, `interface`, `geometry`, `electrostatics`, `dockq`, `openfold` | one dict per metric: `{"skipped": True}` when it did not run, `{"error": message}` when it failed |
 | `nonfinite_fields` | the JSON paths of every NaN or infinite value |
 
