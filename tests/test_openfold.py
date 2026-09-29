@@ -491,6 +491,160 @@ class TestTokenOffsetCheck:
 
 
 # ---------------------------------------------------------------------------
+# Tests: seeds in the query JSON and the seed index
+# ---------------------------------------------------------------------------
+
+_P53_MDM2 = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+
+
+@pytest.fixture
+def batch_sample():
+    from binding_metrics.metrics.openfold import _BatchSample
+
+    return _BatchSample(
+        query_name="p53", complex_structure_path=_P53_MDM2, receptor_chain="A", binder_chain="B"
+    )
+
+
+class TestQuerySeeds:
+    """The query JSON pins the seeds OpenFold3 samples with; 42 is only the default."""
+
+    @pytest.fixture(autouse=True)
+    def _require_gemmi(self):
+        pytest.importorskip("gemmi")
+
+    def _seeds(self, query_json: Path):
+        return json.loads(query_json.read_text())["seeds"]
+
+    def test_scoring_query_defaults_to_42(self, tmp_path):
+        from binding_metrics.metrics.openfold import prepare_scoring_query
+
+        path = prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path)
+        assert self._seeds(path) == [42]
+
+    def test_refolding_query_defaults_to_42(self, tmp_path):
+        from binding_metrics.metrics.openfold import prepare_refolding_query
+
+        path = prepare_refolding_query(_P53_MDM2, "A", "B", "q", tmp_path)
+        assert self._seeds(path) == [42]
+
+    def test_seeds_argument_reaches_the_json(self, tmp_path):
+        from binding_metrics.metrics.openfold import (
+            prepare_refolding_query,
+            prepare_scoring_query,
+        )
+
+        scoring = prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path / "s", seeds=(7, 8, 9))
+        refolding = prepare_refolding_query(_P53_MDM2, "A", "B", "q", tmp_path / "r", seeds=[3])
+        assert self._seeds(scoring) == [7, 8, 9]
+        assert self._seeds(refolding) == [3]
+
+    def test_batched_queries_take_seeds(self, tmp_path, batch_sample):
+        from binding_metrics.metrics.openfold import (
+            prepare_batched_refolding_queries,
+            prepare_batched_scoring_queries,
+        )
+
+        default = prepare_batched_scoring_queries([batch_sample], tmp_path / "d")
+        scoring = prepare_batched_scoring_queries([batch_sample], tmp_path / "s", seeds=(1, 2))
+        refolding = prepare_batched_refolding_queries([batch_sample], tmp_path / "r", seeds=(5,))
+        assert self._seeds(default) == [42]
+        assert self._seeds(scoring) == [1, 2]
+        assert self._seeds(refolding) == [5]
+
+    @pytest.mark.parametrize("bad", [(), []])
+    def test_empty_seeds_are_rejected_before_anything_is_written(self, tmp_path, bad):
+        from binding_metrics.metrics.openfold import prepare_scoring_query
+
+        with pytest.raises(ValueError, match="at least one"):
+            prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path / "out", seeds=bad)
+        assert not (tmp_path / "out").exists()
+
+    def test_a_string_is_not_a_seed_list(self, tmp_path):
+        from binding_metrics.metrics.openfold import prepare_scoring_query
+
+        with pytest.raises(TypeError, match="sequence of integers"):
+            prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path, seeds="42")
+
+    @pytest.mark.parametrize("runner", ["run_openfold_scoring", "run_openfold_refolding"])
+    def test_run_wrappers_forward_seeds(self, tmp_path, monkeypatch, runner):
+        from binding_metrics.metrics import openfold
+
+        captured = {}
+
+        def _fake_run(query_json, **kwargs):
+            captured["seeds"] = self._seeds(Path(query_json))
+            captured["num_model_seeds"] = kwargs["num_model_seeds"]
+            return Path(kwargs["output_dir"])
+
+        monkeypatch.setattr(openfold, "run_openfold", _fake_run)
+        getattr(openfold, runner)(
+            _P53_MDM2, "A", "B", "q", tmp_path, seeds=(11, 12), num_model_seeds=2
+        )
+        assert captured == {"seeds": [11, 12], "num_model_seeds": 2}
+
+        getattr(openfold, runner)(_P53_MDM2, "A", "B", "q", tmp_path / "again")
+        assert captured["seeds"] == [42]
+
+    def test_batched_wrapper_forwards_seeds(self, tmp_path, monkeypatch, batch_sample):
+        from binding_metrics.metrics import openfold
+
+        captured = {}
+
+        def _fake_run(query_json, **kwargs):
+            captured["seeds"] = self._seeds(Path(query_json))
+            return Path(kwargs["output_dir"])
+
+        monkeypatch.setattr(openfold, "run_openfold", _fake_run)
+        openfold.run_openfold_batched([batch_sample], tmp_path, mode="refold", seeds=(4, 5))
+        assert captured["seeds"] == [4, 5]
+
+    @pytest.mark.parametrize(
+        "argv, expected",
+        [([], [42]), (["--seeds", "5", "6"], [5, 6])],
+    )
+    def test_cli_seeds_flag(self, tmp_path, monkeypatch, argv, expected):
+        from binding_metrics.metrics import openfold
+
+        out = tmp_path / "out"
+        monkeypatch.setattr(
+            "sys.argv",
+            ["prog", "prepare-scoring-query", "--complex", str(_P53_MDM2), "--receptor-chain",
+             "A", "--binder-chain", "B", "--query-name", "q", "--output-dir", str(out), *argv],
+        )  # fmt: skip
+        openfold.main()
+        assert self._seeds(out / "q_query.json") == expected
+
+
+class TestSeedIndex:
+    def test_seed_index_selects_the_seed_directory_by_position(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        _make_seed_dir(tmp_path, "q", seed=1, agg={"avg_plddt": 70.0})
+        _make_seed_dir(tmp_path, "q", seed=2, agg={"avg_plddt": 90.0})
+
+        by_position = compute_openfold_metrics(tmp_path, "q", seed_index=2)
+        assert by_position["avg_plddt"] == pytest.approx(90.0)
+        assert by_position["seed"] == 2
+        assert compute_openfold_metrics(tmp_path, "q", seed=1)["avg_plddt"] == pytest.approx(70.0)
+
+    def test_seed_directory_names_are_not_seed_values(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        # OpenFold3 names directories after its own transformed seeds, e.g. seed_1234567
+        _make_seed_dir(tmp_path, "q", seed=1234567, agg={"avg_plddt": 66.0})
+        assert compute_openfold_metrics(tmp_path, "q", seed=1)["avg_plddt"] == pytest.approx(66.0)
+
+    def test_seed_index_takes_precedence_over_seed(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        _make_seed_dir(tmp_path, "q", seed=1, agg={"avg_plddt": 70.0})
+        _make_seed_dir(tmp_path, "q", seed=2, agg={"avg_plddt": 90.0})
+        res = compute_openfold_metrics(tmp_path, "q", seed=1, seed_index=2)
+        assert res["avg_plddt"] == pytest.approx(90.0)
+
+
+# ---------------------------------------------------------------------------
 # Tests: _write_runner_yaml
 # ---------------------------------------------------------------------------
 

@@ -51,11 +51,28 @@ import json
 import subprocess
 import warnings
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 
 from binding_metrics.utils import backfill_auth_columns
+
+#: Seed values written into the ``"seeds"`` field of the query JSON. OpenFold3
+#: derives its sampling from these, so the same query gives the same prediction
+#: (up to GPU non-determinism). The value carries no meaning; pass ``seeds=`` to
+#: the ``prepare_*`` and ``run_openfold_*`` functions to use others.
+_DEFAULT_QUERY_SEEDS: tuple[int, ...] = (42,)
+
+
+def _query_seeds(seeds: Sequence[int]) -> list[int]:
+    """Validate ``seeds`` and return them as a list of ints for the query JSON."""
+    if isinstance(seeds, (str, bytes)):
+        raise TypeError("seeds must be a sequence of integers, not a string.")
+    values = [int(s) for s in seeds]
+    if not values:
+        raise ValueError("seeds must contain at least one integer.")
+    return values
+
 
 # ---------------------------------------------------------------------------
 # Output file discovery
@@ -73,8 +90,9 @@ def _find_prediction_files(
     Args:
         output_dir: Top-level OpenFold3 output directory.
         query_name: Query name as specified in the input JSON.
-        seed: Seed index (1-based index into the sorted list of seed directories).
-              OF3 transforms input seeds, so this selects by position rather than value.
+        seed: Seed index (1-based index into the sorted list of seed directories),
+              not a seed value. OF3 transforms input seeds, so this selects by
+              position rather than value.
         sample: Sample index (default 1).
 
     Returns:
@@ -548,6 +566,8 @@ def compute_openfold_metrics(
     reference_structure_path: Optional[str | Path] = None,
     binder_chain: Optional[str] = None,
     receptor_chain: Optional[str] = None,
+    *,
+    seed_index: Optional[int] = None,
 ) -> dict:
     """Extract confidence metrics from OpenFold3 output files.
 
@@ -568,7 +588,9 @@ def compute_openfold_metrics(
         output_dir: Top-level OpenFold3 output directory.
         query_name: Query name as specified in the input JSON (used to locate
             the ``{output_dir}/{query_name}/`` subdirectory).
-        seed: Seed index to parse (default 1).
+        seed: 1-based index into the sorted ``seed_*`` directories of the query,
+            not a random seed value: OpenFold3 names the directories after its
+            own transformed seeds, so they are selected by position (default 1).
         sample: Sample index to parse (default 1).
         include_matrices: If True, include the full PDE matrix in the result
             (can be large). Default False.
@@ -587,13 +609,14 @@ def compute_openfold_metrics(
               - Receptor Cα atoms are used as the superposition reference
                 when computing ``binder_ca_rmsd``, giving the
                 receptor-frame binder RMSD.
+        seed_index: Clearer name for ``seed``; when given it takes precedence.
 
     Returns:
         Dictionary with keys:
 
         Structure:
             structure_path (str | None): path to the predicted .cif/.pdb file
-            query_name (str), seed (int), sample (int)
+            query_name (str), seed (int, the seed index used), sample (int)
 
         Scalar confidence metrics [from confidences_aggregated.json]:
             avg_plddt (float): mean pLDDT across all atoms [0–100]
@@ -649,6 +672,8 @@ def compute_openfold_metrics(
             reason (str): present only when a requested value could not be
                 computed (it stays NaN); names the analysis and the cause.
     """
+    if seed_index is not None:
+        seed = seed_index
     output_dir = Path(output_dir)
     files = _find_prediction_files(output_dir, query_name, seed=seed, sample=sample)
     reasons: list[str] = []
@@ -877,9 +902,14 @@ def run_openfold(
         inference_ckpt_path: Optional path to a model checkpoint (.pt file).
             Uses the default downloaded checkpoint if None.
         num_diffusion_samples: Number of structure samples per query (default 5).
-        num_model_seeds: Number of random seeds per query (default 1).
+        num_model_seeds: Passed to OpenFold3 as ``--num_model_seeds``. The seed
+            values of a query are the ``"seeds"`` list in ``query_json``, which
+            the ``prepare_*`` functions set from their ``seeds`` argument
+            (default ``[42]``).
         use_msa_server: Use the ColabFold MSA server for alignment generation
-            (default True). Set False if MSAs are pre-computed.
+            (default True). MSAs then come from a remote service, so results can
+            change over time, and the sequences leave the machine. Set False if
+            MSAs are pre-computed.
         model_presets: List of model configuration presets. These are written to
             a runner YAML and passed via ``--runner_yaml``. The ``"predict"``
             preset is always prepended if not already present. Available presets:
@@ -1099,6 +1129,7 @@ def prepare_refolding_query(
     query_name: str,
     output_dir: str | Path,
     template_cif_path: Optional[str | Path] = None,
+    seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
 ) -> Path:
     """Prepare an OpenFold3 query JSON for binder refolding with receptor as template.
 
@@ -1143,15 +1174,19 @@ def prepare_refolding_query(
             (e.g., after MD relaxation). Must be a monomer (one chain).
             If None, the receptor chain is extracted from
             ``complex_structure_path``.
+        seeds: Seed values written to the query JSON's ``"seeds"`` field
+            (default ``(42,)``). One prediction is made per seed.
 
     Returns:
         Path to the written query JSON file.
 
     Raises:
-        ValueError: If a specified chain is not found or has no amino acids.
+        ValueError: If a specified chain is not found or has no amino acids,
+            or ``seeds`` is empty.
     """
     import gemmi
 
+    seed_values = _query_seeds(seeds)
     complex_structure_path = Path(complex_structure_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1185,7 +1220,7 @@ def prepare_refolding_query(
 
     # Query JSON — receptor has template, binder is free (sequence only)
     query = {
-        "seeds": [42],
+        "seeds": seed_values,
         "queries": {
             query_name: {
                 "chains": [
@@ -1216,6 +1251,7 @@ def prepare_scoring_query(
     query_name: str,
     output_dir: str | Path,
     template_cif_path: Optional[str | Path] = None,
+    seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
 ) -> Path:
     """Prepare an OpenFold3 query JSON to score an existing complex structure.
 
@@ -1246,12 +1282,18 @@ def prepare_scoring_query(
         template_cif_path: Optional pre-prepared complex or receptor CIF
             (e.g., after MD relaxation). When provided, both chain templates
             are extracted from this file instead of ``complex_structure_path``.
+        seeds: Seed values written to the query JSON's ``"seeds"`` field
+            (default ``(42,)``). One prediction is made per seed.
 
     Returns:
         Path to the written query JSON file.
+
+    Raises:
+        ValueError: If ``seeds`` is empty.
     """
     import gemmi
 
+    seed_values = _query_seeds(seeds)
     complex_structure_path = Path(complex_structure_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1303,7 +1345,7 @@ def prepare_scoring_query(
 
     # Query JSON — OF3 format: {"seeds": [...], "queries": {"name": {"chains": [...]}}}
     query = {
-        "seeds": [42],
+        "seeds": seed_values,
         "queries": {
             query_name: {
                 "chains": [
@@ -1343,6 +1385,7 @@ def run_openfold_scoring(
     runner_yaml: Optional[str | Path] = None,
     extra_args: Optional[list[str]] = None,
     conda_env: Optional[str] = None,
+    seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
 ) -> Path:
     """Run OpenFold3 scoring of an existing complex structure (Mode 1).
 
@@ -1360,11 +1403,16 @@ def run_openfold_scoring(
         template_cif_path: Optional pre-prepared complex CIF (e.g., MD-relaxed).
         inference_ckpt_path: Optional model checkpoint path.
         num_diffusion_samples: Structure samples per query (default 5).
-        num_model_seeds: Random seeds per query (default 1).
-        use_msa_server: Use ColabFold MSA server (default True).
+        num_model_seeds: Passed to OpenFold3 as ``--num_model_seeds``. The seed
+            values themselves are set by ``seeds``.
+        use_msa_server: Use the ColabFold MSA server (default True). MSAs then
+            come from a remote service, so results can change over time, and
+            the sequences leave the machine. Pass False with pre-computed MSAs.
         model_presets: Model configuration presets.
         runner_yaml: Explicit runner YAML; overrides ``model_presets``.
         extra_args: Additional CLI args for OF3.
+        conda_env: Conda environment where OpenFold3 is installed.
+        seeds: Seed values written to the query JSON (default ``(42,)``).
 
     Returns:
         Path to the OF3 predictions output directory
@@ -1381,6 +1429,7 @@ def run_openfold_scoring(
         query_name=query_name,
         output_dir=query_dir,
         template_cif_path=template_cif_path,
+        seeds=seeds,
     )
 
     run_openfold(
@@ -1414,6 +1463,7 @@ def run_openfold_refolding(
     runner_yaml: Optional[str | Path] = None,
     extra_args: Optional[list[str]] = None,
     conda_env: Optional[str] = None,
+    seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
 ) -> Path:
     """Run OpenFold3 refolding: binder predicted freely, receptor fixed as template.
 
@@ -1438,14 +1488,19 @@ def run_openfold_refolding(
         template_cif_path: Optional pre-prepared receptor template CIF.
         inference_ckpt_path: Optional model checkpoint path.
         num_diffusion_samples: Structure samples per query (default 5).
-        num_model_seeds: Random seeds per query (default 1).
-        use_msa_server: Use ColabFold MSA server (default True).
+        num_model_seeds: Passed to OpenFold3 as ``--num_model_seeds``. The seed
+            values themselves are set by ``seeds``.
+        use_msa_server: Use the ColabFold MSA server (default True). MSAs then
+            come from a remote service, so results can change over time, and
+            the sequences leave the machine. Pass False with pre-computed MSAs.
         model_presets: Model configuration presets.
         runner_yaml: Explicit runner YAML; overrides ``model_presets``.
         extra_args: Additional CLI args for OF3. To use the template CIF,
             pass ``["--template_mmcif_dir=<path>"]`` if OF3 requires it.
             By default ``--template_mmcif_dir`` is automatically appended
             pointing to ``{output_dir}/query/templates/``.
+        conda_env: Conda environment where OpenFold3 is installed.
+        seeds: Seed values written to the query JSON (default ``(42,)``).
 
     Returns:
         Path to the OF3 predictions output directory
@@ -1462,6 +1517,7 @@ def run_openfold_refolding(
         query_name=query_name,
         output_dir=query_dir,
         template_cif_path=template_cif_path,
+        seeds=seeds,
     )
 
     run_openfold(
@@ -1507,6 +1563,7 @@ def _safe_entry_id(sample_id: str, suffix: str) -> str:
 def prepare_batched_scoring_queries(
     samples: list[_BatchSample],
     output_dir: str | Path,
+    seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
 ) -> Path:
     """Prepare a single OF3 query JSON that scores multiple complexes.
 
@@ -1517,11 +1574,17 @@ def prepare_batched_scoring_queries(
     Args:
         samples: Per-sample descriptors.
         output_dir: Directory to write query JSON and supporting files.
+        seeds: Seed values written to the query JSON (default ``(42,)``).
 
     Returns:
         Path to the combined query JSON file.
+
+    Raises:
+        ValueError: If ``seeds`` is empty.
     """
     import gemmi
+
+    seed_values = _query_seeds(seeds)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1571,13 +1634,14 @@ def prepare_batched_scoring_queries(
         }
 
     query_json_path = output_dir / "batch_query.json"
-    query_json_path.write_text(json.dumps({"seeds": [42], "queries": queries}, indent=2))
+    query_json_path.write_text(json.dumps({"seeds": seed_values, "queries": queries}, indent=2))
     return query_json_path
 
 
 def prepare_batched_refolding_queries(
     samples: list[_BatchSample],
     output_dir: str | Path,
+    seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
 ) -> Path:
     """Prepare a single OF3 query JSON that refolds binders for multiple complexes.
 
@@ -1587,11 +1651,17 @@ def prepare_batched_refolding_queries(
     Args:
         samples: Per-sample descriptors.
         output_dir: Directory to write query JSON and supporting files.
+        seeds: Seed values written to the query JSON (default ``(42,)``).
 
     Returns:
         Path to the combined query JSON file.
+
+    Raises:
+        ValueError: If ``seeds`` is empty.
     """
     import gemmi
+
+    seed_values = _query_seeds(seeds)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1632,7 +1702,7 @@ def prepare_batched_refolding_queries(
         }
 
     query_json_path = output_dir / "batch_query.json"
-    query_json_path.write_text(json.dumps({"seeds": [42], "queries": queries}, indent=2))
+    query_json_path.write_text(json.dumps({"seeds": seed_values, "queries": queries}, indent=2))
     return query_json_path
 
 
@@ -1648,6 +1718,7 @@ def run_openfold_batched(
     runner_yaml: Optional[str | Path] = None,
     extra_args: Optional[list[str]] = None,
     conda_env: Optional[str] = None,
+    seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
 ) -> Path:
     """Run OpenFold3 inference on multiple samples in a single subprocess.
 
@@ -1663,12 +1734,16 @@ def run_openfold_batched(
             (binder predicted from sequence only).
         inference_ckpt_path: Optional model checkpoint path.
         num_diffusion_samples: Structure samples per query (default 5).
-        num_model_seeds: Random seeds per query (default 1).
-        use_msa_server: Use ColabFold MSA server (default True).
+        num_model_seeds: Passed to OpenFold3 as ``--num_model_seeds``. The seed
+            values themselves are set by ``seeds``.
+        use_msa_server: Use the ColabFold MSA server (default True). MSAs then
+            come from a remote service, so results can change over time, and
+            the sequences leave the machine. Pass False with pre-computed MSAs.
         model_presets: Model configuration presets.
         runner_yaml: Explicit runner YAML; overrides ``model_presets``.
         extra_args: Additional CLI args for OF3.
         conda_env: Conda environment name (default None).
+        seeds: Seed values written to the query JSON (default ``(42,)``).
 
     Returns:
         Path to the OF3 predictions output directory.
@@ -1678,9 +1753,9 @@ def run_openfold_batched(
     predictions_dir = output_dir / "predictions"
 
     if mode == "refold":
-        query_json = prepare_batched_refolding_queries(samples, query_dir)
+        query_json = prepare_batched_refolding_queries(samples, query_dir, seeds=seeds)
     else:
-        query_json = prepare_batched_scoring_queries(samples, query_dir)
+        query_json = prepare_batched_scoring_queries(samples, query_dir, seeds=seeds)
 
     run_openfold(
         query_json=query_json,
@@ -1705,7 +1780,12 @@ def run_openfold_batched(
 
 def _add_parse_args(p, include_chain_args: bool = False) -> None:
     """Add common parse/metrics arguments to a subparser."""
-    p.add_argument("--seed", type=int, default=1, help="Seed index (default: 1).")
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=1,
+        help="1-based index of the seed directory to parse, not a random seed value (default: 1).",
+    )
     p.add_argument("--sample", type=int, default=1, help="Sample index (default: 1).")
     p.add_argument(
         "--include-matrices",
@@ -1733,6 +1813,18 @@ def _add_parse_args(p, include_chain_args: bool = False) -> None:
         default=None,
         metavar="CIF",
         help="Reference structure CIF/PDB for binder Cα RMSD (requires --binder-chain).",
+    )
+
+
+def _add_query_seeds_arg(p) -> None:
+    """Add ``--seeds`` (seed values for the query JSON) to a subparser."""
+    p.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=list(_DEFAULT_QUERY_SEEDS),
+        metavar="SEED",
+        help="Seed values written to the query JSON (default: %(default)s).",
     )
 
 
@@ -1866,7 +1958,10 @@ def main():
         "--num-samples", type=int, default=5, help="Number of diffusion samples (default: 5)."
     )
     p_run.add_argument(
-        "--num-seeds", type=int, default=1, help="Number of random seeds (default: 1)."
+        "--num-seeds",
+        type=int,
+        default=1,
+        help="Passed to OpenFold3 as --num_model_seeds (default: 1).",
     )
     p_run.add_argument(
         "--no-msa-server",
@@ -1943,6 +2038,7 @@ def main():
         help="Pre-prepared receptor CIF (e.g., after MD relaxation). "
         "If omitted, receptor chain is extracted from --complex.",
     )
+    _add_query_seeds_arg(p_prep)
 
     # --- refold subcommand ---
     p_refold = sub.add_parser(
@@ -1996,7 +2092,10 @@ def main():
         "--num-samples", type=int, default=5, help="Number of diffusion samples (default: 5)."
     )
     p_refold.add_argument(
-        "--num-seeds", type=int, default=1, help="Number of random seeds (default: 1)."
+        "--num-seeds",
+        type=int,
+        default=1,
+        help="Passed to OpenFold3 as --num_model_seeds (default: 1).",
     )
     p_refold.add_argument(
         "--no-msa-server", action="store_true", help="Disable ColabFold MSA server."
@@ -2018,6 +2117,7 @@ def main():
         metavar="ENV",
         help="Conda env where OpenFold3 is installed (e.g. 'openfold3').",
     )
+    _add_query_seeds_arg(p_refold)
     _add_parse_args(p_refold, include_chain_args=False)
 
     # --- prepare-scoring-query subcommand ---
@@ -2059,6 +2159,7 @@ def main():
         metavar="CIF",
         help="Pre-prepared complex CIF (e.g., MD-relaxed). Both chains extracted from it.",
     )
+    _add_query_seeds_arg(p_prep_score)
 
     # --- score subcommand ---
     p_score = sub.add_parser(
@@ -2100,7 +2201,10 @@ def main():
         "--num-samples", type=int, default=5, help="Number of diffusion samples (default: 5)."
     )
     p_score.add_argument(
-        "--num-seeds", type=int, default=1, help="Number of random seeds (default: 1)."
+        "--num-seeds",
+        type=int,
+        default=1,
+        help="Passed to OpenFold3 as --num_model_seeds (default: 1).",
     )
     p_score.add_argument(
         "--no-msa-server", action="store_true", help="Disable ColabFold MSA server."
@@ -2122,6 +2226,7 @@ def main():
         metavar="ENV",
         help="Conda env where OpenFold3 is installed (e.g. 'openfold3').",
     )
+    _add_query_seeds_arg(p_score)
     _add_parse_args(p_score, include_chain_args=False)
 
     from binding_metrics.cli import add_log_file_arg
@@ -2142,6 +2247,7 @@ def main():
             query_name=args.query_name,
             output_dir=args.output_dir,
             template_cif_path=args.template_cif,
+            seeds=args.seeds,
         )
         print(f"Scoring query JSON written to: {path}")
         return
@@ -2165,6 +2271,7 @@ def main():
             model_presets=args.presets,
             runner_yaml=args.runner_yaml,
             conda_env=args.conda_env,
+            seeds=args.seeds,
         )
         print(f"\nParsing scoring metrics from: {predictions_dir}")
         metrics = compute_openfold_metrics(
@@ -2189,6 +2296,7 @@ def main():
             query_name=args.query_name,
             output_dir=args.output_dir,
             template_cif_path=args.template_cif,
+            seeds=args.seeds,
         )
         print(f"Query JSON written to: {path}")
         return
@@ -2212,6 +2320,7 @@ def main():
             model_presets=args.presets,
             runner_yaml=args.runner_yaml,
             conda_env=args.conda_env,
+            seeds=args.seeds,
         )
         print(f"\nParsing refolding metrics from: {predictions_dir}")
         metrics = compute_openfold_metrics(
