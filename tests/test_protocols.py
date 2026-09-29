@@ -1,5 +1,6 @@
 """Tests for the protocol module."""
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -275,3 +276,44 @@ class TestRunAndAnalyze:
         assert isinstance(results, ProtocolResults)
         assert results.sasa_buried_mean == 100.0
         assert results.interaction_energy_mean == -50.0
+
+
+class TestReportNonFinite:
+    """NaN and inf are N/A in the report, not a red score."""
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), np.float32("nan"), np.nan])
+    def test_rag_treats_non_finite_as_not_available(self, value):
+        from binding_metrics.protocols.report import _THRESHOLDS, _rag
+
+        for spec in _THRESHOLDS:
+            assert _rag(value, spec) == "⬜"
+
+    def test_rag_still_grades_finite_values(self):
+        from binding_metrics.protocols.report import _THRESHOLDS, _rag
+
+        rmsd = next(spec for spec in _THRESHOLDS if spec["label"] == "MD RMSD")
+        assert _rag(1.0, rmsd) == "🟢"
+        assert _rag(np.float32(3.0), rmsd) == "🟡"
+        assert _rag(9.0, rmsd) == "🔴"
+
+    def test_fmt_shows_dash_for_none_and_non_finite(self):
+        from binding_metrics.protocols.report import _fmt
+
+        for value in (None, float("nan"), float("inf"), -np.inf, np.float32("nan")):
+            assert _fmt(value) == "—"
+
+    def test_fmt_formats_numpy_and_python_numbers(self):
+        from binding_metrics.protocols.report import _fmt
+
+        assert _fmt(np.float32(1.5), 2) == "1.50"
+        assert _fmt(1.23456, 2) == "1.23"
+        assert _fmt(3) == "3"
+        assert _fmt(np.int64(7)) == "7"
+
+    def test_scorecard_row_of_a_nan_metric_is_not_red(self):
+        from binding_metrics.protocols.report import _build_summary
+
+        summary = _build_summary({"sample_id": "s", "relax": {"rmsd_md_final": float("nan")}})
+        row = next(line for line in summary.splitlines() if "MD RMSD" in line and "|" in line)
+        assert "⬜" in row and "🔴" not in row
+        assert "nan" not in row.lower()

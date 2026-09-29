@@ -13,9 +13,13 @@ import argparse
 import csv
 import datetime
 import json
+import math
+import numbers
 import sys
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 # ---------------------------------------------------------------------------
 # Scorecard thresholds used by the Markdown summary.
@@ -178,16 +182,24 @@ def _best_e_int(energy: dict | None) -> Any:
     return None
 
 
+def _is_nonfinite(v: Any) -> bool:
+    """True for NaN and +-inf, whether a Python float or a numpy scalar."""
+    return isinstance(v, numbers.Real) and not math.isfinite(v)
+
+
 def _fmt(v: Any, decimals: int = 3) -> str:
-    if v is None:
+    # Non-finite values mean "could not be computed"; show them as N/A, as None.
+    if v is None or _is_nonfinite(v):
         return "—"
-    if isinstance(v, float):
+    if isinstance(v, (float, np.floating)):
         return f"{v:.{decimals}f}"
     return str(v)
 
 
 def _rag(value: Any, spec: dict) -> str:
-    if value is None:
+    # NaN fails every comparison and would fall through to red ("poor"); a value
+    # that could not be computed is N/A instead.
+    if value is None or _is_nonfinite(value):
         return "⬜"
     try:
         if spec["green"](value):
