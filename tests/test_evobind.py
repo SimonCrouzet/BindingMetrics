@@ -194,6 +194,22 @@ class TestEvobindScore:
         )
         assert res["n_interface_receptor_residues"] == 5
 
+    def test_fallback_to_full_receptor_is_flagged(self, tmp_path):
+        path = _line_complex(tmp_path)
+        auto = compute_evobind_score(path, None, "B", "A", interface_cutoff_angstrom=6.5)
+        assert auto["interface_fallback_used"] is False
+        tight = compute_evobind_score(path, None, "B", "A", interface_cutoff_angstrom=1.0)
+        assert tight["interface_fallback_used"] is True
+        explicit = compute_evobind_score(
+            path, None, "B", "A", receptor_interface_residues=[2, 3, 4]
+        )
+        assert explicit["interface_fallback_used"] is False
+
+    def test_explicit_residues_absent_from_the_receptor_raise(self, tmp_path):
+        path = _line_complex(tmp_path)
+        with pytest.raises(ValueError, match="receptor_interface_residues"):
+            compute_evobind_score(path, None, "B", "A", receptor_interface_residues=[900, 901])
+
     def test_without_plddt_only_distances_are_reported(self, tmp_path):
         path = _line_complex(tmp_path)
         res = compute_evobind_score(path, None, binder_chain="B", receptor_chain="A")
@@ -341,3 +357,18 @@ class TestAdversarialCheck:
         b = _helix_complex(tmp_path, "afm.pdb")
         with pytest.raises(ValueError, match="binder chain 'Z'"):
             compute_evobind_adversarial_check(a, b, "Z", "A")
+
+    def test_interface_fallback_is_flagged(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb")
+        b = _helix_complex(tmp_path, "afm.pdb")
+        normal = compute_evobind_adversarial_check(a, b, "B", "A")
+        assert normal["interface_fallback_used"] is False
+        # no receptor residue within 0.5 A of the binder in the design
+        tight = compute_evobind_adversarial_check(a, b, "B", "A", interface_cutoff_angstrom=0.5)
+        assert tight["interface_fallback_used"] is True
+
+    def test_interface_residues_missing_from_the_afm_model_are_flagged(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb", first_rec_res=101, first_pep_res=201)
+        b = _helix_complex(tmp_path, "afm.pdb", first_rec_res=1, first_pep_res=1)
+        res = compute_evobind_adversarial_check(a, b, "B", "A")
+        assert res["interface_fallback_used"] is True

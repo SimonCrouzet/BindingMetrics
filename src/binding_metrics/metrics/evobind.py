@@ -224,6 +224,10 @@ def compute_evobind_score(
             Average of the two asymmetric distances above.
         n_interface_receptor_residues (int):
             Number of receptor residues used as the interface.
+        interface_fallback_used (bool):
+            True when no receptor Cβ lay within ``interface_cutoff_angstrom`` of
+            a binder Cβ and the whole receptor was used as the interface. The
+            distances then describe the binder against the entire receptor.
         mean_plddt_binder (float | None):
             Mean per-residue pLDDT of the binder chain [0–100].
             None when ``plddt_per_atom`` is not provided.
@@ -246,13 +250,21 @@ def compute_evobind_score(
     rec_res_ids = rec_cb.res_id  # one per residue by construction of _cb_atoms
 
     # Determine receptor interface residues
+    interface_fallback_used = False
     if receptor_interface_residues is not None:
         if_mask = np.isin(rec_res_ids, receptor_interface_residues)
+        if not if_mask.any():
+            raise ValueError(
+                f"None of receptor_interface_residues {list(receptor_interface_residues)} "
+                f"is a residue number of receptor chain '{receptor_chain}'."
+            )
     else:
         if_mask = _auto_interface_mask(rec_cb_coords, pep_cb_coords, interface_cutoff_angstrom)
         if not if_mask.any():
-            # No residues within cutoff — use the full receptor as fallback
+            # Nothing within the cutoff: the whole receptor stands in for the
+            # interface, which turns the score into a binder-to-receptor distance.
             if_mask = np.ones(len(rec_res_ids), dtype=bool)
+            interface_fallback_used = True
 
     rec_if_coords = rec_cb_coords[if_mask]
 
@@ -269,6 +281,7 @@ def compute_evobind_score(
         "if_dist_rec_to_pep": if_dist_rec_to_pep,
         "if_dist_symmetric": if_dist_symmetric,
         "n_interface_receptor_residues": int(if_mask.sum()),
+        "interface_fallback_used": interface_fallback_used,
         "mean_plddt_binder": None,
         "evobind_score": None,
     }
@@ -337,6 +350,11 @@ def compute_evobind_adversarial_check(
             binder Cβ in the AFM structure (Å).
         afm_mean_if_dist (float):
             Symmetric interface distance in the AFM prediction (Å).
+        interface_fallback_used (bool):
+            True when the design structure has no receptor Cβ within
+            ``interface_cutoff_angstrom`` of a binder Cβ, or none of its
+            interface residue numbers exist in the AFM structure; the whole
+            receptor was then used as the interface.
         afm_mean_plddt_binder (float | None):
             Mean per-residue pLDDT of the binder in the AFM prediction.
             None if ``afm_plddt_per_atom`` is not provided.
@@ -420,11 +438,13 @@ def compute_evobind_adversarial_check(
             f"No Cβ/Cα atoms found for receptor chain '{receptor_chain}' in design structure."
         )
 
+    interface_fallback_used = False
     if_mask = _auto_interface_mask(
         design_rec_cb.coord, design_pep_cb.coord, interface_cutoff_angstrom
     )
     if not if_mask.any():
         if_mask = np.ones(design_rec_cb.array_length(), dtype=bool)
+        interface_fallback_used = True
     if_res_ids = design_rec_cb.res_id[if_mask]
 
     # Map those interface residue numbers to the AFM structure
@@ -436,7 +456,9 @@ def compute_evobind_adversarial_check(
 
     afm_if_mask = np.isin(afm_rec_cb.res_id, if_res_ids)
     if not afm_if_mask.any():
+        # The interface residue numbers do not exist in the AFM model.
         afm_if_mask = np.ones(afm_rec_cb.array_length(), dtype=bool)
+        interface_fallback_used = True
     afm_rec_if_coords = afm_rec_cb.coord[afm_if_mask]
 
     afm_pep_cb = _cb_atoms(afm_atoms, binder_chain)
@@ -460,6 +482,7 @@ def compute_evobind_adversarial_check(
         "afm_if_dist_pep_to_rec": afm_if_dist_pep_to_rec,
         "afm_if_dist_rec_to_pep": afm_if_dist_rec_to_pep,
         "afm_mean_if_dist": afm_mean_if_dist,
+        "interface_fallback_used": interface_fallback_used,
         "afm_mean_plddt_binder": None,
         "evobind_adversarial_score": None,
     }
