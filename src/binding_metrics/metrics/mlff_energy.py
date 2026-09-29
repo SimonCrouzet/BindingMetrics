@@ -1,11 +1,11 @@
-"""Backends and pocket description for an interaction energy from a machine-learned force field.
+"""Reserved interface for an interaction energy from a machine-learned force field.
 
-No energy is computed yet. The module fixes the names of the parts of a static-pocket
-interaction energy scored with a pretrained machine-learned force field (MLFF), the
-protocol of Ryczko et al., ChemRxiv 10.26434/chemrxiv.15008810 (v2, 20 Sep 2026; a
-preprint whose full text was not read when this interface was written; no public
-code was found). A backend adapter and a pocket cropper are the missing pieces, and
-both are added behind these names:
+No energy is computed yet. The module fixes the names and the argument checks of a
+static-pocket interaction energy scored with a pretrained machine-learned force
+field (MLFF), the protocol of Ryczko et al., ChemRxiv 10.26434/chemrxiv.15008810
+(v2, 20 Sep 2026; a preprint whose full text was not read when this interface was
+written; no public code was found). A backend adapter and a pocket cropper are
+the missing pieces, and both are added behind these names:
 
 - :class:`MLFFBackend` is the base class of a backend: one pretrained model that
   returns the energy of an atom set in eV.
@@ -14,8 +14,19 @@ both are added behind these names:
   manage the backends. The names ``uma``, ``mace``, ``orb`` and ``aimnet2`` are
   placeholders: they are known, they are never available and they raise
   ``NotImplementedError`` when asked for.
+- :func:`compute_mlff_interaction_energy` validates its arguments and raises
+  ``NotImplementedError``.
 
-Importing the module needs no MLFF package, no OpenMM and no torch.
+Importing the module needs no MLFF package, no OpenMM and no torch. The function is
+deliberately absent from the metric registry (``binding_metrics.metrics.registry``),
+so code that runs every registered metric never reaches it; it is registered when
+a backend lands.
+
+Usage:
+    from binding_metrics.metrics.mlff_energy import compute_mlff_interaction_energy
+
+    compute_mlff_interaction_energy("complex.cif", "B", "A", backend="uma")
+    # NotImplementedError: names the backend and the reference
 """
 
 from __future__ import annotations
@@ -24,18 +35,34 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from math import isfinite
 from numbers import Real
-from typing import Any, ClassVar, Literal
+from pathlib import Path
+from typing import Any, ClassVar, Literal, Optional
+
+from binding_metrics.metrics._common import KJ_TO_KCAL, resolve_chain_role
 
 __all__ = [
     "MLFFBackend",
     "PocketSpec",
     "available_backends",
+    "compute_mlff_interaction_energy",
     "get_backend",
     "register_backend",
 ]
 
 _REFERENCE = "Ryczko et al., ChemRxiv 10.26434/chemrxiv.15008810"
 
+# One eV per particle in kJ/mol: e * N_A / 1000, with the exact SI values of e and N_A.
+_KJ_MOL_PER_EV = 96.48533212331002
+
+# Energy unit -> factor applied to a backend energy in eV. The keys are the accepted
+# values of ``unit`` and the suffix of the result key.
+_ENERGY_UNIT_PER_EV: dict[str, float] = {
+    "ev": 1.0,
+    "kj_mol": _KJ_MOL_PER_EV,
+    "kcal_mol": _KJ_MOL_PER_EV * KJ_TO_KCAL,
+}
+_HETERO_MODES = ("ignore", "keep")
+_HYDROGEN_MODES = ("ignore", "keep")
 _POCKET_CAPS = ("none", "hydrogen")
 _POCKET_PROTONATIONS = ("as_given", "reprotonate")
 
@@ -240,3 +267,111 @@ class _OrbBackend(_PlaceholderBackend):
 class _AIMNet2Backend(_PlaceholderBackend):
     name = "aimnet2"
     weights_licence = _UNVERIFIED_LICENCE
+
+
+def _require_chain_id(argument: str, value: Optional[str]) -> None:
+    if value is not None and (not isinstance(value, str) or not value.strip()):
+        raise ValueError(f"{argument} must be a non-empty chain ID or None, got {value!r}")
+
+
+def compute_mlff_interaction_energy(
+    structure_path: str | Path,
+    binder_chain: Optional[str] = None,
+    receptor_chain: Optional[str] = None,
+    *,
+    backend: str = "uma",
+    pocket: Optional[PocketSpec] = None,
+    unit: Literal["kcal_mol", "kj_mol", "ev"] = "kcal_mol",
+    hetero: Literal["ignore", "keep"] = "ignore",
+    hydrogens: Literal["ignore", "keep"] = "keep",
+    target_chain: Optional[str] = None,
+) -> dict[str, Any]:
+    """Interaction energy of a binder and its target from a machine-learned force field.
+
+    Reserved interface: the arguments are validated and the function then raises
+    ``NotImplementedError``. It is not in the metric registry.
+
+    Planned method, after Ryczko et al., ChemRxiv 10.26434/chemrxiv.15008810 (a
+    static-pocket score: no relaxation and no sampling, so nothing is stochastic).
+    The pocket around the binder is cut out and capped, and the energy is
+    E(pocket complex) - E(binder in the pocket) - E(receptor pocket), each term
+    evaluated by the backend at the geometry of the complex. The three-term form is
+    inferred from the abstract of the reference and is TO VERIFY against its full text.
+
+    How it relates to the rest of the package. The energy complements
+    :func:`binding_metrics.metrics.energy.compute_interaction_energy` (ff14SB with
+    implicit solvent, kJ/mol) as a second, independent column and does not replace
+    it. The two treat solvent and charges differently, so their values are not
+    numerically comparable.
+
+    Limits of validation. The reference benchmarks congeneric small-molecule series.
+    Peptides, D-amino acids, N-methylated and phosphorylated residues and macrocycles
+    are unvalidated. A pocket cropper with capping is the missing piece; each of
+    those residue types would also need its total charge set correctly, and the
+    charge handling of the model changes the result.
+
+    Licence of the weights. The weights of a backend are not part of this package
+    and are never downloaded by it. UMA weights are gated under the FAIR Chemistry
+    License v1 (acceptable-use policy and acknowledgement duty) and must not be
+    bundled or redistributed. The licence of each backend is on
+    ``MLFFBackend.weights_licence`` and appears in the result.
+
+    Args:
+        structure_path: PDB or mmCIF file of the complex. It is read once a backend
+            exists; the current version does not open it.
+        binder_chain: Chain ID of the binder. None will take the smallest protein
+            chain, as the other metrics do.
+        receptor_chain: Chain ID of the target. None will take the largest protein
+            chain.
+        backend: Registry name of the model: ``"uma"``, ``"mace"``, ``"orb"``,
+            ``"aimnet2"`` or the name of a registered backend.
+        pocket: A :class:`PocketSpec`. None means ``PocketSpec()``.
+        unit: Unit of the returned energy: ``"kcal_mol"``, ``"kj_mol"`` or ``"ev"``.
+        hetero: As in the other structure metrics. ``"ignore"`` keeps polymer atoms
+            (amino acids, AMBER variants, ACE/NME/NH2 caps) and drops waters, ions
+            and ligands; ``"keep"`` uses every atom of the chain.
+        hydrogens: ``"keep"`` (default) hands the hydrogens of the file to the model;
+            ``"ignore"`` drops them first. A model energy needs a complete set of
+            hydrogens, so ``"ignore"`` is for inputs that will be reprotonated.
+        target_chain: Alias of ``receptor_chain``.
+
+    Returns:
+        Once a backend exists, a dict with the keys below. It is never returned now.
+
+        - ``mlff_interaction_energy_<unit>`` (float): the energy, with ``<unit>`` as
+          given, so ``mlff_interaction_energy_kcal_mol`` by default; NaN when it
+          could not be computed.
+        - ``backend`` (str): the backend name.
+        - ``weights_licence`` (str): the licence of its weights.
+        - ``n_atoms_complex``, ``n_atoms_binder``, ``n_atoms_receptor`` (int): atoms
+          in the three evaluated systems.
+        - ``pocket_cutoff_angstrom`` (float): the cutoff of the pocket.
+        - ``reason`` (str): present only when the energy is NaN, and says why.
+
+    Raises:
+        ValueError: If a chain ID is empty, the two chain IDs are the same chain or
+            the receptor is given twice with different IDs, or ``unit``, ``hetero``,
+            ``hydrogens`` or ``backend`` is not an allowed value. Every check runs
+            before the ``NotImplementedError``.
+        TypeError: If ``pocket`` is neither None nor a :class:`PocketSpec`.
+        NotImplementedError: Always, after the checks. The message names the backend
+            and the reference.
+    """
+    receptor = resolve_chain_role("receptor_chain", receptor_chain, "target_chain", target_chain)
+    _require_chain_id("binder_chain", binder_chain)
+    _require_chain_id("receptor_chain", receptor)
+    if binder_chain is not None and binder_chain == receptor:
+        raise ValueError(f"binder_chain and receptor_chain are both {binder_chain!r}")
+    _require_choice("unit", unit, tuple(_ENERGY_UNIT_PER_EV))
+    _require_choice("hetero", hetero, _HETERO_MODES)
+    _require_choice("hydrogens", hydrogens, _HYDROGEN_MODES)
+    _backend_class(backend)
+    if pocket is not None and not isinstance(pocket, PocketSpec):
+        raise TypeError(f"pocket must be a PocketSpec or None, got {type(pocket).__name__}")
+
+    get_backend(backend)  # a placeholder raises NotImplementedError here
+    raise NotImplementedError(
+        f"compute_mlff_interaction_energy has no pocket cropper with capping yet, so backend "
+        f"{backend!r} cannot be used. Reference protocol: {_REFERENCE}. "
+        "compute_interaction_energy gives the force-field interaction energy."
+    )

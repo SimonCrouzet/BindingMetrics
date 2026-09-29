@@ -329,7 +329,11 @@ _METRIC_FUNCTION_PATTERN = re.compile(r"^(compute|calculate)_")
 # Public ``compute_*`` / ``calculate_*`` functions that are deliberately not metrics.
 # Map "module:function" to the reason. Keep this empty unless a function really is
 # a helper: a new metric belongs in the registry.
-_NOT_METRICS: dict[str, str] = {}
+_NOT_METRICS: dict[str, str] = {
+    "binding_metrics.metrics.mlff_energy:compute_mlff_interaction_energy": (
+        "interface only; registered when a backend lands"
+    ),
+}
 
 
 def _metric_modules() -> list[str]:

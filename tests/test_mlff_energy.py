@@ -5,6 +5,8 @@ what a placeholder says when it is asked for, what a registered backend must
 provide, and that importing the module needs no MLFF package, OpenMM or torch.
 """
 
+import importlib
+import inspect
 import subprocess
 import sys
 import textwrap
@@ -12,16 +14,20 @@ import textwrap
 import pytest
 
 from binding_metrics.metrics import mlff_energy
+from binding_metrics.metrics._common import KCAL_TO_KJ
 from binding_metrics.metrics.mlff_energy import (
     MLFFBackend,
     PocketSpec,
     available_backends,
+    compute_mlff_interaction_energy,
     get_backend,
     register_backend,
 )
+from binding_metrics.metrics.registry import METRICS
 
 PLACEHOLDER_NAMES = ("uma", "mace", "orb", "aimnet2")
 REFERENCE_DOI = "10.26434/chemrxiv.15008810"
+FUNCTION_PATH = "binding_metrics.metrics.mlff_energy:compute_mlff_interaction_energy"
 
 
 @pytest.fixture
@@ -217,6 +223,194 @@ class TestBackendRegistry:
 
         with pytest.raises(ValueError, match="name"):
             register_backend(Bare)
+
+
+@pytest.fixture
+def structure_file(tmp_path):
+    """A stand-in path: the function does not open the file while it is an interface."""
+    path = tmp_path / "complex.cif"
+    path.write_text("data_complex\n", encoding="utf-8")
+    return path
+
+
+class TestComputeRaisesNotImplemented:
+    def test_default_call_names_the_backend_and_the_reference(self, structure_file):
+        with pytest.raises(NotImplementedError) as excinfo:
+            compute_mlff_interaction_energy(structure_file, "B", "A")
+        message = str(excinfo.value)
+        assert "'uma'" in message
+        assert "Ryczko et al." in message
+        assert REFERENCE_DOI in message
+
+    @pytest.mark.parametrize("name", PLACEHOLDER_NAMES)
+    def test_every_placeholder_backend_is_named_in_the_message(self, structure_file, name):
+        with pytest.raises(NotImplementedError) as excinfo:
+            compute_mlff_interaction_energy(structure_file, "B", "A", backend=name)
+        message = str(excinfo.value)
+        assert repr(name) in message
+        assert REFERENCE_DOI in message
+        assert "Weights licence" in message
+
+    def test_a_registered_backend_still_stops_at_the_missing_pocket_cropper(
+        self, structure_file, isolated_registry
+    ):
+        register_backend(_make_backend("fake"))
+        with pytest.raises(NotImplementedError) as excinfo:
+            compute_mlff_interaction_energy(structure_file, "B", "A", backend="fake")
+        message = str(excinfo.value)
+        assert "pocket cropper" in message
+        assert "'fake'" in message
+        assert REFERENCE_DOI in message
+        assert "compute_interaction_energy" in message
+
+    def test_chains_are_optional(self, structure_file):
+        with pytest.raises(NotImplementedError):
+            compute_mlff_interaction_energy(structure_file)
+
+    def test_the_target_alias_is_accepted_alone_or_with_the_same_id(self, structure_file):
+        with pytest.raises(NotImplementedError):
+            compute_mlff_interaction_energy(structure_file, "B", target_chain="A")
+        with pytest.raises(NotImplementedError):
+            compute_mlff_interaction_energy(structure_file, "B", "A", target_chain="A")
+
+    @pytest.mark.parametrize("unit", ["kcal_mol", "kj_mol", "ev"])
+    def test_every_documented_unit_passes_validation(self, structure_file, unit):
+        with pytest.raises(NotImplementedError):
+            compute_mlff_interaction_energy(structure_file, "B", "A", unit=unit)
+
+    def test_hetero_hydrogens_and_pocket_options_pass_validation(self, structure_file):
+        with pytest.raises(NotImplementedError):
+            compute_mlff_interaction_energy(
+                structure_file,
+                "B",
+                "A",
+                pocket=PocketSpec(cutoff_angstrom=5.0, cap="none"),
+                hetero="keep",
+                hydrogens="ignore",
+            )
+
+
+class TestComputeValidatesFirst:
+    """Every bad argument is a ValueError (or TypeError), never the NotImplementedError."""
+
+    @pytest.mark.parametrize(
+        "kwargs, match",
+        [
+            ({"unit": "hartree"}, "unit must be one of"),
+            ({"unit": "kcal/mol"}, "unit must be one of"),
+            ({"unit": None}, "unit must be one of"),
+            ({"hetero": "all"}, "hetero must be one of"),
+            ({"hydrogens": "add"}, "hydrogens must be one of"),
+            ({"backend": "nope"}, "unknown MLFF backend 'nope'"),
+            ({"backend": "UMA"}, "unknown MLFF backend 'UMA'"),
+            ({"backend": None}, "unknown MLFF backend"),
+            ({"binder_chain": ""}, "binder_chain must be a non-empty chain ID"),
+            ({"binder_chain": 7}, "binder_chain must be a non-empty chain ID"),
+            ({"receptor_chain": "  "}, "receptor_chain must be a non-empty chain ID"),
+            (
+                {"receptor_chain": None, "target_chain": ""},
+                "receptor_chain must be a non-empty chain ID",
+            ),
+            ({"binder_chain": "A", "receptor_chain": "A"}, "both 'A'"),
+            ({"binder_chain": "A", "target_chain": "A"}, "both 'A'"),
+            ({"receptor_chain": "A", "target_chain": "C"}, "different chains"),
+        ],
+    )
+    def test_invalid_argument_raises_value_error(self, structure_file, kwargs, match):
+        call = {"binder_chain": "B", "receptor_chain": "A"}
+        call.update(kwargs)
+        with pytest.raises(ValueError, match=match):
+            compute_mlff_interaction_energy(structure_file, **call)
+
+    def test_a_bad_argument_wins_over_a_placeholder_backend(self, structure_file):
+        """``uma`` raises NotImplementedError as a placeholder; a bad unit is reported first."""
+        with pytest.raises(ValueError, match="unit must be one of"):
+            compute_mlff_interaction_energy(structure_file, "B", "A", backend="uma", unit="J")
+
+    @pytest.mark.parametrize("pocket", [{"cutoff_angstrom": 6.0}, 6.0, "hydrogen"])
+    def test_a_pocket_that_is_not_a_pocket_spec_is_a_type_error(self, structure_file, pocket):
+        with pytest.raises(TypeError, match="PocketSpec"):
+            compute_mlff_interaction_energy(structure_file, "B", "A", pocket=pocket)
+
+
+class TestComputeSignatureAndDocumentation:
+    def test_signature_matches_the_design(self):
+        parameters = inspect.signature(compute_mlff_interaction_energy).parameters
+        assert list(parameters) == [
+            "structure_path",
+            "binder_chain",
+            "receptor_chain",
+            "backend",
+            "pocket",
+            "unit",
+            "hetero",
+            "hydrogens",
+            "target_chain",
+        ]
+        keyword_only = [
+            name for name, p in parameters.items() if p.kind is inspect.Parameter.KEYWORD_ONLY
+        ]
+        assert keyword_only == ["backend", "pocket", "unit", "hetero", "hydrogens", "target_chain"]
+        defaults = {name: p.default for name, p in parameters.items()}
+        assert defaults["backend"] == "uma"
+        assert defaults["pocket"] is None
+        assert defaults["unit"] == "kcal_mol"
+        assert defaults["hetero"] == "ignore"
+        assert defaults["hydrogens"] == "keep"
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "mlff_interaction_energy_kcal_mol",
+            "backend",
+            "weights_licence",
+            "n_atoms_complex",
+            "n_atoms_binder",
+            "n_atoms_receptor",
+            "pocket_cutoff_angstrom",
+            "reason",
+        ],
+    )
+    def test_docstring_lists_the_future_return_keys(self, key):
+        assert f"``{key}``" in compute_mlff_interaction_energy.__doc__
+
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            "10.26434/chemrxiv.15008810",
+            "FAIR Chemistry License",
+            "must not be bundled",
+            "complements",
+            "does not replace",
+            "unvalidated",
+            "D-amino acids",
+            "N-methylated",
+            "phosphorylated",
+            "macrocycles",
+            "pocket cropper with capping",
+        ],
+    )
+    def test_docstring_carries_the_caveats(self, statement):
+        assert statement in " ".join(compute_mlff_interaction_energy.__doc__.split())
+
+    def test_energy_units_are_physically_consistent(self):
+        per_ev = mlff_energy._ENERGY_UNIT_PER_EV
+        assert per_ev["ev"] == 1.0
+        assert per_ev["kj_mol"] == pytest.approx(96.485, abs=1e-3)
+        assert per_ev["kcal_mol"] == pytest.approx(23.0605, abs=1e-3)
+        assert per_ev["kcal_mol"] * KCAL_TO_KJ == pytest.approx(per_ev["kj_mol"], rel=1e-12)
+
+
+class TestNotInTheMetricRegistry:
+    def test_the_function_is_not_registered_as_a_metric(self):
+        assert FUNCTION_PATH not in {spec.import_path for spec in METRICS}
+        assert not [spec.name for spec in METRICS if "mlff" in spec.name]
+
+    def test_the_function_is_on_the_not_metrics_allowlist_with_a_reason(self):
+        test_registry = importlib.import_module("tests.test_registry")
+        reason = test_registry._NOT_METRICS.get(FUNCTION_PATH, "")
+        assert reason.strip()
+        assert "interface only" in reason
 
 
 _BLOCKED_IMPORT_SCRIPT = textwrap.dedent(
