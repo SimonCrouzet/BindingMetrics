@@ -246,3 +246,71 @@ class TestImplicitRelaxation:
         trajectory = [pos, pos, pos]
         rmsf = relaxer._compute_rmsf(trajectory, list(range(5)))
         assert np.allclose(rmsf, 0.0, atol=1e-6)
+
+
+CYCLOSPORIN_CIF = Path(__file__).parent.parent / "data" / "example_ncaa_cyclosporin_1CWA.cif"
+
+
+@pytest.fixture(scope="module")
+def relaxed_cyclosporin(tmp_path_factory):
+    """Minimize-only relaxation of the raw cyclosporin example (GAFF for BMT/ABA)."""
+    config = RelaxationConfig(
+        md_duration_ps=0.0,
+        min_steps_initial=50,
+        min_steps_restrained=20,
+        min_steps_final=50,
+        small_molecules="auto",
+    )
+    out = tmp_path_factory.mktemp("cyclosporin_names")
+    result = ImplicitRelaxation(config).run(CYCLOSPORIN_CIF, out)
+    assert result.success, result.error_message
+    return result
+
+
+@requires_cuda
+@pytest.mark.integration
+class TestRelaxedOutputKeepsNonstandardNames:
+    """Relaxed cyclosporin keeps its D-alanine and sarcosine names.
+
+    The force field needs DAL -> ALA and SAR -> NMG on the topology. Before the
+    names were restored, the saved file had no DAL or SAR atoms, so every
+    downstream step that keys on the residue name (Ramachandran D-residue
+    handling among them) saw an all-L peptide.
+
+    The D-alanine is the first residue of the cyclic peptide, where the linear
+    phi angle is undefined, so ``compute_ramachandran`` cannot score it and its
+    ``n_d_residues`` stays 0 for this structure. The internal sarcosine is
+    scored, which shows the name reaching that metric.
+    """
+
+    @staticmethod
+    def _peptide_residue_names(cif_path: str) -> list:
+        import gemmi
+
+        chains = gemmi.read_structure(str(cif_path))[0]
+        peptide = min(chains, key=len)
+        return [residue.name for residue in peptide]
+
+    def test_saved_peptide_keeps_input_residue_names(self, relaxed_cyclosporin):
+        names = self._peptide_residue_names(relaxed_cyclosporin.minimized_structure_path)
+        assert names == [
+            "DAL",
+            "MLE",
+            "MLE",
+            "MVA",
+            "BMT",
+            "ABA",
+            "SAR",
+            "MLE",
+            "VAL",
+            "MLE",
+            "ALA",
+        ]
+
+    def test_ramachandran_reads_the_restored_names(self, relaxed_cyclosporin):
+        from binding_metrics.metrics.geometry import compute_ramachandran
+
+        rama = compute_ramachandran(relaxed_cyclosporin.minimized_structure_path)
+        scored = [entry["res_name"] for entry in rama["per_residue"]]
+        assert "SAR" in scored
+        assert "NMG" not in scored

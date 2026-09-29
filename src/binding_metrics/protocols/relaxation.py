@@ -253,6 +253,9 @@ class ImplicitRelaxation:
     def __init__(self, config: RelaxationConfig):
         self.config = config
         self._openmm_imported = False
+        # Set by _setup_system: detection result for D-amino acids and N-methyl
+        # residues, so run() can restore their names before saving.
+        self._ns_info = None
 
     @staticmethod
     def _coerce_molecules(molecules: list) -> list:
@@ -497,6 +500,7 @@ class ImplicitRelaxation:
         """
 
         self._import_openmm()
+        self._ns_info = None
 
         # --- Structure loading ---
         # The input is expected to already be prepared (via binding-metrics-prep).
@@ -548,6 +552,7 @@ class ImplicitRelaxation:
         )
 
         ns_info = detect_nonstandard(topology, peptide_chain)
+        self._ns_info = ns_info
         if not ns_info.is_empty:
             if ns_info.has_d_residues:
                 names = [e["original_name"] for e in ns_info.d_residues]
@@ -986,6 +991,7 @@ class ImplicitRelaxation:
         Returns:
             RelaxationResult with energies, RMSD/RMSF, and output paths
         """
+        from binding_metrics.core.nonstandard import restore_nonstandard_names
         from binding_metrics.io.structures import save_cif
 
         self._import_openmm()
@@ -1122,6 +1128,15 @@ class ImplicitRelaxation:
             )
             minimized_positions = state.getPositions()
             result.minimization_time_s = time.time() - min_start
+
+            # The force field needed L / template names for D-amino acids and
+            # N-methyl residues (DAL -> ALA, SAR -> NMG). Put the input names
+            # back before anything is written, or downstream Ramachandran
+            # scoring treats every D-residue as L. Residue names are not used by
+            # the MD code below, so the topology stays restored for the rest of
+            # the run.
+            if self._ns_info is not None:
+                restore_nonstandard_names(topology, self._ns_info)
 
             # Save minimized structure — pass input as source so auth chain IDs
             # and residue numbers from the (already-prepped) input are preserved.

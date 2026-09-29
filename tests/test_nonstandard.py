@@ -19,6 +19,7 @@ from binding_metrics.core.nonstandard import (
     detect_nonstandard,
     is_d_residue,
     patch_nonstandard,
+    restore_nonstandard_names,
 )
 
 # ---------------------------------------------------------------------------
@@ -337,6 +338,79 @@ class TestPatchNonstandardApplies:
         info = detect_nonstandard(topology, "A")
         top2, _ = patch_nonstandard(topology, self._positions(topology), "A", info)
         assert [r.name for r in top2.residues()] == ["ALA", "GLY", "LEU"]
+
+
+@pytest.mark.integration
+class TestRestoreNonstandardNames:
+    """restore_nonstandard_names undoes patch_nonstandard per residue index.
+
+    A name lookup cannot do it: DAL and ALA both patch to ALA, so a genuine
+    L-alanine next to a D-alanine must keep its name.
+    """
+
+    def _positions(self, topology):
+        import openmm.unit as unit
+        from openmm import Vec3
+
+        n = topology.getNumAtoms()
+        return unit.Quantity([Vec3(i, 0.0, 0.0) for i in range(n)], unit.nanometer)
+
+    def _patched(self, names):
+        topology = _make_minimal_topology(names)
+        info = detect_nonstandard(topology, "A")
+        topology, _ = patch_nonstandard(topology, self._positions(topology), "A", info)
+        return topology, info
+
+    def test_round_trip_keeps_l_alanine_distinct_from_d_alanine(self):
+        original = ["DAL", "ALA", "SAR", "MLE", "GLY", "DAL"]
+        topology, info = self._patched(original)
+        assert [r.name for r in topology.residues()] == [
+            "ALA",
+            "ALA",
+            "NMG",
+            "MLE",
+            "GLY",
+            "ALA",
+        ]
+        assert restore_nonstandard_names(topology, info) == 4
+        assert [r.name for r in topology.residues()] == original
+
+    def test_detection_records_the_chain(self):
+        topology = _make_minimal_topology(["DAL", "ALA"])
+        assert detect_nonstandard(topology, "A").chain_id == "A"
+
+    def test_variant_names_from_later_steps_are_restored(self):
+        # addHydrogens turns HIS into HIE/HID/HIP and prep turns disulfide CYS
+        # into CYX; the D-residue must still get its D name back.
+        topology, info = self._patched(["DHI", "DCY"])
+        residues = list(topology.residues())
+        residues[0].name = "HIE"
+        residues[1].name = "CYX"
+        assert restore_nonstandard_names(topology, info) == 2
+        assert [r.name for r in topology.residues()] == ["DHI", "DCY"]
+
+    def test_unexpected_name_is_left_alone_and_logged(self, caplog):
+        topology, info = self._patched(["DAL", "ALA"])
+        list(topology.residues())[0].name = "GLY"
+        with caplog.at_level("WARNING", logger="binding_metrics.core.nonstandard"):
+            assert restore_nonstandard_names(topology, info) == 0
+        assert [r.name for r in topology.residues()] == ["GLY", "ALA"]
+        assert "DAL was not restored" in caplog.text
+
+    def test_missing_chain_restores_nothing(self, caplog):
+        topology, info = self._patched(["DAL"])
+        with caplog.at_level("WARNING", logger="binding_metrics.core.nonstandard"):
+            assert restore_nonstandard_names(topology, info, chain_id="Z") == 0
+        assert [r.name for r in topology.residues()] == ["ALA"]
+
+    def test_empty_info_is_a_no_op(self):
+        topology = _make_minimal_topology(["ALA", "GLY"])
+        assert restore_nonstandard_names(topology, NonstandardInfo()) == 0
+
+    def test_chain_id_is_required_without_detection(self):
+        info = NonstandardInfo(d_residues=[{"res_idx": 0, "original_name": "DAL", "l_name": "ALA"}])
+        with pytest.raises(ValueError, match="chain_id"):
+            restore_nonstandard_names(_make_minimal_topology(["ALA"]), info)
 
 
 # ---------------------------------------------------------------------------
