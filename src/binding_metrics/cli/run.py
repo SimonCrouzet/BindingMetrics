@@ -255,6 +255,11 @@ def run_pipeline(
 
         results["relax"] = relax_result.to_dict()
         results["relax"]["elapsed_s"] = round(elapsed, 1)
+        if results["relax"].get("qc_passed") is False:
+            # Advisory only: the QC verdict never makes the run exit non-zero.
+            logger.warning(
+                "\n[WARNING] Structural QC failed: %s", results["relax"]["qc_failed_checks"]
+            )
         # The platform OpenMM actually ran on, when the relaxation reports it.
         results["provenance"]["platform"] = results["relax"].get("platform")
 

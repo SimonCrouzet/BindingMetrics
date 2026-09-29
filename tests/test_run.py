@@ -6,6 +6,7 @@ energy / NaN interface). _collect_failures is what turns those into a non-zero
 exit instead of a silent pass.
 """
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -221,3 +222,48 @@ class TestShortMdDuration:
     def test_longer_runs_keep_the_default_interval(self, tmp_path, recorded_configs, duration):
         self._relax(tmp_path, duration)
         assert recorded_configs[0].md_save_interval_ps == 10.0
+
+
+class TestStructuralQcWarning:
+    """A failed advisory QC is logged once and never counts as a failed step."""
+
+    @staticmethod
+    def _relaxer_reporting(qc_passed, failed_checks=()):
+        from binding_metrics.protocols.relaxation import RelaxationResult
+
+        class _Relaxer:
+            def __init__(self, config):
+                pass
+
+            def run(self, input_path, output_dir, sample_id=None):
+                return RelaxationResult(
+                    sample_id=sample_id,
+                    success=True,
+                    minimized_structure_path=str(input_path),
+                    qc_passed=qc_passed,
+                    qc={"passed": qc_passed, "failed": list(failed_checks), "checks": {}},
+                )
+
+        return _Relaxer
+
+    def _run(self, tmp_path, monkeypatch, relaxer):
+        monkeypatch.setattr("binding_metrics.protocols.relaxation.ImplicitRelaxation", relaxer)
+        return run_pipeline(
+            EXAMPLE_1YCR, tmp_path, skip_prep=True, md_duration_ps=0.0, metrics=frozenset()
+        )
+
+    def test_failed_qc_logs_one_warning_naming_the_checks(self, tmp_path, monkeypatch, caplog):
+        relaxer = self._relaxer_reporting(False, ["bond_lengths", "clashes"])
+        with caplog.at_level(logging.INFO, logger="binding_metrics"):
+            results = self._run(tmp_path, monkeypatch, relaxer)
+        warnings_ = [r for r in caplog.records if "Structural QC failed" in r.getMessage()]
+        assert len(warnings_) == 1
+        assert warnings_[0].levelno == logging.WARNING
+        assert "bond_lengths,clashes" in warnings_[0].getMessage()
+        assert _collect_failures(results) == []  # advisory: no exit-1 path
+
+    @pytest.mark.parametrize("qc_passed", [True, None])
+    def test_passing_or_missing_qc_is_silent(self, tmp_path, monkeypatch, caplog, qc_passed):
+        with caplog.at_level(logging.INFO, logger="binding_metrics"):
+            self._run(tmp_path, monkeypatch, self._relaxer_reporting(qc_passed))
+        assert "Structural QC failed" not in caplog.text
