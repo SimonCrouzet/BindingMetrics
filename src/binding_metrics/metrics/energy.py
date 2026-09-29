@@ -21,6 +21,7 @@ References:
 """
 
 import argparse
+import logging
 import traceback
 import warnings
 from pathlib import Path
@@ -36,6 +37,9 @@ except ImportError:
 # OpenMM is imported inside the functions that use it, so this module can be
 # imported (and its CLI parser built) on installs without OpenMM.
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
+from binding_metrics.utils import configure_logging
+
+logger = logging.getLogger(__name__)
 
 # 1 / (4 pi eps0) in OpenMM units (kJ nm mol^-1 e^-2).
 _COULOMB_K_KJ_NM_MOL_E2 = 138.935456
@@ -395,7 +399,7 @@ def _create_implicit_system(
         with deterministic_hydrogen_placement(random_seed):
             modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
     except (ValueError, openmm.OpenMMException) as e:
-        print(f"  Warning: addHydrogens with pH failed ({e}), retrying without pH")
+        logger.warning(f"  Warning: addHydrogens with pH failed ({e}), retrying without pH")
         with deterministic_hydrogen_placement(random_seed):
             modeller.addHydrogens(ff, variants=addh_variants)
 
@@ -435,7 +439,7 @@ def _repair_orphaned_cys(
         positions: Positions (Quantity in nm, or an array in nm).
         solvent_model: Unused; kept so callers pass the same arguments as for
             the other subsystem helpers.
-        label: Prefix for the printed message.
+        label: Prefix for the logged message.
 
     Returns:
         (topology, positions) with HG added to orphaned cysteines; the inputs
@@ -467,7 +471,7 @@ def _repair_orphaned_cys(
 
     names = [f"{r.name}{r.id}" for r in topology.residues() if r.index in orphans]
     prefix = f"[{label}] " if label else ""
-    print(f"{prefix}  Repairing orphaned CYS (cross-chain disulfide severed): {names}")
+    logger.info(f"{prefix}  Repairing orphaned CYS (cross-chain disulfide severed): {names}")
 
     H_element = Element.getBySymbol("H")
     try:
@@ -706,8 +710,9 @@ def _evaluate_subsystem_energies(
 
     except Exception as e:
         # Per-mode isolation: a failed evaluation must not discard the other modes.
-        print(f"  Warning: subsystem energy evaluation failed: {e}")
-        traceback.print_exc()
+        logger.warning(f"  Warning: subsystem energy evaluation failed: {e}")
+        # ERROR records go to stderr, which keeps the traceback off the results stream.
+        logger.error(traceback.format_exc().rstrip("\n"))
         if failures is not None:
             failures.append(f"{type(e).__name__}: {e}")
         return None, None, None
@@ -847,7 +852,7 @@ def compute_interaction_energy(
         if peptide_chain is None or receptor_chain is None:
             raise ValueError("Could not identify two protein chains in structure")
 
-        print(f"[{sample_id}] Chains: peptide={peptide_chain}, receptor={receptor_chain}")
+        logger.info(f"[{sample_id}] Chains: peptide={peptide_chain}, receptor={receptor_chain}")
 
         # Contact counts describe the input geometry (before hydrogens are added),
         # so they are the same for every mode.
@@ -888,7 +893,7 @@ def compute_interaction_energy(
 
         # --- RAW mode ---
         if "raw" in modes:
-            print(f"[{sample_id}] Raw mode...")
+            logger.info(f"[{sample_id}] Raw mode...")
             failures: list[str] = []
             e_c, e_p, e_r = _evaluate_subsystem_energies(
                 simulation,
@@ -908,15 +913,17 @@ def compute_interaction_energy(
                 result["raw_e_receptor"] = e_r
                 result["raw_interaction_energy"] = e_c - e_p - e_r
                 any_success = True
-                print(f"[{sample_id}]   E_int(raw) = {result['raw_interaction_energy']:.1f} kJ/mol")
+                logger.info(
+                    f"[{sample_id}]   E_int(raw) = {result['raw_interaction_energy']:.1f} kJ/mol"
+                )
             else:
-                print(f"[{sample_id}]   Raw evaluation returned NaN (likely clashes)")
+                logger.warning(f"[{sample_id}]   Raw evaluation returned NaN (likely clashes)")
                 _append_error_message(result, "raw: " + "; ".join(failures))
 
         # --- RELAXED mode (also prepares state for after_md) ---
         pos_relaxed = pos_h
         if "relaxed" in modes or "after_md" in modes:
-            print(f"[{sample_id}] Minimizing (backbone-restrained + unrestrained)...")
+            logger.info(f"[{sample_id}] Minimizing (backbone-restrained + unrestrained)...")
             restraint_index = None  # force index while the restraint is in the system
             try:
                 restraint = openmm.CustomExternalForce("0.5 * k * ((x-x0)^2 + (y-y0)^2 + (z-z0)^2)")
@@ -978,7 +985,7 @@ def compute_interaction_energy(
                         result["relaxed_e_receptor"] = e_r
                         result["relaxed_interaction_energy"] = e_c - e_p - e_r
                         any_success = True
-                        print(
+                        logger.info(
                             f"[{sample_id}]   E_int(relaxed) = "
                             f"{result['relaxed_interaction_energy']:.1f} kJ/mol"
                         )
@@ -986,7 +993,7 @@ def compute_interaction_energy(
                         _append_error_message(result, "relaxed: " + "; ".join(failures))
             except Exception as e:
                 # Per-step isolation: the other modes stay usable; the reason is recorded.
-                print(f"[{sample_id}] Warning: relaxed/minimization failed: {e}")
+                logger.warning(f"[{sample_id}] Warning: relaxed/minimization failed: {e}")
                 step = "relaxed" if "relaxed" in modes else "after_md"
                 _append_error_message(
                     result, f"{step}: minimization failed: {type(e).__name__}: {e}"
@@ -1005,7 +1012,7 @@ def compute_interaction_energy(
 
         # --- AFTER_MD mode ---
         if "after_md" in modes:
-            print(f"[{sample_id}] Running MD ({after_md_duration_ps} ps)...")
+            logger.info(f"[{sample_id}] Running MD ({after_md_duration_ps} ps)...")
             try:
                 simulation.context.setPositions(pos_relaxed)
                 if random_seed is not None:
@@ -1041,22 +1048,24 @@ def compute_interaction_energy(
                     result["after_md_e_receptor"] = e_r
                     result["after_md_interaction_energy"] = e_c - e_p - e_r
                     any_success = True
-                    print(
+                    logger.info(
                         f"[{sample_id}]   E_int(after_md) = "
                         f"{result['after_md_interaction_energy']:.1f} kJ/mol"
                     )
                 else:
                     _append_error_message(result, "after_md: " + "; ".join(failures))
             except Exception as e:
-                print(f"[{sample_id}] Warning: after_md failed: {e}")
+                logger.warning(f"[{sample_id}] Warning: after_md failed: {e}")
                 _append_error_message(result, f"after_md: {type(e).__name__}: {e}")
 
         result["success"] = any_success
 
     except Exception as e:
         _append_error_message(result, f"{type(e).__name__}: {e}")
-        print(f"[{sample_id}] ERROR: {result['error_message']}")
-        traceback.print_exc()
+        # Logged at WARNING so the line stays on stdout with the other progress lines;
+        # the traceback below is an ERROR record and goes to stderr.
+        logger.warning(f"[{sample_id}] ERROR: {result['error_message']}")
+        logger.error(traceback.format_exc().rstrip("\n"))
 
     return result
 
@@ -1115,6 +1124,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main():
+    configure_logging()
     parser = _build_parser()
     args = parser.parse_args()
 
