@@ -12,6 +12,13 @@ single-radius van der Waals table by element (documented there as Mantina et
 al., J. Phys. Chem. A 113:5806-5812, 2009; 1.8 Å for an element without an
 entry). Water and monoatomic ions are not part of the surface.
 
+The areas are heavy-atom areas: hydrogen and deuterium atoms are dropped before
+the surface is built (``hydrogens="ignore"``, the default). The atomic solvation
+parameters describe the accessible area of heavy atoms, and PISA reports buried
+area on heavy atoms, so the buried area, the polar/apolar partition and ΔG_int
+do not depend on how the input was protonated. ``hydrogens="keep"`` puts the H
+atoms back into the surface.
+
 Usage:
     binding-metrics-interface --input complex.cif --design-chain A
 """
@@ -379,7 +386,7 @@ def compute_interface_metrics(
         Chains:
             peptide_chain (str), receptor_chain (str)
 
-        SASA (Å²):
+        SASA (Å², heavy atoms unless ``hydrogens="keep"``):
             delta_sasa: total buried SASA = SASA(pep) + SASA(rec) - SASA(complex)
             sasa_peptide: peptide SASA in isolation
             sasa_receptor: receptor SASA in isolation
@@ -387,12 +394,17 @@ def compute_interface_metrics(
 
         Solvation energy (Eisenberg-McLachlan / PISA):
             delta_g_int (kcal/mol): ΔG_int = Σ_i γ_i × ΔA_i, with ΔA_i the
-                buried area of atom i and γ_i in kcal/mol/Å² of buried area:
+                buried heavy-atom area of atom i and γ_i in kcal/mol/Å² of
+                buried area:
                 C -0.016, S -0.021, neutral N/O +0.006, O(-) +0.024,
                 N(+) +0.050. Negative = burial is favorable.
             delta_g_int_kJ (kJ/mol)
             polar_area (Å²): buried area from N and O atoms
-            apolar_area (Å²): buried area from C and S atoms
+            apolar_area (Å²): buried area from C and S atoms. With
+                ``hydrogens="ignore"``, polar_area + apolar_area equals
+                delta_sasa unless a buried atom is of another element (P, Se,
+                halogens), which is in neither mask. With ``hydrogens="keep"``
+                the buried H atoms are in neither mask either.
             fraction_polar: polar_area / delta_sasa (NaN when nothing is buried)
 
         Interface residues:

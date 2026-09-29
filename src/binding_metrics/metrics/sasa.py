@@ -3,6 +3,12 @@
 The trajectory functions use mdtraj's ``shrake_rupley`` (radii in nm); the
 static function uses biotite. Both implement the Shrake-Rupley algorithm
 (J. Mol. Biol. 79:351-371, 1973).
+
+The static function reports the buried area of heavy atoms by default
+(``hydrogens="ignore"``), the convention of PISA and of the atomic solvation
+parameters used for ΔG_int in ``interface``. The trajectory functions do not
+filter hydrogens: they use the atoms of the trajectory and of the index lists as
+given.
 """
 
 import logging
@@ -32,6 +38,8 @@ def calculate_buried_sasa(
 
     The buried SASA is computed as:
         SASA_buried = SASA_ligand_alone + SASA_receptor_alone - SASA_complex
+
+    Hydrogens are not filtered here, unlike in ``compute_delta_sasa_static``.
 
     Args:
         trajectory_path: Path to trajectory file (DCD, XTC, etc.)
@@ -144,7 +152,10 @@ def compute_delta_sasa_static(
     The buried area is defined as:
         delta_SASA = SASA(peptide alone) + SASA(receptor alone) - SASA(complex)
 
-    Positive values indicate surface buried upon binding.
+    Positive values indicate surface buried upon binding. The areas are
+    heavy-atom areas unless ``hydrogens="keep"``, so ``delta_sasa`` is the same
+    number as in ``interface.compute_interface_metrics`` and does not depend on
+    the protonation of the input.
 
     Args:
         cif_path: Path to CIF structure file
