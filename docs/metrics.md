@@ -46,6 +46,19 @@ binding-metrics-run --input complex.cif --output-dir results/
 
 **values that could not be computed.** A function that cannot compute a value keeps its sentinel (NaN, 0 or None) and adds a string under the key `reason`. The key is absent when everything was computed, so a 0.0 without `reason` is a computed 0.0. Functions that already report `success`, `error_message` or `error` keep those keys.
 
+**dependencies.** `import binding_metrics` does not import OpenMM, so the static metrics work on an install without it. A name whose dependency is missing raises an error that names the extra to install.
+
+| extra | needed by |
+|-------|-----------|
+| `static` | interface, H-bonds, salt bridges, Coulomb, Ramachandran, omega, shape complementarity, void volume, static ΔSASA, structure comparison, EvoBind, parsing of OpenFold3 output |
+| `simulation` | force-field interaction energy, relaxation, and the energy term of receptor quality |
+| `structure` | PDBFixer preparation (`binding-metrics-prep`, the pipeline's prep step) and gemmi |
+| `analysis` | trajectory metrics (§11) |
+| `dockq` | DockQ (§10) |
+| `report` | HTML summary (`markdown`) and the `binding-metrics-energy` CSV output (`pandas`) |
+
+GAFF2 parameters for non-canonical residues need openmmforcefields, openff-toolkit, RDKit and AmberTools, which are conda-forge only; `environment.yml` installs them. OpenFold3 runs in its own environment ([`README.md`](../README.md#openfold3-optional)).
+
 **units.** Static structure metrics report Å, Å², Å³ and degrees. Energies are in kJ/mol, except `delta_g_int` and the H-bond and salt-bridge scores (kcal/mol). Trajectory metrics use the MDTraj units (nm, nm²). See [§20](#20-unit-summary).
 
 ---
