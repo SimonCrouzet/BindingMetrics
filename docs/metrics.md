@@ -237,7 +237,7 @@ The `after_md` duration is the argument `after_md_duration_ps` (10 ps). The 200 
 - protein chains other than the binder and the target are removed as well, and a warning names each of them. E_complex would otherwise contain a chain that the isolated terms leave out. The relaxation does the same and lists the IDs under `dropped_protein_chains` ([§15](#15-pipeline-results-and-provenance)); [`nonstandard.md`](nonstandard.md#other-protein-chains) gives the reason. A receptor of several chains has to be reduced to one before it goes in
 - cyclic peptides: the closure bond is patched from custom templates; CYS–CYS disulfides are renamed CYX before `addHydrogens`, and a CYX whose partner lies on the other chain is converted back to CYS for the per-chain terms
 - non-canonical residues: D-amino acids and N-methylated residues use the templates of [`nonstandard.md`](nonstandard.md); other residues get GAFF2 templates; phosphorylated residues use the AMBER phosaa parameters
-- the seed drives hydrogen placement, the Langevin noise and the initial velocities; `random_seed=None` draws fresh randomness. CUDA runs in mixed precision, which is not bit-reproducible, so GPU energies from one seed can differ in the last digits
+- the seed drives hydrogen placement, the conformer of the AM1-BCC charges of GAFF2 residues, the Langevin noise and the initial velocities; `random_seed=None` draws fresh randomness. CUDA runs in mixed precision, which is not bit-reproducible, so GPU energies from one seed can differ in the last digits
 
 ### CLI: `binding-metrics-energy`
 
