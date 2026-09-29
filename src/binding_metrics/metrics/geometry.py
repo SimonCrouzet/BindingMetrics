@@ -17,7 +17,11 @@ from typing import Literal, Optional
 
 import numpy as np
 
-from binding_metrics.metrics._common import resolve_chain_role
+from binding_metrics.metrics._common import (
+    ChainAliasAction,
+    resolve_chain_role,
+    resolve_cli_chain_alias,
+)
 from binding_metrics.utils import backfill_auth_columns, configure_logging
 
 # ---------------------------------------------------------------------------
@@ -1242,9 +1246,20 @@ def main():
     )
     parser.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         default=None,
         help="Receptor chain ID for Sc/void (auto-detect if omitted)",
+    )
+    parser.add_argument(
+        "--binder-chain",
+        type=str,
+        default=None,
+        help=(
+            "Alias of --chain for --metric ramachandran/omega and of --peptide-chain "
+            "for --metric sc/void"
+        ),
     )
     parser.add_argument(
         "--metric",
@@ -1282,6 +1297,8 @@ def main():
 
     add_log_file_arg(parser)
     args = parser.parse_args()
+    binder_dest = "chain" if args.metric in ("ramachandran", "omega") else "peptide_chain"
+    resolve_cli_chain_alias(parser, args, binder_dest, "binder_chain")
 
     from binding_metrics.cli import log_to_file
 

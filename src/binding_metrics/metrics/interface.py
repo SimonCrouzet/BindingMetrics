@@ -23,7 +23,7 @@ from typing import Literal, Optional
 
 import numpy as np
 
-from binding_metrics.metrics._common import resolve_chain_role
+from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.metrics.polar_contacts import (
     _NEGATIVE_ATOMS,
     _POSITIVE_ATOMS,
@@ -547,12 +547,16 @@ def main():
     parser.add_argument("--input", "-i", type=Path, required=True, help="Input CIF file")
     parser.add_argument(
         "--design-chain",
+        "--binder-chain",
+        action=ChainAliasAction,
         type=str,
         default=None,
         help="Peptide chain ID (auto-detect if omitted)",
     )
     parser.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         default=None,
         help="Receptor chain ID (auto-detect if omitted)",

@@ -37,7 +37,7 @@ except ImportError:
 # OpenMM is imported inside the functions that use it, so this module can be
 # imported (and its CLI parser built) on installs without OpenMM.
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
-from binding_metrics.metrics._common import resolve_chain_role
+from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.utils import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -1097,8 +1097,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input-dir", type=Path, help="Directory of structure files")
     parser.add_argument("--glob-pattern", default="*.cif", help="Glob pattern for --input-dir")
     parser.add_argument("--output", "-o", type=Path, help="Output CSV path")
-    parser.add_argument("--peptide-chain", type=str, default=None)
-    parser.add_argument("--receptor-chain", type=str, default=None)
+    parser.add_argument(
+        "--peptide-chain", "--binder-chain", action=ChainAliasAction, type=str, default=None
+    )
+    parser.add_argument(
+        "--receptor-chain", "--target-chain", action=ChainAliasAction, type=str, default=None
+    )
     parser.add_argument("--solvent-model", choices=["obc2", "gbn2"], default="obc2")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument(

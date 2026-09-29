@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
+from binding_metrics.metrics._common import ChainAliasAction
 from binding_metrics.utils import configure_logging
 
 
@@ -38,6 +39,8 @@ def _add_parse_args(p, include_chain_args: bool = False) -> None:
         )
         p.add_argument(
             "--receptor-chain",
+            "--target-chain",
+            action=ChainAliasAction,
             type=str,
             default=None,
             metavar="CHAIN",
@@ -245,6 +248,8 @@ def main():
     )
     p_prep.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         required=True,
         metavar="CHAIN",
@@ -295,6 +300,8 @@ def main():
     )
     p_refold.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         required=True,
         metavar="CHAIN",
@@ -375,6 +382,8 @@ def main():
     )
     p_prep_score.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         required=True,
         metavar="CHAIN",
@@ -416,6 +425,8 @@ def main():
     )
     p_score.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         required=True,
         metavar="CHAIN",

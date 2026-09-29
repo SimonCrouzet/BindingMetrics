@@ -7,6 +7,7 @@ wrappers, because tests patch those.
 
 from __future__ import annotations
 
+import argparse
 from typing import Optional
 
 
@@ -53,3 +54,50 @@ def resolve_chain_role(
     if chain is None and required:
         raise TypeError(f"missing required argument: {legacy_name!r} (or its alias {alias_name!r})")
     return chain
+
+
+class ChainAliasAction(argparse.Action):
+    """Store a chain ID for an option that also has a role-alias spelling.
+
+    Use it on an ``add_argument`` call that lists the old flag and its alias
+    (``"--design-chain", "--binder-chain"``): both fill the same destination.
+    Giving the two spellings with different IDs ends the program through
+    ``parser.error``. Repeating one spelling keeps argparse's rule that the
+    last value wins.
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        spellings = namespace.__dict__.setdefault("_chain_spellings", {})
+        previous = spellings.get(self.dest)
+        if previous is not None:
+            previous_option, previous_value = previous
+            if previous_option != option_string and previous_value != values:
+                parser.error(
+                    f"argument {option_string}: {values!r} conflicts with "
+                    f"{previous_option} {previous_value!r}; give only one of the two spellings"
+                )
+        spellings[self.dest] = (option_string, values)
+        setattr(namespace, self.dest, values)
+
+
+def resolve_cli_chain_alias(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, dest: str, alias_dest: str
+) -> None:
+    """Fold a separately parsed alias flag into the old option's attribute.
+
+    For a CLI where the alias cannot share the old flag's destination (the
+    geometry CLI reads the binder from ``--chain`` or ``--peptide-chain``
+    depending on ``--metric``). Afterwards ``args.<dest>`` holds the chain ID
+    from whichever flag was given; different IDs end the program through
+    ``parser.error``.
+    """
+    try:
+        resolved = resolve_chain_role(
+            f"--{dest.replace('_', '-')}",
+            getattr(args, dest),
+            f"--{alias_dest.replace('_', '-')}",
+            getattr(args, alias_dest),
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    setattr(args, dest, resolved)

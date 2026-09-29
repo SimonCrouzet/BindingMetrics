@@ -32,7 +32,7 @@ from typing import Optional
 import numpy as np
 
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
-from binding_metrics.metrics._common import resolve_chain_role
+from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.utils import backfill_auth_columns, configure_logging
 
 # ---------------------------------------------------------------------------
@@ -1297,6 +1297,8 @@ def main():
     )
     parser.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         default=None,
         help="Receptor chain ID (auto-detects largest chain if omitted)",

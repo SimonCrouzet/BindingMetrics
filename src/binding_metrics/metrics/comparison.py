@@ -18,7 +18,7 @@ from typing import Optional
 
 import numpy as np
 
-from binding_metrics.metrics._common import resolve_chain_role
+from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.utils import configure_logging
 
 
@@ -257,7 +257,12 @@ def main():
         "--processed", "-b", type=Path, required=True, help="Processed (target) structure"
     )
     parser.add_argument(
-        "--design-chain", type=str, default=None, help="Designed chain ID (auto-detect if omitted)"
+        "--design-chain",
+        "--binder-chain",
+        action=ChainAliasAction,
+        type=str,
+        default=None,
+        help="Designed chain ID (auto-detect if omitted)",
     )
     from binding_metrics.cli import add_log_file_arg
 
