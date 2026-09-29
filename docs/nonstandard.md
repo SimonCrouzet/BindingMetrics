@@ -19,6 +19,26 @@ The force field needs the L and template names, but the original names are kept 
 
 ---
 
+## Bonds Around a Non-Standard Residue
+
+OpenMM builds the bonds of a residue from a table of standard residue names. A residue it does not know, phosphoserine or S-palmitoyl-cysteine (P1L in 6SBA) for instance, loads as a group of atoms without a single bond, and the peptide bond from the residue before it is missing too. The force field then rejects the standard neighbour ("No template found for residue ... the bonds are different"), not the residue that lacks the bonds. Three steps restore them:
+
+1. **`load_structure`** (CIF input). The link rows of `_struct_conn` (`covale`, `disulf`, `modres`) are read through the author numbering, because OpenMM looks the partners up by label numbering while it keys the atoms by author numbering, and drops a row when the two differ. This needs gemmi. A residue that the file leaves without any bond is bonded by covalent radii, as the CONECT records of a PDB file would do. `save_cif` writes the restored residue number into `label_seq_id` and the `_struct_conn` rows, so a prepped file keeps its links on reload. 1QJB: HIS6 C to SEP7 N and the nine bonds inside SEP are present after loading the mmCIF, as after loading the PDB file.
+2. **`patch_cyclic_topology`** calls `reconstruct_nonstandard_residue_bonds` for every protein chain, the receptor included. It restores the bonds inside each residue that has none and the C(i) to N(i+1) peptide bond next to it when the two atoms are within 0.20 nm; a chain break is not bridged. A PDB file without CONECT records for the residue relies on this step.
+3. **`strip_heterogens`** keeps SEP, TPO and PTR in every chain, so an unselected chain is not cut at its phosphoserine.
+
+A residue of the receptor that the force fields do not cover goes through the [GAFF2 route](#gaff2-route-for-other-non-canonical-residues) like one of the peptide. The charge calculation for P1L of 6SBA is repeated each time a system is built; the minimisation of 6SBA takes 2.3 minutes end to end.
+
+`CYM`, the AMBER deprotonated cysteine, is a standard residue, as `HID`, `HIE`, `HIP`, `HIN`, `CYX`, `ASH`, `GLH` and `LYN` are; amber14 has its template, so no GAFF2 parameters are built for it.
+
+---
+
+## Other Protein Chains
+
+The relaxation and the interaction energy describe the peptide-receptor pair. A third protein chain, such as the second copy of the complex in the asymmetric unit (5WGD holds two: with peptide E and receptor A, chains B and F are the second copy), would enter the energy of the complex but not that of the isolated peptide and receptor, and its caps and patches are not handled. `drop_other_protein_chains` removes every protein chain other than the peptide and the receptor, after `strip_heterogens`, and a warning names each removed chain. `RelaxationResult.dropped_protein_chains` (`results["relax"]["dropped_protein_chains"]` in the pipeline) lists them. Nothing is removed unless both chains are named and present. There is no option to keep the chains: a receptor made of several chains, a Fab for example, has to be reduced to the chain that carries the interface before it goes in.
+
+---
+
 ## D-Amino Acids
 
 **Strategy:** rename to L counterpart in the topology; preserve coordinates.
@@ -166,7 +186,7 @@ Openmmforcefields' GAFF template generator cannot match a backbone residue, beca
 4. The template drops the caps, adds an `<ExternalBond>` at every capped atom, retypes the backbone atoms to the ff14SB types, and adds explicit GAFF terms for the backbone–side-chain junctions. The charge of the removed cap atoms is spread evenly over the remaining atoms, so the template has an integer net charge, normally 0.
 5. The hydrogens of the residue are injected into the topology, which is rebuilt so that the residue matches its template.
 
-**Fallback to single bonds.** A residue that is not in the CCD, whose atoms disagree with its entry, or whose CCD bond orders do not sanitise in RDKit is built with every bond single. The double bonds, aromatic rings and hydrogen count of such a residue are unreliable, and a warning says so. The pipeline records the outcome for each residue under `ncaa_bond_order_source` in `results["prep"]` (cyclic peptides) and `results["relax"]`: `"ccd"` or `"single_bonds"`. For the somatostatin analogue 1XY4, prep reports `{"IAM": "single_bonds"}`. Use the CCD residue code and atom names to get the chemistry right.
+**Fallback to single bonds.** A residue that is not in the CCD, whose atoms disagree with its entry, or whose CCD bond orders do not sanitise in RDKit is built with every bond single. The double bonds, aromatic rings and hydrogen count of such a residue are unreliable, and a warning says so. The pipeline records the outcome for each residue under `ncaa_bond_order_source` in `results["prep"]` (cyclic peptides) and `results["relax"]`: `"ccd"` or `"single_bonds"`. For the somatostatin analogue 1XY4, prep reports `{"IAM": "ccd"}`. Use the CCD residue code and atom names to get the chemistry right.
 
 Effect of the CCD bond orders on the cyclosporin A residues of 1CWA: MeBmt has 17 hydrogens instead of 19, and its CE=CZ bond relaxes to 1.340 Å instead of 1.544 Å (crystal 1.336 Å).
 
