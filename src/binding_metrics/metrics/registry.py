@@ -14,13 +14,24 @@ static_structure
 trajectory
     Requires a trajectory file AND a topology file (e.g. MDTraj-based metrics).
 openfold_json
-    Reads an OpenFold3 output directory / JSON file; no structure file needed.
+    Reads an OpenFold3 output directory / JSON file; no structure file needed
+    (except ``interface_pae``, which also takes the predicted structure).
+atom_array
+    Takes an already loaded ``biotite.structure.AtomArray`` (``path_arg`` names
+    the kwarg that receives it). These are the building blocks that the
+    ``interface`` metric calls internally.
+predicted_structure
+    Takes the path of a predicted structure plus per-atom confidence arrays
+    (for example ``plddt_per_atom`` from the ``openfold`` metric) that the
+    caller passes as extra keyword arguments.
 
 Chain modes
 -----------
 none        No chain arguments.
 single      One chain (``chain_arg`` kwarg, defaults to peptide/designed chain).
-interface   Two chains (``peptide_chain_arg`` + ``receptor_chain_arg``).
+interface   Two chains (``peptide_chain_arg`` + ``receptor_chain_arg``). One of
+            the two may be None when the function needs only one role
+            (``receptor_quality`` takes only the receptor).
 interface_2paths
     Two chains AND two structure paths (``path_arg`` + ``secondary_path_arg``).
     The benchmark passes the same path for both to measure pure compute cost.
@@ -32,7 +43,14 @@ import importlib
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Optional
 
-InputType = Literal["static_structure", "trajectory", "md_simulation", "openfold_json"]
+InputType = Literal[
+    "static_structure",
+    "trajectory",
+    "md_simulation",
+    "openfold_json",
+    "atom_array",
+    "predicted_structure",
+]
 ChainMode = Literal["none", "single", "interface", "interface_2paths"]
 
 
@@ -172,6 +190,85 @@ METRICS: list[MetricSpec] = [
         secondary_path_arg="processed_path",
         peptide_chain_arg="design_chain",
     ),
+    MetricSpec(
+        name="delta_sasa_static",
+        import_path="binding_metrics.metrics.sasa:compute_delta_sasa_static",
+        description="Buried SASA on binding for one static structure (biotite, probe 1.4 Å)",
+        input_type="static_structure",
+        chain_mode="interface",
+        formats=("pdb", "cif"),
+        path_arg="cif_path",
+        peptide_chain_arg="peptide_chain",
+        receptor_chain_arg="receptor_chain",
+    ),
+    MetricSpec(
+        name="receptor_quality",
+        import_path="binding_metrics.metrics.receptor_quality:compute_receptor_quality",
+        description=(
+            "MolProbity-style receptor quality: Ramachandran, clashscore, rotamers, "
+            "Cβ deviation, bond geometry, force-field energy"
+        ),
+        input_type="static_structure",
+        chain_mode="interface",  # receptor only: the function has no peptide-chain argument
+        formats=("pdb", "cif"),
+        path_arg="path",
+        receptor_chain_arg="receptor_chain",
+    ),
+    MetricSpec(
+        name="evobind_adversarial",
+        import_path="binding_metrics.metrics.evobind:compute_evobind_adversarial_check",
+        description=(
+            "EvoBind adversarial check: binder centre-of-mass shift between two "
+            "predictions after receptor Cα superposition (Bryant et al. 2025)"
+        ),
+        input_type="static_structure",
+        chain_mode="interface_2paths",
+        formats=("pdb", "cif"),
+        path_arg="design_structure_path",
+        secondary_path_arg="afm_structure_path",
+        peptide_chain_arg="binder_chain",
+        receptor_chain_arg="receptor_chain",
+    ),
+    # --- In-memory structure and prediction inputs --------------------------
+    # These do not read a file path. ``path_arg`` names the kwarg that receives
+    # the AtomArray, resp. the predicted-structure path, and the caller supplies
+    # the extra arrays the function needs.
+    MetricSpec(
+        name="hbonds",
+        import_path="binding_metrics.metrics.polar_contacts:compute_hbonds",
+        description="Cross-chain H-bonds (Baker-Hubbard): count and distance/angle-weighted energy",
+        input_type="atom_array",
+        chain_mode="interface",
+        formats=(),
+        path_arg="atoms",
+        peptide_chain_arg="peptide_chain",
+        receptor_chain_arg="receptor_chain",
+    ),
+    MetricSpec(
+        name="saltbridges",
+        import_path="binding_metrics.metrics.polar_contacts:compute_saltbridges",
+        description="Cross-chain salt bridges: residue-pair count, bidentate count, Coulomb energy",
+        input_type="atom_array",
+        chain_mode="interface",
+        formats=(),
+        path_arg="atoms",
+        peptide_chain_arg="peptide_chain",
+        receptor_chain_arg="receptor_chain",
+    ),
+    MetricSpec(
+        name="evobind_score",
+        import_path="binding_metrics.metrics.evobind:compute_evobind_score",
+        description=(
+            "EvoBind primary score: binder-to-interface distance divided by binder "
+            "pLDDT/100 (Bryant et al. 2025)"
+        ),
+        input_type="predicted_structure",
+        chain_mode="interface",
+        formats=("pdb", "cif"),
+        path_arg="structure_path",
+        peptide_chain_arg="binder_chain",
+        receptor_chain_arg="receptor_chain",
+    ),
     # --- Reference-based accuracy metrics -----------------------------------
     # These require a *reference* (native) structure and only make sense for
     # benchmarking / retrospective validation, not for scoring a design in
@@ -278,6 +375,28 @@ METRICS: list[MetricSpec] = [
         peptide_chain_arg="ligand_indices",
         receptor_chain_arg="receptor_indices",
     ),
+    MetricSpec(
+        name="interface_sasa",
+        import_path="binding_metrics.metrics.sasa:calculate_interface_sasa",
+        description="Ligand, receptor, complex and buried SASA per frame (MDTraj Shrake-Rupley)",
+        input_type="trajectory",
+        chain_mode="interface",
+        formats=("pdb", "cif"),
+        path_arg="trajectory_path",
+        peptide_chain_arg="ligand_indices",
+        receptor_chain_arg="receptor_indices",
+    ),
+    MetricSpec(
+        name="contact_residues",
+        import_path="binding_metrics.metrics.contacts:calculate_contact_residues",
+        description="Residues in interface contact over the trajectory",
+        input_type="trajectory",
+        chain_mode="interface",
+        formats=("pdb", "cif"),
+        path_arg="trajectory_path",
+        peptide_chain_arg="ligand_indices",
+        receptor_chain_arg="receptor_indices",
+    ),
     # --- MD simulation ------------------------------------------------------
     # input_type="md_simulation": takes a single structure file (CIF or PDB),
     # runs the full relaxation pipeline (minimization + MD), and returns timing
@@ -296,6 +415,23 @@ METRICS: list[MetricSpec] = [
         formats=("pdb", "cif"),
         path_arg="input_path",
     ),
+    # The per-structure counterpart of "interaction_energy": E_complex - E_peptide -
+    # E_receptor by subsystem decomposition, after optional minimisation and MD
+    # (the default ``modes`` include a short MD run, hence md_simulation).
+    MetricSpec(
+        name="structure_interaction_energy",
+        import_path="binding_metrics.metrics.energy:compute_interaction_energy",
+        description=(
+            "Peptide-receptor interaction energy of one structure by subsystem "
+            "decomposition (AMBER ff14SB + implicit solvent): raw, relaxed, after MD"
+        ),
+        input_type="md_simulation",
+        chain_mode="interface",
+        formats=("pdb", "cif"),
+        path_arg="input_path",
+        peptide_chain_arg="peptide_chain",
+        receptor_chain_arg="receptor_chain",
+    ),
     # --- OpenFold metrics ---------------------------------------------------
     MetricSpec(
         name="openfold",
@@ -305,6 +441,18 @@ METRICS: list[MetricSpec] = [
         chain_mode="none",
         formats=(),
         path_arg="output_dir",
+    ),
+    MetricSpec(
+        name="interface_pae",
+        import_path="binding_metrics.metrics.openfold:compute_interface_pae",
+        description="Binder x receptor PAE slice from OpenFold3 confidences: mean and max",
+        input_type="openfold_json",
+        chain_mode="interface_2paths",
+        formats=(),
+        path_arg="confidences_path",
+        secondary_path_arg="structure_path",
+        peptide_chain_arg="binder_chain",
+        receptor_chain_arg="receptor_chain",
     ),
 ]
 
