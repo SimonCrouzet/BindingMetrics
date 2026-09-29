@@ -136,7 +136,7 @@ _DEFAULT_VDW_RADIUS = 1.80
 
 
 def _get_vdw(element: str) -> float:
-    """Return VDW radius for element string, default 1.8 Å."""
+    """Return the van der Waals radius in Å of an element (Bondi, 1964), default 1.8 Å."""
     _VDW = {"C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80, "H": 1.20, "P": 1.80}
     return _VDW.get(element.strip().upper(), _DEFAULT_VDW_RADIUS)
 
@@ -295,7 +295,8 @@ def compute_ramachandran(
     phi_deg = np.degrees(phi_rad)
     psi_deg = np.degrees(psi_rad)
 
-    # Get unique residues in order (CA atoms give one per residue)
+    # dihedral_backbone yields one (phi, psi, omega) per residue, so the CA
+    # atoms are used to label them; this breaks if a residue lacks a CA atom.
     ca_mask = chain_atoms.atom_name == "CA"
     ca_atoms = chain_atoms[ca_mask]
 
@@ -502,6 +503,9 @@ def compute_omega_planarity(
 def _fibonacci_sphere(n: int) -> np.ndarray:
     """Generate n evenly spaced points on unit sphere via Fibonacci lattice.
 
+    The lattice is the golden-angle spiral of González (2010, Math. Geosci.
+    42, 49), which spreads points almost uniformly without a random seed.
+
     Args:
         n: Number of points
 
@@ -638,7 +642,14 @@ def compute_shape_complementarity(
     *,
     hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
-    """Compute shape complementarity Sc (Lawrence & Colman, 1993).
+    """Compute shape complementarity Sc (Lawrence & Colman, 1993, J. Mol. Biol. 234, 946).
+
+    This is a dot-and-normal approximation of the published method, not a
+    port of the CCP4 ``sc`` program: surface dots are placed on van der Waals
+    spheres rather than on a molecular surface, and the outward normals are
+    estimated from the local atom neighbourhood. Values are comparable
+    between structures scored here; do not compare them numerically with
+    CCP4 ``sc`` output.
 
     For the buried interface patch of each chain this samples molecular
     surface dots with smoothed outward normals, then for every dot on one
@@ -734,7 +745,6 @@ def compute_shape_complementarity(
             f"no atom of one chain lies within interface_cutoff={interface_cutoff} A of the other"
         )
 
-    # Build buried-patch surface dots + smoothed normals for each chain
     dots_A, normals_A = _build_surface_dots(
         pep_iface, pep_atoms, rec_atoms, n_dots, buried_cutoff, normal_radius
     )
@@ -747,7 +757,6 @@ def compute_shape_complementarity(
             f"no surface dot lies within buried_cutoff={buried_cutoff} A of the opposite chain"
         )
 
-    # Compute scores A → B: for each A dot, find nearest B dot
     tree_B = cKDTree(dots_B)
     dist_AB, idx_AB = tree_B.query(dots_A, k=1)
     omega_AB = np.exp(-weight * dist_AB**2)
@@ -756,7 +765,6 @@ def compute_shape_complementarity(
     dot_product_AB = np.sum(normals_A * (-normals_B[idx_AB]), axis=1)
     scores_A = omega_AB * dot_product_AB
 
-    # Compute scores B → A
     tree_A = cKDTree(dots_A)
     dist_BA, idx_BA = tree_A.query(dots_B, k=1)
     omega_BA = np.exp(-weight * dist_BA**2)

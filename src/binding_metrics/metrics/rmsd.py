@@ -1,4 +1,10 @@
-"""RMSD calculations for structural stability analysis."""
+"""RMSD calculations for structural stability analysis.
+
+RMSDs are computed with mdtraj (McGibbon et al., 2015, Biophys. J. 109, 1528),
+whose ``rmsd`` superposes every frame on the reference with the QCP algorithm
+(Theobald, 2005, Acta Cryst. A61, 478), so values are free of overall rotation
+and translation. Distances are in nm unless a function says otherwise.
+"""
 
 import warnings
 from pathlib import Path
@@ -87,10 +93,10 @@ def calculate_rmsd(
         )
         return np.zeros(traj.n_frames)
 
-    # Slice to selected atoms
     traj_subset = traj.atom_slice(atom_indices)
 
-    # Superpose to reference and calculate RMSD
+    # md.rmsd fits each frame onto the reference itself, so the RMSD does not
+    # depend on how the frames are oriented in the file.
     traj_subset.superpose(traj_subset, frame=reference_frame)
     rmsd = md.rmsd(traj_subset, traj_subset, frame=reference_frame)
 
@@ -103,6 +109,9 @@ def calculate_rmsf(
     atom_indices: list[int] | None = None,
 ) -> np.ndarray:
     """Calculate root mean square fluctuation per atom.
+
+    Frames are superposed on frame 0 and the fluctuation is taken about the
+    mean position of each atom after that fit.
 
     Args:
         trajectory_path: Path to trajectory file
@@ -129,13 +138,11 @@ def calculate_rmsf(
 
     traj_subset = traj.atom_slice(atom_indices)
 
-    # Superpose to average structure
+    # Fitted on frame 0, not iteratively on the mean structure: a frame-0 fit
+    # that is far from the mean adds to the fluctuation of every atom.
     traj_subset.superpose(traj_subset, frame=0)
 
-    # Calculate mean positions
     mean_positions = traj_subset.xyz.mean(axis=0)
-
-    # Calculate RMSF
     diff = traj_subset.xyz - mean_positions
     rmsf = np.sqrt((diff**2).sum(axis=2).mean(axis=0))
 
@@ -151,7 +158,11 @@ def calculate_ligand_rmsd(
 ) -> dict[str, np.ndarray]:
     """Calculate RMSD for ligand after aligning on receptor.
 
-    This measures ligand movement relative to the receptor binding site.
+    The trajectory is superposed on the receptor atoms, but the ligand RMSD is
+    then taken with ``md.rmsd``, which superposes the ligand on its reference
+    again. The ligand value therefore measures the change of the ligand's own
+    conformation and leaves out its rigid-body displacement relative to the
+    receptor.
 
     Args:
         trajectory_path: Path to trajectory file
@@ -235,7 +246,6 @@ def compute_receptor_drift(
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
 
-    # Select receptor Cα atoms
     ca_indices = []
     for atom in traj.topology.atoms:
         if atom.name != "CA":
@@ -263,7 +273,8 @@ def compute_receptor_drift(
     # Aligned drift: MDTraj superpose on Cα and compute RMSD (nm → Å)
     drift_aligned = md.rmsd(traj, traj, reference_frame, atom_indices=ca_idx_arr) * 10.0
 
-    # PBC detection
+    # A stored unit cell means the coordinates may be wrapped, which makes raw
+    # displacements meaningless.
     pbc_detected = traj.unitcell_lengths is not None
 
     # Raw drift: per-frame RMSD of positions relative to reference frame (nm → Å)
@@ -281,13 +292,11 @@ def compute_receptor_drift(
         drift_raw_max = float(np.max(drift_raw))
 
     return {
-        # scores
         "drift_aligned_mean": float(np.mean(drift_aligned)),
         "drift_aligned_max": float(np.max(drift_aligned)),
         "drift_raw_mean": drift_raw_mean if not pbc_detected else np.nan,
         "drift_raw_max": drift_raw_max if not pbc_detected else np.nan,
         "pbc_detected": pbc_detected,
-        # features
         "drift_aligned_per_frame": drift_aligned,
         "drift_raw_per_frame": drift_raw,
         "n_receptor_ca": len(ca_indices),

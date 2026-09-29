@@ -195,7 +195,8 @@ def compute_structure_rmsd(
     initial_st = gemmi.read_structure(str(initial_path))
     processed_st = gemmi.read_structure(str(processed_path))
 
-    # Auto-detect design chain from initial structure
+    # The smallest chain with any non-water residue is taken as the design
+    # chain, so a one-residue ligand chain would win: pass design_chain then.
     if design_chain is None:
         chain_sizes = []
         if len(initial_st) > 0:

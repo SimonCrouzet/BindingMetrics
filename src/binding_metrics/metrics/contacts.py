@@ -36,7 +36,8 @@ def calculate_contacts(
         topology_path: Path to topology file
         ligand_indices: Atom indices of the ligand
         receptor_indices: Atom indices of the receptor
-        cutoff: Distance cutoff in nm (default 0.45 nm = 4.5 A)
+        cutoff: Distance cutoff in nm (default 0.45 nm = 4.5 A, a conventional
+            interface-contact distance rather than a fitted value)
         on_empty: What to do when ``ligand_indices`` or ``receptor_indices``
             is empty. "warn" (default) emits a ``RuntimeWarning`` naming the
             empty selection and returns zeros, the historical result, which
@@ -59,7 +60,6 @@ def calculate_contacts(
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
 
-    # Build pairs of ligand-receptor atoms
     pairs = []
     for lig_idx in ligand_indices:
         for rec_idx in receptor_indices:
@@ -98,15 +98,28 @@ def calculate_contact_residues(
 ) -> dict:
     """Identify residues involved in interface contacts.
 
+    An atom pair (one index from each list) is in contact in a frame when its
+    distance is below the cutoff. Atoms are counted exactly as given, so
+    hydrogens and co-labelled waters take part when their indices are passed.
+
     Args:
         trajectory_path: Path to trajectory file
         topology_path: Path to topology file
         ligand_indices: Atom indices of the ligand
         receptor_indices: Atom indices of the receptor
-        cutoff: Distance cutoff in nm
+        cutoff: Distance cutoff in nm (default 0.45 nm)
 
     Returns:
-        Dictionary with contact residue information
+        Dictionary with keys:
+            ligand_residues (list[tuple]): (chain_index, residue_index,
+                residue_name) of each ligand residue with at least one
+                contact in any frame
+            receptor_residues (list[tuple]): Same for the receptor
+            contact_frequency (dict): Maps a (ligand_residue, receptor_residue)
+                pair of the tuples above to the mean number of atom pairs in
+                contact per frame. It is an average count and can exceed 1;
+                the keys are tuples, so the dict is not JSON-serialisable
+                as is.
     """
     if md is None:
         raise ImportError(
@@ -117,11 +130,9 @@ def calculate_contact_residues(
     traj = md.load(str(trajectory_path), top=str(topology_path))
     topology = traj.topology
 
-    # Map atom indices to residues
     ligand_residues = set()
     receptor_residues = set()
 
-    # Build pairs and track residues
     pairs = []
     pair_residue_map = []
 
@@ -141,10 +152,8 @@ def calculate_contact_residues(
 
     pairs = np.array(pairs)
 
-    # Calculate distances for all frames
     distances = md.compute_distances(traj, pairs)
 
-    # Find contacts and their frequencies
     contact_freq = {}
     for i, (lig_res, rec_res) in enumerate(pair_residue_map):
         n_contacts = (distances[:, i] < cutoff).sum()
@@ -154,7 +163,6 @@ def calculate_contact_residues(
             key = (lig_res, rec_res)
             contact_freq[key] = contact_freq.get(key, 0) + n_contacts
 
-    # Normalize by number of frames
     n_frames = traj.n_frames
     contact_freq = {k: v / n_frames for k, v in contact_freq.items()}
 
