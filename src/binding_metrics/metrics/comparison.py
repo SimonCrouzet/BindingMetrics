@@ -196,10 +196,10 @@ def compute_structure_rmsd(
     design_chain = resolve_chain_role("design_chain", design_chain, "binder_chain", binder_chain)
     try:
         import gemmi
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "gemmi is required for structure comparison. Install with: pip install gemmi"
-        )
+        ) from exc
 
     initial_st = gemmi.read_structure(str(initial_path))
     processed_st = gemmi.read_structure(str(processed_path))

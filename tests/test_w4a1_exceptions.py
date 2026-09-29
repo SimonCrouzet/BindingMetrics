@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from binding_metrics.metrics._common import import_biotite
+from binding_metrics.metrics.comparison import compute_structure_rmsd
 
 
 class TestCommon:
@@ -17,4 +18,12 @@ class TestCommon:
         monkeypatch.setitem(sys.modules, "biotite.structure", None)
         with pytest.raises(ImportError, match="biotite is required for tests") as info:
             import_biotite("tests")
+        assert isinstance(info.value.__cause__, ImportError)
+
+
+class TestComparison:
+    def test_missing_gemmi_error_names_the_original_import_failure(self, monkeypatch, tmp_path):
+        monkeypatch.setitem(sys.modules, "gemmi", None)
+        with pytest.raises(ImportError, match="gemmi is required") as info:
+            compute_structure_rmsd(tmp_path / "a.pdb", tmp_path / "b.pdb", "A")
         assert isinstance(info.value.__cause__, ImportError)
