@@ -44,8 +44,11 @@ Values from earlier versions differ in the cases below. A change reads "before -
   - 1CWA: MeBmt has 17 hydrogens, not 19, and its CE=CZ bond relaxes to 1.340 A, not 1.544 A (crystal 1.336 A).
   - 1CWA `raw_interaction_energy` -268.4 -> -280.2 kJ/mol, `relaxed_interaction_energy` -280.9 -> -297.4
     kJ/mol (`--md-duration-ps 0`).
-  - The backbone C=O of 0EH and MK8 (3V3B) was read as C-OH. IAM (1XY4) keeps the single-bond fallback, because its
-    dictionary bond orders do not sanitise in RDKit; `ncaa_bond_order_source` reports it as `single_bonds`.
+  - The backbone C=O of 0EH and MK8 (3V3B) was read as C-OH.
+  - IAM (1XY4): PDBFixer lists the IAM-THR peptide bond twice, so the capped molecule got two caps on the backbone C
+    and IAM fell back to single bonds. A bond that the topology lists twice is capped once, and IAM takes the
+    dictionary bond orders: `ncaa_bond_order_source` `single_bonds` -> `ccd`, hydrogens 24 -> 18, an aromatic ring
+    instead of cyclohexane.
 - **D-amino-acid and N-methyl names survive prep and relax (#15).** The relaxed CIF of 1CWA had
   `ALA ... NMG` where the input has `DAL ... SAR`; it now keeps the input names.
 - **Ligand RMSD (#37).** `calculate_ligand_rmsd` fitted the ligand a second time and returned 0 for a
@@ -80,6 +83,49 @@ Values from earlier versions differ in the cases below. A change reads "before -
   appear on stdout, for example in `binding-metrics-relax` and `-report`; the `core.gaff_ncaa` messages
   appear in relax. `binding-metrics-prep` and `-solvate` keep warnings on stderr.
 - **Warnings of `compute_openfold_metrics`** name the line that called it.
+- **Structural QC bond lengths (#44).** The `bond_lengths` check took its bond list from input distances, so
+  atoms that PDBFixer had rebuilt inside a clash counted as bonds, and a relaxation that resolved the clash
+  failed the check. Bonds now come from the topology (from the residue templates of the Chemical Component
+  Dictionary for a file) and are measured in the relaxed structure only; bonds already over 2.5 A in the input
+  are named in `detail`. The limits are unchanged.
+  - `bond_lengths` on the example runs: 1QJB fail (3 of 1932 bonds) -> pass; 4KRL_relaxed fail (29 of 2613)
+    -> pass; `qc_passed` False -> True for both. The longest real bonds are 1.82 A (Met C-S) and 2.05 A
+    (disulfide); the old maxima (2.39 A for 1YCR, 2.25 A for 3P8F) were non-bonded pairs.
+- **The relaxation and the interaction energy use the peptide-receptor pair only (#42).** Every other
+  protein chain is removed after `strip_heterogens`, with a warning that names it; before, it stayed in
+  E_complex but not in the isolated components, and a chain that had lost its caps could not be built. There
+  is no option to keep it: a receptor of several chains has to be reduced to one before it goes in.
+  - 1QJB (peptide Q, receptor A; chains B and S removed): `relaxed_interaction_energy` -41065.6 -> -546.0
+    kJ/mol and `potential_energy_minimized` -80432.4 -> -39984.3 kJ/mol (`--md-duration-ps 0`). The .cif and
+    the .pdb file agree to all digits.
+  - 5WGD (peptide E, receptor A; chains B and F removed): the relaxation failed with "No template found for
+    residue 473 (SER)"; it now completes, `relaxed_interaction_energy` -235.7 kJ/mol.
+  - 1YCR with a copy of the p53 chain 6 nm away as a third chain: `raw_interaction_energy` +139.6 -> -16.0
+    kJ/mol, the value of the two chains alone.
+- **Chain IDs of the input survive prep (#41).** `prep_structure` names the chains as the caller did,
+  and `save_cif` without a source CIF writes the topology's own chain IDs and residue numbers. A PDB input
+  used to come out as A, B, C, D and `--peptide-chain Q` failed after prep.
+  - 1QJB.pdb prepped: chains A B C D -> A B Q S. The relaxed CIF of a PDB input carries the input's chain
+    IDs and residue numbers, no longer the letters A, B, ... and 1, 2, ....
+  - `peptide_chain_label` of `detect_chains_from_file` is the chain ID OpenMM gives the file: the label ID
+    only when the file has more label IDs than author IDs. A file with swapped label and author letters and no
+    water (the protein-only 4KRL) returned the other chain.
+- **Raw mmCIF with different label and author numbering (#40).** OpenMM matches the `_struct_conn` rows
+  by label numbering and the atoms by author numbering, so a covalent link was dropped, and a residue
+  such as phosphoserine loaded without any bond. 1QJB.cif: HIS6 C to SEP7 N absent -> present, and SEP
+  has 0 -> 9 internal bonds, as from the PDB file. The relaxation of the four-chain 1QJB failed with "bonds
+  are different" and now runs.
+- **Peptide bonds next to a non-standard residue (#43).** `patch_cyclic_topology` rebuilds the bonds of a
+  residue that OpenMM loaded without any, and the peptide bonds beside it, in every protein chain, the
+  receptor included. 6SBA as a PDB file without CONECT records for P1L (S-palmitoyl-cysteine): "No template
+  found for residue 144 (LEU)" -> minimised -32300.7 kJ/mol, as from the mmCIF. P1L is parameterised by
+  the GAFF2 route, so the run takes 4.5 minutes instead of failing.
+- **`CYM` is a standard residue (#34).** A deprotonated cysteine was listed under `kept_nonstandard`, and the
+  GAFF2 route and the heterogen scan of the relaxation treated it as a new residue. 1YCR with one CYS renamed
+  CYM: `kept_nonstandard` `['CYM (chain A)']` -> `[]`.
+- **`detect_chains` finds all-D chains (#41).** `io.structures.detect_chains`, which
+  `compute_interaction_energy` uses when no chain is named, counts every amino-acid residue. A 20-residue ALA
+  chain with a 5-residue DAL chain: `('A', None)` -> `('B', 'A')`.
 
 ### Added
 
@@ -99,6 +145,15 @@ Values from earlier versions differ in the cases below. A change reads "before -
   `compute_receptor_quality` (#23).
 - `results["prep"]` reports `removed_heterogens`, `n_removed_waters`, `kept_nonstandard`,
   `n_missing_atoms_rebuilt` and `n_missing_residue_gaps` (#28).
+- `results["prep"]["chain_breaks"]` lists the consecutive residues of a chain whose C and N atoms are more
+  than 2.0 A apart (`chain`, `residue_before`, `residue_after`, `c_n_distance_angstrom`), and prep and
+  relaxation log a warning. OpenMM bonds the two residues by name and the relaxation closes the gap; nothing
+  else changes. 1QJB chain A, residues 68 and 73: 7.45 A. In 5WGD the relaxation inverted the C-alpha of
+  residue A:460, next to a gap of 11.4 A, and the structural QC `chirality` check flags it (#45).
+- `results["relax"]["dropped_protein_chains"]` and `RelaxationResult.dropped_protein_chains`: the protein
+  chains removed because they are neither the peptide nor the receptor (#42).
+- `find_chain_breaks`, `drop_other_protein_chains` and `reconstruct_nonstandard_residue_bonds`, and the
+  keyword-only `residues` argument of `reconstruct_intraresidue_bonds`.
 - `ncaa_bond_order_source`, `{residue: "ccd" or "single_bonds"}`, in `results["prep"]` and
   `results["relax"]` (#38).
 - Structural QC of the relaxed structure: `qc_passed`, `qc_failed_checks` and `qc_checks` in
@@ -137,6 +192,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
   interface PAE, provenance and the registry metadata (#36).
 - `openfold.py` is split into `_openfold_run.py` and `_openfold_cli.py`, and the residue and water name
   sets live in `core/residues.py`. Public names and import paths are unchanged (#34).
+- The `report` and `all` extras no longer list matplotlib, which nothing imports. The `openfold` extra
+  installs `openfold3` (it named a distribution `openfold`), and `openfold3` is an alias (#36).
 
 ### Fixed
 
@@ -160,3 +217,15 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - `PeptideBindingProtocol.analyze` raises on a trajectory without frames, `calculate_rmsd` and
   `calculate_contacts` warn on an empty selection, and `compute_receptor_quality` says why a term is NaN (#25).
 - `.dockerignore` mirrors the private paths of `.gitignore` (#36).
+- The summary read `cyclic_bonds` where the results carry `peptide_cyclic_bonds`, so its "Cyclic topology"
+  section never appeared; it reads both keys (#45).
+- `strip_heterogens` keeps SEP, TPO and PTR in the chains that are not selected; it deleted the
+  phosphoserine of an unselected chain as a distant heterogen and cut the chain in two (#40).
+- `save_cif` writes the restored residue number into `label_seq_id` and the `_struct_conn` rows, so a
+  prepped file reloads with the links of its non-standard residues (#40).
+- `binding-metrics-run --skip-prep --skip-relax` on 3P8F: the metrics that read the raw file with biotite
+  got the label ID of the peptide (B) and failed with "chain 'B' not found"; they get the author ID (I).
+  The cyclic-bond hints of the pipeline looked the chain up in the raw topology by the ID of the prepped
+  file (#41).
+- `prep_structure` on the stapled peptide 3V3B failed with "Chain 'C' not found in topology", because the
+  cyclic-bond hints named the input chain and PDBFixer had renamed it (#41).
