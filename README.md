@@ -38,7 +38,7 @@ These are exercised end-to-end by the bundled examples: `data/example_ncaa_cyclo
 
 **`binding-metrics-receptor-quality`** is a standalone tool for evaluating receptor structural quality, independent of the main peptide-binding pipeline. It works on receptor-only files or complex structures (non-receptor chains are silently ignored), and scores all models in multi-model PDB/CIF files independently.
 
-Metrics follow the MolProbity convention (Chen et al. 2010):
+The terms follow MolProbity (Chen et al. 2010) as lighter approximations: the clashscore counts heavy-atom overlaps only (hydrogens are ignored, and covalent links and hydrogen-bond pairs are not scored), the rotamer check uses χ1 only, and the Ramachandran regions are boxes. The composite score is therefore indicative and does not compare with published MolProbity values (details in [`docs/metrics.md`](docs/metrics.md#14-receptor-quality)). The goals below are those of MolProbity.
 
 | Metric | Goal |
 |---|---|
@@ -53,7 +53,7 @@ Metrics follow the MolProbity convention (Chen et al. 2010):
 | Absolute AMBER ff14SB energy | lower = less strained |
 
 ```python
-from binding_metrics import compute_receptor_quality
+from binding_metrics.metrics import compute_receptor_quality
 
 # Works on receptor-only or complex structures; auto-detects largest chain
 result = compute_receptor_quality("receptor.pdb", device="cuda")
@@ -72,7 +72,7 @@ print(f"Best model       : {s['best_model_index']}")
 ```bash
 # CLI — output format auto-detected from extension (.csv or .json)
 binding-metrics-receptor-quality --input receptor.pdb --output quality.csv
-binding-metrics-receptor-quality --input ensemble.cif --receptor-chain A --device cpu
+binding-metrics-receptor-quality --input ensemble.cif --receptor-chain A --output quality.json
 ```
 
 ---
@@ -105,47 +105,44 @@ binding-metrics-receptor-quality --input ensemble.cif --receptor-chain A --devic
 
 ### Recommended: conda (GPU-accelerated)
 
-MD simulations are computationally prohibitive on CPU. **A CUDA-capable GPU and
-the conda-forge OpenMM build are strongly recommended** for any workflow that
-involves energy minimization or MD (`binding-metrics-relax`, `compute_interaction_energy`
-with `mode="relaxed"` or `mode="md"`).
+The force-field energies, the relaxation and the MD run on OpenMM, and a CUDA-capable GPU makes them practical: the pipeline warns when MD is requested on the CPU. The conda environment installs OpenMM from conda-forge with CUDA 12.4.
 
 ```bash
 conda env create -f environment.yml   # creates the binding-metrics conda env
 conda activate binding-metrics
+binding-metrics-check-env             # verifies OpenMM, the GPU and MDTraj
 ```
 
-This installs:
-- GPU-ready OpenMM from conda-forge (CUDA/OpenCL binaries)
-- openmmforcefields + openff-toolkit for GAFF2 small-molecule parameterization
-- All other dependencies via pip
+The environment contains:
+- OpenMM (CUDA 12.4 build), MDTraj, PDBFixer, gemmi, biotite, hydride, scipy, pandas, matplotlib and markdown, all from conda-forge
+- openmmforcefields, openff-toolkit, RDKit and AmberTools (`antechamber` and `sqm` must be on `PATH`) for the GAFF2 parameters of non-canonical residues
+- DockQ, installed with pip, and this package in editable mode
 
-### Alternative: pip (CPU only)
+`environment.lock.yml` records the exact versions of the development environment.
 
-> **Warning — MD on CPU is extremely slow.** Only use this path for static
-> metrics (interface geometry, electrostatics, RMSD) or for CI/testing with
-> `device="cpu"` and minimal minimization steps.
+### Alternative: pip
+
+Nothing is published to PyPI: the release workflow attaches the sdist and the wheel to a GitHub Release. Install from a checkout of the repository, choosing the extras you need:
 
 ```bash
-pip install binding-metrics            # core only
+pip install .                       # numpy only
+pip install ".[static]"             # every single-structure metric, no OpenMM needed
+pip install ".[static,simulation]"  # plus force-field energies and relaxation
 ```
 
-Install optional dependency groups based on the metrics you need:
+| Extra | Installs | For |
+|---|---|---|
+| `static` | biotite, hydride, gemmi, scipy | interface, H-bonds, salt bridges, Coulomb, Ramachandran, ω, shape complementarity, void volume, structure comparison, EvoBind, parsing of OpenFold3 output |
+| `simulation` | openmm | force-field energies and relaxation; the plain package, a CPU build (use `environment.yml` for a GPU) |
+| `structure` | pdbfixer, gemmi | structure preparation (`binding-metrics-prep`, the pipeline's prep step) |
+| `analysis` | mdtraj | trajectory metrics |
+| `biotite` | biotite, hydride, scipy | the `static` extra without gemmi; structure comparison needs gemmi |
+| `dockq` | DockQ | reference-based CAPRI accuracy |
+| `report` | pandas, matplotlib, markdown | the HTML summary (`markdown`) and the CSV output of `binding-metrics-energy` (`pandas`); JSON, CSV and Markdown output of the pipeline needs none of them |
+| `gaff` | nothing | placeholder: openmmforcefields, openff-toolkit, RDKit and AmberTools are conda-forge only, so use `environment.yml` |
+| `all` | openmm, mdtraj, pdbfixer, gemmi, biotite, hydride, scipy, DockQ, pandas, matplotlib, markdown | everything above except the GAFF2 stack |
 
-```bash
-pip install "binding-metrics[simulation]"   # OpenMM (CPU-only via PyPI)
-pip install "binding-metrics[analysis]"     # MDTraj — trajectory metrics
-pip install "binding-metrics[structure]"    # PDBFixer + gemmi — structure repair, RMSD
-pip install "binding-metrics[biotite]"      # biotite + hydride + scipy — interface, geometry
-pip install "binding-metrics[gaff]"         # openmmforcefields + openff-toolkit — GAFF2 for non-standard residues
-pip install "binding-metrics[report]"       # no additional dependencies — JSON/CSV/Markdown output
-pip install "binding-metrics[dockq]"        # DockQ — reference-based CAPRI accuracy (DockQ, fnat, i-RMSD, L-RMSD)
-pip install "binding-metrics[all]"          # everything above (OpenMM via PyPI = CPU only)
-```
-
-> The PyPI `openmm` wheel has no CUDA support. `pip install binding-metrics[all]`
-> gives a functional install for testing, but MD runs will be orders of magnitude
-> slower than on GPU. For production use, always install OpenMM via conda-forge.
+A residue that needs GAFF2 parameters (the MeBmt of cyclosporin A, hydrocarbon-staple residues) requires the conda-forge packages, so a pip install alone cannot parameterise it. The extras are also listed in `pyproject.toml`. A name whose dependency is missing raises an error that names the extra to install.
 
 ### Docker (GPU, recommended for production)
 
@@ -153,8 +150,9 @@ Pre-built images are available on Docker Hub (requires [NVIDIA Container Toolkit
 
 | Tag | Contents |
 |---|---|
-| `latest` / `main` | GPU-ready OpenMM (CUDA 12.4), all `[all]` extras |
+| `latest` / `main` | the `environment.yml` environment: OpenMM with CUDA 12.4, the dependencies of the `all` extra and the GAFF2 stack |
 | `full` | Everything in `latest` + OpenFold3 conda env |
+| `<version>`, `<version>-full` | the same two images, built when a `v*` tag is pushed |
 
 ```bash
 # Base image (no OpenFold3)
@@ -213,9 +211,7 @@ Images are rebuilt and pushed to Docker Hub automatically on every push to `main
 
 ### OpenFold3 (optional)
 
-OpenFold3 confidence scoring is optional — all other metrics work without it.
-It requires a GPU, model weights, and a compatible Python version, so we recommend
-installing it in a **dedicated conda environment** named `openfold3`:
+OpenFold3 confidence scoring is optional; every other metric works without it. It requires a GPU, model weights and a compatible Python version, so it belongs in a **dedicated conda environment** named `openfold3`. No extra installs it:
 
 ```bash
 conda create -n openfold3 python=3.10
@@ -241,7 +237,7 @@ binding-metrics-run --input complex.cif --output-dir results/ \
     --metrics energy,interface,geometry,electrostatics
 ```
 
-Run `binding-metrics-check-env` to verify whether OpenFold3 is correctly installed.
+The default `--metrics` includes `openfold`, so pass a list without it when OpenFold3 is not installed. The pipeline's OpenFold3 queries use the ColabFold MSA server: the sequences leave the machine, and the alignments, and so the predictions, can change over time. The query JSON carries the seed 42 unless `--openfold-seeds` is given. Run `binding-metrics-check-env` to verify whether OpenFold3 is correctly installed.
 
 ---
 
@@ -576,4 +572,5 @@ If you use BindingMetrics in your work, please acknowledge it and feel free to g
 - Eastman, P. et al. (2017). OpenMM 7. *PLOS Comput. Biol.* 13, e1005659.
 - Chen, V.B. et al. (2010). MolProbity: all-atom structure validation for macromolecular crystallography. *Acta Cryst.* D66, 12–21.
 - Engh, R.A. & Huber, R. (1991). Accurate bond and angle parameters for X-ray protein structure refinement. *Acta Cryst.* A47, 392–400.
-- Ahdritz, G. et al. (2024). OpenFold3. https://github.com/aqlaboratory/openfold-3
+- The OpenFold3 Team (2025). OpenFold3-preview. https://github.com/aqlaboratory/openfold-3, doi:10.5281/zenodo.19001000
+- Abramson, J. et al. (2024). Accurate structure prediction of biomolecular interactions with AlphaFold 3. *Nature* 630, 493–500.
