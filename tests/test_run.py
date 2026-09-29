@@ -385,3 +385,50 @@ class TestRunMainOpenFoldSeedsFlag:
             "openfold_seeds"
         ]
         assert seeds == [3, 4]
+
+
+class TestPrepReport:
+    """What prep removed, kept and rebuilt is recorded under ``results["prep"]`` (issue #28)."""
+
+    def test_stubbed_report_is_merged_next_to_the_existing_keys(self, tmp_path, monkeypatch):
+        from binding_metrics.core import system
+
+        def fake_prep(topology, positions, report=None, **kwargs):
+            report.update(
+                removed_heterogens=["GOL (chain A)"],
+                n_removed_waters=3,
+                kept_nonstandard=["MSE (chain A)"],
+                n_missing_atoms_rebuilt=2,
+                n_missing_residue_gaps=1,
+            )
+            return topology, positions
+
+        monkeypatch.setattr(system, "prep_structure", fake_prep)
+        results = run_pipeline(EXAMPLE_1YCR, tmp_path, skip_relax=True, metrics=frozenset())
+        prep = results["prep"]
+        assert prep["removed_heterogens"] == ["GOL (chain A)"]
+        assert prep["kept_nonstandard"] == ["MSE (chain A)"]
+        assert (prep["n_removed_waters"], prep["n_missing_atoms_rebuilt"]) == (3, 2)
+        assert prep["n_missing_residue_gaps"] == 1
+        assert prep["ph"] == 7.4 and prep["keep_water"] is False
+        assert prep["output"].endswith("_cleaned.cif")
+
+    def test_real_prep_of_p53_mdm2(self, tmp_path):
+        pytest.importorskip("pdbfixer")
+        results = run_pipeline(EXAMPLE_1YCR, tmp_path, skip_relax=True, metrics=frozenset())
+        prep = results["prep"]
+        assert "error" not in prep, prep
+        # 1YCR is a clean two-chain model without heterogens or gaps; PDBFixer only
+        # adds the C-terminal OXT it lacks.
+        assert prep["removed_heterogens"] == []
+        assert prep["kept_nonstandard"] == []
+        assert prep["n_removed_waters"] == 0
+        assert prep["n_missing_residue_gaps"] == 0
+        assert prep["n_missing_atoms_rebuilt"] >= 1
+        assert _collect_failures(results) == []
+
+    def test_skipped_prep_has_no_report_keys(self, tmp_path):
+        results = run_pipeline(
+            EXAMPLE_1YCR, tmp_path, skip_prep=True, skip_relax=True, metrics=frozenset()
+        )
+        assert results["prep"] == {"skipped": True}

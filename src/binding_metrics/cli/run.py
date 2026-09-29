@@ -146,6 +146,10 @@ def run_pipeline(
         did not run is ``{"skipped": True}``; one that failed is
         ``{"error": message}``.
 
+        ``prep`` records what preparation changed: ``removed_heterogens``,
+        ``n_removed_waters``, ``kept_nonstandard``, ``n_missing_atoms_rebuilt``
+        and ``n_missing_residue_gaps`` (see ``core.system.prep_structure``).
+
     Raises:
         ChainNotFoundError: a requested chain ID does not exist in the structure.
     """
@@ -190,6 +194,7 @@ def run_pipeline(
                 )
             else:
                 topology, positions = load_structure(input_path)
+                prep_report: dict = {}
                 topology, positions = prep_structure(
                     topology,
                     positions,
@@ -197,11 +202,17 @@ def run_pipeline(
                     keep_water=keep_water,
                     canonicalize=canonicalize,
                     random_seed=random_seed,
+                    report=prep_report,
                 )
                 prepped_path = output_dir / f"{sample_id}_cleaned.cif"
                 save_structure(topology, positions, prepped_path, source_path=input_path)
                 logger.info("  Prepped structure: %s", prepped_path)
-                results["prep"] = {"output": str(prepped_path), "ph": ph, "keep_water": keep_water}
+                results["prep"] = {
+                    "output": str(prepped_path),
+                    "ph": ph,
+                    "keep_water": keep_water,
+                    **prep_report,
+                }
                 # save_cif preserves original auth IDs and aligns label IDs to match,
                 # so downstream OpenMM steps will see the original chain IDs.
                 # Re-detect from the cleaned file so peptide_chain_label is up-to-date.
