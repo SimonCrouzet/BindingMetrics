@@ -259,7 +259,11 @@ def load_structure(path: str | Path) -> tuple:
 def detect_chains(topology) -> tuple[Optional[str], Optional[str]]:
     """Auto-detect ligand (peptide) and receptor chain IDs from topology.
 
-    Identifies protein chains by counting standard amino acid residues.
+    Identifies protein chains by counting amino-acid residues: the standard ones and
+    their AMBER variants, D-amino acids, phosphorylated residues and, with biotite
+    installed, every peptide-linking component of the Chemical Component Dictionary
+    (the definition of ``biotite.structure.filter_amino_acids``, which the interface
+    metrics use). A chain of D-residues is a protein chain.
     Returns the smallest chain as ligand and largest as receptor.
     If only one chain exists, returns it as ligand and None as receptor.
 
@@ -272,9 +276,10 @@ def detect_chains(topology) -> tuple[Optional[str], Optional[str]]:
     """
     # Amino acids only — exclude water (HOH) and nucleic acids which are also
     # in app.PDBFile._standardResidues and would cause water chains to be ranked.
+    amino_acids = _amino_acid_names()
     chain_sizes = []
     for chain in topology.chains():
-        n_protein = sum(1 for r in chain.residues() if r.name in PROTEIN_RESIDUES)
+        n_protein = sum(1 for r in chain.residues() if r.name in amino_acids)
         if n_protein > 0:
             chain_sizes.append((chain.id, n_protein))
 
