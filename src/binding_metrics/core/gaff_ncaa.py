@@ -42,12 +42,15 @@ purpose-built RESP-fitted parameters.  Residues already covered by curated templ
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 import xml.etree.ElementTree as ET
 from typing import Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # Residue names handled by ff14SB directly or by curated XML templates elsewhere.
 # Anything NOT in this set (and with >1 heavy atom, non-metal) is treated as an
@@ -222,6 +225,63 @@ def _perceive_bond_orders(mol):
     candidate = Chem.Mol(mol)
     Chem.SanitizeMol(candidate)
     return candidate
+
+
+#: Groups that are charged at pH 7.4 but that template generation perceives in
+#: their neutral form (bond-order perception runs at total charge 0). Each entry is
+#: (label, SMARTS with the ionisable heavy atom first, net charge at pH 7.4). The
+#: charges are the textbook majority state; phosphate monoesters are taken as -2
+#: (as in the AMBER phosaa residues, see :mod:`binding_metrics.core.phosaa`).
+#: Order matters: a group claims its atoms, so the two-OH phosphate is matched
+#: before the one-OH pattern and guanidine before primary amine.
+#:
+#: Bonds are written ``~`` (any order) on purpose. Perception on a residue without
+#: hydrogens often keeps every bond single, which turns C(=O)OH into C(OH)2 and
+#: C(=NH)(NH2)2 into C(NH2)3; the patterns accept both spellings so the warning
+#: still fires on such a graph.
+_IONIZABLE_GROUPS = (
+    ("phosphate (two acidic OH)", "[#15](~[OX2H1])(~[OX2H1])~[#8]", -2),
+    ("phosphate (one acidic OH)", "[#15](~[#8])(~[#8])~[OX2H1]", -1),
+    ("sulfate or sulfonic acid", "[#16](~[#8])(~[#8])~[OX2H1]", -1),
+    ("carboxylic acid", "[#6;X3,X4]([#6])(~[OX1,$([OX2H1])])~[OX2H1]", -1),
+    (
+        "guanidine",
+        "[#6;X3,X4;!a]"
+        + "(~[N+0;!$(N-[#6]=O);!$(N-a);!$(N-C#N)])" * 2
+        + "~[N+0;!$(N-[#6]=O);!$(N-a);!$(N-C#N)]",
+        +1,
+    ),
+    ("primary amine", "[NX3;H2;!$(N-[#6]=[O,S,N]);!$(N-a);!$(N-[#7,#8,#15,#16])][CX4]", +1),
+)
+
+
+def _neutral_ionizable_groups(mol, rd_res_names, cap_indices) -> list:
+    """List the side-chain groups of ``mol`` that are perceived neutral but ionise at pH 7.4.
+
+    ``mol`` is the capped, hydrogen-complete RDKit molecule of one residue. A group
+    already perceived in its charged form (``C(=O)[O-]``, ``[NH3+]``) does not
+    match, so only groups the template treats as neutral are reported. The
+    backbone atoms and the carbon caps are skipped: the cap hides the backbone
+    carbonyl, which the perception can turn into a spurious acid.
+
+    Returns:
+        List of ``(label, charge)`` pairs, one per group found.
+    """
+    from rdkit import Chem
+
+    found: list = []
+    claimed: set = set()
+    for label, smarts, charge in _IONIZABLE_GROUPS:
+        pattern = Chem.MolFromSmarts(smarts)
+        for match in mol.GetSubstructMatches(pattern):
+            key_atom = match[0]
+            if key_atom in cap_indices or rd_res_names.get(key_atom) in _BACKBONE_HEAVY:
+                continue
+            if claimed & set(match):
+                continue
+            claimed.update(match)
+            found.append((label, charge))
+    return found
 
 
 def _build_capped_molecule(res, topology, pos_A):
@@ -409,9 +469,12 @@ def _generate_residue_template(
     backbone class with a GAFF sidechain class) are emitted explicitly with the
     GAFF force constants so nothing is silently dropped by ``createSystem``.
 
-    Returns ``(ffxml_string, h_inject)`` where ``h_inject`` is a list of
-    ``(h_name, parent_atom_name, position_nm_ndarray)`` for the hydrogens that must
-    be injected into the topology residue, or ``None`` on failure.
+    Returns ``(ffxml_string, h_inject, neutral_groups)`` where ``h_inject`` is a
+    list of ``(h_name, parent_atom_name, position_nm_ndarray)`` for the hydrogens
+    that must be injected into the topology residue, and ``neutral_groups`` lists
+    the ``(label, charge)`` of side-chain groups that ionise at pH 7.4 but were
+    built neutral (see :func:`_neutral_ionizable_groups`). Returns ``None`` on
+    failure.
     """
     from openff.toolkit import Molecule
     from openmmforcefields.generators import GAFFTemplateGenerator
@@ -423,6 +486,7 @@ def _generate_residue_template(
     mol = _perceive_bond_orders(mol)
     mh = Chem.AddHs(mol, addCoords=True)
     hconf = mh.GetConformer()
+    neutral_groups = _neutral_ionizable_groups(mh, rd_res_names, cap_indices)
 
     # Classify hydrogens: keep those bonded to a residue heavy atom; drop cap-H.
     keep_h: list = []
@@ -559,7 +623,7 @@ def _generate_residue_template(
         h_inject.append(
             (new_name[h_idx], rd_res_names[parent], np.array([p.x, p.y, p.z]) / 10.0)  # Å → nm
         )
-    return ffxml_out, h_inject
+    return ffxml_out, h_inject, neutral_groups
 
 
 def _inject_boundary_terms(
@@ -747,6 +811,30 @@ def _rebuild_topology_with_injected_h(topology, pos_nm, h_by_res: dict):
     return new_top, new_positions
 
 
+class NcaaTemplateList(list):
+    """The generated force-field XML strings, plus per-residue charge bookkeeping.
+
+    Behaves as the plain ``list`` of XML strings (one per unique residue name) that
+    :func:`parameterize_ncaa_residues` has always returned.
+
+    Attributes:
+        net_charge_by_residue: ``{residue name: net charge in e of its template}``.
+            The template is an integer: bond-order perception runs at total
+            charge 0, so this is 0 unless the perceived graph carries formal
+            charges.
+        neutral_ionizable_groups: ``{residue name: [group label, ...]}`` for
+            residues that carry a side-chain group charged at pH 7.4 (carboxylic
+            acid, phosphate, sulfate, primary amine, guanidine) yet were
+            parameterised in the neutral form. Residues without such a group are
+            absent.
+    """
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.net_charge_by_residue: dict = {}
+        self.neutral_ionizable_groups: dict = {}
+
+
 def parameterize_ncaa_residues(
     topology, positions, ff, *, gaff_version: str = "gaff-2.2.20", verbose: bool = True
 ):
@@ -774,10 +862,14 @@ def parameterize_ncaa_residues(
         unique NCAA residue name; empty if there were none).  The XMLs are already
         loaded into ``ff``; callers that build *separate* force fields (e.g. the
         peptide/receptor subsystems in the energy decomposition) must reload them.
+        The list is an :class:`NcaaTemplateList`, which also carries the net
+        charge of each template and the residues built neutral although they hold
+        a group charged at pH 7.4; a warning is logged for each of those.
     """
+    ncaa_ffxmls = NcaaTemplateList()
     ncaa_residues = [res for res in topology.residues() if _is_ncaa(res)]
     if not ncaa_residues:
-        return topology, positions, []
+        return topology, positions, ncaa_ffxmls
 
     try:
         import openmmforcefields  # noqa: F401
@@ -800,7 +892,6 @@ def parameterize_ncaa_residues(
         )
 
     loaded_names: set = set()
-    ncaa_ffxmls: list = []
     h_by_res: dict = {}
     expected_h: dict = {}  # name -> tuple of kept H names (consistency guard)
 
@@ -813,7 +904,7 @@ def parameterize_ncaa_residues(
             result = None
         if result is None:
             continue
-        ffxml, h_inject = result
+        ffxml, h_inject, neutral_groups = result
         h_by_res[res.index] = h_inject
         h_names = tuple(h[0] for h in h_inject)
 
@@ -822,8 +913,21 @@ def parameterize_ncaa_residues(
             loaded_names.add(res.name)
             expected_h[res.name] = h_names
             ncaa_ffxmls.append(ffxml)
+            net = _template_net_charge(ffxml)
+            ncaa_ffxmls.net_charge_by_residue[res.name] = round(net, 4)  # drop XML rounding noise
+            if neutral_groups:
+                ncaa_ffxmls.neutral_ionizable_groups[res.name] = [g for g, _ in neutral_groups]
+                logger.warning(
+                    "GAFF NCAA '%s' is assumed neutral (template net charge %+.2f) but "
+                    "carries group(s) charged at pH 7.4: %s. Expected net charge is about "
+                    "%+d, so electrostatics and energies involving this residue are "
+                    "unreliable unless its charge is set by hand.",
+                    res.name,
+                    net,
+                    ", ".join(g for g, _ in neutral_groups),
+                    round(net) + sum(c for _, c in neutral_groups),
+                )
             if verbose:
-                net = _template_net_charge(ffxml)
                 print(
                     f"  Auto-GAFF2: '{res.name}' template generated "
                     f"({len(h_inject)} H, net charge {net:+.4f})"

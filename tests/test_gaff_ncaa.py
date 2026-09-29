@@ -179,6 +179,13 @@ class TestGaffTemplateGeneration:
             name = ET.fromstring(xml).find(".//Residue").get("name")
             assert abs(net) < 1e-3, f"{name} template net charge {net} is not integer-neutral"
 
+    def test_net_charge_is_recorded_per_residue(self, cyclosporin_ncaa_result):
+        """BMT and ABA carry no acid or base, so they are neutral and raise no warning."""
+        _, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        assert set(ncaa_xmls.net_charge_by_residue) == {"BMT", "ABA"}
+        assert all(abs(q) < 1e-3 for q in ncaa_xmls.net_charge_by_residue.values())
+        assert ncaa_xmls.neutral_ionizable_groups == {}
+
     def test_template_atom_names_match_topology_residue(self, cyclosporin_ncaa_result):
         topology, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
         # Every heavy-atom name in the topology NCAA residue must appear in its
