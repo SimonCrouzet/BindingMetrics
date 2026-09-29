@@ -24,10 +24,13 @@ nothing here raises.
 from __future__ import annotations
 
 import functools
+import logging
 import platform as _platform
 import subprocess
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 #: Version of the provenance block itself. Bump when a key is renamed, removed
 #: or changes meaning; adding a key does not need a bump.
@@ -51,7 +54,8 @@ def _package_version() -> Optional[str]:
         from binding_metrics import __version__
 
         return str(__version__)
-    except Exception:  # provenance must never break a run
+    except Exception:  # noqa: BLE001 - provenance must never break a run; None is the record
+        logger.debug("package version unavailable", exc_info=True)
         return None
 
 
@@ -79,7 +83,8 @@ def _git_sha() -> Optional[str]:
         if (toplevel / "src" / _PACKAGE_DIR.name).resolve() != _PACKAGE_DIR:
             return None
         return sha or None
-    except Exception:  # git missing, timeout, unexpected output
+    except Exception:  # noqa: BLE001 - git missing, timeout or odd output; None is the record
+        logger.debug("git sha unavailable", exc_info=True)
         return None
 
 
@@ -88,7 +93,8 @@ def _openmm_version() -> Optional[str]:
         import openmm
 
         return str(openmm.__version__)
-    except Exception:  # OpenMM missing or broken
+    except Exception:  # noqa: BLE001 - OpenMM missing or broken; None is the record
+        logger.debug("OpenMM version unavailable", exc_info=True)
         return None
 
 
@@ -107,7 +113,8 @@ def collect_provenance(seed: Optional[int] = None, platform: Optional[str] = Non
     """
     try:
         os_name: Optional[str] = _platform.platform()
-    except Exception:  # platform probing failed
+    except Exception:  # noqa: BLE001 - platform probing failed; None is the record
+        logger.debug("OS name unavailable", exc_info=True)
         os_name = None
     return {
         "schema_version": SCHEMA_VERSION,
