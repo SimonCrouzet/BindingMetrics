@@ -275,3 +275,45 @@ class TestMinimizationLogging:
             "[s2]   Stage 3: Final unrestrained refinement",
             f"[s2] Minimized: {result.potential_energy_minimized:.1f} kJ/mol",
         ]
+
+
+# ---------------------------------------------------------------------------
+# protocols/report.py
+# ---------------------------------------------------------------------------
+
+REPORT_LOGGER = "binding_metrics.protocols.report"
+
+
+class TestWriteReportLogging:
+    def test_summary_path_reaches_the_module_logger(self, tmp_path, caplog):
+        from binding_metrics.protocols.report import write_report
+
+        with caplog.at_level(logging.INFO, logger=REPORT_LOGGER):
+            write_report({"sample_id": "s"}, tmp_path, "s", summary=True)
+        records = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == REPORT_LOGGER]
+        assert records == [(logging.INFO, f"  summary   → {tmp_path / 's_report.md'}")]
+
+    def test_no_summary_logs_nothing(self, tmp_path, caplog):
+        from binding_metrics.protocols.report import write_report
+
+        with caplog.at_level(logging.DEBUG, logger="binding_metrics"):
+            write_report({"sample_id": "s"}, tmp_path, "s")
+        assert caplog.records == []
+
+    def test_cli_output_is_unchanged(self, tmp_path, monkeypatch, capsys, console_logging):
+        """``binding-metrics-report --summary`` prints the summary line, then the results line."""
+        import json
+        import sys
+
+        from binding_metrics.protocols import report
+
+        results = tmp_path / "s_results.json"
+        results.write_text(json.dumps({"sample_id": "s"}))
+        monkeypatch.setattr(
+            sys, "argv", ["binding-metrics-report", "--results", str(results), "--summary"]
+        )
+        report.main()
+        summary_path = tmp_path / "s_report.md"
+        assert capsys.readouterr().out == (
+            f"  summary   → {summary_path}\n  results   → {results}\n"
+        )

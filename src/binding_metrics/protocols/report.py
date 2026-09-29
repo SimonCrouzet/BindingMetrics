@@ -13,6 +13,7 @@ import argparse
 import csv
 import datetime
 import json
+import logging
 import math
 import numbers
 import sys
@@ -20,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Scorecard thresholds used by the Markdown summary.
@@ -821,7 +824,7 @@ def write_report(
         else:
             report_path = output_dir / f"{sample_id}_report.md"
             report_path.write_text(_build_summary(results), encoding="utf-8")
-        print(f"  summary   → {report_path}")
+        logger.info("  summary   → %s", report_path)
 
     return out_path
 
@@ -832,6 +835,10 @@ def write_report(
 
 
 def main() -> None:
+    from binding_metrics.utils import configure_logging
+
+    configure_logging()
+
     parser = argparse.ArgumentParser(
         description=(
             "Export binding-metrics results to JSON or CSV, with optional Markdown summary."
