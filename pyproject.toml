@@ -55,11 +55,11 @@ all = [
     "scipy>=1.10",
     "DockQ>=2.0",
     "pandas>=1.5",
-    "matplotlib>=3.6",
     "markdown>=3.4",
     # openmmforcefields + openff-toolkit are conda-forge only; install via environment.yml
 ]
-report = ["pandas>=1.5", "matplotlib>=3.6", "markdown>=3.4"]
+# pandas is read by binding-metrics-energy (CSV), markdown by the HTML summary.
+report = ["pandas>=1.5", "markdown>=3.4"]
 dev    = ["pytest>=7.0", "ruff==0.15.21"]  # keep equal to ci.yml and .pre-commit-config.yaml
 
 [project.scripts]
