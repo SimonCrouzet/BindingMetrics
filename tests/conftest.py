@@ -3,7 +3,6 @@
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 # Allow `from conftest import ...` in test files
@@ -106,29 +105,6 @@ def sample_pdb_path(sample_pdb_content: str, tmp_path: Path) -> Path:
     pdb_path = tmp_path / "test_complex.pdb"
     pdb_path.write_text(sample_pdb_content)
     return pdb_path
-
-
-@pytest.fixture
-def minimal_trajectory_data() -> dict:
-    """Minimal mock trajectory data for metric testing."""
-    n_frames = 10
-    n_atoms = 33  # Updated for PDB with hydrogens
-
-    # Random positions with small fluctuations
-    np.random.seed(42)
-    base_positions = np.random.rand(n_atoms, 3) * 5  # 5 nm box
-
-    positions = np.zeros((n_frames, n_atoms, 3))
-    for i in range(n_frames):
-        positions[i] = base_positions + np.random.randn(n_atoms, 3) * 0.01
-
-    return {
-        "positions": positions,  # nm
-        "n_frames": n_frames,
-        "n_atoms": n_atoms,
-        "ligand_indices": list(range(23, 33)),  # Chain B (atoms 24-33, 0-indexed)
-        "receptor_indices": list(range(23)),  # Chain A (atoms 1-23, 0-indexed)
-    }
 
 
 @pytest.fixture
