@@ -13,11 +13,17 @@ the seed used.
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
 
 def main() -> None:
+    from binding_metrics.utils import configure_logging
+
+    # stdout carries the JSON summary that scripts parse, so INFO records stay off it.
+    configure_logging(logging.WARNING)
+
     parser = argparse.ArgumentParser(
         description="Add explicit solvent and ions to a structure.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,

@@ -11,11 +11,17 @@ Prep is seeded by default, so the same input and seed give the same output;
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
 
 def main() -> None:
+    from binding_metrics.utils import configure_logging
+
+    # stdout carries the JSON summary that scripts parse, so INFO records stay off it.
+    configure_logging(logging.WARNING)
+
     parser = argparse.ArgumentParser(
         description="Fix and protonate a structure using PDBFixer.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
