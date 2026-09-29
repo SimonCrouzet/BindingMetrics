@@ -55,6 +55,11 @@ OLD_CUSTOM_HYDROGEN_RESIDUES = frozenset(
 # core.cyclic.rename_disulfide_cys_to_cyx: inline ``("CYS", "CYX")``.
 OLD_CYCLIC_CYSTEINE_NAMES = frozenset(("CYS", "CYX"))
 
+# core.gaff_ncaa._BACKBONE_HEAVY, ImplicitRelaxation._add_restraints (``backbone_names``)
+# and, with OXT added, core.cyclic._BACKBONE_ATOM_NAMES.
+OLD_BACKBONE_HEAVY_ATOM_NAMES = frozenset({"N", "CA", "C", "O"})
+OLD_CYCLIC_BACKBONE_ATOM_NAMES = frozenset({"N", "CA", "C", "O", "OXT"})
+
 # protocols.qc.WATER_NAMES.
 OLD_QC_WATER_NAMES = frozenset({"HOH", "WAT", "H2O"})
 
@@ -390,3 +395,37 @@ class TestCyclicNameSets:
             name in residues.CUSTOM_HYDROGEN_RESIDUES for name in names
         ]
         assert sum(variant is not None for variant in variants) == 8
+
+
+class TestBackboneAtomNames:
+    def test_constant_equals_the_old_literal(self):
+        assert residues.BACKBONE_HEAVY_ATOM_NAMES == OLD_BACKBONE_HEAVY_ATOM_NAMES
+
+    def test_gaff_and_cyclic_sets_equal_their_old_literals(self):
+        from binding_metrics.core import cyclic, gaff_ncaa
+
+        assert gaff_ncaa._BACKBONE_HEAVY == OLD_BACKBONE_HEAVY_ATOM_NAMES
+        assert cyclic._BACKBONE_ATOM_NAMES == OLD_CYCLIC_BACKBONE_ATOM_NAMES
+
+    def test_backbone_restraint_covers_the_four_backbone_atoms_only(self):
+        pytest.importorskip("openmm")
+        import openmm
+        from openmm import app
+
+        from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
+
+        topology = app.Topology()
+        residue = topology.addResidue("ALA", topology.addChain(id="A"))
+        for name in ["N", "CA", "C", "O", "CB", "OXT"]:
+            topology.addAtom(name, app.element.carbon, residue)
+        positions = [openmm.Vec3(0.1 * i, 0.0, 0.0) for i in range(6)]
+        system = openmm.System()
+        for _ in positions:
+            system.addParticle(12.0)
+
+        relaxer = ImplicitRelaxation(RelaxationConfig())
+        force_index = relaxer._add_restraints(system, topology, positions, backbone_only=True)
+
+        restrained = [system.getForce(force_index).getParticleParameters(i)[0] for i in range(4)]
+        assert system.getForce(force_index).getNumParticles() == 4
+        assert restrained == [0, 1, 2, 3]

@@ -74,6 +74,7 @@ import numpy as np
 
 from binding_metrics.core.residues import (
     AMBER_STANDARD_VARIANTS,
+    BACKBONE_HEAVY_ATOM_NAMES,
     FORCE_FIELD_CAP_NAMES,
     ION_NAMES_COMMON,
     LACTAM_TEMPLATE_RESIDUES,
@@ -446,7 +447,7 @@ def _hydrogen_names(keep_h, rd_res_names) -> dict:
 
 
 # Protein-backbone atom names whose GAFF types we override with ff14SB types.
-_BACKBONE_HEAVY = frozenset({"N", "CA", "C", "O"})
+_BACKBONE_HEAVY = BACKBONE_HEAVY_ATOM_NAMES
 # Map an external-partner atom name to its ff14SB atom *class*, so a junction that
 # crosses into the neighbouring residue (peptide C(i)–N(i+1), head-to-tail closure)
 # is keyed to amber classes on both sides.  Extendable for exotic linkages.

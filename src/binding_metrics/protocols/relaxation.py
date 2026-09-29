@@ -65,6 +65,7 @@ from binding_metrics._constants import (
 )
 from binding_metrics.core.residues import (
     AMBER_STANDARD_VARIANTS,
+    BACKBONE_HEAVY_ATOM_NAMES,
     FORCE_FIELD_CAP_NAMES,
     ION_NAMES_COMMON,
     LACTAM_TEMPLATE_RESIDUES,
@@ -905,7 +906,6 @@ class ImplicitRelaxation(Relaxer):
         Returns:
             Force index in the system
         """
-        backbone_names = {"N", "CA", "C", "O"}
         restraint = openmm.CustomExternalForce("0.5 * k * ((x-x0)^2 + (y-y0)^2 + (z-z0)^2)")
         restraint.addGlobalParameter(
             "k",
@@ -916,7 +916,7 @@ class ImplicitRelaxation(Relaxer):
         restraint.addPerParticleParameter("z0")
 
         for atom in topology.atoms():
-            if backbone_only and atom.name not in backbone_names:
+            if backbone_only and atom.name not in BACKBONE_HEAVY_ATOM_NAMES:
                 continue
             pos = positions[atom.index]
             restraint.addParticle(atom.index, [pos.x, pos.y, pos.z])

@@ -1,4 +1,4 @@
-"""Residue and water name sets shared by the package.
+"""Residue, water and backbone-atom name sets shared by the package.
 
 Pure Python with no third-party imports, so the module loads without OpenMM,
 biotite or numpy. The sets below look alike on purpose in places (a protonation
@@ -144,3 +144,6 @@ WATER_NAMES_ALL: frozenset[str] = WATER_NAMES_WITH_H2O | WATER_MODEL_NAMES
 CUSTOM_HYDROGEN_RESIDUES: frozenset[str] = (
     frozenset({"CYX"}) | LACTAM_TEMPLATE_RESIDUES | N_METHYLATED_RESIDUES
 )
+
+#: Backbone heavy atoms of an amino-acid residue: N, CA, C and the carbonyl O.
+BACKBONE_HEAVY_ATOM_NAMES: frozenset[str] = frozenset({"N", "CA", "C", "O"})

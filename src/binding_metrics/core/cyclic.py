@@ -46,7 +46,11 @@ from typing import Optional
 
 import numpy as np
 
-from binding_metrics.core.residues import CUSTOM_HYDROGEN_RESIDUES, CYSTEINE_NAMES
+from binding_metrics.core.residues import (
+    BACKBONE_HEAVY_ATOM_NAMES,
+    CUSTOM_HYDROGEN_RESIDUES,
+    CYSTEINE_NAMES,
+)
 
 # ---------------------------------------------------------------------------
 # Threshold constants (nm)
@@ -394,7 +398,7 @@ def _find_atom(residue, name: str):
 
 #: Backbone atom names — a cross-link touching one of these is not a side-chain
 #: staple.
-_BACKBONE_ATOM_NAMES = frozenset({"N", "CA", "C", "O", "OXT"})
+_BACKBONE_ATOM_NAMES = BACKBONE_HEAVY_ATOM_NAMES | {"OXT"}
 
 
 def _is_hydrocarbon_staple_bond(ai, aj) -> bool:
