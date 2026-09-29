@@ -22,6 +22,9 @@ OLD_PROTEIN_RESIDUES = frozenset(
     ).split()
 )
 
+# io.structures.strip_heterogens: local ``_water_names``.
+OLD_STRIP_HETEROGENS_WATERS = frozenset({"HOH", "WAT", "TIP", "TIP3", "SOL"})
+
 
 def _build_topology(chains):
     """Topology with one carbon atom per residue; ``chains`` maps chain id to residue names."""
@@ -99,3 +102,30 @@ class TestProteinResidues:
         names = [residue.name for residue in stripped.residues()]
         assert names == ["ALA", "GLY"] + ["ALA"] * 4 + ["MLE", "ASPL"]
         assert report["removed_heterogens"] == ["HIN (chain C)", "ZN (chain C)"]
+
+
+class TestStripHeterogensWaters:
+    def test_constant_equals_the_old_literal(self):
+        assert residues.WATER_NAMES_STRIP_HETEROGENS == OLD_STRIP_HETEROGENS_WATERS
+
+    def test_h2o_is_not_one_of_the_stripped_solvent_names(self):
+        assert "H2O" not in residues.WATER_NAMES_STRIP_HETEROGENS
+        assert residues.WATER_MODEL_NAMES == {"SOL", "TIP", "TIP3"}
+
+    def test_waters_are_removed_and_counted_but_h2o_is_a_heterogen(self):
+        from binding_metrics.io.structures import strip_heterogens
+
+        topology, positions = _build_topology(
+            {
+                "A": ["ALA", "GLY"],
+                "B": ["ALA"] * 4,
+                "C": ["HOH", "WAT", "TIP", "TIP3", "SOL", "H2O"],
+            }
+        )
+        report: dict = {}
+
+        stripped, _ = strip_heterogens(topology, positions, "A", "B", report=report)
+
+        assert [residue.name for residue in stripped.residues()] == ["ALA", "GLY"] + ["ALA"] * 4
+        assert report["n_removed_waters"] == 5
+        assert report["removed_heterogens"] == ["H2O (chain C)"]

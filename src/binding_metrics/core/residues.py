@@ -83,3 +83,13 @@ PROTEIN_RESIDUES: frozenset[str] = (
     | LACTAM_TEMPLATE_RESIDUES
     | N_METHYLATED_RESIDUES
 )
+
+#: Water names written by solvation tools and water models (GROMACS SOL, TIP,
+#: TIP3).
+WATER_MODEL_NAMES: frozenset[str] = frozenset({"SOL", "TIP", "TIP3"})
+
+#: Water names ``io.structures.strip_heterogens`` deletes as solvent. H2O is not
+#: in it, so an H2O residue outside the protein chains is removed as an ordinary
+#: heterogen: it is listed in ``removed_heterogens``, not counted in
+#: ``n_removed_waters``, and triggers the proximity warning.
+WATER_NAMES_STRIP_HETEROGENS: frozenset[str] = WATER_NAMES_PDB_AMBER | WATER_MODEL_NAMES

@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from binding_metrics.core.residues import PROTEIN_RESIDUES
+from binding_metrics.core.residues import PROTEIN_RESIDUES, WATER_NAMES_STRIP_HETEROGENS
 from binding_metrics.utils import add_to_report, backfill_auth_columns, extend_report
 
 if TYPE_CHECKING:
@@ -365,8 +365,6 @@ def strip_heterogens(
         * 10
     )  # nm → Å
 
-    _water_names = {"HOH", "WAT", "TIP", "TIP3", "SOL"}
-
     atoms_to_remove = []
     removed_heterogens: list[str] = []
     n_removed_waters = 0
@@ -376,7 +374,7 @@ def strip_heterogens(
         if res.name in PROTEIN_RESIDUES:
             continue
         # Water: always remove silently
-        if res.name in _water_names:
+        if res.name in WATER_NAMES_STRIP_HETEROGENS:
             atoms_to_remove.extend(res.atoms())
             n_removed_waters += 1
             continue
