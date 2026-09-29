@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import requires_cuda
 from openmm import Vec3, unit
 from openmm.app import Topology, element
 
@@ -193,3 +194,84 @@ class TestStripHeterogensLogging:
         topology, positions = _protein_with_ions([3.0, 20.0])
         strip_heterogens(topology, positions, "A", None)
         assert capsys.readouterr().out == f"{self.close}\n{self.distant}\n"
+
+
+# ---------------------------------------------------------------------------
+# protocols/relaxation.py
+# ---------------------------------------------------------------------------
+
+RELAXATION_LOGGER = "binding_metrics.protocols.relaxation"
+
+
+def _relaxer(**overrides):
+    from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
+
+    settings = {
+        "md_duration_ps": 0.0,
+        "min_steps_initial": 20,
+        "min_steps_restrained": 10,
+        "min_steps_final": 20,
+    }
+    settings.update(overrides)
+    return ImplicitRelaxation(RelaxationConfig(**settings))
+
+
+class TestSetupSystemLogging:
+    """The linear-peptide path of ``_setup_system`` (1YCR, no GPU needed)."""
+
+    expected = ["  Linear peptide (no cyclization detected)", "  Adding hydrogens..."]
+
+    def test_progress_reaches_the_module_logger(self, prepped_example_cif, caplog):
+        with caplog.at_level(logging.INFO, logger=RELAXATION_LOGGER):
+            _relaxer()._setup_system(prepped_example_cif)
+        records = [r for r in caplog.records if r.name == RELAXATION_LOGGER]
+        assert [r.getMessage() for r in records] == self.expected
+        assert {r.levelno for r in records} == {logging.INFO}
+
+    def test_stdout_text_is_the_former_print(self, prepped_example_cif, console_logging, capsys):
+        console_logging()
+        _relaxer()._setup_system(prepped_example_cif)
+        assert capsys.readouterr().out == "\n".join(self.expected) + "\n"
+
+
+class TestRunErrorLogging:
+    def test_failure_is_logged_as_a_warning_with_the_former_text(self, tmp_path, caplog):
+        with caplog.at_level(logging.INFO, logger=RELAXATION_LOGGER):
+            result = _relaxer().run(tmp_path / "missing.cif", tmp_path, sample_id="s1")
+        assert not result.success
+        records = [
+            (r.levelno, r.getMessage()) for r in caplog.records if r.name == RELAXATION_LOGGER
+        ]
+        assert records == [
+            (logging.INFO, "[s1] Preparing system..."),
+            (logging.WARNING, f"[s1] ERROR: {result.error_message}"),
+        ]
+
+    def test_failure_text_stays_on_stdout(self, tmp_path, console_logging, capsys):
+        console_logging()
+        result = _relaxer().run(tmp_path / "missing.cif", tmp_path, sample_id="s1")
+        out = capsys.readouterr().out
+        assert out == f"[s1] Preparing system...\n[s1] ERROR: {result.error_message}\n"
+
+
+@requires_cuda
+@pytest.mark.integration
+class TestMinimizationLogging:
+    def test_stage_lines_keep_their_text(
+        self, prepped_example_cif, tmp_path, console_logging, capsys
+    ):
+        console_logging()
+        result = _relaxer(device="cuda").run(prepped_example_cif, tmp_path, sample_id="s2")
+        assert result.success, result.error_message
+        lines = capsys.readouterr().out.splitlines()
+        assert lines == [
+            "[s2] Preparing system...",
+            "  Linear peptide (no cyclization detected)",
+            "  Adding hydrogens...",
+            "  Platform: CUDA (mixed precision)",
+            "[s2] Minimizing (3 stages)...",
+            "[s2]   Stage 1: Global relaxation",
+            "[s2]   Stage 2: Backbone-restrained optimization",
+            "[s2]   Stage 3: Final unrestrained refinement",
+            f"[s2] Minimized: {result.potential_energy_minimized:.1f} kJ/mol",
+        ]

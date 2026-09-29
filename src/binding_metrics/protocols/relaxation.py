@@ -566,11 +566,13 @@ class ImplicitRelaxation:
                     hydrogens_are_explicit=True,
                 )
                 result.append(mol)
-                print(f"  Auto-GAFF2: '{res.name}' ({mol.n_atoms} heavy atoms)")
+                logger.info("  Auto-GAFF2: '%s' (%s heavy atoms)", res.name, mol.n_atoms)
             except Exception as exc:
-                print(
-                    f"  Warning: could not build GAFF2 molecule for '{res.name}': "
-                    f"{exc}. Skipping (residue will be excluded from the system)."
+                logger.warning(
+                    "  Warning: could not build GAFF2 molecule for '%s': "
+                    "%s. Skipping (residue will be excluded from the system).",
+                    res.name,
+                    exc,
                 )
 
         return result
@@ -700,7 +702,7 @@ class ImplicitRelaxation:
             if abs(pos.x) < 1e-6 and abs(pos.y) < 1e-6 and abs(pos.z) < 1e-6
         ]
         if origin_atoms:
-            print(f"  Removing {len(origin_atoms)} origin-placeholder atoms...")
+            logger.info("  Removing %d origin-placeholder atoms...", len(origin_atoms))
             modeller.delete(origin_atoms)
             topology, positions = modeller.topology, modeller.positions
 
@@ -738,10 +740,10 @@ class ImplicitRelaxation:
         if not ns_info.is_empty:
             if ns_info.has_d_residues:
                 names = [e["original_name"] for e in ns_info.d_residues]
-                print(f"  D-amino acids: {names} → renamed to L counterparts for FF")
+                logger.info("  D-amino acids: %s → renamed to L counterparts for FF", names)
             if ns_info.has_nmethyl:
                 names = [e["original_name"] for e in ns_info.nmethyl_residues]
-                print(f"  N-methylated residues: {names}")
+                logger.info("  N-methylated residues: %s", names)
             topology, positions = patch_nonstandard(topology, positions, peptide_chain, ns_info)
             load_nonstandard_xmls(ff, ns_info)
 
@@ -763,7 +765,7 @@ class ImplicitRelaxation:
         )
         topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
         if bond_info:
-            print(f"  Cyclic peptide detected — {len(bond_info)} bond(s):")
+            logger.info("  Cyclic peptide detected — %d bond(s):", len(bond_info))
             # Build a residue-name lookup: (chain_id, res_idx_in_chain) → res_name
             res_name_map: dict = {}
             for chain in topology.chains():
@@ -774,10 +776,19 @@ class ImplicitRelaxation:
                 c2, r2, a2 = b.atom2_id
                 rname1 = res_name_map.get((c1, r1), "???")
                 rname2 = res_name_map.get((c2, r2), "???")
-                print(f"    {b.cyclic_type:<14}: {rname1}[{r1}].{a1} → {rname2}[{r2}].{a2}")
+                logger.info(
+                    "    %-14s: %s[%s].%s → %s[%s].%s",
+                    b.cyclic_type,
+                    rname1,
+                    r1,
+                    a1,
+                    rname2,
+                    r2,
+                    a2,
+                )
             load_extra_xmls(ff, bond_info)
         else:
-            print("  Linear peptide (no cyclization detected)")
+            logger.info("  Linear peptide (no cyclization detected)")
 
         # --- GAFF2 for non-standard residues / small-molecule co-factors ---
         # Must run BEFORE addHydrogens so the generated residue templates (with
@@ -802,9 +813,10 @@ class ImplicitRelaxation:
                 gaff_version=self.config.small_molecule_ff,
             )
             if ncaa_xmls:
-                print(
-                    f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
-                    f"ExternalBond templates for {len(ncaa_xmls)} NCAA residue(s)."
+                logger.info(
+                    "  Registered GAFF2 (%s) ExternalBond templates for %d NCAA residue(s).",
+                    self.config.small_molecule_ff,
+                    len(ncaa_xmls),
                 )
         elif self.config.small_molecules:
             # Explicit list: free small-molecule co-factors (no backbone bonds) via
@@ -822,9 +834,10 @@ class ImplicitRelaxation:
                     molecules=mols, forcefield=self.config.small_molecule_ff
                 )
                 ff.registerTemplateGenerator(gaff.generator)
-                print(
-                    f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
-                    f"for {len(mols)} small-molecule(s)."
+                logger.info(
+                    "  Registered GAFF2 (%s) for %d small-molecule(s).",
+                    self.config.small_molecule_ff,
+                    len(mols),
                 )
         else:
             nonstandard_names = [
@@ -832,13 +845,15 @@ class ImplicitRelaxation:
             ]
             if nonstandard_names:
                 unique = sorted(set(nonstandard_names))
-                print(f"  [warning] Non-standard residues found: {', '.join(unique)}")
-                print("  These will likely cause 'No template found' errors.")
-                print("  → Run with --small-molecules auto to parameterise via GAFF2.")
-                print("  → Or run binding-metrics-prep --canonicalize to replace them first.")
+                logger.warning("  [warning] Non-standard residues found: %s", ", ".join(unique))
+                logger.warning("  These will likely cause 'No template found' errors.")
+                logger.warning("  → Run with --small-molecules auto to parameterise via GAFF2.")
+                logger.warning(
+                    "  → Or run binding-metrics-prep --canonicalize to replace them first."
+                )
 
         # --- Add hydrogens ---
-        print("  Adding hydrogens...")
+        logger.info("  Adding hydrogens...")
         modeller = app.Modeller(topology, positions)
 
         # For cyclic peptides, pass explicit variants so addHydrogens uses
@@ -856,9 +871,11 @@ class ImplicitRelaxation:
             with deterministic_hydrogen_placement(seed):
                 modeller.addHydrogens(ff, pH=self.config.ph, variants=addh_variants)
         except Exception as e:
-            print(
-                f"  Warning: addHydrogens(ff, pH={self.config.ph}) failed ({e}), "
-                "retrying without ForceField (approximate H positions)..."
+            logger.warning(
+                "  Warning: addHydrogens(ff, pH=%s) failed (%s), "
+                "retrying without ForceField (approximate H positions)...",
+                self.config.ph,
+                e,
             )
             try:
                 with deterministic_hydrogen_placement(seed):
@@ -1216,15 +1233,15 @@ class ImplicitRelaxation:
                 _sys.addParticle(1.0)
                 _ctx = openmm.Context(_sys, openmm.VerletIntegrator(0.001), platform)
                 del _ctx, _sys
-                print("  Platform: CUDA (mixed precision)")
+                logger.info("  Platform: CUDA (mixed precision)")
                 self._platform_used = "CUDA"
                 self._precision_used = properties["CudaPrecision"]
                 return platform, properties
             except Exception as e:
                 logger.warning("CUDA requested but unavailable, falling back to CPU: %s", e)
                 self._platform_fallback_reason = f"{type(e).__name__}: {e}"
-                print(f"  Warning: CUDA unavailable ({e}), falling back to CPU.")
-        print("  Platform: CPU")
+                logger.warning("  Warning: CUDA unavailable (%s), falling back to CPU.", e)
+        logger.info("  Platform: CPU")
         self._platform_used = "CPU"
         self._precision_used = None
         return openmm.Platform.getPlatformByName("CPU"), {}
@@ -1258,7 +1275,7 @@ class ImplicitRelaxation:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            print(f"[{sample_id}] Preparing system...")
+            logger.info("[%s] Preparing system...", sample_id)
             system, topology, positions, bond_info = self._setup_system(input_path)
 
             if bond_info:
@@ -1334,19 +1351,22 @@ class ImplicitRelaxation:
                         if omega_indices is None:
                             omega_indices = resolve_omega_atoms(topology, bi, peptide_chain)
                     except Exception as e:
-                        print(f"[{sample_id}]   Warning: could not resolve closure atoms: {e}")
+                        logger.warning(
+                            "[%s]   Warning: could not resolve closure atoms: %s", sample_id, e
+                        )
 
             # --- Multi-stage minimization ---
             n_stages = "4" if closure_indices_list else "3"
-            print(f"[{sample_id}] Minimizing ({n_stages} stages)...")
+            logger.info("[%s] Minimizing (%s stages)...", sample_id, n_stages)
             min_start = time.time()
 
             # Stage 0 (cyclic only): relax all closure bond geometries before Stage 1.
             # One CustomBondForce covers all closure bonds (monocyclic or bicyclic+).
             if closure_indices_list:
-                print(
-                    f"[{sample_id}]   Stage 0: Closure bond geometry relaxation "
-                    f"({len(closure_indices_list)} bond(s))"
+                logger.info(
+                    "[%s]   Stage 0: Closure bond geometry relaxation (%d bond(s))",
+                    sample_id,
+                    len(closure_indices_list),
                 )
                 closure_force = openmm.CustomBondForce("0.5 * k_closure * (r - r0_closure)^2")
                 closure_force.addGlobalParameter(
@@ -1363,7 +1383,7 @@ class ImplicitRelaxation:
                 simulation.minimizeEnergy(maxIterations=CLOSURE_MINIMIZATION_MAX_ITERATIONS)
                 simulation.context.setParameter("k_closure", 0.0)
 
-            print(f"[{sample_id}]   Stage 1: Global relaxation")
+            logger.info("[%s]   Stage 1: Global relaxation", sample_id)
             simulation.minimizeEnergy(
                 maxIterations=self.config.min_steps_initial,
                 tolerance=self.config.min_tolerance
@@ -1372,7 +1392,7 @@ class ImplicitRelaxation:
                 / unit.nanometer,
             )
 
-            print(f"[{sample_id}]   Stage 2: Backbone-restrained optimization")
+            logger.info("[%s]   Stage 2: Backbone-restrained optimization", sample_id)
             # The restraints are centred on the input backbone (``positions``),
             # so side chains settle while the backbone stays near the input.
             self._add_restraints(system, topology, positions, backbone_only=True)
@@ -1385,7 +1405,7 @@ class ImplicitRelaxation:
                 / unit.nanometer,
             )
 
-            print(f"[{sample_id}]   Stage 3: Final unrestrained refinement")
+            logger.info("[%s]   Stage 3: Final unrestrained refinement", sample_id)
             simulation.context.setParameter("k", 0.0)
             simulation.minimizeEnergy(
                 maxIterations=self.config.min_steps_final,
@@ -1423,11 +1443,11 @@ class ImplicitRelaxation:
             src = input_path if input_path.suffix.lower() in (".cif", ".mmcif") else None
             save_cif(topology, minimized_positions, min_path, source_cif_path=src)
             result.minimized_structure_path = str(min_path)
-            print(f"[{sample_id}] Minimized: {result.potential_energy_minimized:.1f} kJ/mol")
+            logger.info("[%s] Minimized: %.1f kJ/mol", sample_id, result.potential_energy_minimized)
 
             # --- MD simulation ---
             if self.config.md_duration_ps > 0:
-                print(f"[{sample_id}] Running MD ({self.config.md_duration_ps} ps)...")
+                logger.info("[%s] Running MD (%s ps)...", sample_id, self.config.md_duration_ps)
                 md_start = time.time()
                 # Seed the initial Maxwell-Boltzmann velocities too, else MD is
                 # nondeterministic even with a seeded integrator.
@@ -1444,9 +1464,9 @@ class ImplicitRelaxation:
                 # Cyclic warmup: 10 ps backbone φ/ψ dihedral restraints to
                 # preserve ring conformation during velocity initialisation.
                 if closure_indices_list:
-                    print(
-                        f"[{sample_id}]   Cyclic warmup: 10 ps restrained MD "
-                        "(backbone φ/ψ restraints)..."
+                    logger.info(
+                        "[%s]   Cyclic warmup: 10 ps restrained MD (backbone φ/ψ restraints)...",
+                        sample_id,
                     )
                     self._run_cyclic_warmup(
                         system,
@@ -1540,7 +1560,7 @@ class ImplicitRelaxation:
 
         except Exception as e:
             result.error_message = f"{type(e).__name__}: {e}"
-            print(f"[{sample_id}] ERROR: {result.error_message}")
+            logger.warning("[%s] ERROR: %s", sample_id, result.error_message)
             traceback.print_exc()
 
         return result
@@ -1639,6 +1659,10 @@ def _run_one(
 
 
 def main():
+    from binding_metrics.utils import configure_logging
+
+    configure_logging()
+
     from binding_metrics.cli import small_molecules_arg
 
     parser = argparse.ArgumentParser(

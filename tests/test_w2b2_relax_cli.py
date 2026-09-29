@@ -1,11 +1,13 @@
 """``binding-metrics-relax`` command-line parsing and console output."""
 
+import logging
 import sys
 from types import SimpleNamespace
 
 import pytest
 
 from binding_metrics.protocols import relaxation
+from binding_metrics.utils import _CurrentStreamHandler
 
 
 class _RecordingRelaxer:
@@ -55,3 +57,42 @@ class TestSmallMoleculesFlag:
         err = capsys.readouterr().err
         assert f"argument --small-molecules: invalid value {value!r}" in err
         assert "expected one of auto, none" in err
+
+
+@pytest.fixture
+def package_logging_restored():
+    """Remove the console handlers ``main()`` installs, and restore the level."""
+    package_logger = logging.getLogger("binding_metrics")
+    saved_level = package_logger.level
+    yield package_logger
+    for name in ("binding_metrics", "__main__"):
+        target = logging.getLogger(name)
+        for handler in [h for h in target.handlers if isinstance(h, _CurrentStreamHandler)]:
+            target.removeHandler(handler)
+    package_logger.setLevel(saved_level)
+
+
+class TestMainConfiguresLogging:
+    def test_library_records_reach_stdout_with_the_former_text(
+        self, relax_main, monkeypatch, capsys, package_logging_restored
+    ):
+        def run_one_that_logs(*args, **kwargs):
+            library = logging.getLogger("binding_metrics.protocols.relaxation")
+            library.info("  Platform: CPU")
+            library.warning("  Warning: CUDA unavailable (probe failed), falling back to CPU.")
+            return SimpleNamespace(success=True)
+
+        monkeypatch.setattr(relaxation, "_run_one", run_one_that_logs)
+        relax_main()
+        assert capsys.readouterr().out == (
+            "  Platform: CPU\n  Warning: CUDA unavailable (probe failed), falling back to CPU.\n"
+        )
+
+    def test_configuration_happens_before_argument_parsing(
+        self, monkeypatch, package_logging_restored
+    ):
+        """A usage error exits before any relaxation, but logging is already set up."""
+        monkeypatch.setattr(sys, "argv", ["binding-metrics-relax", "--bogus"])
+        with pytest.raises(SystemExit):
+            relaxation.main()
+        assert any(isinstance(h, _CurrentStreamHandler) for h in package_logging_restored.handlers)
