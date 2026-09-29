@@ -72,6 +72,8 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.core.residues import METAL_ELEMENTS
+
 logger = logging.getLogger(__name__)
 
 # Residue names handled by ff14SB directly or by curated XML templates elsewhere.
@@ -166,41 +168,6 @@ GAFF_SKIP_RESIDUES = frozenset(
     }
 )
 
-_METAL_SYMBOLS = frozenset(
-    {
-        "Li",
-        "Na",
-        "K",
-        "Rb",
-        "Cs",
-        "Mg",
-        "Ca",
-        "Sr",
-        "Ba",
-        "V",
-        "Cr",
-        "Mn",
-        "Fe",
-        "Co",
-        "Ni",
-        "Cu",
-        "Zn",
-        "Mo",
-        "Ru",
-        "Rh",
-        "Pd",
-        "Ag",
-        "Cd",
-        "W",
-        "Re",
-        "Os",
-        "Ir",
-        "Pt",
-        "Au",
-        "Hg",
-    }
-)
-
 
 def _pos_to_angstrom(positions) -> np.ndarray:
     try:
@@ -221,7 +188,7 @@ def _is_ncaa(res) -> bool:
     if len(heavy) < 2:
         return False  # lone ions / monoatomics
     # Pure metal clusters are not GAFF small molecules.
-    if all(a.element.symbol in _METAL_SYMBOLS for a in heavy):
+    if all(a.element.symbol in METAL_ELEMENTS for a in heavy):
         return False
     return True
 

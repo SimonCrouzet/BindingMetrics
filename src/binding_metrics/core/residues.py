@@ -93,3 +93,11 @@ WATER_MODEL_NAMES: frozenset[str] = frozenset({"SOL", "TIP", "TIP3"})
 #: heterogen: it is listed in ``removed_heterogens``, not counted in
 #: ``n_removed_waters``, and triggers the proximity warning.
 WATER_NAMES_STRIP_HETEROGENS: frozenset[str] = WATER_NAMES_PDB_AMBER | WATER_MODEL_NAMES
+
+#: Element symbols of the metals that standard force fields parameterise as
+#: ions or metal centres, so a residue made only of them needs no GAFF2 template.
+METAL_ELEMENTS: frozenset[str] = frozenset(
+    (
+        "Li Na K Rb Cs Mg Ca Sr Ba V Cr Mn Fe Co Ni Cu Zn Mo Ru Rh Pd Ag Cd W Re Os Ir Pt Au Hg"
+    ).split()
+)

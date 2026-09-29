@@ -14,6 +14,7 @@ from binding_metrics._constants import (
     DEFAULT_RANDOM_SEED,  # re-exported: callers import it from here
 )
 from binding_metrics.core.forcefields import get_forcefield
+from binding_metrics.core.residues import METAL_ELEMENTS
 from binding_metrics.utils import add_to_report, extend_report
 
 log = logging.getLogger(__name__)
@@ -227,40 +228,6 @@ _STANDARD_RESIDUES = {
     "G",
     "T",
     "U",
-}
-
-# Common metal ions parameterised in standard force fields (no GAFF2 needed).
-_METAL_ELEMENTS = {
-    "Li",
-    "Na",
-    "K",
-    "Rb",
-    "Cs",
-    "Mg",
-    "Ca",
-    "Sr",
-    "Ba",
-    "V",
-    "Cr",
-    "Mn",
-    "Fe",
-    "Co",
-    "Ni",
-    "Cu",
-    "Zn",
-    "Mo",
-    "Ru",
-    "Rh",
-    "Pd",
-    "Ag",
-    "Cd",
-    "W",
-    "Re",
-    "Os",
-    "Ir",
-    "Pt",
-    "Au",
-    "Hg",
 }
 
 _WATER_NAMES = {"HOH", "WAT", "SOL", "TIP", "TIP3", "H2O"}
@@ -653,7 +620,7 @@ def prep_structure(
                 continue
 
             elements = {atom.element.symbol for atom in res.atoms() if atom.element is not None}
-            if elements & _METAL_ELEMENTS:
+            if elements & METAL_ELEMENTS:
                 kept_nonstandard.append(f"{res.name} (metal, chain {chain_label})")
                 continue
 
