@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import sys
+import tomllib
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from binding_metrics._constants import DEFAULT_MD_SAVE_INTERVAL_PS
 
@@ -170,3 +172,143 @@ def small_molecules_arg(value: str):
             f"invalid value {value!r}: expected one of {', '.join(_SMALL_MOLECULES_CHOICES)}"
         )
     return None if choice == "none" else choice
+
+
+# ---------------------------------------------------------------------------
+# --config: option defaults from a TOML file
+# ---------------------------------------------------------------------------
+
+_CONFIG_HELP = (
+    "TOML file that supplies option defaults. Keys are long option names "
+    "without the leading dashes (md-duration-ps or md_duration_ps). Flags given "
+    "on the command line override the file."
+)
+
+# argparse action classes that cannot take a value from a file.
+_UNSETTABLE_ACTIONS = (
+    argparse._HelpAction,
+    argparse._VersionAction,
+    argparse._CountAction,
+    argparse._AppendAction,
+    argparse._AppendConstAction,
+)
+
+
+def add_config_arg(parser) -> None:
+    """Add ``--config PATH`` to an argparse parser; use ``parse_args_with_config`` to read it."""
+    parser.add_argument("--config", type=Path, default=None, metavar="PATH", help=_CONFIG_HELP)
+
+
+def parse_args_with_config(parser: argparse.ArgumentParser, argv: Optional[Sequence[str]] = None):
+    """Parse ``argv`` (default ``sys.argv[1:]``); a ``--config`` TOML file supplies defaults.
+
+    The file is flat: each key is the long name of an option of ``parser``,
+    with dashes or underscores (``md-duration-ps`` or ``md_duration_ps``). An
+    option's alias spelling works too (``binder-chain``). Values are
+    converted exactly as the same text on the command line would be, so ``ph = 7``,
+    ``ph = "7.0"`` and ``--ph 7`` agree, and a ``choices`` list is enforced:
+
+    * a flag such as ``skip-prep`` takes ``true`` or ``false``;
+    * an option that takes several values (``energy-modes``) takes a list;
+    * a comma-separated option (``metrics``) takes its string (``"interface,geometry"``);
+    * paths are used as written, relative to the working directory.
+
+    Precedence is built-in default, then the file, then the command line. A
+    file value also satisfies a ``required`` option. Where the file sets one
+    member of a mutually exclusive group and the command line names another,
+    the command line wins.
+
+    Ends the program through ``parser.error`` (exit code 2) for an unreadable
+    or invalid file, an unknown key (the message names it and suggests the
+    closest option), a value of the wrong type or outside the choices, and
+    two keys that set the same option.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    finder = argparse.ArgumentParser(prog=parser.prog, add_help=False)
+    finder.add_argument("--config", type=Path, default=None)
+    config_path = finder.parse_known_args(argv)[0].config
+    if config_path is not None:
+        _apply_config_file(parser, Path(config_path), argv)
+    return parser.parse_args(argv)
+
+
+def _config_options(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
+    """Map each long option name (underscored, without dashes) to its action."""
+    options: dict[str, argparse.Action] = {}
+    for action in parser._actions:
+        if isinstance(action, _UNSETTABLE_ACTIONS) or action.dest == "config":
+            continue
+        for spelling in action.option_strings:
+            if spelling.startswith("--"):
+                options[spelling[2:].replace("-", "_")] = action
+    return options
+
+
+def _config_value(parser, path: Path, key: str, action: argparse.Action, raw):
+    """Convert one TOML value the way argparse would convert the same text."""
+
+    def fail(message: str):
+        parser.error(f"--config {path}: key {key!r}: {message}")
+
+    if isinstance(raw, dict):
+        fail("expected a value, not a table")
+    if action.nargs == 0:
+        if not isinstance(raw, bool):
+            fail(f"expected true or false, got {raw!r}")
+        return raw
+    takes_many = action.nargs in ("+", "*") or (isinstance(action.nargs, int) and action.nargs > 1)
+    if isinstance(raw, list) and not takes_many:
+        fail("expected a single value, not a list")
+    converted = []
+    for item in raw if isinstance(raw, list) else [raw]:
+        if isinstance(item, (bool, dict, list)):
+            fail(f"invalid value {item!r}")
+        try:
+            value = action.type(str(item)) if action.type is not None else str(item)
+        except (ValueError, TypeError, argparse.ArgumentTypeError) as error:
+            fail(f"invalid value {item!r}: {error}")
+        if action.choices is not None and value not in action.choices:
+            fail(f"{value!r} is not one of {', '.join(str(c) for c in action.choices)}")
+        converted.append(value)
+    return converted if takes_many else converted[0]
+
+
+def _apply_config_file(parser: argparse.ArgumentParser, path: Path, argv: list[str]) -> None:
+    """Load ``path`` and install its values as the parser's defaults."""
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        parser.error(f"--config: cannot read {path}: {error.strerror or error}")
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+        parser.error(f"--config {path}: not valid TOML: {error}")
+
+    options = _config_options(parser)
+    values: dict[str, tuple[str, object]] = {}
+    for key, raw in data.items():
+        action = options.get(key.replace("-", "_"))
+        if action is None:
+            close = difflib.get_close_matches(key.replace("-", "_"), options, n=1)
+            hint = f"; did you mean {close[0].replace('_', '-')!r}?" if close else ""
+            parser.error(f"--config {path}: unknown key {key!r}{hint}")
+        if action.dest in values:
+            parser.error(
+                f"--config {path}: keys {values[action.dest][0]!r} and {key!r} set the same option"
+            )
+        values[action.dest] = (key, _config_value(parser, path, key, action, raw))
+
+    # A command-line flag beats a file value in the same mutually exclusive group.
+    for group in parser._mutually_exclusive_groups:
+        named_on_command_line = [
+            action
+            for action in group._group_actions
+            if any(token.split("=", 1)[0] in action.option_strings for token in argv)
+        ]
+        if named_on_command_line:
+            for action in group._group_actions:
+                if action not in named_on_command_line:
+                    values.pop(action.dest, None)
+
+    for action in parser._actions:
+        if action.dest in values:
+            action.required = False  # the file provides it
+    parser.set_defaults(**{dest: value for dest, (_, value) in values.items()})

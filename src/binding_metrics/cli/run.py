@@ -15,6 +15,20 @@ Usage:
 
 The results JSON carries a ``provenance`` block (package version, git sha, seed,
 platform) so a result can be tied to the code and settings that produced it.
+
+Configuration file:
+    --config run.toml supplies option defaults; flags on the command line override
+    the file. Keys are the long option names (md-duration-ps or md_duration_ps):
+
+        # run.toml
+        md-duration-ps = 100
+        ph = 7.0
+        metrics = "interface,geometry"
+        energy-modes = ["relaxed", "raw"]
+        skip-prep = true
+
+    A flag takes true or false, an option with several values takes a list, and
+    an unknown key is an error.
 """
 
 import argparse
@@ -31,7 +45,12 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
-from binding_metrics.cli import add_openfold_seeds_arg, md_save_interval_for
+from binding_metrics.cli import (
+    add_config_arg,
+    add_openfold_seeds_arg,
+    md_save_interval_for,
+    parse_args_with_config,
+)
 from binding_metrics.cli import seed_arg as _seed_arg
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.metrics.registry import get_metric
@@ -794,8 +813,9 @@ def main():
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(report_group)
+    add_config_arg(parser)
 
-    args = parser.parse_args()
+    args = parse_args_with_config(parser)
 
     if not args.input.exists():
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)

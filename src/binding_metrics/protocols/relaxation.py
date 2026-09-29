@@ -28,6 +28,19 @@ Usage:
         --input complex.cif \\
         --output-dir results/ \\
         --md-duration-ps 200
+
+Configuration file:
+    --config relax.toml supplies option defaults; flags on the command line
+    override the file. Keys are the long option names (md-duration-ps or
+    md_duration_ps):
+
+        # relax.toml
+        md-duration-ps = 100
+        solvent-model = "gbn2"
+        temperature = 310
+        small-molecules = "none"
+
+    A flag takes true or false, and an unknown key is an error.
 """
 
 import argparse
@@ -1670,7 +1683,7 @@ def main():
 
     configure_logging()
 
-    from binding_metrics.cli import small_molecules_arg
+    from binding_metrics.cli import add_config_arg, parse_args_with_config, small_molecules_arg
     from binding_metrics.metrics._common import ChainAliasAction
 
     parser = argparse.ArgumentParser(
@@ -1772,7 +1785,8 @@ def main():
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(parser)
-    args = parser.parse_args()
+    add_config_arg(parser)
+    args = parse_args_with_config(parser)
 
     if args.all_models and args.sample_id is not None:
         parser.error("--sample-id cannot be used with --all-models (IDs are auto-generated)")

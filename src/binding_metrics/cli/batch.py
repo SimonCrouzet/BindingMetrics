@@ -15,6 +15,22 @@ Usage:
 Every CSV row ends with ``provenance_*`` columns (package version, git sha,
 seed, platform) that tie the row to the code and settings that produced it.
 
+Configuration file:
+    --config batch.toml supplies option defaults; flags on the command line
+    override the file. Keys are the long option names (workers, md-duration-ps or
+    md_duration_ps):
+
+        # batch.toml
+        input-dir = "designs/"
+        output-csv = "metrics.csv"
+        workers = 4
+        skip-relax = true
+        metrics = "interface,geometry"
+
+    A flag takes true or false, an option with several values takes a list, and
+    an unknown key is an error. An option the file sets need not be repeated on
+    the command line, required ones included.
+
 Sample status (CSV column ``batch_status``)
 -------------------------------------------
 ``ok`` (all steps completed), ``partial`` (the pipeline finished but a step
@@ -60,7 +76,12 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
-from binding_metrics.cli import add_openfold_seeds_arg, add_random_seed_arg
+from binding_metrics.cli import (
+    add_config_arg,
+    add_openfold_seeds_arg,
+    add_random_seed_arg,
+    parse_args_with_config,
+)
 from binding_metrics.cli.run import (
     ALL_METRICS,
     KNOWN_METRICS,
@@ -827,7 +848,9 @@ def main():
         "when --log-file is provided)",
     )
 
-    args = parser.parse_args()
+    add_config_arg(parser)
+
+    args = parse_args_with_config(parser)
 
     if args.per_sample_log and args.log_file is not None:
         print(
