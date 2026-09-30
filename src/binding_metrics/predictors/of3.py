@@ -50,6 +50,7 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.capabilities import Capabilities, check_openfold3_residues
 from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.record import PredictionFiles, PredictionRecord
 
@@ -212,6 +213,45 @@ class OpenFold3Parser(PredictionParser):
     name = "of3"
     display_name = "OpenFold3"
     family = "af3"
+
+    # The inputs OpenFold3 0.5.0 can be given, from its source (tag v0.5.0): the closure limit
+    # from openfold3/core/utils/relpos.py and the query schema, the residue limit from the rule of
+    # this package's own query builder (binding_metrics.metrics._openfold_run), imported when the
+    # check runs. Not declared because nothing shows it: a limit on the binder size or on a binder
+    # of several chains.
+    capabilities = Capabilities(
+        closures={"none", "head_to_tail"},
+        extra_checks=(check_openfold3_residues,),
+        reasons={
+            "closures": (
+                "OpenFold3 0.5.0 takes one kind of ring closure: `cyclic: true` on a protein chain "
+                "wraps the whole chain, which makes it head-to-tail (openfold3/core/utils/"
+                "relpos.py). The query schema has a `covalent_bonds` field but nothing reads it "
+                "(openfold3/projects/of3_all_atom/config/inference_query_format.py), so a "
+                "disulfide, a lactam, a staple or another cross-link cannot be given and the model "
+                "would fold the chain without it. Use a model that takes the link as input, or "
+                "leave the OpenFold3 step out."
+            ),
+        },
+        caveats={
+            "closures:head_to_tail": (
+                "OpenFold3 takes a head-to-tail closure through `cyclic: true`, and the query "
+                "builders of this package (metrics/_openfold_run.py, _query_chain) do not write "
+                "that field, so the binder is folded as a linear chain. OpenFold3 does not "
+                "enforce the closure bond even when it is asked for one."
+            ),
+            "residue_classes:ligand": (
+                "The OpenFold3 query builder (_extract_query_chain) leaves groups that are not "
+                "amino acids out of a chain, so a ligand or glycan bonded to the binder is not "
+                "part of the prediction."
+            ),
+            "residue_classes:cap": (
+                "The OpenFold3 query builder (_extract_query_chain) leaves terminal capping "
+                "groups out of the query, so the prediction is of the uncapped peptide."
+            ),
+        },
+        version="0.5.0",
+    )
 
     def find_files(
         self,

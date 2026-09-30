@@ -29,8 +29,11 @@ class TestRegistration:
         assert isinstance(get_parser("of3"), OpenFold3Parser)
         assert (spec.display_name, spec.family) == ("OpenFold3", "af3")
 
-    def test_no_capabilities_are_declared(self):
-        assert OpenFold3Parser.capabilities is None
+    def test_the_input_limits_are_declared_in_tests_pre_openfold3_limits(self):
+        # tests/test_pre_openfold3_limits.py holds the contents of the declaration
+        from binding_metrics.capabilities import Capabilities
+
+        assert isinstance(OpenFold3Parser.capabilities, Capabilities)
 
 
 class TestFindFiles:
