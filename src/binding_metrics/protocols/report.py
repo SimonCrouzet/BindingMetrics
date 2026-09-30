@@ -271,6 +271,7 @@ def _flatten(results: dict) -> dict[str, Any]:
         "geometry",
         "electrostatics",
         "openfold",
+        "prediction",
         "dockq",
     ):
         if section not in results:
@@ -576,19 +577,20 @@ def _md_electrostatics(elec: dict | None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _md_openfold(of: dict | None) -> str:
-    lines = ["## OpenFold\n"]
-    if _is_skipped(of):
-        return lines[0] + "_Skipped._\n"
-    if not of:
-        return lines[0] + "_Absent._\n"
+def _md_confidence_lines(section: dict, extra_rows: list[list[str]] | None = None) -> list[str]:
+    """The confidence table and the low-pLDDT warning shared by the OpenFold and prediction blocks.
+
+    ``section`` is a ``compute_openfold_metrics`` or ``summarize_prediction`` dict; its
+    values are read with ``get``, so a missing key shows as an em dash. ``extra_rows`` go
+    below the refolding RMSD row.
+    """
     rows = [
-        ["avg pLDDT", _fmt(of.get("avg_plddt"), 2)],
-        ["pTM", _fmt(of.get("ptm"), 3)],
-        ["ipTM", _fmt(of.get("iptm"), 3)],
-        ["gPDE", f"{_fmt(of.get('gpde'), 2)} Å"],
+        ["avg pLDDT", _fmt(section.get("avg_plddt"), 2)],
+        ["pTM", _fmt(section.get("ptm"), 3)],
+        ["ipTM", _fmt(section.get("iptm"), 3)],
+        ["gPDE", f"{_fmt(section.get('gpde'), 2)} Å"],
     ]
-    refold_rmsd = of.get("binder_ca_rmsd")
+    refold_rmsd = section.get("binder_ca_rmsd")
     try:
         import math
 
@@ -597,9 +599,10 @@ def _md_openfold(of: dict | None) -> str:
         _show_rmsd = False
     if _show_rmsd:
         rows.append(["Refolding RMSD", f"{_fmt(refold_rmsd, 2)} Å"])
-    lines.append(_md_table(["Metric", "Value"], rows))
+    rows.extend(extra_rows or [])
+    lines = [_md_table(["Metric", "Value"], rows)]
     # per-residue low pLDDT warning
-    plddt_per_res = of.get("binder_plddt_per_residue")
+    plddt_per_res = section.get("binder_plddt_per_residue")
     if plddt_per_res is not None:
         try:
             import numpy as np
@@ -611,6 +614,65 @@ def _md_openfold(of: dict | None) -> str:
                 lines.append(f"\n⚠️ **Low binder pLDDT (< 70):** {', '.join(low_strs)}")
         except (TypeError, ValueError, IndexError) as exc:  # values that are not numbers
             logger.debug("Per-residue pLDDT left out of the report: %s", exc)
+    return lines
+
+
+def _md_openfold(of: dict | None) -> str:
+    lines = ["## OpenFold\n"]
+    if _is_skipped(of):
+        return lines[0] + "_Skipped._\n"
+    if not of:
+        return lines[0] + "_Absent._\n"
+    lines.extend(_md_confidence_lines(of))
+    return "\n".join(lines) + "\n"
+
+
+def _prediction_display_name(model: Any) -> str | None:
+    """The report name of a model (``"Boltz-2"`` for ``"boltz2"``); the key itself if unknown."""
+    if not model:
+        return None
+    from binding_metrics.predictors.registry import PARSERS
+
+    spec = PARSERS.get(str(model))
+    return spec.display_name if spec is not None else str(model)
+
+
+def _md_prediction(pred: dict | None) -> str:
+    """The ``results["prediction"]`` block: the OpenFold table for any model, plus the extras.
+
+    Below the table it shows the interface PAE, the EvoBind score and the adversarial COM
+    displacement when they were computed, the reason a value is missing, and how the store
+    served the prediction (``cache``: runs, store hits, adopted outputs).
+    """
+    model_name = _prediction_display_name(pred.get("model")) if isinstance(pred, dict) else None
+    heading = "## Structure prediction" + (f" ({model_name})" if model_name else "")
+    lines = [heading + "\n"]
+    if _is_skipped(pred):
+        return lines[0] + "_Skipped._\n"
+    if not pred:
+        return lines[0] + "_Absent._\n"
+    if pred.get("error"):
+        return lines[0] + f"_Failed: {pred['error']}_\n"
+
+    extra_rows = []
+    for label, key, decimals, unit in (
+        ("Mean interface PAE", "mean_interface_pae", 2, " Å"),
+        ("EvoBind score", "evobind_score", 2, ""),
+        ("Adversarial ΔCOM", "delta_com_angstrom", 2, " Å"),
+    ):
+        value = pred.get(key)
+        if value is not None and not _is_nonfinite(value):
+            extra_rows.append([label, f"{_fmt(value, decimals)}{unit}"])
+    lines.extend(_md_confidence_lines(pred, extra_rows))
+
+    if pred.get("reason"):
+        lines.append(f"\n_Not computed: {pred['reason']}_")
+    cache = pred.get("cache")
+    if isinstance(cache, dict) and "runs" in cache:
+        lines.append(
+            f"\n_Prediction store: {cache.get('runs')} run(s), {cache.get('hits', 0)} store "
+            f"hit(s), {cache.get('adopted', 0)} adopted output(s)._"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -739,6 +801,8 @@ def _build_summary(results: dict) -> str:
     ]
     if "openfold" in results:
         sections.append(_md_openfold(results["openfold"]))
+    if "prediction" in results:
+        sections.append(_md_prediction(results["prediction"]))
     if "dockq" in results:
         sections.append(_md_dockq(results["dockq"]))
     sections.append(_md_scorecard(results))
