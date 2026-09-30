@@ -22,6 +22,7 @@ _VALID_INPUT_TYPES = {
     "openfold_json",
     "atom_array",
     "predicted_structure",
+    "prediction_dir",
 }
 _VALID_CHAIN_MODES = {"none", "single", "interface", "interface_2paths"}
 
@@ -98,6 +99,10 @@ class TestMetricsByInputType:
     def test_predicted_structure_nonempty(self):
         specs = metrics_by_input_type("predicted_structure")
         assert {s.name for s in specs} == {"evobind_score"}
+
+    def test_prediction_dir_holds_the_model_neutral_prediction_metric(self):
+        specs = metrics_by_input_type("prediction_dir")
+        assert {s.name for s in specs} == {"prediction"}
 
     def test_all_types_partition_metrics(self):
         """Every metric appears in exactly one input_type bucket."""

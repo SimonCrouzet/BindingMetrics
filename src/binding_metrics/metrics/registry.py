@@ -40,7 +40,8 @@ other parameter keeps the function's own default. Inputs the spec does not
 declare are the caller's to supply: trajectory metrics also take a
 ``topology_path``, and the interface ones receive atom-index lists
 (``ligand_indices``, ``receptor_indices``) where static metrics take chain IDs;
-``evobind_score`` takes a ``plddt_per_atom`` array.
+``evobind_score`` takes a ``plddt_per_atom`` array, and ``prediction`` takes the
+``model`` and ``name`` of the prediction.
 
 Not registered: the ``run_openfold*`` and ``prepare_*`` functions (they start or
 prepare a model job and return no metric), the command-line ``main`` functions,
@@ -67,6 +68,13 @@ predicted_structure
     (for example ``plddt_per_atom`` from the ``openfold`` metric) that the
     caller passes as extra keyword arguments.
 
+prediction_dir
+    Reads the output directory of a structure-prediction model that has an adapter in
+    ``binding_metrics.predictors`` (``path_arg`` names the kwarg that receives the
+    directory). The caller also supplies ``model`` (a key of ``predictors.PARSERS``) and
+    ``name`` (the prediction name); ``interface_pae`` and ``openfold`` remain the OpenFold3
+    entries of ``openfold_json``.
+
 Chain modes
 -----------
 none        No chain arguments.
@@ -92,6 +100,7 @@ InputType = Literal[
     "openfold_json",
     "atom_array",
     "predicted_structure",
+    "prediction_dir",
 ]
 ChainMode = Literal["none", "single", "interface", "interface_2paths"]
 Direction = Literal["higher_is_better", "lower_is_better"]
@@ -744,6 +753,24 @@ METRICS: list[MetricSpec] = [
         formats=(),
         path_arg="output_dir",
         # Bundle: pLDDT and ipTM are higher-is-better, pDE is lower-is-better.
+        cost_class="model",
+        requires_extras=("biotite",),
+    ),
+    MetricSpec(
+        name="prediction",
+        import_path="binding_metrics.metrics.prediction:compute_prediction_metrics",
+        description=(
+            "Confidence metrics of a structure prediction from a registered model: "
+            "pLDDT, pTM, ipTM, PAE, PDE, binder pLDDT, interface PAE and PDE"
+        ),
+        input_type="prediction_dir",
+        chain_mode="none",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
+        formats=(),
+        path_arg="prediction_dir",
+        # Bundle: pLDDT and ipTM are higher-is-better, PDE and PAE lower-is-better; the
+        # scales of pLDDT and ipTM differ between models.
         cost_class="model",
         requires_extras=("biotite",),
     ),

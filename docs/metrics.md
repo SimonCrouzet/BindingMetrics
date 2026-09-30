@@ -610,6 +610,8 @@ A model-specific scalar or dictionary goes in `extras` under the key the model u
 
 `binding_metrics.predictors.PARSERS` maps a model name to a `ParserSpec` that names the adapter class and imports it only when it is needed; `get_parser(name)` returns an adapter instance (`KeyError` listing the known names for an unknown model) and `register_parser(spec)` adds one. A contract test in `tests/predictors` runs every registered adapter against a synthetic complex; an adapter brings `tests/predictors/synth_<name>.py` with a `write_prediction` function that writes that complex in the model's layout, and needs no other test edit to be covered.
 
+`compute_prediction_metrics(prediction_dir, model, name, seed=1, sample=1, include_matrices=False, reference_structure_path=None, binder_chain=None, receptor_chain=None, chain_map=None, *, seed_index=None, target_chain=None)` — `binding_metrics.metrics.prediction`, registered as `prediction` — loads one sample with the adapter of `model` and returns the result dictionary of `compute_openfold_metrics` (same keys, same order) with a `model` key first; `summarize_prediction(record, ...)` does the second step for a record that is already loaded. `binder_chain` and `receptor_chain` are the chain IDs of your input: give `chain_map` (`{"A": "R", "B": "P"}`, model chain to your chain) when the model named its chains differently. `KeyError` lists the registered models for an unknown one. pLDDT and ipTM are calibrated per model, so compare them within one model. The interface PDE and PAE blocks are cut with the record's `TokenLayout` when it has one, and otherwise with one token per residue.
+
 The `of3` adapter reads the layout above: `.cif`, `.cif.gz` or `.pdb` structures, JSON or NPZ confidences (NPZ without pickle), `seed_index` as the position in the numeric order of the seed values, `sample` counted from 1. `bespoke_iptm` is in `record.extras`, `chain_pair_iptm` keys are the strings OpenFold3 writes (`"(A, B)"`), and `record.tokens` is None because the files carry no token layout. Its layout was checked against the OpenFold3 v0.5.0 source, not against a 0.5.0 run.
 
 ---
@@ -761,7 +763,7 @@ fields of a `MetricSpec`:
 | field | meaning |
 |-------|---------|
 | `name`, `import_path`, `description` | identifier, `"module:function"`, one line |
-| `input_type` | `static_structure` (one PDB or CIF file), `trajectory` (trajectory and topology), `md_simulation` (one structure, runs a relaxation or MD protocol), `openfold_json` (OpenFold3 output), `atom_array` (a loaded `biotite.structure.AtomArray`), `predicted_structure` (a predicted structure path plus per-atom confidence arrays) |
+| `input_type` | `static_structure` (one PDB or CIF file), `trajectory` (trajectory and topology), `md_simulation` (one structure, runs a relaxation or MD protocol), `openfold_json` (OpenFold3 output), `atom_array` (a loaded `biotite.structure.AtomArray`), `predicted_structure` (a predicted structure path plus per-atom confidence arrays), `prediction_dir` (the output directory of a model that has an adapter; the caller also gives `model` and `name`) |
 | `chain_mode` | `none`, `single`, `interface` or `interface_2paths` |
 | `formats`, `path_arg`, `secondary_path_arg` | accepted file formats, and the keyword that receives the primary and the second input |
 | `chain_arg`, `peptide_chain_arg`, `receptor_chain_arg` | keywords that receive the chains |
@@ -804,6 +806,7 @@ fields of a `MetricSpec`:
 | `md_implicit` | `run_implicit_relaxation` | md_simulation | — | — | — | md | yes |
 | `structure_interaction_energy` | `compute_interaction_energy` | md_simulation | `relaxed_interaction_energy` | lower | kJ/mol | md | yes |
 | `openfold` | `compute_openfold_metrics` | openfold_json | — | — | — | model |  |
+| `prediction` | `compute_prediction_metrics` | prediction_dir | — | — | — | model |  |
 | `interface_pae` | `compute_interface_pae` | openfold_json | `mean_interface_pae` | lower | angstrom | model |  |
 
 ---

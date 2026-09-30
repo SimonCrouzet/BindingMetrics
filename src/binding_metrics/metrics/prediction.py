@@ -1,10 +1,13 @@
 """Confidence metrics of a structure prediction, from any model with an adapter.
 
-``summarize_prediction`` turns a ``binding_metrics.predictors.PredictionRecord`` into the
-result dictionary that ``compute_openfold_metrics`` has always returned, plus a ``model`` key:
-the scalar scores, per-residue pLDDT of the binder, interface PDE and PAE statistics and the
-binder C-alpha RMSD against a reference. It reads only the record, so the analysis is the same
-for every model; a model-specific value stays in ``record.extras``.
+``compute_prediction_metrics`` reads the output directory of a registered model
+(``binding_metrics.predictors.PARSERS``) and returns the summary; it is the registered
+metric ``prediction``. ``summarize_prediction`` turns a
+``binding_metrics.predictors.PredictionRecord`` into the result dictionary that
+``compute_openfold_metrics`` has always returned, plus a ``model`` key: the scalar scores,
+per-residue pLDDT of the binder, interface PDE and PAE statistics and the binder C-alpha
+RMSD against a reference. It reads only the record, so the analysis is the same for every
+model; a model-specific value stays in ``record.extras``.
 
 Chains: ``binder_chain`` and ``receptor_chain`` are the chain IDs of the user's input, that is
 the IDs of ``record.atoms()`` after ``record.chain_map`` has renamed the model's chains.
@@ -16,7 +19,7 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 from binding_metrics.metrics._common import resolve_chain_role
 from binding_metrics.predictors._confidence import (
@@ -27,8 +30,69 @@ from binding_metrics.predictors._confidence import (
     _load_atoms,
 )
 from binding_metrics.predictors.record import PredictionRecord
+from binding_metrics.predictors.registry import get_parser
 
 _NAN = float("nan")
+
+
+def compute_prediction_metrics(
+    prediction_dir: str | Path,
+    model: str,
+    name: str,
+    seed: int = 1,
+    sample: int = 1,
+    include_matrices: bool = False,
+    reference_structure_path: Optional[str | Path] = None,
+    binder_chain: Optional[str] = None,
+    receptor_chain: Optional[str] = None,
+    chain_map: Optional[Mapping[str, str]] = None,
+    *,
+    seed_index: Optional[int] = None,
+    target_chain: Optional[str] = None,
+) -> dict:
+    """Confidence metrics of one prediction sample of any registered model.
+
+    Loads the sample with the adapter of ``model`` and summarises it with
+    :func:`summarize_prediction`; the result has the keys documented there, with
+    ``model`` first. For OpenFold3 it holds the values of ``compute_openfold_metrics``.
+    pLDDT and ipTM are calibrated per model: compare values within one model.
+
+    Args:
+        prediction_dir: The directory the model wrote; its layout is the adapter's business.
+        model: A key of ``binding_metrics.predictors.PARSERS`` (``"of3"``).
+        name: The prediction name (the query name for OpenFold3).
+        seed: 1-based position of the seed, in the model's natural order (not a seed value).
+        sample: 1-based position of the sample in that order (not a ranking).
+        include_matrices: Include the full PDE and PAE matrices and the interface slices.
+        reference_structure_path: Reference CIF or PDB for ``binder_ca_rmsd``.
+        binder_chain: Binder chain ID in the user's naming (see ``chain_map``).
+        receptor_chain: Receptor chain ID in the user's naming.
+        chain_map: Model chain ID to user chain ID, for a model whose chain IDs differ from
+            the input's; chains it does not mention keep their ID.
+        seed_index: Clearer name for ``seed``; when given it takes precedence.
+        target_chain: Alias of ``receptor_chain``; different IDs in both raise ``ValueError``.
+
+    Raises:
+        KeyError: ``model`` is not registered.
+        ValueError: ``chain_map`` is not a valid map, or a chain alias conflicts.
+    """
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain
+    )
+    if seed_index is not None:
+        seed = seed_index
+    record = get_parser(model).load(
+        prediction_dir, name, seed_index=seed, sample=sample, chain_map=chain_map
+    )
+    return summarize_prediction(
+        record,
+        include_matrices=include_matrices,
+        reference_structure_path=reference_structure_path,
+        binder_chain=binder_chain,
+        receptor_chain=receptor_chain,
+        caller="compute_prediction_metrics",
+        stacklevel=3,  # the caller of compute_prediction_metrics, through summarize_prediction
+    )
 
 
 def _token_ranges(record: PredictionRecord) -> Optional[dict[str, tuple[int, int]]]:
