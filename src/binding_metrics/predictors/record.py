@@ -17,7 +17,11 @@ EvoBind check read only the record. The rules that every adapter converts to:
   that is present but corrupt raises.
 * ``chain_map`` renames chains: it maps a chain ID of the model's structure file to the ID
   the user's input uses. An empty map means no renaming. ``chain_ptm`` and
-  ``chain_pair_iptm`` keep the keys as the model writes them.
+  ``chain_pair_iptm`` are keyed by chain ID and are not renamed by ``chain_map``; each adapter
+  names the form of its pair keys: ``"(A, B)"`` for OpenFold3 (as the model writes them),
+  ``"A-B"`` for ColabFold and for Boltz-2. Boltz-2 writes chain indices in a nested
+  dictionary, so its adapter names them by the chain IDs of the structure file and keeps the
+  raw index-keyed values in ``extras``.
 
 Extension points, for a model whose output has something the record has no field for:
 
@@ -215,8 +219,9 @@ class PredictionRecord:
         ranking_score, ranking_score_name: The model's own ranking score and what it is
             called there; never compared across models.
         has_clash, disorder: The model's clash flag (0 or 1) and disorder fraction (0-1).
-        chain_ptm, chain_pair_iptm: Per-chain pTM and per-chain-pair ipTM, keys as the model
-            writes them.
+        chain_ptm, chain_pair_iptm: Per-chain pTM and per-chain-pair ipTM, keyed by the chain
+            IDs of the model's structure file; the pair key form is the adapter's (OpenFold3
+            ``"(A, B)"``, ColabFold and Boltz-2 ``"A-B"``).
         plddt_per_atom: ``(n_atoms,)`` pLDDT, 0-100, in the atom order of ``structure_path``.
         pae, pde: ``(n_tokens, n_tokens)`` in angstrom; see the module docstring for the
             orientation of ``pae``.
