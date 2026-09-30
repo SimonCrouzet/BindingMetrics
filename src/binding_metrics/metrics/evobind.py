@@ -38,18 +38,30 @@ Usage:
         receptor_chain="A",
         afm_plddt_per_atom=afm_metrics["plddt_per_atom"],
     )
+
+    # The same check between two predictions read by the predictor adapters, whatever
+    # model made them. Chain IDs are the user's IDs after each record's chain_map.
+    from binding_metrics.metrics.evobind import compute_evobind_adversarial_from_records
+    from binding_metrics.predictors import get_parser
+
+    of3 = get_parser("of3")
+    design = of3.load("design_scoring_out", "cmplx_007")
+    adversary = of3.load("sequence_only_out", "cmplx_007")
+    check = compute_evobind_adversarial_from_records(design, adversary, "B", "A")
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 
 from binding_metrics.core.residues import VARIANT_TO_PARENT_RESIDUE
 from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
 from binding_metrics.predictors._confidence import _binder_plddt_per_residue
+from binding_metrics.predictors.record import PredictionRecord
 
 # ---------------------------------------------------------------------------
 # Internal helpers: coordinate extraction
@@ -154,6 +166,21 @@ def _resname_mismatch_fraction(atoms_a, atoms_b) -> float:
 # The per-residue mean lives with the other model-agnostic confidence helpers. It is
 # kept under its old name here because callers and tests import it from this module.
 _per_residue_plddt = _binder_plddt_per_residue
+
+
+def _require_chains(atoms, chains: dict[str, str], which: str, note: str) -> None:
+    """Raise ``ValueError`` if a role's chain ID is not a chain of ``atoms``.
+
+    ``chains`` maps a role (``"binder"``, ``"receptor"``) to the chain ID asked for; the
+    message lists the chains that exist, since a chain ID of the model's own file instead
+    of the user's is the usual mistake.
+    """
+    present = sorted({str(chain) for chain in atoms.chain_id})
+    for role, chain in chains.items():
+        if chain not in present:
+            raise ValueError(
+                f"{role} chain '{chain}' is not in the {which} structure ({note}): it has {present}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -635,3 +662,121 @@ def compute_evobind_adversarial_check(
         interface_cutoff_angstrom,
         max_resname_mismatch_fraction,
     )
+
+
+def compute_evobind_adversarial_from_records(
+    design: Union[PredictionRecord, str, Path],
+    adversary: PredictionRecord,
+    binder_chain: str,
+    receptor_chain: Optional[str] = None,
+    *,
+    interface_cutoff_angstrom: float = 8.0,
+    max_resname_mismatch_fraction: float = 0.5,
+    target_chain: Optional[str] = None,
+) -> dict:
+    """EvoBind adversarial check between two predictions read by the predictor adapters.
+
+    Same computation as :func:`compute_evobind_adversarial_check`, but the two structures
+    come from ``PredictionRecord`` objects, so the second prediction can be made by any
+    model with an adapter and its per-atom pLDDT travels with it. Chain IDs are the
+    USER's IDs: each record renames the chains of its file through its ``chain_map``
+    (``get_parser(model).load(directory, name, chain_map={"B": "P"})``), so a receptor
+    that one model calls ``A`` and another ``B`` needs no argument here.
+
+    The score divides by the adversary's pLDDT, and pLDDT is calibrated per model, so
+    compare ``evobind_adversarial_score`` between designs only when the same adversary
+    model made the second prediction. When the adversary was run in OpenFold3 score mode
+    it was templated on the design pose, so agreement with the design is partly by
+    construction; an independent adversary is a sequence-only prediction.
+
+    Args:
+        design: The first prediction, or the input pose. A ``PredictionRecord`` (its
+            ``chain_map`` applies) or the path of a structure file (chain IDs as in
+            the file).
+        adversary: The second prediction, a ``PredictionRecord``. Its
+            ``plddt_per_atom`` (0 to 100, in the atom order of its structure file)
+            gives the pLDDT-weighted score.
+        binder_chain: Chain ID of the binder in both structures, after ``chain_map``.
+        receptor_chain: Chain ID of the receptor in both structures, after
+            ``chain_map``. Required, through this parameter or ``target_chain``.
+        interface_cutoff_angstrom: Distance cutoff (Å) that picks the receptor interface
+            residues from the design structure (default 8.0).
+        max_resname_mismatch_fraction: Largest accepted fraction of paired residues with
+            different residue names (default 0.5); see
+            :func:`compute_evobind_adversarial_check`.
+        target_chain: Alias of ``receptor_chain``; different IDs in both raise
+            ``ValueError``.
+
+    Returns:
+        The dictionary of :func:`compute_evobind_adversarial_check`, whose keys keep their
+        ``afm_`` prefix and here describe the adversary whatever model it is, plus:
+
+        design_model (str | None):
+            ``design.model`` for a record, None when ``design`` is a path.
+        adversary_model (str):
+            ``adversary.model``.
+        reason (str):
+            Present when the score could not be computed: the adversary has no per-atom
+            pLDDT (the geometric keys are still returned, ``evobind_adversarial_score``
+            and ``afm_mean_plddt_binder`` are None; the adapter's own reasons are
+            appended), or its mean binder pLDDT is zero or not finite.
+
+    Raises:
+        TypeError: If ``adversary`` is not a ``PredictionRecord``, or ``design`` is neither
+            a record nor a path.
+        ValueError: If a record has no structure file, a chain is not in a structure, the
+            pLDDT array does not have one value per atom of the adversary structure, or
+            for any of the reasons listed for :func:`compute_evobind_adversarial_check`.
+
+    Reference:
+        Bryant et al. 2025, Commun. Chem. (doi:10.1038/s42004-025-01601-3).
+    """
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
+    if not isinstance(adversary, PredictionRecord):
+        raise TypeError(
+            "adversary must be a PredictionRecord (get_parser(model).load(...)); "
+            f"got {type(adversary).__name__}. For two structure files use "
+            "compute_evobind_adversarial_check."
+        )
+    if isinstance(design, PredictionRecord):
+        design_atoms = design.atoms()
+        design_model: Optional[str] = design.model
+        design_note = f"chains after the chain_map of the {design.model} record"
+    elif isinstance(design, (str, os.PathLike)):
+        design_atoms = _load_atoms(Path(design))
+        design_model = None
+        design_note = "chain IDs as in the file"
+    else:
+        raise TypeError(
+            f"design must be a PredictionRecord or a structure path, got {type(design).__name__}"
+        )
+    adversary_atoms = adversary.atoms()
+
+    chains = {"binder": binder_chain, "receptor": receptor_chain}
+    _require_chains(design_atoms, chains, "design", design_note)
+    _require_chains(
+        adversary_atoms,
+        chains,
+        "adversary",
+        f"chains after the chain_map of the {adversary.model} record",
+    )
+
+    plddt = adversary.plddt_per_atom
+    result = _adversarial_from_atoms(
+        design_atoms,
+        adversary_atoms,
+        plddt,
+        binder_chain,
+        receptor_chain,
+        interface_cutoff_angstrom,
+        max_resname_mismatch_fraction,
+        adversary_label="adversary",
+    )
+    if plddt is None:
+        reason = "adversary has no per-atom pLDDT"
+        if adversary.reasons:
+            reason += ": " + "; ".join(adversary.reasons)
+        result["reason"] = reason
+    return {"design_model": design_model, "adversary_model": adversary.model, **result}
