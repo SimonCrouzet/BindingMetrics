@@ -418,6 +418,17 @@ print(f"Δ COM: {check['delta_com_angstrom']:.2f} Å  adversarial score: {check[
 
 Both functions implement the losses from [Bryant et al. (2025) *EvoBind*, Communications Chemistry](https://doi.org/10.1038/s42004-025-01601-3). The primary score is `if_dist / (pLDDT/100)`; the adversarial score is `mean_if_dist × (100/pLDDT) × ΔCOM`.
 
+Both scores also take the records that the parsers read, so the second prediction can come from any model with a parser (`compute_evobind_score_from_record` and `compute_evobind_adversarial_from_records`). Chain IDs are yours, after the `chain_map` of each record, and a design given as a file works too. Each model calibrates pLDDT differently, so compare a score between designs only when one model made the predictions it divides by.
+
+```python
+from binding_metrics.metrics.evobind import compute_evobind_adversarial_from_records
+from binding_metrics.predictors import get_parser
+
+design = get_parser("of3").load("./openfold_out", "my_complex")
+adversary = get_parser("boltz2").load("./boltz_out", "my_complex")
+check = compute_evobind_adversarial_from_records(design, adversary, binder_chain="B", receptor_chain="A")
+```
+
 ### Batch scoring
 
 ```python
