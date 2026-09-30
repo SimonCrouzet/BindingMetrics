@@ -281,8 +281,9 @@ def compute_openfold_metrics(
             has_clash (float): 1.0 if steric clashes detected, 0.0 otherwise
             sample_ranking_score (float): weighted composite score for ranking
             chain_ptm (dict): per-chain pTM scores {chain_id: float}
-            chain_pair_iptm (dict): pairwise interface pTM {(A,B): float}
-            bespoke_iptm (dict): bespoke interface score {(A,B): float}
+            chain_pair_iptm (dict): pairwise interface pTM, keyed by the strings
+                OpenFold3 writes: {"(A, B)": float}
+            bespoke_iptm (dict): bespoke interface score, keyed the same way
 
         Per-atom / per-token data [from confidences.json]:
             plddt_per_atom (np.ndarray | None): per-atom pLDDT, shape (n_atoms,)
@@ -437,6 +438,7 @@ def run_openfold(
     # Resolve runner YAML: explicit path takes precedence over model_presets
     effective_yaml: Optional[Path] = None
     if runner_yaml is not None:
+        # TODO(#96): template_dir is dropped here, so a given runner_yaml loses the templates.
         effective_yaml = Path(runner_yaml)
     else:
         presets = list(model_presets) if model_presets is not None else list(_DEFAULT_MODEL_PRESETS)
@@ -604,10 +606,11 @@ def run_openfold_refolding(
             the sequences leave the machine. Pass False with pre-computed MSAs.
         model_presets: Model configuration presets.
         runner_yaml: Explicit runner YAML; overrides ``model_presets``.
-        extra_args: Additional CLI args for OF3. To use the template CIF,
-            pass ``["--template_mmcif_dir=<path>"]`` if OF3 requires it.
-            By default ``--template_mmcif_dir`` is automatically appended
-            pointing to ``{output_dir}/query/templates/``.
+        extra_args: Additional CLI args for OF3, passed verbatim. The receptor
+            template reaches OpenFold3 through ``template_preprocessor_settings.
+            structure_directory`` of the runner YAML, which points to
+            ``{output_dir}/query/templates/``; there is no command-line flag for
+            it.
         conda_env: Conda environment where OpenFold3 is installed.
         seeds: Seed values written to the query JSON (default ``(42,)``).
 
