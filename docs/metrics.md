@@ -574,6 +574,31 @@ binding-metrics-openfold run --query-json query.json --output-dir ./openfold_out
 
 Further subcommands: `prepare-query` and `refold` (binder refolding), `prepare-scoring-query` and `score` (scoring an existing complex). `--seed` is the seed-directory index, as in the function. In `binding-metrics-run` and `-batch`, `--openfold-seeds SEED [SEED ...]` sets the seed values of the query JSON and the first seed's first sample is scored.
 
+### Prediction records (`binding_metrics.predictors`)
+
+`PredictionRecord` is the form of one prediction sample that every predictor adapter converts a model's files to, and the only thing the confidence metrics read. `PredictionFiles` says where an adapter found the files of a sample, `TokenLayout` says what each PAE and PDE token is, and `SampleRef` names one sample of a directory. The rules are the same for every model:
+
+| field | type | unit | meaning |
+|-------|------|------|---------|
+| `model`, `name` | str | — | adapter name (`"of3"`) and prediction name; the only positional arguments |
+| `seed_index`, `sample` | int | — | 1-based positions in the model's natural order, not seed values and not a ranking |
+| `structure_path` | Path \| None | — | predicted structure; `atoms()` reads model 1 with the author IDs, gzip-compressed files included |
+| `chain_map` | dict | — | model chain ID to user chain ID, applied by `atoms()`; empty means no renaming |
+| `avg_plddt` | float | [0–100] | mean pLDDT |
+| `ptm`, `iptm` | float | [0–1] | definitions differ by model |
+| `gpde` | float | Å | global predicted distance error |
+| `ranking_score`, `ranking_score_name` | float, str | — | the model's own score and its name there; never compared across models |
+| `has_clash`, `disorder` | float | — | clash flag (0 or 1) and disorder fraction |
+| `chain_ptm`, `chain_pair_iptm` | dict | [0–1] | keys as the model writes them |
+| `plddt_per_atom` | ndarray \| None | [0–100] | one value per atom, in the atom order of `structure_path` |
+| `pae`, `pde` | ndarray \| None | Å | `(n_tokens, n_tokens)`; `pae[i, j]` is the error of token j when the structure is aligned on token i |
+| `tokens` | TokenLayout \| None | — | chain, residue and atom of each token; None means one token per residue |
+| `extras`, `timing`, `reasons` | dict, dict, list | — | model-specific values, reported run times, one sentence per value that could not be provided |
+
+A scalar the model does not provide is NaN, never None. A file that is absent leaves the fields it feeds at NaN (None for an array) and adds a sentence to `reasons`; a file that is present but corrupt raises. An adapter converts a 0–1 pLDDT to 0–100 and expands a per-residue or per-token pLDDT to atoms. `record.validate()` raises `ValueError` listing every violation of these rules (a scale, a shape, a `chain_map` that renames two chains to one ID), and reports a pLDDT array whose largest value is at most 1 as a probable unconverted 0–1 scale; `validate(check_structure=True)` also reads the structure and checks that the pLDDT array has one value per atom and that the `chain_map` fits the file.
+
+A model-specific scalar or dictionary goes in `extras` under the key the model uses (`bespoke_iptm` for OpenFold3), a per-token array in `TokenLayout.extras`, and an extra file of a sample in `PredictionFiles.extra`. Generic code never reads `extras`.
+
 ---
 
 ## 13. EvoBind scoring
