@@ -798,6 +798,25 @@ def _extract_chain_to_cif(
     doc.write_file(str(output_path))
 
 
+def _check_template_chain_id(chain_id: str, source: str = "") -> None:
+    """Raise ``ValueError`` if ``chain_id`` cannot be the chain of a template header.
+
+    OpenFold3 reads a template header as ``<entry>_<chain>`` and splits it on the underscore
+    into exactly two parts (``A3mParser`` in v0.5.0), so a chain that carries a template must
+    have no underscore in its ID. The toolkit rejects such an ID rather than renaming the
+    chain, which would change the chain IDs of the result. Chains without a template
+    (the binder of a refolding query) are not affected.
+    """
+    if "_" in chain_id:
+        where = f" in {source}" if source else ""
+        raise ValueError(
+            f"Chain ID '{chain_id}'{where} contains an underscore. OpenFold3 reads a template "
+            "header as <entry>_<chain> and splits it on one underscore, so a chain that "
+            "carries a template cannot have one in its ID. Rename the chain (for example to "
+            "a letter) before scoring or refolding."
+        )
+
+
 def _write_a3m_self_alignment(
     sequence: str,
     query_id: str,
@@ -823,6 +842,7 @@ def _write_a3m_self_alignment(
         chain_id: Chain identifier within the template CIF (e.g. ``"A"``).
         output_path: Destination A3M file path.
     """
+    _check_template_chain_id(chain_id)
     n = len(sequence)
     template_header = f"{entry_id}_{chain_id}/{1}-{n}"
     output_path.write_text(
@@ -943,6 +963,7 @@ def prepare_refolding_query(
         template_source = str(template_cif_path)
     else:
         template_src, template_source = st, str(complex_structure_path)
+    _check_template_chain_id(receptor_chain, str(complex_structure_path))
     _require_chain(template_src, receptor_chain, template_source)
 
     output_dir = Path(output_dir)
@@ -1067,6 +1088,8 @@ def prepare_scoring_query(
         template_source = str(template_cif_path)
     else:
         template_src, template_source = st, str(complex_structure_path)
+    _check_template_chain_id(receptor_chain, str(complex_structure_path))
+    _check_template_chain_id(binder_chain, str(complex_structure_path))
     _require_chain(template_src, receptor_chain, template_source)
     _require_chain(template_src, binder_chain, template_source)
 
@@ -1230,6 +1253,24 @@ def _read_batch_chains(samples: list[_BatchSample], on_unmappable_residue: str) 
     return rows
 
 
+def _check_batch_template_chain_ids(rows: list[tuple], binder_has_template: bool) -> None:
+    """Check the template chain IDs of every sample before anything is written.
+
+    Raises one ``ValueError`` that names each sample whose template chain ID has an
+    underscore (see :func:`_check_template_chain_id`).
+    """
+    problems = []
+    for sample, *_ in rows:
+        chains = [sample.receptor_chain] + ([sample.binder_chain] if binder_has_template else [])
+        for chain_id in chains:
+            try:
+                _check_template_chain_id(chain_id, f"sample '{sample.query_name}'")
+            except ValueError as exc:
+                problems.append(str(exc))
+    if problems:
+        raise ValueError("\n".join(dict.fromkeys(problems)))
+
+
 def prepare_batched_scoring_queries(
     samples: list[_BatchSample],
     output_dir: str | Path,
@@ -1261,6 +1302,7 @@ def prepare_batched_scoring_queries(
     """
     seed_values = _query_seeds(seeds)
     rows = _read_batch_chains(samples, on_unmappable_residue)
+    _check_batch_template_chain_ids(rows, binder_has_template=True)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1346,6 +1388,7 @@ def prepare_batched_refolding_queries(
     """
     seed_values = _query_seeds(seeds)
     rows = _read_batch_chains(samples, on_unmappable_residue)
+    _check_batch_template_chain_ids(rows, binder_has_template=False)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

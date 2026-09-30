@@ -404,3 +404,82 @@ class TestManualYamlFallbackQuoting:
         )
         assert cfg["model_update"]["presets"] == ["predict", "low_mem"]
         assert cfg["msa_computation_settings"] == {"cleanup_msa_dir": False}
+
+
+class TestTemplateChainIdWithUnderscore:
+    """OpenFold3 splits ``<entry>_<chain>`` on one underscore, so a template chain ID may not
+    contain one; the toolkit refuses such an ID before writing anything (#100)."""
+
+    @pytest.fixture(autouse=True)
+    def _require_gemmi(self):
+        pytest.importorskip("gemmi")
+
+    @pytest.fixture
+    def complex_with_underscore(self, tmp_path):
+        from tests.test_of3_synth import _structure
+
+        st = _structure({"A_1": ["ALA", "GLY", "SER"], "B": ["LYS", "ARG"]})
+        path = tmp_path / "underscore.cif"
+        st.make_mmcif_document().write_file(str(path))
+        return path
+
+    @pytest.mark.parametrize(
+        "function", [openfold.prepare_scoring_query, openfold.prepare_refolding_query]
+    )
+    def test_a_receptor_id_with_an_underscore_is_refused_before_any_file(
+        self, tmp_path, complex_with_underscore, function
+    ):
+        out = tmp_path / "out"
+        with pytest.raises(ValueError, match="'A_1'.*splits it on one underscore"):
+            function(complex_with_underscore, "A_1", "B", "q", out)
+        assert not out.exists()
+
+    def test_scoring_refuses_a_binder_id_with_an_underscore_too(self, tmp_path):
+        from tests.test_of3_synth import _structure
+
+        path = tmp_path / "c.cif"
+        _structure({"A": ["ALA", "GLY"], "B_2": ["SER", "LYS"]}).make_mmcif_document().write_file(
+            str(path)
+        )
+        with pytest.raises(ValueError, match="'B_2'"):
+            openfold.prepare_scoring_query(path, "A", "B_2", "q", tmp_path / "out")
+        assert not (tmp_path / "out").exists()
+
+    def test_refolding_leaves_the_binder_id_alone_because_it_has_no_template(self, tmp_path):
+        from tests.test_of3_synth import _structure
+
+        path = tmp_path / "c.cif"
+        _structure({"A": ["ALA", "GLY"], "B_2": ["SER", "LYS"]}).make_mmcif_document().write_file(
+            str(path)
+        )
+        query = openfold.prepare_refolding_query(path, "A", "B_2", "q", tmp_path / "out")
+        chains = json.loads(query.read_text(encoding="utf-8"))["queries"]["q"]["chains"]
+        assert chains[1]["chain_ids"] == ["B_2"]
+
+    def test_the_batched_functions_name_the_sample_and_write_nothing(
+        self, tmp_path, complex_with_underscore
+    ):
+        from binding_metrics.metrics._openfold_run import _BatchSample
+
+        samples = [_BatchSample("s1", complex_with_underscore, "A_1", "B")]
+        for function in (
+            openfold.prepare_batched_scoring_queries,
+            openfold.prepare_batched_refolding_queries,
+        ):
+            out = tmp_path / function.__name__
+            with pytest.raises(ValueError, match="'A_1' in sample 's1'"):
+                function(samples, out)
+            assert not out.exists()
+
+    def test_ids_without_an_underscore_are_unchanged(self, tmp_path):
+        p53 = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+        query = openfold.prepare_scoring_query(p53, "A", "B", "q", tmp_path)
+        a3m = (tmp_path / "q_receptor.a3m").read_text(encoding="utf-8")
+        assert ">receptor_A/1-" in a3m
+        assert query.exists()
+
+    def test_the_a3m_writer_refuses_it_as_well(self, tmp_path):
+        out = tmp_path / "x.a3m"
+        with pytest.raises(ValueError, match="underscore"):
+            _openfold_run._write_a3m_self_alignment("AAA", "query_A_1", "receptor", "A_1", out)
+        assert not out.exists()
