@@ -90,8 +90,9 @@ as a failed prediction. ``KeyboardInterrupt`` and ``SystemExit`` stop the run, r
 temporary directory and propagate.
 
 Model versions. A request made without ``model_version`` takes the runner's ``version()`` when a
-runner is given. Before running, the store also looks under the key without a version, so
-outputs adopted without a declared version are found by a session that has a runner.
+runner is given and that version is known. Outputs adopted without a declared version are found
+under the key without a version first, so a session that has a runner uses what the user pointed
+at; a run made while the version was unknown is not reused once it is known.
 """
 
 from __future__ import annotations
@@ -639,18 +640,20 @@ class PredictionStore:
     ) -> tuple[Optional[StoredPrediction], PredictionRequest]:
         """The stored entry (or None) and the request as it will be run.
 
-        A request without a version is first looked up as it is (outputs adopted without a
-        declared version), then with the runner's version, which is what a run is stored under.
+        A request without a version is run and stored under the runner's version. Outputs that
+        the user adopted without declaring a version are found first: the user pointed at them,
+        whatever version made them. A run made under an unknown version is not reused once the
+        version is known.
         """
         entry = self.lookup(request)
-        if entry is not None:
-            return entry, request
         if not request.model_version and runner is not None:
             version = runner.version()
             if version:
+                if entry is not None and entry.status == STATUS_ADOPTED:
+                    return entry, request
                 request = request.with_model_version(version)
                 return self.lookup(request), request
-        return None, request
+        return entry, request
 
     def _read_entry(self, directory: Path) -> Optional[StoredPrediction]:
         status_path = directory / "STATUS.json"

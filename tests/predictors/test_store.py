@@ -459,6 +459,19 @@ class TestRunOnce:
         store.get_or_run(request, runner)
         assert runner.run_names == []
 
+    def test_a_run_made_under_an_unknown_version_is_not_reused_once_it_is_known(
+        self, store, tmp_path
+    ):
+        request = make_request(tmp_path, model_version="")
+        unknown = StubRunner(version=None)
+        first = store.get_or_run(request, unknown)
+        assert first.key == request.key()  # stored without a version
+        assert store.get_or_run(request, StubRunner(version=None)).run_id == first.run_id
+        known = StubRunner(version="2.0")
+        second = store.get_or_run(request, known)
+        assert known.run_names == ["s1"] and second.run_id != first.run_id
+        assert second.key == request.with_model_version("2.0").key()
+
     def test_another_model_version_is_another_run(self, store, tmp_path):
         runner = StubRunner(version="1.0")
         store.get_or_run(make_request(tmp_path, model_version=""), runner)
@@ -825,6 +838,17 @@ class TestAdoption:
         runner = StubRunner(version="5.0")
         entry = store.get_or_run(request, runner)
         assert runner.run_names == [] and entry.status == "adopted"
+
+    def test_adopted_outputs_win_over_a_run_of_the_installed_version(
+        self, store, tmp_path, outputs
+    ):
+        request = make_request(tmp_path, model_version="")
+        runner = StubRunner(version="5.0")
+        store.get_or_run(request, runner)  # a run exists under version 5.0
+        store.adopt(request, outputs)  # the user then points at their own outputs
+        entry = store.get_or_run(request, runner)
+        assert entry.status == "adopted" and entry.prediction_dir == outputs.resolve()
+        assert runner.run_names == ["s1"]
 
     def test_rerun_of_adopted_outputs_runs_the_model_and_leaves_the_users_files(
         self, store, tmp_path, outputs
