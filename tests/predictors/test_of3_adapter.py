@@ -157,6 +157,11 @@ class TestParse:
         assert record.timing == {"runtime_s": 12.5}
         assert record.extras["seed_value"] == "9"
 
+    def test_the_record_keeps_the_files_it_was_parsed_from(self, tmp_path):
+        parser = OpenFold3Parser()
+        root = _write(tmp_path)
+        assert parser.parse(parser.find_files(root, NAME), name=NAME).files.arrays.suffix == ".json"
+
     def test_chain_pair_keys_are_strings_as_written(self, tmp_path):
         record = OpenFold3Parser().load(_write(tmp_path), NAME)
         assert record.chain_ptm == {"A": 0.88, "B": 0.80}

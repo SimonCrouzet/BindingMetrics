@@ -130,6 +130,8 @@ class PredictionParser(ABC):
         checked_map = check_chain_map(chain_map) if chain_map else {}
         files = self.find_files(Path(prediction_dir), name, seed_index=seed_index, sample=sample)
         record = self.parse(files, name=name, seed_index=seed_index, sample=sample)
+        if record.files is None:
+            record.files = files
         if checked_map:
             record.chain_map = checked_map
         return record

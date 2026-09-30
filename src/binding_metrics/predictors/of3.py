@@ -221,6 +221,7 @@ class OpenFold3Parser(PredictionParser):
             sample=sample,
             structure_path=files.structure,
             ranking_score_name="sample_ranking_score",
+            files=files,
         )
 
         if files.scores is None and files.arrays is None:

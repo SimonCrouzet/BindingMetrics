@@ -73,6 +73,20 @@ class TestLoad:
         assert second.avg_plddt == pytest.approx(72.0)
         first.validate(check_structure=True)
 
+    def test_the_located_files_are_kept_on_the_record(self, written):
+        record = StubParser().load(written, "cmplx")
+        assert record.files == StubParser().find_files(written, "cmplx")
+        assert record.files.arrays is not None
+
+    def test_an_adapter_that_sets_the_files_itself_keeps_its_choice(self, written):
+        class Own(StubParser):
+            def parse(self, files, *, name, seed_index=1, sample=1):
+                record = super().parse(files, name=name, seed_index=seed_index, sample=sample)
+                record.files = PredictionFiles(directory=files.directory)
+                return record
+
+        assert Own().load(written, "cmplx").files.found() == {}
+
     def test_a_string_path_is_accepted(self, written):
         assert StubParser().load(str(written), "cmplx").model == "stub"
 

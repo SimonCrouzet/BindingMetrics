@@ -27,7 +27,8 @@ Extension points, for a model whose output has something the record has no field
 * a per-token array of that model goes in ``TokenLayout.extras`` (same length as the token
   list), and an additional file of a sample in ``PredictionFiles.extra``.
 * a field that every model could fill is added to ``PredictionRecord`` as the last keyword
-  argument, with NaN, None or an empty container as the default, so no adapter has to change.
+  argument (``files`` is the latest), with NaN, None or an empty container as the default, so
+  no adapter has to change.
 * how a value was obtained (for example that the pLDDT came from the B-factor column, or the
   model version the layout was checked against) goes in ``extras``; a reason that a value is
   missing goes in ``reasons``.
@@ -223,6 +224,9 @@ class PredictionRecord:
         extras: Model-specific values; see the module docstring.
         timing: Run times the model reports, seconds.
         reasons: One sentence for each value that could not be provided.
+        files: The files the record was parsed from; ``PredictionParser.load`` fills it when
+            the adapter did not. ``summarize_prediction`` reads it to tell a full-confidence
+            file that is absent (already explained in ``reasons``) from one that lacks a value.
     """
 
     model: str
@@ -249,6 +253,7 @@ class PredictionRecord:
     extras: dict[str, Any] = field(default_factory=dict)
     timing: dict[str, Any] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
+    files: Optional[PredictionFiles] = None
     _atoms_cache: Optional[tuple[Any, Any]] = field(default=None, init=False, repr=False)
 
     def __post_init__(self):

@@ -181,6 +181,11 @@ class TestConstruction:
     def test_n_atoms_counts_the_plddt_values(self):
         assert PredictionRecord("of3", "q", plddt_per_atom=np.full(9, 80.0)).n_atoms == 9
 
+    def test_files_default_to_none_and_hold_what_the_adapter_located(self, tmp_path):
+        assert PredictionRecord("of3", "q").files is None
+        files = PredictionFiles(directory=tmp_path, arrays=tmp_path / "a.json")
+        assert PredictionRecord("of3", "q", files=files).files is files
+
     def test_equality_is_identity(self):
         record = _good_record()
         assert record == record
