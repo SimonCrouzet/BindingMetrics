@@ -149,6 +149,26 @@ class PredictionParser(ABC):
             record.chain_map = checked_map
         return record
 
+    def complete(self, record: PredictionRecord) -> PredictionRecord:
+        """Finish a record whose remaining fields need the structure file.
+
+        Parsing must not open the structure (it imports no biotite), so a model whose PAE and
+        PDE rows or chain-keyed values can only be assigned to chains by reading the structure
+        leaves them raw. ``complete`` is the step that does it. The default returns the record
+        unchanged.
+
+        An override may open the structure. It changes and returns the same record, is
+        idempotent, and does not raise for a problem of the data: it leaves the field as it was
+        and adds a sentence to ``record.reasons``. A record without a structure file, or
+        without the arrays it needs, is returned as it is (the parser has already said why).
+
+        ``load`` does not call it. The callers that turn a directory or a stored request into a
+        summary or a consumer input do: ``compute_prediction_metrics`` and
+        ``compute_openfold_metrics`` after ``load``, and ``PredictionSession.record``, the one
+        place the pipeline and ``binding-metrics-prediction`` read records from.
+        """
+        return record
+
     def list_samples(self, prediction_dir: str | Path, name: str) -> list[SampleRef]:
         """The samples present, in the model's natural order, with their ranking scores.
 

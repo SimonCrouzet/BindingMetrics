@@ -56,9 +56,11 @@ does not read.
   holding all its atoms; every other residue (a modified residue, a ligand, an ion) is one
   token per atom (``data/tokenizer.py:112-154``). ``pae`` and ``pde`` have one row per token, so
   they are larger than the residue count when such a residue is present. The chain and residue
-  of a token need the structure, which parsing does not open: ``record.tokens`` is None, and
-  the interface statistics apply only when the matrix size equals the residue count, until
-  :func:`token_layout` builds the layout from the record and its structure.
+  of a token need the structure, which parsing does not open: ``load`` leaves ``record.tokens``
+  None. :meth:`ProtenixParser.complete` builds the layout with :func:`token_layout`, and is
+  called by ``compute_prediction_metrics`` and ``PredictionSession.record``; a record that
+  only went through ``load`` has the interface statistics only when the matrix size equals the
+  residue count.
 
 Not provided by Protenix, so NaN or empty: ``bespoke_iptm`` (OpenFold3's), the run time (no
 timing file), and ``disorder``, which the model writes as 0 for every sample
@@ -523,6 +525,36 @@ class ProtenixParser(PredictionParser):
         located = next(iter(files.found().values()), None)
         if located is not None and located.parent.parent.name.startswith("seed_"):
             record.extras["seed_value"] = located.parent.parent.name[len("seed_") :]
+        return record
+
+    def complete(self, record: PredictionRecord) -> PredictionRecord:
+        """Attach the token layout, which needs the structure file (see :func:`token_layout`).
+
+        Without it the interface PAE and PDE of a prediction with a modified residue, ligand or
+        ion are refused, because the matrices then have more rows than the structure has
+        residues. A record parsed without the full-data file, or without a structure, has no
+        layout to build and is returned as it is. A layout that cannot be built (the files are
+        not from one sample, the chain numbering disagrees) leaves ``record.tokens`` None and
+        adds the reason. biotite that is not installed leaves the record as it is: the analysis
+        that needs the structure reports it.
+        """
+        if (
+            record.model != self.name
+            or record.tokens is not None
+            or record.structure_path is None
+            or "atom_to_token_idx" not in record.extras
+        ):
+            return record
+        try:
+            record.tokens = token_layout(record)
+        except ImportError:
+            pass
+        except (ValueError, OSError) as exc:
+            reason = (
+                f"token layout not built, so the interface blocks are cut by residue count: {exc}"
+            )
+            if reason not in record.reasons:  # idempotent
+                record.reasons.append(reason)
         return record
 
     def list_samples(self, prediction_dir: str | Path, name: str) -> list[SampleRef]:

@@ -81,8 +81,9 @@ def compute_prediction_metrics(
     )
     if seed_index is not None:
         seed = seed_index
-    record = get_parser(model).load(
-        prediction_dir, name, seed_index=seed, sample=sample, chain_map=chain_map
+    parser = get_parser(model)
+    record = parser.complete(
+        parser.load(prediction_dir, name, seed_index=seed, sample=sample, chain_map=chain_map)
     )
     return summarize_prediction(
         record,

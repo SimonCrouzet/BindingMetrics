@@ -24,6 +24,8 @@ The rules, from ``binding_metrics.predictors.base`` and ``record``:
 * ``check_scalars_parse_without_biotite``: loading the scalars needs no biotite and does not
   open the structure file; a per-atom array that needs the atoms may be None with a reason.
 * ``check_chain_map``: ``chain_map`` renames the chains of ``atoms()``.
+* ``check_completion``: ``complete`` returns the same record, does not raise, is idempotent and
+  leaves a valid record.
 """
 
 import dataclasses
@@ -354,6 +356,35 @@ def check_chain_map(model: str, workdir: Path) -> None:
         _load(model, workdir, chain_map={original[0]: "Z", original[1]: "Z"})
 
 
+def check_completion(model: str, workdir: Path) -> None:
+    write_fixture(model, workdir / "full")
+    parser = get_parser(model)
+    record = _load(model, workdir / "full")
+    try:
+        done = parser.complete(record)
+        again = parser.complete(record)
+    except Exception as exc:  # noqa: BLE001 - reported as the broken rule "complete never raises"
+        raise AssertionError(
+            f"{model}: complete raised {type(exc).__name__}: {exc}; a problem of the data is "
+            "a sentence in record.reasons"
+        ) from exc
+    assert done is record and again is record, f"{model}: complete must return the same record"
+    try:
+        record.validate(check_structure=True)
+    except ValueError as exc:
+        raise AssertionError(f"{model}: record invalid after complete: {exc}") from exc
+    reasons = list(record.reasons)
+    parser.complete(record)
+    assert record.reasons == reasons, f"{model}: complete is not idempotent (reasons grew)"
+
+    # a directory without output and a record without a structure are returned as they are
+    empty = _load_without_raising(model, workdir / "nothing", "a missing directory")
+    try:
+        assert parser.complete(empty) is empty
+    except Exception as exc:  # noqa: BLE001 - reported as the broken rule
+        raise AssertionError(f"{model}: complete failed on a record without files: {exc}") from exc
+
+
 CHECKS = [
     check_class_attributes,
     check_capabilities_declaration,
@@ -363,4 +394,5 @@ CHECKS = [
     check_corrupt_files,
     check_scalars_parse_without_biotite,
     check_chain_map,
+    check_completion,
 ]

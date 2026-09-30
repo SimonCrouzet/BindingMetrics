@@ -157,6 +157,36 @@ class ConstantPlddt(StubParser):
         return record
 
 
+class CompleteRaises(StubParser):
+    """Raises from ``complete`` instead of recording a reason."""
+
+    FAILS_CHECK = "check_completion"
+
+    def complete(self, record):
+        raise ValueError("the structure does not fit")
+
+
+class CompleteReturnsACopy(StubParser):
+    """Returns another record from ``complete``."""
+
+    FAILS_CHECK = "check_completion"
+
+    def complete(self, record):
+        import copy
+
+        return copy.copy(record)
+
+
+class CompleteGrowsTheReasons(StubParser):
+    """Adds the same sentence to the reasons on every call."""
+
+    FAILS_CHECK = "check_completion"
+
+    def complete(self, record):
+        record.reasons.append("completed")
+        return record
+
+
 DEFECTS = [
     PlddtLeftOnZeroToOne,
     TransposedPae,
@@ -171,4 +201,7 @@ DEFECTS = [
     IgnoresTheChainMap,
     WrongName,
     ConstantPlddt,
+    CompleteRaises,
+    CompleteReturnsACopy,
+    CompleteGrowsTheReasons,
 ]

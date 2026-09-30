@@ -174,7 +174,11 @@ class PredictionSession:
         sample: int = 1,
         chain_map: Optional[Mapping[str, str]] = None,
     ) -> PredictionRecord:
-        """The parsed record of one sample of ``request``; runs and parses at most once.
+        """The parsed, completed record of one sample of ``request``; runs and parses at most once.
+
+        The record has been through ``PredictionParser.complete`` of its model, so a consumer
+        gets the token layout and chain names that need the structure. This is the one place
+        the pipeline and ``binding-metrics-prediction`` read records from.
 
         Args:
             request: What to predict.
@@ -193,12 +197,15 @@ class PredictionSession:
         with self._key_lock(key):
             record = self._records.get(memo_key)
             if record is None:
-                record = self._parser(entry.model).load(
-                    entry.prediction_dir,
-                    entry.name,
-                    seed_index=seed_index,
-                    sample=sample,
-                    chain_map=chain_map,
+                parser = self._parser(entry.model)
+                record = parser.complete(
+                    parser.load(
+                        entry.prediction_dir,
+                        entry.name,
+                        seed_index=seed_index,
+                        sample=sample,
+                        chain_map=chain_map,
+                    )
                 )
                 with self._guard:
                     self._records[memo_key] = record

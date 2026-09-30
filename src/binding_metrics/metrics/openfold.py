@@ -337,7 +337,8 @@ def compute_openfold_metrics(
     )
     if seed_index is not None:
         seed = seed_index
-    record = get_parser("of3").load(output_dir, query_name, seed_index=seed, sample=sample)
+    parser = get_parser("of3")
+    record = parser.complete(parser.load(output_dir, query_name, seed_index=seed, sample=sample))
     result = summarize_prediction(
         record,
         include_matrices=include_matrices,
