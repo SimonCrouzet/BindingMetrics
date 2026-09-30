@@ -168,7 +168,7 @@ class TestListSamples:
     def test_nothing_found_gives_an_empty_list(self, tmp_path):
         assert StubParser().list_samples(tmp_path, "cmplx") == []
 
-    def test_the_probe_stops_at_the_limit_for_an_adapter_that_always_finds_files(self, monkeypatch):
+    def test_the_list_is_capped_for_an_adapter_that_always_finds_files(self, monkeypatch):
         class Endless(StubParser):
             def find_files(self, prediction_dir, name, *, seed_index=1, sample=1):
                 return PredictionFiles(directory=Path(prediction_dir), scores=Path("x"))
@@ -176,6 +176,6 @@ class TestListSamples:
             def parse(self, files, *, name, seed_index=1, sample=1):
                 return PredictionRecord(self.name, name, seed_index=seed_index, sample=sample)
 
-        monkeypatch.setattr(base, "_PROBE_LIMIT", 3)
+        monkeypatch.setattr(base, "_PROBE_LIMIT", 4)
         refs = Endless().list_samples(Path("."), "q")
-        assert len(refs) == 9  # 3 seeds x 3 samples, then it gives up
+        assert len(refs) == 4

@@ -44,8 +44,8 @@ from binding_metrics.predictors.record import (
 #: atom of a ligand or modified residue (AlphaFold3, OpenFold3, Boltz, Protenix, Chai-1).
 FAMILIES: tuple[str, ...] = ("af2", "af3")
 
-#: Upper bound of the seed and sample positions ``list_samples`` probes, so an adapter whose
-#: ``find_files`` never comes back empty cannot loop forever.
+#: Upper bound of the samples ``list_samples`` returns, so an adapter whose ``find_files``
+#: never comes back empty cannot loop for long.
 _PROBE_LIMIT = 1000
 
 
@@ -140,18 +140,23 @@ class PredictionParser(ABC):
         The default probes seed positions 1, 2, ... and, inside each, sample positions 1, 2,
         ... until ``find_files`` finds nothing, and parses each sample for its ranking score,
         which reads its arrays; an adapter that can read the score more cheaply overrides it.
+        At most ``_PROBE_LIMIT`` samples are returned.
         """
         directory = Path(prediction_dir)
         refs: list[SampleRef] = []
-        for seed_index in range(1, _PROBE_LIMIT + 1):
-            found_any = False
-            for sample in range(1, _PROBE_LIMIT + 1):
+        seed_index = 0
+        while len(refs) < _PROBE_LIMIT:
+            seed_index += 1
+            sample = 0
+            found_in_seed = False
+            while len(refs) < _PROBE_LIMIT:
+                sample += 1
                 files = self.find_files(directory, name, seed_index=seed_index, sample=sample)
                 if not files.any_found():
                     break
-                found_any = True
+                found_in_seed = True
                 record = self.parse(files, name=name, seed_index=seed_index, sample=sample)
                 refs.append(SampleRef(seed_index, sample, record.ranking_score))
-            if not found_any:
+            if not found_in_seed:
                 break
         return refs
