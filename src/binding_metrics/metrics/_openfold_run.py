@@ -6,13 +6,17 @@ self-alignments) that ``run_openfold predict`` reads. The subprocess call and th
 re-exports everything defined here.
 """
 
+import codecs
 import dataclasses
 import hashlib
 import importlib.metadata
 import json
 import logging
+import os
 import re
 import subprocess
+import sys
+import time
 import warnings
 from pathlib import Path
 from typing import Optional, Sequence
@@ -167,6 +171,304 @@ def _write_runner_yaml(
     yaml_path = output_dir / "runner_config.yaml"
     yaml_path.write_text(content, encoding="utf-8")
     return yaml_path
+
+
+# ---------------------------------------------------------------------------
+# Running OpenFold3 and reporting why it failed
+# ---------------------------------------------------------------------------
+
+#: How much of OpenFold3's stderr is kept for the error message (characters).
+_STDERR_TAIL_CHARS = 8000
+
+#: Lines of that tail shown in the error message.
+_STDERR_LINES_IN_MESSAGE = 8
+
+#: Longest reason text of one query (characters); the error log holds the full traceback.
+_REASON_CHARS = 300
+
+_KNOWN_FAILURE_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("cowardly refusing", "Default checkpoint"),
+        "The default checkpoint (OpenBind-0, of3-ob-2025-06-30-174k.pt) is not on disk. "
+        "Run `setup_openfold --non-interactive` in the OpenFold3 environment, or pass "
+        "inference_ckpt_path. openfold3 >= 0.5.0 does not download it at first use.",
+    ),
+    (
+        ("state_dict keys do not match", "is not compatible with the currently installed"),
+        "This checkpoint does not belong to the installed openfold3: Preview2 weights need "
+        "openfold3 < 0.5, the OpenBind-0 weights need openfold3 >= 0.5.0.",
+    ),
+    (
+        ("out of memory", "OutOfMemoryError"),
+        "The GPU ran out of memory: lower num_diffusion_samples, keep the low_mem preset or "
+        "use a GPU with more memory.",
+    ),
+    (
+        ("unable to allocate shared memory",),
+        "Docker's default /dev/shm is too small: start the container with --shm-size=8g "
+        "(or --ipc=host).",
+    ),
+)
+
+
+def _stderr_hint(text: str) -> str:
+    """Return the advice for a known OpenFold3 failure message, or an empty string."""
+    lowered = text.lower()
+    for needles, hint in _KNOWN_FAILURE_HINTS:
+        if any(needle.lower() in lowered for needle in needles):
+            return hint
+    return ""
+
+
+def _stderr_lines(text: str) -> list[str]:
+    """Non-empty lines of ``text``; a progress bar's carriage returns keep only the last state."""
+    lines = []
+    for raw in text.split("\n"):
+        line = raw.split("\r")[-1].strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _key_line(lines: Sequence[str]) -> str:
+    """The line that names the failure: the last exception line, else the last line."""
+    for line in reversed(lines):
+        if re.match(r"^[\w.]*(Error|Exception|Exit|Interrupt)\b", line):
+            return line
+    return lines[-1] if lines else ""
+
+
+class OpenFoldRunError(subprocess.CalledProcessError):
+    """``run_openfold`` exited with a non-zero status.
+
+    A ``subprocess.CalledProcessError`` whose message starts with the reason: the line of
+    OpenFold3's stderr that names the failure, advice for the failures that have a known fix
+    (missing or incompatible weights, GPU memory, shared memory) and the last lines of stderr.
+    ``stderr`` holds the last few kilobytes of it and ``hint`` the advice.
+    """
+
+    def __init__(self, returncode: int, cmd, stderr_tail: str = ""):
+        super().__init__(returncode, cmd, stderr=stderr_tail)
+        self.hint = _stderr_hint(stderr_tail)
+
+    def __str__(self) -> str:
+        lines = _stderr_lines(self.stderr or "")
+        head = f"OpenFold3 exited with status {self.returncode}"
+        if lines:
+            head += f": {_key_line(lines)[:_REASON_CHARS]}"
+        parts = [head]
+        if self.hint:
+            parts.append(f"Hint: {self.hint}")
+        if lines:
+            shown = "\n".join(
+                f"  {line[:_REASON_CHARS]}" for line in lines[-_STDERR_LINES_IN_MESSAGE:]
+            )
+            parts.append(f"Last lines of stderr:\n{shown}")
+        parts.append(f"Command: {self.cmd}")
+        return "\n".join(parts)
+
+
+class OpenFoldQueryError(RuntimeError):
+    """``run_openfold`` exited with status 0 but every query of the run failed.
+
+    OpenFold3 logs an out-of-memory error or any other failure inside a query, skips the query
+    and still exits normally. ``failures`` maps each failed query to the reason text.
+    """
+
+    def __init__(self, output_dir: Path, failures: dict[str, str]):
+        self.output_dir = Path(output_dir)
+        self.failures = failures
+        lines = "\n".join(f"  {name}: {why}" for name, why in failures.items())
+        super().__init__(
+            f"OpenFold3 exited normally but failed on every query in {output_dir}:\n{lines}"
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class _RunSummary:
+    """The counts and failed queries that OpenFold3 writes to ``<output>/summary.txt``."""
+
+    total: Optional[int]
+    succeeded: Optional[int]
+    failed: Optional[int]
+    failed_queries: tuple[str, ...]
+
+
+def _read_run_summary(output_dir: Path, not_before: float = 0.0) -> Optional[_RunSummary]:
+    """Parse ``<output_dir>/summary.txt`` (format of OpenFold3 0.5.0, ``writer.py``).
+
+    Returns None when there is no summary, or when it is older than ``not_before`` (a
+    modification time in seconds), which means an earlier run wrote it.
+    """
+    path = Path(output_dir) / "summary.txt"
+    try:
+        if path.stat().st_mtime < not_before:
+            logger.debug("%s predates this run and is ignored", path)
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    def _count(label: str, bullet: str = "") -> Optional[int]:
+        # The bullet keeps a one-query list "Failed Queries: 7" from being read as a count.
+        match = re.search(rf"^\s*{bullet}{label}:\s*(\d+)\s*$", text, re.MULTILINE)
+        return int(match.group(1)) if match else None
+
+    listed = re.search(r"^Failed Queries:\s*(.+?)\s*$", text, re.MULTILINE)
+    names = tuple(n.strip() for n in listed.group(1).split(",") if n.strip()) if listed else ()
+    return _RunSummary(
+        total=_count("Total Queries Processed"),
+        succeeded=_count("Successful Queries", bullet="-\\s*"),
+        failed=_count("Failed Queries", bullet="-\\s*"),
+        failed_queries=names,
+    )
+
+
+_ERROR_LOG_ENTRY = re.compile(
+    r"Query ID\(s\): (?P<ids>[^\n]*)\nError Type: (?P<kind>[^\n]*)\n"
+    r"Error Message: (?P<message>.*?)\n-{20,}\nTraceback:",
+    re.DOTALL,
+)
+
+
+def _error_log_reasons(output_dir: Path) -> dict[str, tuple[str, Path]]:
+    """Map each query in OpenFold3's ``logs/predict_err_rank<N>.log`` files to its last error.
+
+    The value is the one-line reason and the log file. A later entry for the same query
+    replaces an earlier one, because OpenFold3 appends to these files across runs.
+    """
+    reasons: dict[str, tuple[str, Path]] = {}
+    for log in sorted((Path(output_dir) / "logs").glob("predict_err_rank*.log")):
+        try:
+            text = log.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for entry in _ERROR_LOG_ENTRY.finditer(text):
+            message = " ".join(entry.group("message").split())
+            reason = f"{entry.group('kind').strip()}: {message}"[:_REASON_CHARS]
+            for name in entry.group("ids").split(","):
+                if name.strip():
+                    reasons[name.strip()] = (reason, log)
+    return reasons
+
+
+def _failed_query_reasons(output_dir: Path, not_before: float = 0.0) -> dict[str, str]:
+    """Return ``{query name: reason}`` for the queries OpenFold3 reports as failed.
+
+    Reads ``<output_dir>/summary.txt`` for the names and ``logs/predict_err_rank<N>.log``
+    for the error of each. OpenFold3 exits with status 0 when a query fails (out of memory
+    or any other exception inside the forward pass), so this is the only trace of it. An empty
+    dict means no failure was reported, or that there is no summary.
+    """
+    summary = _read_run_summary(output_dir, not_before)
+    if summary is None:
+        return {}
+    logged = _error_log_reasons(output_dir)
+    reasons = {}
+    for name in summary.failed_queries:
+        if name in logged:
+            why, log = logged[name]
+            reasons[name] = f"OpenFold3 failed on this query: {why} (see {log})"
+        else:
+            reasons[name] = (
+                "OpenFold3 reported this query as failed (see "
+                f"{Path(output_dir) / 'summary.txt'} and the logs directory)"
+            )
+    return reasons
+
+
+def _user_default_runner_yaml() -> Optional[Path]:
+    """Path of the user-default ``runner.yml`` that OpenFold3 >= 0.5 merges into every run.
+
+    ``run_openfold predict`` loads ``$OPENFOLD_CACHE/runner.yml`` (default
+    ``~/.openfold3/runner.yml``) first and layers the runner YAML it is given over it, so
+    settings the toolkit does not write (structure format, MSA server URL, seeds, ...) come
+    from that file. Returns None when there is none.
+    """
+    cache = os.environ.get("OPENFOLD_CACHE") or (Path.home() / ".openfold3")
+    candidate = Path(cache) / "runner.yml"
+    return candidate if candidate.is_file() else None
+
+
+@dataclasses.dataclass(frozen=True)
+class OpenFoldRunInfo:
+    """What a finished ``run_openfold`` call reports besides its output files.
+
+    ``failed_queries`` maps the queries that OpenFold3 skipped (it still exits with status 0)
+    to their reasons; ``user_default_runner_yaml`` is the file it merged under the toolkit's
+    runner YAML, if any.
+    """
+
+    failed_queries: dict[str, str]
+    user_default_runner_yaml: Optional[Path]
+
+
+def _run_openfold_command(cmd: Sequence[str], output_dir: Path) -> OpenFoldRunInfo:
+    """Run an OpenFold3 command line and explain how it failed.
+
+    stdout goes to the parent's stdout untouched. stderr is echoed to ``sys.stderr`` as it
+    arrives and its last few kilobytes are kept, so a non-zero exit raises
+    :class:`OpenFoldRunError` with the reason instead of only the exit status. After an exit
+    with status 0 the run's ``summary.txt`` is read: queries that failed inside OpenFold3 are
+    logged, and when every query failed :class:`OpenFoldQueryError` is raised.
+
+    Args:
+        cmd: Full command line (``run_openfold predict ...``, possibly behind ``conda run``).
+        output_dir: The ``--output_dir`` of the command; ``summary.txt`` and ``logs/`` are
+            read from there.
+
+    Returns:
+        The queries that failed in a run that otherwise succeeded, and the user-default
+        runner YAML that was merged in.
+
+    Raises:
+        OpenFoldRunError: The process exited non-zero.
+        OpenFoldQueryError: The process exited with status 0 and every query failed.
+    """
+    default_yaml = _user_default_runner_yaml()
+    if default_yaml is not None:
+        logger.warning(
+            "OpenFold3 merges the user-default runner YAML %s under the toolkit's runner YAML "
+            "(openfold3 >= 0.5); settings it holds that the toolkit does not write, such as "
+            "seeds, structure_format or the MSA server URL, apply to this run.",
+            default_yaml,
+        )
+    started = time.time()
+    process = subprocess.Popen(list(cmd), stderr=subprocess.PIPE)
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    tail = ""
+    try:
+        while chunk := process.stderr.read1(4096):
+            text = decoder.decode(chunk)
+            try:
+                sys.stderr.write(text)
+                sys.stderr.flush()
+            except (OSError, ValueError):  # a closed or unwritable console must not stop the run
+                pass
+            tail = (tail + text)[-_STDERR_TAIL_CHARS:]
+        process.wait()
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        process.stderr.close()
+    if process.returncode != 0:
+        raise OpenFoldRunError(process.returncode, list(cmd), tail)
+
+    # A file written a moment before the run started still counts as an earlier run's.
+    failures = _failed_query_reasons(output_dir, not_before=started - 2.0)
+    if failures:
+        logger.warning(
+            "OpenFold3 exited normally but failed on %d quer%s: %s",
+            len(failures),
+            "y" if len(failures) == 1 else "ies",
+            "; ".join(f"{name}: {why}" for name, why in failures.items()),
+        )
+        summary = _read_run_summary(output_dir, not_before=started - 2.0)
+        if summary is not None and summary.total and len(failures) >= summary.total:
+            raise OpenFoldQueryError(output_dir, failures)
+    return OpenFoldRunInfo(failed_queries=failures, user_default_runner_yaml=default_yaml)
 
 
 #: One-letter codes of the 20 standard amino acids.
