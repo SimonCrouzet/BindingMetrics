@@ -668,3 +668,58 @@ class TestInsertionCodes:
         assert res["n_interface_receptor_residues"] == 2
         expected = (6.0 + 12.0 + np.hypot(3.8, 6.0)) / 3.0  # was (6.0 + hypot) / 2 without 1A
         assert res["if_dist_pep_to_rec"] == pytest.approx(expected, abs=1e-2)
+
+
+class TestAdversarialPairingWithInsertionCodes:
+    """Issue #103: residues are paired by residue number AND insertion code."""
+
+    @staticmethod
+    def _renumbered(tmp_path, name, chain, from_res, to_res, to_ins):
+        """The 12+4 residue helix complex with one residue given another number and code."""
+        atoms = _load_atoms(_helix_complex(tmp_path, name))
+        moved = (atoms.chain_id == chain) & (atoms.res_id == from_res)
+        atoms.res_id[moved] = to_res
+        atoms.ins_code[moved] = to_ins
+        return _write(tmp_path / name, atoms)
+
+    def test_a_receptor_residue_with_an_insertion_code_is_not_matched_by_its_number(self, tmp_path):
+        # residue 5 of the prediction is called 4A: the design has residues 4 and 5, the
+        # prediction 4 and 4A, so the two share 11 residues and 4A is not paired with 4
+        design = _helix_complex(tmp_path, "design.pdb")
+        second = self._renumbered(tmp_path, "afm.pdb", "A", 5, 4, "A")
+        res = compute_evobind_adversarial_check(design, second, "B", "A")
+        assert res["receptor_pairing"] == "residue_number"
+        assert res["n_superposition_residues"] == 11
+        assert res["n_superposition_atoms"] == 11
+        assert res["delta_com_angstrom"] == pytest.approx(0.0, abs=1e-2)
+
+    def test_a_binder_residue_with_an_insertion_code_is_not_matched_by_its_number(self, tmp_path):
+        design = _helix_complex(tmp_path, "design.pdb")
+        second = self._renumbered(tmp_path, "afm.pdb", "B", 3, 2, "A")
+        res = compute_evobind_adversarial_check(design, second, "B", "A")
+        assert res["binder_pairing"] == "residue_number"
+        assert res["delta_com_angstrom"] == pytest.approx(0.0, abs=1e-2)
+
+    def test_the_interface_is_mapped_by_number_and_insertion_code(self, tmp_path):
+        # the prediction has a residue 5A where the design has residue 5: the design interface
+        # residue 5 has no partner, so the prediction interface holds fewer residues
+        design = _helix_complex(tmp_path, "design.pdb")
+        second = self._renumbered(tmp_path, "afm.pdb", "A", 5, 5, "A")
+        with_code = compute_evobind_adversarial_check(design, second, "B", "A")
+        plain = compute_evobind_adversarial_check(
+            design, _helix_complex(tmp_path, "plain.pdb"), "B", "A"
+        )
+        assert with_code["interface_fallback_used"] is False
+        assert with_code["afm_if_dist_rec_to_pep"] != pytest.approx(plain["afm_if_dist_rec_to_pep"])
+
+    @pytest.mark.parametrize(
+        "chain, role, from_res, to_res", [("A", "receptor", 5, 4), ("B", "binder", 3, 2)]
+    )
+    def test_a_repeated_residue_number_raises_a_value_error_that_says_so(
+        self, tmp_path, chain, role, from_res, to_res
+    ):
+        # two residues of one chain with the same number and no insertion code cannot be paired
+        design = _helix_complex(tmp_path, "design.pdb")
+        second = self._renumbered(tmp_path, "afm.pdb", chain, from_res, to_res, "")
+        with pytest.raises(ValueError, match=rf"{role} residues .*cannot be paired"):
+            compute_evobind_adversarial_check(design, second, "B", "A")
