@@ -241,8 +241,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
 ### Changed
 
 - `compute_openfold_metrics` reads the output through the `of3` adapter and analyses the record with `summarize_prediction` (`binding_metrics.metrics.prediction`); its dictionary, keys and warnings are unchanged. The reason for a missing full confidence file now reads "per-atom confidences file not found; OpenFold3 writes it only when write_full_confidence_scores is true" (#73).
-- The default OpenFold3 model presets of `binding-metrics-openfold run`, `refold` and `score` are
-  `predict low_mem`. OpenFold3 0.4.1 removed `pae_enabled` (the PAE head is on by default; pTM, ipTM and PAE
+- The default OpenFold3 model presets of `run_openfold` and of `binding-metrics-openfold run`, `refold` and
+  `score` are `predict low_mem`. OpenFold3 0.4.1 removed `pae_enabled` (the PAE head is on by default; pTM, ipTM and PAE
   are always written) and 0.5.0 only logs a warning for it. An explicit `pae_enabled` is left out of the runner
   YAML with a `DeprecationWarning`, and the run continues (#49).
 - `binding-metrics-check-env` reports the installed `openfold3` version and whether the default checkpoint

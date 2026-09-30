@@ -67,6 +67,7 @@ from binding_metrics.metrics._openfold_cli import (  # noqa: F401  (re-exported)
     main,
 )
 from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
+    _DEFAULT_MODEL_PRESETS,
     _DEFAULT_QUERY_SEEDS,
     OpenFoldQueryError,
     OpenFoldRunError,
@@ -390,13 +391,14 @@ def run_openfold(
             preset is always prepended if not already present. Available presets:
 
             - ``"predict"`` — required base preset for inference
-            - ``"pae_enabled"`` — enable the PAE head (required for pTM, ipTM,
-              disorder, chain scores; required by official OpenFold3 weights)
             - ``"low_mem"`` — memory-efficient mode; pairformer embeddings are
               computed sequentially. Recommended for large complexes or limited
               GPU memory. Significant slowdown with many diffusion samples.
 
-            Defaults to ``["predict", "pae_enabled", "low_mem"]``.
+            Defaults to ``["predict", "low_mem"]``. OpenFold3 0.4.1 removed the
+            ``"pae_enabled"`` preset: the PAE head is on by default and pTM, ipTM
+            and PAE are always written. A ``"pae_enabled"`` entry in the list is
+            left out of the runner YAML with a ``DeprecationWarning``.
             Ignored if ``runner_yaml`` is also provided.
         runner_yaml: Explicit path to a runner YAML configuration file. Overrides
             ``model_presets`` when both are provided. CLI flags always take
@@ -436,11 +438,7 @@ def run_openfold(
     if runner_yaml is not None:
         effective_yaml = Path(runner_yaml)
     else:
-        presets = (
-            list(model_presets)
-            if model_presets is not None
-            else ["predict", "pae_enabled", "low_mem"]
-        )
+        presets = list(model_presets) if model_presets is not None else list(_DEFAULT_MODEL_PRESETS)
         if "predict" not in presets:
             presets.insert(0, "predict")
         effective_yaml = _write_runner_yaml(

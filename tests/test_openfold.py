@@ -837,6 +837,44 @@ class TestRunOpenfoldCommand:
         assert f"--output_dir={out}" in cmd and "--num_diffusion_samples=2" in cmd
         assert output_dir == out
 
+    def _runner_yaml_of(self, recorded):
+        ((cmd, _),) = recorded
+        (option,) = [a for a in cmd if a.startswith("--runner_yaml=")]
+        return Path(option.split("=", 1)[1]).read_text(encoding="utf-8")
+
+    def test_the_default_presets_are_predict_and_low_mem(self, tmp_path, recorded):
+        import warnings
+
+        from binding_metrics.metrics.openfold import run_openfold
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # no DeprecationWarning for the defaults
+            run_openfold(tmp_path / "q.json", tmp_path / "o", conda_env="of3")
+        content = self._runner_yaml_of(recorded)
+        assert "predict" in content and "low_mem" in content
+        assert "pae_enabled" not in content
+
+    def test_an_explicit_pae_enabled_still_works_with_a_deprecation_warning(
+        self, tmp_path, recorded
+    ):
+        from binding_metrics.metrics.openfold import run_openfold
+
+        with pytest.warns(DeprecationWarning, match="pae_enabled"):
+            run_openfold(
+                tmp_path / "q.json",
+                tmp_path / "o",
+                conda_env="of3",
+                model_presets=["predict", "pae_enabled", "low_mem"],
+            )
+        assert "pae_enabled" not in self._runner_yaml_of(recorded)
+
+    def test_predict_is_prepended_when_the_presets_lack_it(self, tmp_path, recorded):
+        from binding_metrics.metrics.openfold import run_openfold
+
+        run_openfold(tmp_path / "q.json", tmp_path / "o", conda_env="of3", model_presets=["mps"])
+        content = self._runner_yaml_of(recorded)
+        assert content.index("predict") < content.index("mps")
+
     def test_a_failed_run_raises_what_the_runner_raises(self, tmp_path, monkeypatch):
         import subprocess
 
