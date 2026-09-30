@@ -31,6 +31,24 @@ from binding_metrics.predictors.record import PredictionRecord
 _NAN = float("nan")
 
 
+def _token_ranges(record: PredictionRecord) -> Optional[dict[str, tuple[int, int]]]:
+    """Token ranges by the user's chain IDs, or None for one token per residue.
+
+    A record with a ``TokenLayout`` says which tokens belong to which chain, so the
+    interface block is cut with it and not with residue counts. The layout keeps the
+    model's chain IDs; ``record.chain_map`` renames them like the atoms.
+
+    Raises:
+        ValueError: If the tokens of a chain are not contiguous.
+    """
+    if record.tokens is None:
+        return None
+    return {
+        record.chain_map.get(chain, chain): span
+        for chain, span in record.tokens.token_ranges().items()
+    }
+
+
 def summarize_prediction(
     record: PredictionRecord,
     *,
@@ -79,9 +97,10 @@ def summarize_prediction(
         Binder (needs ``binder_chain``):
             binder_plddt_per_residue (ndarray | None), binder_avg_plddt
 
-        Interface (needs both chains). The block is located with one token per residue and is
-        left NaN, with a warning and a reason, when the matrix size differs from the residue
-        count (a ligand or modified residue tokenised per atom):
+        Interface (needs both chains). The block is cut with ``record.tokens`` when the record
+        has a token layout, and otherwise located with one token per residue; it is left NaN,
+        with a warning and a reason, when the matrix size differs from the residue count (a
+        ligand or modified residue tokenised per atom):
             mean_interface_pde, max_interface_pde, pde_interface (only with
             ``include_matrices``), mean_interface_pae (average of both slice directions),
             max_interface_pae, pae_interface (binder rows, receptor columns; only with
@@ -170,7 +189,11 @@ def summarize_prediction(
                 if record.pde is not None:
                     try:
                         pde_stats = _interface_pde_stats(
-                            record.pde, pred_atoms, binder_chain, receptor_chain
+                            record.pde,
+                            pred_atoms,
+                            binder_chain,
+                            receptor_chain,
+                            token_ranges=_token_ranges(record),
                         )
                         result["mean_interface_pde"] = pde_stats["mean_interface_pde"]
                         result["max_interface_pde"] = pde_stats["max_interface_pde"]
@@ -188,7 +211,11 @@ def summarize_prediction(
                 if record.pae is not None:
                     try:
                         pae_stats = _interface_pae_stats(
-                            record.pae, pred_atoms, binder_chain, receptor_chain
+                            record.pae,
+                            pred_atoms,
+                            binder_chain,
+                            receptor_chain,
+                            token_ranges=_token_ranges(record),
                         )
                         result["mean_interface_pae"] = pae_stats["mean_interface_pae"]
                         result["max_interface_pae"] = pae_stats["max_interface_pae"]

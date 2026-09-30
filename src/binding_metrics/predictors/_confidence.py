@@ -255,6 +255,8 @@ def _interface_pde_stats(
     atoms,
     binder_chain: str,
     receptor_chain: str,
+    *,
+    token_ranges: Optional[dict[str, tuple[int, int]]] = None,
 ) -> dict:
     """PDE statistics for the binder–receptor interface region.
 
@@ -266,6 +268,9 @@ def _interface_pde_stats(
         atoms: Biotite AtomArray of the predicted structure.
         binder_chain: Chain ID of the binder.
         receptor_chain: Chain ID of the receptor.
+        token_ranges: ``{chain_id: (start, end)}`` token ranges from a token layout
+            (``TokenLayout.token_ranges``). Given, they replace the residue-count offsets,
+            so a ligand or modified residue tokenised per atom no longer shifts the blocks.
 
     Returns:
         Dict with:
@@ -279,7 +284,7 @@ def _interface_pde_stats(
         ValueError: If a chain is not in the structure, or the matrix size does
             not equal the residue count (see :func:`_check_token_offsets`).
     """
-    offsets = _chain_token_offsets(atoms)
+    offsets = token_ranges if token_ranges is not None else _chain_token_offsets(atoms)
     missing = [c for c in (binder_chain, receptor_chain) if c not in offsets]
     if missing:
         raise ValueError(f"Chains not found in structure: {missing}")
@@ -301,6 +306,8 @@ def _interface_pae_stats(
     atoms,
     binder_chain: str,
     receptor_chain: str,
+    *,
+    token_ranges: Optional[dict[str, tuple[int, int]]] = None,
 ) -> dict:
     """PAE statistics for the binder–receptor interface region.
 
@@ -319,6 +326,9 @@ def _interface_pae_stats(
         atoms: Biotite AtomArray of the predicted structure.
         binder_chain: Chain ID of the binder.
         receptor_chain: Chain ID of the receptor.
+        token_ranges: ``{chain_id: (start, end)}`` token ranges from a token layout
+            (``TokenLayout.token_ranges``). Given, they replace the residue-count offsets,
+            so a ligand or modified residue tokenised per atom no longer shifts the blocks.
 
     Returns:
         Dict with:
@@ -332,7 +342,7 @@ def _interface_pae_stats(
         ValueError: If a chain is not in the structure, or the matrix size does
             not equal the residue count (see :func:`_check_token_offsets`).
     """
-    offsets = _chain_token_offsets(atoms)
+    offsets = token_ranges if token_ranges is not None else _chain_token_offsets(atoms)
     missing = [c for c in (binder_chain, receptor_chain) if c not in offsets]
     if missing:
         raise ValueError(f"Chains not found in structure: {missing}")

@@ -10,7 +10,7 @@ import pytest
 
 from binding_metrics.metrics import openfold
 from binding_metrics.metrics.prediction import summarize_prediction
-from binding_metrics.predictors.record import PredictionFiles, PredictionRecord
+from binding_metrics.predictors.record import PredictionFiles, PredictionRecord, TokenLayout
 from tests.predictors import contract, synth, synth_of3
 from tests.predictors.test_openfold_golden import _KEYS, _write_reference, _write_run
 
@@ -209,3 +209,103 @@ class TestOpenFold30Layouts:
             receptor_chain="A",
         )
         assert result["mean_interface_pae"] == pytest.approx(3.4375)
+
+
+class TestTokenLayout:
+    """A record with a token layout is cut by chain, not by residue count."""
+
+    def _ligand_complex(self, tmp_path):
+        """The synthetic dimer plus a 5-atom ligand chain L: 7 residue tokens and 5 atom tokens."""
+        import biotite.structure as struc
+
+        truth = synth.synthetic_complex()
+        ligand = struc.array(
+            [
+                struc.Atom(
+                    [3.8 * k, 20.0, 0.0],
+                    chain_id="L",
+                    res_id=1,
+                    res_name="LIG",
+                    atom_name=f"C{k + 1}",
+                    element="C",
+                    hetero=True,
+                )
+                for k in range(5)
+            ]
+        )
+        atoms = struc.concatenate([truth.atoms, ligand])
+        atoms.set_annotation("b_factor", np.full(atoms.array_length(), 90.0))
+        path = synth.write_structure(atoms, tmp_path / "model.cif")
+        n = 12
+        i = np.arange(n)[:, None]
+        j = np.arange(n)[None, :]
+        # CA of each residue token, then the five ligand atoms
+        atom_index = [0, 2, 4, 6, 8, 10, 12, 14, 15, 16, 17, 18]
+        layout = TokenLayout(
+            chain_id=np.array(["A"] * 4 + ["B"] * 3 + ["L"] * 5),
+            res_id=np.array([1, 2, 3, 4, 1, 2, 3, 1, 1, 1, 1, 1]),
+            atom_index=np.array(atom_index),
+            is_atom_token=np.array([False] * 7 + [True] * 5),
+        )
+        return PredictionRecord(
+            "fake",
+            "q",
+            structure_path=path,
+            plddt_per_atom=np.full(atoms.array_length(), 90.0),
+            pde=0.5 + 0.25 * i + 0.125 * j,
+            pae=1.0 + 0.5 * i + 0.25 * j,
+            tokens=layout,
+            files=None,
+        )
+
+    def test_the_ligand_tokens_do_not_shift_the_interface_block(self, tmp_path):
+        record = self._ligand_complex(tmp_path)
+        summary = summarize_prediction(record, binder_chain="B", receptor_chain="A")
+        # the same numbers as the ligand-free dimer: tokens 4-6 against 0-3
+        assert summary["mean_interface_pde"] == pytest.approx(1.9375)
+        assert summary["mean_interface_pae"] == pytest.approx(3.4375)
+        assert summary["max_interface_pae"] == pytest.approx(4.75)
+        assert "reason" not in summary
+
+    def test_without_the_layout_the_same_record_is_refused(self, tmp_path):
+        record = self._ligand_complex(tmp_path)
+        record.tokens = None
+        with pytest.warns(UserWarning, match="interface PDE skipped"):
+            summary = summarize_prediction(record, binder_chain="B", receptor_chain="A")
+        assert np.isnan(summary["mean_interface_pde"])
+        assert "PDE matrix has 12 tokens" in summary["reason"]
+
+    def test_the_layout_follows_the_chain_map(self, tmp_path):
+        record = self._ligand_complex(tmp_path)
+        record.chain_map = {"A": "R", "B": "P"}
+        summary = summarize_prediction(record, binder_chain="P", receptor_chain="R")
+        assert summary["mean_interface_pae"] == pytest.approx(3.4375)
+        # the ligand chain is not in the map and keeps its name
+        ligand = summarize_prediction(record, binder_chain="L", receptor_chain="R")
+        assert ligand["mean_interface_pde"] == pytest.approx(float(record.pde[7:12, 0:4].mean()))
+
+    def test_a_chain_that_is_not_in_the_layout_is_reported(self, tmp_path):
+        record = self._ligand_complex(tmp_path)
+        with pytest.warns(UserWarning):
+            summary = summarize_prediction(record, binder_chain="B", receptor_chain="Z")
+        assert "Chains not found" in summary["reason"]
+
+    def test_non_contiguous_tokens_are_reported_not_guessed(self, tmp_path):
+        record = self._ligand_complex(tmp_path)
+        record.tokens = TokenLayout(
+            chain_id=np.array(["A", "B", "A"] * 4),
+            res_id=np.arange(12),
+            atom_index=np.zeros(12, dtype=int),
+        )
+        with pytest.warns(UserWarning, match="interface PDE skipped"):
+            summary = summarize_prediction(record, binder_chain="B", receptor_chain="A")
+        assert "not contiguous" in summary["reason"]
+        assert np.isnan(summary["mean_interface_pae"])
+
+    def test_the_helpers_accept_ranges_directly(self):
+        from binding_metrics.predictors._confidence import _interface_pae_stats
+
+        pae = np.arange(36.0).reshape(6, 6)
+        stats = _interface_pae_stats(pae, None, "B", "A", token_ranges={"A": (0, 2), "B": (2, 6)})
+        np.testing.assert_allclose(stats["pae_interface"], pae[2:6, 0:2])
+        assert (stats["n_binder_tokens"], stats["n_receptor_tokens"]) == (4, 2)
