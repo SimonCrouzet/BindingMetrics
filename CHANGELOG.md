@@ -246,6 +246,11 @@ Values from earlier versions differ in the cases below. A change reads "before -
   is on disk. openfold3 0.5.0 or later without that file fails the check, since every run would stop there;
   Preview2 weights alone do not count. A version below 0.5.0, or one that cannot be read, is a warning
   (#74). The check was a bare `import openfold3`.
+- The `:full` image and its README section describe the default Triton path of openfold3 0.5: the DeepSpeed
+  `evoformer_attn` JIT cache mount, the CUTLASS and ninja layer and `CUTLASS_PATH` are gone (DeepSpeed is
+  an opt-in extra that the environment file does not install), a mount for `TRITON_CACHE_DIR` takes their
+  place, and the README names `openbind-2025-06-30-174k`, not `openfold3-p2-155k`, as the default
+  checkpoint (#72, #81). The image was not built.
 - `environment_openfold3.yml` pins `openfold3>=0.5.0,<0.6` (it was unpinned) and names OpenBind-0, the default
   weights of the 0.5 series, which the 0.4.x releases and Preview2 weights cannot use (#82). The pin follows
   the release notes; the resolved torch and CUDA wheels were not tested.

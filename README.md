@@ -190,19 +190,19 @@ docker pull simoncrouzet/binding-metrics:latest
 docker pull simoncrouzet/binding-metrics:full
 ```
 
-**OpenFold3 weights and JIT cache** — model weights (~2.3 GB) are not included in the image, and DeepSpeed's `evoformer_attn` kernel JIT-compiles on first use (~1–3 min via nvcc). Bind-mount both to host directories so they persist across container runs and host reboots:
+**OpenFold3 weights and kernel cache** — model weights (~2.3 GB) are not included in the image, and Triton compiles OpenFold3's kernels on first use. Bind-mount both to host directories so they persist across container runs and host reboots:
 
 ```bash
-mkdir -p ~/.openfold-weights ~/.of3-jit-cache
+mkdir -p ~/.openfold-weights ~/.of3-triton-cache
 
 docker run -it --gpus all --shm-size=8g \
     -v ~/.openfold-weights:/root/.openfold3 \
-    -v ~/.of3-jit-cache:/tmp/.cache/torch_extensions \
+    -v ~/.of3-triton-cache:/tmp/triton_cache \
     -v /path/to/your/structures:/data \
     simoncrouzet/binding-metrics:full bash
 ```
 
-First run downloads the default checkpoint (`openfold3-p2-155k`) and JIT-builds the kernel. Subsequent runs skip the download and load the cached `.so` in milliseconds. The `binding-metrics` conda env is activated automatically on shell start.
+First run downloads the default checkpoint (`openbind-2025-06-30-174k`, the OpenBind-0 weights of openfold3 0.5) and compiles the kernels; later runs skip both. The second mount is the `TRITON_CACHE_DIR` that the image sets. A volume that holds Preview2 weights (`of3-p2-*.pt`) from an earlier image keeps them, but they do not load into openfold3 0.5: the entrypoint downloads the OpenBind-0 file next to them. The `binding-metrics` conda env is activated automatically on shell start.
 
 > **Bind mount vs. named volume.** Docker named volumes (`-v openfold3-weights:/root/.openfold3`) work too, but they live under `/var/lib/docker/volumes/` which is often on ephemeral storage in cloud / studio environments (RunPod, Lambda, etc.). Bind-mounting to `~/...` keeps the data in your persistent user home.
 
@@ -211,7 +211,7 @@ First run downloads the default checkpoint (`openfold3-p2-155k`) and JIT-builds 
 **Advanced:**
 
 - `-e BINDING_METRICS_SKIP_WEIGHTS_CHECK=1` — skip the weights check and auto-download. Useful when you know the weights aren't needed. `binding-metrics-check-env` reports the `openfold3` version and whether the default checkpoint is on disk.
-- To download a non-default checkpoint or run OpenFold3's integration tests, bypass the entrypoint and run `setup_openfold` interactively:
+- To run OpenFold3's integration tests or download to another folder, bypass the entrypoint and run `setup_openfold` interactively (`setup_openfold --non-interactive` is what the entrypoint runs):
   ```bash
   docker run -it --rm --gpus all --entrypoint bash \
       -v ~/.openfold-weights:/root/.openfold3 \
