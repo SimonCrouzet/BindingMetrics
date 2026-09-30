@@ -391,20 +391,23 @@ class ProtenixParser(PredictionParser):
 
     # The inputs Protenix 2.0.0 can be given, from its documentation (commit 85767b8, checked
     # against the clone on 2026-09-30; tests/test_pre_protenix_limits.py re-reads it when the
-    # clone is at hand). Not declared because nothing shows it: a limit on the residue classes
-    # (modified residues go through a CCD code, D-amino acids and N-methyl are not mentioned), and
-    # the 2560-token limit of the model protenix-v2, which is a limit of the whole complex.
+    # clone is at hand). No closure is refused: the documentation gives a head-to-tail amide bond
+    # and a disulfide as the supported cases and calls other polymer-polymer bonds "not reliably
+    # handled", a reliability statement, so they are warnings and the source takes any atom pair.
+    # Not declared because nothing shows it: a limit on the residue classes (modified residues go
+    # through a CCD code, D-amino acids and N-methyl are not mentioned), and the 2560-token limit
+    # of the model protenix-v2, which is a limit of the whole complex.
     capabilities = Capabilities(
-        closures={"none", "head_to_tail", "disulfide"},
-        reasons={
-            "closures": (
-                "Protenix 2.0.0 takes a covalent bond between two polymer residues only for a "
-                "cyclic peptide: a head-to-tail amide bond or a disulfide between cysteines. "
-                "Other polymer-polymer bonds can be written in `covalent_bonds` but are 'not "
-                "reliably handled by the current model': the residues tend to sit close together "
-                "without forming the bond (docs/infer_json_format.md, section covalent_bonds). "
-                "Use a model that takes the link as input, or leave the Protenix step out."
-            ),
+        caveats={
+            family: (
+                "Protenix documents a covalent bond between two polymer residues only for a "
+                "head-to-tail amide bond and a disulfide between cysteines; other types "
+                '"can still be specified in the input, but they are not reliably handled by the '
+                "current model. In such cases, the specified residues may tend to be positioned "
+                'in close proximity, though typically not close enough to form a covalent bond" '
+                "(docs/infer_json_format.md, section covalent_bonds)."
+            )
+            for family in ("closures:lactam", "closures:staple", "closures:other")
         },
         version="2.0.0",
     )

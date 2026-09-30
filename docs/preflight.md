@@ -137,11 +137,7 @@ Warnings, not refusals: a head-to-tail binder is folded as a linear chain, becau
 
 ### Protenix 2.0.0
 
-Declared on `ProtenixParser.capabilities`, from `docs/infer_json_format.md` of Protenix (commit 85767b8, 2026-09-21).
-
-| Limit | Basis |
-|---|---|
-| Closures: `none`, `head_to_tail` and `disulfide` | "Covalent bonds between two polymer residues ... are generally not supported. Exceptions are made for cyclic peptides", for a head-to-tail amide bond or a disulfide between cysteines; other polymer-polymer bonds "are not reliably handled by the current model". The source takes any atom pair (`json_to_feature.py`), so a lactam, a staple or another link can be written; the limit is about what the model does with it. |
+Declared on `ProtenixParser.capabilities`: no limit, warnings for a lactam, a staple and another cross-link. `docs/infer_json_format.md` (commit 85767b8, section `covalent_bonds`) supports a covalent bond between two polymer residues for a head-to-tail amide bond and for a disulfide between cysteines, which stay silent. It says other types "can still be specified in the input, but they are not reliably handled by the current model", and that the residues "may tend to be positioned in close proximity, though typically not close enough to form a covalent bond". That is a statement about reliability, not about what can be given, and the source takes any atom pair (`json_to_feature.py`), so refusing the input would claim more than the documentation does: it is a caveat and the input runs under the default policy.
 
 ### Boltz-2 2.2.1
 
@@ -177,6 +173,10 @@ Declared on `MetricSpec.capabilities`, a keyword-only optional field.
 
 `preflight` checks the receptor need from the profile, and the reference and prediction needs only when the caller passes `provided`.
 
+### The rule between a limit and a caveat
+
+A limit refuses the input (policy `error`) and is declared only where the source says the input cannot be given or is not read: OpenFold3 reads `covalent_bonds` nowhere, AlphaFold2 and ColabFold take a sequence of 20 amino acids and X, a metric raises or returns nothing without its receptor. A source that says "not reliably", "may" or "experimental" gives a caveat, a warning under every policy: the Protenix bonds above, the Boltz-2 staple, the OpenFold3 head-to-tail closure sent as a linear chain.
+
 ### Considered and not declared
 
 | Candidate | Why it is not declared |
@@ -196,6 +196,7 @@ Declared on `MetricSpec.capabilities`, a keyword-only optional field.
 | Boltz-2 on D-amino acids, N-methyl and phospho residues | A modified residue is a CCD code in `modifications`; no source or documentation says whether D-amino acid or N-methyl codes work, so nothing is declared. |
 | Boltz-2 affinity for a peptide | Not an input limit of the structure prediction. |
 | Boltz-2 binder size | The 256-token and 2048-atom cropping limits belong to the affinity data set; no maximum is stated for structure prediction. |
+| Protenix closure limit for a lactam, a staple or another link | The documentation says "not reliably handled", so it is a caveat and not a limit. |
 | Protenix on D-amino acids, N-methyl and phospho residues | A modified residue is a CCD code in `modifications`; D-amino acids and N-methylation are not mentioned. |
 | Protenix size (2560 tokens for `protenix-v2`) | It is a limit of the whole complex and of one model name (`runner/inference.py`), and the profile holds the binder only. |
 | AlphaFold2 and ColabFold binder size | The memory figures of the ColabFold FAQ depend on the GPU; no code states a maximum. |
