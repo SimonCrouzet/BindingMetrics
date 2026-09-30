@@ -695,11 +695,33 @@ class TestColabFoldParse:
         with pytest.raises(ValueError, match="not a valid JSON file"):
             AlphaFold2Parser().load(tmp_path, NAME)
 
-    def test_a_corrupt_structure_raises(self, tmp_path):
+    def test_a_structure_that_cannot_be_read_keeps_the_scores_and_says_why(self, tmp_path):
+        _colabfold(tmp_path)
+        next(tmp_path.glob("*_unrelaxed_*.pdb")).write_text("# stub CIF\n", encoding="utf-8")
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.plddt_per_atom is None
+        assert record.avg_plddt == pytest.approx(RESIDUE_PLDDT.mean())
+        assert (record.ptm, record.iptm) == (0.88, 0.76)
+        assert "structure file cannot be read" in record.reasons[0]
+        assert "has no atom records" in record.reasons[0]
+        assert "cannot be expanded to atoms" in record.reasons[0]
+        record.validate()
+
+    def test_a_malformed_atom_record_is_reported_the_same_way(self, tmp_path):
         _colabfold(tmp_path)
         next(tmp_path.glob("*_unrelaxed_*.pdb")).write_text("ATOM      1  CA\n", encoding="utf-8")
-        with pytest.raises(ValueError, match="atom record of"):
-            AlphaFold2Parser().load(tmp_path, NAME)
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.plddt_per_atom is None and record.pae is not None
+        assert "is an atom record of 15 columns" in record.reasons[0]
+
+    def test_a_structure_that_cannot_be_read_gives_no_pLDDT_from_its_b_factors(self, tmp_path):
+        _colabfold(tmp_path)
+        next(tmp_path.glob("*_scores_*.json")).unlink()
+        next(tmp_path.glob("*_unrelaxed_*.pdb")).write_text("# stub CIF\n", encoding="utf-8")
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.plddt_per_atom is None and np.isnan(record.avg_plddt)
+        assert any("so there is no pLDDT either" in reason for reason in record.reasons)
+        record.validate()
 
     def test_the_chain_map_renames_the_chains_of_the_atoms_only(self, tmp_path):
         record = AlphaFold2Parser().load(_colabfold(tmp_path), NAME, chain_map={"A": "R", "B": "P"})

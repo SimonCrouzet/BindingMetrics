@@ -47,7 +47,8 @@ Conventions
   the atoms of the structure file; ``avg_plddt`` is the mean over residues, as ColabFold reports it,
   and the per-residue array stays in ``record.extras["plddt_per_residue"]``. The structure file is
   read as text for a PDB (no biotite) and with biotite for an mmCIF. The residue counts of the two
-  files must agree, or ``ValueError`` is raised.
+  files must agree, or ``ValueError`` is raised; a structure file that cannot be read leaves
+  ``plddt_per_atom`` None, with a reason.
 * Chains are those of the structure file, in input order except that ColabFold places identical
   sequences next to each other, so the order can differ from the FASTA order. ``chain_ptm`` and
   ``chain_pair_iptm`` use the same letters. Rename chains with ``chain_map``. A bare structure
@@ -704,7 +705,12 @@ def _parse_files(
     record.extras["layout"] = _layout_of(files)
 
     confidences = _read_confidences(files, record)
-    scan = None if files.structure is None else _scan_structure(files.structure)
+    scan, structure_problem = None, "no structure file found"
+    if files.structure is not None:
+        try:
+            scan = _scan_structure(files.structure)
+        except ValueError as exc:
+            structure_problem = f"the structure file cannot be read ({exc})"
     if confidences is not None:
         source_file = files.arrays
         _apply_confidences(record, confidences, source_file.name)
@@ -714,13 +720,13 @@ def _parse_files(
             )
         else:
             record.reasons.append(
-                "structure file not found: the per-residue pLDDT (record.extras"
+                f"{structure_problem}: the per-residue pLDDT (record.extras"
                 "['plddt_per_residue']) cannot be expanded to atoms"
             )
     elif scan is not None:
         _apply_bfactor(record, scan, files.structure, scale)
     else:
-        record.reasons.append("no structure file found, so there is no pLDDT either")
+        record.reasons.append(f"{structure_problem}, so there is no pLDDT either")
 
     _apply_layout_details(record, files, confidences)
     return record
@@ -774,8 +780,9 @@ class AlphaFold2Parser(PredictionParser):
         """Read the located files into a record.
 
         A missing confidence file leaves its values at NaN (None for an array), adds a reason
-        and, when the structure is there, reads pLDDT from its B-factor column. A corrupt file
-        raises ``ValueError``, and so do confidence and structure files that disagree on the
+        and, when the structure is there, reads pLDDT from its B-factor column. A structure file
+        that cannot be read leaves ``plddt_per_atom`` None with a reason. A corrupt confidence
+        file raises ``ValueError``, and so do confidence and structure files that disagree on the
         number of residues.
         """
         return _parse_files(files, name, seed_index, sample)
