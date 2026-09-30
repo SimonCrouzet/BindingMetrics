@@ -55,7 +55,7 @@ Usage (CLI):
         --query-name my_complex
 """
 
-import subprocess
+import subprocess  # noqa: F401  (tests patch openfold.subprocess)
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -68,10 +68,13 @@ from binding_metrics.metrics._openfold_cli import (  # noqa: F401  (re-exported)
 )
 from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     _DEFAULT_QUERY_SEEDS,
+    OpenFoldQueryError,
+    OpenFoldRunError,
     _BatchSample,
     _extract_chain_to_cif,
     _extract_sequence_from_structure,
     _query_seeds,
+    _run_openfold_command,
     _safe_entry_id,
     _write_a3m_self_alignment,
     _write_runner_yaml,
@@ -410,7 +413,12 @@ def run_openfold(
     Raises:
         FileNotFoundError: If ``run_openfold`` is not on PATH and no
             ``conda_env`` is specified.
-        subprocess.CalledProcessError: If OpenFold3 exits non-zero.
+        OpenFoldRunError: If OpenFold3 exits non-zero. It is a
+            ``subprocess.CalledProcessError``; its message starts with the failing line of
+            stderr and adds a fix for missing or incompatible weights, GPU memory and
+            ``/dev/shm``.
+        OpenFoldQueryError: If OpenFold3 exits with status 0 but every query failed, which
+            it reports only in ``summary.txt`` and ``logs/``. A partial failure is logged.
     """
     import shutil
 
@@ -463,7 +471,7 @@ def run_openfold(
     else:
         cmd = of3_cmd
 
-    subprocess.run(cmd, check=True)
+    _run_openfold_command(cmd, output_dir)
     return output_dir
 
 

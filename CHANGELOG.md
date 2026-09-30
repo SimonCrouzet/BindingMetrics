@@ -180,6 +180,7 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - `PredictionParser`, the base class of a predictor adapter (`find_files`, `parse`, `load`, `list_samples`), and its registry in `binding_metrics.predictors`: `ParserSpec`, `PARSERS`, `get_parser` and `register_parser`. An adapter reads a model's output files and never runs the model.
 - The `of3` adapter, `get_parser("of3")`, reads an OpenFold3 output directory into a `PredictionRecord`: structure files `.cif`, `.cif.gz` and `.pdb`, seed directories in numeric order of the seed value, `.npz` confidences read without pickle, and the OpenFold3-only `bespoke_iptm` in `record.extras` (#78, #79, #80).
 - `binding_metrics.metrics.mlff_energy`, a reserved interface for an interaction energy from a machine-learned force field (Ryczko et al., ChemRxiv 10.26434/chemrxiv.15008810): `MLFFBackend`, `PocketSpec`, `register_backend`, `get_backend`, `available_backends` and `compute_mlff_interaction_energy`, which validates its arguments and raises `NotImplementedError`. It is not a registered metric.
+- `binding_metrics.capabilities`, the description of what a model or a metric accepts and of the input to check it against, for pre-flight checks (#90). `Capabilities` is a frozen dataclass whose fields (binder types, ring closures, residue classes, binder size, single-chain binder, needs) all default to "no constraint", and a constraint must carry a sentence that says why it holds. `profile_input(structure, binder_chain, receptor_chain=None, binder_type="auto")` returns an `InputProfile`: size and type of the binder, closures (head-to-tail, disulfide, lactam, staple, other) and residue classes (canonical, D, N-methyl, phospho, other non-canonical, cap, ligand). `detect_closures` finds the closures on a biotite structure and returns the same links as `core.cyclic.detect_cyclization` on 1YCR, 1CWA, 3P8F, 1XY4, 3V3B and 1QJB, without OpenMM. Importing the module loads no OpenMM, torch or biotite. See `docs/preflight.md`.
 - `random_seed` on `parameterize_ncaa_residues` (default 1, keyword-only): the seed of the conformer that the
   AM1-BCC charges of GAFF2 residues start from. `None` draws a new one.
 - `--config PATH` for `binding-metrics-run`, `-batch` and `-relax`: a TOML file supplies option
@@ -281,6 +282,7 @@ Values from earlier versions differ in the cases below. A change reads "before -
 
 ### Fixed
 
+- A failed OpenFold3 run keeps its reason (#83, #84, #85). A non-zero exit raises `OpenFoldRunError` (a `CalledProcessError`) whose message starts with the failing line of stderr and a fix hint for missing or incompatible weights, GPU memory and `/dev/shm`. OpenFold3 exits with status 0 when a query fails inside it; the run's `summary.txt` and `logs/predict_err_rank*.log` are now read, `OpenFoldQueryError` is raised when every query failed, and a partial failure is logged. A user-default `runner.yml` that OpenFold3 merges under the toolkit's YAML is logged.
 - The per-residue binder pLDDT and the residue-count token offsets of the OpenFold3 metrics tell residues apart by residue number and insertion code, so residues 52 and 52A are two (they were merged, which gave one value too few and made the interface block refuse a matrix of the right size, #94).
 - `compute_openfold_metrics` finds and reads `.cif.gz` structures (`structure_format: cif.gz`, #78), counts `seed` in the numeric order of the seed directories (`seed_9` before `seed_10`; the string order decided before, which differs when the seed values have different numbers of digits, #79), and opens `.npz` confidences without pickle, reading only `plddt`, `pde`, `pae` and `gpde` (#80).
 - `core/gaff_ncaa.py` writes force-field files and reads antechamber output as UTF-8 whatever the locale.
@@ -304,6 +306,10 @@ Values from earlier versions differ in the cases below. A change reads "before -
   `*.pt` file as the weights, so a volume with Preview2 weights skipped the download and the first run
   stopped (#71), and named `openfold3-p2-155k` as the default (#72). Statically checked and run under bash
   with a stub `conda`; the image was not built.
+- A chain ID with an underscore on a chain that carries a template (both chains when scoring, the receptor
+  when refolding) raises `ValueError` before anything is written, saying that OpenFold3 splits the template
+  header `<entry>_<chain>` on one underscore. It failed later inside OpenFold3. The chain is not renamed,
+  because that would change the chain IDs of the result (#100).
 - The runner YAML that is written without PyYAML quotes the template directory, so a path with `: ` or ` #`
   in it is read back unchanged (#99).
 - A template file that lacks the receptor or binder chain (`template_cif_path` of the scoring and refolding

@@ -809,6 +809,59 @@ class TestSeedIndex:
 
 
 # ---------------------------------------------------------------------------
+# Tests: run_openfold hands the command to the failure-reporting runner
+# ---------------------------------------------------------------------------
+
+
+class TestRunOpenfoldCommand:
+    @pytest.fixture
+    def recorded(self, monkeypatch):
+        from binding_metrics.metrics import openfold
+
+        calls = []
+
+        def _fake(cmd, output_dir):
+            calls.append((list(cmd), output_dir))
+
+        monkeypatch.setattr(openfold, "_run_openfold_command", _fake)
+        return calls
+
+    def test_the_command_and_the_output_directory_reach_the_runner(self, tmp_path, recorded):
+        from binding_metrics.metrics.openfold import run_openfold
+
+        out = tmp_path / "predictions"
+        result = run_openfold(tmp_path / "q.json", out, conda_env="of3", num_diffusion_samples=2)
+        assert result == out and out.is_dir()
+        ((cmd, output_dir),) = recorded
+        assert cmd[:6] == ["conda", "run", "-n", "of3", "--no-capture-output", "run_openfold"]
+        assert f"--output_dir={out}" in cmd and "--num_diffusion_samples=2" in cmd
+        assert output_dir == out
+
+    def test_a_failed_run_raises_what_the_runner_raises(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from binding_metrics.metrics import openfold
+
+        def _fail(cmd, output_dir):
+            raise openfold.OpenFoldRunError(
+                3, list(cmd), "torch.cuda.OutOfMemoryError: CUDA out of memory"
+            )
+
+        monkeypatch.setattr(openfold, "_run_openfold_command", _fail)
+        with pytest.raises(subprocess.CalledProcessError, match="out of memory") as info:
+            openfold.run_openfold(tmp_path / "q.json", tmp_path / "o", conda_env="of3")
+        assert isinstance(info.value, openfold.OpenFoldRunError)
+        assert info.value.returncode == 3
+
+    def test_the_new_exceptions_are_importable_from_openfold(self):
+        from binding_metrics.metrics import _openfold_run, openfold
+
+        assert openfold.OpenFoldRunError is _openfold_run.OpenFoldRunError
+        assert openfold.OpenFoldQueryError is _openfold_run.OpenFoldQueryError
+        assert issubclass(openfold.OpenFoldQueryError, RuntimeError)
+
+
+# ---------------------------------------------------------------------------
 # Tests: _write_runner_yaml
 # ---------------------------------------------------------------------------
 
