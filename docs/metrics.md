@@ -613,7 +613,77 @@ A model-specific scalar or dictionary goes in `extras` under the key the model u
 
 `compute_prediction_metrics(prediction_dir, model, name, seed=1, sample=1, include_matrices=False, reference_structure_path=None, binder_chain=None, receptor_chain=None, chain_map=None, *, seed_index=None, target_chain=None)` — `binding_metrics.metrics.prediction`, registered as `prediction` — loads one sample with the adapter of `model` and returns the result dictionary of `compute_openfold_metrics` (same keys, same order) with a `model` key first; `summarize_prediction(record, ...)` does the second step for a record that is already loaded. `binder_chain` and `receptor_chain` are the chain IDs of your input: give `chain_map` (`{"A": "R", "B": "P"}`, model chain to your chain) when the model named its chains differently. `KeyError` lists the registered models for an unknown one. pLDDT and ipTM are calibrated per model, so compare them within one model. The interface PDE and PAE blocks are cut with the record's `TokenLayout` when it has one, and otherwise with one token per residue.
 
-The `of3` adapter reads the layout above: `.cif`, `.cif.gz` or `.pdb` structures, JSON or NPZ confidences (NPZ without pickle), `seed_index` as the position in the numeric order of the seed values, `sample` counted from 1. `bespoke_iptm` is in `record.extras`, `chain_pair_iptm` keys are the strings OpenFold3 writes (`"(A, B)"`), and `record.tokens` is None because the files carry no token layout. Its layout was checked against the OpenFold3 v0.5.0 source, not against a 0.5.0 run.
+The `of3` adapter reads the layout above: `.cif`, `.cif.gz` or `.pdb` structures, JSON or NPZ confidences (NPZ without pickle), `seed_index` as the position in the numeric order of the seed values, `sample` counted from 1. `bespoke_iptm` is in `record.extras`, `chain_pair_iptm` keys are the strings OpenFold3 writes (`"(A, B)"`), and `record.tokens` is None because the files carry no token layout. Its layout was checked against the OpenFold3 v0.5.0 source (released 2026-08-21) and the 0.3 and 0.4 outputs the earlier parser read, and not against a 0.5.0 run. Where each adapter stands is listed under "Model adapters".
+
+### Model adapters
+
+Four adapters are registered (`sorted(binding_metrics.predictors.PARSERS)`). Each was written from the source and the documentation of its model. The table gives the version and the date of the source that the layout was read from and the real output that was read; the end of each subsection lists what no real run has confirmed. None of the adapters starts a model: OpenFold3 is the only model with a runner (see "Run-once prediction store").
+
+| adapter | model | layout read from | real output seen |
+|---------|-------|------------------|------------------|
+| `af2` | AlphaFold2, AlphaFold-Multimer, ColabFold | ColabFold 1.6.3 (2026-09-14) and 1.5.4, AlphaFold2 2.3.2 (2023-04-05) and main (c77e5d2); read on 2026-09-29 and 2026-09-30 | one ColabFold multimer-v3 scores file; no AlphaFold2 result pickle |
+| `boltz2` | Boltz-2 | Boltz 2.2.1 (2025-09-08), main b1ebfc4; read on 2026-09-29 | none |
+| `of3` | OpenFold3 | OpenFold3 0.5.0 (2026-08-21); the layout did not change between 0.4.0 and 0.5.0 | 0.3 and 0.4 outputs; no 0.5.0 output |
+| `protenix` | Protenix | commit 85767b8 (2026-09-21, version 2.0.0); read on 2026-09-30 | none |
+
+#### `af2`: AlphaFold2, AlphaFold-Multimer and ColabFold
+
+`AlphaFold2Parser` (`family = "af2"`, display name "AlphaFold2 / ColabFold") reads four layouts, told apart by their file names. `prediction_dir` is searched, and `prediction_dir/name` when it holds none of them. `name` is the ColabFold job name, the AlphaFold2 FASTA name (its files sit in `{output}/{fasta_name}/`) or the file stem of a bare structure.
+
+| layout | files of one sample | what they give |
+|--------|---------------------|----------------|
+| ColabFold (`colabfold_batch`) | `{name}_{unrelaxed\|relaxed}_rank_{RRR}_{model_type}_model_{k}_seed_{SSS}.pdb`, `{name}_scores_rank_{RRR}_{model_type}_model_{k}_seed_{SSS}.json` | scores JSON: `plddt` (per residue, 0-100), `pae`, `ptm`, `iptm` (2 decimals); with `--calc-extra-ptm` `per_chain_ptm` (read as `chain_ptm`), `pairwise_iptm` (`"A-B"` keys, read as `chain_pair_iptm`), `pairwise_actifptm` and `actifptm`; 1.6.3 adds `ipsae`, `pdockq` and `pdockq2` (in `record.extras`) |
+| AlphaFold2 v2.3.2 (`run_alphafold.py`) | `{unrelaxed\|relaxed}_{model}_pred_{i}.pdb`, `result_{model}_pred_{i}.pkl`, `ranking_debug.json`, `timings.json` | pickle: `plddt`, `predicted_aligned_error`, `ptm`, `iptm` (multimer only), `ranking_confidence`; the ranking score is named `iptm+ptm` or `plddts` as AlphaFold2 names it; `timings.json` is copied to `record.timing` |
+| AlphaFold2 main JSON | `confidence_{model}_pred_{i}.json`, `pae_{model}_pred_{i}.json` with the PDB | per-residue pLDDT (`confidenceScore`) and PAE; no pTM or ipTM; read only when the sample has no pickle |
+| structure alone | `{name}.pdb` (or `.cif`, `.mmcif`, `.pdb.gz`, `.cif.gz`, `.ent`), or any layout above without its confidence file | pLDDT from the B-factor column; everything else NaN or None, with a reason |
+
+Tokens are residues, so `pae` is `(n_residues, n_residues)`, stored as written and never transposed (`pae[i, j]` is the error of residue j when the structures are aligned on residue i), and `record.tokens` is None. The models give one pLDDT per residue; the adapter repeats it over the atoms of each residue by reading the structure file. The residue counts of the two files must agree or `ValueError` is raised. `avg_plddt` is the mean over residues, as ColabFold and AlphaFold2 report it, and the per-residue array is `record.extras["plddt_per_residue"]`. `gpde`, `disorder`, `has_clash` and `pde` are in `not_provided` and carry no reason. Also empty: the ranking score of ColabFold (its rank is in the file name and in `extras["colabfold_rank"]`), and `ptm`, `iptm` and PAE for a monomer model without the pTM head, for the JSON files of AlphaFold2 main and for a bare structure.
+
+Chains are those of the structure file: A, B, ... in input order, except that ColabFold places identical sequences next to each other, so the order can differ from the FASTA order; use `chain_map`. `seed_index` is the position of the seed in the numeric order of its value (`seed_{SSS}` for ColabFold, `pred_{i}` for AlphaFold2) and `sample` the position inside the seed: by rank for ColabFold (`rank_001` first, so with one seed `sample=1` is the best model) and by model number for AlphaFold2. The structure is the relaxed one when it exists, and the unrelaxed one is then `files.extra["unrelaxed_structure"]`. Relaxation writes hydrogens, renumbers the residues from 1 in each chain and sets every B-factor to the pLDDT of its residue (read from the ColabFold 1.5.4 source).
+
+AlphaFold2 result pickles run code when they are loaded with `pickle`. `read_result_pickle` uses an unpickler that builds numpy arrays, numpy scalars and dictionaries and refuses every other global, naming it, before it is imported. The whole pickle is read, distogram and logits included, which takes memory in proportion to the square of the number of residues.
+
+`load_bfactor_record(structure_path, *, name=None, chain_map=None, scale="auto")` returns the record of a bare complex, for example a BindCraft or AlphaFold2 model, and `read_bfactor_plddt(structure_path, *, scale="auto")` returns the per-atom array (`ValueError` when the column cannot be a pLDDT). `scale` is `"auto"` (a column whose largest value is at most 1 is multiplied by 100), `"percent"` or `"fraction"`. A column that is all zero or outside 0-100 gives no pLDDT and a reason. Nothing distinguishes an experimental B-factor from a pLDDT, so give it predicted structures only. The record can be the second prediction of `compute_evobind_adversarial_from_records`.
+
+To verify. No AlphaFold2 or ColabFold run was made and no real AlphaFold2 result pickle was seen. Unconfirmed: that ColabFold 1.6.3 does what 1.5.4 does for the score arrays, the rank tags and the chain names (the 1.6.3 source was read only for file names and keys); the file names of ColabFold before 1.5.4; the names `confidence_*.json` and `pae_*.json` and the mmCIF names of AlphaFold2 main; that a real result pickle holds numpy data only, written with pickle protocol 3 to 5, and the keys of `timings.json`; that a relaxed file from a real run looks as the code says; the B-factor scale that BindCraft and ColabDesign write.
+
+#### `boltz2`: Boltz-2
+
+`Boltz2Parser` reads the output tree of `boltz predict`, `{out_dir}/boltz_results_{stem}/predictions/{stem}/`. `prediction_dir` can be the output directory of the run, its `boltz_results_*` folder, the `predictions` folder or the sample folder itself; `name` is the stem of the input file. `sample` counts from 1 in the rank order of Boltz-2: `sample=1` is file `model_0`, the model with the highest `confidence_score`. A run has one seed, so `seed_index` must be 1; another seed is another output directory.
+
+| file (`{stem}_model_{r}`) | read for |
+|---------------------------|----------|
+| `.cif` (or `.pdb`) | structure; its atom records tell the atoms of each token |
+| `confidence_....json` | `confidence_score` (ranking score), `ptm`, `iptm`, `complex_plddt` (mean pLDDT over tokens), `complex_pde` (`gpde`), `chains_ptm`, `pair_chains_iptm`; `ligand_iptm`, `protein_iptm`, `complex_iplddt` and `complex_ipde` go to `extras` |
+| `plddt_....npz` | key `plddt`, one value per token, 0-1 |
+| `pae_....npz`, `pde_....npz` | keys `pae` and `pde`, `(n_tokens, n_tokens)` in angstrom |
+
+- Boltz-2 makes one token of a polymer residue, standard or modified, and one token per atom of a ligand. Nothing in the output lists the tokens, so the adapter applies that rule to the atoms of the structure file, builds `record.tokens` from it (`is_atom_token` is True for a ligand atom) and refuses a file whose token count differs from the arrays.
+- pLDDT is one value per token; `plddt_per_atom` repeats it over the atoms of the token. `avg_plddt` is `complex_plddt`, the mean over tokens, which differs from the mean over atoms when the complex has a ligand or a modified residue.
+- `chains_ptm` and `pair_chains_iptm` are keyed by chain index in the file. The record names them by the chain IDs of the structure file (index 0 is the first chain of the file). `chain_pair_iptm["A-B"]` is the ipTM of the tokens of chain A with the structure aligned on chain B, so `"A-B"` and `"B-A"` differ.
+- `iptm` is NaN for a single chain, where Boltz-2 writes 0. `has_clash` and `disorder` are NaN and `timing` is empty: Boltz-2 writes none of them.
+- The confidence score is `0.8 complex_plddt + 0.2 ipTM` (pTM for a single chain), so it ranks mostly by pLDDT; compare it only within Boltz-2.
+
+To verify. No Boltz-2 run was made and no real output file was read. Unconfirmed: the whole layout (versions after 2.2.1 are not checked; Boltz-1 writes the same file names with other semantics, and a token count that differs raises); that the mmCIF has `auth_asym_id` and `auth_seq_id` equal to the chain name and the residue number (without them the label columns are read); that the chain index of the confidence file is the position of the chain in the structure file for complexes of three or more chains and for identical chains listed apart; that a standard residue never appears in a ligand chain and a modified residue never in a `HETATM` record of a polymer chain; that PAE and PDE are written without `--write_full_pae` and `--write_full_pde` (the source reads those flags in Boltz-1 only, the Boltz documentation lists them for these files; an absent file gives a reason); that `complex_pde` is the quantity that OpenFold3 and Protenix write as `gpde`.
+
+#### `protenix`: Protenix
+
+`ProtenixParser` reads the output of `protenix pred`, the `-o` directory.
+
+| file (under `{out}/{name}/seed_{S}/predictions/`) | content |
+|---------------------------------------------------|---------|
+| `{name}_sample_{r}.cif` | structure; the B-factor is the per-atom pLDDT, 0-100 |
+| `{name}_summary_confidence_sample_{r}.json` | `plddt` (mean, 0-100), `gpde`, `ptm`, `iptm`, `has_clash`, `ranking_score`, `num_recycles`, per-chain lists |
+| `{name}_full_data_sample_{r}.json` | only with `--need_atom_confidence true`: `atom_plddt` (0-1, 2 decimals), `token_pair_pae` and `token_pair_pde` (angstrom, 2 decimals), `token_asym_id`, `token_has_frame`, `atom_to_token_idx` |
+| `{out}/ERR/{name}.txt` | written when a sample fails; its first line goes to `record.reasons` |
+
+- `seed_index` is the position of the seed directory in the numeric order of the seed values. `sample` is 1-based and `r = sample - 1` is the rank by `ranking_score` inside the seed, so `sample=1` is the best sample of the seed.
+- Without `--need_atom_confidence true` the record has the summary scalars, no per-atom pLDDT, PAE or PDE, and a `reason` that names the flag. The B-factor of the CIF still holds the per-atom pLDDT, finer than `atom_plddt` (a resolution of 1 on 0-100); the adapter does not read it.
+- `record.chain_ptm` is keyed `"0"`, `"1"`, ... and `record.chain_pair_iptm` `"0-1"`, `"1-0"`, ...: the position of the chain in the structure file, in order of first appearance. The diagonal of the model's pair matrix is 0 and is dropped. The other per-chain lists (`chain_iptm`, `chain_pair_iptm_global`, `chain_plddt`, `chain_gpde`, ...) are in `record.extras` as written.
+- Protenix writes `disorder` as 0 for every sample, so an exact 0 reads as NaN and the written value is in `extras["disorder_written"]`. `bespoke_iptm` does not exist and no timing file is written.
+- A modified residue, a ligand or an ion is one token per atom, so `pae` and `pde` are larger than the residue count and `record.tokens` is None after `load`. `binding_metrics.predictors.protenix.token_layout(record)` builds the layout from the structure and the arrays of the full-data file. Set `record.tokens = token_layout(record)` before `summarize_prediction` to cut the interface blocks at the chain boundaries. `compute_prediction_metrics` and the pipeline do not set it, so for such a prediction their interface PAE and PDE are NaN with a `reason` that gives the token and residue counts.
+
+To verify. No Protenix run was made and no real output was parsed. Unconfirmed: that the tag v2.0.0 writes the layout of the commit above; one real run with `--need_atom_confidence true` against the adapter; that the atoms of the CIF follow the order of the arrays (`validate(check_structure=True)` and `token_layout` check the atom count and the chains); the 0-1 scale of `atom_plddt` and the shape of every array (a value or a shape that differs raises).
 
 ### Pipeline: `--predictor`, the prediction store and `results["prediction"]`
 
