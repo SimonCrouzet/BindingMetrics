@@ -91,6 +91,7 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
+from binding_metrics.capabilities import POLICIES, IncompatibleInputError
 from binding_metrics.cli import (
     add_config_arg,
     add_on_unmappable_residue_arg,
@@ -122,6 +123,12 @@ from binding_metrics.cli.run import (
     run_pipeline,
 )
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
+from binding_metrics.preflight_cli import (
+    BINDER_TYPE_CHOICES,
+    add_preflight_args,
+    check_input,
+    refusal_block,
+)
 from binding_metrics.provenance import collect_provenance, conda_python_command, openfold3_version
 from binding_metrics.utils import configure_logging
 
@@ -203,6 +210,10 @@ def _run_one(
     binder_chain: Optional[str] = None,
     target_chain: Optional[str] = None,
     raise_errors: bool = False,
+    binder_type: str = "auto",
+    on_incompatible: str = "error",
+    preflight_model: Optional[tuple] = None,
+    on_unmappable_residue: str = "error",
 ) -> dict:
     """Run the pipeline for a single structure and return a flat results dict.
 
@@ -210,7 +221,11 @@ def _run_one(
     ``peptide_chain`` and ``receptor_chain``; both spellings with different IDs
     make the sample an ``"error"`` row, like any other pipeline failure. With
     ``raise_errors`` an exception from the pipeline is re-raised instead of
-    becoming an ``"error"`` row.
+    becoming an ``"error"`` row. An input that the pre-flight check refuses
+    (``on_incompatible="error"``) is such an error row: ``batch_error`` and
+    ``preflight_reason`` carry the reason and nothing was prepared or run.
+    ``preflight_model`` is the whole-batch model step of this sample, as ``(model, metric,
+    adopted)``, so that its limits are checked here, before this worker does anything.
 
     The row carries ``batch_status``:
 
@@ -266,6 +281,10 @@ def _run_one(
                 random_seed=random_seed,
                 binder_chain=binder_chain,
                 target_chain=target_chain,
+                binder_type=binder_type,
+                on_incompatible=on_incompatible,
+                preflight_model=preflight_model,
+                on_unmappable_residue=on_unmappable_residue,
             )
             results["total_elapsed_s"] = round(time.time() - t0, 1)
 
@@ -275,7 +294,12 @@ def _run_one(
         if raise_errors:
             raise
         error_msg = f"{type(e).__name__}: {e}"
-        traceback.print_exc()
+        if isinstance(e, IncompatibleInputError):
+            # a decision, not a crash: the message says what to change
+            logger.warning("  %s: refused by the pre-flight check\n%s", sid, e)
+            results["preflight"] = refusal_block(e)
+        else:
+            traceback.print_exc()
         results["total_elapsed_s"] = round(time.time() - t0, 1)
         results["batch_error"] = error_msg
 
@@ -348,6 +372,43 @@ def _detect_sample_chains(
     return eligible
 
 
+def _model_step_allowed(
+    sid: str,
+    input_path: Path,
+    pchain: str,
+    rchain: str,
+    model: tuple,
+    binder_type: str,
+    on_incompatible: str,
+    on_unmappable_residue: str = "error",
+) -> tuple[bool, str]:
+    """Whether the whole-batch model step may run for one sample, and why not.
+
+    The worker of the sample has already checked the model (``preflight_model``): under ``error``
+    it refused the sample, so it is not here, and under ``warn`` it logged the problems. What
+    is left is ``skip``, where the sample's model step is dropped and the reason recorded. The
+    check runs again here, before any request is built or the store touched, so that the
+    whole-batch step never depends on what the worker did.
+    """
+    if on_incompatible == "warn":
+        return True, ""
+    outcome = check_input(
+        input_path,
+        pchain,
+        rchain,
+        binder_type=binder_type,
+        on_incompatible=on_incompatible,
+        steps=frozenset(),
+        model=model,
+        on_unmappable_residue=on_unmappable_residue,
+    )
+    if outcome.refused or not outcome.model_usable:
+        reason = outcome.block["reason"] or outcome.block["status"]
+        logger.warning("  %s: left out of the model step by the pre-flight check: %s", sid, reason)
+        return False, reason
+    return True, ""
+
+
 # ---------------------------------------------------------------------------
 # Batched OpenFold (single subprocess for all samples)
 # ---------------------------------------------------------------------------
@@ -363,6 +424,8 @@ def _run_batched_openfold(
     receptor_chain: Optional[str],
     openfold_seeds: Optional[Sequence[int]] = None,
     on_unmappable_residue: str = "error",
+    binder_type: str = "auto",
+    on_incompatible: str = "error",
 ) -> None:
     """Run OpenFold3 on all successful samples in a single subprocess.
 
@@ -371,7 +434,9 @@ def _run_batched_openfold(
     ``openfold_seeds`` are the seed values written to the query JSON; ``None``
     keeps the OpenFold default. ``on_unmappable_residue`` is passed to the query
     preparation of every sample; a residue OpenFold3 cannot take then stops the whole
-    batch call (the error names each such residue) before the model starts.
+    batch call (the error names each such residue) before the model starts. A sample that the
+    pre-flight check leaves out (``on_incompatible="skip"``) gets ``openfold_skipped`` and the
+    reason in ``openfold_reason`` and is not part of the call.
     """
     from binding_metrics.metrics.openfold import (
         _BatchSample,
@@ -390,6 +455,20 @@ def _run_batched_openfold(
     for i, sid, input_path, pchain, rchain in _detect_sample_chains(
         rows, sid_to_input, peptide_chain, receptor_chain, "OpenFold"
     ):
+        allowed, why_not = _model_step_allowed(
+            sid,
+            input_path,
+            pchain,
+            rchain,
+            ("of3", "openfold", False),
+            binder_type,
+            on_incompatible,
+            on_unmappable_residue,
+        )
+        if not allowed:
+            rows[i]["openfold_skipped"] = True
+            rows[i]["openfold_reason"] = why_not
+            continue
         samples.append(
             _BatchSample(
                 query_name=sid,
@@ -577,6 +656,8 @@ def _run_batched_prediction(
     openfold_conda_env: Optional[str] = None,
     openfold_seeds: Optional[Sequence[int]] = None,
     on_unmappable_residue: str = "error",
+    binder_type: str = "auto",
+    on_incompatible: str = "error",
 ) -> None:
     """The ``--predictor`` step of a batch: every sample through one shared prediction store.
 
@@ -592,13 +673,37 @@ def _run_batched_prediction(
     OpenFold3 was run, and, for a sample whose prediction failed, ``batch_status`` "partial"
     with the step named in ``batch_failed_steps``. Also writes ``prediction`` into each
     sample's JSON report. A failed prediction of one sample, or of the whole batch call,
-    never stops the others.
+    never stops the others. A sample that the pre-flight check leaves out
+    (``on_incompatible="skip"``, the limits of the model) is dropped before its request is built,
+    with ``prediction_skipped`` and the reason in the row, and does not fail the batch.
     """
     from binding_metrics.protocols.report import _flatten
 
-    eligible = _detect_sample_chains(
+    candidates = _detect_sample_chains(
         rows, sid_to_input, peptide_chain, receptor_chain, "prediction"
     )
+    adopted = prediction_dir is not None
+    eligible = []
+    for entry in candidates:
+        idx, sid, input_path, pchain, rchain = entry
+        allowed, why_not = _model_step_allowed(
+            sid,
+            input_path,
+            pchain,
+            rchain,
+            (predictor, "prediction", adopted),
+            binder_type,
+            on_incompatible,
+            on_unmappable_residue,
+        )
+        if allowed:
+            eligible.append(entry)
+            continue
+        block = {"model": predictor, "skipped": True, "reason": why_not}
+        for key, value in _flatten({"prediction": block}).items():
+            if key.startswith("prediction_"):
+                rows[idx][key] = value
+        _update_sample_json(output_dir / sid, sid, block, section="prediction")
     if not eligible:
         logger.info("  [skip] No eligible samples for the batched prediction.")
         return
@@ -741,6 +846,9 @@ def run_batch(
     prediction_target_chain: Optional[str] = None,
     prediction_cache: Optional[Path] = None,
     rerun_predictions: bool = False,
+    binder_type: str = "auto",
+    on_incompatible: str = "error",
+    preflight_only: bool = False,
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -792,6 +900,15 @@ def run_batch(
             model version finds every prediction there and starts no model.
         rerun_predictions: Run every prediction again although the store has it (once).
             Outputs given as ``prediction_dir`` are never replaced.
+        binder_type, on_incompatible: The pre-flight check of every sample (see
+            ``--binder-type`` and ``--on-incompatible``). It runs first in each worker, before
+            preparation, relaxation and the model step, which it checks as well. A refused
+            sample is an ``"error"`` row with ``preflight_status`` ``refused`` and the reason;
+            it does not stop the batch. Under ``"skip"`` the incompatible steps of a sample are
+            recorded as skipped with their reason and the rest runs.
+        preflight_only: Check every sample and return one row each (``preflight_status``,
+            ``preflight_reason``, ``preflight_plan``) without preparing, relaxing or predicting
+            anything and without creating ``output_dir``.
 
     Returns:
         One flat row per path, in the order of ``paths`` whatever the number of
@@ -833,16 +950,41 @@ def run_batch(
     )
     check_on_unmappable_residue(on_unmappable_residue)
     check_predictor(predictor, prediction_dir)
+    if binder_type not in BINDER_TYPE_CHOICES:
+        raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")
+    if on_incompatible not in POLICIES:
+        raise ValueError(f"on_incompatible must be one of {POLICIES}, got {on_incompatible!r}")
 
     input_paths = [Path(p) for p in paths]
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     references = references or {}
     if references:
         selected = selected | {"dockq"}
+    if preflight_only:
+        return _preflight_only_rows(
+            input_paths,
+            output_dir,
+            metrics=selected,
+            skip_relax=skip_relax,
+            peptide_chain=peptide_chain,
+            receptor_chain=receptor_chain,
+            references=references,
+            predictor=predictor,
+            prediction_dir=prediction_dir,
+            binder_type=binder_type,
+            on_incompatible=on_incompatible,
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
     # Strip openfold from per-worker metrics: it runs as a single batched
     # subprocess after all other metrics finish.
     want_openfold = "openfold" in selected
+    # The model step runs after the workers, but each worker checks its limits first.
+    if not want_openfold:
+        preflight_model = None
+    elif predictor is not None:
+        preflight_model = (predictor, "prediction", prediction_dir is not None)
+    else:
+        preflight_model = ("of3", "openfold", False)
 
     common_kwargs = dict(
         output_dir=output_dir,
@@ -862,6 +1004,10 @@ def run_batch(
         openfold_conda_env=openfold_conda_env,
         log_file=log_file,  # None: per-sample log inside the sample dir
         random_seed=random_seed,
+        binder_type=binder_type,
+        on_incompatible=on_incompatible,
+        preflight_model=preflight_model,
+        on_unmappable_residue=on_unmappable_residue,
     )
     if on_error == "raise":
         common_kwargs["raise_errors"] = True
@@ -947,6 +1093,8 @@ def run_batch(
             openfold_conda_env=openfold_conda_env,
             openfold_seeds=openfold_seeds,
             on_unmappable_residue=on_unmappable_residue,
+            binder_type=binder_type,
+            on_incompatible=on_incompatible,
         )
     elif want_openfold:
         _run_batched_openfold(
@@ -959,8 +1107,64 @@ def run_batch(
             receptor_chain=receptor_chain,
             openfold_seeds=openfold_seeds,
             on_unmappable_residue=on_unmappable_residue,
+            binder_type=binder_type,
+            on_incompatible=on_incompatible,
         )
     return finished
+
+
+def _preflight_only_rows(
+    input_paths: list[Path],
+    output_dir: Path,
+    *,
+    metrics: frozenset,
+    skip_relax: bool,
+    peptide_chain: Optional[str],
+    receptor_chain: Optional[str],
+    references: Mapping[str, Path],
+    predictor: Optional[str],
+    prediction_dir: Optional[Path],
+    binder_type: str,
+    on_incompatible: str,
+) -> list[dict]:
+    """One row per sample with the pre-flight decision and nothing else (``--preflight-only``).
+
+    Nothing is prepared, relaxed or predicted and no directory is created. A refused sample
+    (policy ``error``) is an ``"error"`` row; a sample that only warns or leaves steps out is
+    ``"ok"``.
+    """
+    rows = []
+    for input_path in input_paths:
+        sid = input_path.stem
+        row: dict = {"sample_id": sid, "input": str(input_path)}
+        try:
+            results = run_pipeline(
+                input_path=input_path,
+                output_dir=output_dir / sid,
+                sample_id=sid,
+                skip_relax=skip_relax,
+                peptide_chain=peptide_chain,
+                receptor_chain=receptor_chain,
+                metrics=metrics,
+                reference_path=references.get(sid),
+                predictor=predictor,
+                prediction_dir=prediction_dir,
+                binder_type=binder_type,
+                on_incompatible=on_incompatible,
+                preflight_only=True,
+            )
+            block = results["preflight"]
+            row["preflight_status"] = block["status"]
+            row["preflight_reason"] = block["reason"]
+            row["preflight_plan"] = block.get("plan", "")
+            row["batch_status"] = "error" if block["status"] == "refused" else "ok"
+            if block["status"] == "refused":
+                row["batch_error"] = block["reason"]
+        except Exception as error:  # noqa: BLE001 - one unreadable input must not stop the plan
+            row["batch_status"] = "error"
+            row["batch_error"] = f"{type(error).__name__}: {error}"
+        rows.append(row)
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -1113,6 +1317,7 @@ def main():
     add_on_unmappable_residue_arg(openfold_group)
 
     add_prediction_args(parser, batch=True)
+    add_preflight_args(parser)
 
     from binding_metrics.cli import add_log_file_arg
 
@@ -1144,8 +1349,9 @@ def main():
         sys.exit(1)
 
     output_dir: Path = args.output_dir or args.output_csv.parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-    args.output_csv.parent.mkdir(parents=True, exist_ok=True)
+    if not args.preflight_only:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ Collect inputs
     if args.glob:
@@ -1187,6 +1393,28 @@ def main():
             f"  References: {args.reference_dir}  "
             f"({matched}/{len(input_files)} samples matched by stem)\n"
         )
+
+    if args.preflight_only:
+        rows = run_batch(
+            input_files,
+            output_dir,
+            skip_relax=args.skip_relax,
+            peptide_chain=args.peptide_chain,
+            receptor_chain=args.receptor_chain,
+            metrics=selected_metrics,
+            references=reference_map,
+            predictor=args.predictor,
+            prediction_dir=args.prediction_dir,
+            binder_type=args.binder_type,
+            on_incompatible=args.on_incompatible,
+            preflight_only=True,
+        )
+        for row in rows:
+            print(f"--- {row['sample_id']}: {row.get('preflight_status', 'error')}")
+            print(row.get("preflight_plan") or row.get("batch_error", ""))
+        n_refused = sum(1 for row in rows if row["batch_status"] == "error")
+        print(f"\nPre-flight: {len(rows) - n_refused} of {len(rows)} samples can run")
+        sys.exit(1 if n_refused else 0)
 
     # ------------------------------------------------------------------ Run
     # run_batch does the work; the callbacks print the progress lines. Started
@@ -1248,6 +1476,8 @@ def main():
         prediction_target_chain=args.prediction_target_chain,
         prediction_cache=args.prediction_cache,
         rerun_predictions=args.rerun_predictions,
+        binder_type=args.binder_type,
+        on_incompatible=args.on_incompatible,
         random_seed=args.random_seed,
         log_file=args.log_file,
         n_workers=args.workers,
