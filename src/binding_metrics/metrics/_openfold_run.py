@@ -849,17 +849,16 @@ def prepare_refolding_query(
     .. code-block:: text
 
         {output_dir}/
-          {query_name}_query.json            — OF3 input JSON
-          {query_name}_receptor_{chain}.a3m  — self-alignment for receptor
+          {query_name}_query.json     — OF3 input JSON
+          {query_name}_receptor.a3m   — self-alignment for receptor
           templates/
-            {query_name}_receptor_{chain}.cif — receptor template structure
+            receptor.cif              — receptor template structure
 
-    The template CIF must be discoverable by OF3 at inference time. Pass::
-
-        --template_mmcif_dir {output_dir}/templates
-
-    to ``run_openfold`` (via ``extra_args``) if OF3 does not automatically
-    locate templates relative to the alignment file.
+    OpenFold3 finds the template CIF through
+    ``template_preprocessor_settings.structure_directory`` of the runner YAML, which
+    :func:`run_openfold` writes from its ``template_dir`` argument (the
+    ``run_openfold_*`` wrappers pass ``{output_dir}/query/templates``). ``run_openfold
+    predict`` has no ``--template_mmcif_dir`` option.
 
     .. note::
         OF3's template pipeline currently supports **monomeric templates**
@@ -982,11 +981,11 @@ def prepare_scoring_query(
 
         {output_dir}/
           {query_name}_query.json
-          {query_name}_receptor_{chain}.a3m
-          {query_name}_binder_{chain}.a3m
+          {query_name}_receptor.a3m
+          {query_name}_binder.a3m
           templates/
-            {query_name}_receptor_{chain}.cif
-            {query_name}_binder_{chain}.cif
+            receptor.cif
+            binder.cif
 
     Args:
         complex_structure_path: CIF or PDB file of the full complex.

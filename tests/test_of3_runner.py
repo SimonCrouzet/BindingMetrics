@@ -265,3 +265,40 @@ class TestInputsStayOnDisk:
         # the folder OpenFold3 would have removed still holds the inputs
         assert (out / "query" / "q_query.json").exists()
         assert (out / "query" / "templates" / "receptor.cif").exists()
+
+
+class TestQueryLayoutDocstrings:
+    """The file layout that ``prepare_*_query`` documents is the layout it writes."""
+
+    _P53 = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+
+    @pytest.mark.parametrize(
+        "function, files",
+        [
+            (
+                openfold.prepare_refolding_query,
+                ["{query_name}_query.json", "{query_name}_receptor.a3m", "templates/receptor.cif"],
+            ),
+            (
+                openfold.prepare_scoring_query,
+                [
+                    "{query_name}_query.json",
+                    "{query_name}_receptor.a3m",
+                    "{query_name}_binder.a3m",
+                    "templates/receptor.cif",
+                    "templates/binder.cif",
+                ],
+            ),
+        ],
+    )
+    def test_documented_files_are_written(self, tmp_path, function, files):
+        pytest.importorskip("gemmi")
+        function(self._P53, "A", "B", "q", tmp_path)
+        for name in files:
+            assert Path(name).name in function.__doc__  # the docstring draws a tree
+            assert (tmp_path / name.replace("{query_name}", "q")).is_file()
+
+    def test_the_refolding_docstring_does_not_send_users_to_a_missing_option(self):
+        doc = openfold.prepare_refolding_query.__doc__
+        assert "has no ``--template_mmcif_dir`` option" in doc
+        assert "Pass::" not in doc
