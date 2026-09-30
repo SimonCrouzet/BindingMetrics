@@ -449,6 +449,7 @@ def run_openfold(
             output_dir,
             presets,
             template_dir=Path(template_dir) if template_dir is not None else None,
+            conda_env=conda_env,
         )
 
     of3_cmd = [

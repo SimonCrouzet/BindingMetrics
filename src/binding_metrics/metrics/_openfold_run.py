@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -100,18 +101,23 @@ def installed_openfold3_version(python_cmd: Optional[Sequence[str]] = None) -> O
     return probe.stdout.strip() or None
 
 
-def _drop_removed_presets(presets: Sequence[str]) -> list[str]:
+def _drop_removed_presets(presets: Sequence[str], conda_env: Optional[str] = None) -> list[str]:
     """Return ``presets`` without ``pae_enabled``, warning when it was given.
 
     OpenFold3 0.4.1 removed the preset and 0.5.0 still only logs a deprecation warning
     for it, because the PAE head has been on by default since 0.4.0. The name stays
-    in the list only when the current interpreter has an openfold3 older than 0.4.0,
-    where PAE is off unless the preset asks for it.
+    in the list only when the installation that will run has an openfold3 older than 0.4.0,
+    where PAE is off unless the preset asks for it. That installation is the conda
+    environment ``conda_env`` when one is used, else the current interpreter; a version that
+    cannot be read counts as a current one.
     """
     kept = list(presets)
     if "pae_enabled" not in kept:
         return kept
-    installed = installed_openfold3_version()
+    python_cmd = None
+    if conda_env is not None:
+        python_cmd = [shutil.which("conda") or "conda", "run", "-n", conda_env, "python"]
+    installed = installed_openfold3_version(python_cmd)
     if installed is not None and _version_tuple(installed) < _PAE_ON_BY_DEFAULT_SINCE:
         return kept
     message = (
@@ -127,6 +133,8 @@ def _write_runner_yaml(
     output_dir: Path,
     presets: list[str],
     template_dir: Optional[Path] = None,
+    *,
+    conda_env: Optional[str] = None,
 ) -> Path:
     """Write a runner YAML with model presets and optional template settings.
 
@@ -135,6 +143,7 @@ def _write_runner_yaml(
         presets: List of model preset names, e.g. ``["predict", "low_mem"]``. A
             ``"pae_enabled"`` entry is dropped with a ``DeprecationWarning`` (the
             preset was removed in OpenFold3 0.4.1 and the PAE head is always on).
+            The OpenFold3 version that decides is the one in ``conda_env`` when given.
         template_dir: If given, adds ``template_preprocessor_settings`` with
             ``structure_directory`` pointing here and
             ``fetch_missing_structures: false`` so OF3 uses local CIFs only. It also adds
@@ -144,11 +153,13 @@ def _write_runner_yaml(
             user-chosen directories), which here is the folder that holds the query JSON,
             the A3M files and the template CIFs. In 0.5.0 ``cleanup_msa_dir`` guards only
             that deletion; 0.4.0 also removed the MSA output directory with it.
+        conda_env: Conda environment that will run OpenFold3, asked for its version when
+            ``presets`` names ``pae_enabled``; None asks the current interpreter.
 
     Returns:
         Path to the written YAML file.
     """
-    presets = _drop_removed_presets(presets)
+    presets = _drop_removed_presets(presets, conda_env)
     # TODO(#67): seeds go here as experiment_settings.seeds; OpenFold3 ignores the query "seeds".
     cfg: dict = {"model_update": {"presets": presets}}
     if template_dir is not None:

@@ -483,3 +483,107 @@ class TestTemplateChainIdWithUnderscore:
         with pytest.raises(ValueError, match="underscore"):
             _openfold_run._write_a3m_self_alignment("AAA", "query_A_1", "receptor", "A_1", out)
         assert not out.exists()
+
+
+class TestPresetVersionFromCondaEnv:
+    """With a conda environment the version that decides is the environment's, not ours.
+
+    A stub ``conda`` first on PATH answers the version probe (``conda run -n <env> python -c
+    ...``) with ``$FAKE_OF3_VERSION`` and records any other call (the run itself).
+    """
+
+    _STUB = (
+        "#!{python}\n"
+        "import json, os, sys\n"
+        "if '-c' in sys.argv:\n"
+        "    if os.environ.get('FAKE_OF3_PROBE_EXIT', '0') != '0':\n"
+        "        sys.exit(1)\n"
+        "    print(os.environ['FAKE_OF3_VERSION'])\n"
+        "else:\n"
+        "    open(os.environ['FAKE_OF3_RUN_LOG'], 'w').write(json.dumps(sys.argv[1:]))\n"
+    )
+
+    @pytest.fixture
+    def conda(self, tmp_path, monkeypatch):
+        stub = tmp_path / "bin" / "conda"
+        stub.parent.mkdir()
+        stub.write_text(self._STUB.format(python=sys.executable), encoding="utf-8")
+        stub.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{stub.parent}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.setenv("FAKE_OF3_RUN_LOG", str(tmp_path / "run.json"))
+        monkeypatch.setenv("FAKE_OF3_VERSION", "0.5.0")
+        return monkeypatch
+
+    def _write(self, tmp_path, conda_env="of3-old"):
+        return _parse_runner_yaml(
+            _openfold_run._write_runner_yaml(
+                tmp_path, ["predict", "pae_enabled"], conda_env=conda_env
+            )
+        )["model_update"]["presets"]
+
+    def test_an_environment_with_an_old_openfold3_keeps_the_preset(self, tmp_path, conda):
+        conda.setenv("FAKE_OF3_VERSION", "0.3.1")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert self._write(tmp_path) == ["predict", "pae_enabled"]
+
+    @pytest.mark.parametrize("version", ["0.4.0", "0.5.0"])
+    def test_an_environment_with_a_current_openfold3_drops_it(self, tmp_path, conda, version):
+        conda.setenv("FAKE_OF3_VERSION", version)
+        with pytest.warns(DeprecationWarning, match="pae_enabled"):
+            assert self._write(tmp_path) == ["predict"]
+
+    def test_an_unreadable_environment_counts_as_current(self, tmp_path, conda):
+        conda.setenv("FAKE_OF3_PROBE_EXIT", "1")
+        with pytest.warns(DeprecationWarning):
+            assert self._write(tmp_path) == ["predict"]
+
+    def test_the_current_interpreter_is_not_asked_when_an_environment_is_named(
+        self, tmp_path, conda
+    ):
+        asked = []
+
+        def _version(python_cmd=None):
+            asked.append(python_cmd)
+            return "0.3.1"
+
+        conda.setattr(_openfold_run, "installed_openfold3_version", _version)
+        self._write(tmp_path)
+        assert len(asked) == 1
+        assert asked[0][1:] == ["run", "-n", "of3-old", "python"]
+
+    def test_without_an_environment_the_current_interpreter_is_asked(self, tmp_path, conda):
+        asked = []
+        conda.setattr(
+            _openfold_run,
+            "installed_openfold3_version",
+            lambda python_cmd=None: asked.append(python_cmd),
+        )
+        with pytest.warns(DeprecationWarning):
+            self._write(tmp_path, conda_env=None)
+        assert asked == [None]
+
+    def test_no_probe_when_the_preset_is_not_named(self, tmp_path, conda):
+        conda.setattr(
+            _openfold_run,
+            "installed_openfold3_version",
+            lambda python_cmd=None: pytest.fail("probed"),
+        )
+        path = _openfold_run._write_runner_yaml(tmp_path, ["predict"], conda_env="of3-old")
+        assert _parse_runner_yaml(path)["model_update"]["presets"] == ["predict"]
+
+    @pytest.mark.parametrize("version, kept", [("0.3.1", True), ("0.5.0", False)])
+    def test_run_openfold_passes_its_environment_to_the_writer(
+        self, tmp_path, conda, version, kept
+    ):
+        conda.setenv("FAKE_OF3_VERSION", version)
+        out = tmp_path / "out"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            openfold.run_openfold(
+                "q.json", out, conda_env="of3-old", model_presets=["predict", "pae_enabled"]
+            )
+        presets = _parse_runner_yaml(out / "runner_config.yaml")["model_update"]["presets"]
+        assert ("pae_enabled" in presets) is kept
+        run_argv = json.loads((tmp_path / "run.json").read_text(encoding="utf-8"))
+        assert run_argv[:5] == ["run", "-n", "of3-old", "--no-capture-output", "run_openfold"]
