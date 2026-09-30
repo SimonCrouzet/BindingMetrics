@@ -135,6 +135,14 @@ Declared on `OpenFold3Parser.capabilities`.
 
 Warnings, not refusals: a head-to-tail binder is folded as a linear chain, because the query builders of this package do not write `cyclic: true`; terminal capping groups and non-amino-acid groups (ligands, glycans) are left out of the query by `_extract_query_chain`, so the prediction is of the uncapped peptide without them.
 
+### Protenix 2.0.0
+
+Declared on `ProtenixParser.capabilities`, from `docs/infer_json_format.md` of Protenix (commit 85767b8, 2026-09-21).
+
+| Limit | Basis |
+|---|---|
+| Closures: `none`, `head_to_tail` and `disulfide` | "Covalent bonds between two polymer residues ... are generally not supported. Exceptions are made for cyclic peptides", for a head-to-tail amide bond or a disulfide between cysteines; other polymer-polymer bonds "are not reliably handled by the current model". The source takes any atom pair (`json_to_feature.py`), so a lactam, a staple or another link can be written; the limit is about what the model does with it. |
+
 ### Metrics
 
 Declared on `MetricSpec.capabilities`, a keyword-only optional field.

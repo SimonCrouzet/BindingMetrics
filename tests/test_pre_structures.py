@@ -158,3 +158,27 @@ def test_builder_moves_the_requested_atom_and_declares_the_requested_bond():
 
 def test_builder_without_a_bond_table():
     assert build_chain(["ALA", "GLY"], bond_table=False).bonds is None
+
+
+# ---------------------------------------------------------------------------
+# Sources of the models, for the tests that re-read what a declared limit rests on
+# ---------------------------------------------------------------------------
+
+#: Directory that holds a clone of each model repository (``alphafold``, ``ColabFold``, ``boltz``,
+#: ``Protenix``, ...). The evidence tests of ``test_pre_*_limits.py`` read a documentation or
+#: source line from it and skip when it is not set, so CI needs no clone.
+MODEL_SOURCES_ENVIRONMENT_VARIABLE = "BINDING_METRICS_MODEL_SOURCES"
+
+
+def model_source_text(repository: str, relative_path: str) -> str:
+    """The text of a file of a model clone, or skip the test when the clone is not there."""
+    import os
+    from pathlib import Path
+
+    root = os.environ.get(MODEL_SOURCES_ENVIRONMENT_VARIABLE)
+    if not root:
+        pytest.skip(f"{MODEL_SOURCES_ENVIRONMENT_VARIABLE} is not set")
+    path = Path(root) / repository / relative_path
+    if not path.is_file():
+        pytest.skip(f"{path} is not there")
+    return path.read_text(encoding="utf-8")

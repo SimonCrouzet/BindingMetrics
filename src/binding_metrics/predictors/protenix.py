@@ -89,6 +89,7 @@ from typing import Any, Optional
 
 import numpy as np
 
+from binding_metrics.capabilities import Capabilities
 from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.record import (
     PredictionFiles,
@@ -387,6 +388,26 @@ class ProtenixParser(PredictionParser):
     name = "protenix"
     display_name = "Protenix"
     family = "af3"
+
+    # The inputs Protenix 2.0.0 can be given, from its documentation (commit 85767b8, checked
+    # against the clone on 2026-09-30; tests/test_pre_protenix_limits.py re-reads it when the
+    # clone is at hand). Not declared because nothing shows it: a limit on the residue classes
+    # (modified residues go through a CCD code, D-amino acids and N-methyl are not mentioned), and
+    # the 2560-token limit of the model protenix-v2, which is a limit of the whole complex.
+    capabilities = Capabilities(
+        closures={"none", "head_to_tail", "disulfide"},
+        reasons={
+            "closures": (
+                "Protenix 2.0.0 takes a covalent bond between two polymer residues only for a "
+                "cyclic peptide: a head-to-tail amide bond or a disulfide between cysteines. "
+                "Other polymer-polymer bonds can be written in `covalent_bonds` but are 'not "
+                "reliably handled by the current model': the residues tend to sit close together "
+                "without forming the bond (docs/infer_json_format.md, section covalent_bonds). "
+                "Use a model that takes the link as input, or leave the Protenix step out."
+            ),
+        },
+        version="2.0.0",
+    )
 
     def find_files(
         self,

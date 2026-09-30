@@ -87,8 +87,11 @@ class TestRegistration:
         assert isinstance(get_parser("protenix"), ProtenixParser)
         assert (spec.display_name, spec.family) == ("Protenix", "af3")
 
-    def test_no_capabilities_are_declared(self):
-        assert ProtenixParser.capabilities is None
+    def test_the_input_limits_are_declared_in_tests_pre_protenix_limits(self):
+        # tests/test_pre_protenix_limits.py holds the contents of the declaration
+        from binding_metrics.capabilities import Capabilities
+
+        assert isinstance(ProtenixParser.capabilities, Capabilities)
 
 
 # ---------------------------------------------------------------------------
