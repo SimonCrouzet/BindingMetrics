@@ -50,7 +50,7 @@ binding-metrics-run --input complex.cif --output-dir results/
 
 | extra | needed by |
 |-------|-----------|
-| `static` | interface, H-bonds, salt bridges, Coulomb, Ramachandran, omega, shape complementarity, void volume, static ΔSASA, structure comparison, EvoBind, parsing of OpenFold3 output |
+| `static` | interface, H-bonds, salt bridges, Coulomb, Ramachandran, omega, shape complementarity, void volume, static ΔSASA, structure comparison, EvoBind, parsing of prediction output (§12) |
 | `simulation` | force-field interaction energy, relaxation, and the energy term of receptor quality |
 | `structure` | PDBFixer preparation (`binding-metrics-prep`, the pipeline's prep step) and gemmi |
 | `analysis` | trajectory metrics (§11) |
@@ -915,6 +915,7 @@ binding-metrics-receptor-quality --input receptor.pdb --output quality.csv    # 
 | `interface`, `geometry`, `electrostatics` | results of §2 to §8; `geometry` holds `ramachandran`, `omega` and `shape_complementarity` |
 | `dockq`, `openfold` | results of §10 and §12 (with the EvoBind keys merged into `openfold`) |
 | `prediction` | only with `--predictor` / `predictor=`: the prediction of any model with an adapter, its EvoBind keys and the store counters (§12, "Pipeline"); `openfold` is then `{"skipped": True}` |
+| `preflight` | the decision of the pre-flight check: `status`, `reason`, `policy`, the steps left out and the full report (§12, "Pipeline: the pre-flight check"; [`preflight.md`](preflight.md)) |
 | `nonfinite_fields` | paths of every NaN or infinite value in the file, for example `relax.rmsd_md_final` |
 
 A metric that did not run is `{"skipped": True}`; one that failed is `{"error": message}`, and the command exits with 1 when any step failed.
