@@ -25,13 +25,15 @@ The rules, from ``binding_metrics.predictors.base`` and ``record``:
   open the structure file; a per-atom array that needs the atoms may be None with a reason.
 * ``check_chain_map``: ``chain_map`` renames the chains of ``atoms()``.
 * ``check_completion``: ``complete`` returns the same record, does not raise, is idempotent and
-  leaves a valid record.
+  leaves a valid record whose ``chain_ptm`` and ``chain_pair_iptm`` are keyed by chain IDs of
+  the structure file.
 """
 
 import dataclasses
 import importlib
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -376,6 +378,15 @@ def check_completion(model: str, workdir: Path) -> None:
     reasons = list(record.reasons)
     parser.complete(record)
     assert record.reasons == reasons, f"{model}: complete is not idempotent (reasons grew)"
+
+    # chain-keyed values are keyed by chain IDs of the structure file (before chain_map)
+    chains = set(map(str, record.atoms().chain_id))
+    keys = [*record.chain_ptm, *(p for k in record.chain_pair_iptm for p in re.findall(r"\w+", k))]
+    stray = sorted(set(keys) - chains)
+    assert not stray, (
+        f"{model}: chain_ptm and chain_pair_iptm name {stray}, which are not chains of the "
+        f"structure file {sorted(chains)}"
+    )
 
     # a directory without output and a record without a structure are returned as they are
     empty = _load_without_raising(model, workdir / "nothing", "a missing directory")

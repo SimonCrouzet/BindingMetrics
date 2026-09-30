@@ -34,11 +34,14 @@ does not read.
   (``token_asym_id`` numbers chains that way, ``data/core/parser.py:3199-3226``; chain IDs are
   the ``id`` list of the input JSON, or A, B, ... in entity and copy order,
   ``data/inference/json_to_feature.py:94-160``). ``chain_pair_iptm`` is symmetric with a zero
-  diagonal (``sample_confidence.py:531-545``); the adapter drops the diagonal. The keys of
-  ``record.chain_ptm`` are the positions as strings (``"0"``), those of
-  ``record.chain_pair_iptm`` are ``"0-1"`` in both directions; ``chain_map`` renames the chains
-  of the structure, not these keys. ``chain_pair_pae_mean`` and ``chain_pair_pae_min`` exist at
-  that commit and, by the report, not in 2.0.0: they are read when present.
+  diagonal (``sample_confidence.py:531-545``); the adapter drops the diagonal. ``parse`` keys
+  ``record.chain_ptm`` by the positions as strings (``"0"``) and ``record.chain_pair_iptm`` by
+  ``"0-1"`` in both directions; :meth:`ProtenixParser.complete` renames them to the chain IDs
+  of the structure (``"A"``, ``"A-B"``) and keeps the position-keyed dictionaries in
+  ``extras["chain_ptm_by_position"]`` and ``["chain_pair_iptm_by_position"]``. ``chain_map``
+  renames the atoms, and these keys stay the model's own chain IDs, as in the other adapters.
+  ``chain_pair_pae_mean`` and ``chain_pair_pae_min`` exist at that commit and, by the report,
+  not in 2.0.0: they are read when present.
 * The full-data file is written only with ``--need_atom_confidence true``
   (``dumper.py:258-275``). It holds ``atom_plddt`` (per atom, 0-1, rounded to 2 decimals: a
   resolution of 1 on 0-100), ``token_pair_pae`` and ``token_pair_pde`` (per token pair,
@@ -528,34 +531,91 @@ class ProtenixParser(PredictionParser):
         return record
 
     def complete(self, record: PredictionRecord) -> PredictionRecord:
-        """Attach the token layout, which needs the structure file (see :func:`token_layout`).
+        """Attach the token layout and name the chains, both of which need the structure file.
 
-        Without it the interface PAE and PDE of a prediction with a modified residue, ligand or
-        ion are refused, because the matrices then have more rows than the structure has
-        residues. A record parsed without the full-data file, or without a structure, has no
-        layout to build and is returned as it is. A layout that cannot be built (the files are
-        not from one sample, the chain numbering disagrees) leaves ``record.tokens`` None and
-        adds the reason. biotite that is not installed leaves the record as it is: the analysis
-        that needs the structure reports it.
+        * ``record.tokens`` becomes :func:`token_layout` of the record. Without it the interface
+          PAE and PDE of a prediction with a modified residue, ligand or ion are refused,
+          because the matrices then have more rows than the structure has residues.
+        * ``record.chain_ptm`` and ``record.chain_pair_iptm``, which parsing keys by chain
+          position (``"0"``, ``"0-1"``), are keyed by chain ID like those of the other
+          adapters: position ``i`` is the ``i``-th chain of the structure file in order of first
+          appearance, by the model's own chain IDs (before ``record.chain_map``, which renames
+          the atoms and not these keys). The dictionaries as parsed are kept in
+          ``record.extras["chain_ptm_by_position"]`` and ``["chain_pair_iptm_by_position"]``.
+
+        A record without a structure is returned as it is. When the structure cannot be read, or
+        the layout cannot be built (the files are not from one sample, the chain numbering
+        disagrees), ``tokens`` stays None, the keys stay positions, and a reason says so.
+        A structure cannot be read without biotite, which leaves the record as it is: the
+        analysis that needs the structure reports it. The call is idempotent.
         """
         if (
             record.model != self.name
-            or record.tokens is not None
             or record.structure_path is None
-            or "atom_to_token_idx" not in record.extras
+            or "chain_ptm_by_position" in record.extras
+            or (record.tokens is not None and not (record.chain_ptm or record.chain_pair_iptm))
         ):
             return record
         try:
-            record.tokens = token_layout(record)
+            atoms = record.atoms()
         except ImportError:
-            pass
-        except (ValueError, OSError) as exc:
-            reason = (
-                f"token layout not built, so the interface blocks are cut by residue count: {exc}"
+            return record
+        except Exception as exc:  # noqa: BLE001 - external structure file; recorded as a reason
+            self._say(
+                record,
+                "structure could not be read, so the token layout is not built and the chain "
+                f"keys stay positions: {exc}",
             )
-            if reason not in record.reasons:  # idempotent
-                record.reasons.append(reason)
+            return record
+
+        layout_built = record.tokens is not None
+        if not layout_built and "atom_to_token_idx" in record.extras:
+            try:
+                record.tokens = token_layout(record)
+                layout_built = True
+            except (ValueError, OSError) as exc:
+                self._say(
+                    record,
+                    "token layout not built, so the interface blocks are cut by residue count "
+                    f"and the chain keys stay positions: {exc}",
+                )
+        # The chain order is checked against token_asym_id inside token_layout; without the
+        # full-data file there is nothing to check it against and the documented rule applies.
+        if layout_built or "atom_to_token_idx" not in record.extras:
+            self._name_chains(record, atoms)
         return record
+
+    @staticmethod
+    def _say(record: PredictionRecord, reason: str) -> None:
+        if reason not in record.reasons:  # idempotent
+            record.reasons.append(reason)
+
+    def _name_chains(self, record: PredictionRecord, atoms) -> None:
+        """Key ``chain_ptm`` and ``chain_pair_iptm`` by the chain IDs of the structure file."""
+        if not (record.chain_ptm or record.chain_pair_iptm):
+            return
+        to_model = {user: model for model, user in record.chain_map.items()}
+        order = list(dict.fromkeys(to_model.get(str(c), str(c)) for c in atoms.chain_id))
+        try:
+            named_ptm = {order[int(k)]: v for k, v in record.chain_ptm.items()}
+            named_pairs = {}
+            for key, value in record.chain_pair_iptm.items():
+                first, second = key.split("-")
+                named_pairs[f"{order[int(first)]}-{order[int(second)]}"] = value
+        except (IndexError, ValueError):
+            positions = sorted(
+                {int(p) for k in (*record.chain_ptm, *record.chain_pair_iptm) for p in k.split("-")}
+            )
+            self._say(
+                record,
+                f"chain_ptm and chain_pair_iptm name chain positions {positions} but the structure "
+                f"has {len(order)} chains {order}; the keys stay positions",
+            )
+            return
+        record.extras["chain_ptm_by_position"] = record.chain_ptm
+        record.extras["chain_pair_iptm_by_position"] = record.chain_pair_iptm
+        record.chain_ptm = named_ptm
+        record.chain_pair_iptm = named_pairs
 
     def list_samples(self, prediction_dir: str | Path, name: str) -> list[SampleRef]:
         """The samples present, in seed order and rank order, with their ranking scores.

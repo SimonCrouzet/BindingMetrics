@@ -154,6 +154,104 @@ class TestProtenixCompletion:
         assert ProtenixParser().complete(record).tokens is None
 
 
+class TestProtenixChainNames:
+    """``chain_ptm`` and ``chain_pair_iptm`` are keyed by chain ID after ``complete``."""
+
+    def test_load_keys_by_position_and_complete_by_chain_id(self, truth, tmp_path):
+        record = _load(tmp_path)
+        assert set(record.chain_ptm) == {"0", "1", "2"}
+        parsed = dict(record.chain_ptm), dict(record.chain_pair_iptm)
+        ProtenixParser().complete(record)
+        assert record.chain_ptm == {
+            "A": pytest.approx(0.88),
+            "B": pytest.approx(0.80),
+            "C": 0.0,  # the writer pads a third chain with zeros
+        }
+        assert set(record.chain_pair_iptm) == {
+            "A-B",
+            "A-C",
+            "B-A",
+            "B-C",
+            "C-A",
+            "C-B",
+        }
+        assert record.chain_pair_iptm["A-B"] == pytest.approx(0.76)
+        assert record.chain_pair_iptm["B-A"] == pytest.approx(0.74)
+        # the position-keyed dictionaries are kept as parsed
+        assert record.extras["chain_ptm_by_position"] == parsed[0]
+        assert record.extras["chain_pair_iptm_by_position"] == parsed[1]
+        assert record.reasons == [] or all("chain" not in r for r in record.reasons)
+
+    def test_the_keys_are_the_models_chain_ids_when_the_user_renames_the_chains(
+        self, truth, tmp_path
+    ):
+        record = _load(tmp_path, chain_map={"A": "R", "B": "P"})
+        ProtenixParser().complete(record)
+        assert set(record.chain_ptm) == {"A", "B", "C"}  # as for every other adapter
+        assert record.chain_ptm["A"] == pytest.approx(0.88)  # the chain the user calls R
+        assert record.chain_map == {"A": "R", "B": "P"}
+        assert set(record.atoms().chain_id) == {"R", "P", "C"}
+
+    def test_without_the_full_data_file_the_chains_are_still_named(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(synth_protenix, "WRITE_FULL_DATA", False)
+        _write(tmp_path, _complex_with_a_modified_residue_and_an_ion())
+        record = ProtenixParser().complete(_load(tmp_path))
+        assert set(record.chain_ptm) == {"A", "B", "C"} and record.tokens is None
+
+    def test_through_compute_prediction_metrics(self, truth, tmp_path, registered):  # noqa: F811
+        result = compute_prediction_metrics(tmp_path, "protenix", NAME, **CHAINS)
+        assert set(result["chain_ptm"]) == {"A", "B", "C"}
+        assert "A-B" in result["chain_pair_iptm"]
+
+    def test_through_the_session(self, truth, tmp_path):
+        session = PredictionSession(
+            PredictionStore(tmp_path / "store"), {}, {"protenix": ProtenixParser()}
+        )
+        request = PredictionRequest("protenix", NAME, sequences={"A": "AAA"})
+        session.store.adopt(request, tmp_path)
+        assert set(session.record(request).chain_ptm) == {"A", "B", "C"}
+
+    def test_an_unreadable_structure_leaves_the_positions_and_says_why(self, truth, tmp_path):
+        record = _load(tmp_path)
+        record.structure_path.write_text("# stub CIF\n", encoding="utf-8")
+        ProtenixParser().complete(record)
+        assert set(record.chain_ptm) == {"0", "1", "2"} and record.tokens is None
+        assert record.reasons[-1].startswith("structure could not be read")
+        assert "chain keys stay positions" in record.reasons[-1]
+        reasons = list(record.reasons)
+        ProtenixParser().complete(record)  # idempotent
+        assert record.reasons == reasons
+
+    def test_a_layout_that_cannot_be_built_leaves_the_positions(self, truth, tmp_path):
+        record = _load(tmp_path)
+        record.extras["atom_to_token_idx"] = record.extras["atom_to_token_idx"][:-1]
+        ProtenixParser().complete(record)
+        assert set(record.chain_ptm) == {"0", "1", "2"}
+        assert "chain keys stay positions" in record.reasons[-1]
+
+    def test_more_chains_in_the_lists_than_in_the_structure_leave_the_positions(
+        self, truth, tmp_path
+    ):
+        record = _load(tmp_path)
+        record.chain_ptm = {**record.chain_ptm, "5": 0.1}
+        ProtenixParser().complete(record)
+        assert "5" in record.chain_ptm and "A" not in record.chain_ptm
+        assert "chain positions [0, 1, 2, 5]" in record.reasons[-1]
+        assert "structure has 3 chains ['A', 'B', 'C']" in record.reasons[-1]
+
+    def test_complete_twice_does_not_rename_twice(self, truth, tmp_path):
+        record = _load(tmp_path)
+        parser = ProtenixParser()
+        parser.complete(record)
+        named = dict(record.chain_ptm)
+        parser.complete(record)
+        assert record.chain_ptm == named and set(record.extras["chain_ptm_by_position"]) == {
+            "0",
+            "1",
+            "2",
+        }
+
+
 class TestThePipelinePath:
     """``PredictionSession.record`` is the one place the pipeline and the CLI read from."""
 
