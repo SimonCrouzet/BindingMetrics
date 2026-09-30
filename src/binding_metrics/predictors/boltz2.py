@@ -664,8 +664,9 @@ class Boltz2Parser(PredictionParser):
 
         A missing file leaves its values at NaN (None for an array) and adds a reason; a
         corrupt or inconsistent file raises ``ValueError``. The structure file is read as text
-        to tell the atoms of each token; when it holds no atom records the per-token pLDDT is
-        stored as it is (one value per token) and a reason says so.
+        to tell the atoms of each token; when it is absent or holds no atom records the
+        atom-bound values (``plddt_per_atom``, the chain-keyed dictionaries, the token layout)
+        are left empty and a reason says so, while ``avg_plddt`` still comes from the tokens.
         """
         record = PredictionRecord(
             self.name,
@@ -723,10 +724,7 @@ class Boltz2Parser(PredictionParser):
                 )
             record.reasons.append(reason)
         elif arrays or needs:
-            tokens = self._tokens_of(record, files, stem, n_tokens, "plddt" in arrays)
-            if tokens is None and "plddt" in arrays:
-                # A file with no atom records: the tokens stay unexpanded, one value per token.
-                record.plddt_per_atom = 100.0 * arrays["plddt"]
+            tokens = self._tokens_of(record, files, stem, n_tokens, needs)
         if tokens is not None and "plddt" in arrays:
             self._expand_plddt(record, files, arrays["plddt"], tokens)
 
@@ -741,7 +739,7 @@ class Boltz2Parser(PredictionParser):
     # ------------------------------------------------------------------ steps of parse
 
     @staticmethod
-    def _tokens_of(record, files, stem, n_tokens, has_plddt) -> Optional[_BoltzTokens]:
+    def _tokens_of(record, files, stem, n_tokens, needs) -> Optional[_BoltzTokens]:
         """The tokens of the structure file, set on the record; None if the file has no atoms.
 
         Raises:
@@ -751,13 +749,8 @@ class Boltz2Parser(PredictionParser):
         if sites is None:
             record.reasons.append(
                 f"{files.structure.name} holds no atom records that could be read, so the tokens "
-                "are unknown: "
-                + (
-                    "plddt_per_atom holds the per-token pLDDT (one value per token), "
-                    if has_plddt
-                    else ""
-                )
-                + "chain_ptm and chain_pair_iptm are left empty, and PAE and PDE have no layout"
+                "are unknown and PAE and PDE have no layout"
+                + (f"; {' and '.join(needs)} need them and are left empty" if needs else "")
             )
             return None
         tokens = _boltz_tokens(sites)

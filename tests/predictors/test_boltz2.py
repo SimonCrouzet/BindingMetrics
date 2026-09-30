@@ -712,19 +712,23 @@ class TestModifiedResiduesAndLigands:
 
 
 class TestWhenTheStructureCannotTellTheTokens:
-    def test_a_structure_file_with_no_atom_records_leaves_the_pLDDT_per_token(self, tmp_path):
+    def test_a_structure_file_with_no_atom_records_leaves_the_atom_bound_values_empty(
+        self, tmp_path
+    ):
         root = _write(tmp_path)
         structure = Boltz2Parser().find_files(root, NAME).structure
         structure.write_text("# stub CIF\n", encoding="utf-8")
         record = Boltz2Parser().load(root, NAME)
-        assert record.plddt_per_atom.shape == (7,)  # one value per token, not per atom
-        np.testing.assert_allclose(record.plddt_per_atom, [93, 89, 85, 79, 62, 89, 77], atol=1e-4)
+        assert record.plddt_per_atom is None  # per token cannot become per atom without atoms
         assert record.tokens is None and record.chain_ptm == {} and record.chain_pair_iptm == {}
         assert record.avg_plddt == pytest.approx(82.0)
         assert record.extras["chains_ptm_by_index"] == {"0": 0.88, "1": 0.80}
         assert len(record.reasons) == 1
-        assert "holds no atom records" in record.reasons[0]
-        assert "one value per token" in record.reasons[0]
+        assert record.reasons == [
+            f"{NAME}_model_0.cif holds no atom records that could be read, so the tokens are "
+            "unknown and PAE and PDE have no layout; plddt_per_atom and chain_ptm and "
+            "chain_pair_iptm need them and are left empty"
+        ]
         with pytest.raises(Exception):  # noqa: B017 - the stub is no structure for biotite either
             record.atoms()
 
