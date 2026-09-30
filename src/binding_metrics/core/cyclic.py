@@ -46,6 +46,7 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.core.nonstandard import D_AA_MAP
 from binding_metrics.core.residues import (
     BACKBONE_HEAVY_ATOM_NAMES,
     CUSTOM_HYDROGEN_RESIDUES,
@@ -68,6 +69,14 @@ _AMIDE_BOND_THRESH = 0.20
 #: leaves room for poor geometry while excluding the van der Waals contact of
 #: two unbonded sulfurs (0.36 nm).
 _DISULFIDE_THRESH = 0.26
+
+#: Residue names that can hold the sulfur of a disulfide: CYS, its AMBER disulfide form CYX,
+#: and the D-cysteine codes of ``core.nonstandard.D_AA_MAP`` (DCY). The latter is renamed to
+#: CYS by ``patch_nonstandard`` before ``patch_cyclic_topology`` runs, but the hints that
+#: ``binding-metrics-run`` takes from the raw input file still carry the original name.
+_DISULFIDE_RESIDUE_NAMES = CYSTEINE_NAMES | frozenset(
+    name for name, parent in D_AA_MAP.items() if parent == "CYS"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +597,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
             detected_pairs.add((n_first.index, c_last.index))
 
     # ---- 2. Disulfide: SG — SG (all CYS pairs, supports multiple disulfides) ----
-    cys_residues = [(i, r) for i, r in enumerate(residues) if r.name == "CYS"]
+    cys_residues = [(i, r) for i, r in enumerate(residues) if r.name in _DISULFIDE_RESIDUE_NAMES]
     for i, (ri, res_i) in enumerate(cys_residues):
         sg_i = _find_atom(res_i, "SG")
         if sg_i is None:
