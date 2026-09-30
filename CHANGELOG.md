@@ -161,6 +161,7 @@ Values from earlier versions differ in the cases below. A change reads "before -
 ### Added
 
 - `binding_metrics.predictors`, the readers of structure-prediction output, starts with `PredictionRecord`, `PredictionFiles`, `TokenLayout` and `SampleRef`: one neutral form for a prediction sample (pLDDT per atom on 0-100, PAE and PDE in angstrom with the row as the alignment frame, NaN for a value the model lacks, and a `chain_map` that renames chains). `PredictionRecord.validate()` rejects a wrong scale or shape.
+- `PredictionParser`, the base class of a predictor adapter (`find_files`, `parse`, `load`, `list_samples`), and its registry in `binding_metrics.predictors`: `ParserSpec`, `PARSERS`, `get_parser` and `register_parser`. An adapter reads a model's output files and never runs the model.
 - `binding_metrics.metrics.mlff_energy`, a reserved interface for an interaction energy from a machine-learned force field (Ryczko et al., ChemRxiv 10.26434/chemrxiv.15008810): `MLFFBackend`, `PocketSpec`, `register_backend`, `get_backend`, `available_backends` and `compute_mlff_interaction_energy`, which validates its arguments and raises `NotImplementedError`. It is not a registered metric.
 - `random_seed` on `parameterize_ncaa_residues` (default 1, keyword-only): the seed of the conformer that the
   AM1-BCC charges of GAFF2 residues start from. `None` draws a new one.

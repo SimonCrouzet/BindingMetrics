@@ -599,6 +599,10 @@ A scalar the model does not provide is NaN, never None. A file that is absent le
 
 A model-specific scalar or dictionary goes in `extras` under the key the model uses (`bespoke_iptm` for OpenFold3), a per-token array in `TokenLayout.extras`, and an extra file of a sample in `PredictionFiles.extra`. Generic code never reads `extras`.
 
+**Adapters.** An adapter subclasses `PredictionParser` (`binding_metrics.predictors.base`) and reads the output of one model without running it. It implements `find_files(prediction_dir, name, *, seed_index=1, sample=1) -> PredictionFiles` and `parse(files, *, name, seed_index=1, sample=1) -> PredictionRecord`; the base class supplies `load(prediction_dir, name, *, seed_index=1, sample=1, chain_map=None)`, which chains the two and applies the chain map, and `list_samples(prediction_dir, name)`, which returns `SampleRef(seed_index, sample, ranking_score)` for each sample in the model's natural order. The class attributes are `name`, `display_name`, `family` (`"af2"`: one token per residue; `"af3"`: one token per standard residue and one per heavy atom of a ligand or modified residue) and `capabilities` (None until an adapter declares which inputs its model can take). `sample=1` is the first output in the model's own order, not the best-ranked one. Parsing the scalars imports no biotite and does not open the structure file.
+
+`binding_metrics.predictors.PARSERS` maps a model name to a `ParserSpec` that names the adapter class and imports it only when it is needed; `get_parser(name)` returns an adapter instance (`KeyError` listing the known names for an unknown model) and `register_parser(spec)` adds one.
+
 ---
 
 ## 13. EvoBind scoring
