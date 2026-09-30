@@ -142,21 +142,26 @@ def _check_openfold() -> bool:
     import shutil
 
     conda = shutil.which("conda") or "conda"
-    result = subprocess.run(
-        [
-            conda,
-            "run",
-            "-n",
-            _OPENFOLD_CONDA_ENV,
-            "python",
-            "-c",
-            "import openfold3; import shutil; print(shutil.which('run_openfold') or 'ok')",
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    if result.returncode == 0:
+    # Without conda the dedicated env cannot exist: report OpenFold3 as not found, not a traceback.
+    try:
+        result = subprocess.run(
+            [
+                conda,
+                "run",
+                "-n",
+                _OPENFOLD_CONDA_ENV,
+                "python",
+                "-c",
+                "import openfold3; import shutil; print(shutil.which('run_openfold') or 'ok')",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        returncode = result.returncode
+    except OSError:  # FileNotFoundError (no conda executable) or a permission error
+        returncode = None
+    if returncode == 0:
         ready = _report_openfold_readiness(
             [conda, "run", "-n", _OPENFOLD_CONDA_ENV, "python"],
             f"conda env '{_OPENFOLD_CONDA_ENV}'",
@@ -171,13 +176,16 @@ def _check_openfold() -> bool:
         return ready
 
     # 3. Check whether the conda env exists at all
-    env_check = subprocess.run(
-        [conda, "env", "list"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    env_exists = _OPENFOLD_CONDA_ENV in (env_check.stdout + env_check.stderr)
+    if returncode is None:
+        env_exists = False
+    else:
+        env_check = subprocess.run(
+            [conda, "env", "list"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        env_exists = _OPENFOLD_CONDA_ENV in (env_check.stdout + env_check.stderr)
 
     if env_exists:
         _fail(

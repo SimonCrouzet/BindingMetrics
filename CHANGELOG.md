@@ -303,6 +303,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
   `*.pt` file as the weights, so a volume with Preview2 weights skipped the download and the first run
   stopped (#71), and named `openfold3-p2-155k` as the default (#72). Statically checked and run under bash
   with a stub `conda`; the image was not built.
+- `binding-metrics-check-env` reports OpenFold3 as not found when the `conda` executable is missing, where
+  it stopped with a `FileNotFoundError` traceback (#97).
 - OpenFold3 removes the parent of its template `structure_directory` when a run with the MSA server and
   templates ends (0.3.1 to 0.5.0), and the toolkit's is `<output>/query`. The runner YAML now sets
   `msa_computation_settings.cleanup_msa_dir: false` when it sets `structure_directory`, so the query JSON,

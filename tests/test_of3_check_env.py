@@ -123,3 +123,41 @@ class TestCheckOpenfold:
         source = Path(check_env.__file__).read_text(encoding="utf-8")
         assert "pip install openfold3" in source
         assert "setup_openfold --non-interactive" in source
+
+
+class TestWithoutConda:
+    """A missing ``conda`` executable means the dedicated env cannot exist (#97)."""
+
+    @pytest.fixture
+    def no_conda(self, monkeypatch):
+        calls = []
+
+        def _run(cmd, **kwargs):
+            calls.append(cmd[0])
+            if cmd[0] == "conda" or Path(cmd[0]).name == "conda":
+                raise FileNotFoundError(2, "No such file or directory: 'conda'")
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")  # not importable
+
+        monkeypatch.setattr(check_env.subprocess, "run", _run)
+        monkeypatch.setattr("shutil.which", lambda name, *a, **k: None)
+        return calls
+
+    def test_the_check_reports_openfold3_as_not_found(self, no_conda, capsys):
+        assert check_env._check_openfold() is False
+        out = capsys.readouterr().out
+        assert "OpenFold3 not found" in out
+        assert "pip install openfold3" in out
+        assert "optional" in out
+
+    def test_conda_is_not_asked_a_second_time(self, no_conda):
+        check_env._check_openfold()
+        assert no_conda.count("conda") == 1
+
+    def test_the_whole_command_ends_with_a_report_not_a_traceback(
+        self, no_conda, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(check_env, "CHECKS", [("OpenFold3", check_env._check_openfold)])
+        with pytest.raises(SystemExit) as info:
+            check_env.main()
+        assert info.value.code == 1
+        assert "1 failed" in capsys.readouterr().out
