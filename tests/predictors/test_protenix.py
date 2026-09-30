@@ -455,3 +455,37 @@ class TestUnexpectedContent:
         _edit(_full_data(tmp_path), edit)
         with pytest.raises(ValueError, match=message):
             _load(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Listing the samples
+# ---------------------------------------------------------------------------
+
+
+class TestListSamples:
+    def test_samples_come_in_seed_order_then_rank_order_with_their_scores(self, tmp_path):
+        for seed_index, sample, score in ((1, 1, 0.9), (1, 2, 0.8), (2, 1, 0.7)):
+            _write(tmp_path, seed_index=seed_index, sample=sample)
+            summary = _summary(tmp_path, rank=sample - 1, seed=8 + seed_index)
+            _edit(summary, lambda d, s=score: d.update(ranking_score=s))
+        refs = ProtenixParser().list_samples(tmp_path, NAME)
+        assert [(r.seed_index, r.sample, r.ranking_score) for r in refs] == [
+            (1, 1, 0.9),
+            (1, 2, 0.8),
+            (2, 1, 0.7),
+        ]
+
+    def test_the_full_data_files_are_not_opened(self, tmp_path):
+        _write(tmp_path)
+        _full_data(tmp_path).write_bytes(contract.GARBAGE)
+        refs = ProtenixParser().list_samples(tmp_path, NAME)
+        assert [(r.seed_index, r.sample) for r in refs] == [(1, 1)]
+
+    def test_an_empty_directory_has_no_samples(self, tmp_path):
+        assert ProtenixParser().list_samples(tmp_path, NAME) == []
+
+    def test_a_corrupt_summary_raises(self, tmp_path):
+        _write(tmp_path)
+        _summary(tmp_path).write_bytes(contract.GARBAGE)
+        with pytest.raises(ValueError):
+            ProtenixParser().list_samples(tmp_path, NAME)

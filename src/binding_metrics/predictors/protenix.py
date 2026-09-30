@@ -91,11 +91,15 @@ from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.record import (
     PredictionFiles,
     PredictionRecord,
+    SampleRef,
 )
 
 logger = logging.getLogger(__name__)
 
 _NAN = float("nan")
+
+#: Bound on the samples ``list_samples`` returns, as in the base class.
+_MAX_SAMPLES = 1000
 
 #: Keys of the summary file that identify it; at least one must be present.
 _SUMMARY_CORE_KEYS = ("plddt", "ptm", "iptm", "ranking_score")
@@ -481,3 +485,31 @@ class ProtenixParser(PredictionParser):
         if located is not None and located.parent.parent.name.startswith("seed_"):
             record.extras["seed_value"] = located.parent.parent.name[len("seed_") :]
         return record
+
+    def list_samples(self, prediction_dir: str | Path, name: str) -> list[SampleRef]:
+        """The samples present, in seed order and rank order, with their ranking scores.
+
+        Reads only the small summary files: the full-data files hold three token-by-token
+        matrices as text, which the default implementation would parse for every sample.
+        """
+        directory = Path(prediction_dir)
+        refs: list[SampleRef] = []
+        seed_index = 0
+        while len(refs) < _MAX_SAMPLES:
+            seed_index += 1
+            sample = 0
+            found_in_seed = False
+            while len(refs) < _MAX_SAMPLES:
+                sample += 1
+                files = self.find_files(directory, name, seed_index=seed_index, sample=sample)
+                if not files.has_output():
+                    break
+                found_in_seed = True
+                score = _NAN
+                if files.scores is not None:
+                    raw = _read_json_object(files.scores, "summary confidence")
+                    score = _number(raw, "ranking_score", files.scores)
+                refs.append(SampleRef(seed_index, sample, score))
+            if not found_in_seed:
+                break
+        return refs
