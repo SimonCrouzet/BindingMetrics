@@ -608,6 +608,41 @@ class TestColabFoldParse:
         assert record.structure_path.name == f"{NAME}_relaxed_{tag}.pdb"
         record.validate(check_structure=True)
 
+    def test_a_relaxed_structure_with_hydrogens_gets_the_residue_value_on_every_atom(
+        self, tmp_path
+    ):
+        # AlphaFold2 relaxation writes hydrogens, and gives each atom, hydrogens included, the
+        # pLDDT of its residue in the B-factor; the residues are numbered from 1 in each chain
+        complex_ = _truth()
+        tag = synth_af2.write_colabfold(tmp_path, NAME, complex_)
+        atoms = synth_af2.af2_atoms(complex_)
+        pieces = []
+        starts = synth_af2.residue_starts(complex_)
+        for start, stop in zip(starts, [*starts[1:], complex_.n_atoms]):
+            residue = atoms[start:stop]
+            hydrogen = synth.struc.array(
+                [
+                    synth.struc.Atom(
+                        residue.coord[0] + 0.9,
+                        chain_id=residue.chain_id[0],
+                        res_id=residue.res_id[0],
+                        res_name=residue.res_name[0],
+                        atom_name="H",
+                        element="H",
+                    )
+                ]
+            )
+            hydrogen.set_annotation("b_factor", residue.b_factor[:1])
+            pieces += [residue, hydrogen]
+        relaxed = synth.struc.concatenate(pieces)
+        synth.write_structure(relaxed, tmp_path / f"{NAME}_relaxed_{tag}.pdb")
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        record.validate(check_structure=True)
+        assert record.structure_path.name.startswith(f"{NAME}_relaxed_")
+        assert record.plddt_per_atom.shape == (21,)
+        np.testing.assert_allclose(record.plddt_per_atom, np.repeat(RESIDUE_PLDDT, 3))
+        assert record.avg_plddt == pytest.approx(RESIDUE_PLDDT.mean())
+
     def test_the_average_is_over_residues_and_the_expansion_follows_the_atom_counts(self, tmp_path):
         # residues of 2, 1 and 5 atoms in A and 3 and 4 in B, pLDDT 50, 55, 60, 65, 70 per residue
         complex_ = _complex_with_atoms_per_residue({"A": [2, 1, 5], "B": [3, 4]})
