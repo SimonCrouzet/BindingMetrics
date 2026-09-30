@@ -18,6 +18,7 @@ exactly: the writer stores the mean of the atoms of each token, and the module s
 ``PLDDT_ATOL`` to cover the spread inside a token of the default synthetic complex (2 points).
 """
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -181,3 +182,89 @@ def write_boltz_structure(atoms, path: Path, bfactor: np.ndarray) -> Path:
     text = mmcif_text(atoms, bfactor) if path.suffix == ".cif" else pdb_text(atoms, bfactor)
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def prediction_directory(directory: Path, name: str) -> Path:
+    """The folder that holds the sample files: ``boltz_results_{name}/predictions/{name}``."""
+    return Path(directory) / f"boltz_results_{name}" / "predictions" / name
+
+
+def confidence_summary(complex_, per_token_plddt: np.ndarray, chains: list[str]) -> dict:
+    """The content of ``confidence_{name}_model_{r}.json`` for ``complex_``.
+
+    ``chains_ptm`` and ``pair_chains_iptm`` are keyed by the index of the chain in file order
+    and ``pair_chains_iptm[a][b]`` holds the truth of ``"{chain a}-{chain b}"``; ``iptm`` and
+    the ligand and protein ipTM are 0 for a complex with one chain, as Boltz writes them
+    (``confidence_utils.py:91-96,119-123``). The ranking score is the truth's, not Boltz's
+    formula, so that the contract can compare it.
+    """
+    scalars = complex_.scalars
+    multi = len(chains) > 1
+    ptm = {str(a): complex_.chain_ptm.get(chain, scalars["ptm"]) for a, chain in enumerate(chains)}
+    pairs = {
+        str(a): {
+            str(b): (
+                ptm[str(a)]
+                if a == b
+                else complex_.chain_pair_iptm.get(f"{first}-{second}", scalars["iptm"])
+            )
+            for b, second in enumerate(chains)
+        }
+        for a, first in enumerate(chains)
+    }
+    return {
+        "confidence_score": scalars["ranking_score"],
+        "ptm": scalars["ptm"],
+        "iptm": scalars["iptm"] if multi else 0.0,
+        "ligand_iptm": 0.0,
+        "protein_iptm": scalars["iptm"] if multi else 0.0,
+        "complex_plddt": float(per_token_plddt.mean()) / 100.0,
+        "complex_iplddt": float(per_token_plddt.mean()) / 100.0,
+        "complex_pde": scalars["gpde"],
+        "complex_ipde": scalars["gpde"],
+        "chains_ptm": ptm,
+        "pair_chains_iptm": pairs,
+    }
+
+
+def write_prediction(
+    directory: Path,
+    name: str,
+    complex_,
+    *,
+    seed_index: int = 1,
+    sample: int = 1,
+) -> None:
+    """Write ``complex_`` as sample ``sample`` (file ``model_{sample - 1}``) of a Boltz-2 run.
+
+    The atoms are tokenised by Boltz-2's rule; the pLDDT of each token is the mean of the
+    truth over its atoms. PAE and PDE are the truth, which must have one row per token.
+
+    Raises:
+        ValueError: ``seed_index`` is not 1, the matrices do not have one row per token, or the
+            atoms of a chain are not in one block.
+    """
+    if seed_index != 1:
+        raise ValueError("a Boltz-2 run has one seed; seed_index must be 1")
+    atoms = complex_.atoms
+    token_of_atom = token_index_of_atoms(atoms)
+    n_tokens = int(token_of_atom.max()) + 1
+    for label, matrix in (("pae", complex_.pae), ("pde", complex_.pde)):
+        if matrix.shape != (n_tokens, n_tokens):
+            raise ValueError(
+                f"{label} has shape {matrix.shape} but the atoms make {n_tokens} tokens"
+            )
+    per_token = np.array(
+        [complex_.plddt_per_atom[token_of_atom == token].mean() for token in range(n_tokens)]
+    )
+    chains, _ = _boltz_numbering(atoms)
+
+    out = prediction_directory(directory, name)
+    stem = f"{name}_model_{sample - 1}"
+    write_boltz_structure(atoms, out / f"{stem}{STRUCTURE_SUFFIX}", per_token[token_of_atom])
+    (out / f"confidence_{stem}.json").write_text(
+        json.dumps(confidence_summary(complex_, per_token, chains), indent=4), encoding="utf-8"
+    )
+    np.savez_compressed(out / f"plddt_{stem}.npz", plddt=(per_token / 100.0).astype(np.float32))
+    np.savez_compressed(out / f"pae_{stem}.npz", pae=complex_.pae.astype(np.float32))
+    np.savez_compressed(out / f"pde_{stem}.npz", pde=complex_.pde.astype(np.float32))
