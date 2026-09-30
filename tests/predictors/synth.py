@@ -20,8 +20,16 @@ tests in ``contract.py`` call):
 writes the smallest output of the model that describes ``complex_`` under ``directory``, in
 the model's own layout and scales, so that ``get_parser("<model>").load(directory, name,
 seed_index=seed_index, sample=sample)`` returns a record equal to the truth within the
-writer's rounding. A module may set ``PLDDT_ATOL`` and ``SCALAR_ATOL`` (default 0.05 and 0.01)
-for a model that rounds its values. Files are written at test time; nothing is committed.
+writer's rounding. The directory exists when the writer is called. A module may set
+
+    PLDDT_ATOL, SCALAR_ATOL, MATRIX_ATOL    tolerances for a model that rounds its values
+                                            (default 0.05, 0.01 and 0.01)
+    SUPPORTS_SEED_INDEX                     False for a model with no seed dimension (default
+                                            True); the seed check then uses samples only
+
+and it writes only what its model writes: a model without PDE leaves ``pde`` out, and the
+contract compares only the values the parser returns. Files are written at test time; nothing
+is committed.
 """
 
 import gzip
