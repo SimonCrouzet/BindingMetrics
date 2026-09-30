@@ -60,7 +60,7 @@ import numpy as np
 
 from binding_metrics.core.residues import VARIANT_TO_PARENT_RESIDUE
 from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
-from binding_metrics.predictors._confidence import _binder_plddt_per_residue
+from binding_metrics.predictors._confidence import _binder_plddt_per_residue, _residue_index
 from binding_metrics.predictors.record import PredictionRecord
 
 # ---------------------------------------------------------------------------
@@ -81,18 +81,18 @@ def _load_atoms(path: Path):
 def _cb_atoms(atoms, chain_id: str):
     """Return a biotite AtomArray of Cβ atoms for each residue in a chain.
 
-    Glycine and any residue lacking CB fall back to Cα.
+    Glycine and any residue lacking CB fall back to Cα. A residue is identified by
+    residue number and insertion code, so residues 52 and 52A are two, and the result
+    lists them in ascending order of that pair.
     """
-    chain_atoms = atoms[atoms.chain_id == chain_id]
-    unique_res_ids = np.unique(chain_atoms.res_id)
-
-    selected_indices = []
-    all_indices = np.where(atoms.chain_id == chain_id)[0]
-    chain_res_ids = atoms.res_id[all_indices]
+    chain_mask = atoms.chain_id == chain_id
+    all_indices = np.where(chain_mask)[0]
+    residue, n_residues = _residue_index(atoms, chain_mask)
     chain_atom_names = atoms.atom_name[all_indices]
 
-    for rid in unique_res_ids:
-        res_mask = chain_res_ids == rid
+    selected_indices = []
+    for r in range(n_residues):
+        res_mask = residue == r
         res_names = chain_atom_names[res_mask]
         res_global_idx = all_indices[res_mask]
 

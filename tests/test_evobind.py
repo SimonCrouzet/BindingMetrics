@@ -594,3 +594,77 @@ class TestSharedPlddtHelper:
         atoms = _chain("A", np.array([[0.0, 0, 0], [3.8, 0, 0]]))
         with pytest.raises(ValueError, match="plddt_per_atom length"):
             _per_residue_plddt([50.0, 60.0, 70.0], atoms, "A")
+
+
+# ---------------------------------------------------------------------------
+# Residues that differ only by insertion code are two residues (issue #102)
+# ---------------------------------------------------------------------------
+
+
+def _insertion_atom(x, y, chain_id, res_id, ins_code, atom_name):
+    return struc.Atom(
+        [x, y, 0.0],
+        chain_id=chain_id,
+        res_id=res_id,
+        ins_code=ins_code,
+        res_name="ALA",
+        atom_name=atom_name,
+        element="C",
+    )
+
+
+def _insertion_code_complex(tmp_path):
+    """Receptor A of two residues; binder B of residues 1, 1A and 2, the 1A one far away.
+
+    Binder Cβ at (0, 7.5), (3.8, 13.5) [residue 1A] and (7.6, 7.5); receptor Cβ at (0, 1.5)
+    and (3.8, 1.5). The nearest receptor Cβ is 6.0, 12.0 and hypot(3.8, 6.0) angstrom away.
+    """
+    atoms = struc.array(
+        [
+            _insertion_atom(0.0, 0.0, "A", 1, "", "CA"),
+            _insertion_atom(0.0, 1.5, "A", 1, "", "CB"),
+            _insertion_atom(3.8, 0.0, "A", 2, "", "CA"),
+            _insertion_atom(3.8, 1.5, "A", 2, "", "CB"),
+            _insertion_atom(0.0, 6.0, "B", 1, "", "CA"),
+            _insertion_atom(0.0, 7.5, "B", 1, "", "CB"),
+            _insertion_atom(3.8, 12.0, "B", 1, "A", "CA"),
+            _insertion_atom(3.8, 13.5, "B", 1, "A", "CB"),
+            _insertion_atom(7.6, 6.0, "B", 2, "", "CA"),
+            _insertion_atom(7.6, 7.5, "B", 2, "", "CB"),
+        ]
+    )
+    return _write(tmp_path / "insertion.pdb", atoms), atoms
+
+
+class TestInsertionCodes:
+    def test_cb_atoms_keeps_a_residue_that_differs_only_by_insertion_code(self, tmp_path):
+        _, atoms = _insertion_code_complex(tmp_path)
+        picked = _cb_atoms(atoms, "B")
+        assert picked.array_length() == 3
+        assert picked.res_id.tolist() == [1, 1, 2]
+        assert picked.ins_code.tolist() == ["", "A", ""]
+        assert picked.atom_name.tolist() == ["CB", "CB", "CB"]
+        np.testing.assert_allclose(picked.coord[:, 0], [0.0, 3.8, 7.6])
+
+    def test_cb_atoms_lists_the_residues_in_residue_number_then_insertion_code_order(self):
+        # written out of order: 2, 1A, 1
+        atoms = struc.array(
+            [
+                _insertion_atom(7.6, 0.0, "B", 2, "", "CA"),
+                _insertion_atom(3.8, 0.0, "B", 1, "A", "CA"),
+                _insertion_atom(0.0, 0.0, "B", 1, "", "CA"),
+            ]
+        )
+        picked = _cb_atoms(atoms, "B")
+        assert list(zip(picked.res_id.tolist(), picked.ins_code.tolist())) == [
+            (1, ""),
+            (1, "A"),
+            (2, ""),
+        ]
+
+    def test_the_score_counts_the_insertion_code_residue(self, tmp_path):
+        path, _ = _insertion_code_complex(tmp_path)
+        res = compute_evobind_score(path, None, "B", "A")
+        assert res["n_interface_receptor_residues"] == 2
+        expected = (6.0 + 12.0 + np.hypot(3.8, 6.0)) / 3.0  # was (6.0 + hypot) / 2 without 1A
+        assert res["if_dist_pep_to_rec"] == pytest.approx(expected, abs=1e-2)
