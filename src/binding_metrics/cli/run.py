@@ -16,6 +16,18 @@ Usage:
 The results JSON carries a ``provenance`` block (package version, git sha, seed,
 platform) so a result can be tied to the code and settings that produced it.
 
+Structure prediction:
+    The ``openfold`` step runs OpenFold3 and writes ``results["openfold"]``. With
+    ``--predictor MODEL`` it reads the prediction of that model instead (af2, boltz2, of3 or
+    protenix), runs the model at most once for all the metrics that use it, and writes
+    ``results["prediction"]``. Only of3 can be run from here; for another model pass its
+    output with ``--prediction-dir DIR``. The finished predictions are kept in
+    ``--prediction-cache`` (default ``<output-dir>/predictions``) and a repeated run reuses
+    them; ``--rerun-predictions`` runs the model again.
+
+        binding-metrics-run --input complex.cif --output-dir results/ \\
+            --predictor boltz2 --prediction-dir boltz_out/
+
 Configuration file:
     --config run.toml supplies option defaults; flags on the command line override
     the file. Keys are the long option names (md-duration-ps or md_duration_ps):
