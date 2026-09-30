@@ -123,6 +123,7 @@ from typing import Any, Mapping, NamedTuple, Optional
 
 import numpy as np
 
+from binding_metrics.capabilities import Capabilities
 from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.record import (
     PredictionFiles,
@@ -954,6 +955,47 @@ class AlphaFold2Parser(PredictionParser):
     name = _MODEL
     display_name = "AlphaFold2 / ColabFold"
     family = "af2"
+
+    # The inputs AlphaFold2 and ColabFold can be given, from the model code (AlphaFold commit
+    # c77e5d2, ColabFold 1.6.3, checked against the clones on 2026-09-30;
+    # tests/test_pre_af2_limits.py re-reads them when the clones are at hand). The input is a
+    # sequence of the 20 amino acids and X plus an MSA and templates, so neither a residue that is
+    # not one of the 20 nor a ring closure can be given. Not declared because nothing shows it: a
+    # limit on the binder size or on a binder of several chains (the multimer models take them).
+    capabilities = Capabilities(
+        closures={"none"},
+        residue_classes={"canonical", "cap", "ligand"},
+        reasons={
+            "closures": (
+                "AlphaFold2 and ColabFold take a sequence, an MSA and templates, and nothing in "
+                "that input can state a ring closure: ColabFold builds the features with "
+                "make_sequence_features, make_msa_features and the template features "
+                "(colabfold/batch.py, build_monomer_feature), none of which holds a bond. The "
+                "chain is folded as a linear one. Use a model that takes the link as input, or "
+                "leave the AlphaFold2 step out."
+            ),
+            "residue_classes": (
+                "AlphaFold2 and ColabFold read a chain as a sequence whose residue types are the "
+                "20 amino acids and X (alphafold/common/residue_constants.py, restypes_with_x; "
+                "alphafold/data/pipeline.py, make_sequence_features maps any other letter to X), "
+                "so a D-amino acid, an N-methylated, phosphorylated or other modified residue "
+                "cannot be given and the prediction would be of the parent residue or of an "
+                "unknown one. Use a model that takes modified residues as input, or leave the "
+                "AlphaFold2 step out."
+            ),
+        },
+        caveats={
+            "residue_classes:cap": (
+                "AlphaFold2 and ColabFold take the 20 amino acids as a sequence, so a terminal "
+                "capping group is not part of the input and the prediction is of the uncapped "
+                "peptide."
+            ),
+            "residue_classes:ligand": (
+                "AlphaFold2 and ColabFold take the 20 amino acids as a sequence, so a ligand or "
+                "glycan bonded to the binder is not part of the input."
+            ),
+        },
+    )
     not_provided = frozenset({"pde", "gpde", "disorder", "has_clash"})
 
     def find_files(

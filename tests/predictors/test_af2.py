@@ -1274,8 +1274,11 @@ class TestRegistration:
         assert (spec.display_name, spec.family) == ("AlphaFold2 / ColabFold", "af2")
         assert AlphaFold2Parser.name == "af2"
 
-    def test_no_capabilities_are_declared(self):
-        assert AlphaFold2Parser.capabilities is None
+    def test_the_input_limits_are_declared_in_tests_pre_af2_limits(self):
+        # tests/test_pre_af2_limits.py holds the contents of the declaration
+        from binding_metrics.capabilities import Capabilities
+
+        assert isinstance(AlphaFold2Parser.capabilities, Capabilities)
 
     def test_a_writer_module_exists_for_the_contract_tests(self):
         assert callable(contract.writer_module("af2").write_prediction)

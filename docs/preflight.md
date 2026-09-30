@@ -147,6 +147,15 @@ Declared on `ProtenixParser.capabilities`, from `docs/infer_json_format.md` of P
 
 Declared on `Boltz2Parser.capabilities`: no limit, one warning. The `cyclic: true` flag wraps a chain head-to-tail, and the `bond` constraint takes any two atoms of the input (`atom_idx_map` in `boltz/data/parse/schema.py`), which the featuriser turns into a cyclic period when it joins the first and last residue of a chain, so a disulfide or a lactam between canonical residues can be given. The documentation lists the `bond` constraint as supported for "CCD ligands and canonical residues" only (`docs/prediction.md`), which is why a hydrocarbon staple, whose residues are not canonical, gets a warning and not a refusal.
 
+### AlphaFold2 and ColabFold
+
+Declared on `AlphaFold2Parser.capabilities`, from the model code (AlphaFold commit c77e5d2, ColabFold 1.6.3).
+
+| Limit | Basis |
+|---|---|
+| Closures: `none` | ColabFold builds its features from `make_sequence_features`, `make_msa_features` and the template features (`colabfold/batch.py`, `build_monomer_feature`, one such dictionary per chain for a multimer); none holds a bond, so a ring closure cannot be given and the chain is folded as a linear one. |
+| Residue classes: `canonical`, plus `cap` and `ligand` | The residue types are the 20 amino acids and X (`restypes_with_x` in `alphafold/common/residue_constants.py`), and `make_sequence_features` maps any other letter to X (`alphafold/data/pipeline.py`). A D-amino acid, an N-methylated, phosphorylated or other modified residue cannot be given. A capping group or a ligand is not part of a sequence and gives a warning. |
+
 ### Metrics
 
 Declared on `MetricSpec.capabilities`, a keyword-only optional field.
@@ -183,4 +192,12 @@ Declared on `MetricSpec.capabilities`, a keyword-only optional field.
 | Trajectory metrics | Their input is a trajectory and a topology, which the needs vocabulary does not describe. |
 | Residue limits of `md_implicit` and `structure_interaction_energy` | Unknown residues go through GAFF2 templates whose success depends on the residue and on `antechamber`. |
 | Closure limits of `openfold` and `interface_pae` | They read an existing output that another model may have written; the limit belongs to the predictor that writes it. |
+| Boltz-2 closures limited to head-to-tail | Not true: the `bond` constraint takes any two atoms of the input, so a disulfide or a lactam between canonical residues can be given (see the Boltz-2 section). |
+| Boltz-2 on D-amino acids, N-methyl and phospho residues | A modified residue is a CCD code in `modifications`; no source or documentation says whether D-amino acid or N-methyl codes work, so nothing is declared. |
+| Boltz-2 affinity for a peptide | Not an input limit of the structure prediction. |
+| Boltz-2 binder size | The 256-token and 2048-atom cropping limits belong to the affinity data set; no maximum is stated for structure prediction. |
+| Protenix on D-amino acids, N-methyl and phospho residues | A modified residue is a CCD code in `modifications`; D-amino acids and N-methylation are not mentioned. |
+| Protenix size (2560 tokens for `protenix-v2`) | It is a limit of the whole complex and of one model name (`runner/inference.py`), and the profile holds the binder only. |
+| AlphaFold2 and ColabFold binder size | The memory figures of the ColabFold FAQ depend on the GPU; no code states a maximum. |
+| Cyclic-offset forks of AlphaFold2 (ColabDesign, BindCraft) | Their outputs are read by the same adapter, and what they add to the input was not checked here. The closure limit above describes AlphaFold2 and ColabFold as released; `policy="warn"` lets such an output through. |
 | `compute_evobind_adversarial_from_records` | It is not a registry entry, so there is no `MetricSpec` to declare on; its needs are those of `evobind_adversarial`. |
