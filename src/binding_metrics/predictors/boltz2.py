@@ -116,6 +116,7 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.capabilities import Capabilities
 from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.record import (
     PredictionFiles,
@@ -606,6 +607,28 @@ class Boltz2Parser(PredictionParser):
     name = "boltz2"
     display_name = "Boltz-2"
     family = "af3"
+
+    # The inputs Boltz-2 2.2.1 can be given, from its source and documentation (checked against
+    # the clone on 2026-09-30; tests/test_pre_boltz2_limits.py re-reads it when the clone is at
+    # hand). No closure is refused: `cyclic: true` wraps a chain head-to-tail
+    # (boltz/data/parse/schema.py) and the `bond` constraint takes any two atoms of the input, which
+    # the featuriser reads as a cyclic period when it joins the ends of a chain
+    # (boltz/data/feature/featurizerv2.py), so a disulfide or a lactam between canonical residues
+    # can be given. Not declared because nothing shows it: a limit on the residue classes (a
+    # modified residue is a CCD code in `modifications`; D-amino acids and N-methyl are not
+    # mentioned), and on the binder size (no maximum is stated).
+    capabilities = Capabilities(
+        caveats={
+            "closures:staple": (
+                "Boltz-2 takes a covalent link between residues only as a `bond` constraint, and "
+                "its documentation lists that constraint as supported for CCD ligands and "
+                "canonical residues only (docs/prediction.md, section Constraints); the residues "
+                "of a hydrocarbon staple are not canonical, so the staple is outside what the "
+                "documentation says is supported."
+            ),
+        },
+        version="2.2.1",
+    )
 
     def find_files(
         self,

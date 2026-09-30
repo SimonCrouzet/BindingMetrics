@@ -933,8 +933,11 @@ class TestRegistration:
         parser = Boltz2Parser()
         assert (parser.name, parser.display_name, parser.family) == ("boltz2", "Boltz-2", "af3")
 
-    def test_no_capabilities_are_declared(self):
-        assert Boltz2Parser.capabilities is None
+    def test_the_input_limits_are_declared_in_tests_pre_boltz2_limits(self):
+        # tests/test_pre_boltz2_limits.py holds the contents of the declaration
+        from binding_metrics.capabilities import Capabilities
+
+        assert isinstance(Boltz2Parser.capabilities, Capabilities)
 
     def test_a_record_is_loaded_through_the_registry(self, tmp_path):
         record = get_parser("boltz2").load(_write(tmp_path), NAME, chain_map={"A": "R", "B": "P"})

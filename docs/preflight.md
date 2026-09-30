@@ -143,6 +143,10 @@ Declared on `ProtenixParser.capabilities`, from `docs/infer_json_format.md` of P
 |---|---|
 | Closures: `none`, `head_to_tail` and `disulfide` | "Covalent bonds between two polymer residues ... are generally not supported. Exceptions are made for cyclic peptides", for a head-to-tail amide bond or a disulfide between cysteines; other polymer-polymer bonds "are not reliably handled by the current model". The source takes any atom pair (`json_to_feature.py`), so a lactam, a staple or another link can be written; the limit is about what the model does with it. |
 
+### Boltz-2 2.2.1
+
+Declared on `Boltz2Parser.capabilities`: no limit, one warning. The `cyclic: true` flag wraps a chain head-to-tail, and the `bond` constraint takes any two atoms of the input (`atom_idx_map` in `boltz/data/parse/schema.py`), which the featuriser turns into a cyclic period when it joins the first and last residue of a chain, so a disulfide or a lactam between canonical residues can be given. The documentation lists the `bond` constraint as supported for "CCD ligands and canonical residues" only (`docs/prediction.md`), which is why a hydrocarbon staple, whose residues are not canonical, gets a warning and not a refusal.
+
 ### Metrics
 
 Declared on `MetricSpec.capabilities`, a keyword-only optional field.
