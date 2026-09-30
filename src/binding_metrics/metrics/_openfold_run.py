@@ -161,6 +161,7 @@ def _write_runner_yaml(
     """
     presets = _drop_removed_presets(presets, conda_env)
     # TODO(#67): seeds go here as experiment_settings.seeds; OpenFold3 ignores the query "seeds".
+    # Also check whether --num_model_seeds overrides them (openfold3/entry_points/validator.py).
     cfg: dict = {"model_update": {"presets": presets}}
     if template_dir is not None:
         cfg["template_preprocessor_settings"] = {
