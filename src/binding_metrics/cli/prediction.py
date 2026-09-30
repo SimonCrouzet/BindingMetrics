@@ -276,7 +276,6 @@ def make_request(
             input_path=input_path,
             binder_chain=binder_chain,
             receptor_chain=receptor_chain,
-            options={"adopted_name": sample_id},
         )
     if runner is None:
         raise ValueError(no_runner_message(predictor))
@@ -322,9 +321,14 @@ def reference_for(predictor: str, openfold_mode: str, input_path: Path) -> Optio
 # ---------------------------------------------------------------------------
 
 
-def _cache_block(session, request) -> dict[str, Any]:
-    """The session's counters and the key of the store entry, for ``results["prediction"]``."""
-    return {**session.stats(), "request_key": request.key()}
+def _cache_block(session, request, *, adopted: bool = False) -> dict[str, Any]:
+    """The session's counters and the key of the store entry, for ``results["prediction"]``.
+
+    An output adopted from ``--prediction-dir`` is stored under the key of the request with its
+    name (``for_adoption``), so two samples that share an input file have two entries.
+    """
+    key = request.for_adoption().key() if adopted else request.key()
+    return {**session.stats(), "request_key": key}
 
 
 def _evobind_score_of(record, binder_chain: str, receptor_chain: str) -> dict:
@@ -350,6 +354,7 @@ def _analyse(
     receptor_chain: str,
     chain_map: Optional[Mapping[str, str]],
     reference_path: Optional[Path],
+    adopted: bool = False,
 ) -> tuple[dict, dict]:
     """Every consumer of one prediction, all reading the record the session parsed once."""
     from binding_metrics.metrics.evobind import compute_evobind_adversarial_from_records
@@ -363,7 +368,7 @@ def _analyse(
         return {
             "model": request.model,
             "error": str(error),
-            "cache": _cache_block(session, request),
+            "cache": _cache_block(session, request, adopted=adopted),
         }, {}
 
     block = summarize_prediction(
@@ -393,7 +398,7 @@ def _analyse(
             logger.warning("  [warning] EvoBind adversarial check failed: %s", e)
             block["adversarial_error"] = str(e)
 
-    block["cache"] = _cache_block(session, request)
+    block["cache"] = _cache_block(session, request, adopted=adopted)
     provenance: dict[str, Any] = {}
     checkpoint = record.extras.get("inference_ckpt_name")
     if record.model == "of3" and checkpoint:
@@ -446,6 +451,7 @@ def run_prediction_step(
                 prediction_binder_chain, prediction_target_chain, binder_chain, receptor_chain
             ),
             reference_path=reference_path,
+            adopted=prediction_dir is not None,
         )
     except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["prediction"]
         logger.warning("  [warning] Prediction failed: %s", e)
@@ -453,7 +459,7 @@ def run_prediction_step(
         return {
             "model": request.model,
             "error": str(e),
-            "cache": _cache_block(session, request),
+            "cache": _cache_block(session, request, adopted=prediction_dir is not None),
         }, {}
 
 
