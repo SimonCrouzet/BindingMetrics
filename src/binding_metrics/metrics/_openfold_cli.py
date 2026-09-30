@@ -72,6 +72,30 @@ def _add_query_seeds_arg(p) -> None:
     )
 
 
+def _add_unmappable_residue_arg(p) -> None:
+    """Add ``--on-unmappable-residue`` (what to do with residues OpenFold3 cannot take)."""
+    p.add_argument(
+        "--on-unmappable-residue",
+        choices=("error", "x"),
+        default="error",
+        help=(
+            "A residue that OpenFold3 cannot take (not a standard, D-, modified or "
+            "protonation-variant amino acid) stops the run before it starts (default: "
+            "%(default)s). 'x' sends an X in its place and logs a warning."
+        ),
+    )
+
+
+def _unmappable_residue_kwargs(args) -> dict:
+    """Keyword argument for the API, only when the flag differs from the default.
+
+    The default is left out so that a function that predates the option keeps working.
+    """
+    if args.on_unmappable_residue == "error":
+        return {}
+    return {"on_unmappable_residue": args.on_unmappable_residue}
+
+
 def _print_metrics(metrics: dict, seed: int, sample: int) -> None:
     """Print OpenFold3 metrics to stdout."""
     print(f"\nOpenFold3 confidence metrics (seed={seed}, sample={sample}):")
@@ -288,6 +312,7 @@ def main():
         "If omitted, receptor chain is extracted from --complex.",
     )
     _add_query_seeds_arg(p_prep)
+    _add_unmappable_residue_arg(p_prep)
 
     # --- refold subcommand ---
     p_refold = sub.add_parser(
@@ -369,6 +394,7 @@ def main():
         help="Conda env where OpenFold3 is installed (e.g. 'openfold3').",
     )
     _add_query_seeds_arg(p_refold)
+    _add_unmappable_residue_arg(p_refold)
     _add_parse_args(p_refold, include_chain_args=False)
 
     # --- prepare-scoring-query subcommand ---
@@ -413,6 +439,7 @@ def main():
         help="Pre-prepared complex CIF (e.g., MD-relaxed). Both chains extracted from it.",
     )
     _add_query_seeds_arg(p_prep_score)
+    _add_unmappable_residue_arg(p_prep_score)
 
     # --- score subcommand ---
     p_score = sub.add_parser(
@@ -482,6 +509,7 @@ def main():
         help="Conda env where OpenFold3 is installed (e.g. 'openfold3').",
     )
     _add_query_seeds_arg(p_score)
+    _add_unmappable_residue_arg(p_score)
     _add_parse_args(p_score, include_chain_args=False)
 
     from binding_metrics.cli import add_log_file_arg
@@ -503,6 +531,7 @@ def main():
             output_dir=args.output_dir,
             template_cif_path=args.template_cif,
             seeds=args.seeds,
+            **_unmappable_residue_kwargs(args),
         )
         print(f"Scoring query JSON written to: {path}")
         return
@@ -527,6 +556,7 @@ def main():
             runner_yaml=args.runner_yaml,
             conda_env=args.conda_env,
             seeds=args.seeds,
+            **_unmappable_residue_kwargs(args),
         )
         print(f"\nParsing scoring metrics from: {predictions_dir}")
         metrics = of.compute_openfold_metrics(
@@ -552,6 +582,7 @@ def main():
             output_dir=args.output_dir,
             template_cif_path=args.template_cif,
             seeds=args.seeds,
+            **_unmappable_residue_kwargs(args),
         )
         print(f"Query JSON written to: {path}")
         return
@@ -576,6 +607,7 @@ def main():
             runner_yaml=args.runner_yaml,
             conda_env=args.conda_env,
             seeds=args.seeds,
+            **_unmappable_residue_kwargs(args),
         )
         print(f"\nParsing refolding metrics from: {predictions_dir}")
         metrics = of.compute_openfold_metrics(

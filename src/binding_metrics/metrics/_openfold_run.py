@@ -16,6 +16,14 @@ import warnings
 from pathlib import Path
 from typing import Optional, Sequence
 
+from binding_metrics.core.nonstandard import D_AA_MAP
+from binding_metrics.core.residues import (
+    FORCE_FIELD_CAP_NAMES,
+    LACTAM_TEMPLATE_RESIDUES,
+    TERMINAL_CAP_NAMES,
+    VARIANT_TO_PARENT_RESIDUE,
+)
+
 logger = logging.getLogger(__name__)
 
 #: Seed values written into the ``"seeds"`` field of the query JSON. OpenFold3
@@ -160,37 +168,207 @@ def _write_runner_yaml(
     return yaml_path
 
 
-def _extract_sequence_from_structure(structure, chain_id: str) -> str:
-    """Extract one-letter amino acid sequence for a chain using gemmi.
+#: One-letter codes of the 20 standard amino acids.
+_THREE_TO_ONE: dict[str, str] = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+    "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+    "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+    "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+}  # fmt: skip
 
-    Skips non-amino-acid residues (waters, ligands, etc.).
+#: Residue names that ``core.nonstandard`` uses for its N-methyl templates but that are
+#: not the Chemical Component Dictionary entries of those residues (the CCD code NMG is
+#: an unrelated non-polymer component). The CCD codes of sarcosine and N-methylalanine are
+#: SAR and MAA. MVA and MLE are CCD codes already.
+_TEMPLATE_NAME_TO_CCD: dict[str, str] = {"NMG": "SAR", "NMA": "MAA"}
+
+#: Values of ``on_unmappable_residue``.
+_ON_UNMAPPABLE_CHOICES = ("error", "x")
+
+_STANDARD_LETTERS = frozenset(_THREE_TO_ONE.values())
+
+
+class UnmappableResidueError(ValueError):
+    """A chain holds residues that OpenFold3 cannot take in a query.
+
+    ``details`` lists ``(source, chain_id, residue_labels)`` for every offending chain,
+    where ``source`` names the sample in a batch and is empty otherwise.
+    """
+
+    def __init__(self, details: list[tuple[str, str, list[str]]]):
+        self.details = details
+        lines = [
+            f"  - {source + ': ' if source else ''}chain '{chain}': {', '.join(labels)}"
+            for source, chain, labels in details
+        ]
+        super().__init__(
+            "OpenFold3 cannot take these residues:\n" + "\n".join(lines) + "\n"
+            "OpenFold3 accepts the 20 standard amino acids, X, and other amino acids only as "
+            "Chemical Component Dictionary codes; the names above are none of these, so the "
+            "prediction would model something else than the input. Remove or replace the "
+            "residues, or run without the OpenFold3 metrics (leave 'openfold' out of "
+            "--metrics). on_unmappable_residue='x' (--on-unmappable-residue x) sends an X "
+            "instead and logs a warning."
+        )
+
+
+def _peptide_linking_parent_letter(ccd_code: str) -> Optional[str]:
+    """Parent one-letter code of a peptide-linking CCD component, or None if it is not one.
+
+    The Chemical Component Dictionary bundled with biotite decides; without it (or with a
+    biotite that lacks the lookup) gemmi's built-in table of amino-acid components is used,
+    which is smaller. The letter is ``X`` when the component has no standard parent.
+    """
+    try:
+        from biotite.structure import info as ccd_info
+
+        types = ccd_info.get_from_ccd("chem_comp", ccd_code, "type")
+        if types is None:
+            return None
+        values = types.as_array()
+        if len(values) == 0 or "PEPTIDE LINKING" not in str(values[0]).upper():
+            return None
+        letter = ccd_info.one_letter_code(ccd_code)
+    except (ImportError, AttributeError, KeyError, ValueError, OSError) as exc:
+        logger.debug("CCD lookup of %s unavailable (%s); using gemmi's table", ccd_code, exc)
+        import gemmi
+
+        table_entry = gemmi.find_tabulated_residue(ccd_code)
+        if table_entry is None or not table_entry.is_amino_acid():
+            return None
+        letter = table_entry.one_letter_code
+    letter = (letter or "X").upper()
+    return letter if letter in _STANDARD_LETTERS else "X"
+
+
+def _residue_letter_and_ccd(name: str) -> Optional[tuple[str, Optional[str]]]:
+    """Map a residue name to ``(one-letter code, CCD code or None)`` for an OpenFold3 chain.
+
+    The CCD code is set when the residue must be listed in ``non_canonical_residues``
+    (D-amino acids, N-methylated and other modified residues). Protonation and
+    cross-link variants (HID, HIE, HIP, CYX, ...) and the lactam-bridge templates take the
+    letter of their parent residue and no CCD entry: the state or the link is not sent, and
+    HIP names doubly protonated histidine here although the CCD uses it for
+    phosphohistidine. Returns None when the name is no amino acid OpenFold3 can express.
+    """
+    if name in _THREE_TO_ONE:
+        return _THREE_TO_ONE[name], None
+    if name in VARIANT_TO_PARENT_RESIDUE:
+        return _THREE_TO_ONE[VARIANT_TO_PARENT_RESIDUE[name]], None
+    if name in LACTAM_TEMPLATE_RESIDUES:
+        return _THREE_TO_ONE[name[:3]], None
+    if name in D_AA_MAP:
+        return _THREE_TO_ONE[D_AA_MAP[name]], name
+    if name == "UNK":
+        return "X", None
+    if name == "SEC":  # selenocysteine is a sequence letter of OpenFold3
+        return "U", None
+    ccd_code = _TEMPLATE_NAME_TO_CCD.get(name, name)
+    letter = _peptide_linking_parent_letter(ccd_code)
+    return None if letter is None else (letter, ccd_code)
+
+
+def _extract_query_chain(
+    structure, chain_id: str, *, on_unmappable_residue: str = "error"
+) -> tuple[str, dict[int, str]]:
+    """Read one chain of a ``gemmi.Structure`` as an OpenFold3 query chain.
+
+    Returns the one-letter sequence and ``non_canonical_residues``, a map from the 1-based
+    position in that sequence to the CCD code of the residue. The 20 standard residues are
+    plain letters; protonation and cross-link variants take their parent letter; D-amino
+    acids, N-methylated and other peptide-linking CCD components keep their chemistry
+    through the CCD entry (the letter is the parent, which the MSA search uses). Waters,
+    ions, ligands and terminal caps are left out, as OpenFold3 takes them as separate
+    chains.
+
+    A residue that has a backbone (N, CA, C) but is none of the above cannot be expressed.
 
     Args:
-        structure: A ``gemmi.Structure`` object.
-        chain_id: Chain ID to extract.
-
-    Returns:
-        One-letter sequence string (non-standard residues become 'X').
+        structure: A ``gemmi.Structure``.
+        chain_id: Chain ID to read (first model).
+        on_unmappable_residue: ``"error"`` (default) raises
+            :class:`UnmappableResidueError` naming the residues; ``"x"`` sends an ``X`` at
+            their positions and logs a warning.
 
     Raises:
-        ValueError: If the chain is not found or contains no amino acids.
+        ValueError: If the chain is not found, has no amino acids, or
+            ``on_unmappable_residue`` is not one of ``"error"``, ``"x"``.
+        UnmappableResidueError: See ``on_unmappable_residue``.
     """
-    import gemmi
-
+    if on_unmappable_residue not in _ON_UNMAPPABLE_CHOICES:
+        raise ValueError(
+            f"on_unmappable_residue must be one of {_ON_UNMAPPABLE_CHOICES}, "
+            f"got {on_unmappable_residue!r}."
+        )
     for model in structure:
         for chain in model:
             if chain.name != chain_id:
                 continue
-            seq = []
+            letters: list[str] = []
+            non_canonical: dict[int, str] = {}
+            unmappable: list[str] = []
+            left_out: list[str] = []
             for res in chain:
-                tbl = gemmi.find_tabulated_residue(res.name)
-                if tbl is None or not tbl.is_amino_acid():
+                mapped = _residue_letter_and_ccd(res.name)
+                if mapped is not None:
+                    letters.append(mapped[0])
+                    if mapped[1] is not None:
+                        non_canonical[len(letters)] = mapped[1]
                     continue
-                seq.append(tbl.one_letter_code or "X")
-            if not seq:
+                atom_names = {atom.name for atom in res}
+                if {"N", "CA", "C"} <= atom_names:
+                    unmappable.append(f"{res.name} {res.seqid.num}{res.seqid.icode.strip()}")
+                    if on_unmappable_residue == "x":
+                        letters.append("X")
+                else:
+                    left_out.append(res.name)
+            if unmappable and on_unmappable_residue == "error":
+                raise UnmappableResidueError([("", chain_id, unmappable)])
+            if unmappable:
+                logger.warning(
+                    "Chain '%s': sent X for %s, which OpenFold3 cannot take; the prediction "
+                    "does not model these residues.",
+                    chain_id,
+                    ", ".join(unmappable),
+                )
+            caps = sorted({n for n in left_out if n in TERMINAL_CAP_NAMES | FORCE_FIELD_CAP_NAMES})
+            if caps:
+                logger.info(
+                    "Chain '%s': terminal cap(s) %s left out of the OpenFold3 query.",
+                    chain_id,
+                    ", ".join(caps),
+                )
+            if not letters:
                 raise ValueError(f"Chain '{chain_id}' found but contains no amino acid residues")
-            return "".join(seq)
+            return "".join(letters), non_canonical
     raise ValueError(f"Chain '{chain_id}' not found in structure")
+
+
+def _extract_sequence_from_structure(
+    structure, chain_id: str, *, on_unmappable_residue: str = "error"
+) -> str:
+    """Extract the one-letter sequence of a chain for an OpenFold3 query using gemmi.
+
+    Skips waters, ligands and caps. D-amino acids and modified residues give the letter of
+    their parent residue (upper case); the residue itself travels in
+    ``non_canonical_residues``, which :func:`_extract_query_chain` returns together with
+    this sequence. Protonation variants (CYX, HID, HIE, HIP, ...) give their parent letter.
+
+    Args:
+        structure: A ``gemmi.Structure`` object.
+        chain_id: Chain ID to extract.
+        on_unmappable_residue: ``"error"`` (default) or ``"x"``; see
+            :func:`_extract_query_chain`.
+
+    Returns:
+        One-letter sequence string.
+
+    Raises:
+        ValueError: If the chain is not found or contains no amino acids.
+        UnmappableResidueError: If a residue cannot be expressed to OpenFold3 (and
+            ``on_unmappable_residue`` is ``"error"``).
+    """
+    return _extract_query_chain(structure, chain_id, on_unmappable_residue=on_unmappable_residue)[0]
 
 
 def _extract_chain_to_cif(structure, chain_id: str, output_path: Path, sequence: str = "") -> None:
@@ -284,6 +462,26 @@ def _write_a3m_self_alignment(
     )
 
 
+def _query_chain(
+    chain_id: str,
+    sequence: str,
+    non_canonical_residues: dict[int, str],
+    template_alignment_file_path: Optional[str] = None,
+) -> dict:
+    """Build the query JSON dict of one protein chain.
+
+    ``non_canonical_residues`` is written only when it is not empty, so queries of chains
+    made of standard residues are the same as before it existed. OpenFold3 reads its keys
+    as 1-based residue positions; JSON needs them as strings.
+    """
+    chain: dict = {"molecule_type": "protein", "chain_ids": [chain_id], "sequence": sequence}
+    if non_canonical_residues:
+        chain["non_canonical_residues"] = {str(i): c for i, c in non_canonical_residues.items()}
+    if template_alignment_file_path is not None:
+        chain["template_alignment_file_path"] = template_alignment_file_path
+    return chain
+
+
 def prepare_refolding_query(
     complex_structure_path: str | Path,
     receptor_chain: str,
@@ -292,6 +490,8 @@ def prepare_refolding_query(
     output_dir: str | Path,
     template_cif_path: Optional[str | Path] = None,
     seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
+    *,
+    on_unmappable_residue: str = "error",
 ) -> Path:
     """Prepare an OpenFold3 query JSON for binder refolding with receptor as template.
 
@@ -338,6 +538,11 @@ def prepare_refolding_query(
             ``complex_structure_path``.
         seeds: Seed values written to the query JSON's ``"seeds"`` field
             (default ``(42,)``). One prediction is made per seed.
+        on_unmappable_residue: ``"error"`` (default) raises
+            :class:`UnmappableResidueError` before anything is written when a chain
+            holds a residue that OpenFold3 cannot take; ``"x"`` sends an ``X`` for it
+            and logs a warning. D-amino acids and modified residues are not affected:
+            they go to ``non_canonical_residues`` with their CCD code.
 
     Returns:
         Path to the written query JSON file.
@@ -345,20 +550,27 @@ def prepare_refolding_query(
     Raises:
         ValueError: If a specified chain is not found or has no amino acids,
             or ``seeds`` is empty.
+        UnmappableResidueError: See ``on_unmappable_residue``.
     """
     import gemmi
 
     seed_values = _query_seeds(seeds)
     complex_structure_path = Path(complex_structure_path)
+
+    # Read the sequences first: a residue OpenFold3 cannot take must stop the run before
+    # any file is written.
+    st = gemmi.read_structure(str(complex_structure_path))
+    receptor_seq, receptor_nc = _extract_query_chain(
+        st, receptor_chain, on_unmappable_residue=on_unmappable_residue
+    )
+    binder_seq, binder_nc = _extract_query_chain(
+        st, binder_chain, on_unmappable_residue=on_unmappable_residue
+    )
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     templates_dir = output_dir / "templates"
     templates_dir.mkdir(exist_ok=True)
-
-    # Extract sequences
-    st = gemmi.read_structure(str(complex_structure_path))
-    receptor_seq = _extract_sequence_from_structure(st, receptor_chain)
-    binder_seq = _extract_sequence_from_structure(st, binder_chain)
 
     # Template CIF — named receptor.cif so OF3 finds entry_id="receptor"
     receptor_entry_id = "receptor"
@@ -386,17 +598,13 @@ def prepare_refolding_query(
         "queries": {
             query_name: {
                 "chains": [
-                    {
-                        "molecule_type": "protein",
-                        "chain_ids": [receptor_chain],
-                        "sequence": receptor_seq,
-                        "template_alignment_file_path": str(a3m_path),
-                    },
-                    {
-                        "molecule_type": "protein",
-                        "chain_ids": [binder_chain],
-                        "sequence": binder_seq,
-                    },
+                    _query_chain(
+                        receptor_chain,
+                        receptor_seq,
+                        receptor_nc,
+                        template_alignment_file_path=str(a3m_path),
+                    ),
+                    _query_chain(binder_chain, binder_seq, binder_nc),
                 ],
             }
         },
@@ -414,6 +622,8 @@ def prepare_scoring_query(
     output_dir: str | Path,
     template_cif_path: Optional[str | Path] = None,
     seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
+    *,
+    on_unmappable_residue: str = "error",
 ) -> Path:
     """Prepare an OpenFold3 query JSON to score an existing complex structure.
 
@@ -446,26 +656,38 @@ def prepare_scoring_query(
             are extracted from this file instead of ``complex_structure_path``.
         seeds: Seed values written to the query JSON's ``"seeds"`` field
             (default ``(42,)``). One prediction is made per seed.
+        on_unmappable_residue: ``"error"`` (default) raises
+            :class:`UnmappableResidueError` before anything is written when a chain
+            holds a residue that OpenFold3 cannot take; ``"x"`` sends an ``X`` for it
+            and logs a warning. D-amino acids and modified residues are not affected:
+            they go to ``non_canonical_residues`` with their CCD code.
 
     Returns:
         Path to the written query JSON file.
 
     Raises:
         ValueError: If ``seeds`` is empty.
+        UnmappableResidueError: See ``on_unmappable_residue``.
     """
     import gemmi
 
     seed_values = _query_seeds(seeds)
     complex_structure_path = Path(complex_structure_path)
+
+    # Source structure for sequences (always the original complex). Read first: a residue
+    # OpenFold3 cannot take must stop the run before any file is written.
+    st = gemmi.read_structure(str(complex_structure_path))
+    receptor_seq, receptor_nc = _extract_query_chain(
+        st, receptor_chain, on_unmappable_residue=on_unmappable_residue
+    )
+    binder_seq, binder_nc = _extract_query_chain(
+        st, binder_chain, on_unmappable_residue=on_unmappable_residue
+    )
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     templates_dir = output_dir / "templates"
     templates_dir.mkdir(exist_ok=True)
-
-    # Source structure for sequences (always the original complex)
-    st = gemmi.read_structure(str(complex_structure_path))
-    receptor_seq = _extract_sequence_from_structure(st, receptor_chain)
-    binder_seq = _extract_sequence_from_structure(st, binder_chain)
 
     # Template source: use template_cif_path if provided, else the complex
     template_src = (
@@ -511,18 +733,18 @@ def prepare_scoring_query(
         "queries": {
             query_name: {
                 "chains": [
-                    {
-                        "molecule_type": "protein",
-                        "chain_ids": [receptor_chain],
-                        "sequence": receptor_seq,
-                        "template_alignment_file_path": str(receptor_a3m),
-                    },
-                    {
-                        "molecule_type": "protein",
-                        "chain_ids": [binder_chain],
-                        "sequence": binder_seq,
-                        "template_alignment_file_path": str(binder_a3m),
-                    },
+                    _query_chain(
+                        receptor_chain,
+                        receptor_seq,
+                        receptor_nc,
+                        template_alignment_file_path=str(receptor_a3m),
+                    ),
+                    _query_chain(
+                        binder_chain,
+                        binder_seq,
+                        binder_nc,
+                        template_alignment_file_path=str(binder_a3m),
+                    ),
                 ],
             }
         },
@@ -551,10 +773,41 @@ def _safe_entry_id(sample_id: str, suffix: str) -> str:
     return sample_id.replace("_", "-") + suffix
 
 
+def _read_batch_chains(samples: list[_BatchSample], on_unmappable_residue: str) -> list[tuple]:
+    """Read receptor and binder of every sample before anything is written.
+
+    Returns ``(sample, structure, receptor_seq, receptor_nc, binder_seq, binder_nc)`` per
+    sample. With ``on_unmappable_residue="error"`` the residues that OpenFold3 cannot take
+    are collected over all samples and raised together as one
+    :class:`UnmappableResidueError`, so one run names every affected sample.
+    """
+    import gemmi
+
+    rows = []
+    problems: list[tuple[str, str, list[str]]] = []
+    for s in samples:
+        st = gemmi.read_structure(str(s.complex_structure_path))
+        chains = {}
+        for role, chain_id in (("receptor", s.receptor_chain), ("binder", s.binder_chain)):
+            try:
+                chains[role] = _extract_query_chain(
+                    st, chain_id, on_unmappable_residue=on_unmappable_residue
+                )
+            except UnmappableResidueError as exc:
+                problems.extend((s.query_name, chain, labels) for _, chain, labels in exc.details)
+        if len(chains) == 2:
+            rows.append((s, st, *chains["receptor"], *chains["binder"]))
+    if problems:
+        raise UnmappableResidueError(problems)
+    return rows
+
+
 def prepare_batched_scoring_queries(
     samples: list[_BatchSample],
     output_dir: str | Path,
     seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
+    *,
+    on_unmappable_residue: str = "error",
 ) -> Path:
     """Prepare a single OF3 query JSON that scores multiple complexes.
 
@@ -566,16 +819,20 @@ def prepare_batched_scoring_queries(
         samples: Per-sample descriptors.
         output_dir: Directory to write query JSON and supporting files.
         seeds: Seed values written to the query JSON (default ``(42,)``).
+        on_unmappable_residue: ``"error"`` (default) raises
+            :class:`UnmappableResidueError`, listing every affected sample, before
+            anything is written; ``"x"`` sends an ``X`` and logs a warning. See
+            :func:`prepare_scoring_query`.
 
     Returns:
         Path to the combined query JSON file.
 
     Raises:
         ValueError: If ``seeds`` is empty.
+        UnmappableResidueError: See ``on_unmappable_residue``.
     """
-    import gemmi
-
     seed_values = _query_seeds(seeds)
+    rows = _read_batch_chains(samples, on_unmappable_residue)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -583,11 +840,7 @@ def prepare_batched_scoring_queries(
     templates_dir.mkdir(exist_ok=True)
 
     queries: dict = {}
-    for s in samples:
-        st = gemmi.read_structure(str(s.complex_structure_path))
-        receptor_seq = _extract_sequence_from_structure(st, s.receptor_chain)
-        binder_seq = _extract_sequence_from_structure(st, s.binder_chain)
-
+    for s, st, receptor_seq, receptor_nc, binder_seq, binder_nc in rows:
         rec_entry = _safe_entry_id(s.query_name, "rec")
         bnd_entry = _safe_entry_id(s.query_name, "bnd")
 
@@ -609,18 +862,18 @@ def prepare_batched_scoring_queries(
 
         queries[s.query_name] = {
             "chains": [
-                {
-                    "molecule_type": "protein",
-                    "chain_ids": [s.receptor_chain],
-                    "sequence": receptor_seq,
-                    "template_alignment_file_path": str(rec_a3m),
-                },
-                {
-                    "molecule_type": "protein",
-                    "chain_ids": [s.binder_chain],
-                    "sequence": binder_seq,
-                    "template_alignment_file_path": str(bnd_a3m),
-                },
+                _query_chain(
+                    s.receptor_chain,
+                    receptor_seq,
+                    receptor_nc,
+                    template_alignment_file_path=str(rec_a3m),
+                ),
+                _query_chain(
+                    s.binder_chain,
+                    binder_seq,
+                    binder_nc,
+                    template_alignment_file_path=str(bnd_a3m),
+                ),
             ],
         }
 
@@ -635,6 +888,8 @@ def prepare_batched_refolding_queries(
     samples: list[_BatchSample],
     output_dir: str | Path,
     seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
+    *,
+    on_unmappable_residue: str = "error",
 ) -> Path:
     """Prepare a single OF3 query JSON that refolds binders for multiple complexes.
 
@@ -645,16 +900,20 @@ def prepare_batched_refolding_queries(
         samples: Per-sample descriptors.
         output_dir: Directory to write query JSON and supporting files.
         seeds: Seed values written to the query JSON (default ``(42,)``).
+        on_unmappable_residue: ``"error"`` (default) raises
+            :class:`UnmappableResidueError`, listing every affected sample, before
+            anything is written; ``"x"`` sends an ``X`` and logs a warning. See
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the combined query JSON file.
 
     Raises:
         ValueError: If ``seeds`` is empty.
+        UnmappableResidueError: See ``on_unmappable_residue``.
     """
-    import gemmi
-
     seed_values = _query_seeds(seeds)
+    rows = _read_batch_chains(samples, on_unmappable_residue)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -662,11 +921,7 @@ def prepare_batched_refolding_queries(
     templates_dir.mkdir(exist_ok=True)
 
     queries: dict = {}
-    for s in samples:
-        st = gemmi.read_structure(str(s.complex_structure_path))
-        receptor_seq = _extract_sequence_from_structure(st, s.receptor_chain)
-        binder_seq = _extract_sequence_from_structure(st, s.binder_chain)
-
+    for s, st, receptor_seq, receptor_nc, binder_seq, binder_nc in rows:
         rec_entry = _safe_entry_id(s.query_name, "rec")
 
         _extract_chain_to_cif(
@@ -680,17 +935,13 @@ def prepare_batched_refolding_queries(
 
         queries[s.query_name] = {
             "chains": [
-                {
-                    "molecule_type": "protein",
-                    "chain_ids": [s.receptor_chain],
-                    "sequence": receptor_seq,
-                    "template_alignment_file_path": str(rec_a3m),
-                },
-                {
-                    "molecule_type": "protein",
-                    "chain_ids": [s.binder_chain],
-                    "sequence": binder_seq,
-                },
+                _query_chain(
+                    s.receptor_chain,
+                    receptor_seq,
+                    receptor_nc,
+                    template_alignment_file_path=str(rec_a3m),
+                ),
+                _query_chain(s.binder_chain, binder_seq, binder_nc),
             ],
         }
 

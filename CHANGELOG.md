@@ -104,6 +104,20 @@ Values from earlier versions differ in the cases below. A change reads "before -
   Chemical Component Dictionary. `MED` is now the D-methionine code and `DME` is no longer a D residue.
 - **`HIN` in EvoBind residue matching.** `HIN` pairs with `HIS` as a histidine variant, so
   `*_resname_mismatch_fraction` does not count it as a mismatch.
+- **OpenFold3 query sequences (#75, #76).** D-amino acids and modified residues became lower-case letters
+  in the query sequence (`DAL` -> `a`, `SEP` -> `s`), which OpenFold3 turns into unknown residues, and
+  CYX, HID, HIE, HIP and names gemmi does not know were dropped from it, so the chain came out shorter
+  without a message. D-amino acids, N-methylated and other modified residues now keep their parent
+  letter in upper case and go to `non_canonical_residues` with their CCD code (the toolkit's NMG and NMA
+  as SAR and MAA); protonation variants take the parent letter.
+  - 1CWA chain C: `allvtaglVlA` -> `ALLVTAGLVLA`, with nine residues (`DAL`, `MLE`, `MVA`, `BMT`, `ABA`,
+    `SAR`) in `non_canonical_residues`. 1QJB chain Q: `ARSHsYPA` -> `ARSHSYPA` with `{5: SEP}`. 3V3B chain C:
+    `TFNLWRLLl` (nine letters, `0EH` left out) -> `TFXNLWRLLL` with `{3: 0EH, 10: MK8}`.
+  - **Deliberate behaviour change:** a residue with a backbone that OpenFold3 cannot take (not a standard,
+    variant, D- or peptide-linking CCD residue) raises `UnmappableResidueError` before any file is
+    written or process started, where it was left out or turned into a wrong letter. The message names
+    the chain and the residues. `on_unmappable_residue="x"` (`--on-unmappable-residue x`) restores a
+    query with `X` at their positions and a logged warning.
 - **Interface PDE and PAE of OpenFold3 output (#33).** A ligand or modified residue tokenised per atom
   shifted the residue-based slice onto the wrong block. The values are NaN with a `reason` now.
 - **Batch status and order (#19, #32).** A sample whose steps failed had `batch_status` `ok`; it is
