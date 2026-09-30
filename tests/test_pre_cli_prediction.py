@@ -7,14 +7,20 @@ into the request options; and the primary EvoBind score of a record comes from
 
 from __future__ import annotations
 
+import inspect
+import math
+
 import pytest
 
+from binding_metrics.cli import prediction
 from binding_metrics.cli.prediction import (
     make_request,
     make_session,
     make_store,
     run_prediction_step,
 )
+from binding_metrics.metrics.evobind import compute_evobind_score_from_record
+from binding_metrics.predictors import get_parser
 from tests.test_feat_c_support import EXAMPLE_1YCR, write_of3_output
 
 
@@ -57,3 +63,33 @@ class TestAdoptedRequestsAreKeyedByName:
         assert blocks["a"]["avg_plddt"] == pytest.approx(55.0, abs=1.0)
         assert blocks["b"]["avg_plddt"] == pytest.approx(75.0, abs=1.0)
         assert blocks["a"]["cache"]["request_key"] != blocks["b"]["cache"]["request_key"]
+
+
+class TestThePublicEvobindScore:
+    def _record(self, tmp_path):
+        outputs = tmp_path / "outputs"
+        write_of3_output(outputs, "s", EXAMPLE_1YCR)
+        return get_parser("of3").load(outputs, "s")
+
+    def test_the_helper_calls_the_public_function(self):
+        source = inspect.getsource(prediction._evobind_score_of)
+        assert "compute_evobind_score_from_record" in source
+        assert "_score_from_atoms" not in source
+
+    def test_it_gives_the_score_of_the_public_function(self, tmp_path):
+        record = self._record(tmp_path)
+        ours = prediction._evobind_score_of(record, "B", "A")
+        theirs = compute_evobind_score_from_record(record, "B", "A", interface_cutoff_angstrom=8.0)
+        assert ours == theirs
+        assert math.isfinite(ours["evobind_score"]) and ours["model"] == "of3"
+
+    def test_a_record_without_plddt_gives_distances_a_none_score_and_a_reason(self, tmp_path):
+        record = self._record(tmp_path)
+        record.plddt_per_atom = None
+        result = prediction._evobind_score_of(record, "B", "A")
+        assert result["evobind_score"] is None
+        assert "per-atom pLDDT" in result["reason"]
+        assert math.isfinite(result["if_dist_pep_to_rec"])
+
+    def test_the_cutoff_is_the_one_of_the_step(self):
+        assert prediction._INTERFACE_CUTOFF_ANGSTROM == 8.0

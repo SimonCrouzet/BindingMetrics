@@ -333,15 +333,13 @@ def _cache_block(session, request, *, adopted: bool = False) -> dict[str, Any]:
 
 def _evobind_score_of(record, binder_chain: str, receptor_chain: str) -> dict:
     """Primary EvoBind score of a record, in the input's chain IDs (its ``chain_map`` applied)."""
-    from binding_metrics.metrics import evobind
+    from binding_metrics.metrics.evobind import compute_evobind_score_from_record
 
-    return evobind._score_from_atoms(
-        record.atoms(),
-        record.plddt_per_atom,
+    return compute_evobind_score_from_record(
+        record,
         binder_chain,
         receptor_chain,
-        None,
-        _INTERFACE_CUTOFF_ANGSTROM,
+        interface_cutoff_angstrom=_INTERFACE_CUTOFF_ANGSTROM,
     )
 
 
