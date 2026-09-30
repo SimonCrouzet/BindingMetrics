@@ -21,7 +21,7 @@ from binding_metrics.predictors.boltz2 import (
     _read_atom_sites,
     parse_token_array,
 )
-from binding_metrics.predictors.registry import PARSERS, ParserSpec, register_parser
+from binding_metrics.predictors.registry import PARSERS, get_parser
 from tests.predictors import contract, synth, synth_boltz2
 
 NAME = contract.NAME
@@ -915,35 +915,36 @@ class TestCorruptFiles:
             assert parse_token_array(path, "plddt").tolist() == [0.5, 0.75]
 
 
-# ---------------------------------------------------------------------- the contract
+# ---------------------------------------------------------------------- registration and contract
 
 
-@pytest.fixture
-def registered():
-    """Register the adapter under its name for the test, whatever the registry holds."""
-    saved = dict(PARSERS)
-    register_parser(
-        ParserSpec(
-            name="boltz2",
-            import_path="binding_metrics.predictors.boltz2:Boltz2Parser",
-            display_name="Boltz-2",
-            family="af3",
-        ),
-        replace=True,
-    )
-    yield
-    PARSERS.clear()
-    PARSERS.update(saved)
+class TestRegistration:
+    def test_boltz2_is_registered_and_lazy(self):
+        spec = PARSERS["boltz2"]
+        assert spec.import_path == "binding_metrics.predictors.boltz2:Boltz2Parser"
+        assert (spec.display_name, spec.family) == ("Boltz-2", "af3")
+        assert isinstance(get_parser("boltz2"), Boltz2Parser)
+
+    def test_the_attributes_of_the_class(self):
+        parser = Boltz2Parser()
+        assert (parser.name, parser.display_name, parser.family) == ("boltz2", "Boltz-2", "af3")
+
+    def test_no_capabilities_are_declared(self):
+        assert Boltz2Parser.capabilities is None
+
+    def test_a_record_is_loaded_through_the_registry(self, tmp_path):
+        record = get_parser("boltz2").load(_write(tmp_path), NAME, chain_map={"A": "R", "B": "P"})
+        assert record.model == "boltz2" and set(record.atoms().chain_id) == {"R", "P"}
 
 
-class TestContract:
-    @pytest.mark.parametrize("check", contract.CHECKS, ids=lambda check: check.__name__)
-    def test_every_check_of_the_contract(self, registered, check, tmp_path):
-        check("boltz2", tmp_path)
+class TestContractVariants:
+    """The PDB layout through the checks of ``contract.py``.
 
-    @pytest.mark.parametrize("suffix", [".pdb"])
-    def test_the_pdb_variant_of_the_files(self, registered, tmp_path, monkeypatch, suffix):
-        monkeypatch.setattr(synth_boltz2, "STRUCTURE_SUFFIX", suffix)
+    ``test_contract.py`` runs every check on the mmCIF layout for each registered model.
+    """
+
+    def test_the_pdb_variant_of_the_files(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(synth_boltz2, "STRUCTURE_SUFFIX", ".pdb")
         for check in (
             contract.check_load_valid_record,
             contract.check_sample_and_seed_selection,
@@ -954,8 +955,3 @@ class TestContract:
             workdir = tmp_path / check.__name__
             workdir.mkdir()
             check("boltz2", workdir)
-
-    def test_the_class_attributes(self):
-        parser = Boltz2Parser()
-        assert (parser.name, parser.display_name, parser.family) == ("boltz2", "Boltz-2", "af3")
-        assert Boltz2Parser.capabilities is None

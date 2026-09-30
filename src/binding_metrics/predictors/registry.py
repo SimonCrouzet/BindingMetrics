@@ -98,6 +98,16 @@ class ParserSpec:
 # One ParserSpec per adapter, in alphabetical order of the name. The dict is keyed by name so
 # that ``sorted(PARSERS)`` lists the models.
 PARSERS: dict[str, ParserSpec] = {
+    "boltz2": ParserSpec(
+        name="boltz2",
+        import_path="binding_metrics.predictors.boltz2:Boltz2Parser",
+        display_name="Boltz-2",
+        family="af3",
+        description=(
+            "Boltz-2 output: boltz_results_*/predictions/{name}/{name}_model_{r}.cif|pdb with "
+            "confidence_*_model_{r}.json and the per-token plddt_, pae_ and pde_ .npz files"
+        ),
+    ),
     "of3": ParserSpec(
         name="of3",
         import_path="binding_metrics.predictors.of3:OpenFold3Parser",
