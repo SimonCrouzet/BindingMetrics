@@ -261,7 +261,10 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - The default OpenFold3 model presets of `run_openfold` and of `binding-metrics-openfold run`, `refold` and
   `score` are `predict low_mem`. OpenFold3 0.4.1 removed `pae_enabled` (the PAE head is on by default; pTM, ipTM and PAE
   are always written) and 0.5.0 only logs a warning for it. An explicit `pae_enabled` is left out of the runner
-  YAML with a `DeprecationWarning`, and the run continues (#49).
+  YAML with a `DeprecationWarning`, and the run continues. It stays in the YAML when the OpenFold3 that will
+  run is older than 0.4.0, where PAE is off without it. That is the installation in the conda environment
+  when one is named (`--openfold-conda-env`, asked through `conda run -n <env> python`) and the current
+  interpreter otherwise; a version that cannot be read counts as a current one (#49).
 - `binding-metrics-check-env` reports the installed `openfold3` version and whether the default checkpoint
   (`of3-ob-2025-06-30-174k.pt`, found through `$OPENFOLD_CACHE` or `~/.openfold3` and its `ckpt_root` file)
   is on disk. openfold3 0.5.0 or later without that file fails the check, since every run would stop there;
