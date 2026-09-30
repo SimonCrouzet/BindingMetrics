@@ -68,6 +68,18 @@ class TestPredictionFiles:
         }
         assert files.any_found()
 
+    def test_a_shared_timing_file_is_found_but_is_not_sample_output(self, tmp_path):
+        files = PredictionFiles(directory=tmp_path, timing=tmp_path / "timing.json")
+        assert files.any_found()
+        assert not files.has_output()
+
+    @pytest.mark.parametrize("role", ["structure", "scores", "arrays", "extra"])
+    def test_any_file_of_the_sample_is_output(self, tmp_path, role):
+        kwargs = (
+            {"extra": {"pae": tmp_path / "pae.npz"}} if role == "extra" else {role: tmp_path / "x"}
+        )
+        assert PredictionFiles(directory=tmp_path, **kwargs).has_output()
+
     @pytest.mark.parametrize("role", ["structure", "scores", "arrays", "timing"])
     def test_an_extra_role_may_not_reuse_a_named_role(self, tmp_path, role):
         with pytest.raises(ValueError, match="reserved"):

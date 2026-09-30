@@ -67,7 +67,7 @@ class PredictionFiles:
         arrays: The file with the per-atom and per-token arrays (pLDDT, PAE, PDE) when the
             model writes them in one file; a model that writes one file per array lists them
             in ``extra`` instead.
-        timing: A run-time file, when the model writes one.
+        timing: A run-time file, when the model writes one; it may be shared by several samples.
         extra: Any other file of the sample, by a role name the adapter chooses (for
             example ``"pae"``). A role must not be one of ``structure``, ``scores``,
             ``arrays`` and ``timing``.
@@ -92,8 +92,17 @@ class PredictionFiles:
         return {role: Path(path) for role, path in named.items() if path is not None}
 
     def any_found(self) -> bool:
-        """True when at least one file of the sample exists."""
+        """True when at least one file exists, the run-time file included."""
         return bool(self.found())
+
+    def has_output(self) -> bool:
+        """True when a file that belongs to this sample exists.
+
+        Unlike ``any_found`` it ignores ``timing``, which a model may write once for all
+        the samples of a seed (OpenFold3 does), so a sample number that was never written
+        does not count as present.
+        """
+        return any(role != "timing" for role in self.found())
 
 
 @dataclass(frozen=True)

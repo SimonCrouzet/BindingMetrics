@@ -168,6 +168,28 @@ class TestListSamples:
     def test_nothing_found_gives_an_empty_list(self, tmp_path):
         assert StubParser().list_samples(tmp_path, "cmplx") == []
 
+    def test_a_timing_file_shared_by_the_samples_does_not_make_absent_samples_appear(
+        self, tmp_path
+    ):
+        class SharedTiming(StubParser):
+            def find_files(self, prediction_dir, name, *, seed_index=1, sample=1):
+                files = super().find_files(
+                    prediction_dir, name, seed_index=seed_index, sample=sample
+                )
+                shared = Path(prediction_dir) / "timing.json"
+                return PredictionFiles(
+                    directory=files.directory,
+                    structure=files.structure,
+                    scores=files.scores,
+                    arrays=files.arrays,
+                    timing=shared if shared.exists() else None,
+                )
+
+        write_prediction(tmp_path, "cmplx", synth.synthetic_complex())
+        (tmp_path / "timing.json").write_text("{}", encoding="utf-8")
+        refs = SharedTiming().list_samples(tmp_path, "cmplx")
+        assert [(r.seed_index, r.sample) for r in refs] == [(1, 1)]
+
     def test_the_list_is_capped_for_an_adapter_that_always_finds_files(self, monkeypatch):
         class Endless(StubParser):
             def find_files(self, prediction_dir, name, *, seed_index=1, sample=1):

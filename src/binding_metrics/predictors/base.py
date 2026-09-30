@@ -138,9 +138,10 @@ class PredictionParser(ABC):
         """The samples present, in the model's natural order, with their ranking scores.
 
         The default probes seed positions 1, 2, ... and, inside each, sample positions 1, 2,
-        ... until ``find_files`` finds nothing, and parses each sample for its ranking score,
-        which reads its arrays; an adapter that can read the score more cheaply overrides it.
-        At most ``_PROBE_LIMIT`` samples are returned.
+        ... until ``find_files`` finds no file of the sample (``PredictionFiles.has_output``),
+        and parses each sample for its ranking score, which reads its arrays; an adapter that
+        can read the score more cheaply overrides it. At most ``_PROBE_LIMIT`` samples are
+        returned.
         """
         directory = Path(prediction_dir)
         refs: list[SampleRef] = []
@@ -152,7 +153,7 @@ class PredictionParser(ABC):
             while len(refs) < _PROBE_LIMIT:
                 sample += 1
                 files = self.find_files(directory, name, seed_index=seed_index, sample=sample)
-                if not files.any_found():
+                if not files.has_output():
                     break
                 found_in_seed = True
                 record = self.parse(files, name=name, seed_index=seed_index, sample=sample)
