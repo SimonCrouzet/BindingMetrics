@@ -351,6 +351,9 @@ Values from earlier versions differ in the cases below. A change reads "before -
   file, so the second sample's CIF replaced the first's and that query was predicted from the wrong
   template. `a_b` and `a-b` both became `templates/a-brec.cif`; each now gets a short hash of its own ID
   (`a-b-648fa9b3rec` and `a-b-d44362d6rec`). IDs that do not collide keep their names (#86).
+- Batched OpenFold3 queries: two samples with the same query name became one query and the first was never
+  predicted. `prepare_batched_scoring_queries` and `prepare_batched_refolding_queries` raise `ValueError`
+  naming the repeated names before anything is written (#105).
 - OpenFold3 and EvoBind: token offsets are checked against the matrix size, residue names are checked
   when two structures are paired, and the batch OpenFold JSON holds numbers, not strings (#25, #33).
 - The report writes numpy scalars as numbers and shows NaN as N/A in the scorecard, where NaN used to
