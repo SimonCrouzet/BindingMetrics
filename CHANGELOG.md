@@ -176,6 +176,7 @@ Values from earlier versions differ in the cases below. A change reads "before -
 
 ### Added
 
+- `run_openfold_scoring`, `run_openfold_refolding` and `run_openfold_batched` take the keyword-only `on_unmappable_residue` (`"error"` by default, `"x"` to send an `X`) and pass it to the query preparation, and `UnmappableResidueError` is importable from `binding_metrics.metrics.openfold`. `--on-unmappable-residue x` of `binding-metrics-openfold refold` and `score` needs them.
 - `binding_metrics.predictors`, the readers of structure-prediction output, starts with `PredictionRecord`, `PredictionFiles`, `TokenLayout` and `SampleRef`: one neutral form for a prediction sample (pLDDT per atom on 0-100, PAE and PDE in angstrom with the row as the alignment frame, NaN for a value the model lacks, and a `chain_map` that renames chains). `PredictionRecord.validate()` rejects a wrong scale or shape.
 - `PredictionParser`, the base class of a predictor adapter (`find_files`, `parse`, `load`, `list_samples`), and its registry in `binding_metrics.predictors`: `ParserSpec`, `PARSERS`, `get_parser` and `register_parser`. An adapter reads a model's output files and never runs the model.
 - The `of3` adapter, `get_parser("of3")`, reads an OpenFold3 output directory into a `PredictionRecord`: structure files `.cif`, `.cif.gz` and `.pdb`, seed directories in numeric order of the seed value, `.npz` confidences read without pickle, and the OpenFold3-only `bespoke_iptm` in `record.extras` (#78, #79, #80).

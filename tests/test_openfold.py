@@ -911,6 +911,82 @@ class TestRunOpenfoldCommand:
 
 
 # ---------------------------------------------------------------------------
+# Tests: the wrappers forward on_unmappable_residue to the query preparation
+# ---------------------------------------------------------------------------
+
+
+class TestOnUnmappableResidueForwarding:
+    @pytest.fixture
+    def seen(self, monkeypatch):
+        from binding_metrics.metrics import openfold
+
+        calls = {}
+
+        def _prepare(name):
+            def _fake(*args, **kwargs):
+                calls[name] = kwargs
+                return Path("query.json")
+
+            return _fake
+
+        for name in (
+            "prepare_scoring_query",
+            "prepare_refolding_query",
+            "prepare_batched_scoring_queries",
+            "prepare_batched_refolding_queries",
+        ):
+            monkeypatch.setattr(openfold, name, _prepare(name))
+        monkeypatch.setattr(openfold, "run_openfold", lambda **kwargs: None)
+        return calls
+
+    @pytest.mark.parametrize(
+        "wrapper, prepare",
+        [
+            ("run_openfold_scoring", "prepare_scoring_query"),
+            ("run_openfold_refolding", "prepare_refolding_query"),
+        ],
+    )
+    def test_the_single_sample_wrappers(self, tmp_path, seen, wrapper, prepare):
+        from binding_metrics.metrics import openfold
+
+        function = getattr(openfold, wrapper)
+        function("c.pdb", "A", "B", "q", tmp_path)
+        assert seen[prepare]["on_unmappable_residue"] == "error"
+        function("c.pdb", "A", "B", "q", tmp_path, on_unmappable_residue="x")
+        assert seen[prepare]["on_unmappable_residue"] == "x"
+
+    @pytest.mark.parametrize(
+        "mode, prepare",
+        [
+            ("score", "prepare_batched_scoring_queries"),
+            ("refold", "prepare_batched_refolding_queries"),
+        ],
+    )
+    def test_the_batched_wrapper(self, tmp_path, seen, mode, prepare):
+        from binding_metrics.metrics import openfold
+
+        openfold.run_openfold_batched([], tmp_path, mode=mode)
+        assert seen[prepare]["on_unmappable_residue"] == "error"
+        openfold.run_openfold_batched([], tmp_path, mode=mode, on_unmappable_residue="x")
+        assert seen[prepare]["on_unmappable_residue"] == "x"
+
+    def test_the_option_is_keyword_only(self, tmp_path, seen):
+        from binding_metrics.metrics import openfold
+
+        with pytest.raises(TypeError):
+            openfold.run_openfold_scoring(
+                "c.pdb", "A", "B", "q", tmp_path, None, None, 5, 1, True, None, None, None, None,
+                (42,), "x",
+            )  # fmt: skip
+
+    def test_the_exception_is_importable_from_openfold(self):
+        from binding_metrics.metrics import _openfold_run, openfold
+
+        assert openfold.UnmappableResidueError is _openfold_run.UnmappableResidueError
+        assert issubclass(openfold.UnmappableResidueError, ValueError)
+
+
+# ---------------------------------------------------------------------------
 # Tests: _write_runner_yaml
 # ---------------------------------------------------------------------------
 

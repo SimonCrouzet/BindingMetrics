@@ -71,6 +71,7 @@ from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     _DEFAULT_QUERY_SEEDS,
     OpenFoldQueryError,
     OpenFoldRunError,
+    UnmappableResidueError,
     _BatchSample,
     _extract_chain_to_cif,
     _extract_sequence_from_structure,
@@ -497,6 +498,8 @@ def run_openfold_scoring(
     extra_args: Optional[list[str]] = None,
     conda_env: Optional[str] = None,
     seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
+    *,
+    on_unmappable_residue: str = "error",
 ) -> Path:
     """Run OpenFold3 scoring of an existing complex structure (Mode 1).
 
@@ -524,10 +527,18 @@ def run_openfold_scoring(
         extra_args: Additional CLI args for OF3.
         conda_env: Conda environment where OpenFold3 is installed.
         seeds: Seed values written to the query JSON (default ``(42,)``).
+        on_unmappable_residue: ``"error"`` (default) raises
+            :class:`UnmappableResidueError` before anything is written or started
+            when a residue has no one-letter code or CCD code OpenFold3 can take;
+            ``"x"`` sends an ``X`` for it and logs a warning.
 
     Returns:
         Path to the OF3 predictions output directory
         (``{output_dir}/predictions/``).
+
+    Raises:
+        UnmappableResidueError: See ``on_unmappable_residue``; raised before any
+            file is written or process started.
     """
     output_dir = Path(output_dir)
     query_dir = output_dir / "query"
@@ -541,6 +552,7 @@ def run_openfold_scoring(
         output_dir=query_dir,
         template_cif_path=template_cif_path,
         seeds=seeds,
+        on_unmappable_residue=on_unmappable_residue,
     )
 
     run_openfold(
@@ -575,6 +587,8 @@ def run_openfold_refolding(
     extra_args: Optional[list[str]] = None,
     conda_env: Optional[str] = None,
     seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
+    *,
+    on_unmappable_residue: str = "error",
 ) -> Path:
     """Run OpenFold3 refolding: binder predicted freely, receptor fixed as template.
 
@@ -613,10 +627,18 @@ def run_openfold_refolding(
             it.
         conda_env: Conda environment where OpenFold3 is installed.
         seeds: Seed values written to the query JSON (default ``(42,)``).
+        on_unmappable_residue: ``"error"`` (default) raises
+            :class:`UnmappableResidueError` before anything is written or started
+            when a residue has no one-letter code or CCD code OpenFold3 can take;
+            ``"x"`` sends an ``X`` for it and logs a warning.
 
     Returns:
         Path to the OF3 predictions output directory
         (``{output_dir}/predictions/``).
+
+    Raises:
+        UnmappableResidueError: See ``on_unmappable_residue``; raised before any
+            file is written or process started.
     """
     output_dir = Path(output_dir)
     query_dir = output_dir / "query"
@@ -630,6 +652,7 @@ def run_openfold_refolding(
         output_dir=query_dir,
         template_cif_path=template_cif_path,
         seeds=seeds,
+        on_unmappable_residue=on_unmappable_residue,
     )
 
     run_openfold(
@@ -666,6 +689,8 @@ def run_openfold_batched(
     extra_args: Optional[list[str]] = None,
     conda_env: Optional[str] = None,
     seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
+    *,
+    on_unmappable_residue: str = "error",
 ) -> Path:
     """Run OpenFold3 inference on multiple samples in a single subprocess.
 
@@ -691,18 +716,28 @@ def run_openfold_batched(
         extra_args: Additional CLI args for OF3.
         conda_env: Conda environment name (default None).
         seeds: Seed values written to the query JSON (default ``(42,)``).
+        on_unmappable_residue: ``"error"`` (default) raises
+            :class:`UnmappableResidueError` before anything is written or started
+            when a residue has no one-letter code or CCD code OpenFold3 can take;
+            ``"x"`` sends an ``X`` for it and logs a warning.
 
     Returns:
         Path to the OF3 predictions output directory.
+
+    Raises:
+        UnmappableResidueError: See ``on_unmappable_residue``; the error names every
+            affected sample and is raised before any file is written or process started.
     """
     output_dir = Path(output_dir)
     query_dir = output_dir / "query"
     predictions_dir = output_dir / "predictions"
 
-    if mode == "refold":
-        query_json = prepare_batched_refolding_queries(samples, query_dir, seeds=seeds)
-    else:
-        query_json = prepare_batched_scoring_queries(samples, query_dir, seeds=seeds)
+    prepare = (
+        prepare_batched_refolding_queries if mode == "refold" else prepare_batched_scoring_queries
+    )
+    query_json = prepare(
+        samples, query_dir, seeds=seeds, on_unmappable_residue=on_unmappable_residue
+    )
 
     run_openfold(
         query_json=query_json,
