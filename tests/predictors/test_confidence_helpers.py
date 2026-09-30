@@ -273,3 +273,76 @@ class TestBinderCaRmsd:
         with pytest.raises(ValueError, match="Binder Cα count mismatch"):
             _binder_ca_rmsd(reference, short, "B", "A")
         assert np.isnan(_binder_ca_rmsd(reference, reference, "Z", "A"))
+
+
+class TestInsertionCodes:
+    """Residues 52 and 52A are two residues (issue 94)."""
+
+    def _chain_with_insertion(self):
+        rows = [(51, ""), (52, ""), (52, "A"), (53, "")]
+        return struc.array(
+            [
+                struc.Atom(
+                    [3.8 * i, 0.0, 0.0],
+                    chain_id="A",
+                    res_id=res_id,
+                    ins_code=ins_code,
+                    res_name="ALA",
+                    atom_name="CA",
+                    element="C",
+                )
+                for i, (res_id, ins_code) in enumerate(rows)
+            ]
+        )
+
+    def test_per_residue_plddt_keeps_the_inserted_residue_apart(self):
+        from binding_metrics.predictors._confidence import _binder_plddt_per_residue
+
+        atoms = self._chain_with_insertion()
+        per_residue = _binder_plddt_per_residue(np.array([90.0, 80.0, 70.0, 60.0]), atoms, "A")
+        np.testing.assert_allclose(per_residue, [90.0, 80.0, 70.0, 60.0])
+
+    def test_token_offsets_count_the_inserted_residue(self):
+        from binding_metrics.predictors._confidence import _chain_token_offsets
+
+        assert _chain_token_offsets(self._chain_with_insertion()) == {"A": (0, 4)}
+
+    def test_residues_are_ordered_by_number_then_insertion_code_whatever_the_atom_order(self):
+        from binding_metrics.predictors._confidence import _binder_plddt_per_residue
+
+        atoms = self._chain_with_insertion()
+        shuffled = atoms[[3, 2, 0, 1]]
+        plddt = np.array([60.0, 70.0, 90.0, 80.0])  # 53, 52A, 51, 52 in the shuffled order
+        np.testing.assert_allclose(
+            _binder_plddt_per_residue(plddt, shuffled, "A"), [90.0, 80.0, 70.0, 60.0]
+        )
+
+    def test_two_atoms_of_one_inserted_residue_are_averaged(self):
+        from binding_metrics.predictors._confidence import _binder_plddt_per_residue
+
+        atoms = self._chain_with_insertion()
+        doubled = struc.concatenate([atoms, atoms[atoms.ins_code == "A"]])
+        per_residue = _binder_plddt_per_residue(
+            np.array([90.0, 80.0, 70.0, 60.0, 50.0]), doubled, "A"
+        )
+        np.testing.assert_allclose(per_residue, [90.0, 80.0, 60.0, 60.0])
+
+    def test_a_matrix_of_the_residue_count_with_insertions_is_accepted(self):
+        from binding_metrics.predictors._confidence import _interface_pae_stats
+
+        atoms = self._chain_with_insertion()
+        atoms.chain_id[2:] = "B"  # chain A: 51, 52; chain B: 52A, 53
+        stats = _interface_pae_stats(np.arange(16.0).reshape(4, 4), atoms, "B", "A")
+        assert (stats["n_binder_tokens"], stats["n_receptor_tokens"]) == (2, 2)
+
+    def test_an_atom_array_without_the_annotation_is_still_handled(self):
+        from binding_metrics.predictors._confidence import _residue_index
+
+        class NoInsertionCodes:
+            res_id = np.array([1, 1, 2])
+
+            def get_annotation_categories(self):
+                return ["res_id"]
+
+        index, n_residues = _residue_index(NoInsertionCodes(), np.array([True, True, True]))
+        assert list(index) == [0, 0, 1] and n_residues == 2

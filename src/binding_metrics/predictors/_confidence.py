@@ -48,6 +48,34 @@ def _load_atoms(path: Path):
     return load_structure(path, purpose="per-chain structural analysis")
 
 
+def _residue_index(atoms, mask) -> tuple[np.ndarray, int]:
+    """Number the residues of the atoms selected by ``mask``, one index per selected atom.
+
+    A residue is identified by ``(res_id, ins_code)``, so residues 52 and 52A are two.
+    Residues are numbered in ascending order of that pair, which for a chain without
+    insertion codes is ascending residue number.
+
+    Returns:
+        ``(index, n_residues)``: ``index[k]`` is the residue number of the k-th selected atom.
+    """
+    res_id = np.asarray(atoms.res_id)[mask]
+    if "ins_code" in atoms.get_annotation_categories():
+        ins_code = np.asarray(atoms.ins_code)[mask]
+    else:
+        ins_code = np.full(res_id.shape, "", dtype="U1")
+    if res_id.size == 0:
+        return np.zeros(0, dtype=int), 0
+    order = np.lexsort((ins_code, res_id))
+    new_residue = np.ones(res_id.size, dtype=bool)
+    new_residue[1:] = (res_id[order][1:] != res_id[order][:-1]) | (
+        ins_code[order][1:] != ins_code[order][:-1]
+    )
+    numbered = np.cumsum(new_residue) - 1
+    index = np.empty(res_id.size, dtype=int)
+    index[order] = numbered
+    return index, int(numbered[-1]) + 1
+
+
 def _chain_token_offsets(atoms) -> dict[str, tuple[int, int]]:
     """Map chain IDs to [start, end) PAE token ranges (one token per residue).
 
@@ -55,6 +83,8 @@ def _chain_token_offsets(atoms) -> dict[str, tuple[int, int]]:
     the PAE matrix token ordering (the order of the chains in the prediction input).
     The one-token-per-residue assumption fails for ligands and modified
     residues; :func:`_check_token_offsets` compares the result with the matrix.
+
+    Residues are counted by ``(res_id, ins_code)``, so an insertion code adds a token.
 
     Returns:
         Dict ``{chain_id: (start, end)}`` where ``end = start + n_residues``.
@@ -66,7 +96,7 @@ def _chain_token_offsets(atoms) -> dict[str, tuple[int, int]]:
     offsets: dict[str, tuple[int, int]] = {}
     offset = 0
     for chain_id in seen:
-        n_res = int(np.unique(atoms.res_id[atoms.chain_id == chain_id]).size)
+        _, n_res = _residue_index(atoms, atoms.chain_id == chain_id)
         offsets[chain_id] = (offset, offset + n_res)
         offset += n_res
     return offsets
@@ -114,6 +144,8 @@ def _binder_plddt_per_residue(
 ) -> np.ndarray:
     """Mean pLDDT per residue for one chain.
 
+    Residues are told apart by ``(res_id, ins_code)``, in ascending order of that pair.
+
     Args:
         plddt_per_atom: Per-atom pLDDT array of the prediction, shape (n_atoms,).
             Must be in the same atom order as ``atoms``.
@@ -134,11 +166,8 @@ def _binder_plddt_per_residue(
         )
     mask = atoms.chain_id == binder_chain
     chain_plddt = plddt_per_atom[mask]
-    chain_res_ids = atoms.res_id[mask]
-    if chain_res_ids.size == 0:
-        return np.array([], dtype=float)
-    unique_res = np.unique(chain_res_ids)
-    return np.array([chain_plddt[chain_res_ids == r].mean() for r in unique_res], dtype=float)
+    residue, n_residues = _residue_index(atoms, mask)
+    return np.array([chain_plddt[residue == r].mean() for r in range(n_residues)], dtype=float)
 
 
 def _binder_ca_rmsd(

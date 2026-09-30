@@ -281,6 +281,7 @@ Values from earlier versions differ in the cases below. A change reads "before -
 
 ### Fixed
 
+- The per-residue binder pLDDT and the residue-count token offsets of the OpenFold3 metrics tell residues apart by residue number and insertion code, so residues 52 and 52A are two (they were merged, which gave one value too few and made the interface block refuse a matrix of the right size, #94).
 - `compute_openfold_metrics` finds and reads `.cif.gz` structures (`structure_format: cif.gz`, #78), counts `seed` in the numeric order of the seed directories (`seed_9` before `seed_10`; the string order decided before, which differs when the seed values have different numbers of digits, #79), and opens `.npz` confidences without pickle, reading only `plddt`, `pde`, `pae` and `gpde` (#80).
 - `core/gaff_ncaa.py` writes force-field files and reads antechamber output as UTF-8 whatever the locale.
 - Batch: `--per-sample-log` was never read, and workers overwrote a shared `--log-file` (#19). An
