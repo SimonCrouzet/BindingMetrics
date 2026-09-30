@@ -304,6 +304,8 @@ Values from earlier versions differ in the cases below. A change reads "before -
   `*.pt` file as the weights, so a volume with Preview2 weights skipped the download and the first run
   stopped (#71), and named `openfold3-p2-155k` as the default (#72). Statically checked and run under bash
   with a stub `conda`; the image was not built.
+- The runner YAML that is written without PyYAML quotes the template directory, so a path with `: ` or ` #`
+  in it is read back unchanged (#99).
 - A template file that lacks the receptor or binder chain (`template_cif_path` of the scoring and refolding
   queries, for example a relaxed CIF that renames chains) raises `ValueError` before anything is written.
   It wrote a template CIF without atoms and gave no error. The message names the file and the chains it has (#98).

@@ -368,3 +368,39 @@ class TestTemplateChainMustExist:
         openfold.prepare_scoring_query(self._P53, "A", "B", "q", out, template_cif_path=self._P53)
         assert (out / "templates" / "receptor.cif").exists()
         assert (out / "templates" / "binder.cif").exists()
+
+
+class TestManualYamlFallbackQuoting:
+    """Without PyYAML the template path is written by hand and must survive YAML rules (#99)."""
+
+    @pytest.mark.parametrize(
+        "template_dir",
+        [
+            "/data/run: 1 #x/templates",
+            "/data/plain/templates",
+            '/data/quote"d/and\\back/templates',
+            "/data/it's here/templates",
+            "/data/ends with #",
+        ],
+    )
+    def test_the_path_is_read_back_unchanged(self, tmp_path, monkeypatch, template_dir):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _no_yaml(name, *args, **kwargs):
+            if name == "yaml":
+                raise ImportError("no yaml")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _no_yaml)
+        path = _openfold_run._write_runner_yaml(
+            tmp_path, ["predict", "low_mem"], template_dir=Path(template_dir)
+        )
+        monkeypatch.undo()
+        cfg = _parse_runner_yaml(path)
+        assert cfg["template_preprocessor_settings"]["structure_directory"] == str(
+            Path(template_dir)
+        )
+        assert cfg["model_update"]["presets"] == ["predict", "low_mem"]
+        assert cfg["msa_computation_settings"] == {"cleanup_msa_dir": False}

@@ -170,7 +170,8 @@ def _write_runner_yaml(
         if template_dir is not None:
             lines += [
                 "template_preprocessor_settings:\n",
-                f"  structure_directory: {template_dir}\n",
+                # a JSON string is valid YAML and survives ': ', ' #' and quotes in the path
+                f"  structure_directory: {json.dumps(str(template_dir))}\n",
                 "  structure_file_format: cif\n",
                 "  fetch_missing_structures: false\n",
                 "msa_computation_settings:\n",
