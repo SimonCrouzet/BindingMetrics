@@ -35,9 +35,11 @@ in the same session returns the fresh entry. Outputs adopted through the session
 rerun never replaces what the user pointed at.
 
 The record is parsed from the directory of the stored entry with the name the outputs were
-written under, so ``record.name`` is the name of the request that produced them when a second
-request with another name but the same content hits the entry. The returned record is shared
-between callers: treat it as read-only.
+written under. For a model run that is the name of the request that produced it, so ``record.name``
+is that name when a second request with another name but the same content hits the entry (the
+model ran once for both). Adopted outputs belong to a name: two samples with one input file each
+get their own record. The session memory tells requests apart by key and name. The returned
+record is shared between callers: treat it as read-only.
 
 ``stats()`` counts, since the session was made (all integers, ready for a JSON result)::
 
@@ -92,6 +94,16 @@ _COUNTERS = (
 )
 
 
+#: What the session tells requests apart by: the request key and the name. A run does not depend
+#: on the name and the store shares it, but adopted outputs belong to a name, and so does the
+#: record a caller expects back.
+_Ident = tuple[str, str]
+
+
+def _ident(request: PredictionRequest) -> _Ident:
+    return (request.key(), request.name)
+
+
 class PredictionSession:
     """Runs each model at most once per request and parses each prediction once."""
 
@@ -112,12 +124,12 @@ class PredictionSession:
         else:
             self._runners = {runner.name: runner for runner in runners}
         self._parsers: dict[str, PredictionParser] = dict(parsers or {})
-        self._entries: dict[str, StoredPrediction] = {}
+        self._entries: dict[_Ident, StoredPrediction] = {}
         self._records: dict[tuple, PredictionRecord] = {}
         self._counts = dict.fromkeys(_COUNTERS, 0)
         self._guard = threading.Lock()  # counters, memos and the table of key locks
-        self._key_locks: dict[str, threading.Lock] = {}
-        self._adopted_keys: set[str] = set()  # ``rerun`` does not replace what the user adopted
+        self._key_locks: dict[_Ident, threading.Lock] = {}
+        self._adopted: set[_Ident] = set()  # ``rerun`` does not replace what the user adopted
 
     # ------------------------------------------------------------------ asking
 
@@ -132,7 +144,7 @@ class PredictionSession:
                 once per session).
             PredictionUnavailableError: Nothing is stored and no runner can produce it.
         """
-        key = request.key()
+        key = _ident(request)
         with self._key_lock(key):
             with self._guard:
                 self._counts["requests"] += 1
@@ -145,7 +157,7 @@ class PredictionSession:
                 entry = self.store.ensure(
                     request,
                     self._runners.get(request.model),
-                    rerun=self.rerun and key not in self._adopted_keys,
+                    rerun=self.rerun and key not in self._adopted,
                 )
             except PredictionUnavailableError:
                 with self._guard:
@@ -175,7 +187,7 @@ class PredictionSession:
             KeyError: No parser is registered for the model.
         """
         entry = self.entry(request)
-        key = request.key()
+        key = _ident(request)
         chains = tuple(sorted((chain_map or {}).items()))
         memo_key = (key, seed_index, sample, chains)
         with self._key_lock(key):
@@ -207,8 +219,10 @@ class PredictionSession:
         seen = set()
         with self._guard:
             already = set(self._entries)
+            if self.rerun:
+                already |= self._adopted  # a rerun never replaces what the user adopted
         for request in requests:
-            key = request.key()
+            key = _ident(request)
             if key in already or key in seen:
                 continue
             seen.add(key)
@@ -216,7 +230,7 @@ class PredictionSession:
         for model, group in wanted.items():
             entries = self.store.run_missing(group, self._runners.get(model), rerun=self.rerun)
             for request, entry in zip(group, entries):
-                key = request.key()
+                key = _ident(request)
                 with self._guard:
                     self._counts["requests"] += 1
                 self._remember(key, entry)
@@ -252,9 +266,9 @@ class PredictionSession:
                     "check the directory and the prediction name"
                 )
         entry = self.store.adopt(request, directory, copy_outputs=copy_outputs)
-        key = request.key()
-        with self._guard:  # what was remembered for this key describes the older entry
-            self._adopted_keys.add(key)
+        key = _ident(request)
+        with self._guard:  # what was remembered for this request describes the older entry
+            self._adopted.add(key)
             self._entries.pop(key, None)
             for memo_key in [k for k in self._records if k[0] == key]:
                 del self._records[memo_key]
@@ -267,7 +281,7 @@ class PredictionSession:
 
     # ------------------------------------------------------------------ internals
 
-    def _key_lock(self, key: str) -> threading.Lock:
+    def _key_lock(self, key: _Ident) -> threading.Lock:
         with self._guard:
             return self._key_locks.setdefault(key, threading.Lock())
 
@@ -280,7 +294,7 @@ class PredictionSession:
                 parser = self._parsers[model] = get_parser(model)
         return parser
 
-    def _remember(self, key: str, entry: StoredPrediction) -> None:
+    def _remember(self, key: _Ident, entry: StoredPrediction) -> None:
         """Memoise ``entry`` and count how it was obtained."""
         with self._guard:
             if key in self._entries:

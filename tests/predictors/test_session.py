@@ -192,6 +192,19 @@ class TestRunOnce:
         assert runner.runs == ["s1", "s1"]
         assert session.stats()["runs"] == 2
 
+    def test_two_names_for_one_input_run_the_model_once(self, store, tmp_path):
+        first = make_request(tmp_path, name="a", content=b"the shared input")
+        second = make_request(tmp_path, name="b", content=b"the shared input")
+        assert first.key() == second.key()
+        runner = ParsingRunner()
+        session = make_session(store, runner)
+        record_a, record_b = session.record(first), session.record(second)
+        assert runner.runs == ["a"]
+        assert record_a.name == "a" and record_b.name == "a"  # parsed from the one run
+        stats = session.stats()
+        assert (stats["runs"], stats["misses"], stats["hits"]) == (1, 1, 1)
+        assert_counts_add_up(stats)
+
     def test_the_stats_are_a_copy(self, store, tmp_path):
         session = make_session(store, ParsingRunner())
         session.record(make_request(tmp_path))
@@ -318,6 +331,46 @@ class TestAdoption:
         assert (stats["adopted"], stats["misses"], stats["runs"], stats["hits"]) == (1, 0, 0, 0)
         assert_counts_add_up(stats)
 
+    def test_two_samples_with_one_input_file_each_get_their_own_record(self, store, tmp_path):
+        """A run of either is the same run; adopted outputs belong to a name."""
+        first = make_request(tmp_path, name="a", content=b"the shared input")
+        second = PredictionRequest(
+            "stub",
+            "b",
+            input_path=first.input_path,
+            binder_chain="B",
+            receptor_chain="A",
+            model_version="1.0",
+        )
+        assert first.key() == second.key()
+        write_prediction(tmp_path / "out_a", "a", TRUTH)
+        write_prediction(tmp_path / "out_b", "b", SECOND_SAMPLE)
+        runner = ParsingRunner()
+        session = make_session(store, runner)
+        session.adopt(first, tmp_path / "out_a")
+        session.adopt(second, tmp_path / "out_b")
+        record_a, record_b = session.record(first), session.record(second)
+        assert (record_a.name, record_b.name) == ("a", "b")
+        assert record_a.avg_plddt == pytest.approx(TRUTH.scalars["avg_plddt"])
+        assert record_b.avg_plddt == pytest.approx(SECOND_SAMPLE.scalars["avg_plddt"])
+        assert record_a.structure_path.parent == (tmp_path / "out_a").resolve()
+        assert record_b.structure_path.parent == (tmp_path / "out_b").resolve()
+        assert session.record(first) is record_a and session.record(second) is record_b
+        stats = session.stats()
+        assert (stats["adopted"], stats["runs"], stats["parsed"]) == (2, 0, 2)
+        assert runner.runs == []
+        assert_counts_add_up(stats)
+
+    def test_a_new_session_finds_each_names_adopted_outputs(self, store, tmp_path):
+        first = make_request(tmp_path, name="a", content=b"the shared input")
+        second = make_request(tmp_path, name="b", content=b"the shared input")
+        write_prediction(tmp_path / "out_a", "a", TRUTH)
+        write_prediction(tmp_path / "out_b", "b", SECOND_SAMPLE)
+        make_session(store).adopt(first, tmp_path / "out_a")
+        make_session(store).adopt(second, tmp_path / "out_b")
+        fresh = make_session(store)
+        assert fresh.record(second).name == "b" and fresh.record(first).name == "a"
+
     def test_a_wrong_directory_is_refused_by_the_check(self, store, tmp_path):
         empty = tmp_path / "empty"
         empty.mkdir()
@@ -404,6 +457,16 @@ class TestPrefetch:
             session.record(requests[1])
         assert session.record(requests[2]).avg_plddt > 0
         assert session.stats()["failed"] == 1
+
+    def test_prefetch_with_rerun_leaves_adopted_outputs_alone(self, store, tmp_path):
+        request = make_request(tmp_path)
+        write_prediction(tmp_path / "out", "s1", TRUTH)
+        runner = ParsingRunner()
+        session = make_session(store, runner, rerun=True)
+        session.adopt(request, tmp_path / "out")
+        session.prefetch([request])
+        assert session.record(request).structure_path.parent == (tmp_path / "out").resolve()
+        assert runner.runs == [] and runner.batches == []
 
     def test_requests_already_remembered_are_not_asked_again(self, store, tmp_path):
         requests = self._requests(tmp_path, 3)

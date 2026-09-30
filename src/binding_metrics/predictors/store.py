@@ -25,6 +25,7 @@ Public names and signatures (the module imports the standard library only)::
         .batch_signature() -> str           # the key with the per-sample fields left out
         .describe() -> dict                 # canonical() plus name and paths, for request.json
         .with_model_version(version: str) -> PredictionRequest
+        .for_adoption() -> PredictionRequest    # the same request with the name in its key
 
     @dataclass(frozen=True)
     class StoredPrediction:
@@ -36,11 +37,10 @@ Public names and signatures (the module imports the standard library only)::
     class PredictionStore:
         PredictionStore(root: str | Path)
         .path_for(request) -> Path          # <root>/<model>/<key[:2]>/<key>
-        .lookup(request) -> Optional[StoredPrediction]
+        .lookup(request) -> Optional[StoredPrediction]      # adopted outputs first, then a run
         .get_or_run(request, runner, *, rerun: bool = False) -> StoredPrediction
         .ensure(request, runner, *, rerun: bool = False) -> StoredPrediction
-        .adopt(request, directory, *, copy_outputs: bool = False, replace: bool = False)
-                -> StoredPrediction
+        .adopt(request, directory, *, copy_outputs: bool = False) -> StoredPrediction
         .run_missing(requests, runner, *, rerun: bool = False, max_batch: int = 256)
                 -> list[StoredPrediction]
 
@@ -53,9 +53,16 @@ everything that changes the output: the model, its version, the mode, the seeds,
 samples, the options, the chain roles, the sequences and the CONTENT hash of the input file (and
 of each extra file), never its path. The same request gives the same key on every machine, a
 moved or renamed identical file gives the same key, and a changed seed, option, model version or
-file content gives another. ``name`` is not in the key: it is the label of the output files, so
-two samples that hold the same structure share one run, and a stored entry keeps the name of the
-request that produced it (``StoredPrediction.name``, which the parser must be given).
+file content gives another. ``name`` is not in the key of a RUN: it is the label of the output
+files, so two samples that hold the same structure share one run, and a stored entry keeps the
+name of the request that produced it (``StoredPrediction.name``, which the parser must be given).
+
+Adopted outputs are the opposite: the user's directory holds one output per name, so the name
+selects it. ``adopt`` stores the entry under ``request.for_adoption().key()``, the key of the
+same request with its name added, and ``lookup`` (hence ``get_or_run``, ``ensure`` and
+``run_missing``) tries that entry first and the run entry second. Two samples with one input
+file each keep their own adopted outputs, and two run requests that differ only in the name
+still run once.
 
 The layout of one entry, ``<root>/<model>/<key[:2]>/<key>/``::
 
@@ -83,7 +90,8 @@ Windows. Lookups need no lock.
 
 Failures. A run that raises is recorded as ``failed`` with the exception text as its reason
 and is not retried silently: asking again raises ``PredictionFailedError`` with that reason, and
-``rerun=True`` (the ``--rerun-predictions`` option) forces a new run. A runner that says it is
+``rerun=True`` (the ``--rerun-predictions`` option) forces a new run and drops the adoption of the
+same request, so that the fresh run is what is found afterwards. A runner that says it is
 unavailable on this machine (``PredictionRunner.is_available()``) raises
 ``PredictionUnavailableError`` and records nothing, so a missing installation is not remembered
 as a failed prediction. ``KeyboardInterrupt`` and ``SystemExit`` stop the run, remove its
@@ -201,9 +209,9 @@ class PredictionRequest:
             and ``extra_files`` (the input file has the role ``"input"``).
 
     A request needs an input file or sequences (otherwise every request of a model would share
-    one key). Treat it as immutable; ``with_model_version`` returns a changed copy. Two requests
-    are equal when their key and name are equal. It can be pickled, so batch workers can be sent
-    one.
+    one key). Treat it as immutable; ``with_model_version`` and ``for_adoption`` return changed
+    copies. Two requests are equal when their key and name are equal. It can be pickled, so
+    batch workers can be sent one.
 
     Raises:
         ValueError: A malformed field, no input, or a reserved extra-file role.
@@ -225,6 +233,7 @@ class PredictionRequest:
     model_version: str = ""
     options: Mapping[str, Any] = field(default_factory=dict)
     content_hashes: Mapping[str, str] = field(init=False, default_factory=dict, repr=False)
+    adoption_name: Optional[str] = field(init=False, default=None, repr=False)
 
     def __post_init__(self):
         def put(field_name: str, value: Any) -> None:
@@ -266,8 +275,11 @@ class PredictionRequest:
         put("content_hashes", hashes)
 
     def canonical(self) -> dict[str, Any]:
-        """The fields that the key hashes, as plain JSON values."""
-        return {
+        """The fields that the key hashes, as plain JSON values.
+
+        A request made by ``for_adoption`` has one more, ``adopted_name``.
+        """
+        fields = {
             "format": KEY_FORMAT,
             "model": self.model,
             "model_version": self.model_version,
@@ -280,6 +292,9 @@ class PredictionRequest:
             "num_samples": self.num_samples,
             "options": copy.deepcopy(self.options),
         }
+        if self.adoption_name is not None:
+            fields["adopted_name"] = self.adoption_name
+        return fields
 
     def key(self) -> str:
         """SHA-256 hex digest of the canonical JSON: the same request gives the same key."""
@@ -293,6 +308,7 @@ class PredictionRequest:
         a batch, because its hash is part of the signature.
         """
         fields = self.canonical()
+        fields.pop("adopted_name", None)
         for name in _PER_SAMPLE_FIELDS:
             fields.pop(name)
         fields["file_sha256"] = {
@@ -314,6 +330,20 @@ class PredictionRequest:
         """A copy with ``model_version`` set; the files are not read again."""
         clone = copy.copy(self)
         object.__setattr__(clone, "model_version", str(version or ""))
+        return clone
+
+    def for_adoption(self) -> PredictionRequest:
+        """The request whose key also holds the name; adopted outputs are stored under it.
+
+        A model run does not depend on the name, so run requests that differ only in it share
+        one key. Adopted outputs belong to a name: the directory the user points at holds one
+        output per name. The copy is what the store uses for the adopted entry; the files are
+        not read again.
+        """
+        if self.adoption_name is not None:
+            return self
+        clone = copy.copy(self)
+        object.__setattr__(clone, "adoption_name", self.name)
         return clone
 
     def __eq__(self, other: object) -> bool:
@@ -431,15 +461,23 @@ class PredictionStore:
     # ------------------------------------------------------------------ reading
 
     def path_for(self, request: PredictionRequest) -> Path:
-        """The entry directory of ``request`` (it exists once the request has a record)."""
+        """The entry directory of ``request`` (it exists once the request has a record).
+
+        It is the directory of a model run; ``path_for(request.for_adoption())`` is where the
+        outputs adopted for the request's name are recorded.
+        """
         return self._parent(request) / request.key()
 
     def lookup(self, request: PredictionRequest) -> Optional[StoredPrediction]:
-        """The entry stored under exactly ``request.key()``, or None.
+        """The entry stored for ``request``, or None: adopted outputs for its name first.
 
-        A failed entry is returned (check ``ok``). An entry whose ``STATUS.json`` cannot be read,
-        or whose output directory has vanished, counts as absent and is logged.
+        Then the run stored under exactly ``request.key()``. A failed run is returned (check
+        ``ok``). An entry whose ``STATUS.json`` cannot be read, or whose output directory has
+        vanished, counts as absent and is logged.
         """
+        adopted = self._read_entry(self.path_for(request.for_adoption()))
+        if adopted is not None:
+            return adopted
         return self._read_entry(self.path_for(request))
 
     # ------------------------------------------------------------------ running
@@ -486,15 +524,18 @@ class PredictionStore:
         entry, request = self._find(request, runner)
         if entry is not None and not rerun:
             return entry
-        seen_run_id = entry.run_id if entry is not None else None
         if runner is None:
             raise PredictionUnavailableError(
                 f"no stored {request.model} prediction for '{request.name}' "
                 f"(key {request.key()[:12]}) and no runner to compute it"
             )
         _require_available(request, runner)
+        seen = self._read_entry(self.path_for(request))
+        seen_run_id = seen.run_id if seen is not None else None
+        if rerun:
+            self._drop_adoption(request)
         with self._locked(request):
-            current = self.lookup(request)
+            current = self._read_entry(self.path_for(request)) if rerun else self.lookup(request)
             if current is not None and (not rerun or current.run_id != seen_run_id):
                 return current  # another process ran it while this one waited
             return self._execute(request, runner)
@@ -530,27 +571,31 @@ class PredictionStore:
             for request in requests:
                 _check_runner(request, runner)
         resolved: list[PredictionRequest] = []
-        results: dict[str, StoredPrediction] = {}
+        found: list[Optional[StoredPrediction]] = []
         seen_run_ids: dict[str, Optional[str]] = {}
-        todo: dict[str, PredictionRequest] = {}
+        todo: dict[str, PredictionRequest] = {}  # by run key: equal runs are made once
         for request in requests:
             entry, effective = self._find(request, runner)
-            key = effective.key()
             resolved.append(effective)
-            if key in results or key in todo:
-                continue
             if entry is not None and not rerun:
-                results[key] = entry
-            else:
-                todo[key] = effective
-                seen_run_ids[key] = entry.run_id if entry is not None else None
+                found.append(entry)
+                continue
+            found.append(None)
+            if effective.key() not in todo:
+                todo[effective.key()] = effective
+                seen = self._read_entry(self.path_for(effective))
+                seen_run_ids[effective.key()] = seen.run_id if seen is not None else None
 
+        runs: dict[str, StoredPrediction] = {}
         if todo:
             if runner is None:
                 raise PredictionUnavailableError(
                     f"{len(todo)} prediction(s) have no stored output and there is no runner"
                 )
             _require_available(next(iter(todo.values())), runner)
+            if rerun:
+                for request in resolved:
+                    self._drop_adoption(request)
             singles = [r for r in todo.values() if not runner.supports_batch(r)]
             groups: dict[str, list[PredictionRequest]] = {}
             for request in todo.values():
@@ -561,10 +606,13 @@ class PredictionStore:
                     if len(chunk) == 1:
                         singles.extend(chunk)
                     else:
-                        self._run_batch(chunk, runner, rerun, seen_run_ids, results)
+                        self._run_batch(chunk, runner, rerun, seen_run_ids, runs)
             for request in singles:
-                results[request.key()] = self.ensure(request, runner, rerun=rerun)
-        return [results[request.key()] for request in resolved]
+                runs[request.key()] = self.ensure(request, runner, rerun=rerun)
+        return [
+            entry if entry is not None else runs[request.key()]
+            for entry, request in zip(found, resolved)
+        ]
 
     # ------------------------------------------------------------------ adopting
 
@@ -574,9 +622,12 @@ class PredictionStore:
         directory: str | Path,
         *,
         copy_outputs: bool = False,
-        replace: bool = False,
     ) -> StoredPrediction:
         """Register outputs that the user produced, so that they count as a finished run.
+
+        The entry belongs to the request's name (``request.for_adoption()``): two samples with
+        one input file each keep their own outputs. A run of the same request stays as it is and
+        is found only when nothing is adopted for the name.
 
         Args:
             request: What the outputs are a prediction of. A request without a
@@ -586,12 +637,10 @@ class PredictionStore:
                 ``request.name``. It is kept where it is (a reference in ``STATUS.json``) unless
                 ``copy_outputs`` is True, which copies it into the entry.
             copy_outputs: Copy the directory into the store.
-            replace: Replace an existing entry that a model run produced. Without it that entry
-                is returned unchanged; a failed entry, and an adopted one that points elsewhere,
-                are always replaced.
 
         Returns:
-            The entry, with status ``adopted`` (or the untouched ``done`` entry).
+            The entry, with status ``adopted``. Adopting the same directory again returns the
+            entry unchanged; another directory replaces it.
 
         Raises:
             FileNotFoundError: ``directory`` is not a directory.
@@ -599,30 +648,19 @@ class PredictionStore:
         source = Path(directory).resolve()
         if not source.is_dir():
             raise FileNotFoundError(f"cannot adopt {directory}: it is not a directory")
-        with self._locked(request):
-            current = self.lookup(request)
-            if current is not None and not replace:
-                if current.status == STATUS_DONE:
-                    logger.info(
-                        "keeping the %s run already stored for '%s'; nothing adopted",
-                        request.model,
-                        request.name,
-                    )
-                    return current
-                if (
-                    current.status == STATUS_ADOPTED
-                    and not copy_outputs
-                    and current.prediction_dir == source
-                ):
-                    return current
-            self._discard_leftovers(request)
-            tmp = self._new_temp(request)
+        slot = request.for_adoption()
+        with self._locked(slot):
+            current = self._read_entry(self.path_for(slot))
+            if current is not None and not copy_outputs and current.prediction_dir == source:
+                return current
+            self._discard_leftovers(slot)
+            tmp = self._new_temp(slot)
             if copy_outputs:
                 shutil.copytree(source, tmp / "outputs")
             else:
                 (tmp / "outputs").mkdir()
             return self._commit(
-                request,
+                slot,
                 tmp,
                 status=STATUS_ADOPTED,
                 started_at=_now(),
@@ -655,6 +693,21 @@ class PredictionStore:
                 request = request.with_model_version(version)
                 return self.lookup(request), request
         return entry, request
+
+    def _drop_adoption(self, request: PredictionRequest) -> None:
+        """Forget the outputs adopted for ``request``'s name (a rerun replaces them).
+
+        The user's own files are not touched; a copy made by ``copy_outputs`` is removed.
+        """
+        slot = request.for_adoption()
+        entry_dir = self.path_for(slot)
+        if not entry_dir.exists():
+            return
+        with self._locked(slot):  # a leaf lock: nothing else is taken while it is held
+            if entry_dir.exists():
+                old = entry_dir.with_name(f"{entry_dir.name}.old-{uuid.uuid4().hex[:8]}")
+                os.rename(entry_dir, old)
+                shutil.rmtree(old, ignore_errors=True)
 
     def _read_entry(self, directory: Path) -> Optional[StoredPrediction]:
         status_path = directory / "STATUS.json"
@@ -785,7 +838,7 @@ class PredictionStore:
                 stack.enter_context(self._locked(request))
             pending = []
             for request in chunk:
-                current = self.lookup(request)
+                current = self._read_entry(self.path_for(request))
                 if current is not None and (
                     not rerun or current.run_id != seen_run_ids.get(request.key())
                 ):

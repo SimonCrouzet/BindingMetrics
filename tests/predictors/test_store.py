@@ -133,6 +133,18 @@ def make_request(tmp_path, name="s1", content=b"ATOM 1", *, subdir="in", **kwarg
     return PredictionRequest("stub", name, **fields)
 
 
+def same_input_other_name(request, name):
+    """A request for the same input file and settings under another name."""
+    return PredictionRequest(
+        request.model,
+        name,
+        input_path=request.input_path,
+        binder_chain=request.binder_chain,
+        receptor_chain=request.receptor_chain,
+        model_version=request.model_version,
+    )
+
+
 @pytest.fixture
 def store(tmp_path):
     return PredictionStore(tmp_path / "store")
@@ -225,6 +237,32 @@ class TestTheKey:
         assert first != second
         assert first == make_request(tmp_path, name="s1")
         assert len({first, make_request(tmp_path, name="s1"), second}) == 2
+
+    def test_for_adoption_puts_the_name_into_the_key(self, tmp_path):
+        first = make_request(tmp_path, name="a", content=b"same")
+        second = same_input_other_name(first, "b")
+        assert first.key() == second.key()
+        assert first.for_adoption().key() != first.key()
+        assert first.for_adoption().key() != second.for_adoption().key()
+        assert (
+            first.for_adoption().key()
+            == make_request(tmp_path, name="a", content=b"same").for_adoption().key()
+        )
+        assert first.for_adoption().canonical()["adopted_name"] == "a"
+        assert "adopted_name" not in first.canonical()
+
+    def test_for_adoption_is_idempotent_and_survives_the_other_copies(self, tmp_path):
+        request = make_request(tmp_path, model_version="")
+        adopted = request.for_adoption()
+        assert adopted.for_adoption() is adopted
+        assert adopted.with_model_version("2.0").canonical()["adopted_name"] == "s1"
+        assert pickle.loads(pickle.dumps(adopted)).key() == adopted.key()
+        assert request.adoption_name is None and adopted.adoption_name == "s1"
+
+    def test_a_request_options_key_named_adopted_name_does_not_collide(self, tmp_path):
+        request = make_request(tmp_path)
+        lookalike = make_request(tmp_path, options={"adopted_name": "s1"})
+        assert lookalike.key() != request.for_adoption().key()
 
     def test_dict_order_and_tuples_do_not_matter(self, tmp_path):
         first = make_request(
@@ -386,6 +424,15 @@ class TestRunOnce:
         assert first.executed_here is True and second.executed_here is False
         assert first.key == second.key and first.run_id == second.run_id
         assert (second.prediction_dir / "s1.txt").read_text(encoding="utf-8").startswith("model")
+
+    def test_two_names_for_one_input_share_one_run(self, store, tmp_path):
+        first = make_request(tmp_path, name="a", content=b"the shared input")
+        second = same_input_other_name(first, "b")
+        runner = StubRunner()
+        ran = store.get_or_run(first, runner)
+        again = store.get_or_run(second, runner)
+        assert runner.run_names == ["a"] and again.run_id == ran.run_id
+        assert again.name == "a"  # the entry keeps the name it was run under
 
     def test_a_new_store_object_on_the_same_root_finds_the_entry(self, store, tmp_path):
         request = make_request(tmp_path)
@@ -824,11 +871,51 @@ class TestAdoption:
         other.mkdir()
         assert store.adopt(request, other).prediction_dir == other.resolve()
 
-    def test_a_run_of_the_model_is_not_overwritten_unless_asked(self, store, tmp_path, outputs):
+    def test_adopting_leaves_a_run_of_the_same_request_alone_and_wins_the_lookup(
+        self, store, tmp_path, outputs
+    ):
         request = make_request(tmp_path)
         ran = store.get_or_run(request, StubRunner())
-        assert store.adopt(request, outputs).run_id == ran.run_id
-        assert store.adopt(request, outputs, replace=True).status == "adopted"
+        adopted = store.adopt(request, outputs)
+        assert adopted.status == "adopted" and adopted.run_id != ran.run_id
+        assert store.lookup(request).status == "adopted"
+        status = json.loads((store.path_for(request) / "STATUS.json").read_text(encoding="utf-8"))
+        assert status["status"] == "done" and status["run_id"] == ran.run_id  # the run is intact
+
+    def test_two_samples_with_one_input_file_keep_their_own_adopted_outputs(self, store, tmp_path):
+        first = make_request(tmp_path, name="a", content=b"the shared input")
+        second = same_input_other_name(first, "b")
+        assert first.key() == second.key()  # a run of either is the same run
+        dir_a, dir_b = tmp_path / "out_a", tmp_path / "out_b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        entry_a, entry_b = store.adopt(first, dir_a), store.adopt(second, dir_b)
+        assert (entry_a.name, entry_b.name) == ("a", "b") and entry_a.key != entry_b.key
+        assert store.lookup(first).prediction_dir == dir_a.resolve()
+        assert store.lookup(second).prediction_dir == dir_b.resolve()
+        runner = StubRunner()
+        assert store.get_or_run(first, runner).prediction_dir == dir_a.resolve()
+        assert store.get_or_run(second, runner).prediction_dir == dir_b.resolve()
+        assert runner.run_names == []
+
+    def test_a_name_that_was_not_adopted_does_not_see_another_names_outputs(
+        self, store, tmp_path, outputs
+    ):
+        first = make_request(tmp_path, name="a", content=b"the shared input")
+        second = same_input_other_name(first, "b")
+        store.adopt(first, outputs)
+        assert store.lookup(second) is None
+        runner = StubRunner()
+        assert store.get_or_run(second, runner).status == "done"
+        assert runner.run_names == ["b"]
+
+    def test_the_adopted_entry_records_the_name_in_its_key(self, store, tmp_path, outputs):
+        request = make_request(tmp_path)
+        entry = store.adopt(request, outputs)
+        assert entry.key == request.for_adoption().key() != request.key()
+        assert entry.directory == store.path_for(request.for_adoption())
+        written = json.loads((entry.directory / "request.json").read_text(encoding="utf-8"))
+        assert written["adopted_name"] == "s1" and written["key"] == entry.key
 
     def test_adoption_replaces_a_recorded_failure(self, store, tmp_path, outputs):
         request = make_request(tmp_path)
@@ -875,6 +962,7 @@ class TestAdoption:
         entry = store.get_or_run(request, runner, rerun=True)
         assert runner.run_names == ["s1"] and entry.status == "done"
         assert (outputs / "s1" / "result.txt").exists()
+        assert store.lookup(request).run_id == entry.run_id  # the fresh run is what is found now
 
     def test_adopted_outputs_that_vanished_count_as_absent(self, store, tmp_path, outputs):
         import shutil
@@ -905,6 +993,31 @@ class TestRunMissing:
         assert [e.name for e in entries] == [f"s{i}" for i in range(5)]
         assert [e.status for e in entries] == ["done", "done", "done", "adopted", "done"]
         assert [e.executed_here for e in entries] == [True, False, True, False, True]
+
+    def test_adopted_twins_keep_their_outputs_and_run_twins_share_one_run(self, store, tmp_path):
+        a = make_request(tmp_path, name="a", content=b"twin input")
+        b = same_input_other_name(a, "b")
+        dir_a, dir_b = tmp_path / "out_a", tmp_path / "out_b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        store.adopt(a, dir_a)
+        store.adopt(b, dir_b)
+        c = make_request(tmp_path, name="c", content=b"other input")
+        d = same_input_other_name(c, "d")  # the same run under two names
+        runner = StubRunner()
+        entries = store.run_missing([a, b, c, d], runner)
+        assert [e.status for e in entries] == ["adopted", "adopted", "done", "done"]
+        assert [e.prediction_dir for e in entries[:2]] == [dir_a.resolve(), dir_b.resolve()]
+        assert entries[2].key == entries[3].key and entries[2].run_id == entries[3].run_id
+        assert runner.run_names == ["c"] and runner.batches == []
+
+    def test_rerun_drops_the_adoption_and_runs_the_model(self, store, tmp_path):
+        request = make_request(tmp_path)
+        store.adopt(request, tmp_path)
+        runner = StubRunner()
+        (entry,) = store.run_missing([request], runner, rerun=True)
+        assert entry.status == "done" and runner.run_names == ["s1"]
+        assert store.lookup(request).status == "done"
 
     def test_every_entry_is_a_normal_entry_that_a_later_lookup_finds(self, store, tmp_path):
         requests = self._requests(tmp_path, 3)
