@@ -274,6 +274,10 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - `--small-molecules` accepts `auto` or `none`. A typo used to register each character as a SMILES (#27).
 - Without gemmi, `save_cif` logs a warning and `extract_model_to_tempfile` raises `ImportError` for a CIF;
   both used to degrade without a message (#28).
+- OpenFold3 removes the parent of its template `structure_directory` when a run with the MSA server and
+  templates ends (0.3.1 to 0.5.0), and the toolkit's is `<output>/query`. The runner YAML now sets
+  `msa_computation_settings.cleanup_msa_dir: false` when it sets `structure_directory`, so the query JSON,
+  the A3M files and the template CIFs stay next to the predictions (#69). Read from the OpenFold3 source, not run.
 - Batched OpenFold3 queries: sample IDs that differ only by `_` versus `-` (or by case) shared one template
   file, so the second sample's CIF replaced the first's and that query was predicted from the wrong
   template. `a_b` and `a-b` both became `templates/a-brec.cif`; each now gets a short hash of its own ID

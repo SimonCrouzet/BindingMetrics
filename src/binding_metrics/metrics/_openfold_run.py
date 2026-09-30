@@ -137,7 +137,13 @@ def _write_runner_yaml(
             preset was removed in OpenFold3 0.4.1 and the PAE head is always on).
         template_dir: If given, adds ``template_preprocessor_settings`` with
             ``structure_directory`` pointing here and
-            ``fetch_missing_structures: false`` so OF3 uses local CIFs only.
+            ``fetch_missing_structures: false`` so OF3 uses local CIFs only. It also adds
+            ``msa_computation_settings.cleanup_msa_dir: false``: with the MSA server and
+            templates on (the defaults), OpenFold3 deletes ``structure_directory.parent``
+            at the end of a run (0.3.1 to 0.5.0; unreleased ``main`` no longer deletes
+            user-chosen directories), which here is the folder that holds the query JSON,
+            the A3M files and the template CIFs. In 0.5.0 ``cleanup_msa_dir`` guards only
+            that deletion; 0.4.0 also removed the MSA output directory with it.
 
     Returns:
         Path to the written YAML file.
@@ -150,6 +156,7 @@ def _write_runner_yaml(
             "structure_file_format": "cif",
             "fetch_missing_structures": False,
         }
+        cfg["msa_computation_settings"] = {"cleanup_msa_dir": False}
 
     try:
         import yaml
@@ -165,6 +172,8 @@ def _write_runner_yaml(
                 f"  structure_directory: {template_dir}\n",
                 "  structure_file_format: cif\n",
                 "  fetch_missing_structures: false\n",
+                "msa_computation_settings:\n",
+                "  cleanup_msa_dir: false\n",
             ]
         content = "".join(lines)
 

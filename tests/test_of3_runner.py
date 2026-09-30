@@ -1,10 +1,14 @@
-"""Runner-side OpenFold3 behaviour: presets, query building, failure reporting.
+"""Runner-side OpenFold3 behaviour: presets and the runner YAML.
 
 No OpenFold3 install is needed. The tests use temporary files, stub subprocesses and
 fake presets; what they cannot show is stated in the docstrings.
 """
 
+import json
+import os
+import sys
 import warnings
+from pathlib import Path
 
 import pytest
 
@@ -196,3 +200,68 @@ class TestInstalledVersion:
 
         monkeypatch.setattr(_openfold_run.subprocess, "run", _fake_run)
         assert _openfold_run.installed_openfold3_version(["conda", "run", "python"]) is None
+
+
+class TestInputsStayOnDisk:
+    """OpenFold3 deletes ``structure_directory.parent`` after a run with the MSA server (#69)."""
+
+    def test_toolkit_templates_switch_the_deletion_off(self, tmp_path):
+        path = _openfold_run._write_runner_yaml(tmp_path, ["predict"], template_dir=tmp_path / "t")
+        cfg = _parse_runner_yaml(path)
+        assert cfg["msa_computation_settings"] == {"cleanup_msa_dir": False}
+        assert cfg["template_preprocessor_settings"]["structure_directory"] == str(tmp_path / "t")
+
+    def test_without_templates_the_file_is_as_before(self, tmp_path):
+        path = _openfold_run._write_runner_yaml(tmp_path, ["predict"])
+        assert set(_parse_runner_yaml(path)) == {"model_update"}
+
+    def test_the_manual_writer_fallback_writes_the_same_settings(self, tmp_path, monkeypatch):
+        import builtins
+
+        with_yaml = _parse_runner_yaml(
+            _openfold_run._write_runner_yaml(tmp_path, ["predict"], template_dir=tmp_path / "t")
+        )
+        real_import = builtins.__import__
+
+        def _no_yaml(name, *args, **kwargs):
+            if name == "yaml":
+                raise ImportError("no yaml")
+            return real_import(name, *args, **kwargs)
+
+        (tmp_path / "manual").mkdir()
+        monkeypatch.setattr(builtins, "__import__", _no_yaml)
+        manual_path = _openfold_run._write_runner_yaml(
+            tmp_path / "manual", ["predict"], template_dir=tmp_path / "t"
+        )
+        monkeypatch.undo()
+        assert _parse_runner_yaml(manual_path) == with_yaml
+
+    @pytest.mark.parametrize("runner", ["run_openfold_scoring", "run_openfold_refolding"])
+    def test_the_yaml_of_a_scoring_or_refolding_run_keeps_the_query_directory(
+        self, tmp_path, monkeypatch, runner
+    ):
+        """End to end with a stub ``conda`` that records its command line and exits 0."""
+        p53 = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+        record = tmp_path / "argv.json"
+        conda = tmp_path / "bin" / "conda"
+        conda.parent.mkdir()
+        conda.write_text(
+            f"#!{sys.executable}\nimport json, sys\n"
+            f"open({str(record)!r}, 'w').write(json.dumps(sys.argv[1:]))\n",
+            encoding="utf-8",
+        )
+        conda.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{conda.parent}{os.pathsep}{os.environ['PATH']}")
+        out = tmp_path / "out"
+        getattr(openfold, runner)(p53, "A", "B", "q", out, conda_env="of3")
+
+        argv = json.loads(record.read_text(encoding="utf-8"))
+        yaml_arg = next(a for a in argv if a.startswith("--runner_yaml="))
+        cfg = _parse_runner_yaml(Path(yaml_arg.split("=", 1)[1]))
+        assert cfg["template_preprocessor_settings"]["structure_directory"] == str(
+            out / "query" / "templates"
+        )
+        assert cfg["msa_computation_settings"] == {"cleanup_msa_dir": False}
+        # the folder OpenFold3 would have removed still holds the inputs
+        assert (out / "query" / "q_query.json").exists()
+        assert (out / "query" / "templates" / "receptor.cif").exists()
