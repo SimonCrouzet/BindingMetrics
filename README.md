@@ -539,6 +539,9 @@ Unless `--skip-prep` is given, the pipeline starts with a **prep step** (equival
 | `--reference PATH` | none | native structure; enables DockQ |
 | `--openfold-mode`, `--openfold-conda-env`, `--openfold-seeds` | `score`, `openfold3`, seed 42 | OpenFold3 step |
 | `--on-unmappable-residue {error,x}` | `error` | a residue OpenFold3 cannot take stops the run before the model starts; `x` sends an `X` in its place |
+| `--binder-type {auto,peptide,miniprotein,nanobody,antibody}` | `auto` | what the binder is, for the pre-flight checks that depend on it ([Pre-flight check](#pre-flight-check)) |
+| `--on-incompatible {error,skip,warn}` | `error` | an input that a requested step or model cannot take is refused before anything runs (`error`), left out with its reason (`skip`) or logged (`warn`) |
+| `--preflight-only` | off | print the pre-flight plan and stop; exit status 1 when something is refused |
 | `--predictor {af2,boltz2,of3,protenix}` | none | the `openfold` step reads the prediction of this model into `results["prediction"]` and runs the model at most once; see [Other prediction models](#other-prediction-models-and-the-run-once-store) |
 | `--prediction-dir DIR` | none | read the output you made with the model (never run); in `-batch` the root with one output per sample ID |
 | `--prediction-binder-chain`, `--prediction-target-chain` | the input's IDs | chain IDs inside the prediction when they differ |
@@ -556,6 +559,23 @@ binding-metrics-run --input complex.cif --output-dir results/ \
 ```
 
 OpenFold3 runs in the `openfold3` conda env by default (see [OpenFold3 install](#openfold3-optional) above). Use `--openfold-mode refold` to measure refolding RMSD (binder predicted freely, receptor fixed as template).
+
+#### Pre-flight check
+
+Some inputs cannot go through some steps: a binder with a disulfide sent to OpenFold3, which reads only a head-to-tail closure; a binder residue that its query builder cannot express; `interface` on a structure with no receptor chain. Before anything runs (before preparation, relaxation, any model run and the prediction store), the pipeline compares the input with the declared limits of every requested step and model and refuses it with all the problems at once, each with the fact found, the requirement, the reason and a fix:
+
+```
+Pre-flight check failed: 1 incompatibility between the input and what was requested (policy: error).
+Input: binder chain I: 14 residues; type peptide (estimated from size); closures head_to_tail, disulfide; ...
+
+predictor OpenFold3 0.5.0: closures
+    found:    the binder has a disulfide bond (CYS 3.SG - CYS 11.SG)
+    requires: closures limited to: none, head_to_tail
+    why:      OpenFold3 0.5.0 takes one kind of ring closure: ...
+    fix:      use a predictor whose declared limits accept this input: ...; or use policy='skip' ...
+```
+
+`--on-incompatible skip` computes the steps that apply and records why the others were left out, `--on-incompatible warn` runs everything, and `--preflight-only` prints the plan without running anything (`binding-metrics-batch` prints one per sample, writes no CSV and exits 1 when a sample is refused). In a batch a refused sample is an error row with `preflight_status` and `preflight_reason` and the others go on. A prediction read with `--prediction-dir` was made elsewhere, so the limits of its model only warn. `docs/preflight.md` lists what is declared and why.
 
 #### Other prediction models and the run-once store
 

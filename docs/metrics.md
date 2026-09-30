@@ -657,6 +657,30 @@ A prediction that failed, or that cannot be started here, gives `{"model": ..., 
 
 The adversarial check compares the input pose with the prediction. pLDDT and ipTM are calibrated per model, and `evobind_adversarial_score` divides by the pLDDT of the prediction, so compare scores between designs only when they come from one model. With `--predictor of3 --openfold-mode score` OpenFold3 is templated on the input pose, so agreement with it is partly by construction; a prediction from another model, or `--openfold-mode refold`, is an independent one.
 
+### Pipeline: the pre-flight check and `results["preflight"]`
+
+`binding-metrics-run` and `binding-metrics-batch` check the input against what the requested steps and models can take before anything runs: before the output directory, preparation, relaxation, any model run and the prediction store. The limits are the `capabilities` of the registry entries and of the predictor adapters; see [`docs/preflight.md`](preflight.md) for what is declared and why.
+
+| option | default | effect |
+|--------|---------|--------|
+| `--binder-type {auto,peptide,miniprotein,nanobody,antibody}` | `auto` | what the binder is, for the checks that depend on it; `auto` estimates it from the size (at most 40 residues a peptide, at most 100 a miniprotein, longer unknown, which skips the type checks) |
+| `--on-incompatible {error,skip,warn}` | `error` | `error` refuses the sample and lists every problem with its fix; `skip` leaves out the incompatible steps, records why and runs the rest; `warn` logs the problems and runs everything. An output read with `--prediction-dir` only warns |
+| `--preflight-only` | off | print the plan (what would run, what is incompatible and why) and stop; exit status 1 when `--on-incompatible` is `error` and something is refused |
+
+The steps checked are the ones the run executes: the relaxation (`md_implicit`), `energy`, `interface`, the three metrics of `geometry` one by one, `electrostatics`, and the model step (`openfold` for the OpenFold3 step, `prediction` for `--predictor`, with the limits of the model). `dockq` is left alone: without a reference the pipeline already skips it and says so.
+
+**`results["preflight"]`.**
+
+| key | description |
+|-----|-------------|
+| `status` | `ok`, `warn` (a warning or, with `--on-incompatible warn`, a problem that was logged), `skipped` (steps left out), `refused` (batch error rows only: a refused `binding-metrics-run` raises before it writes anything) or `not_checked` (the input could not be profiled; the run goes on as before) |
+| `reason` | the problems or warnings in one line, `subject: constraint: fact` joined with `; ` |
+| `policy` | the `--on-incompatible` value |
+| `skipped_steps`, `skipped_geometry` | the steps (and the metrics of `geometry`) that were left out under `skip`, each with its reason; a left-out step is `{"skipped": true, "reason": ...}` in the results |
+| `report` | the full report: the input profile (binder type, closures, residue classes), every violation with its fact, requirement, reason and fix, the warnings and the notes |
+
+A batch row carries `preflight_status` and `preflight_reason`. A refused sample is an `error` row (`batch_error` holds the whole message) and does not stop the batch; a step left out under `skip` has `<step>_skipped` and, for a model step, `openfold_reason` or `prediction_reason`.
+
 ---
 
 ## 13. EvoBind scoring

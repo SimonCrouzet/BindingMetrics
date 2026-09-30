@@ -120,6 +120,42 @@ predictor NarrowFold 9.9: closures
 
 ---
 
+## On the command line
+
+`binding-metrics-run` and `binding-metrics-batch` call the check first, through `binding_metrics.preflight_cli.check_input`. It runs before the output directory is created, before the provenance probe, preparation, relaxation, any model run and any use of the prediction store; tests replace all of those with stubs that must not be called when the input is refused.
+
+| Option | Default | Effect |
+|---|---|---|
+| `--binder-type {auto,peptide,miniprotein,nanobody,antibody}` | `auto` | The binder type of the profile. |
+| `--on-incompatible {error,skip,warn}` | `error` | The policy of `preflight`. |
+| `--preflight-only` | off | Print the plan and stop. Exit status 1 when the policy is `error` and something is refused. |
+
+**What is checked.** The steps the run executes, as registry metrics: the relaxation (`md_implicit`), `energy` (`structure_interaction_energy`), `interface`, the metrics of `geometry` one by one (`ramachandran`, `omega`, `shape_complementarity`), `electrostatics` (`coulomb`), and the model step. The model step is `openfold` in `--metrics`: without `--predictor` it is OpenFold3 (metric `openfold`, predictor `of3`); with `--predictor MODEL` it is the metric `prediction` with the limits of that model. `dockq` is left alone: without a reference the pipeline already skips it with a warning. A run with its own `Relaxer` object is not checked for the relaxation.
+
+**What the run provides.** The needs `predicted_structure` (the model step supplies it) and `reference_structure` (when `--reference` is given) come from the arguments. The receptor need is met by a receptor given or by any other protein chain, found as the pipeline finds it.
+
+**`--on-unmappable-residue x`.** The option asks the OpenFold3 query builder to send an `X` for a residue it cannot take and to log a warning, so the residue check of OpenFold3 is lifted and the closure limit stays.
+
+**A prediction made elsewhere.** With `--prediction-dir` the model does not run here and what it was given is not known (it may have been a patched model), so the limits of the model use the policy `warn` whatever `--on-incompatible` says; the metrics keep the policy.
+
+**Policies.**
+
+| Policy | `binding-metrics-run` | `binding-metrics-batch` |
+|---|---|---|
+| `error` | Raises `IncompatibleInputError` before anything is written; the command prints `ERROR:` and the message and exits 1. | The sample is an `error` row: `batch_error` holds the message, `preflight_status` is `refused`, `preflight_reason` the problems. The other samples run. |
+| `skip` | The incompatible steps are `{"skipped": true, "reason": ...}`; a refused metric of `geometry` is left out alone; the rest runs. A left-out step is not a failure. | The same per sample. A left-out model step gives `openfold_skipped` and `openfold_reason` (or `prediction_skipped` and `prediction_reason`), and the sample is not part of the model call. |
+| `warn` | The problems are logged and everything runs. | The same. |
+
+In a batch each worker checks its sample first, the model step included, so a refused sample costs nothing. The whole-batch model step checks again under `skip`, before a request is built or the store is touched, and drops the samples that were left out.
+
+**Decision.** `results["preflight"]` holds `status`, `reason`, `policy`, the steps left out and the full report; see `docs/metrics.md`. The CSV row has `preflight_status` and `preflight_reason`, and the summary (`--summary`) a short block.
+
+**`--preflight-only`.** `binding-metrics-run` prints the plan of one input; `binding-metrics-batch` prints one plan per sample and a count, writes no CSV and creates no directory. `run_pipeline(preflight_only=True)` and `run_batch(preflight_only=True)` return the same without printing.
+
+**An input that cannot be profiled** (an unreadable structure, no binder chain) is not an incompatibility: the run goes on as before and the block says `not_checked` with the reason.
+
+---
+
 ## Declared limits
 
 A limit is declared only where code or the documentation of the model shows it, and its `reasons` sentence names that source. The tests in `tests/test_pre_openfold3_limits.py` and `tests/test_pre_metric_limits.py` pin the behaviour each sentence describes.
