@@ -236,6 +236,93 @@ class TestParse:
         assert OpenFold3Parser().load(root, NAME).avg_plddt == 82.0
 
 
+def _summary_text(total, failed):
+    """``summary.txt`` as openfold3 v0.5.0 writes it (``core/runners/writer.py``)."""
+    lines = [
+        "=" * 50,
+        f"Total Queries Processed: {total}",
+        f"  - Successful Queries:  {total - len(failed)}",
+        f"  - Failed Queries:      {len(failed)}",
+    ]
+    if failed:
+        lines.append(f"\nFailed Queries: {', '.join(failed)}")
+    return "\n".join(lines) + "\n"
+
+
+def _error_log(query_ids, kind, message):
+    """One entry of ``logs/predict_err_rank0.log`` (``projects/of3_all_atom/runner.py``)."""
+    return "\n".join(
+        [
+            "=" * 50,
+            f"Query ID(s): {', '.join(query_ids)}",
+            f"Error Type: {kind}",
+            f"Error Message: {message}",
+            "-" * 50,
+            "Traceback:Traceback (most recent call last):",
+            "=" * 50,
+        ]
+    )
+
+
+class TestFailedQueries:
+    """OpenFold3 exits with status 0 when a query fails; the run's files say why (issue 84)."""
+
+    def _failed_run(self, tmp_path, failed=("gone",), message="CUDA out of memory"):
+        (tmp_path / "summary.txt").write_text(_summary_text(2, list(failed)), encoding="utf-8")
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        (logs / "predict_err_rank0.log").write_text(
+            _error_log(list(failed), "OutOfMemoryError", message), encoding="utf-8"
+        )
+        return tmp_path
+
+    def test_a_failed_query_adds_its_reason_after_the_missing_files(self, tmp_path):
+        root = self._failed_run(tmp_path)
+        record = OpenFold3Parser().load(root, "gone")
+        assert len(record.reasons) == 2
+        assert record.reasons[0].startswith("no confidence files found for query 'gone'")
+        assert record.reasons[1].startswith(
+            "OpenFold3 failed on this query: OutOfMemoryError: CUDA out of memory"
+        )
+        assert str(tmp_path / "logs" / "predict_err_rank0.log") in record.reasons[1]
+
+    def test_only_the_query_that_failed_gets_the_reason(self, tmp_path):
+        root = self._failed_run(tmp_path)
+        other = OpenFold3Parser().load(root, "fine")
+        assert len(other.reasons) == 1 and "failed on this query" not in other.reasons[0]
+
+    def test_a_summary_without_the_log_still_names_the_summary(self, tmp_path):
+        (tmp_path / "summary.txt").write_text(_summary_text(1, ["gone"]), encoding="utf-8")
+        record = OpenFold3Parser().load(tmp_path, "gone")
+        assert "reported this query as failed" in record.reasons[1]
+        assert "summary.txt" in record.reasons[1]
+
+    def test_a_query_with_confidence_files_is_not_reported_as_failed(self, tmp_path):
+        root = self._failed_run(tmp_path, failed=(NAME,))
+        _write(root)
+        record = OpenFold3Parser().load(root, NAME)
+        assert record.reasons == []
+
+    def test_a_run_without_a_summary_adds_nothing(self, tmp_path):
+        assert len(OpenFold3Parser().load(tmp_path, "q").reasons) == 1
+
+    def test_the_parser_still_imports_no_biotite_when_it_explains_a_failure(self, tmp_path):
+        import subprocess
+        import sys
+
+        self._failed_run(tmp_path)
+        code = (
+            "import sys; sys.modules['biotite'] = None\n"
+            "from binding_metrics.predictors.registry import get_parser\n"
+            f"r = get_parser('of3').load({str(tmp_path)!r}, 'gone')\n"
+            "print(len(r.reasons))"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, encoding="utf-8"
+        )
+        assert done.returncode == 0 and done.stdout.strip() == "2", done.stderr
+
+
 class TestNpzConfidences:
     """``.npz`` files are read without pickle and only for the arrays OpenFold3 writes."""
 

@@ -28,8 +28,12 @@ Layout checked against the released source of OpenFold3 v0.5.0 (2026-08-21) and 
   equals the residue count.
 * pTM, ipTM and PAE are always written by 0.4.1 and later (the ``pae_enabled`` preset was
   removed); a missing value means a missing file.
+* A query that fails inside OpenFold3 leaves no confidence files and the process still exits
+  with status 0; the run's ``summary.txt`` and ``logs/predict_err_rank<N>.log`` say why, and
+  the reason is added to ``record.reasons``.
 
-The module imports numpy only; the structure file is not opened while parsing.
+The module imports numpy only (the runner module is imported when a failed query has to be
+explained); the structure file is not opened while parsing.
 """
 
 from __future__ import annotations
@@ -63,6 +67,18 @@ def _seed_directories(query_dir: Path) -> list[Path]:
     if not query_dir.is_dir():
         return []
     return sorted((d for d in query_dir.glob("seed_*") if d.is_dir()), key=_seed_key)
+
+
+def _failed_query_reason(output_dir: Path, query_name: str) -> Optional[str]:
+    """Why OpenFold3 reported ``query_name`` as failed, from ``summary.txt`` and ``logs/``.
+
+    OpenFold3 exits with status 0 when a query fails inside it, so a query without
+    confidence files may have failed rather than never run. Returns None when the run's
+    summary does not list the query. The readers live with the runner code.
+    """
+    from binding_metrics.metrics._openfold_run import _failed_query_reasons
+
+    return _failed_query_reasons(output_dir).get(query_name)
 
 
 def parse_aggregated_confidences(path: Path) -> dict:
@@ -229,6 +245,9 @@ class OpenFold3Parser(PredictionParser):
                 f"no confidence files found for query '{name}' "
                 f"(seed index {seed_index}, sample {sample}) in {files.directory}"
             )
+            failure = _failed_query_reason(Path(files.directory), name)
+            if failure:
+                record.reasons.append(failure)
         elif files.scores is None:
             record.reasons.append("aggregated confidences file not found")
         elif files.arrays is None:
