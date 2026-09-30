@@ -512,3 +512,64 @@ class TestSplitAtTheLoadStep:
             _adversarial_from_atoms(
                 design, second, None, "B", "A", 8.0, 0.5, adversary_label="adversary"
             )
+
+
+# ---------------------------------------------------------------------------
+# The per-residue pLDDT helper is the shared one (issue #92)
+# ---------------------------------------------------------------------------
+
+
+class TestSharedPlddtHelper:
+    def test_wrong_length_array_is_a_value_error_naming_both_lengths(self):
+        atoms = _chain("A", np.array([[0.0, 0, 0], [3.8, 0, 0]]))
+        with pytest.raises(ValueError, match=r"plddt_per_atom length \(3\) != atom count .* \(2\)"):
+            _per_residue_plddt(np.array([50.0, 60.0, 70.0]), atoms, "A")
+
+    def test_score_with_a_wrong_length_array_raises_value_error(self, tmp_path):
+        path = _line_complex(tmp_path)  # 16 atoms
+        with pytest.raises(ValueError, match="plddt_per_atom length"):
+            compute_evobind_score(path, np.full(6, 80.0), "B", "A")
+        with pytest.raises(ValueError, match="plddt_per_atom length"):
+            compute_evobind_score(path, np.full(20, 80.0), "B", "A")
+
+    def test_adversarial_check_with_a_wrong_length_array_raises_value_error(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb")
+        b = _helix_complex(tmp_path, "afm.pdb")  # 32 atoms
+        with pytest.raises(ValueError, match="plddt_per_atom length"):
+            compute_evobind_adversarial_check(a, b, "B", "A", afm_plddt_per_atom=np.full(8, 80.0))
+
+    def test_insertion_codes_make_separate_residues(self):
+        # residue 1 and residue 1A are two residues: their pLDDT are not averaged together
+        atoms = struc.array(
+            [
+                struc.Atom(
+                    [0.0, 0, 0],
+                    chain_id="B",
+                    res_id=1,
+                    ins_code="",
+                    res_name="ALA",
+                    atom_name="CA",
+                    element="C",
+                ),
+                struc.Atom(
+                    [3.8, 0, 0],
+                    chain_id="B",
+                    res_id=1,
+                    ins_code="A",
+                    res_name="ALA",
+                    atom_name="CA",
+                    element="C",
+                ),
+                struc.Atom(
+                    [7.6, 0, 0],
+                    chain_id="B",
+                    res_id=2,
+                    ins_code="",
+                    res_name="ALA",
+                    atom_name="CA",
+                    element="C",
+                ),
+            ]
+        )
+        plddt = np.array([10.0, 30.0, 50.0])
+        np.testing.assert_allclose(_per_residue_plddt(plddt, atoms, "B"), [10.0, 30.0, 50.0])

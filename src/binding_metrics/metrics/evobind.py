@@ -49,6 +49,7 @@ import numpy as np
 
 from binding_metrics.core.residues import VARIANT_TO_PARENT_RESIDUE
 from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
+from binding_metrics.predictors._confidence import _binder_plddt_per_residue
 
 # ---------------------------------------------------------------------------
 # Internal helpers: coordinate extraction
@@ -150,27 +151,9 @@ def _resname_mismatch_fraction(atoms_a, atoms_b) -> float:
     return float(np.mean([a != b for a, b in zip(_canonical(atoms_a), _canonical(atoms_b))]))
 
 
-def _per_residue_plddt(
-    plddt_per_atom: np.ndarray,
-    atoms,
-    chain_id: str,
-) -> np.ndarray:
-    """Mean pLDDT per residue for a chain.
-
-    Args:
-        plddt_per_atom: Per-atom pLDDT [0–100], shape (n_atoms,). Must be
-            aligned with ``atoms``.
-        atoms: Biotite AtomArray from the same prediction.
-        chain_id: Chain to extract.
-
-    Returns:
-        Array of shape (n_residues,).
-    """
-    mask = atoms.chain_id == chain_id
-    chain_plddt = plddt_per_atom[mask]
-    chain_res_ids = atoms.res_id[mask]
-    unique_res = np.unique(chain_res_ids)
-    return np.array([chain_plddt[chain_res_ids == r].mean() for r in unique_res], dtype=float)
+# The per-residue mean lives with the other model-agnostic confidence helpers. It is
+# kept under its old name here because callers and tests import it from this module.
+_per_residue_plddt = _binder_plddt_per_residue
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +226,7 @@ def _score_from_atoms(
     }
 
     if plddt_per_atom is not None:
-        per_res = _per_residue_plddt(plddt_per_atom, atoms, binder_chain)
+        per_res = _binder_plddt_per_residue(plddt_per_atom, atoms, binder_chain)
         mean_plddt = float(per_res.mean()) if per_res.size > 0 else float("nan")
         result["mean_plddt_binder"] = mean_plddt
         if mean_plddt > 0 and np.isfinite(mean_plddt):
@@ -430,7 +413,7 @@ def _adversarial_from_atoms(
     }
 
     if adversary_plddt is not None:
-        per_res = _per_residue_plddt(adversary_plddt, adversary_atoms, binder_chain)
+        per_res = _binder_plddt_per_residue(adversary_plddt, adversary_atoms, binder_chain)
         afm_mean_plddt = float(per_res.mean()) if per_res.size > 0 else float("nan")
         result["afm_mean_plddt_binder"] = afm_mean_plddt
         if afm_mean_plddt > 0 and np.isfinite(afm_mean_plddt):
