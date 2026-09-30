@@ -54,7 +54,15 @@ from binding_metrics.cli import (
     on_unmappable_residue_kwargs,
     parse_args_with_config,
 )
+from binding_metrics.cli import merge_reason as _merge_reason
 from binding_metrics.cli import seed_arg as _seed_arg
+from binding_metrics.cli.prediction import (
+    add_prediction_args,
+    check_prediction_args,
+    check_predictor,
+    display_name,
+    run_single_prediction,
+)
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.metrics.registry import get_metric
 from binding_metrics.protocols.relaxer import Relaxer
@@ -138,19 +146,6 @@ def _require_chains_present(
     raise ChainNotFoundError(f"{named} not found; available: {listing}")
 
 
-def _merge_reason(target: dict, extra: dict, label: str) -> None:
-    """Move ``extra["reason"]`` into ``target["reason"]`` as ``"<label>: <reason>"``.
-
-    Metric dicts merged into one flat namespace (OpenFold, then the EvoBind
-    metrics that reuse its output) each carry an optional ``reason``; a plain
-    ``dict.update`` would let the last one erase the diagnosis of the first.
-    Reasons are joined with ``"; "``, and nothing is added when ``extra`` has none.
-    """
-    reason = extra.pop("reason", None)
-    if reason:
-        target["reason"] = "; ".join(filter(None, [target.get("reason"), f"{label}: {reason}"]))
-
-
 def _warn(msg: str) -> None:
     logger.warning("  [warning] %s", msg)
 
@@ -191,6 +186,12 @@ def run_pipeline(
     target_chain: Optional[str] = None,
     relaxer: Optional[Relaxer] = None,
     on_unmappable_residue: str = "error",
+    predictor: Optional[str] = None,
+    prediction_dir: Optional[Path] = None,
+    prediction_binder_chain: Optional[str] = None,
+    prediction_target_chain: Optional[str] = None,
+    prediction_cache: Optional[Path] = None,
+    rerun_predictions: bool = False,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -211,15 +212,37 @@ def run_pipeline(
         on_unmappable_residue: What the OpenFold3 step does with a residue it cannot take
             (keyword-only): ``"error"`` (default) records the step as failed before the model
             starts, ``"x"`` sends an ``X`` in its place and logs a warning.
+        predictor: A key of ``binding_metrics.predictors.PARSERS`` (keyword-only). The
+            ``openfold`` step then reads that model's prediction through a
+            ``PredictionSession`` and writes ``results["prediction"]``; ``results["openfold"]``
+            is ``{"skipped": True}``. ``None`` (default) keeps the OpenFold3 step and
+            ``results["openfold"]``. Only ``"of3"`` can be run from here; another model needs
+            ``prediction_dir``.
+        prediction_dir: With ``predictor``, the directory of an output you made; it is adopted
+            into the store and the model never runs (keyword-only).
+        prediction_binder_chain, prediction_target_chain: With ``predictor``, the chain IDs
+            inside the prediction when they differ from the input's (keyword-only).
+        prediction_cache: The prediction store; default ``<output_dir>/predictions``. A run
+            over the same input, options and model version finds its prediction there and
+            starts no model (keyword-only).
+        rerun_predictions: Run the prediction again although the store has it, once
+            (keyword-only). Outputs given as ``prediction_dir`` are never replaced.
         The remaining arguments mirror the ``binding-metrics-run`` flags.
 
     Returns:
         Dict with ``sample_id``, ``input``, ``provenance`` (see
         ``binding_metrics.provenance.collect_provenance``), ``chains``, ``prep``,
         ``relax``, and one entry per metric (``energy``, ``interface``,
-        ``geometry``, ``electrostatics``, ``dockq``, ``openfold``). A metric that
-        did not run is ``{"skipped": True}``; one that failed is
-        ``{"error": message}``.
+        ``geometry``, ``electrostatics``, ``dockq``, ``openfold``), plus ``prediction`` when
+        ``predictor`` is given. A metric that did not run is ``{"skipped": True}``; one that
+        failed is ``{"error": message}``.
+
+        ``prediction`` holds the keys of ``binding_metrics.metrics.prediction.
+        summarize_prediction`` (``model`` first), the EvoBind keys (``evobind_score``,
+        ``delta_com_angstrom``, ...) and ``cache``: the counters of
+        ``PredictionSession.stats()`` (``runs`` is 1 when the model ran for this sample, 0
+        when the store or ``prediction_dir`` supplied it) and ``request_key``, the name of the
+        store entry.
 
         ``prep`` records what preparation changed: ``removed_heterogens``,
         ``n_removed_waters``, ``kept_nonstandard``, ``n_missing_atoms_rebuilt``,
@@ -235,14 +258,17 @@ def run_pipeline(
 
     Raises:
         ChainNotFoundError: a requested chain ID does not exist in the structure.
-        ValueError: a chain is given through both spellings with different IDs, or
-            ``on_unmappable_residue`` is not ``"error"`` or ``"x"``.
+        ValueError: a chain is given through both spellings with different IDs,
+            ``on_unmappable_residue`` is not ``"error"`` or ``"x"``, ``predictor`` is not a
+            registered model, or it has no runner and no ``prediction_dir`` is given.
     """
     peptide_chain = resolve_chain_role("peptide_chain", peptide_chain, "binder_chain", binder_chain)
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
     check_on_unmappable_residue(on_unmappable_residue)
+    check_predictor(predictor, prediction_dir)
+
     if sample_id is None:
         sample_id = input_path.stem
 
@@ -252,7 +278,8 @@ def run_pipeline(
         "input": str(input_path),
         "provenance": collect_provenance(
             seed=random_seed,
-            openfold3="openfold" in metrics,
+            openfold3="openfold" in metrics
+            and (predictor is None or (predictor == "of3" and prediction_dir is None)),
             openfold3_python_cmd=conda_python_command(openfold_conda_env),
         ),
     }
@@ -550,7 +577,31 @@ def run_pipeline(
         results["dockq"] = {"skipped": True}
 
     # --------------------------------------------------------- OpenFold
-    if "openfold" in metrics:
+    if predictor is not None:
+        results["openfold"] = {"skipped": True}
+        if "openfold" in metrics:
+            _step(f"Structure prediction ({display_name(predictor)})")
+            results["prediction"], prediction_provenance = run_single_prediction(
+                predictor,
+                input_path,
+                output_dir,
+                sample_id,
+                binder_chain=peptide_chain,
+                receptor_chain=receptor_chain,
+                prediction_dir=prediction_dir,
+                prediction_binder_chain=prediction_binder_chain,
+                prediction_target_chain=prediction_target_chain,
+                prediction_cache=prediction_cache,
+                rerun_predictions=rerun_predictions,
+                openfold_mode=openfold_mode,
+                openfold_conda_env=openfold_conda_env,
+                openfold_seeds=openfold_seeds,
+                on_unmappable_residue=on_unmappable_residue,
+            )
+            results["provenance"].update(prediction_provenance)
+        else:
+            results["prediction"] = {"skipped": True}
+    elif "openfold" in metrics:
         _step("OpenFold3 confidence scoring")
         try:
             from binding_metrics.metrics.openfold import (
@@ -829,6 +880,8 @@ def main():
     add_openfold_seeds_arg(openfold_group)
     add_on_unmappable_residue_arg(openfold_group)
 
+    add_prediction_args(parser)
+
     # Report
     report_group = parser.add_argument_group("Report")
     report_group.add_argument(
@@ -856,6 +909,7 @@ def main():
     add_config_arg(parser)
 
     args = parse_args_with_config(parser)
+    check_prediction_args(parser, args)
 
     if not args.input.exists():
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)
@@ -904,6 +958,12 @@ def main():
                 random_seed=args.random_seed,
                 openfold_seeds=args.openfold_seeds,
                 on_unmappable_residue=args.on_unmappable_residue,
+                predictor=args.predictor,
+                prediction_dir=args.prediction_dir,
+                prediction_binder_chain=args.prediction_binder_chain,
+                prediction_target_chain=args.prediction_target_chain,
+                prediction_cache=args.prediction_cache,
+                rerun_predictions=args.rerun_predictions,
             )
         except ChainNotFoundError as e:
             print(f"ERROR: {e}", file=sys.stderr)

@@ -147,6 +147,19 @@ def add_openfold_seeds_arg(parser) -> None:
     )
 
 
+def merge_reason(target: dict, extra: dict, label: str) -> None:
+    """Move ``extra["reason"]`` into ``target["reason"]`` as ``"<label>: <reason>"``.
+
+    Metric dicts merged into one flat namespace (OpenFold, then the EvoBind
+    metrics that reuse its output) each carry an optional ``reason``; a plain
+    ``dict.update`` would let the last one erase the diagnosis of the first.
+    Reasons are joined with ``"; "``, and nothing is added when ``extra`` has none.
+    """
+    reason = extra.pop("reason", None)
+    if reason:
+        target["reason"] = "; ".join(filter(None, [target.get("reason"), f"{label}: {reason}"]))
+
+
 #: Values of ``--on-unmappable-residue``; the first is the default.
 ON_UNMAPPABLE_RESIDUE_CHOICES = ("error", "x")
 
