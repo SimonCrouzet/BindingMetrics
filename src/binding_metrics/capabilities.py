@@ -507,8 +507,11 @@ def classify_residue(res_name: str, *, is_amino_acid: bool = True) -> Optional[s
 _AMIDE_BOND_THRESHOLD_ANGSTROM = 2.0
 _DISULFIDE_THRESHOLD_ANGSTROM = 2.6
 
-# Names that hold a cysteine sulfur: CYS and its AMBER disulfide form CYX, and D-cysteine.
-_DISULFIDE_RESIDUE_NAMES = CYSTEINE_NAMES | {"DCY"}
+# Names that hold the sulfur of a disulfide, the same rule as ``core.cyclic``: CYS, its AMBER
+# disulfide form CYX, and the D-cysteine codes of D_AA_MAP (a test compares the two sets).
+_DISULFIDE_RESIDUE_NAMES = CYSTEINE_NAMES | frozenset(
+    name for name, parent in D_AA_MAP.items() if parent == "CYS"
+)
 # The atoms that make a residue a peptide-chain member even when no table knows its name.
 _BACKBONE_CORE = frozenset({"N", "CA", "C"})
 # Backbone atoms; a cross-link that touches one is not a side-chain staple.
@@ -780,10 +783,10 @@ def detect_closures(atoms: AtomArray, chain_id: str) -> list[Closure]:
     it or the atoms are closer than 2.0 A (2.6 A for SG-SG), so a strained model that has no
     bond record is still found. A test compares the two detectors on the bundled examples.
 
-    Where it differs: a cysteine named CYX or DCY counts for a disulfide (``detect_cyclization``
-    reads the name CYS only), and only the amino-acid residues of the chain are looked at, so the
+    It differs on one point: only the amino-acid residues of the chain are looked at, so the
     waters and the ligands that share the chain ID of an author-numbered file cannot shift the
-    first or last residue.
+    first or last residue. Both detectors take a disulfide between cysteines named CYS, CYX or
+    DCY.
 
     Args:
         atoms: A biotite ``AtomArray``. With a bond table (``include_bonds=True`` when read) the

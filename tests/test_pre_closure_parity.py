@@ -17,6 +17,7 @@ pytest.importorskip("biotite")
 
 from binding_metrics.capabilities import (  # noqa: E402
     _AMIDE_BOND_THRESHOLD_ANGSTROM,
+    _DISULFIDE_RESIDUE_NAMES,
     _DISULFIDE_THRESHOLD_ANGSTROM,
     detect_closures,
     profile_input,
@@ -129,3 +130,28 @@ def test_the_receptor_of_3p8f_has_its_three_disulfides():
 def test_the_distance_cut_offs_equal_those_of_core_cyclic():
     assert _AMIDE_BOND_THRESHOLD_ANGSTROM == pytest.approx(cyclic._AMIDE_BOND_THRESH * 10)
     assert _DISULFIDE_THRESHOLD_ANGSTROM == pytest.approx(cyclic._DISULFIDE_THRESH * 10)
+
+
+# ---------------------------------------------------------------------------
+# The cysteine names of a disulfide: CYS, CYX (AMBER) and DCY (D-cysteine)
+# ---------------------------------------------------------------------------
+
+SFTI1 = DATA / "example_bicyclic_sfti1_3P8F.cif"
+
+
+def test_the_light_detector_uses_the_cysteine_names_of_core_cyclic():
+    assert _DISULFIDE_RESIDUE_NAMES == cyclic._DISULFIDE_RESIDUE_NAMES == {"CYS", "CYX", "DCY"}
+
+
+@pytest.mark.parametrize("name", ["CYS", "CYX", "DCY"])
+def test_the_two_detectors_agree_under_every_cysteine_name(name):
+    topology, positions = load_structure(SFTI1)
+    atoms = _biotite_atoms(SFTI1.name)
+    chain = next(c for c in topology.chains() if c.id == "B")
+    for residue in chain.residues():
+        if residue.name == "CYS":
+            residue.name = name
+    atoms.res_name[(atoms.chain_id == "I") & (atoms.res_name == "CYS")] = name
+    found = _biotite_links(atoms, "I")
+    assert found == _openmm_links(topology, positions, "B")
+    assert [kind for kind, _ in found] == ["disulfide", "head_to_tail"]

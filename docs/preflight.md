@@ -63,7 +63,7 @@ A predictor adapter declares its limits in the class attribute `PredictionParser
 | `hydrocarbon_staple` | an all-carbon link between two side chains, from the bond table |
 | `unsupported_crosslink` | any other link between residues that are not neighbours, from the bond table |
 
-A pair counts as linked when the bond table lists it or the atoms are closer than 2.0 A (2.6 A for SG to SG), the same cut-offs as `core.cyclic`. A strained model without a bond record is therefore still found. An `AtomArray` without a bond table finds no staples or other cross-links, and the profile notes it. Two differences from `detect_cyclization`: a cysteine named CYX or DCY counts for a disulfide, and only the amino-acid residues of the chain are read, so waters and ligands that share the author chain ID cannot shift the first or last residue.
+A pair counts as linked when the bond table lists it or the atoms are closer than 2.0 A (2.6 A for SG to SG), the same cut-offs as `core.cyclic`. A strained model without a bond record is therefore still found. An `AtomArray` without a bond table finds no staples or other cross-links, and the profile notes it. One difference from `detect_cyclization`: only the amino-acid residues of the chain are read, so waters and ligands that share the author chain ID cannot shift the first or last residue. Both take a disulfide between cysteines named CYS, CYX or DCY.
 
 The closure families are `head_to_tail`, `disulfide`, `lactam` (the four lactam types), `staple` and `other`.
 
