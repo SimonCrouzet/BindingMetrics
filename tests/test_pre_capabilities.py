@@ -277,8 +277,15 @@ class TestNeeds:
     def test_the_receptor_chain_is_read_from_the_profile(self):
         assert self.receptor.accepts(LINEAR)
         (violation,) = self.receptor.check(dataclasses.replace(LINEAR, receptor_chain=None))
-        assert violation.fact == "no receptor chain was given"
+        assert violation.fact == (
+            "no receptor chain was given and the structure has no other protein chain"
+        )
         assert violation.requirement == "needs a receptor chain"
+
+    def test_another_protein_chain_of_the_structure_meets_the_need(self):
+        # the metrics take the largest other protein chain when none is given
+        profile = dataclasses.replace(LINEAR, receptor_chain=None, other_protein_chains=("A",))
+        assert self.receptor.accepts(profile)
 
     def test_the_other_needs_are_checked_only_when_the_caller_says_what_it_provides(self):
         assert self.reference.check(LINEAR) == []
@@ -373,3 +380,52 @@ class TestViolation:
             "reason",
             "fix",
         }
+
+
+def _refuse_short_chains(profile):
+    if profile.n_binder_residues < 20:
+        return [
+            Violation(
+                constraint="residue_classes",
+                fact=f"the binder has {profile.n_binder_residues} residues",
+                requirement="at least 20 residues",
+                reason="A rule that only the model's own code can state.",
+            )
+        ]
+    return []
+
+
+class TestExtraChecks:
+    caps = Capabilities(extra_checks=(_refuse_short_chains,))
+
+    def test_an_extra_check_is_a_constraint_that_needs_no_reason_entry(self):
+        assert self.caps.constrained_fields() == ("extra_checks",)
+        assert not self.caps.is_unconstrained
+
+    def test_its_violations_are_returned_with_the_others(self):
+        (violation,) = self.caps.check(LINEAR)
+        assert violation.fact == "the binder has 12 residues"
+        assert violation.reason == "A rule that only the model's own code can state."
+        assert self.caps.accepts(dataclasses.replace(LINEAR, n_binder_residues=30))
+
+    def test_it_runs_after_the_built_in_constraints(self):
+        caps = Capabilities(
+            closures={"none"},
+            reasons={"closures": "No ring."},
+            extra_checks=(_refuse_short_chains,),
+        )
+        assert [v.constraint for v in caps.check(DISULFIDE_ONLY)] == ["closures", "residue_classes"]
+
+    def test_a_list_of_functions_becomes_a_tuple_and_the_object_stays_hashable(self):
+        caps = Capabilities(extra_checks=[_refuse_short_chains])
+        assert caps.extra_checks == (_refuse_short_chains,)
+        assert hash(caps) == hash(Capabilities(extra_checks=(_refuse_short_chains,)))
+
+    def test_something_that_is_not_a_function_is_refused(self):
+        with pytest.raises(ValueError, match="extra_checks must be functions"):
+            Capabilities(extra_checks=("not a function",))
+
+    def test_a_check_must_return_violations(self):
+        caps = Capabilities(extra_checks=(lambda profile: ["a string"],))
+        with pytest.raises(TypeError, match="not Violation"):
+            caps.check(LINEAR)

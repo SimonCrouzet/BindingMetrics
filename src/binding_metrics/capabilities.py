@@ -28,7 +28,7 @@ import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Callable, Collection, Iterable, Mapping, Optional
 
 from binding_metrics.core.nonstandard import D_AA_MAP, NME_AA_MAP
 from binding_metrics.core.residues import (
@@ -63,6 +63,7 @@ __all__ = [
     "InputProfile",
     "PreflightReport",
     "Violation",
+    "check_openfold3_residues",
     "classify_residue",
     "detect_closures",
     "estimate_binder_type",
@@ -129,7 +130,7 @@ _NEED_TEXT = {
     "gpu": "a GPU",
 }
 _NEED_FACT = {
-    "receptor_chain": "no receptor chain was given",
+    "receptor_chain": "no receptor chain was given and the structure has no other protein chain",
     "reference_structure": "no reference structure was provided",
     "predicted_structure": "no predicted structure was provided",
     "gpu": "no GPU was provided",
@@ -197,11 +198,19 @@ class Violation:
     def format(self) -> str:
         """A short block: the step and constraint, then what was found, required, why, the fix."""
         head = f"{self.subject}: {self.constraint}" if self.subject else self.constraint
-        lines = [head, f"    found:    {self.fact}", f"    requires: {self.requirement}"]
+
+        def indented(text: str) -> str:
+            return text.replace("\n", "\n" + " " * 14)
+
+        lines = [
+            head,
+            f"    found:    {indented(self.fact)}",
+            f"    requires: {indented(self.requirement)}",
+        ]
         if self.reason:
-            lines.append(f"    why:      {self.reason}")
+            lines.append(f"    why:      {indented(self.reason)}")
         if self.fix:
-            lines.append(f"    fix:      {self.fix}")
+            lines.append(f"    fix:      {indented(self.fix)}")
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
@@ -240,7 +249,14 @@ class Capabilities:
         min_binder_residues, max_binder_residues: Bounds on the number of amino-acid residues of
             the binder; None leaves a side open.
         multi_chain_binder: False refuses a binder that spans several chains.
-        needs: What the step cannot run without, a subset of ``NEEDS``.
+        needs: What the step cannot run without, a subset of ``NEEDS``. ``receptor_chain`` is met
+            by a receptor given or by any other protein chain in the structure.
+        extra_checks: Functions ``profile -> violations`` for a limit that the sets above cannot
+            state, such as the residue names a model's query builder can express. Each returns
+            ``Violation`` objects with ``fact``, ``requirement`` and a ``reason`` that says why and
+            what to do instead. A function reuses the code that enforces the limit at run time
+            rather than copying its rules, and imports it when called, so declaring the check
+            costs nothing at import.
         reasons: One sentence per constraint saying why it holds and what to do instead. Keys are
             the field name (``"closures"``), or field and value (``"closures:disulfide"``) for a
             sentence about one value; the second form is looked up first. A constraint without a
@@ -259,6 +275,7 @@ class Capabilities:
     max_binder_residues: Optional[int] = None
     multi_chain_binder: bool = True
     needs: frozenset[str] = frozenset()
+    extra_checks: tuple[Callable[[InputProfile], Iterable[Violation]], ...] = ()
     # The two mappings are unhashable and long; equality still compares them.
     reasons: Mapping[str, str] = field(default_factory=dict, hash=False, repr=False)
     caveats: Mapping[str, str] = field(default_factory=dict, hash=False, repr=False)
@@ -281,6 +298,10 @@ class Capabilities:
         low, high = self.min_binder_residues, self.max_binder_residues
         if low is not None and high is not None and low > high:
             raise ValueError(f"min_binder_residues {low} exceeds max_binder_residues {high}")
+        checks = tuple(self.extra_checks)
+        if not all(callable(check) for check in checks):
+            raise ValueError("extra_checks must be functions taking an InputProfile")
+        object.__setattr__(self, "extra_checks", checks)
         reasons, caveats = dict(self.reasons), dict(self.caveats)
         for key in reasons:
             if key not in _REASON_KEYS and not _is_field_value_key(key, tuple(_SET_FIELDS)):
@@ -293,7 +314,7 @@ class Capabilities:
                 if not isinstance(sentence, str) or not sentence.strip():
                     raise ValueError(f"{mapping_name}[{key!r}] must be a non-empty sentence")
         for name in self.constrained_fields():
-            if name not in reasons:
+            if name != "extra_checks" and name not in reasons:
                 raise ValueError(
                     f"{name} is constrained but reasons has no sentence under {name!r}; say why "
                     "the limit holds and what to do instead"
@@ -310,6 +331,8 @@ class Capabilities:
             names.append("max_binder_residues")
         if not self.multi_chain_binder:
             names.append("multi_chain_binder")
+        if self.extra_checks:
+            names.append("extra_checks")
         return tuple(names)
 
     @property
@@ -400,11 +423,20 @@ class Capabilities:
             )
         for need in _sorted_by(NEEDS, self.needs):
             if need == "receptor_chain":
-                missing = profile.receptor_chain is None
+                # The metrics pick the largest other protein chain when none is given
+                # (metrics.interface.detect_interface_chains), so one in the file is enough.
+                missing = profile.receptor_chain is None and not profile.other_protein_chains
             else:
                 missing = provided is not None and need not in provided
             if missing:
                 add("needs", _NEED_FACT[need], f"needs {_NEED_TEXT[need]}", need)
+        for extra in self.extra_checks:
+            for violation in extra(profile):
+                if not isinstance(violation, Violation):
+                    raise TypeError(
+                        f"an extra check returned {type(violation).__name__}, not Violation"
+                    )
+                found.append(violation)
         return found
 
     def caveats_for(self, profile: InputProfile) -> list[str]:
@@ -586,6 +618,7 @@ class _Residue:
     index: int  # position among the amino-acid residues (-1 for a group that is not one)
     name: str
     number: int
+    label: str  # "NAME number" plus the insertion code, for messages
     start: int  # atom range [start, stop) in the chain's atom array
     stop: int
     is_amino_acid: bool
@@ -638,6 +671,10 @@ def _chain_view(atoms, chain_id: str) -> _ChainView:
             index=len(amino_acids) if is_amino_acid else -1,
             name=str(chain_atoms.res_name[start]),
             number=int(chain_atoms.res_id[start]),
+            label=(
+                f"{chain_atoms.res_name[start]} {int(chain_atoms.res_id[start])}"
+                f"{str(chain_atoms.ins_code[start]).strip()}"
+            ),
             start=int(start),
             stop=int(stop),
             is_amino_acid=is_amino_acid,
@@ -851,7 +888,11 @@ class InputProfile:
         closure_bonds: The links behind ``closures``.
         residue_classes: The classes of residue present in the binder (see ``classify_residue``).
         residue_names: For each class present, the distinct residue names, sorted.
+        residue_labels: For each class present, the residues in chain order as ``"NAME number"``
+            (the insertion code follows the number), for messages that point at a residue.
         chain_ids: Every chain ID of the structure.
+        other_protein_chains: The protein chains that are not the binder, in file order: the
+            receptor that a metric can find by itself when none is given.
         notes: Things that make the profile less certain (an atom missing, no bond table, a binder
             type that could not be estimated).
     """
@@ -869,6 +910,10 @@ class InputProfile:
     )
     chain_ids: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
+    residue_labels: Mapping[str, tuple[str, ...]] = field(
+        default_factory=dict, hash=False, repr=False
+    )
+    other_protein_chains: tuple[str, ...] = ()
 
     def __post_init__(self):
         chains = (
@@ -882,6 +927,12 @@ class InputProfile:
             "residue_names",
             MappingProxyType({k: tuple(v) for k, v in dict(self.residue_names).items()}),
         )
+        object.__setattr__(
+            self,
+            "residue_labels",
+            MappingProxyType({k: tuple(v) for k, v in dict(self.residue_labels).items()}),
+        )
+        object.__setattr__(self, "other_protein_chains", tuple(self.other_protein_chains))
         if self.binder_type != "unknown" and self.binder_type not in BINDER_TYPES:
             raise ValueError(f"binder_type {self.binder_type!r} is not one of {BINDER_TYPES}")
 
@@ -919,7 +970,9 @@ class InputProfile:
             "closure_bonds": [c.describe() for c in self.closure_bonds],
             "residue_classes": _sorted_by(RESIDUE_CLASSES, self.residue_classes),
             "residue_names": {k: list(v) for k, v in self.residue_names.items()},
+            "residue_labels": {k: list(v) for k, v in self.residue_labels.items()},
             "chain_ids": list(self.chain_ids),
+            "other_protein_chains": list(self.other_protein_chains),
             "notes": list(self.notes),
         }
 
@@ -959,6 +1012,9 @@ def profile_input(
         binder_chain: Chain ID of the binder; a list or tuple of IDs for a binder that spans
             several chains.
         receptor_chain: Chain ID of the receptor, None when there is none or it is not known.
+            A step that needs a receptor is satisfied by any other protein chain of the structure
+            (``InputProfile.other_protein_chains``), because the metrics pick one when none is
+            given.
         binder_type: ``auto`` estimates the type from the number of residues (see
             ``estimate_binder_type``: at most 40 residues a peptide, at most 100 a miniprotein,
             longer ``unknown``); or ``peptide``, ``miniprotein``, ``nanobody``, ``antibody``.
@@ -995,6 +1051,7 @@ def profile_input(
 
     closures: list[Closure] = []
     names_by_class: dict[str, set[str]] = {}
+    labels_by_class: dict[str, list[str]] = {}
     n_residues = 0
     for chain in binder_chains:
         view = _chain_view(atoms, chain)
@@ -1005,6 +1062,7 @@ def profile_input(
             residue_class = classify_residue(group.name, is_amino_acid=group.is_amino_acid)
             if residue_class is not None:
                 names_by_class.setdefault(residue_class, set()).add(group.name)
+                labels_by_class.setdefault(residue_class, []).append(group.label)
         n_residues += len(view.amino_acids)
 
     if binder_type == "auto":
@@ -1018,6 +1076,7 @@ def profile_input(
     else:
         resolved, source = binder_type, "given"
 
+    protein_chain_ids = set(map(str, atoms.chain_id[_amino_acid_mask(atoms)]))
     families = frozenset(c.family for c in closures) or frozenset({"none"})
     return InputProfile(
         binder_chains=binder_chains,
@@ -1031,7 +1090,75 @@ def profile_input(
         residue_names={k: sorted(v) for k, v in names_by_class.items()},
         chain_ids=chain_ids,
         notes=tuple(dict.fromkeys(notes)),
+        residue_labels=labels_by_class,
+        other_protein_chains=tuple(
+            c for c in chain_ids if c in protein_chain_ids and c not in binder_chains
+        ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Checks that reuse the rule of the code they guard
+# ---------------------------------------------------------------------------
+
+#: The classes whose residues are amino acids, that is, the ones an OpenFold3 query names.
+_AMINO_ACID_CLASSES = ("canonical", "d_amino", "n_methyl", "phospho", "other_ncaa")
+
+
+def check_openfold3_residues(profile: InputProfile) -> list[Violation]:
+    """The binder residues that the OpenFold3 query builder cannot express.
+
+    It asks the builder itself: ``metrics._openfold_run._residue_letter_and_ccd`` maps a residue
+    name to a one-letter code and, for a D-amino acid or a modified residue, to the Chemical
+    Component Dictionary code written into ``non_canonical_residues``. A name it cannot map is
+    what ``_extract_query_chain`` reports as an ``UnmappableResidueError``, and the ``reason`` of
+    the violation is the text of that error, so a run that gets past the check and one that does
+    not say the same thing. Caps, ligands, waters and ions are left out of the query by the
+    builder and are not checked.
+
+    The builder is imported when the check runs, which needs biotite (or gemmi) for the CCD
+    lookup. This is the ``extra_checks`` entry of the OpenFold3 adapter.
+
+    Args:
+        profile: The input; ``residue_labels`` gives the residues, ``residue_names`` is used when
+            a hand-built profile has no labels.
+
+    Returns:
+        At most one ``Violation``, listing every residue that cannot be expressed.
+    """
+    from binding_metrics.metrics._openfold_run import (
+        UnmappableResidueError,
+        _residue_letter_and_ccd,
+    )
+
+    mappable: dict[str, bool] = {}
+    unmappable: list[str] = []
+    for class_name in _AMINO_ACID_CLASSES:
+        labels = profile.residue_labels.get(class_name)
+        if labels:
+            residues = [(label, label.rsplit(" ", 1)[0]) for label in labels]
+        else:
+            residues = [(name, name) for name in profile.residue_names.get(class_name, ())]
+        for label, residue_name in residues:
+            if residue_name not in mappable:
+                mappable[residue_name] = _residue_letter_and_ccd(residue_name) is not None
+            if not mappable[residue_name]:
+                unmappable.append(label)
+    if not unmappable:
+        return []
+    chains = ", ".join(profile.binder_chains)
+    error = UnmappableResidueError([("", chains, unmappable)])
+    return [
+        Violation(
+            constraint="residue_classes",
+            fact=f"the binder has residues that OpenFold3 cannot take: {_join(unmappable)}",
+            requirement=(
+                "amino acids that are one of the 20 standard residues, X, or a peptide-linking "
+                "Chemical Component Dictionary code"
+            ),
+            reason=str(error),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1172,6 +1299,8 @@ class _Step:
     name: str
     subject: str  # how the messages call it
     capabilities: Optional[Capabilities]
+    display: str = ""  # the display name of a predictor
+    item: Any = None  # what the caller passed for a predictor, if it was an adapter or a runner
 
 
 def _declared_capabilities(owner: str, value: Any) -> Optional[Capabilities]:
@@ -1225,6 +1354,7 @@ def _predictor_steps(predictor) -> list[_Step]:
     items = predictor if isinstance(predictor, (list, tuple)) else [predictor]
     steps = []
     for item in items:
+        given = None
         if isinstance(item, str):
             from binding_metrics.predictors.registry import PARSERS
 
@@ -1243,22 +1373,46 @@ def _predictor_steps(predictor) -> list[_Step]:
             )
             name = _text_attribute(item, "name") or display
             declared = getattr(item, "capabilities", None)
+            given = item
         declared = _declared_capabilities(f"predictor {display}", declared)
         label = f"{display} {declared.version}".strip() if declared is not None else display
-        steps.append(_Step("predictor", name, f"predictor {label}", declared))
+        steps.append(_Step("predictor", name, f"predictor {label}", declared, display, given))
     return steps
 
 
+def _is_registry_entry_of(spec, step: _Step) -> bool:
+    """True when the registry entry ``spec`` is the predictor of ``step``.
+
+    A predictor passed as an object need not use the registry name, so the entry is matched by
+    name, by display name, or by being the same adapter class.
+    """
+    if spec.name == step.name or spec.display_name.casefold() == step.display.casefold():
+        return True
+    if step.item is None:
+        return False
+    try:
+        adapter = spec.load()
+    except Exception as exc:  # noqa: BLE001 - a broken adapter must not stop the check of another
+        logger.warning("could not load predictor %r: %s", spec.name, exc)
+        return False
+    return adapter is step.item or adapter is type(step.item)
+
+
 def _other_predictors(
-    profile: InputProfile, exclude: str, provided: Optional[Collection[str]]
-) -> tuple[list[str], list[str]]:
-    """Registered predictors, other than ``exclude``, split into accepting and undeclared."""
+    profile: InputProfile, rejected: _Step, provided: Optional[Collection[str]]
+) -> tuple[list[str], list[str], int]:
+    """The registered predictors other than ``rejected``, as (declared compatible, no declared
+    limits, number of other predictors).
+
+    A predictor that declares limits and refuses the input is in neither list.
+    """
     from binding_metrics.predictors.registry import PARSERS
 
-    accepting, undeclared = [], []
+    accepting, undeclared, others = [], [], 0
     for name in sorted(PARSERS):
-        if name == exclude:
+        if _is_registry_entry_of(PARSERS[name], rejected):
             continue
+        others += 1
         try:
             declared = PARSERS[name].load_capabilities()
         except Exception as exc:  # noqa: BLE001 - a broken adapter must not stop the check of another
@@ -1269,26 +1423,35 @@ def _other_predictors(
             undeclared.append(label)
         elif declared.accepts(profile, provided=provided):
             accepting.append(label)
-    return accepting, undeclared
+    return accepting, undeclared, others
 
 
 def _fix_for(step: _Step, profile: InputProfile, provided: Optional[Collection[str]]) -> str:
-    """What to do about a violation of ``step``."""
+    """What to do about a violation of ``step``.
+
+    For a predictor the fix names the other registered predictors in two lists: those whose
+    declared limits accept the input, and those that declare no limits, which is not the same as
+    validated. It says so plainly when a list is empty, and never offers the rejected predictor.
+    """
     if step.kind == "metric":
         return (
             f"leave {step.name!r} out of the metric list, or use policy='skip' to compute only "
             "the metrics that apply"
         )
-    accepting, undeclared = _other_predictors(profile, step.name, provided)
+    accepting, undeclared, others = _other_predictors(profile, step, provided)
     parts = []
-    if accepting:
-        parts.append(f"use a predictor whose declared limits accept this input: {_join(accepting)}")
+    if not others:
+        parts.append("no other predictor is registered")
     else:
-        parts.append("no other registered predictor declares support for this input")
-    if undeclared:
-        parts.append(
-            f"predictors with no declared limits (not validated for it): {_join(undeclared)}"
-        )
+        if accepting:
+            parts.append(f"predictors whose declared limits accept this input: {_join(accepting)}")
+        else:
+            parts.append("no other registered predictor declares support for this input")
+        if undeclared:
+            parts.append(
+                f"predictors that declare no limits (not validated for this input): "
+                f"{_join(undeclared)}"
+            )
     parts.append("or use policy='skip' to leave the predictor out and run the rest")
     return "; ".join(parts)
 

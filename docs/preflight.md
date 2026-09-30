@@ -23,12 +23,13 @@ Three rules hold everywhere:
 | `residue_classes` | Accepted residue classes in the binder: `canonical`, `d_amino`, `n_methyl`, `phospho`, `other_ncaa`, `cap`, `ligand`. |
 | `min_binder_residues`, `max_binder_residues` | Bounds on the number of amino-acid residues of the binder, ends included. |
 | `multi_chain_binder` | `False` refuses a binder that spans several chains. |
-| `needs` | What the step cannot run without: `receptor_chain`, `reference_structure`, `predicted_structure`, `gpu`. |
+| `needs` | What the step cannot run without: `receptor_chain`, `reference_structure`, `predicted_structure`, `gpu`. `receptor_chain` is met by a receptor given or by any other protein chain of the structure, because the metrics take the largest other protein chain when none is given. |
+| `extra_checks` | Functions `profile -> violations` for a limit that the sets above cannot state, such as the residue names that a model's query builder can express. A check reuses the code that enforces the limit at run time and imports it when called, so declaring it costs nothing at import. |
 | `reasons` | One sentence per constraint. Keys are the field name (`"closures"`) or field and value (`"closures:disulfide"`); the second is looked up first. |
 | `caveats` | One sentence per accepted input value that was never validated, keyed `"<field>:<value>"`. |
 | `version` | The version of the model or metric the limits were checked against. |
 
-A constraint without a `reasons` entry under its field name is rejected when the object is built, so no limit can be declared without saying why. `closures={"none", "head_to_tail"}` refuses a binder with a disulfide. A step that needs a ring lists every family except `none`, and a linear binder is refused.
+A constraint without a `reasons` entry under its field name is rejected when the object is built, so no limit can be declared without saying why. The violations of an `extra_checks` function carry their own reason. `closures={"none", "head_to_tail"}` refuses a binder with a disulfide. A step that needs a ring lists every family except `none`, and a linear binder is refused.
 
 `Capabilities.check(profile, provided=None)` returns every violation, not the first one. Each `Violation` carries the constraint, the fact found in the input, the requirement, and the step's own sentence. `receptor_chain` is checked against the profile. The other needs are facts only the caller knows: they are checked when `provided` lists what the caller makes available, and skipped when it is `None`. `caveats_for(profile)` returns the caveats that apply to the input, and `accepts(profile)` is the boolean form.
 
@@ -47,7 +48,8 @@ A predictor adapter declares its limits in the class attribute `PredictionParser
 | `binder_type`, `binder_type_source` | The type and whether it was `given` or `estimated`. |
 | `closures`, `closure_bonds` | The closure families present (`none` alone for a linear binder) and the links behind them. |
 | `residue_classes`, `residue_names` | The classes present in the binder and the distinct residue codes of each. |
-| `chain_ids`, `notes` | Every chain of the structure; what makes the profile less certain. |
+| `residue_labels` | For each class, the residues in chain order as `NAME number` (with the insertion code), for messages that point at a residue. |
+| `chain_ids`, `other_protein_chains`, `notes` | Every chain of the structure; the protein chains that are not the binder; what makes the profile less certain. |
 
 ### Ring closures
 
@@ -93,7 +95,7 @@ The closure families are `head_to_tail`, `disulfide`, `lactam` (the four lactam 
 - `predictor` is a registered name (`"of3"`), an adapter or runner (class or instance) with a `capabilities` attribute, a `Capabilities`, or a list of these.
 - `provided` lists what the caller makes available among the needs `reference_structure`, `predicted_structure` and `gpu`. `None` leaves them unchecked and the report says so.
 
-All violations are collected and reported at once. Each has the fact found in the input, the requirement, the step's own reason and a fix. For a refused predictor the fix lists the other registered predictors whose declared limits accept the input, and those that declare no limit (which is not the same as validated).
+All violations are collected and reported at once. Each has the fact found in the input, the requirement, the step's own reason and a fix. For a refused predictor the fix lists the other registered predictors in two lists: those whose declared limits accept the input, and those that declare no limits (which is not the same as validated). The refused predictor is never offered, even when it is passed under another name than its registry entry: the entry is matched by registry name, by display name or by adapter class. When no other predictor declares support for the input, or none is registered, the fix says so.
 
 | Policy | Effect of an incompatibility |
 |---|---|

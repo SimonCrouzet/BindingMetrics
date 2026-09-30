@@ -66,6 +66,14 @@ class NarrowFold(StubParser):
     capabilities = OF3_LIKE_CAPABILITIES
 
 
+class NarrowFoldToo(StubParser):
+    name = "narrowtoo"
+    display_name = "NarrowFoldToo"
+    capabilities = Capabilities(
+        closures={"none"}, reasons={"closures": "It reads linear chains only."}
+    )
+
+
 class WideFold(StubParser):
     name = "wide"
     display_name = "WideFold"
@@ -82,8 +90,8 @@ class VagueFold(StubParser):
 
 @pytest.fixture
 def three_models(monkeypatch):
-    """Register NarrowFold, WideFold and VagueFold for one test."""
-    for cls in (NarrowFold, WideFold, VagueFold):
+    """Register NarrowFold, NarrowFoldToo, WideFold and VagueFold for one test."""
+    for cls in (NarrowFold, NarrowFoldToo, WideFold, VagueFold):
         spec = ParserSpec(
             name=cls.name,
             import_path=f"{cls.__module__}:{cls.__name__}",
@@ -167,8 +175,12 @@ class TestErrorPolicy:
         assert "the binder has a disulfide bond (CYS 3.SG - CYS 11.SG)" in message
         assert "closures limited to: none, head_to_tail" in message
         assert "A disulfide has no field in the query." in message
-        assert "WideFold (wide)" in message  # accepts this input
-        assert "VagueFold (vague)" in message and "no declared limits" in message
+        assert "predictors whose declared limits accept this input: WideFold (wide)" in message
+        assert (
+            "predictors that declare no limits (not validated for this input): VagueFold (vague)"
+            in message
+        )
+        assert "NarrowFold (narrow)" not in message  # the rejected model is never offered
         assert "policy='skip'" in message
         assert "binder chain B: 14 residues" in message  # the input, so the fact can be checked
 
@@ -212,11 +224,88 @@ class TestErrorPolicy:
         assert violation.reason == "DockQ compares to a native."
         assert "leave 'dockq' out of the metric list" in violation.fix
 
-    def test_no_alternative_is_said_plainly(self, monkeypatch):
+    def test_no_other_registered_predictor_is_said_plainly(self, monkeypatch):
         monkeypatch.setattr("binding_metrics.predictors.registry.PARSERS", {})
         with pytest.raises(IncompatibleInputError) as caught:
             preflight(BICYCLE, [], NarrowFold)
-        assert "no other registered predictor declares support for this input" in str(caught.value)
+        assert "no other predictor is registered" in str(caught.value)
+
+    def test_no_alternative_that_declares_support_is_said_plainly(self, monkeypatch):
+        specs = {
+            cls.name: ParserSpec(
+                name=cls.name,
+                import_path=f"{cls.__module__}:{cls.__name__}",
+                display_name=cls.display_name,
+                family=cls.family,
+            )
+            for cls in (NarrowFold, NarrowFoldToo)
+        }
+        monkeypatch.setattr("binding_metrics.predictors.registry.PARSERS", specs)
+        with pytest.raises(IncompatibleInputError) as caught:
+            preflight(BICYCLE, [], "narrow")
+        message = str(caught.value)
+        assert "no other registered predictor declares support for this input" in message
+        assert "declare no limits" not in message
+        assert "NarrowFoldToo (narrowtoo)" not in message  # it refuses the input as well
+
+
+class TestTheRejectedPredictorIsNeverAnAlternative:
+    """The rejected model can be passed as something other than its registry entry.
+
+    The registry entry of VagueFold declares no limits, so a check that failed to recognise it
+    would offer it as "not validated for this input", right after refusing it.
+    """
+
+    def test_an_object_with_another_name_but_the_display_name_of_an_entry(self, three_models):
+        impostor = SimpleNamespace(
+            name="local_copy", display_name="VagueFold", capabilities=OF3_LIKE_CAPABILITIES
+        )
+        with pytest.raises(IncompatibleInputError) as caught:
+            preflight(BICYCLE, [], impostor)
+        message = str(caught.value)
+        assert "WideFold (wide)" in message
+        assert "VagueFold (vague)" not in message
+
+    def test_an_instance_of_the_adapter_class_under_another_name(self, three_models):
+        instance = VagueFold()
+        instance.name = "renamed"
+        instance.display_name = "Renamed"
+        instance.capabilities = OF3_LIKE_CAPABILITIES
+        with pytest.raises(IncompatibleInputError) as caught:
+            preflight(BICYCLE, [], instance)
+        assert "VagueFold (vague)" not in str(caught.value)
+        assert "WideFold (wide)" in str(caught.value)
+
+    def test_the_display_name_is_matched_whatever_its_case(self, three_models):
+        impostor = SimpleNamespace(
+            name="x", display_name="VAGUEFOLD", capabilities=OF3_LIKE_CAPABILITIES
+        )
+        with pytest.raises(IncompatibleInputError) as caught:
+            preflight(BICYCLE, [], impostor)
+        assert "VagueFold (vague)" not in str(caught.value)
+
+    def test_the_registry_name_is_matched(self, three_models):
+        impostor = SimpleNamespace(
+            name="vague", display_name="Something else", capabilities=OF3_LIKE_CAPABILITIES
+        )
+        with pytest.raises(IncompatibleInputError) as caught:
+            preflight(BICYCLE, [], impostor)
+        assert "VagueFold (vague)" not in str(caught.value)
+
+    def test_another_entry_without_limits_is_still_offered(self, three_models):
+        impostor = SimpleNamespace(
+            name="local_copy", display_name="LocalCopy", capabilities=OF3_LIKE_CAPABILITIES
+        )
+        with pytest.raises(IncompatibleInputError) as caught:
+            preflight(BICYCLE, [], impostor)
+        assert "VagueFold (vague)" in str(caught.value)
+
+    def test_a_registered_predictor_that_refuses_the_input_too_is_in_neither_list(
+        self, three_models
+    ):
+        with pytest.raises(IncompatibleInputError) as caught:
+            preflight(BICYCLE, [], "narrow")
+        assert "NarrowFoldToo" not in str(caught.value)
 
 
 class TestSkipPolicy:
@@ -337,7 +426,7 @@ class TestResolvingSteps:
     def test_a_metric_the_registry_does_not_know_has_no_limit(self):
         assert preflight(BICYCLE, ["no_such_metric"]).compatible
 
-    def test_the_real_registry_metrics_declare_no_limit_yet_are_accepted(self):
+    def test_registry_metrics_are_read_from_their_specs_and_a_complex_passes(self):
         assert preflight(BICYCLE, ["interface", "ramachandran", "omega"]).compatible
 
     def test_a_metric_needs_a_name(self):
