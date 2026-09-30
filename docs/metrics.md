@@ -518,8 +518,8 @@ expected layout:
 | `structure_path` | str \| None | — | path to the predicted structure |
 | `avg_plddt` | float | [0–100] | mean per-atom pLDDT |
 | `gpde` | float | Å | global predicted distance error |
-| `ptm` | float | [0–1] | predicted TM-score; NaN without the PAE head |
-| `iptm` | float | [0–1] | interface pTM; NaN for a single chain or without the PAE head |
+| `ptm` | float | [0–1] | predicted TM-score; NaN when the aggregated file lacks it |
+| `iptm` | float | [0–1] | interface pTM; NaN for a single chain or when the aggregated file lacks it |
 | `disorder` | float | [0–1] | mean relative SASA |
 | `has_clash` | float | 0 or 1 | steric clash in the prediction |
 | `sample_ranking_score` | float | — | OpenFold3 composite ranking score |
@@ -539,7 +539,7 @@ expected layout:
 | `binder_ca_rmsd` | float | Å | binder Cα RMSD against `reference_structure_path` (refolding mode): in the receptor frame when `receptor_chain` is given, otherwise after superposing the binder Cα; NaN with a `reason` when the receptor Cα counts differ or are fewer than 3 |
 | `reason` | str | — | only when a value could not be computed; names each affected analysis |
 
-**interface PAE.** PAE at token (i, j) is the expected position error of token j when the prediction is aligned on token i (the row is the alignment frame, the column the scored token). The interface block is the binder × target slice of the PAE matrix, that is the error of the target tokens when the structure is aligned on the binder. `mean_interface_pae` averages the binder→target and target→binder blocks, so it does not depend on the slice direction, and `max_interface_pae` is the larger of the two maxima. `compute_interface_pae(confidences_path, structure_path, binder_chain, receptor_chain=None, *, target_chain=None)` returns the slice and its statistics (`pae_interface`, `mean_interface_pae`, `max_interface_pae`, `n_binder_tokens`, `n_receptor_tokens`) from a confidences file and the predicted structure; it is registered as `interface_pae` and raises `ValueError` when the file has no PAE matrix. The PAE head is written by the `pae_enabled` model preset.
+**interface PAE.** PAE at token (i, j) is the expected position error of token j when the prediction is aligned on token i (the row is the alignment frame, the column the scored token). The interface block is the binder × target slice of the PAE matrix, that is the error of the target tokens when the structure is aligned on the binder. `mean_interface_pae` averages the binder→target and target→binder blocks, so it does not depend on the slice direction, and `max_interface_pae` is the larger of the two maxima. `compute_interface_pae(confidences_path, structure_path, binder_chain, receptor_chain=None, *, target_chain=None)` returns the slice and its statistics (`pae_interface`, `mean_interface_pae`, `max_interface_pae`, `n_binder_tokens`, `n_receptor_tokens`) from a confidences file and the predicted structure; it is registered as `interface_pae` and raises `ValueError` when the file has no PAE matrix. OpenFold3 0.4.1 and later always compute PAE, pTM and ipTM; the `pae` array is in the full confidences file, which is missing when the run used `write_full_confidence_scores: false`, and `reason` says so.
 
 The interface blocks are located with one token per residue. OpenFold3 uses one token per standard residue but one per heavy atom for ligands and modified residues, so a prediction that holds such components makes the matrix larger than the residue count. The interface values then stay NaN, a warning is issued and `reason` says why; the earlier code sliced the wrong block silently.
 

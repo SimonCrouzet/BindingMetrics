@@ -486,6 +486,17 @@ class TestTokenOffsetCheck:
         assert metrics["mean_interface_pae"] == pytest.approx(3.0)
         assert "reason" not in metrics
 
+    def test_compute_interface_pae_names_the_option_that_controls_the_file(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_interface_pae
+
+        conf = tmp_path / "conf.json"
+        conf.write_text(json.dumps({"plddt": [90.0, 80.0]}), encoding="utf-8")
+        with pytest.raises(ValueError, match="write_full_confidence_scores") as info:
+            compute_interface_pae(
+                conf, tmp_path / "model.cif", binder_chain="B", receptor_chain="A"
+            )
+        assert "pae_enabled" not in str(info.value)
+
     def test_compute_interface_pae_raises_for_a_ligand_complex(self, tmp_path):
         from binding_metrics.metrics.openfold import compute_interface_pae
 

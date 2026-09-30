@@ -13,8 +13,8 @@ Output files per prediction (seed S, sample M):
       chain_pair_iptm, bespoke_iptm, disorder, has_clash, sample_ranking_score
   {output_dir}/{query_name}/seed_{S}/{prefix}_confidences.json (or .npz)
       Per-atom arrays: plddt[n_atoms], pde[n_tokens, n_tokens],
-      pae[n_tokens, n_tokens] (if PAE head enabled)
-  {output_dir}/{query_name}/seed_{S}/{prefix}_model.cif
+      pae[n_tokens, n_tokens]; written unless the run set write_full_confidence_scores false
+  {output_dir}/{query_name}/seed_{S}/{prefix}_model.cif (or .cif.gz, .pdb)
       3D structure (pLDDT in B-factor column)
   {output_dir}/{query_name}/seed_{S}/timing.json
       Runtime (excluding MSA computation)
@@ -161,9 +161,9 @@ def compute_interface_pae(
 ) -> dict:
     """Interface PAE slice from OpenFold3 output.
 
-    OpenFold3 (>= v0.4.1) writes the full ``pae`` matrix to
-    ``*_confidences.json/.npz`` alongside ``plddt`` and ``pde`` when the full
-    confidence scores are requested with the ``pae_enabled`` model preset. This
+    OpenFold3 (>= v0.4.1) always computes the PAE head and writes the full
+    ``pae`` matrix to ``*_confidences.json/.npz`` alongside ``plddt`` and
+    ``pde``, unless the run set ``write_full_confidence_scores`` to false. This
     loads that matrix and the predicted structure and returns the interface
     (binder×receptor) PAE statistics.
 
@@ -182,10 +182,11 @@ def compute_interface_pae(
         ``mean_interface_pae``, ``max_interface_pae``, token counts).
 
     Raises:
-        ValueError: If the confidences file has no PAE matrix (the run did not
-            enable the PAE head / persist full confidences), or if the matrix
-            size does not equal the structure's residue count (a ligand or
-            modified residue makes the token count differ).
+        ValueError: If the confidences file has no PAE matrix (it comes from a
+            run with ``write_full_confidence_scores`` false, or from a version
+            before 0.4), or if the matrix size does not equal the structure's
+            residue count (a ligand or modified residue makes the token count
+            differ).
     """
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
@@ -194,9 +195,9 @@ def compute_interface_pae(
     pae = conf.get("pae")
     if pae is None:
         raise ValueError(
-            f"No PAE matrix in {confidences_path}. Re-run OpenFold3 with the "
-            "'pae_enabled' preset and full confidence output so the 'pae' array "
-            "is written to the confidences file."
+            f"No PAE matrix in {confidences_path}. OpenFold3 0.4 and later write the 'pae' "
+            "array to the full confidences file unless write_full_confidence_scores is "
+            "false, so this file comes from such a run or from an older version."
         )
     atoms = _load_atoms(Path(structure_path))
     return _interface_pae_stats(pae, atoms, binder_chain, receptor_chain)
@@ -274,8 +275,8 @@ def compute_openfold_metrics(
         Scalar confidence metrics [from confidences_aggregated.json]:
             avg_plddt (float): mean pLDDT across all atoms [0–100]
             gpde (float): global predicted distance error (Å)
-            ptm (float): predicted TM-score [0–1]; NaN if pae_enabled preset off
-            iptm (float): interface pTM [0–1]; NaN if single chain or pae_enabled off
+            ptm (float): predicted TM-score [0–1]; NaN if the aggregated file lacks it
+            iptm (float): interface pTM [0–1]; NaN if single chain or the aggregated file lacks it
             disorder (float): average relative SASA [0–1]
             has_clash (float): 1.0 if steric clashes detected, 0.0 otherwise
             sample_ranking_score (float): weighted composite score for ranking
@@ -290,7 +291,7 @@ def compute_openfold_metrics(
                 include_matrices=True
             max_pde (float): max PDE value (Å)
             pae (np.ndarray | None): PAE matrix (n_tokens×n_tokens); only if
-                include_matrices=True and the run persisted the PAE head
+                include_matrices=True and the full confidence file has a PAE matrix
             max_pae (float): max PAE value (Å); NaN if no PAE matrix present
 
         Per-chain structural analysis [requires binder_chain]:
@@ -308,7 +309,7 @@ def compute_openfold_metrics(
             pde_interface (np.ndarray | None): raw PDE slice, shape
                 (n_binder_res, n_receptor_res); only if include_matrices=True
             mean_interface_pae (float): mean PAE over the interface tokens (Å),
-                averaged over both slice directions; NaN if no PAE persisted
+                averaged over both slice directions; NaN if there is no PAE matrix
             max_interface_pae (float): max PAE over the interface tokens (Å)
             pae_interface (np.ndarray | None): raw PAE slice (binder→receptor);
                 only if include_matrices=True
