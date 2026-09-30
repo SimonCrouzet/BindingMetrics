@@ -147,8 +147,8 @@ def _binder_plddt_per_residue(
     Residues are told apart by ``(res_id, ins_code)``, in ascending order of that pair.
 
     Args:
-        plddt_per_atom: Per-atom pLDDT array of the prediction, shape (n_atoms,).
-            Must be in the same atom order as ``atoms``.
+        plddt_per_atom: Per-atom pLDDT of the prediction, shape (n_atoms,): an array or
+            any sequence of numbers. Must be in the same atom order as ``atoms``.
         atoms: Biotite AtomArray of the predicted model file.
         binder_chain: Chain ID to extract.
 
@@ -158,6 +158,8 @@ def _binder_plddt_per_residue(
     Raises:
         ValueError: If ``len(plddt_per_atom) != atoms.array_length()``.
     """
+    # A list cannot be indexed by the boolean chain mask below.
+    plddt_per_atom = np.asarray(plddt_per_atom, dtype=float)
     if len(plddt_per_atom) != atoms.array_length():
         raise ValueError(
             f"plddt_per_atom length ({len(plddt_per_atom)}) != "

@@ -573,3 +573,24 @@ class TestSharedPlddtHelper:
         )
         plddt = np.array([10.0, 30.0, 50.0])
         np.testing.assert_allclose(_per_residue_plddt(plddt, atoms, "B"), [10.0, 30.0, 50.0])
+
+    def test_a_list_of_plddt_values_is_accepted(self, tmp_path):
+        # a list used to fail with "only integer scalar arrays can be converted to a scalar index"
+        path = _line_complex(tmp_path)
+        as_array = np.concatenate([np.full(10, 50.0), np.full(6, 80.0)])
+        from_list = compute_evobind_score(path, as_array.tolist(), "B", "A")
+        assert from_list["mean_plddt_binder"] == pytest.approx(80.0)
+        assert (
+            from_list["evobind_score"]
+            == compute_evobind_score(path, as_array, "B", "A")["evobind_score"]
+        )
+        a = _helix_complex(tmp_path, "design.pdb")
+        b = _helix_complex(tmp_path, "afm.pdb")
+        plddt = np.concatenate([np.full(24, 40.0), np.full(8, 80.0)])
+        res = compute_evobind_adversarial_check(a, b, "B", "A", afm_plddt_per_atom=list(plddt))
+        assert res["afm_mean_plddt_binder"] == pytest.approx(80.0)
+
+    def test_a_list_of_the_wrong_length_is_still_a_value_error(self):
+        atoms = _chain("A", np.array([[0.0, 0, 0], [3.8, 0, 0]]))
+        with pytest.raises(ValueError, match="plddt_per_atom length"):
+            _per_residue_plddt([50.0, 60.0, 70.0], atoms, "A")
