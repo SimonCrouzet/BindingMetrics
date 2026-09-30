@@ -1,4 +1,7 @@
-"""``compute_evobind_adversarial_from_records``: the adversarial check between predictions.
+"""The record-based EvoBind functions: the adversarial check and the primary score.
+
+``compute_evobind_adversarial_from_records`` is tested first, ``compute_evobind_score_from_record``
+at the end of the file; both read predictions through the predictor adapters.
 
 The cross-model tests write one geometry (an alpha-helix receptor with a short binder beside
 it) in the layout of every registered model, plus the made-up "stub" model whose pLDDT is on
@@ -21,6 +24,8 @@ pytest.importorskip("biotite")
 from binding_metrics.metrics.evobind import (  # noqa: E402
     compute_evobind_adversarial_check,
     compute_evobind_adversarial_from_records,
+    compute_evobind_score,
+    compute_evobind_score_from_record,
 )
 from binding_metrics.predictors.record import PredictionRecord  # noqa: E402
 from binding_metrics.predictors.registry import (  # noqa: E402
@@ -524,3 +529,144 @@ class TestRenumberedFromOneSecondModel:
         record = PredictionRecord("hand", "1ycr", structure_path=path, plddt_per_atom=plddt)
         with pytest.raises(ValueError, match="receptor residues cannot be paired"):
             compute_evobind_adversarial_from_records(example_pdb_path, record, "B", "A")
+
+
+# ---------------------------------------------------------------------------
+# compute_evobind_score_from_record
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("model", MODELS)
+class TestScoreFromRecordInEveryModelFormat:
+    """The same coordinates in each model's layout give the same score, whatever the chain names."""
+
+    def _record_and_plain_file(self, tmp_path, model, **kwargs):
+        record = _model_record(
+            model,
+            tmp_path / "adv",
+            {"X": "A", "Y": "B"},
+            receptor_chain="X",
+            binder_chain="Y",
+            **kwargs,
+        )
+        atoms, _ = _complex_atoms(**kwargs)
+        return record, synth.write_structure(atoms, tmp_path / "plain.pdb")
+
+    def test_the_score_equals_the_path_function_on_a_plain_file(self, tmp_path, model):
+        record, plain = self._record_and_plain_file(tmp_path, model)
+        _, plddt = _complex_atoms()
+        expected = compute_evobind_score(plain, plddt, "B", "A")
+        res = compute_evobind_score_from_record(record, "B", "A")
+        assert res["model"] == model
+        assert set(res) == set(expected) | {"model"}
+        for key, value in expected.items():
+            if isinstance(value, float):
+                assert res[key] == pytest.approx(value, abs=1e-2), key
+            else:
+                assert res[key] == value, key
+
+    def test_the_binder_plddt_is_on_the_0_100_scale_and_divides_the_distance(self, tmp_path, model):
+        record, _ = self._record_and_plain_file(tmp_path, model)
+        res = compute_evobind_score_from_record(record, "B", "A")
+        assert res["mean_plddt_binder"] == pytest.approx(BINDER_PLDDT, abs=_plddt_atol(model))
+        assert res["evobind_score"] == pytest.approx(
+            res["if_dist_pep_to_rec"] / (BINDER_PLDDT / 100.0), rel=1e-3
+        )
+
+
+class TestScoreFromRecord:
+    def test_a_hand_built_record_gives_the_path_keys_and_the_model_name(self, tmp_path):
+        record = _record(tmp_path, model="beta")
+        expected = compute_evobind_score(record.structure_path, record.plddt_per_atom, "B", "A")
+        res = compute_evobind_score_from_record(record, "B", "A")
+        assert res == {"model": "beta", **expected}
+        assert res["evobind_score"] == pytest.approx(
+            res["if_dist_pep_to_rec"] / (BINDER_PLDDT / 100.0)
+        )
+
+    def test_chain_ids_are_the_user_ids_after_the_chain_map(self, tmp_path):
+        record = _record(
+            tmp_path, chain_map={"X": "A", "Y": "B"}, receptor_chain="X", binder_chain="Y"
+        )
+        swapped = _record(
+            tmp_path,
+            "swapped",
+            chain_map={"B": "A", "A": "B"},
+            receptor_chain="B",
+            binder_chain="A",
+        )
+        plain = _record(tmp_path, "plain")
+        reference = compute_evobind_score_from_record(plain, "B", "A")
+        for candidate in (record, swapped):
+            res = compute_evobind_score_from_record(candidate, "B", "A")
+            assert res["if_dist_pep_to_rec"] == pytest.approx(reference["if_dist_pep_to_rec"])
+            assert res["evobind_score"] == pytest.approx(reference["evobind_score"])
+
+    def test_the_model_ids_are_refused_with_the_chains_that_exist(self, tmp_path):
+        record = _record(
+            tmp_path, chain_map={"X": "A", "Y": "B"}, receptor_chain="X", binder_chain="Y"
+        )
+        with pytest.raises(
+            ValueError,
+            match=r"binder chain 'Y' is not in the prediction structure.*it has \['A', 'B'\]",
+        ):
+            compute_evobind_score_from_record(record, "Y", "A")
+
+    def test_the_interface_arguments_are_passed_on(self, tmp_path):
+        record = _record(tmp_path)
+        default = compute_evobind_score_from_record(record, "B", "A")
+        tight = compute_evobind_score_from_record(record, "B", "A", interface_cutoff_angstrom=0.5)
+        explicit = compute_evobind_score_from_record(
+            record, "B", "A", receptor_interface_residues=[1, 2, 3]
+        )
+        assert default["interface_fallback_used"] is False
+        assert tight["interface_fallback_used"] is True
+        assert explicit["n_interface_receptor_residues"] == 3
+
+    def test_target_chain_is_an_alias_of_receptor_chain(self, tmp_path):
+        record = _record(tmp_path)
+        assert compute_evobind_score_from_record(
+            record, "B", target_chain="A"
+        ) == compute_evobind_score_from_record(record, "B", "A")
+        with pytest.raises(ValueError, match="different chains"):
+            compute_evobind_score_from_record(record, "B", "A", target_chain="B")
+        with pytest.raises(TypeError, match="receptor_chain"):
+            compute_evobind_score_from_record(record, "B")
+
+    def test_a_record_without_plddt_gives_the_distances_and_a_reason(self, tmp_path):
+        record = _record(tmp_path, plddt=None)
+        record.reasons.append("the confidences file is missing")
+        res = compute_evobind_score_from_record(record, "B", "A")
+        assert np.isfinite(res["if_dist_pep_to_rec"])
+        assert res["mean_plddt_binder"] is None
+        assert res["evobind_score"] is None
+        assert res["reason"] == "prediction has no per-atom pLDDT: the confidences file is missing"
+
+    def test_zero_plddt_gives_no_score_and_the_path_reason(self, tmp_path):
+        record = _record(tmp_path, plddt=np.zeros(2 * (N_RECEPTOR + N_BINDER)))
+        res = compute_evobind_score_from_record(record, "B", "A")
+        assert res["evobind_score"] is None
+        assert res["reason"] == "mean binder pLDDT is zero or not finite"
+
+    def test_no_reason_when_the_score_is_computed(self, tmp_path):
+        assert "reason" not in compute_evobind_score_from_record(_record(tmp_path), "B", "A")
+
+    def test_a_wrong_length_plddt_array_is_a_value_error(self, tmp_path):
+        with pytest.raises(ValueError, match="plddt_per_atom length"):
+            compute_evobind_score_from_record(_record(tmp_path, plddt=np.full(5, 80.0)), "B", "A")
+
+    def test_the_record_must_be_a_record_with_a_structure(self, tmp_path):
+        with pytest.raises(TypeError, match="compute_evobind_score"):
+            compute_evobind_score_from_record(_record(tmp_path).structure_path, "B", "A")
+        empty = PredictionRecord("hand", "none", reasons=["no output found"])
+        with pytest.raises(ValueError, match="no structure file.*no output found"):
+            compute_evobind_score_from_record(empty, "B", "A")
+
+    def test_the_record_is_not_modified(self, tmp_path):
+        record = _record(
+            tmp_path, chain_map={"X": "A", "Y": "B"}, receptor_chain="X", binder_chain="Y"
+        )
+        before = record.atoms().chain_id.copy()
+        first = compute_evobind_score_from_record(record, "B", "A")
+        assert compute_evobind_score_from_record(record, "B", "A") == first
+        np.testing.assert_array_equal(record.atoms().chain_id, before)

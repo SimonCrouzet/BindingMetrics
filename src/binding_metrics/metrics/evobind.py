@@ -41,13 +41,19 @@ Usage:
 
     # The same check between two predictions read by the predictor adapters, whatever
     # model made them. Chain IDs are the user's IDs after each record's chain_map.
-    from binding_metrics.metrics.evobind import compute_evobind_adversarial_from_records
+    from binding_metrics.metrics.evobind import (
+        compute_evobind_adversarial_from_records,
+        compute_evobind_score_from_record,
+    )
     from binding_metrics.predictors import get_parser
 
     of3 = get_parser("of3")
     design = of3.load("design_scoring_out", "cmplx_007")
     adversary = of3.load("sequence_only_out", "cmplx_007")
     check = compute_evobind_adversarial_from_records(design, adversary, "B", "A")
+
+    # The primary score of one prediction read by an adapter
+    score = compute_evobind_score_from_record(adversary, "B", "A")
 """
 
 from __future__ import annotations
@@ -907,3 +913,82 @@ def compute_evobind_adversarial_from_records(
             reason += ": " + "; ".join(adversary.reasons)
         result["reason"] = reason
     return {"design_model": design_model, "adversary_model": adversary.model, **result}
+
+
+def compute_evobind_score_from_record(
+    record: PredictionRecord,
+    binder_chain: str,
+    receptor_chain: Optional[str] = None,
+    *,
+    receptor_interface_residues: Optional[list[int]] = None,
+    interface_cutoff_angstrom: float = 8.0,
+    target_chain: Optional[str] = None,
+) -> dict:
+    """Primary EvoBind score of a prediction read by a predictor adapter.
+
+    Same computation as :func:`compute_evobind_score`, with the structure and the per-atom
+    pLDDT taken from a ``PredictionRecord``, so the prediction can come from any model with
+    an adapter. Chain IDs are the USER's IDs: the record renames the chains of its file
+    through its ``chain_map`` (``get_parser(model).load(directory, name, chain_map=...)``).
+
+    The score divides by the binder pLDDT of the model that made the prediction, and pLDDT
+    is calibrated per model, so compare ``evobind_score`` between designs only when the same
+    model made the predictions.
+
+    Args:
+        record: The prediction. Its ``plddt_per_atom`` (0 to 100, in the atom order of its
+            structure file) gives the pLDDT-weighted score.
+        binder_chain: Chain ID of the binder, after ``chain_map``.
+        receptor_chain: Chain ID of the receptor, after ``chain_map``. Required, through
+            this parameter or ``target_chain``.
+        receptor_interface_residues: Receptor residue numbers that define the interface;
+            see :func:`compute_evobind_score`.
+        interface_cutoff_angstrom: Distance cutoff (Å) for the automatic interface
+            (default 8.0).
+        target_chain: Alias of ``receptor_chain``; different IDs in both raise
+            ``ValueError``.
+
+    Returns:
+        The dictionary of :func:`compute_evobind_score` plus ``model`` (``record.model``).
+        A record without per-atom pLDDT gives the distances, ``mean_plddt_binder`` and
+        ``evobind_score`` None, and a ``reason`` ("prediction has no per-atom pLDDT", the
+        adapter's own reasons appended).
+
+    Raises:
+        TypeError: If ``record`` is not a ``PredictionRecord``.
+        ValueError: If the record has no structure file, a chain is not in the structure,
+            the pLDDT array does not have one value per atom, or for any of the reasons
+            listed for :func:`compute_evobind_score`.
+
+    Reference:
+        Bryant et al. 2025, Commun. Chem. (doi:10.1038/s42004-025-01601-3).
+    """
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
+    if not isinstance(record, PredictionRecord):
+        raise TypeError(
+            "record must be a PredictionRecord (get_parser(model).load(...)); "
+            f"got {type(record).__name__}. For a structure file use compute_evobind_score."
+        )
+    atoms = record.atoms()
+    _require_chains(
+        atoms,
+        {"binder": binder_chain, "receptor": receptor_chain},
+        "prediction",
+        f"chains after the chain_map of the {record.model} record",
+    )
+    result = _score_from_atoms(
+        atoms,
+        record.plddt_per_atom,
+        binder_chain,
+        receptor_chain,
+        receptor_interface_residues,
+        interface_cutoff_angstrom,
+    )
+    if record.plddt_per_atom is None:
+        reason = "prediction has no per-atom pLDDT"
+        if record.reasons:
+            reason += ": " + "; ".join(record.reasons)
+        result["reason"] = reason
+    return {"model": record.model, **result}
