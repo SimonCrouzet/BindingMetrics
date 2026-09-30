@@ -119,9 +119,9 @@ binding-metrics-receptor-quality --input ensemble.cif --receptor-chain A --outpu
 | Reference accuracy | DockQ, fnat, fnonnat, i-RMSD, L-RMSD + CAPRI class — requires a native reference | Score | DockQ |
 | MD trajectory | Receptor backbone drift — aligned (conformational) and raw; ligand RMSD, RMSF, contacts | Score | MDTraj |
 | Receptor quality | MolProbity-style terms for a receptor chain (approximate) | Score | biotite + OpenMM |
-| Structure prediction | avg_pLDDT, pTM, ipTM, gPDE, interface PDE and PAE — OpenFold3 confidence | Score | OpenFold3 output |
+| Structure prediction | avg_pLDDT, pTM, ipTM, gPDE, interface PDE and PAE — confidence of OpenFold3, AlphaFold2 (ColabFold), Boltz-2 or Protenix output | Score | model output |
 | EvoBind scoring | Interface distance / pLDDT — confidence-weighted binding score (Å) | Score | biotite |
-| EvoBind adversarial check | Δ COM between design pose and OF3 prediction after receptor superposition — a large value means the prediction places the binder elsewhere | Score | biotite |
+| EvoBind adversarial check | Δ COM between design pose and the prediction after receptor superposition — a large value means the prediction places the binder elsewhere | Score | biotite |
 | All of the above | Per-residue breakdowns, per-atom arrays, per-frame series | Feature | — |
 
 Every result value is a score or a feature; the metric registry (`binding_metrics.metrics.registry`) declares the direction, unit and cost class of each metric's headline value. The full list of keys, units and algorithms is in [`docs/metrics.md`](docs/metrics.md).
@@ -339,14 +339,21 @@ result = compute_receptor_drift("traj.dcd", "complex.pdb", receptor_chain="A")
 print(f"Aligned drift — mean: {result['drift_aligned_mean']:.3f} Å  max: {result['drift_aligned_max']:.3f} Å")
 ```
 
-### OpenFold3 confidence scores
+### Structure-prediction confidence scores
 
 ```python
-from binding_metrics import compute_openfold_metrics
+from binding_metrics import compute_openfold_metrics, compute_prediction_metrics
 
 metrics = compute_openfold_metrics("./openfold_out", query_name="my_complex", seed=1, sample=1)
 print(f"pLDDT: {metrics['avg_plddt']:.1f}  ipTM: {metrics['iptm']:.3f}  gPDE: {metrics['gpde']:.3f} Å")
+
+# The same summary for the output of any model with an adapter (af2, boltz2, of3, protenix)
+metrics = compute_prediction_metrics(
+    "./boltz_out", model="boltz2", name="my_complex", binder_chain="B", receptor_chain="A"
+)
 ```
+
+`compute_openfold_metrics` keeps its dictionary; `compute_prediction_metrics` returns it with a `model` key for whichever model wrote the output. pLDDT and ipTM are calibrated per model, so compare them within one model.
 
 ### DockQ — reference-based CAPRI accuracy
 
@@ -374,7 +381,7 @@ binding-metrics-run --input predicted.cif --output-dir results/ --reference nati
 binding-metrics-batch --input-dir preds/ --output-csv metrics.csv --reference-dir natives/
 ```
 
-When the `openfold` metric is enabled in `binding-metrics-run`, EvoBind scores are automatically computed and merged into the OpenFold3 result dict — no additional model calls required.
+When the `openfold` metric is enabled in `binding-metrics-run`, EvoBind scores are automatically computed and merged into the OpenFold3 result dict — no additional model calls required. With `--predictor` they are merged into `results["prediction"]`, computed on the prediction of that model.
 
 ### EvoBind scoring
 
@@ -454,7 +461,7 @@ rows = run_batch(
 )
 ```
 
-`run_pipeline` takes the options of the `binding-metrics-run` flags as keyword arguments and returns the results dict described under [Results](#results-and-provenance). `binder_chain`, `target_chain` and `openfold_seeds` are keyword arguments too. `run_batch` returns one flat row per path in the order of the paths, whatever the number of workers, and writes the per-sample JSON and log; `on_result` is called with each row as it finishes (in completion order when `n_workers > 1`), and `on_error="raise"` re-raises an exception instead of recording an error row. The CSV of `binding-metrics-batch` is these rows.
+`run_pipeline` takes the options of the `binding-metrics-run` flags as keyword arguments and returns the results dict described under [Results](#results-and-provenance). `binder_chain`, `target_chain` and `openfold_seeds` are keyword arguments too, and so are `predictor`, `prediction_dir`, `prediction_binder_chain`, `prediction_target_chain`, `prediction_cache` and `rerun_predictions` (on `run_batch` as well). `run_batch` returns one flat row per path in the order of the paths, whatever the number of workers, and writes the per-sample JSON and log; `on_result` is called with each row as it finishes (in completion order when `n_workers > 1`), and `on_error="raise"` re-raises an exception instead of recording an error row. The CSV of `binding-metrics-batch` is these rows.
 
 The relaxation step is a `Relaxer`. `ImplicitRelaxation` is the one the package ships; pass another implementation, for a different force field or a stub in a test, with `run_pipeline(..., relaxer=...)`. The pipeline reads `success`, `error_message` and the structure path from the returned `RelaxationResult` and records its `to_dict()` under `results["relax"]`:
 
@@ -531,6 +538,11 @@ Unless `--skip-prep` is given, the pipeline starts with a **prep step** (equival
 | `--random-seed INT\|none` | 1 | seed of the stochastic steps; `none` for fresh randomness |
 | `--reference PATH` | none | native structure; enables DockQ |
 | `--openfold-mode`, `--openfold-conda-env`, `--openfold-seeds` | `score`, `openfold3`, seed 42 | OpenFold3 step |
+| `--on-unmappable-residue {error,x}` | `error` | a residue OpenFold3 cannot take stops the run before the model starts; `x` sends an `X` in its place |
+| `--predictor {af2,boltz2,of3,protenix}` | none | the `openfold` step reads the prediction of this model into `results["prediction"]` and runs the model at most once; see [Other prediction models](#other-prediction-models-and-the-run-once-store) |
+| `--prediction-dir DIR` | none | read the output you made with the model (never run); in `-batch` the root with one output per sample ID |
+| `--prediction-binder-chain`, `--prediction-target-chain` | the input's IDs | chain IDs inside the prediction when they differ |
+| `--prediction-cache DIR`, `--rerun-predictions` | `<output-dir>/predictions` (`-batch`: `_predictions`), off | the store of finished predictions; run again although it has one |
 | `--config PATH` | none | TOML file with option defaults (below) |
 | `--summary`, `--summary-format`, `--format` | off, `md`, `json` | write a summary with the scorecard; results as JSON or CSV (`binding-metrics-run` only) |
 | `--log-file PATH` | none | send all output to a file |
@@ -544,6 +556,26 @@ binding-metrics-run --input complex.cif --output-dir results/ \
 ```
 
 OpenFold3 runs in the `openfold3` conda env by default (see [OpenFold3 install](#openfold3-optional) above). Use `--openfold-mode refold` to measure refolding RMSD (binder predicted freely, receptor fixed as template).
+
+#### Other prediction models and the run-once store
+
+`--predictor MODEL` makes the `openfold` step model-agnostic. The prediction of AlphaFold2 (ColabFold), Boltz-2, Protenix or OpenFold3 is read through the adapter of that model, and every metric that needs it (the confidence scalars, the interface PAE and PDE, the EvoBind score and the adversarial check) reads one record, so a model runs at most once. The results go to `results["prediction"]` (`prediction_*` CSV columns) and `results["openfold"]` is skipped; without `--predictor` nothing changes.
+
+```bash
+# Read a Boltz-2 output you made yourself (the model never runs); the chains are named P and R in it
+binding-metrics-run --input design.cif --output-dir results/ --metrics interface,openfold \
+    --predictor boltz2 --prediction-dir boltz_out/ \
+    --prediction-binder-chain P --prediction-target-chain R
+
+# Run OpenFold3 through the store: a second run of this input starts no model
+binding-metrics-run --input design.cif --output-dir results/ --predictor of3
+binding-metrics-run --input design.cif --output-dir results/ --predictor of3 --rerun-predictions  # runs again
+
+# A batch: one model start for the samples the store lacks, one shared store
+binding-metrics-batch --input-dir designs/ --output-csv metrics.csv --predictor of3
+```
+
+Only OpenFold3 can be run from here; for the other models pass their output with `--prediction-dir`, or the command stops while the arguments are checked. The store (`--prediction-cache`, default `<output-dir>/predictions`) keeps one directory per request, named by a hash of the input file's content, the model version, the seeds and the options, so the same request finds its prediction on any machine and a changed option gets a new one; a failed run is recorded and not retried until `--rerun-predictions`. `results["prediction"]["cache"]` holds the counters (`runs`, `hits`, `adopted`, ...) that show whether the model ran for the sample. The keys, the store layout and the batch behaviour are in [`docs/metrics.md`](docs/metrics.md#pipeline---predictor-the-prediction-store-and-resultsprediction).
 
 **Configuration files.** `--config` (on `binding-metrics-run`, `-batch` and `-relax`) reads option defaults from a flat TOML file. Keys are long option names with dashes or underscores, a flag takes `true` or `false`, an option with several values takes a list, and an unknown key is an error. Precedence is the built-in default, then the file, then the command line.
 
@@ -644,11 +676,12 @@ The individual scoring tools take the binder chain as `--binder-chain` and the t
 | Key | Content |
 |---|---|
 | `sample_id`, `input`, `total_elapsed_s` | identifiers and wall time |
-| `provenance` | package version, git sha (when the package runs from its own checkout), Python, OS, OpenMM version, platform, seed |
+| `provenance` | package version, git sha (when the package runs from its own checkout), Python, OS, OpenMM version, platform, seed; the installed OpenFold3 version and the checkpoint name when OpenFold3 ran |
 | `chains` | resolved chain IDs and residue counts |
 | `prep` | what preparation changed: `removed_heterogens`, `n_removed_waters`, `kept_nonstandard`, `n_missing_atoms_rebuilt`, `n_missing_residue_gaps`, `chain_breaks` (consecutive residues whose C and N atoms are more than 2 Å apart) and `ncaa_bond_order_source` for GAFF2 residues |
 | `relax` | energies, RMSD and RMSF, the OpenMM `platform`, `dropped_protein_chains` (protein chains other than the peptide and the receptor, which the relaxation removes) and the structural QC: `qc_passed`, `qc_failed_checks` and (in the JSON) `qc_checks` |
 | `energy`, `interface`, `geometry`, `electrostatics`, `dockq`, `openfold` | one dict per metric: `{"skipped": True}` when it did not run, `{"error": message}` when it failed |
+| `prediction` | with `--predictor`: the confidence scores of the model's prediction, its EvoBind keys and `cache` (how the store served it) |
 | `nonfinite_fields` | the JSON paths of every NaN or infinite value |
 
 A value that could not be computed keeps its NaN, 0 or None, and its dict gains a string under `reason` that says why; a dict without `reason` was computed in full. The QC of the relaxed structure is advisory: a failed check logs a warning and changes neither the results nor the exit code. `binding-metrics-run` exits with 1 when a step failed, after writing the partial results. The schemas are in [`docs/metrics.md`](docs/metrics.md#15-pipeline-results-and-provenance).
@@ -673,7 +706,7 @@ configure_logging(logging.INFO)
 ## Reproducibility
 
 - **Seeds.** Hydrogen placement, PDBFixer's rebuilding of missing atoms, the conformer behind the AM1-BCC charges of non-canonical residues, the MD initial velocities and Langevin noise, the ion placement of `binding-metrics-solvate` and the hydrogen placement in the receptor energy term of `binding-metrics-receptor-quality` are seeded. The default seed is 1. Set it with `--random-seed INT` on `binding-metrics-run`, `-batch`, `-relax`, `-energy`, `-prep`, `-solvate` and `-receptor-quality`, or with `random_seed=` in the API; `--random-seed none` draws fresh randomness, for instance to generate independent MD replicas. The static metrics have no random step.
-- **OpenFold3.** The seed above does not drive it. The query JSON carries the seed 42 unless `--openfold-seeds` is given, and the MSA server can return different alignments over time.
+- **OpenFold3.** The seed above does not drive it. The query JSON carries the seed 42 unless `--openfold-seeds` is given, and the MSA server can return different alignments over time. With `--predictor` a finished prediction is stored under a key of the input's content, the model version, the seeds and the options, and a repeated run reuses it instead of predicting again; `--rerun-predictions` forces a new one. The alignments a remote MSA server returns are not part of the key.
 - **GPU precision.** CUDA runs in mixed precision and its force reduction order is not deterministic, so energies and MD from one seed can differ in the last digits between GPU runs.
 - **Provenance.** Every results file carries the `provenance` block (package version, git sha, Python, OS, OpenMM version, platform, seed), and batch CSV rows carry it as `provenance_*` columns, so a result can be tied to the code and settings that produced it.
 - **Environments.** `environment.yml` is the specification that CI and the Dockerfile build from. `environment.lock.yml` is a snapshot of the exact versions of the development environment (`conda env create -n binding-metrics -f environment.lock.yml`, then `pip install --no-deps -e .`); neither CI nor the Dockerfile reads it, and its header says how to regenerate it. The Docker images are built from `environment.yml` (see [Docker](#docker-gpu-recommended-for-production)).

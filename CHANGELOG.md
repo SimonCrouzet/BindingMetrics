@@ -289,6 +289,7 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - Broad `except Exception` blocks catch the errors they expect, or say in a comment why they stay
   broad. Those that passed silently log a warning or debug record. `compute_hbonds`, the platform probe
   of `MDSimulation` and the scorecard of the report no longer hide an unexpected error (#25).
+- The README and `docs/metrics.md` describe the structure-prediction step as model-agnostic: the options `--predictor`, `--prediction-dir`, `--prediction-binder-chain`, `--prediction-target-chain`, `--prediction-cache`, `--rerun-predictions` and `--on-unmappable-residue`, the keys of `results["prediction"]`, the layout of the prediction store, the run-once behaviour of a single run and of a batch, the optional provenance keys `openfold3_version` and `openfold3_checkpoint`, and the caveat that pLDDT and ipTM are calibrated per model, so the adversarial score is compared between designs only within one model. `tests/test_feat_c_docs.py` checks the documented options and keys against the code.
 
 ### Fixed
 

@@ -614,13 +614,56 @@ A model-specific scalar or dictionary goes in `extras` under the key the model u
 
 The `of3` adapter reads the layout above: `.cif`, `.cif.gz` or `.pdb` structures, JSON or NPZ confidences (NPZ without pickle), `seed_index` as the position in the numeric order of the seed values, `sample` counted from 1. `bespoke_iptm` is in `record.extras`, `chain_pair_iptm` keys are the strings OpenFold3 writes (`"(A, B)"`), and `record.tokens` is None because the files carry no token layout. Its layout was checked against the OpenFold3 v0.5.0 source, not against a 0.5.0 run.
 
+### Pipeline: `--predictor`, the prediction store and `results["prediction"]`
+
+`binding-metrics-run` and `binding-metrics-batch` read a prediction in their `openfold` step. Without `--predictor` that step is what it always was: it runs OpenFold3, parses it with `compute_openfold_metrics` and writes `results["openfold"]` (`openfold_*` columns). With `--predictor MODEL` it works for any model with an adapter and writes `results["prediction"]` (`prediction_*` columns); `results["openfold"]` is then `{"skipped": true}`.
+
+| option | default | effect |
+|--------|---------|--------|
+| `--predictor {af2,boltz2,of3,protenix}` | none | the model whose prediction the step reads; the choices are `sorted(binding_metrics.predictors.PARSERS)` |
+| `--prediction-dir DIR` | none | read an output you made; the model never runs. `DIR` is the directory the adapter loads with the sample ID (`--sample-id`, default the file stem) as the name; for OpenFold3 the folder that holds `<sample>/seed_*/`. The layout under it is the adapter's own, described in the docstring of `binding_metrics.predictors.<model>`. In `binding-metrics-batch` it is the root that holds one output per sample ID |
+| `--prediction-binder-chain`, `--prediction-target-chain` | the input's IDs | chain IDs inside the prediction when they differ from the input's; they build the `chain_map` of the record (model chain to input chain) |
+| `--prediction-cache DIR` | `<output-dir>/predictions` (`-batch`: `<output-dir>/_predictions`) | the store of finished predictions, shared by all samples of a batch |
+| `--rerun-predictions` | off | run each prediction again although the store has it, once; outputs given with `--prediction-dir` are never replaced |
+| `--openfold-mode`, `--openfold-seeds`, `--openfold-conda-env`, `--on-unmappable-residue` | as before | configure the OpenFold3 run of `--predictor of3` (`--openfold-mode refold` also measures `binder_ca_rmsd` against the input); ignored for a prediction that is read |
+
+Only OpenFold3 has a runner. `--predictor af2`, `boltz2` or `protenix` without `--prediction-dir` stops while the command line is checked, with the message that the model has no runner yet and that its output is passed with `--prediction-dir`; a prediction option without `--predictor` is refused too. In Python, `run_pipeline` takes the keyword-only `predictor`, `prediction_dir`, `prediction_binder_chain`, `prediction_target_chain`, `prediction_cache` and `rerun_predictions`, and `run_batch` takes the same, and both raise `ValueError` for the same combinations before any step runs. TOML config files set the options under their long names (`predictor = "boltz2"`, `prediction-dir = "outputs/"`).
+
+**one run per prediction.** A sample gets one `PredictionSession` on the store. The session asks the store for the sample's request; the model runs only when the store has no finished entry for it, and the record is parsed once. The confidence scalars, the interface PAE and PDE, the primary EvoBind score and the adversarial check all read that one record, so a model runs at most once for all of them, and a second run of the same input, model version, seeds and options starts no model. In a batch the requests of all samples go to the session's `prefetch` first, which starts the model once for those the store lacks (OpenFold3 predicts them in one call, as the batched OpenFold3 step always did); every sample then reads its record with a session of its own, so its `cache` shows `hits: 1`. The step runs after the workers, in the main process, like the batched OpenFold3 call.
+
+**the store.** One entry per request, in `<cache>/<model>/<key[:2]>/<key>/`:
+
+```
+request.json    what was asked: the model, its version, the mode, seeds, samples, options, chain roles, input hashes
+STATUS.json     status (done, failed with the reason, or adopted), timestamps, runner and version
+outputs/        the model's own files, untouched
+```
+
+`<key>` is the SHA-256 of a canonical description of the request: everything that changes the output, and the content hash of the input file, never its path. The same input, seeds, options and model version give the same key on every machine and after a move or rename of the file; another seed, option, model version or file content gives another. A run is written to a temporary directory and renamed into place under a file lock per key, so a run that is killed leaves no finished entry and two processes that ask for one request start the model once. A run that failed is recorded with its reason and is not retried unless `--rerun-predictions` is given; a model that cannot be started here (no `run_openfold` on the PATH, no `openfold3` in the conda environment) records nothing, so a missing installation is not remembered as a failure. Output given with `--prediction-dir` is adopted into the store by reference (`adopted`, the files stay where they are); its key includes the sample name, so two samples with identical input files keep their own outputs.
+
+**`results["prediction"]`.** The keys of the table in section 12, with `model` first, plus:
+
+| key | description |
+|-----|-------------|
+| `model` | the adapter name (`"of3"`, `"boltz2"`, ...) |
+| `if_dist_pep_to_rec`, `if_dist_rec_to_pep`, `if_dist_symmetric`, `n_interface_receptor_residues`, `interface_fallback_used`, `mean_plddt_binder`, `evobind_score` | the primary EvoBind score of section 13 on the predicted structure, with the binder pLDDT of the same record |
+| `delta_com_angstrom`, `n_superposition_residues`, `n_superposition_atoms`, `receptor_pairing`, `binder_pairing`, `*_resname_mismatch_fraction`, `afm_*`, `evobind_adversarial_score` | the adversarial check of section 13 between the input pose and the prediction; `afm_*` describe the prediction whatever its model |
+| `design_model`, `adversary_model` | `None` (the input pose is a file) and the adapter name |
+| `evobind_error`, `adversarial_error` | why the score or the check could not be computed; the rest of the block is unaffected |
+| `reason` | the `reason` strings of the parts, labelled and joined with `; ` (`evobind: ...`, `evobind adversarial: ...`) |
+| `cache` | `requests`, `memo_hits`, `hits`, `adopted`, `misses`, `runs`, `failed`, `parsed` (the counters of `PredictionSession.stats()`; `runs` is 1 when the model was computed for this sample, 0 when the store or `--prediction-dir` supplied it) and `request_key`, the name of the store entry |
+
+A prediction that failed, or that cannot be started here, gives `{"model": ..., "error": <reason>, "cache": {...}}`; the step counts as failed (exit code 1, `partial` in a batch, with `prediction` in `batch_failed_steps`) and the other steps of the sample go on. The step is `{"skipped": true}` when the chains are unknown, or when `openfold` is not among `--metrics`. `provenance` gains `openfold3_checkpoint` (the checkpoint file name the of3 record names) and, when the pipeline started OpenFold3 itself, `openfold3_version` (below).
+
+The adversarial check compares the input pose with the prediction. pLDDT and ipTM are calibrated per model, and `evobind_adversarial_score` divides by the pLDDT of the prediction, so compare scores between designs only when they come from one model. With `--predictor of3 --openfold-mode score` OpenFold3 is templated on the input pose, so agreement with it is partly by construction; a prediction from another model, or `--openfold-mode refold`, is an independent one.
+
 ---
 
 ## 13. EvoBind scoring
 
 `compute_evobind_score(structure_path, plddt_per_atom, binder_chain, receptor_chain=None, receptor_interface_residues=None, interface_cutoff_angstrom=8.0, *, target_chain=None)`, `compute_evobind_adversarial_check(design_structure_path, afm_structure_path, binder_chain, receptor_chain=None, afm_plddt_per_atom=None, interface_cutoff_angstrom=8.0, max_resname_mismatch_fraction=0.5, *, target_chain=None)` — `binding_metrics.metrics.evobind`
 
-The interface-distance and confidence losses of Bryant et al. (2025). Gly and residues without Cβ use Cα. When `binding-metrics-run` runs the `openfold` metric, both functions run on the OpenFold3 output and their keys are merged into the OpenFold3 result; no extra model call is needed. Registered as `evobind_score` and `evobind_adversarial`.
+The interface-distance and confidence losses of Bryant et al. (2025). Gly and residues without Cβ use Cα. When `binding-metrics-run` runs the `openfold` metric, both functions run on the OpenFold3 output and their keys are merged into the OpenFold3 result; no extra model call is needed. With `--predictor` the same two computations run on the record of that model and their keys are merged into `results["prediction"]` (see the end of section 12). Registered as `evobind_score` and `evobind_adversarial`.
 
 ### primary score
 
@@ -695,6 +738,7 @@ binding-metrics-receptor-quality --input receptor.pdb --output quality.csv    # 
 | `energy` | result of §5 |
 | `interface`, `geometry`, `electrostatics` | results of §2 to §8; `geometry` holds `ramachandran`, `omega` and `shape_complementarity` |
 | `dockq`, `openfold` | results of §10 and §12 (with the EvoBind keys merged into `openfold`) |
+| `prediction` | only with `--predictor` / `predictor=`: the prediction of any model with an adapter, its EvoBind keys and the store counters (§12, "Pipeline"); `openfold` is then `{"skipped": True}` |
 | `nonfinite_fields` | paths of every NaN or infinite value in the file, for example `relax.rmsd_md_final` |
 
 A metric that did not run is `{"skipped": True}`; one that failed is `{"error": message}`, and the command exits with 1 when any step failed.
@@ -750,7 +794,9 @@ The limits are wide on purpose: they separate a relaxed structure from an explod
 
 `git_sha` is set only when the package is imported from its own git checkout. Collection is best effort and never raises; a field that cannot be determined is `None`. `binding-metrics-batch` writes the same block as `provenance_<key>` columns at the end of every CSV row. `binding_metrics.provenance.collect_provenance(seed, platform)` builds the block for your own result files.
 
-**batch rows.** A row holds `sample_id`, `input`, the flattened results, `batch_status` and the `provenance_*` columns. `batch_status` is `ok` (every step completed), `partial` (the pipeline finished but a step failed; see `batch_failed_steps` and `batch_failed_reasons`) or `error` (the worker raised; see `batch_error`). `run_batch` returns the rows in the order of its input paths.
+Two optional keys describe a run that used OpenFold3 and are absent otherwise (adding them needs no schema bump). `openfold3_version` is the installed `openfold3` version (None when it is not installed or unreadable), added when the pipeline starts OpenFold3: the `openfold` step without `--predictor`, or `--predictor of3` without `--prediction-dir`; the environment of `--openfold-conda-env` is asked through `conda run -n <env> python`, and `collect_provenance(openfold3=True, openfold3_python_cmd=...)` adds it in your own code. It is not recorded for an output that was read from disk, because the installed version is not the one that made it. `openfold3_checkpoint` is the checkpoint file name that the record of the prediction names (`inference_ckpt_name` of OpenFold3's `experiment_config.json`), added by `--predictor` when the record has it. A batch writes `provenance_openfold3_version` for the samples OpenFold3 predicted.
+
+**batch rows.** A row holds `sample_id`, `input`, the flattened results, `batch_status` and the `provenance_*` columns. `batch_status` is `ok` (every step completed), `partial` (the pipeline finished but a step failed; see `batch_failed_steps` and `batch_failed_reasons`) or `error` (the worker raised; see `batch_error`). `run_batch` returns the rows in the order of its input paths. List and array fields (per-atom pLDDT, the PAE and PDE matrices, per-residue pLDDT) are not columns: they stay in the per-sample JSON. With `--predictor` the row holds the `prediction_*` columns of `results["prediction"]` (for example `prediction_avg_plddt`, `prediction_iptm`, `prediction_evobind_score`, `prediction_cache_runs`, `prediction_cache_request_key`).
 
 ---
 
