@@ -407,6 +407,10 @@ def _boltz_tokens(sites: _AtomSites) -> _BoltzTokens:
     standard or modified. The token of a residue is represented by its C-alpha (its C1' for a
     nucleotide, its first atom otherwise), the token of a ligand atom by that atom.
 
+    TO VERIFY: the rule assumes that a standard residue never appears in a ligand chain and a
+    modified residue never as ``HETATM`` in a polymer chain (module docstring, item 5). Where it
+    fails the token count differs from the arrays and ``Boltz2Parser.parse`` refuses the file.
+
     Raises:
         ValueError: A chain is written in two separate blocks; Boltz-2 writes each chain in
             one block, and the confidence files index chains by their order.
@@ -691,6 +695,8 @@ class Boltz2Parser(PredictionParser):
             if role in files.extra
         }
         sizes = {role: array.shape[0] for role, array in arrays.items()}
+        # TO VERIFY: a per-atom pLDDT (a head without token_level_confidence, module docstring
+        # item 4) has more values than PAE has rows and is refused here.
         if len(set(sizes.values())) > 1:
             raise ValueError(
                 f"the arrays of {stem} disagree on the number of tokens: {sizes}; "
@@ -806,6 +812,7 @@ class Boltz2Parser(PredictionParser):
             )
         if tokens is None:
             return
+        # TO VERIFY (module docstring, item 3): chain index k is the k-th chain of the file.
         order = tokens.chain_order
         by_index = {str(k): chain for k, chain in enumerate(order)}
         record.extras["chain_ids_by_index"] = by_index
