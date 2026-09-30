@@ -63,6 +63,37 @@ class TestTheAbstractClass:
         )
 
 
+class TestNotProvided:
+    def test_it_is_empty_by_default(self, written):
+        assert PredictionParser.not_provided == frozenset()
+        assert StubParser().load(written, "cmplx").not_provided == frozenset()
+
+    def test_load_copies_the_adapters_declaration_to_the_record(self, written):
+        class NoPde(StubParser):
+            not_provided = frozenset({"pde"})
+
+        record = NoPde().load(written, "cmplx")
+        assert record.not_provided == {"pde"}
+        assert StubParser.not_provided == frozenset()  # a sibling is unaffected
+
+    def test_load_keeps_what_the_adapter_put_on_the_record(self, written):
+        class Both(StubParser):
+            not_provided = frozenset({"pde"})
+
+            def parse(self, files, *, name, seed_index=1, sample=1):
+                record = super().parse(files, name=name, seed_index=seed_index, sample=sample)
+                record.not_provided = frozenset({"gpde"})
+                return record
+
+        assert Both().load(written, "cmplx").not_provided == {"pde", "gpde"}
+
+    def test_a_name_that_is_not_a_field_a_model_may_omit_is_refused_at_class_creation(self):
+        with pytest.raises(TypeError, match=r"not_provided names \['pdf'\]"):
+
+            class Typo(StubParser):
+                not_provided = frozenset({"pdf"})
+
+
 class TestLoad:
     def test_returns_the_record_of_the_requested_sample(self, written):
         first = StubParser().load(written, "cmplx")

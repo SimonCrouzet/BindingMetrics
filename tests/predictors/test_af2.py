@@ -687,8 +687,8 @@ class TestColabFoldParse:
         assert not np.allclose(summary["pae_interface"], truth[0:4, 4:7].T)
         expected_mean = (truth[4:7, 0:4].mean() + truth[0:4, 4:7].mean()) / 2
         assert summary["mean_interface_pae"] == pytest.approx(expected_mean)
-        # AlphaFold2 has no PDE, and the summary says so; nothing else is missing
-        assert summary["reason"] == "interface PDE: no PDE matrix in the confidences file"
+        # AlphaFold2 has no PDE by design, so nothing is missing and there is no reason
+        assert "reason" not in summary
 
     def test_a_directory_without_output_gives_a_reason(self, tmp_path):
         record = AlphaFold2Parser().load(tmp_path, NAME)
@@ -1296,7 +1296,7 @@ class TestPredictionMetricsOnAlphaFoldOutput:
         assert result["max_pae"] == pytest.approx(truth.pae.max())
         assert np.isnan(result["gpde"]) and result["pde"] is None
         assert result["chain_ptm"] == {"A": 0.88, "B": 0.8}
-        assert result["reason"] == "interface PDE: no PDE matrix in the confidences file"
+        assert "reason" not in result
 
     def test_the_chains_of_the_user_are_reached_through_the_chain_map(self, tmp_path):
         result = compute_prediction_metrics(

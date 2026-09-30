@@ -31,7 +31,7 @@ Extension points, for a model whose output has something the record has no field
 * a per-token array of that model goes in ``TokenLayout.extras`` (same length as the token
   list), and an additional file of a sample in ``PredictionFiles.extra``.
 * a field that every model could fill is added to ``PredictionRecord`` as the last keyword
-  argument (``files`` is the latest), with NaN, None or an empty container as the default, so
+  argument (``not_provided`` is the latest), with NaN, None or an empty container as the default, so
   no adapter has to change.
 * how a value was obtained (for example that the pLDDT came from the B-factor column, or the
   model version the layout was checked against) goes in ``extras``; a reason that a value is
@@ -232,6 +232,10 @@ class PredictionRecord:
         files: The files the record was parsed from; ``PredictionParser.load`` fills it when
             the adapter did not. ``summarize_prediction`` reads it to tell a full-confidence
             file that is absent (already explained in ``reasons``) from one that lacks a value.
+        not_provided: Names of the fields the model never provides (AlphaFold2 has no
+            ``pde``); ``PredictionParser.load`` copies them from the adapter. A field named
+            here is expected to stay NaN, None or empty, and ``summarize_prediction`` gives
+            no reason for it: a reason means a value that the model writes was missing.
     """
 
     model: str
@@ -259,6 +263,7 @@ class PredictionRecord:
     timing: dict[str, Any] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
     files: Optional[PredictionFiles] = None
+    not_provided: frozenset[str] = frozenset()
     _atoms_cache: Optional[tuple[Any, Any]] = field(default=None, init=False, repr=False)
 
     def __post_init__(self):
@@ -347,6 +352,10 @@ class PredictionRecord:
 
         problems += self._array_problems()
         problems += _chain_map_problems(self.chain_map)
+        problems += _not_provided_problems(self.not_provided)
+        for label in sorted(self.not_provided & set(_PROVIDABLE)):
+            if not _is_empty(getattr(self, label)):
+                problems.append(f"{label} is listed in not_provided but the record holds a value")
         if check_structure:
             problems += self._structure_problems()
         return problems
@@ -426,6 +435,42 @@ def check_chain_map(chain_map: Mapping[str, str]) -> dict[str, str]:
     if problems:
         raise ValueError("invalid chain_map: " + "; ".join(problems))
     return dict(chain_map)
+
+
+#: Fields of ``PredictionRecord`` that a model may leave out, so an adapter can name them in
+#: ``not_provided``. The identity, the paths and the free-form containers are not among them.
+_PROVIDABLE = (
+    "avg_plddt",
+    "ptm",
+    "iptm",
+    "gpde",
+    "ranking_score",
+    "has_clash",
+    "disorder",
+    "chain_ptm",
+    "chain_pair_iptm",
+    "plddt_per_atom",
+    "pae",
+    "pde",
+    "tokens",
+)
+
+
+def _not_provided_problems(names) -> list[str]:
+    """Problems of a ``not_provided`` set: anything that is not a field a model may omit."""
+    unknown = sorted(str(n) for n in names if n not in _PROVIDABLE)
+    if unknown:
+        return [f"not_provided names {unknown}, which are not fields a model may leave out"]
+    return []
+
+
+def _is_empty(value: Any) -> bool:
+    """True for a value that means "not provided": None, NaN or an empty container."""
+    if value is None:
+        return True
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
+        return not value
+    return _is_number(value) and bool(np.isnan(value))
 
 
 def _chain_map_problems(chain_map: Mapping[str, str]) -> list[str]:

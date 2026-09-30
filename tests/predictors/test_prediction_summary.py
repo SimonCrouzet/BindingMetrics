@@ -87,6 +87,30 @@ class TestReasonsForAFileThatWasReadButLacksAValue:
             "interface PAE: no PAE matrix in the confidences file"
         )
 
+    def test_a_field_the_model_never_provides_gets_no_reason(self, tmp_path):
+        files = PredictionFiles(directory=tmp_path, arrays=tmp_path / "confidences.json")
+        record = self._record(tmp_path, files)
+        record.not_provided = frozenset({"pde"})
+        summary = summarize_prediction(record, binder_chain="B", receptor_chain="A")
+        # only what the model does write is reported missing
+        assert summary["reason"] == (
+            "binder pLDDT: no per-atom pLDDT in the confidences file; "
+            "interface PAE: no PAE matrix in the confidences file"
+        )
+
+    def test_a_model_that_writes_a_pde_still_gets_the_reason_when_it_is_missing(self, tmp_path):
+        # OpenFold3 declares nothing as not provided, so a missing PDE is reported
+        root = _run(tmp_path)
+        (root / QUERY / "seed_1" / f"{QUERY}_seed_1_sample_1_confidences.json").write_text(
+            '{"plddt": %s, "pae": %s}' % (list(np.full(14, 90.0)), np.ones((7, 7)).tolist()),
+            encoding="utf-8",
+        )
+        record = openfold.get_parser("of3").load(root, QUERY)
+        assert record.not_provided == frozenset()
+        summary = summarize_prediction(record, binder_chain="B", receptor_chain="A")
+        assert summary["reason"] == "interface PDE: no PDE matrix in the confidences file"
+        assert summary["mean_interface_pae"] == pytest.approx(1.0)
+
     @pytest.mark.parametrize("files", [None, PredictionFiles(directory=Path("."))])
     def test_no_confidence_file_means_the_parser_has_already_said_why(self, tmp_path, files):
         summary = summarize_prediction(

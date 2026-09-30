@@ -38,6 +38,7 @@ from binding_metrics.predictors.record import (
     PredictionFiles,
     PredictionRecord,
     SampleRef,
+    _not_provided_problems,
     check_chain_map,
 )
 
@@ -71,12 +72,20 @@ class PredictionParser(ABC):
     #: that this attribute is None or an instance of it. A pre-flight check reads the value
     #: to refuse an input the model cannot handle before anything runs.
     capabilities: ClassVar[Optional[Any]] = None
+    #: Names of the ``PredictionRecord`` fields the model never provides (AlphaFold2 and
+    #: ColabFold write no ``pde``): ``load`` copies them to ``record.not_provided``, and
+    #: ``summarize_prediction`` gives no reason for them. Anything a model writes and a file
+    #: lacks is still explained. Only fields listed in ``record._PROVIDABLE`` are accepted.
+    not_provided: ClassVar[frozenset[str]] = frozenset()
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         family = cls.__dict__.get("family")
         if family is not None and family not in FAMILIES:
             raise TypeError(f"{cls.__name__}.family must be one of {FAMILIES}, got {family!r}")
+        problems = _not_provided_problems(cls.__dict__.get("not_provided", ()))
+        if problems:
+            raise TypeError(f"{cls.__name__}: {problems[0]}")
 
     @abstractmethod
     def find_files(
@@ -134,6 +143,8 @@ class PredictionParser(ABC):
         record = self.parse(files, name=name, seed_index=seed_index, sample=sample)
         if record.files is None:
             record.files = files
+        if self.not_provided:
+            record.not_provided = record.not_provided | self.not_provided
         if checked_map:
             record.chain_map = checked_map
         return record

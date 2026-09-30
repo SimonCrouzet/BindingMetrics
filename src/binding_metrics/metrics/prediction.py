@@ -181,7 +181,8 @@ def summarize_prediction(
     )
     reasons: list[str] = list(record.reasons)
     # A missing full-confidence file is already explained by the parser; the clauses below
-    # apply when the file was read but does not hold the value.
+    # apply when the file was read but does not hold a value that the model writes. A field
+    # in ``record.not_provided`` (AlphaFold2 has no PDE) is not missing, so it gets none.
     arrays_read = record.files is not None and record.files.arrays is not None
     plddt_arr = record.plddt_per_atom
 
@@ -245,7 +246,7 @@ def summarize_prediction(
                         stacklevel=stacklevel,
                     )
                     reasons.append(f"binder pLDDT: {exc}")
-            elif arrays_read:
+            elif arrays_read and "plddt_per_atom" not in record.not_provided:
                 reasons.append("binder pLDDT: no per-atom pLDDT in the confidences file")
 
             if receptor_chain is not None:
@@ -268,7 +269,7 @@ def summarize_prediction(
                             f"{caller}: interface PDE skipped: {exc}", stacklevel=stacklevel
                         )
                         reasons.append(f"interface PDE: {exc}")
-                elif arrays_read:
+                elif arrays_read and "pde" not in record.not_provided:
                     reasons.append("interface PDE: no PDE matrix in the confidences file")
 
                 # Interface PAE statistics (binder x receptor token block)
@@ -290,7 +291,7 @@ def summarize_prediction(
                             f"{caller}: interface PAE skipped: {exc}", stacklevel=stacklevel
                         )
                         reasons.append(f"interface PAE: {exc}")
-                elif arrays_read:
+                elif arrays_read and "pae" not in record.not_provided:
                     reasons.append("interface PAE: no PAE matrix in the confidences file")
 
             # Binder C-alpha RMSD vs. reference structure

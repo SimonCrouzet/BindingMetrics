@@ -954,6 +954,7 @@ class AlphaFold2Parser(PredictionParser):
     name = _MODEL
     display_name = "AlphaFold2 / ColabFold"
     family = "af2"
+    not_provided = frozenset({"pde", "gpde", "disorder", "has_clash"})
 
     def find_files(
         self,

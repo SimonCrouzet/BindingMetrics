@@ -285,6 +285,23 @@ class TestValidate:
             _good_record(chain_map={"A": "X", "B": "X"}).validate()
 
 
+class TestNotProvided:
+    def test_a_field_that_stays_empty_is_consistent(self):
+        record = _good_record(pde=None, gpde=float("nan"), not_provided=frozenset({"pde", "gpde"}))
+        record.validate()
+
+    def test_a_field_that_holds_a_value_is_reported(self):
+        with pytest.raises(ValueError, match="pde is listed in not_provided but the record holds"):
+            _good_record(not_provided=frozenset({"pde"})).validate()
+
+    def test_an_empty_dictionary_counts_as_not_provided(self):
+        _good_record(chain_pair_iptm={}, not_provided=frozenset({"chain_pair_iptm"})).validate()
+
+    def test_a_name_that_is_not_a_field_is_reported(self):
+        with pytest.raises(ValueError, match="not_provided names"):
+            _good_record(not_provided=frozenset({"structure_path"})).validate()
+
+
 class TestValidateAgainstTheStructure:
     def test_a_sound_record_passes(self, tmp_path):
         _record_with_structure(tmp_path).validate(check_structure=True)
