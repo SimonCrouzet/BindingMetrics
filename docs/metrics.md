@@ -598,6 +598,7 @@ Further subcommands: `prepare-query` and `refold` (binder refolding), `prepare-s
 | `pae`, `pde` | ndarray \| None | Å | `(n_tokens, n_tokens)`; `pae[i, j]` is the error of token j when the structure is aligned on token i |
 | `tokens` | TokenLayout \| None | — | chain, residue and atom of each token; None means one token per residue |
 | `extras`, `timing`, `reasons` | dict, dict, list | — | model-specific values, reported run times, one sentence per value that could not be provided |
+| `files` | PredictionFiles \| None | — | the files the record was parsed from; `load` fills it |
 
 A scalar the model does not provide is NaN, never None. A file that is absent leaves the fields it feeds at NaN (None for an array) and adds a sentence to `reasons`; a file that is present but corrupt raises. An adapter converts a 0–1 pLDDT to 0–100 and expands a per-residue or per-token pLDDT to atoms. `record.validate()` raises `ValueError` listing every violation of these rules (a scale, a shape, a `chain_map` that renames two chains to one ID), and reports a pLDDT array whose largest value is at most 1 as a probable unconverted 0–1 scale; `validate(check_structure=True)` also reads the structure and checks that the pLDDT array has one value per atom and that the `chain_map` fits the file.
 
@@ -905,7 +906,8 @@ The registry's `headline_key` and `direction` name the score of a metric that ha
 - Lovell et al. (2003). *Proteins* 50, 437.
 - Word et al. (1999). *J. Mol. Biol.* 285, 1735.
 - Engh & Huber (1991). *Acta Cryst.* A47, 392–400.
-- The OpenFold3 Team (2025). OpenFold3-preview. https://github.com/aqlaboratory/openfold-3, doi:10.5281/zenodo.19001000
+- The OpenFold3 Team (2026). OpenFold3, v0.5.0 (OpenBind-0 weights). https://github.com/aqlaboratory/openfold-3, doi:10.5281/zenodo.22042719 (doi:10.5281/zenodo.17485509 stands for all versions; cite the release that produced the results).
+- OpenBind Consortium (2026). OpenBind-0 announcement, 21 August 2026. https://openbind.uk/news/blog-openbind-0-advancing-open-molecular-structure-prediction/
 - Abramson et al. (2024). Accurate structure prediction of biomolecular interactions with AlphaFold 3. *Nature* 630, 493–500.
 - Bryant et al. (2025). EvoBind. *Communications Chemistry*. https://doi.org/10.1038/s42004-025-01601-3
 - Ryczko et al. (2026). Machine-learning force-field scoring rivals free-energy perturbation for congeneric ligand ranking across public benchmarks. ChemRxiv preprint, doi:10.26434/chemrxiv.15008810 (v2, 20 Sep 2026).

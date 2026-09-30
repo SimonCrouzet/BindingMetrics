@@ -246,6 +246,11 @@ Values from earlier versions differ in the cases below. A change reads "before -
   is on disk. openfold3 0.5.0 or later without that file fails the check, since every run would stop there;
   Preview2 weights alone do not count. A version below 0.5.0, or one that cannot be read, is a warning
   (#74). The check was a bare `import openfold3`.
+- The OpenFold3 reference in the README and `docs/metrics.md` is the v0.5.0 record (The OpenFold3 Team, 2026,
+  doi:10.5281/zenodo.22042719; concept doi:10.5281/zenodo.17485509 for all versions), where it pointed at the
+  0.4.0 record with the year 2025, and the OpenBind-0 announcement is listed (#87). The README says that
+  openfold3 supports Python 3.10 to 3.13 instead of "runs Python 3.10", keeps the separate environment as
+  the tested route and installs it with `setup_openfold --non-interactive` (#89).
 - The `:full` image and its README section describe the default Triton path of openfold3 0.5: the DeepSpeed
   `evoformer_attn` JIT cache mount, the CUTLASS and ninja layer and `CUTLASS_PATH` are gone (DeepSpeed is
   an opt-in extra that the environment file does not install), a mount for `TRITON_CACHE_DIR` takes their

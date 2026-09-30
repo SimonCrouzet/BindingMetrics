@@ -239,14 +239,16 @@ Images are rebuilt and pushed to Docker Hub automatically on every push to `main
 
 ### OpenFold3 (optional)
 
-OpenFold3 confidence scoring is optional; every other metric works without it. It requires a GPU, model weights and a compatible Python version, so it belongs in a **dedicated conda environment** named `openfold3`. The `openfold` extra (alias `openfold3`) lists the `openfold3` distribution, for an environment that can hold it next to BindingMetrics. That environment runs Python 3.10 and BindingMetrics needs 3.11 or later, so install OpenFold3 on its own, as below:
+OpenFold3 confidence scoring is optional; every other metric works without it. It requires a GPU, model weights and a compatible Python version, so it belongs in a **dedicated conda environment** named `openfold3`. The `openfold` extra (alias `openfold3`) lists the `openfold3` distribution, for an environment that can hold it next to BindingMetrics. openfold3 0.5 supports Python 3.10 to 3.13 and BindingMetrics needs 3.11 or later, so the two can share an interpreter version. Whether they install into one environment has not been tested (openfold3 0.5.0 requires `rdkit<2026` and brings torch, PyTorch Lightning and wandb), so a separate environment stays the route below:
 
 ```bash
-conda create -n openfold3 python=3.10
+conda create -n openfold3 python=3.10   # 3.10 to 3.13 work
 conda activate openfold3
-pip install openfold3
-setup_openfold   # downloads model weights
+pip install "openfold3>=0.5.0,<0.6"
+setup_openfold --non-interactive   # downloads the OpenBind-0 weights (about 2.3 GB)
 ```
+
+`environment_openfold3.yml` does the same in one step. openfold3 0.5 stops without its default checkpoint (`of3-ob-2025-06-30-174k.pt`) instead of downloading it at first use, and Preview2 weights from an older install do not load into it, so run `setup_openfold --non-interactive` once.
 
 `binding-metrics-run` will automatically use the `openfold3` env via
 `--openfold-conda-env openfold3` (the default). You can point it at a
@@ -731,5 +733,6 @@ If you use BindingMetrics in your work, please acknowledge it and feel free to g
 - Eastman, P. et al. (2017). OpenMM 7. *PLOS Comput. Biol.* 13, e1005659.
 - Chen, V.B. et al. (2010). MolProbity: all-atom structure validation for macromolecular crystallography. *Acta Cryst.* D66, 12–21.
 - Engh, R.A. & Huber, R. (1991). Accurate bond and angle parameters for X-ray protein structure refinement. *Acta Cryst.* A47, 392–400.
-- The OpenFold3 Team (2025). OpenFold3-preview. https://github.com/aqlaboratory/openfold-3, doi:10.5281/zenodo.19001000
+- The OpenFold3 Team (2026). OpenFold3, v0.5.0 (OpenBind-0 weights). https://github.com/aqlaboratory/openfold-3, doi:10.5281/zenodo.22042719 (doi:10.5281/zenodo.17485509 stands for all versions; cite the release that produced the results).
+- OpenBind Consortium (2026). OpenBind-0 announcement, 21 August 2026. https://openbind.uk/news/blog-openbind-0-advancing-open-molecular-structure-prediction/
 - Abramson, J. et al. (2024). Accurate structure prediction of biomolecular interactions with AlphaFold 3. *Nature* 630, 493–500.
