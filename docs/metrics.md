@@ -685,6 +685,48 @@ To verify. No Boltz-2 run was made and no real output file was read. Unconfirmed
 
 To verify. No Protenix run was made and no real output was parsed. Unconfirmed: that the tag v2.0.0 writes the layout of the commit above; one real run with `--need_atom_confidence true` against the adapter; that the atoms of the CIF follow the order of the arrays (`validate(check_structure=True)` and `token_layout` check the atom count and the chains); the 0-1 scale of `atom_plddt` and the shape of every array (a value or a shape that differs raises).
 
+### Run-once prediction store (`binding_metrics.predictors`)
+
+One prediction feeds several metrics: the confidence scalars, the interface PAE and PDE, the EvoBind score and the adversarial check. The store makes each model run happen at most once per request, across metrics, batch workers, processes and restarts. This subsection is the Python interface; the options of the command line and the layout of a stored entry are under "Pipeline" below.
+
+```python
+from binding_metrics.predictors import OpenFold3Runner, PredictionSession, PredictionStore
+
+runner = OpenFold3Runner(conda_env="openfold3")
+session = PredictionSession(PredictionStore("predictions"), [runner])
+request = runner.make_request("design.cif", name="design", binder_chain="B", receptor_chain="A")
+record = session.record(request)      # starts OpenFold3 on the first call only
+print(session.stats()["runs"])        # 1 here; a new session or process on the same store gives 0
+```
+
+`PredictionRequest(model, name, *, mode="score", input_path=None, binder_chain=None, receptor_chain=None, sequences=None, extra_files=None, seeds=(42,), num_samples=5, model_version="", options=None)` describes a prediction. `mode` is `predict`, `score` (both chains as templates) or `refold` (the binder from its sequence beside a templated receptor). `request.key()` is the SHA-256 of the canonical JSON of the model, its version, the mode, the seeds, the number of samples, the options, the chain roles, the sequences and the content hash of the input file and of each extra file. A moved or renamed identical file gives the same key; another seed, option, model version or file content gives another. A request without `model_version` takes the version that the runner reports, so predictions of two versions never share an entry. `name` labels the output files and is not part of the key of a run, so two samples with the same structure share one run.
+
+Outputs that the user made are the exception: they belong to a name, because a directory holds one output per name. `adopt` stores the entry under `request.for_adoption().key()`, the key with the name added, so two samples with one input file each keep their own outputs, and `lookup` tries the adopted entry first. Output adopted without a model version is found first even when the runner reports one. `PredictionStore.get_or_run(..., rerun=True)` runs the model again and drops the adoption of that request; `PredictionSession(..., rerun=True)` leaves the outputs adopted through it alone.
+
+`PredictionStore(root)` keeps `<root>/<model>/<key[:2]>/<key>/` with `request.json`, `STATUS.json` (`done`, `failed` with the reason, or `adopted`; timestamps; runner and version) and `outputs/`, the files of the model, untouched.
+
+| method | effect |
+|--------|--------|
+| `lookup(request)` | the stored entry of a request (`StoredPrediction`), or None |
+| `get_or_run(request, runner, *, rerun=False)` | the entry; the model runs only when there is none |
+| `adopt(request, directory, *, copy_outputs=False)` | registers outputs the user produced; they stay where they are unless `copy_outputs` is True |
+| `run_missing(requests, runner, *, rerun=False, max_batch=256)` | runs the requests that have no entry, in one batched call (of at most `max_batch` requests) when the runner supports it; a failed run is recorded, not raised |
+
+A run is written to a temporary directory and renamed into place, so a killed run leaves no finished entry, and an advisory `fcntl.flock` per key makes a second process wait and reuse the result. That needs a POSIX file system on which `flock` works, on one host at a time; it is not available on Windows. A run that raises is recorded as `failed` with the exception text as its reason, and asking again raises `PredictionFailedError` with that reason until a run is forced. A model that cannot be started (`PredictionRunner.is_available()` is False) raises `PredictionUnavailableError` and records nothing, so a missing installation is not remembered as a failed prediction.
+
+`PredictionSession(store, runners=None, parsers=None, *, rerun=False)` is what a pipeline passes around. `runners` maps a model name to its runner, or is a list of runners; a model without a runner is served from what the store holds. `parsers` defaults to the registry.
+
+| method | effect |
+|--------|--------|
+| `record(request, *, seed_index=1, sample=1, chain_map=None)` | the parsed `PredictionRecord`; the model runs on the first miss only and the files are parsed once |
+| `prefetch(requests)` | runs all missing requests of a batch of samples in one model process |
+| `adopt(request, directory, *, copy_outputs=False, check=True)` | registers a directory for parse-only use; with `check`, a directory in which the adapter finds no file of the sample raises `ValueError` |
+| `stats()` | the counters below |
+
+`stats()` returns `requests`, `memo_hits` (answered from the session's memory), `hits` (a finished run was in the store), `adopted`, `misses` (the model was run, or a run was forced or attempted), `runs` (predictions the model computed for this session; a failed run counts), `failed` and `parsed`, with `requests == memo_hits + hits + adopted + misses`.
+
+`PredictionRunner` (`binding_metrics.predictors.runners`) is the base class of a model runner: `prepare(request, work_dir)` writes the input files of the model, `run(request, work_dir)` runs the model and returns the directory its adapter loads, and the optional `supports_batch`, `run_many`, `is_available` and `version` say what it can do. A runner never reads the output; the adapter of the same model does. `OpenFold3Runner(conda_env=None)` starts OpenFold3 through `run_openfold_scoring`, `run_openfold_refolding`, `run_openfold_batched` and `run_openfold`, and is the only runner. Its `make_request` writes every setting that changes the output into the request, so two callers who mean one run get one key: the presets, the MSA server switch, the seeds and samples, `on_unmappable_residue`, the checkpoint and its size, the content of a template or runner YAML, and the content of OpenFold3's user-default `runner.yml`. The alignments that an MSA server returns are not in the key, because the answer of a remote server can change over time.
+
 ### Pipeline: `--predictor`, the prediction store and `results["prediction"]`
 
 `binding-metrics-run` and `binding-metrics-batch` read a prediction in their `openfold` step. Without `--predictor` that step is what it always was: it runs OpenFold3, parses it with `compute_openfold_metrics` and writes `results["openfold"]` (`openfold_*` columns). With `--predictor MODEL` it works for any model with an adapter and writes `results["prediction"]` (`prediction_*` columns); `results["openfold"]` is then `{"skipped": true}`.
