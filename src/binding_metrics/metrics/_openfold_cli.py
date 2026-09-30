@@ -12,7 +12,10 @@ from pathlib import Path
 import numpy as np
 
 from binding_metrics.metrics._common import ChainAliasAction
+from binding_metrics.metrics._openfold_run import _DEFAULT_MODEL_PRESETS
 from binding_metrics.utils import configure_logging
+
+_PRESETS_TEXT = " ".join(_DEFAULT_MODEL_PRESETS)
 
 
 def _add_parse_args(p, include_chain_args: bool = False) -> None:
@@ -215,9 +218,9 @@ def main():
     p_run.add_argument(
         "--presets",
         nargs="+",
-        default=["predict", "pae_enabled", "low_mem"],
+        default=list(_DEFAULT_MODEL_PRESETS),
         metavar="PRESET",
-        help="Model configuration presets (default: predict pae_enabled low_mem).",
+        help=f"Model configuration presets (default: {_PRESETS_TEXT}).",
     )
     p_run.add_argument(
         "--runner-yaml",
@@ -351,9 +354,9 @@ def main():
     p_refold.add_argument(
         "--presets",
         nargs="+",
-        default=["predict", "pae_enabled", "low_mem"],
+        default=list(_DEFAULT_MODEL_PRESETS),
         metavar="PRESET",
-        help="Model configuration presets.",
+        help=f"Model configuration presets (default: {_PRESETS_TEXT}).",
     )
     p_refold.add_argument(
         "--runner-yaml", type=Path, default=None, help="Explicit YAML config; overrides --presets."
@@ -464,9 +467,9 @@ def main():
     p_score.add_argument(
         "--presets",
         nargs="+",
-        default=["predict", "pae_enabled", "low_mem"],
+        default=list(_DEFAULT_MODEL_PRESETS),
         metavar="PRESET",
-        help="Model configuration presets.",
+        help=f"Model configuration presets (default: {_PRESETS_TEXT}).",
     )
     p_score.add_argument(
         "--runner-yaml", type=Path, default=None, help="Explicit YAML config; overrides --presets."

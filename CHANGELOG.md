@@ -220,6 +220,10 @@ Values from earlier versions differ in the cases below. A change reads "before -
 
 ### Changed
 
+- The default OpenFold3 model presets of `binding-metrics-openfold run`, `refold` and `score` are
+  `predict low_mem`. OpenFold3 0.4.1 removed `pae_enabled` (the PAE head is on by default; pTM, ipTM and PAE
+  are always written) and 0.5.0 only logs a warning for it. An explicit `pae_enabled` is left out of the runner
+  YAML with a `DeprecationWarning`, and the run continues (#49).
 - `import binding_metrics` no longer imports OpenMM. Names load on first access, and a name whose
   optional dependency is missing raises an error that names the extra to install (#21).
 - Library code logs through `logging`. The command-line tools call `configure_logging`, which sends

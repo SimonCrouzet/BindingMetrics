@@ -7,9 +7,16 @@ re-exports everything defined here.
 """
 
 import dataclasses
+import importlib.metadata
 import json
+import logging
+import re
+import subprocess
+import warnings
 from pathlib import Path
 from typing import Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 #: Seed values written into the ``"seeds"`` field of the query JSON. OpenFold3
 #: derives its sampling from these, so the same query gives the same prediction
@@ -28,6 +35,81 @@ def _query_seeds(seeds: Sequence[int]) -> list[int]:
     return values
 
 
+#: Model presets used when the caller names none. ``predict`` is the inference base and
+#: ``low_mem`` computes the pairformer embeddings sequentially, which suits large
+#: complexes. OpenFold3 0.4.1 removed ``pae_enabled``: the PAE head is on by default
+#: and pTM, ipTM and PAE are always written.
+_DEFAULT_MODEL_PRESETS: tuple[str, ...] = ("predict", "low_mem")
+
+#: First OpenFold3 release in which the PAE head is on by default. Before it (0.3.x),
+#: ``pae_enabled`` is the only way to get PAE, pTM and ipTM.
+_PAE_ON_BY_DEFAULT_SINCE = (0, 4, 0)
+
+_VERSION_PROBE = "from importlib.metadata import version; print(version('openfold3'))"
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """Leading numeric release fields of ``version`` (``"0.5.0.dev3"`` gives ``(0, 5, 0)``)."""
+    match = re.match(r"\d+(?:\.\d+)*", version.strip())
+    return tuple(int(part) for part in match.group().split(".")) if match else ()
+
+
+def installed_openfold3_version(python_cmd: Optional[Sequence[str]] = None) -> Optional[str]:
+    """Return the installed ``openfold3`` version, or None when it is not installed.
+
+    Args:
+        python_cmd: Command that starts the interpreter to ask, for example
+            ``["conda", "run", "-n", "openfold3", "python"]``. None asks the current
+            interpreter without starting a process.
+
+    Returns:
+        The distribution version string, or None if the package is absent, the
+        interpreter cannot be started or does not answer within a minute.
+    """
+    if python_cmd is None:
+        try:
+            return importlib.metadata.version("openfold3")
+        except importlib.metadata.PackageNotFoundError:
+            return None
+    try:
+        probe = subprocess.run(
+            [*python_cmd, "-c", _VERSION_PROBE],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("could not ask %s for the openfold3 version: %s", list(python_cmd), exc)
+        return None
+    if probe.returncode != 0:
+        return None
+    return probe.stdout.strip() or None
+
+
+def _drop_removed_presets(presets: Sequence[str]) -> list[str]:
+    """Return ``presets`` without ``pae_enabled``, warning when it was given.
+
+    OpenFold3 0.4.1 removed the preset and 0.5.0 still only logs a deprecation warning
+    for it, because the PAE head has been on by default since 0.4.0. The name stays
+    in the list only when the current interpreter has an openfold3 older than 0.4.0,
+    where PAE is off unless the preset asks for it.
+    """
+    kept = list(presets)
+    if "pae_enabled" not in kept:
+        return kept
+    installed = installed_openfold3_version()
+    if installed is not None and _version_tuple(installed) < _PAE_ON_BY_DEFAULT_SINCE:
+        return kept
+    message = (
+        "The 'pae_enabled' model preset is deprecated: OpenFold3 >= 0.4 computes the PAE "
+        "head by default, so the preset is left out of the runner YAML."
+    )
+    warnings.warn(message, DeprecationWarning, stacklevel=3)
+    logger.warning(message)
+    return [p for p in kept if p != "pae_enabled"]
+
+
 def _write_runner_yaml(
     output_dir: Path,
     presets: list[str],
@@ -37,8 +119,9 @@ def _write_runner_yaml(
 
     Args:
         output_dir: Directory in which to write the file.
-        presets: List of model preset names, e.g.
-            ``["predict", "pae_enabled", "low_mem"]``.
+        presets: List of model preset names, e.g. ``["predict", "low_mem"]``. A
+            ``"pae_enabled"`` entry is dropped with a ``DeprecationWarning`` (the
+            preset was removed in OpenFold3 0.4.1 and the PAE head is always on).
         template_dir: If given, adds ``template_preprocessor_settings`` with
             ``structure_directory`` pointing here and
             ``fetch_missing_structures: false`` so OF3 uses local CIFs only.
@@ -46,6 +129,7 @@ def _write_runner_yaml(
     Returns:
         Path to the written YAML file.
     """
+    presets = _drop_removed_presets(presets)
     cfg: dict = {"model_update": {"presets": presets}}
     if template_dir is not None:
         cfg["template_preprocessor_settings"] = {

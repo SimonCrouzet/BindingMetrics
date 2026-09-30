@@ -814,31 +814,31 @@ class TestWriteRunnerYaml:
     def test_default_presets(self, tmp_path):
         from binding_metrics.metrics.openfold import _write_runner_yaml
 
-        yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled", "low_mem"])
+        yaml_path = _write_runner_yaml(tmp_path, ["predict", "low_mem"])
 
         assert yaml_path.exists()
         content = yaml_path.read_text(encoding="utf-8")
         assert "predict" in content
-        assert "pae_enabled" in content
+        assert "pae_enabled" not in content
         assert "low_mem" in content
         assert "model_update" in content
 
     def test_custom_presets(self, tmp_path):
         from binding_metrics.metrics.openfold import _write_runner_yaml
 
-        yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled"])
+        yaml_path = _write_runner_yaml(tmp_path, ["predict", "mps"])
         content = yaml_path.read_text(encoding="utf-8")
 
-        assert "pae_enabled" in content
+        assert "mps" in content
         assert "low_mem" not in content
 
     def test_predict_prepended_by_run_openfold(self, tmp_path):
         """run_openfold() must prepend 'predict' if absent from presets."""
         from binding_metrics.metrics.openfold import _write_runner_yaml
 
-        yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled", "low_mem"])
+        yaml_path = _write_runner_yaml(tmp_path, ["predict", "low_mem"])
         content = yaml_path.read_text(encoding="utf-8")
-        for p in ("predict", "pae_enabled", "low_mem"):
+        for p in ("predict", "low_mem"):
             assert p in content
 
     def test_chain_metrics(self, tmp_path):

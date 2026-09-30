@@ -554,10 +554,10 @@ Runs `run_openfold predict` as a subprocess, in the current environment or throu
 | `num_diffusion_samples` | 5 | structures sampled per query |
 | `num_model_seeds` | 1 | passed as `--num_model_seeds` |
 | `use_msa_server` | True | ColabFold MSA server; the sequences leave the machine, and results can change over time because the alignments come from a remote service |
-| `model_presets` | `["predict", "pae_enabled", "low_mem"]` | presets written to a runner YAML; `predict` is always included |
+| `model_presets` | `["predict", "low_mem"]` | presets written to a runner YAML; `predict` is always included |
 | `runner_yaml` | None | explicit YAML; overrides `model_presets` |
 
-presets: `predict` is the required base preset, `pae_enabled` switches on the PAE head (needed for pTM, ipTM, disorder and the chain scores, and required by the official weights), `low_mem` computes the pairformer embeddings sequentially and suits large complexes or limited GPU memory.
+presets: `predict` is the required base preset and `low_mem` computes the pairformer embeddings sequentially, which suits large complexes or limited GPU memory. There is no preset for the PAE head: OpenFold3 0.4.1 removed `pae_enabled`, and pTM, ipTM and PAE are always written. A `pae_enabled` entry in `model_presets` (or `--presets`) is left out of the runner YAML with a `DeprecationWarning`, and the run continues.
 
 ### CLI: `binding-metrics-openfold`
 
@@ -569,7 +569,7 @@ binding-metrics-openfold parse --output-dir ./openfold_out --query-name my_compl
 # run inference, then parse
 binding-metrics-openfold run --query-json query.json --output-dir ./openfold_out \
     --query-name my_complex --num-samples 5 --num-seeds 1 \
-    [--presets predict pae_enabled low_mem] [--no-msa-server]
+    [--presets predict low_mem] [--no-msa-server]
 ```
 
 Further subcommands: `prepare-query` and `refold` (binder refolding), `prepare-scoring-query` and `score` (scoring an existing complex). `--seed` is the seed-directory index, as in the function. In `binding-metrics-run` and `-batch`, `--openfold-seeds SEED [SEED ...]` sets the seed values of the query JSON and the first seed's first sample is scored.
