@@ -7,6 +7,7 @@ re-exports everything defined here.
 """
 
 import dataclasses
+import hashlib
 import importlib.metadata
 import json
 import logging
@@ -773,6 +774,48 @@ def _safe_entry_id(sample_id: str, suffix: str) -> str:
     return sample_id.replace("_", "-") + suffix
 
 
+def _unique_entry_ids(sample_ids: Sequence[str], suffix: str) -> dict[str, str]:
+    """Return the entry ID of every sample, unique across the batch.
+
+    An ID is :func:`_safe_entry_id` of the sample ID, so samples whose IDs contain no
+    underscore and do not collide keep exactly that. ``a_b`` and ``a-b`` (or ``Ab`` and
+    ``aB``, which collide on a case-insensitive file system) would both give
+    ``templates/a-b<suffix>.cif`` and the second CIF would replace the first, so one query
+    would be predicted from the other's template. Every sample of such a group gets a short
+    hash of its own sample ID before the suffix (``a-b-1f2e3d4c<suffix>``), which does not
+    depend on the other samples or their order.
+
+    Args:
+        sample_ids: Sample IDs of the batch; a repeated ID is one sample.
+        suffix: Role suffix (``"rec"`` or ``"bnd"``).
+
+    Returns:
+        Map from each distinct sample ID to its entry ID.
+    """
+    unique_ids = list(dict.fromkeys(sample_ids))
+    plain = {sid: _safe_entry_id(sid, suffix) for sid in unique_ids}
+    groups: dict[str, list[str]] = {}
+    for sid, entry in plain.items():
+        groups.setdefault(entry.casefold(), []).append(sid)
+    entry_ids = dict(plain)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        for length in range(8, 41, 4):  # widen the hash in the (unlikely) event of a clash
+            hashed = {
+                sid: _safe_entry_id(
+                    sid, f"-{hashlib.sha256(sid.encode('utf-8')).hexdigest()[:length]}{suffix}"
+                )
+                for sid in members
+            }
+            if len({entry.casefold() for entry in hashed.values()}) == len(members):
+                entry_ids.update(hashed)
+                break
+        else:
+            raise ValueError(f"Cannot build distinct template entry IDs for {members}.")
+    return entry_ids
+
+
 def _read_batch_chains(samples: list[_BatchSample], on_unmappable_residue: str) -> list[tuple]:
     """Read receptor and binder of every sample before anything is written.
 
@@ -839,10 +882,14 @@ def prepare_batched_scoring_queries(
     templates_dir = output_dir / "templates"
     templates_dir.mkdir(exist_ok=True)
 
+    names = [s.query_name for s, *_ in rows]
+    rec_entries = _unique_entry_ids(names, "rec")
+    bnd_entries = _unique_entry_ids(names, "bnd")
+
     queries: dict = {}
     for s, st, receptor_seq, receptor_nc, binder_seq, binder_nc in rows:
-        rec_entry = _safe_entry_id(s.query_name, "rec")
-        bnd_entry = _safe_entry_id(s.query_name, "bnd")
+        rec_entry = rec_entries[s.query_name]
+        bnd_entry = bnd_entries[s.query_name]
 
         _extract_chain_to_cif(
             st, s.receptor_chain, templates_dir / f"{rec_entry}.cif", sequence=receptor_seq
@@ -920,9 +967,11 @@ def prepare_batched_refolding_queries(
     templates_dir = output_dir / "templates"
     templates_dir.mkdir(exist_ok=True)
 
+    rec_entries = _unique_entry_ids([s.query_name for s, *_ in rows], "rec")
+
     queries: dict = {}
     for s, st, receptor_seq, receptor_nc, binder_seq, binder_nc in rows:
-        rec_entry = _safe_entry_id(s.query_name, "rec")
+        rec_entry = rec_entries[s.query_name]
 
         _extract_chain_to_cif(
             st, s.receptor_chain, templates_dir / f"{rec_entry}.cif", sequence=receptor_seq

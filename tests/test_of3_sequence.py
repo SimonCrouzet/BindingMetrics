@@ -21,42 +21,7 @@ from binding_metrics.metrics._openfold_run import (  # noqa: E402
     _extract_query_chain,
     _extract_sequence_from_structure,
 )
-
-_BACKBONE = (("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"))
-
-
-def _residue(name: str, number: int, atoms=_BACKBONE, icode: str = " "):
-    res = gemmi.Residue()
-    res.name = name
-    res.seqid = gemmi.SeqId(number, icode)
-    for k, (atom_name, element) in enumerate(atoms):
-        atom = gemmi.Atom()
-        atom.name = atom_name
-        atom.element = gemmi.Element(element)
-        atom.pos = gemmi.Position(3.8 * number + k, 0.5 * k, 0.0)
-        res.add_atom(atom)
-    return res
-
-
-def _structure(chains: dict) -> "gemmi.Structure":
-    """Structure from ``{chain_id: [name or (name, atoms), ...]}``; residues are numbered 1..n."""
-    st = gemmi.Structure()
-    model = gemmi.Model("1")
-    for chain_id, names in chains.items():
-        chain = gemmi.Chain(chain_id)
-        for number, entry in enumerate(names, start=1):
-            name, atoms = (entry, _BACKBONE) if isinstance(entry, str) else entry
-            chain.add_residue(_residue(name, number, atoms))
-        model.add_chain(chain)
-    st.add_model(model)
-    return st
-
-
-def _write(tmp_path: Path, chains: dict, name: str = "complex.pdb") -> Path:
-    path = tmp_path / name
-    _structure(chains).write_pdb(str(path))
-    return path
-
+from tests.test_of3_synth import _residue, _structure, _write  # noqa: E402
 
 _HOH = ("HOH", (("O", "O"),))
 _ZN = ("ZN", (("ZN", "Zn"),))

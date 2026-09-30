@@ -274,6 +274,10 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - `--small-molecules` accepts `auto` or `none`. A typo used to register each character as a SMILES (#27).
 - Without gemmi, `save_cif` logs a warning and `extract_model_to_tempfile` raises `ImportError` for a CIF;
   both used to degrade without a message (#28).
+- Batched OpenFold3 queries: sample IDs that differ only by `_` versus `-` (or by case) shared one template
+  file, so the second sample's CIF replaced the first's and that query was predicted from the wrong
+  template. `a_b` and `a-b` both became `templates/a-brec.cif`; each now gets a short hash of its own ID
+  (`a-b-648fa9b3rec` and `a-b-d44362d6rec`). IDs that do not collide keep their names (#86).
 - OpenFold3 and EvoBind: token offsets are checked against the matrix size, residue names are checked
   when two structures are paired, and the batch OpenFold JSON holds numbers, not strings (#25, #33).
 - The report writes numpy scalars as numbers and shows NaN as N/A in the scorecard, where NaN used to
