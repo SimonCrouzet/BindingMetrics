@@ -430,6 +430,9 @@ def run_openfold(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # ``--openfold-conda-env ""`` means the current environment, as its help says.
+    # run_openfold_scoring, run_openfold_refolding and run_openfold_batched end here.
+    conda_env = conda_env or None
     if conda_env is None and shutil.which("run_openfold") is None:
         raise FileNotFoundError(
             "run_openfold not found on PATH. "
