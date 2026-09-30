@@ -14,18 +14,21 @@ Layout (all files of one sample share a stem, ``{name}_s{seed_index}_m{sample}``
     {stem}.timing.json     {"inference": seconds}
 
 The stub writes pLDDT on 0-1, so its parser has a scale conversion to do, and it names its
-ranking score ``stub_score``.
+ranking score ``stub_score``. This module imports no biotite (the writer imports the shared
+``synth`` helpers when it runs), so the parser can be loaded where biotite is blocked.
 """
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.record import PredictionFiles, PredictionRecord
-from tests.predictors import synth
+
+if TYPE_CHECKING:
+    from tests.predictors.synth import SyntheticComplex
 
 _NAN = float("nan")
 
@@ -117,12 +120,14 @@ class StubParser(PredictionParser):
 def write_prediction(
     directory: Path,
     name: str,
-    complex_: synth.SyntheticComplex,
+    complex_: "SyntheticComplex",
     *,
     seed_index: int = 1,
     sample: int = 1,
 ) -> None:
     """Write ``complex_`` as the stub model's files (see the module docstring)."""
+    from tests.predictors import synth  # here, so the parser above imports without biotite
+
     stem = _stem(directory, name, seed_index, sample)
     Path(directory).mkdir(parents=True, exist_ok=True)
     scalars = complex_.scalars
