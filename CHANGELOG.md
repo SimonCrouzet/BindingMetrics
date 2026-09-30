@@ -304,6 +304,9 @@ Values from earlier versions differ in the cases below. A change reads "before -
   `*.pt` file as the weights, so a volume with Preview2 weights skipped the download and the first run
   stopped (#71), and named `openfold3-p2-155k` as the default (#72). Statically checked and run under bash
   with a stub `conda`; the image was not built.
+- A template file that lacks the receptor or binder chain (`template_cif_path` of the scoring and refolding
+  queries, for example a relaxed CIF that renames chains) raises `ValueError` before anything is written.
+  It wrote a template CIF without atoms and gave no error. The message names the file and the chains it has (#98).
 - `binding-metrics-check-env` reports OpenFold3 as not found when the `conda` executable is missing, where
   it stopped with a `FileNotFoundError` traceback (#97).
 - OpenFold3 removes the parent of its template `structure_directory` when a run with the MSA server and

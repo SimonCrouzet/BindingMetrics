@@ -712,7 +712,27 @@ def _extract_sequence_from_structure(
     return _extract_query_chain(structure, chain_id, on_unmappable_residue=on_unmappable_residue)[0]
 
 
-def _extract_chain_to_cif(structure, chain_id: str, output_path: Path, sequence: str = "") -> None:
+def _require_chain(structure, chain_id: str, source: str = "") -> None:
+    """Raise ``ValueError`` unless the first model of ``structure`` has a chain ``chain_id``.
+
+    ``source`` names where the structure came from (a file path) so that the message says
+    which template file lacks the chain; without this check a missing chain gives a template
+    CIF with no atoms and no error.
+    """
+    chain_ids = [chain.name for chain in structure[0]]
+    if chain_id not in chain_ids:
+        where = f" {source}" if source else ""
+        raise ValueError(
+            f"Chain '{chain_id}' not found in template structure{where} "
+            f"(chains in its first model: {', '.join(chain_ids) or 'none'}). The template "
+            "must use the chain IDs of the complex; rename the chain in the template file "
+            "or pass a template that has it."
+        )
+
+
+def _extract_chain_to_cif(
+    structure, chain_id: str, output_path: Path, sequence: str = "", *, source: str = ""
+) -> None:
     """Write a single chain from a gemmi Structure to a CIF file.
 
     Also patches the missing mmCIF metadata tables required by OF3's template
@@ -725,8 +745,14 @@ def _extract_chain_to_cif(structure, chain_id: str, output_path: Path, sequence:
         output_path: Destination CIF file path.
         sequence: One-letter amino acid sequence for this chain (used to
             populate ``_entity_poly``). If empty, extracted from structure atoms.
+        source: File the structure was read from, named in the error message.
+
+    Raises:
+        ValueError: If the chain is not in the structure; nothing is written then.
     """
     import gemmi
+
+    _require_chain(structure, chain_id, source)
 
     new_st = gemmi.Structure()
     new_st.cell = structure.cell
@@ -909,6 +935,15 @@ def prepare_refolding_query(
         st, binder_chain, on_unmappable_residue=on_unmappable_residue
     )
 
+    # Template source: the provided CIF (e.g. after MD relaxation) or the complex. Its chain is
+    # checked before anything is written, because the relaxed file may name chains differently.
+    if template_cif_path is not None:
+        template_src = gemmi.read_structure(str(template_cif_path))
+        template_source = str(template_cif_path)
+    else:
+        template_src, template_source = st, str(complex_structure_path)
+    _require_chain(template_src, receptor_chain, template_source)
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     templates_dir = output_dir / "templates"
@@ -917,12 +952,10 @@ def prepare_refolding_query(
     # Template CIF — named receptor.cif so OF3 finds entry_id="receptor"
     receptor_entry_id = "receptor"
     template_dest = templates_dir / f"{receptor_entry_id}.cif"
-    if template_cif_path is not None:
-        # Extract only the receptor chain from the provided CIF
-        template_src = gemmi.read_structure(str(template_cif_path))
-        _extract_chain_to_cif(template_src, receptor_chain, template_dest, sequence=receptor_seq)
-    else:
-        _extract_chain_to_cif(st, receptor_chain, template_dest, sequence=receptor_seq)
+    # Only the receptor chain is extracted from the template source
+    _extract_chain_to_cif(
+        template_src, receptor_chain, template_dest, sequence=receptor_seq, source=template_source
+    )
 
     # A3M self-alignment for receptor — header: receptor_{chain}/{1}-{N}
     a3m_path = output_dir / f"{query_name}_receptor.a3m"
@@ -1026,15 +1059,20 @@ def prepare_scoring_query(
         st, binder_chain, on_unmappable_residue=on_unmappable_residue
     )
 
+    # Template source: use template_cif_path if provided, else the complex. Both chains are
+    # checked before anything is written, because a relaxed file may name chains differently.
+    if template_cif_path is not None:
+        template_src = gemmi.read_structure(str(template_cif_path))
+        template_source = str(template_cif_path)
+    else:
+        template_src, template_source = st, str(complex_structure_path)
+    _require_chain(template_src, receptor_chain, template_source)
+    _require_chain(template_src, binder_chain, template_source)
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     templates_dir = output_dir / "templates"
     templates_dir.mkdir(exist_ok=True)
-
-    # Template source: use template_cif_path if provided, else the complex
-    template_src = (
-        gemmi.read_structure(str(template_cif_path)) if template_cif_path is not None else st
-    )
 
     # Template CIF files — named {entry_id}.cif so OF3 can find them.
     # Entry IDs must contain no underscores; chain_id is the suffix after "_".
@@ -1046,9 +1084,14 @@ def prepare_scoring_query(
         receptor_chain,
         templates_dir / f"{receptor_entry_id}.cif",
         sequence=receptor_seq,
+        source=template_source,
     )
     _extract_chain_to_cif(
-        template_src, binder_chain, templates_dir / f"{binder_entry_id}.cif", sequence=binder_seq
+        template_src,
+        binder_chain,
+        templates_dir / f"{binder_entry_id}.cif",
+        sequence=binder_seq,
+        source=template_source,
     )
 
     # A3M self-alignments — header: {entry_id}_{chain_id}/{1}-{N}

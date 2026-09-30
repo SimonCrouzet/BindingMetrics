@@ -302,3 +302,69 @@ class TestQueryLayoutDocstrings:
         doc = openfold.prepare_refolding_query.__doc__
         assert "has no ``--template_mmcif_dir`` option" in doc
         assert "Pass::" not in doc
+
+
+class TestTemplateChainMustExist:
+    """A template source without the chain used to give a template CIF with no atoms (#98)."""
+
+    _P53 = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+
+    @pytest.fixture(autouse=True)
+    def _require_gemmi(self):
+        pytest.importorskip("gemmi")
+
+    @pytest.fixture
+    def renamed_template(self, tmp_path):
+        """A relaxed-looking template whose chains are X and Y instead of A and B."""
+        from tests.test_of3_synth import _write
+
+        return _write(tmp_path, {"X": ["ALA", "GLY"], "Y": ["SER", "LYS"]}, "relaxed.pdb")
+
+    def test_the_direct_call_raises_and_writes_nothing(self, tmp_path):
+        import gemmi
+
+        st = gemmi.read_structure(str(self._P53))
+        out = tmp_path / "t.cif"
+        with pytest.raises(ValueError, match="Chain 'Z' not found in template structure"):
+            _openfold_run._extract_chain_to_cif(st, "Z", out, sequence="AAAA")
+        assert not out.exists()
+
+    def test_the_message_names_the_source_and_the_chains_it_has(self, tmp_path):
+        import gemmi
+
+        st = gemmi.read_structure(str(self._P53))
+        with pytest.raises(ValueError) as info:
+            _openfold_run._extract_chain_to_cif(
+                st, "Z", tmp_path / "t.cif", sequence="AAAA", source="relaxed.cif"
+            )
+        assert "relaxed.cif" in str(info.value)
+        assert "chains in its first model: A, B" in str(info.value)
+
+    @pytest.mark.parametrize(
+        "function", [openfold.prepare_scoring_query, openfold.prepare_refolding_query]
+    )
+    def test_prepare_names_the_template_file_and_writes_nothing(
+        self, tmp_path, renamed_template, function
+    ):
+        out = tmp_path / "out"
+        with pytest.raises(ValueError, match="Chain 'A' not found in template structure") as info:
+            function(self._P53, "A", "B", "q", out, template_cif_path=renamed_template)
+        assert str(renamed_template) in str(info.value)
+        assert not out.exists()
+
+    def test_scoring_checks_the_binder_chain_too(self, tmp_path):
+        from tests.test_of3_synth import _write
+
+        template = _write(tmp_path, {"A": ["ALA", "GLY"]}, "only_a.pdb")
+        out = tmp_path / "out"
+        with pytest.raises(ValueError, match="Chain 'B' not found in template structure"):
+            openfold.prepare_scoring_query(
+                self._P53, "A", "B", "q", out, template_cif_path=template
+            )
+        assert not out.exists()
+
+    def test_a_template_that_has_the_chains_still_works(self, tmp_path):
+        out = tmp_path / "out"
+        openfold.prepare_scoring_query(self._P53, "A", "B", "q", out, template_cif_path=self._P53)
+        assert (out / "templates" / "receptor.cif").exists()
+        assert (out / "templates" / "binder.cif").exists()
