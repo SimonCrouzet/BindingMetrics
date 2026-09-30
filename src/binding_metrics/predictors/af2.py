@@ -72,8 +72,10 @@ TO VERIFY
 from __future__ import annotations
 
 import gzip
+import importlib
 import io
 import json
+import pickle
 import re
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple, Optional
@@ -388,6 +390,113 @@ def parse_colabfold_scores(path: Path) -> dict:
         "chain_ptm": _number_dict(raw.get("per_chain_ptm"), "per_chain_ptm", path),
         "chain_pair_iptm": _number_dict(raw.get("pairwise_iptm"), "pairwise_iptm", path),
         "extras": {key: raw[key] for key in _COLABFOLD_EXTRA_KEYS if key in raw},
+    }
+
+
+#: The classes a numpy array or scalar needs to be unpickled; nothing else is accepted.
+_PICKLE_ALLOWED = frozenset(
+    {
+        ("numpy", "ndarray"),
+        ("numpy", "dtype"),
+        ("numpy.core.multiarray", "_reconstruct"),
+        ("numpy.core.multiarray", "scalar"),
+        ("numpy.core.numeric", "_frombuffer"),
+        ("numpy._core.multiarray", "_reconstruct"),
+        ("numpy._core.multiarray", "scalar"),
+        ("numpy._core.numeric", "_frombuffer"),
+        ("collections", "OrderedDict"),
+    }
+)
+
+
+class _ArrayOnlyUnpickler(pickle.Unpickler):
+    """An unpickler that builds numpy arrays, numpy scalars and containers, and nothing else.
+
+    ``pickle`` calls any importable callable named in the file, which is how a malicious pickle
+    runs code. Here every global other than the numpy array types is refused before it is
+    imported, so the load cannot run anything (Python documentation, "Restricting Globals").
+    """
+
+    def find_class(self, module: str, name: str):
+        if (module, name) not in _PICKLE_ALLOWED:
+            raise pickle.UnpicklingError(
+                f"the pickle asks for {module}.{name}, which is not a numpy array type, and it "
+                "was not run. AlphaFold2 result pickles hold numpy arrays only; if this file "
+                "is genuine, its layout is TO VERIFY"
+            )
+        if module.startswith("numpy.") and module.split(".")[-1] in ("multiarray", "numeric"):
+            # numpy 2 renamed numpy.core to numpy._core; a pickle from either loads in either
+            for package in ("numpy._core", "numpy.core"):
+                try:
+                    return getattr(
+                        importlib.import_module(f"{package}.{module.split('.')[-1]}"), name
+                    )
+                except ImportError:
+                    continue
+        return super().find_class(module, name)
+
+
+def read_result_pickle(path: Path) -> dict:
+    """Load an AlphaFold2 ``result_*.pkl`` without running any code from it.
+
+    The whole file is read, including the distogram and confidence logits, which take memory
+    in proportion to the square of the number of residues.
+
+    Raises:
+        ValueError: The file is not a pickle of a dictionary of numpy data, or it asks for
+            anything but numpy arrays (the message names what it asked for).
+    """
+    path = Path(path)
+    with open(path, "rb") as handle:
+        try:
+            result = _ArrayOnlyUnpickler(handle).load()
+        except Exception as exc:  # noqa: BLE001 - unpickling bytes can raise nearly any type; re-raised as ValueError
+            raise ValueError(
+                f"{path} cannot be read as an AlphaFold2 result pickle: {type(exc).__name__}: {exc}"
+            ) from exc
+    if not isinstance(result, dict):
+        raise ValueError(
+            f"{path}: an AlphaFold2 result pickle holds a dictionary, got {type(result).__name__}"
+        )
+    return result
+
+
+def _pickle_scalar(raw: dict, key: str, source: Path) -> float:
+    value = raw.get(key)
+    if value is None:
+        return _NAN
+    array = np.asarray(value, dtype=float).reshape(-1)
+    if array.size != 1:
+        raise ValueError(f"{source}: '{key}' has {array.size} values, expected one")
+    return float(array[0])
+
+
+def parse_result_pickle(path: Path) -> dict:
+    """Parse an AlphaFold2 ``result_{model}_pred_{i}.pkl`` (v2.3.2 layout).
+
+    Returns:
+        The keys of ``parse_colabfold_scores``, with ``chain_ptm``, ``chain_pair_iptm`` and
+        ``extras`` empty (AlphaFold2 writes none of them), and ``ranking_confidence`` (float,
+        NaN when absent).
+
+    Raises:
+        ValueError: As ``read_result_pickle``, or the pickle has no ``plddt``.
+    """
+    path = Path(path)
+    raw = read_result_pickle(path)
+    if "plddt" not in raw:
+        raise ValueError(f"{path} has no 'plddt' entry; it is not an AlphaFold2 result pickle")
+    plddt = _plddt_per_residue(raw["plddt"], path)
+    pae = raw.get("predicted_aligned_error")
+    return {
+        "plddt_per_residue": plddt,
+        "pae": None if pae is None else _pae_matrix(pae, plddt.size, path),
+        "ptm": _pickle_scalar(raw, "ptm", path),
+        "iptm": _pickle_scalar(raw, "iptm", path),
+        "chain_ptm": {},
+        "chain_pair_iptm": {},
+        "extras": {},
+        "ranking_confidence": _pickle_scalar(raw, "ranking_confidence", path),
     }
 
 

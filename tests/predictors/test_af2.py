@@ -7,6 +7,7 @@ layouts of ``predictors/af2.py``. Nothing here is real model output.
 
 import gzip
 import json
+import pickle
 import subprocess
 import sys
 import textwrap
@@ -20,7 +21,9 @@ from binding_metrics.predictors.af2 import (
     AlphaFold2Parser,
     load_bfactor_record,
     parse_colabfold_scores,
+    parse_result_pickle,
     read_bfactor_plddt,
+    read_result_pickle,
 )
 from tests.predictors import contract, synth, synth_af2
 
@@ -736,6 +739,123 @@ class TestParsingNeedsNoBiotite:
 
     def test_a_colabfold_job(self, tmp_path):
         self._run(_colabfold(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# The AlphaFold2 result pickle, read without running code from it
+# ---------------------------------------------------------------------------
+
+
+class _Gadget:
+    """A pickle that, when loaded by the plain ``pickle``, creates a directory named ``marker``."""
+
+    def __init__(self, marker):
+        self.marker = str(marker)
+
+    def __reduce__(self):
+        import os
+
+        return (os.mkdir, (self.marker,))
+
+
+def _pickle_file(tmp_path, payload, *, protocol=4):
+    path = tmp_path / "result.pkl"
+    with open(path, "wb") as handle:
+        pickle.dump(payload, handle, protocol=protocol)
+    return path
+
+
+class TestResultPickle:
+    @pytest.mark.parametrize("protocol", [3, 4, 5])
+    def test_a_result_pickle_is_read_whatever_the_protocol(self, tmp_path, protocol):
+        path = _pickle_file(tmp_path, synth_af2.result_pickle(_truth()), protocol=protocol)
+        result = read_result_pickle(path)
+        assert result["plddt"].dtype == np.float32 and result["plddt"].shape == (7,)
+        assert result["distogram"]["logits"].shape == (7, 7, 4)
+        assert float(result["ptm"]) == pytest.approx(0.88)
+
+    def test_the_keys_of_the_report_are_parsed(self, tmp_path):
+        parsed = parse_result_pickle(_pickle_file(tmp_path, synth_af2.result_pickle(_truth())))
+        np.testing.assert_allclose(parsed["plddt_per_residue"], RESIDUE_PLDDT)
+        np.testing.assert_allclose(parsed["pae"], _truth().pae)
+        assert parsed["pae"].dtype == np.float64
+        assert parsed["ptm"] == pytest.approx(0.88) and parsed["iptm"] == pytest.approx(0.76)
+        assert parsed["ranking_confidence"] == pytest.approx(0.8 * 0.76 + 0.2 * 0.88)
+        assert parsed["chain_ptm"] == {} and parsed["chain_pair_iptm"] == {}
+
+    def test_the_pae_matrix_is_not_transposed(self, tmp_path):
+        pae = parse_result_pickle(_pickle_file(tmp_path, synth_af2.result_pickle(_truth())))["pae"]
+        assert pae[0, 6] == pytest.approx(2.5) and pae[6, 0] == pytest.approx(4.0)
+
+    def test_a_monomer_result_has_no_pae_or_tm_scores(self, tmp_path):
+        payload = {
+            "plddt": RESIDUE_PLDDT.astype(np.float32),
+            "ranking_confidence": np.float32(80.0),
+        }
+        parsed = parse_result_pickle(_pickle_file(tmp_path, payload))
+        assert parsed["pae"] is None and np.isnan(parsed["ptm"]) and np.isnan(parsed["iptm"])
+        assert parsed["ranking_confidence"] == pytest.approx(80.0)
+
+    def test_a_pickle_written_by_numpy_2_loads_in_any_numpy(self, tmp_path):
+        # numpy 2 writes numpy._core.multiarray where numpy 1 writes numpy.core.multiarray;
+        # protocol 3 names a global in plain text, so the module can be renamed inside the bytes
+        path = _pickle_file(tmp_path, synth_af2.result_pickle(_truth()), protocol=3)
+        data = path.read_bytes()
+        renamed = data.replace(b"cnumpy.core.multiarray\n", b"cnumpy._core.multiarray\n")
+        assert renamed != data and b"numpy.core.multiarray" not in renamed
+        path.write_bytes(renamed)
+        np.testing.assert_allclose(
+            parse_result_pickle(path)["plddt_per_residue"], RESIDUE_PLDDT, atol=1e-4
+        )
+
+    def test_a_pickle_that_asks_for_anything_but_numpy_is_refused_and_not_run(self, tmp_path):
+        marker = tmp_path / "ran"
+        path = _pickle_file(tmp_path, {"plddt": np.ones(3), "trap": _Gadget(marker)})
+        with pytest.raises(
+            ValueError, match=r"asks for \w+\.mkdir, which is not a numpy array type"
+        ):
+            read_result_pickle(path)
+        assert not marker.exists()
+
+    def test_an_object_array_cannot_smuggle_a_callable(self, tmp_path):
+        marker = tmp_path / "ran"
+        trap = np.empty(1, dtype=object)
+        trap[0] = _Gadget(marker)
+        with pytest.raises(ValueError, match="not a numpy array type"):
+            read_result_pickle(_pickle_file(tmp_path, {"plddt": trap}))
+        assert not marker.exists()
+
+    def test_the_message_says_what_to_do_with_a_genuine_file(self, tmp_path):
+        with pytest.raises(ValueError, match="layout is TO VERIFY"):
+            read_result_pickle(
+                _pickle_file(tmp_path, {"when": __import__("datetime").date(2020, 1, 1)})
+            )
+
+    @pytest.mark.parametrize("damage", ["garbage", "truncated", "empty"])
+    def test_a_damaged_file_raises_a_value_error(self, tmp_path, damage):
+        path = _pickle_file(tmp_path, synth_af2.result_pickle(_truth()))
+        data = {"garbage": GARBAGE, "truncated": path.read_bytes()[:40], "empty": b""}[damage]
+        path.write_bytes(data)
+        with pytest.raises(ValueError, match="cannot be read as an AlphaFold2 result pickle"):
+            read_result_pickle(path)
+
+    def test_a_pickle_of_something_else_than_a_dictionary_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="holds a dictionary, got list"):
+            read_result_pickle(_pickle_file(tmp_path, [1, 2, 3]))
+
+    def test_a_result_without_plddt_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="no 'plddt' entry"):
+            parse_result_pickle(_pickle_file(tmp_path, {"ptm": np.float32(0.5)}))
+
+    def test_a_pae_that_does_not_match_the_plddt_raises(self, tmp_path):
+        payload = {"plddt": RESIDUE_PLDDT, "predicted_aligned_error": np.ones((5, 5))}
+        with pytest.raises(ValueError, match="5 by 5 but pLDDT has 7 residues"):
+            parse_result_pickle(_pickle_file(tmp_path, payload))
+
+    def test_a_scalar_with_several_values_raises(self, tmp_path):
+        payload = {"plddt": RESIDUE_PLDDT, "ptm": np.array([0.5, 0.6])}
+        with pytest.raises(ValueError, match="'ptm' has 2 values"):
+            parse_result_pickle(_pickle_file(tmp_path, payload))
 
 
 # ---------------------------------------------------------------------------

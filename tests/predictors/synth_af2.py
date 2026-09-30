@@ -15,6 +15,8 @@ by model number or by file name fails the seed and sample check of the contract 
 The other writers serve ``test_af2.py``: ``write_colabfold`` (relaxed file, no extra pTM,
 another directory) and ``write_bare`` (a structure alone).
 
+``result_pickle`` builds the dictionary that AlphaFold2 pickles for a multimer prediction.
+
 Every writer takes the structure from a ``SyntheticComplex`` and writes what the model writes:
 one pLDDT per residue, the mean over the atoms of the residue in the truth, and the same value in
 the B-factor column of each atom of the residue. The truth has one pLDDT per atom, so
@@ -175,3 +177,20 @@ def write_bare(
     return synth.write_structure(
         af2_atoms(complex_), Path(directory) / f"{name}{suffix}", bfactor_scale=bfactor_scale
     )
+
+
+def result_pickle(complex_: synth.SyntheticComplex) -> dict:
+    """What ``run_alphafold.py`` pickles for a multimer prediction (the keys of the report)."""
+    _check_tokens_are_residues(complex_)
+    n = complex_.n_tokens
+    scalars = complex_.scalars
+    return {
+        "plddt": plddt_per_residue(complex_).astype(np.float32),
+        "predicted_aligned_error": complex_.pae.astype(np.float32),
+        "max_predicted_aligned_error": np.float32(31.75),
+        "aligned_confidence_probs": np.zeros((n, n, 4), dtype=np.float32),
+        "distogram": {"logits": np.zeros((n, n, 4), dtype=np.float32), "bin_edges": np.arange(3.0)},
+        "ptm": np.float32(scalars["ptm"]),
+        "iptm": np.float32(scalars["iptm"]),
+        "ranking_confidence": np.float32(0.8 * scalars["iptm"] + 0.2 * scalars["ptm"]),
+    }
