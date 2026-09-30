@@ -28,6 +28,11 @@ Layout checked against the released source of OpenFold3 v0.5.0 (2026-08-21) and 
   equals the residue count.
 * pTM, ipTM and PAE are always written by 0.4.1 and later (the ``pae_enabled`` preset was
   removed); a missing value means a missing file.
+* ``<prediction_dir>/experiment_config.json`` records the checkpoint of the run
+  (``inference_ckpt_path``, ``inference_ckpt_name``) and the user-default ``runner.yml`` that
+  was merged; they go to ``record.extras`` as ``inference_ckpt_path``, ``inference_ckpt_name``
+  and ``user_default_runner_yaml``. Which weights produced a prediction is otherwise not
+  visible in the output files, and Preview2 and OpenBind-0 outputs share one layout.
 * A query that fails inside OpenFold3 leaves no confidence files and the process still exits
   with status 0; the run's ``summary.txt`` and ``logs/predict_err_rank<N>.log`` say why, and
   the reason is added to ``record.reasons``.
@@ -39,6 +44,7 @@ explained); the structure file is not opened while parsing.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +52,8 @@ import numpy as np
 
 from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.record import PredictionFiles, PredictionRecord
+
+logger = logging.getLogger(__name__)
 
 _NAN = float("nan")
 
@@ -79,6 +87,36 @@ def _failed_query_reason(output_dir: Path, query_name: str) -> Optional[str]:
     from binding_metrics.metrics._openfold_run import _failed_query_reasons
 
     return _failed_query_reasons(output_dir).get(query_name)
+
+
+def _run_provenance(output_dir: Path) -> dict:
+    """The checkpoint and the user-default runner YAML of the run that wrote ``output_dir``.
+
+    OpenFold3 writes its resolved settings to ``experiment_config.json`` in the output
+    directory (``InferenceExperimentConfig.model_dump_json``, v0.5.0), with the top-level keys
+    ``inference_ckpt_path``, ``inference_ckpt_name`` and ``user_default_runner_yaml_path``.
+    Without that file the user-default ``runner.yml`` that this machine would merge is probed
+    instead (``$OPENFOLD_CACHE/runner.yml``, default ``~/.openfold3``), and nothing is known
+    about the checkpoint. A file that cannot be read is ignored: this is provenance, not data.
+    """
+    path = Path(output_dir) / "experiment_config.json"
+    if path.is_file():
+        try:
+            with open(path, encoding="utf-8") as fh:
+                config = json.load(fh)
+        except (OSError, ValueError) as exc:
+            logger.debug("%s could not be read for provenance: %s", path, exc)
+        else:
+            if isinstance(config, dict):
+                return {
+                    "inference_ckpt_path": config.get("inference_ckpt_path"),
+                    "inference_ckpt_name": config.get("inference_ckpt_name"),
+                    "user_default_runner_yaml": config.get("user_default_runner_yaml_path"),
+                }
+    from binding_metrics.metrics._openfold_run import _user_default_runner_yaml
+
+    probed = _user_default_runner_yaml()
+    return {} if probed is None else {"user_default_runner_yaml": str(probed)}
 
 
 def parse_aggregated_confidences(path: Path) -> dict:
@@ -279,6 +317,8 @@ class OpenFold3Parser(PredictionParser):
 
         if files.timing is not None:
             record.timing = parse_timing(files.timing)
+
+        record.extras.update(_run_provenance(Path(files.directory)))
 
         located = next(iter(files.found().values()), None)
         if located is not None and located.parent.name.startswith("seed_"):

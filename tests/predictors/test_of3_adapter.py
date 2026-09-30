@@ -264,6 +264,69 @@ def _error_log(query_ids, kind, message):
     )
 
 
+class TestRunProvenance:
+    """The checkpoint and the user-default runner YAML are kept in ``record.extras`` (issue 85)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_user_default_yaml(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENFOLD_CACHE", str(tmp_path / "empty_cache"))
+
+    def _config(self, root, **overrides):
+        config = {
+            "experiment_settings": {"mode": "predict"},
+            "inference_ckpt_path": "/w/of3-ob-2025-06-30-174k.pt",
+            "inference_ckpt_name": "openbind-2025-06-30-174k",
+            "user_default_runner_yaml_path": None,
+        }
+        config.update(overrides)
+        (root / "experiment_config.json").write_text(json.dumps(config), encoding="utf-8")
+
+    def test_the_checkpoint_is_read_from_the_experiment_config(self, tmp_path):
+        root = _write(tmp_path)
+        self._config(root)
+        extras = OpenFold3Parser().load(root, NAME).extras
+        assert extras["inference_ckpt_path"] == "/w/of3-ob-2025-06-30-174k.pt"
+        assert extras["inference_ckpt_name"] == "openbind-2025-06-30-174k"
+        assert extras["user_default_runner_yaml"] is None
+
+    def test_the_runner_yaml_the_run_merged_is_read_from_the_config(self, tmp_path):
+        root = _write(tmp_path)
+        self._config(root, user_default_runner_yaml_path="/home/u/.openfold3/runner.yml")
+        extras = OpenFold3Parser().load(root, NAME).extras
+        assert extras["user_default_runner_yaml"] == "/home/u/.openfold3/runner.yml"
+
+    def test_a_null_checkpoint_name_is_kept_as_none(self, tmp_path):
+        root = _write(tmp_path)
+        self._config(root, inference_ckpt_name=None)
+        assert OpenFold3Parser().load(root, NAME).extras["inference_ckpt_name"] is None
+
+    def test_without_the_config_nothing_is_known_about_the_checkpoint(self, tmp_path):
+        extras = OpenFold3Parser().load(_write(tmp_path), NAME).extras
+        assert "inference_ckpt_path" not in extras and "inference_ckpt_name" not in extras
+        assert "user_default_runner_yaml" not in extras
+
+    def test_without_the_config_the_user_default_runner_yaml_of_this_machine_is_probed(
+        self, tmp_path, monkeypatch
+    ):
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "runner.yml").write_text("experiment_settings: {}\n", encoding="utf-8")
+        monkeypatch.setenv("OPENFOLD_CACHE", str(cache))
+        extras = OpenFold3Parser().load(_write(tmp_path / "run"), NAME).extras
+        assert extras["user_default_runner_yaml"] == str(cache / "runner.yml")
+
+    @pytest.mark.parametrize("content", ["{", "[1, 2]", ""])
+    def test_an_unreadable_config_is_ignored(self, tmp_path, content):
+        root = _write(tmp_path)
+        (root / "experiment_config.json").write_text(content, encoding="utf-8")
+        record = OpenFold3Parser().load(root, NAME)
+        assert record.reasons == [] and "inference_ckpt_name" not in record.extras
+
+    def test_a_directory_with_no_output_has_no_checkpoint_information(self, tmp_path):
+        record = OpenFold3Parser().load(tmp_path, "q")
+        assert record.reasons and "inference_ckpt_path" not in record.extras
+
+
 class TestFailedQueries:
     """OpenFold3 exits with status 0 when a query fails; the run's files say why (issue 84)."""
 
