@@ -90,7 +90,13 @@ class VagueFold(StubParser):
 
 @pytest.fixture
 def three_models(monkeypatch):
-    """Register NarrowFold, NarrowFoldToo, WideFold and VagueFold for one test."""
+    """Make NarrowFold, NarrowFoldToo, WideFold and VagueFold the only registered models.
+
+    The real adapters are removed for the test: one of them without declared limits would
+    join the "declare no limits" list and change the message under test.
+    """
+    for registered in list(PARSERS):
+        monkeypatch.delitem(PARSERS, registered)
     for cls in (NarrowFold, NarrowFoldToo, WideFold, VagueFold):
         spec = ParserSpec(
             name=cls.name,
