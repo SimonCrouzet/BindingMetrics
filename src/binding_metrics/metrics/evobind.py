@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, NamedTuple, Optional, Union
 
 import numpy as np
 
@@ -209,20 +209,102 @@ def _pair_by_residue_id(design_ca, adversary_ca):
     return design_matched, adversary_matched, len(shared)
 
 
-def _require_same_count(
-    design_matched, adversary_matched, n_shared: int, region: str, adversary_label: str
-) -> None:
-    """Raise ``ValueError`` when residue-ID pairing gave arrays of different length."""
-    n_design = design_matched.array_length()
-    n_adversary = adversary_matched.array_length()
-    if n_design != n_adversary:
+class _ResiduePairing(NamedTuple):
+    """The residues of one chain that two structures pair, and how they were paired."""
+
+    design_matched: Any
+    adversary_matched: Any
+    pairing: str  # "residue_number" or "position"
+    n_shared: int  # residues the two structures share by number and insertion code
+    mismatch_fraction: float
+    numbers_disagree: bool  # the numbers overlap but name other residues, so position was used
+
+
+def _pair_residues(
+    design_ca,
+    adversary_ca,
+    *,
+    min_paired: int,
+    region: str,
+    purpose: str,
+    max_mismatch: float,
+    adversary_label: str,
+    too_few_message: str,
+) -> _ResiduePairing:
+    """Pair the Cα atoms of one chain of the design with those of the second structure.
+
+    Residues are paired by ``(res_id, ins_code)`` when the two structures share at least
+    ``min_paired`` of them and the pairs agree in residue name (at most ``max_mismatch`` of
+    them differ). If the numbers overlap but the pairing is mostly name-inconsistent, or
+    a number and code repeats within a chain so that the arrays differ in length, the atoms
+    are paired by position, which needs the same number of Cα atoms in both structures and
+    names that agree in the same sense. When the numbers do not overlap at all, atoms are
+    paired by position up to the shorter chain, and the names alone decide.
+
+    Raises:
+        ValueError: If neither pairing is usable; the message names what is wrong with each.
+    """
+    n_design = design_ca.array_length()
+    n_adversary = adversary_ca.array_length()
+    by_number_design, by_number_adversary, n_shared = _pair_by_residue_id(design_ca, adversary_ca)
+    numbers_overlap = n_shared >= min_paired
+
+    problem = None
+    if numbers_overlap:
+        n_number_design = by_number_design.array_length()
+        n_number_adversary = by_number_adversary.array_length()
+        if n_number_design == n_number_adversary:
+            mismatch = _resname_mismatch_fraction(by_number_design, by_number_adversary)
+            if mismatch <= max_mismatch:
+                return _ResiduePairing(
+                    by_number_design,
+                    by_number_adversary,
+                    "residue_number",
+                    n_shared,
+                    mismatch,
+                    False,
+                )
+            problem = (
+                f"{mismatch:.0%} of the {region} residues paired by residue number and "
+                "insertion code have different residue names"
+            )
+        else:
+            problem = (
+                f"the {n_shared} {region} residues that the two structures share by residue "
+                f"number and insertion code select {n_number_design} Cα atoms in the design "
+                f"and {n_number_adversary} in the {adversary_label} structure (a residue "
+                "number and insertion code probably occurs twice in a chain)"
+            )
+        if n_design != n_adversary:
+            raise ValueError(
+                f"The {region} residues cannot be paired: {problem}, and pairing by position "
+                f"needs the same number of Cα atoms, but the design has {n_design} and the "
+                f"{adversary_label} structure {n_adversary}."
+            )
+        n = n_design
+    else:
+        n = min(n_design, n_adversary)
+        if n < min_paired:
+            raise ValueError(too_few_message)
+
+    design_matched = design_ca[:n]
+    adversary_matched = adversary_ca[:n]
+    mismatch = _resname_mismatch_fraction(design_matched, adversary_matched)
+    if mismatch > max_mismatch:
+        if problem is None:
+            raise ValueError(
+                f"{mismatch:.0%} of the {region} residues paired {purpose} (by position) have "
+                f"different residue names in the two structures (limit {max_mismatch:.0%}); the "
+                "residue numbering or the chain contents probably do not correspond."
+            )
         raise ValueError(
-            f"The {n_shared} {region} residues that the design and the {adversary_label} "
-            f"structure share (by residue number and insertion code) select {n_design} Cα "
-            f"atoms in the design and {n_adversary} in the {adversary_label} structure, so "
-            "they cannot be paired; a residue number and insertion code probably occur twice "
-            "in a chain."
+            f"The {region} residues cannot be paired: {problem}, and {mismatch:.0%} of the "
+            f"residues paired by position have different residue names in the two structures "
+            f"(limit {max_mismatch:.0%}); the chain contents probably do not correspond."
         )
+    return _ResiduePairing(
+        design_matched, adversary_matched, "position", n_shared, mismatch, problem is not None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -334,36 +416,26 @@ def _adversarial_from_atoms(
     design_rec_ca = _ca_atoms(design_atoms, receptor_chain)
     afm_rec_ca = _ca_atoms(adversary_atoms, receptor_chain)
 
-    design_rec_ca_matched, afm_rec_ca_matched, n_shared_rec = _pair_by_residue_id(
-        design_rec_ca, afm_rec_ca
+    # A number-and-code pairing that names other residues (a design numbered 25-109 against a
+    # prediction renumbered from 1) is caught by the residue names and replaced by a
+    # positional pairing when the chains have the same length.
+    receptor_pairs = _pair_residues(
+        design_rec_ca,
+        afm_rec_ca,
+        min_paired=3,
+        region="receptor",
+        purpose="for superposition",
+        max_mismatch=max_resname_mismatch_fraction,
+        adversary_label=adversary_label,
+        too_few_message=(
+            f"Fewer than 3 receptor Cα atoms for superposition (design "
+            f"{design_rec_ca.array_length()}, {adversary_label} {afm_rec_ca.array_length()})."
+        ),
     )
-    if n_shared_rec >= 3:
-        receptor_pairing = "residue_number"
-        _require_same_count(
-            design_rec_ca_matched, afm_rec_ca_matched, n_shared_rec, "receptor", adversary_label
-        )
-    else:
-        # Fall back to positional pairing (e.g. OF3 renumbered from 1)
-        receptor_pairing = "position"
-        n = min(design_rec_ca.array_length(), afm_rec_ca.array_length())
-        if n < 3:
-            raise ValueError(
-                f"Fewer than 3 receptor Cα atoms for superposition (design "
-                f"{design_rec_ca.array_length()}, {adversary_label} {afm_rec_ca.array_length()})."
-            )
-        design_rec_ca_matched = design_rec_ca[:n]
-        afm_rec_ca_matched = afm_rec_ca[:n]
-
-    # Numbers alone can pair unrelated residues (a design numbered 100-200
-    # against a prediction renumbered from 1); residue names catch that.
-    receptor_mismatch = _resname_mismatch_fraction(design_rec_ca_matched, afm_rec_ca_matched)
-    if receptor_mismatch > max_resname_mismatch_fraction:
-        raise ValueError(
-            f"{receptor_mismatch:.0%} of the receptor residues paired for superposition "
-            f"(by {receptor_pairing}) have different residue names in the two structures "
-            f"(limit {max_resname_mismatch_fraction:.0%}); the residue numbering or the "
-            "chain contents probably do not correspond."
-        )
+    design_rec_ca_matched = receptor_pairs.design_matched
+    afm_rec_ca_matched = receptor_pairs.adversary_matched
+    receptor_pairing = receptor_pairs.pairing
+    receptor_mismatch = receptor_pairs.mismatch_fraction
 
     # superimpose(reference, mobile) → (superimposed_mobile, transform)
     _, transform = struc.superimpose(afm_rec_ca_matched, design_rec_ca_matched)
@@ -380,35 +452,21 @@ def _adversarial_from_atoms(
             f"No Cα atoms found for binder chain '{binder_chain}' in {adversary_label} structure."
         )
 
-    # For CoM: match binder residues by number; fall back to positional
-    # pairing when numbering schemes differ (e.g. OF3 renumbers from 1).
-    design_pep_ca_matched, afm_pep_ca_matched, n_shared_pep = _pair_by_residue_id(
-        design_pep_ca, afm_pep_ca
+    # For CoM: pair the binder residues the same way as the receptor ones.
+    binder_pairs = _pair_residues(
+        design_pep_ca,
+        afm_pep_ca,
+        min_paired=1,
+        region="binder",
+        purpose="for the centre of mass",
+        max_mismatch=max_resname_mismatch_fraction,
+        adversary_label=adversary_label,
+        too_few_message=f"No binder Cα atoms for chain '{binder_chain}' in one of the structures.",
     )
-    if n_shared_pep >= 1:
-        binder_pairing = "residue_number"
-        _require_same_count(
-            design_pep_ca_matched, afm_pep_ca_matched, n_shared_pep, "binder", adversary_label
-        )
-    else:
-        # No residue-number overlap — pair positionally up to the shorter length
-        binder_pairing = "position"
-        n = min(design_pep_ca.array_length(), afm_pep_ca.array_length())
-        if n == 0:
-            raise ValueError(
-                f"No binder Cα atoms for chain '{binder_chain}' in one of the structures."
-            )
-        design_pep_ca_matched = design_pep_ca[:n]
-        afm_pep_ca_matched = afm_pep_ca[:n]
-
-    binder_mismatch = _resname_mismatch_fraction(design_pep_ca_matched, afm_pep_ca_matched)
-    if binder_mismatch > max_resname_mismatch_fraction:
-        raise ValueError(
-            f"{binder_mismatch:.0%} of the binder residues paired for the centre of mass "
-            f"(by {binder_pairing}) have different residue names in the two structures "
-            f"(limit {max_resname_mismatch_fraction:.0%}); the residue numbering or the "
-            "chain contents probably do not correspond."
-        )
+    design_pep_ca_matched = binder_pairs.design_matched
+    afm_pep_ca_matched = binder_pairs.adversary_matched
+    binder_pairing = binder_pairs.pairing
+    binder_mismatch = binder_pairs.mismatch_fraction
 
     # Apply receptor superposition transform to design binder Cα
     design_pep_ca_in_afm_frame = transform.apply(design_pep_ca_matched).coord
@@ -439,6 +497,16 @@ def _adversarial_from_atoms(
         if_mask = np.ones(design_rec_cb.array_length(), dtype=bool)
         interface_fallback_used = True
     if_keys = set(_residue_keys(design_rec_cb[if_mask]))
+    if receptor_pairs.numbers_disagree:
+        # The numbers name other residues in the two structures, so the interface residues
+        # follow the positional pairing of the receptor, not their numbers.
+        if_keys = {
+            adversary_key
+            for design_key, adversary_key in zip(
+                _residue_keys(design_rec_ca_matched), _residue_keys(afm_rec_ca_matched)
+            )
+            if design_key in if_keys
+        }
 
     # Map those interface residues (number and insertion code) to the AFM structure
     afm_rec_cb = _cb_atoms(adversary_atoms, receptor_chain)
@@ -473,7 +541,9 @@ def _adversarial_from_atoms(
 
     result: dict = {
         "delta_com_angstrom": delta_com,
-        "n_superposition_residues": int(n_shared_rec),
+        "n_superposition_residues": 0
+        if receptor_pairs.numbers_disagree
+        else receptor_pairs.n_shared,
         "n_superposition_atoms": int(design_rec_ca_matched.array_length()),
         "receptor_pairing": receptor_pairing,
         "binder_pairing": binder_pairing,
@@ -639,11 +709,15 @@ def compute_evobind_adversarial_check(
         interface_cutoff_angstrom: Distance cutoff (Å) used to identify
             receptor interface residues from the design structure (default 8.0).
         max_resname_mismatch_fraction: Residues are paired between the two
-            structures by residue number and insertion code, or by position when
-            the numberings do not overlap. If more than this fraction of the paired receptor (or
-            binder) residues have different residue names (histidine and
-            cysteine protonation variants count as equal), the pairing is
-            rejected with a ValueError (default 0.5).
+            structures by residue number and insertion code. When the numbers do
+            not overlap, or overlap but pair mostly different residues (a second
+            model that numbers every chain from 1), they are paired by position
+            instead; the positional pairing of an overlapping numbering needs the
+            same number of Cα atoms in both chains. A pairing is accepted when at
+            most this fraction of the paired receptor (or binder) residues have
+            different residue names (histidine and cysteine protonation variants
+            count as equal); if neither pairing is accepted a ValueError says why
+            (default 0.5).
         target_chain: Alias of ``receptor_chain``; different IDs in both raise
             ``ValueError``.
 
@@ -655,14 +729,17 @@ def compute_evobind_adversarial_check(
             receptor Cα superposition.  Large values indicate disagreement.
         n_superposition_residues (int):
             Receptor residues matched by residue number and insertion code. 0 to 2 when the
-            structures share no numbering and positional pairing was used
-            instead; see ``n_superposition_atoms`` for the real count.
+            structures share no numbering, and 0 when the numbers overlap but
+            name other residues, so positional pairing was used instead; see
+            ``n_superposition_atoms`` for the real count.
         n_superposition_atoms (int):
             Receptor Cα atoms used for the superposition, whichever pairing
             was applied.
         receptor_pairing, binder_pairing (str):
             ``"residue_number"`` or ``"position"``: how residues were paired
-            for the superposition and for the binder centre of mass.
+            for the superposition and for the binder centre of mass. When the
+            receptor was paired by position although its numbers overlap, the
+            receptor interface residues are mapped by position too.
         receptor_resname_mismatch_fraction, binder_resname_mismatch_fraction (float):
             Fraction of paired residues with different residue names.
         afm_if_dist_pep_to_rec (float):
@@ -690,10 +767,10 @@ def compute_evobind_adversarial_check(
 
     Raises:
         ValueError: If a chain has no Cα/Cβ atoms in either structure, fewer
-            than three receptor Cα atoms can be paired, a residue number and
-            insertion code that occurs twice in a chain makes the paired Cα arrays
-            differ in length, or the residue names of the paired residues disagree
-            beyond ``max_resname_mismatch_fraction``.
+            than three receptor Cα atoms can be paired, or neither the pairing by
+            residue number and insertion code nor the pairing by position gives
+            residue names that agree (within ``max_resname_mismatch_fraction``) or
+            chains of the same length.
 
     Reference:
         Bryant et al. 2025, Commun. Chem. (doi:10.1038/s42004-025-01601-3).

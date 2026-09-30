@@ -674,9 +674,9 @@ class TestAdversarialPairingWithInsertionCodes:
     """Issue #103: residues are paired by residue number AND insertion code."""
 
     @staticmethod
-    def _renumbered(tmp_path, name, chain, from_res, to_res, to_ins):
-        """The 12+4 residue helix complex with one residue given another number and code."""
-        atoms = _load_atoms(_helix_complex(tmp_path, name))
+    def _renumbered(tmp_path, name, chain, from_res, to_res, to_ins, n_rec=12):
+        """The helix complex with one residue given another number and insertion code."""
+        atoms = _load_atoms(_helix_complex(tmp_path, name, n_rec=n_rec))
         moved = (atoms.chain_id == chain) & (atoms.res_id == from_res)
         atoms.res_id[moved] = to_res
         atoms.ins_code[moved] = to_ins
@@ -713,13 +713,125 @@ class TestAdversarialPairingWithInsertionCodes:
         assert with_code["afm_if_dist_rec_to_pep"] != pytest.approx(plain["afm_if_dist_rec_to_pep"])
 
     @pytest.mark.parametrize(
-        "chain, role, from_res, to_res", [("A", "receptor", 5, 4), ("B", "binder", 3, 2)]
+        "chain, pairing_key", [("A", "receptor_pairing"), ("B", "binder_pairing")]
     )
-    def test_a_repeated_residue_number_raises_a_value_error_that_says_so(
-        self, tmp_path, chain, role, from_res, to_res
+    def test_a_repeated_residue_number_is_paired_by_position_when_the_lengths_agree(
+        self, tmp_path, chain, pairing_key
     ):
         # two residues of one chain with the same number and no insertion code cannot be paired
+        # by number; the chains have the same length, so they are paired by position
         design = _helix_complex(tmp_path, "design.pdb")
-        second = self._renumbered(tmp_path, "afm.pdb", chain, from_res, to_res, "")
-        with pytest.raises(ValueError, match=rf"{role} residues .*cannot be paired"):
+        second = self._renumbered(
+            tmp_path, "afm.pdb", chain, 5 if chain == "A" else 3, 4 if chain == "A" else 2, ""
+        )
+        res = compute_evobind_adversarial_check(design, second, "B", "A")
+        assert res[pairing_key] == "position"
+        assert res["delta_com_angstrom"] == pytest.approx(0.0, abs=1e-2)
+
+    def test_a_repeated_residue_number_raises_when_the_lengths_differ(self, tmp_path):
+        design = _helix_complex(tmp_path, "design.pdb", n_rec=10)
+        second = self._renumbered(tmp_path, "afm.pdb", "A", 5, 4, "", n_rec=12)
+        with pytest.raises(
+            ValueError, match=r"receptor residues cannot be paired.*Cα atoms.*by position needs"
+        ):
             compute_evobind_adversarial_check(design, second, "B", "A")
+
+
+# ---------------------------------------------------------------------------
+# A second model that numbers every chain from 1 (issue #108)
+# ---------------------------------------------------------------------------
+
+
+def renumber_from_one(atoms):
+    """Copy of ``atoms`` with the residues of each chain numbered 1, 2, ... in file order.
+
+    Boltz-2 numbers the chains of its output like this, whatever the input numbering.
+    """
+    out = atoms.copy()
+    for chain in np.unique(out.chain_id):
+        index = np.where(out.chain_id == chain)[0]
+        keys = list(zip(out.res_id[index].tolist(), out.ins_code[index].tolist()))
+        number: dict = {}
+        for key in keys:
+            number.setdefault(key, len(number) + 1)
+        out.res_id[index] = [number[key] for key in keys]
+        out.ins_code[index] = ""
+    return out
+
+
+class TestRenumberedFromOneSecondModel:
+    """1YCR: receptor A is numbered 25-109 and binder B 17-29; the second model numbers both from 1.
+
+    The receptor numbers overlap (25-85) but name other residues, so a pairing by number is
+    name-inconsistent for 93% of the pairs and must give way to a pairing by position.
+    """
+
+    @pytest.fixture
+    def design_atoms(self, example_pdb_path):
+        return _load_atoms(example_pdb_path)
+
+    def test_the_second_model_is_paired_by_position(self, tmp_path, example_pdb_path, design_atoms):
+        second = _write(tmp_path / "boltz_like.pdb", renumber_from_one(design_atoms))
+        res = compute_evobind_adversarial_check(example_pdb_path, second, "B", "A")
+        assert res["receptor_pairing"] == "position"
+        assert res["binder_pairing"] == "position"
+        assert res["n_superposition_atoms"] == 85
+        assert res["n_superposition_residues"] == 0  # none is paired by number
+        assert res["receptor_resname_mismatch_fraction"] == 0.0
+        assert res["binder_resname_mismatch_fraction"] == 0.0
+        assert res["delta_com_angstrom"] == pytest.approx(0.0, abs=1e-2)
+
+    def test_the_interface_follows_the_positional_pairing(
+        self, tmp_path, example_pdb_path, design_atoms
+    ):
+        # same coordinates and residues, so the interface distances are those of the design
+        # against itself; mapping the interface residues by number would pick other residues
+        second = _write(tmp_path / "boltz_like.pdb", renumber_from_one(design_atoms))
+        renumbered = compute_evobind_adversarial_check(example_pdb_path, second, "B", "A")
+        same_numbers = compute_evobind_adversarial_check(
+            example_pdb_path, example_pdb_path, "B", "A"
+        )
+        assert renumbered["interface_fallback_used"] is False
+        for key in ("afm_if_dist_pep_to_rec", "afm_if_dist_rec_to_pep", "afm_mean_if_dist"):
+            assert renumbered[key] == pytest.approx(same_numbers[key], abs=1e-3)
+
+    def test_a_displaced_binder_gives_the_known_delta_com(
+        self, tmp_path, example_pdb_path, design_atoms
+    ):
+        moved = renumber_from_one(design_atoms)
+        moved.coord[moved.chain_id == "B"] += [0.0, 3.0, 4.0]
+        second = _write(tmp_path / "boltz_like_moved.pdb", moved)
+        res = compute_evobind_adversarial_check(example_pdb_path, second, "B", "A")
+        assert res["delta_com_angstrom"] == pytest.approx(5.0, abs=1e-2)
+
+    def test_matching_numbers_are_still_paired_by_number(self, example_pdb_path):
+        res = compute_evobind_adversarial_check(example_pdb_path, example_pdb_path, "B", "A")
+        assert res["receptor_pairing"] == "residue_number"
+        assert res["binder_pairing"] == "residue_number"
+        assert res["n_superposition_residues"] == 85
+
+    def test_residues_that_name_other_residues_in_both_pairings_still_raise(
+        self, tmp_path, example_pdb_path, design_atoms
+    ):
+        scrambled = renumber_from_one(design_atoms)
+        receptor = scrambled.chain_id == "A"
+        names = scrambled.res_name[receptor]
+        # give every residue the name of the residue seven places on: no pairing agrees
+        _, first, inverse = np.unique(
+            scrambled.res_id[receptor], return_index=True, return_inverse=True
+        )
+        per_residue = names[first]
+        scrambled.res_name[receptor] = np.roll(per_residue, 7)[inverse]
+        second = _write(tmp_path / "scrambled.pdb", scrambled)
+        with pytest.raises(
+            ValueError, match=r"receptor residues cannot be paired.*by position have different"
+        ):
+            compute_evobind_adversarial_check(example_pdb_path, second, "B", "A")
+
+    def test_chains_of_different_length_are_not_paired_by_position(
+        self, tmp_path, example_pdb_path, design_atoms
+    ):
+        shorter = design_atoms[~((design_atoms.chain_id == "A") & (design_atoms.res_id == 60))]
+        second = _write(tmp_path / "shorter.pdb", renumber_from_one(shorter))
+        with pytest.raises(ValueError, match=r"receptor residues cannot be paired.*84"):
+            compute_evobind_adversarial_check(example_pdb_path, second, "B", "A")

@@ -31,7 +31,7 @@ from binding_metrics.predictors.registry import (  # noqa: E402
 )
 from tests.predictors import synth  # noqa: E402
 from tests.predictors.contract import writer_module  # noqa: E402
-from tests.test_evobind import _chain, _helix_ca  # noqa: E402
+from tests.test_evobind import _chain, _helix_ca, renumber_from_one  # noqa: E402
 
 NAME = "cmplx"
 N_RECEPTOR = 12
@@ -90,7 +90,7 @@ def _complex_atoms(
 def _as_synthetic_complex(atoms, plddt):
     """A ``SyntheticComplex`` around ``atoms``, for a model's writer (one token per residue)."""
     base = synth.synthetic_complex()
-    n_tokens = N_RECEPTOR + N_BINDER
+    n_tokens = int((atoms.atom_name == "CA").sum())
     i = np.arange(n_tokens)[:, None]
     j = np.arange(n_tokens)[None, :]
     return synth.SyntheticComplex(
@@ -466,3 +466,61 @@ class TestRecordsAreNotModified:
         assert first == second
         np.testing.assert_array_equal(adversary.atoms().coord, before)
         np.testing.assert_array_equal(adversary.atoms().chain_id, chains_before)
+
+
+# ---------------------------------------------------------------------------
+# A model that numbers every chain from 1, on the 1YCR coordinates (issue #108)
+# ---------------------------------------------------------------------------
+
+
+def _ycr_second_model_atoms(example_pdb_path):
+    """1YCR renumbered from 1 per chain, with pLDDT 40 on the receptor and 80 on the binder."""
+    from binding_metrics.metrics.evobind import _load_atoms
+
+    atoms = renumber_from_one(_load_atoms(example_pdb_path))
+    plddt = np.where(atoms.chain_id == "B", BINDER_PLDDT, RECEPTOR_PLDDT)
+    atoms.set_annotation("b_factor", plddt.copy())
+    return atoms, plddt
+
+
+class TestRenumberedFromOneSecondModel:
+    """1YCR: receptor 25-109, binder 17-29 in the design; the second model counts from 1."""
+
+    @pytest.mark.parametrize("model", MODELS)
+    def test_every_model_layout_of_the_renumbered_coordinates_agrees_with_the_design(
+        self, tmp_path, example_pdb_path, model
+    ):
+        atoms, plddt = _ycr_second_model_atoms(example_pdb_path)
+        directory = tmp_path / "adv"
+        directory.mkdir()
+        writer_module(model).write_prediction(directory, NAME, _as_synthetic_complex(atoms, plddt))
+        adversary = get_parser(model).load(directory, NAME)
+        res = compute_evobind_adversarial_from_records(example_pdb_path, adversary, "B", "A")
+        assert res["receptor_pairing"] == "position"
+        assert res["binder_pairing"] == "position"
+        assert res["n_superposition_atoms"] == 85
+        assert res["delta_com_angstrom"] == pytest.approx(0.0, abs=1e-2)
+        assert res["afm_mean_plddt_binder"] == pytest.approx(BINDER_PLDDT, abs=_plddt_atol(model))
+
+    def test_a_record_and_the_path_function_agree(self, tmp_path, example_pdb_path):
+        atoms, plddt = _ycr_second_model_atoms(example_pdb_path)
+        path = synth.write_structure(atoms, tmp_path / "boltz_like.pdb")
+        record = PredictionRecord("hand", "1ycr", structure_path=path, plddt_per_atom=plddt)
+        from_record = compute_evobind_adversarial_from_records(example_pdb_path, record, "B", "A")
+        from_paths = compute_evobind_adversarial_check(
+            example_pdb_path, path, "B", "A", afm_plddt_per_atom=plddt
+        )
+        for key, value in from_paths.items():
+            assert from_record[key] == pytest.approx(value), key
+
+    def test_a_wrong_pairing_still_raises_for_a_record(self, tmp_path, example_pdb_path):
+        atoms, plddt = _ycr_second_model_atoms(example_pdb_path)
+        receptor = atoms.chain_id == "A"
+        _, first, inverse = np.unique(
+            atoms.res_id[receptor], return_index=True, return_inverse=True
+        )
+        atoms.res_name[receptor] = np.roll(atoms.res_name[receptor][first], 7)[inverse]
+        path = synth.write_structure(atoms, tmp_path / "scrambled.pdb")
+        record = PredictionRecord("hand", "1ycr", structure_path=path, plddt_per_atom=plddt)
+        with pytest.raises(ValueError, match="receptor residues cannot be paired"):
+            compute_evobind_adversarial_from_records(example_pdb_path, record, "B", "A")
