@@ -800,7 +800,11 @@ A batch row carries `preflight_status` and `preflight_reason`. A refused sample 
 
 `compute_evobind_score(structure_path, plddt_per_atom, binder_chain, receptor_chain=None, receptor_interface_residues=None, interface_cutoff_angstrom=8.0, *, target_chain=None)`, `compute_evobind_adversarial_check(design_structure_path, afm_structure_path, binder_chain, receptor_chain=None, afm_plddt_per_atom=None, interface_cutoff_angstrom=8.0, max_resname_mismatch_fraction=0.5, *, target_chain=None)` — `binding_metrics.metrics.evobind`
 
+`compute_evobind_score_from_record(record, binder_chain, receptor_chain=None, *, receptor_interface_residues=None, interface_cutoff_angstrom=8.0, target_chain=None)`, `compute_evobind_adversarial_from_records(design, adversary, binder_chain, receptor_chain=None, *, interface_cutoff_angstrom=8.0, max_resname_mismatch_fraction=0.5, target_chain=None)` — same module; they take `PredictionRecord` objects (§12) and are not registry entries.
+
 The interface-distance and confidence losses of Bryant et al. (2025). Gly and residues without Cβ use Cα. When `binding-metrics-run` runs the `openfold` metric, both functions run on the OpenFold3 output and their keys are merged into the OpenFold3 result; no extra model call is needed. With `--predictor` the same two computations run on the record of that model and their keys are merged into `results["prediction"]` (see the end of section 12). Registered as `evobind_score` and `evobind_adversarial`.
+
+**What the scores divide by.** Both divide by the mean per-residue pLDDT of the binder in the structure that they score: `if_dist_pep_to_rec / (mean_plddt_binder / 100)` for the primary score, and `afm_mean_if_dist × (100 / afm_mean_plddt_binder) × ΔCOM` for the adversarial check, where the pLDDT is that of the second structure. Each model calibrates pLDDT differently, so compare a score between designs only when one model made every structure whose pLDDT it divides by. The interface distances and ΔCOM are geometry and compare across models.
 
 ### primary score
 
@@ -815,14 +819,16 @@ The interface-distance and confidence losses of Bryant et al. (2025). Gly and re
 | `evobind_score` | float \| None | Å | `if_dist_pep_to_rec / (mean_plddt / 100)`; lower is better |
 | `reason` | str | — | pLDDT was given but its mean is zero or not finite |
 
+A `plddt_per_atom` array whose length differs from the number of atoms in the structure raises a `ValueError` (#92); the same holds for `afm_plddt_per_atom`. A list of values is accepted. `receptor_interface_residues` names residue numbers: number 52 selects residues 52 and 52A.
+
 ### adversarial check
 
-Compares a design pose with a second prediction, for example an OpenFold3 prediction of the same complex: the two structures are superposed on the receptor Cα atoms and the binder centres of mass are compared. Residues are paired by residue number, or by position when the numberings do not overlap; a `ValueError` is raised when more than `max_resname_mismatch_fraction` of the pairs have different residue names (histidine and cysteine protonation variants, `HIN` included, count as equal).
+Compares a design pose with a second prediction, for example an OpenFold3 prediction of the same complex: the two structures are superposed on the receptor Cα atoms and the binder centres of mass are compared. Residues are paired by residue number and insertion code. When the two structures share too few of them (fewer than three receptor residues, no binder residue), the residues are paired by position up to the shorter chain. When the shared numbers pair mostly different residues (a second model that numbers every chain from 1; 1YCR has its receptor at 25-109), or a number and insertion code occurs twice in a chain, they are paired by position too, which needs the same number of Cα atoms in both chains, and the receptor interface residues then follow the positional pairing. A `ValueError` says why when neither pairing agrees in residue name (at most `max_resname_mismatch_fraction` of the pairs may differ; histidine and cysteine protonation variants, `HIN` included, count as equal) or when the chains differ in length.
 
 | key | type | unit | description |
 |-----|------|------|-------------|
 | `delta_com_angstrom` | float | Å | binder centre-of-mass displacement after receptor Cα superposition |
-| `n_superposition_residues` | int | — | receptor residues matched by residue number (0 to 2 when position pairing was used) |
+| `n_superposition_residues` | int | — | receptor residues matched by residue number and insertion code (0 to 2 when the numberings barely overlap; 0 when position pairing replaced a pairing by number that named other residues or repeated a number) |
 | `n_superposition_atoms` | int | — | receptor Cα atoms used for the superposition, whichever pairing applied |
 | `receptor_pairing`, `binder_pairing` | str | — | `"residue_number"` or `"position"` |
 | `receptor_resname_mismatch_fraction`, `binder_resname_mismatch_fraction` | float | — | fraction of paired residues with different names |
@@ -833,6 +839,39 @@ Compares a design pose with a second prediction, for example an OpenFold3 predic
 | `reason` | str | — | pLDDT was given but its mean is zero or not finite |
 
 A high pLDDT and a small interface distance with a large ΔCOM mean that the second prediction places the binder elsewhere on the receptor surface, which suggests that the design pose is not supported.
+
+### scores from prediction records
+
+The same computations with the structures read by a predictor adapter (§12), so the second prediction can come from any model that has one and its per-atom pLDDT travels in the record. `design` is a `PredictionRecord` or the path of the input pose; `adversary` is a `PredictionRecord`.
+
+```python
+from binding_metrics.metrics.evobind import (
+    compute_evobind_adversarial_from_records,
+    compute_evobind_score_from_record,
+)
+from binding_metrics.predictors import get_parser
+
+of3 = get_parser("of3")
+design = of3.load("design_scoring_out", "cmplx_007")
+adversary = of3.load("sequence_only_out", "cmplx_007", chain_map={"R": "A"})
+check = compute_evobind_adversarial_from_records(design, adversary, binder_chain="B", receptor_chain="A")
+score = compute_evobind_score_from_record(adversary, binder_chain="B", receptor_chain="A")
+```
+
+Chain IDs are the user's IDs, after each record's `chain_map` (model chain ID to user chain ID). A model that calls the receptor `A` and another that calls it `R` therefore need no argument here, only the `chain_map` of their record. A chain that is not in a structure raises a `ValueError` that lists the chains it has.
+
+`compute_evobind_score_from_record` returns the keys of `compute_evobind_score` plus `model`; a record without per-atom pLDDT gives the distances, `mean_plddt_binder` and `evobind_score` as None, and a `reason`. `compute_evobind_adversarial_from_records` returns the keys of the adversarial check, where the `afm_` prefix now means "the second prediction", plus two more:
+
+| key | type | unit | description |
+|-----|------|------|-------------|
+| `design_model` | str \| None | — | `design.model`; None when `design` is a path |
+| `adversary_model` | str | — | `adversary.model` |
+| `reason` | str | — | the second prediction has no per-atom pLDDT (the geometric keys are returned, `afm_mean_plddt_binder` and `evobind_adversarial_score` are None, and the adapter's own reasons are appended), or its mean binder pLDDT is zero or not finite |
+
+Two cautions apply to the second prediction:
+
+- `evobind_adversarial_score` divides by the binder pLDDT of the second prediction, so compare scores between designs only when one adversary model made all the second predictions. `delta_com_angstrom` and the interface distances are geometry and compare across models.
+- When the second prediction is an OpenFold3 run in score mode, it is templated on the design pose, so its agreement with the design is partly by construction. An independent second prediction is a sequence-only run (refold or predict).
 
 ---
 
