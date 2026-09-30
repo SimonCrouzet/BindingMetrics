@@ -903,6 +903,54 @@ class TestWithAStubExecutable:
         assert len(stub_openfold.calls()) == 1
 
 
+class TestSessionWithOpenFold3:
+    """Session, store and runner together, with the OpenFold3 parser of the registry."""
+
+    def test_two_metrics_and_a_second_session_start_one_process(self, tmp_path, stub_openfold):
+        from binding_metrics.predictors.session import PredictionSession
+
+        store = PredictionStore(tmp_path / "store")
+        runner = OpenFold3Runner()
+        request = runner.make_request(P53, name="p53", binder_chain="B", receptor_chain="A")
+        session = PredictionSession(store, [runner])
+        assert session.record(request).ptm == 0.5  # metric one
+        assert session.record(request).iptm == 0.25  # metric two
+        again = PredictionSession(store, [runner])  # a restarted pipeline
+        assert again.record(request).avg_plddt == 77.0
+        assert len(stub_openfold.calls()) == 1
+        assert session.stats()["runs"] == 1 and again.stats()["runs"] == 0
+        assert again.stats()["hits"] == 1
+
+    def test_prefetch_starts_one_process_for_a_batch(self, tmp_path, stub_openfold):
+        from binding_metrics.predictors.session import PredictionSession
+
+        runner = OpenFold3Runner()
+        other = tmp_path / "p53_other.pdb"
+        other.write_text(P53.read_text(encoding="utf-8") + "REMARK other\n", encoding="utf-8")
+        requests = [
+            runner.make_request(path, name=name, binder_chain="B", receptor_chain="A")
+            for path, name in ((P53, "one"), (other, "two"))
+        ]
+        session = PredictionSession(PredictionStore(tmp_path / "store"), [runner])
+        session.prefetch(requests)
+        assert [session.record(request).iptm for request in requests] == [0.25, 0.25]
+        assert len(stub_openfold.calls()) == 1
+        assert session.stats()["runs"] == 2
+
+    def test_a_failure_reaches_the_caller_as_one_readable_error(self, tmp_path, stub_openfold):
+        from binding_metrics.predictors.session import PredictionSession
+
+        stub_openfold.install(fail=True)
+        runner = OpenFold3Runner()
+        request = runner.make_request(P53, name="p53", binder_chain="B", receptor_chain="A")
+        session = PredictionSession(PredictionStore(tmp_path / "store"), [runner])
+        with pytest.raises(PredictionFailedError, match="cowardly refusing"):
+            session.record(request)
+        with pytest.raises(PredictionFailedError):
+            session.record(request)
+        assert len(stub_openfold.calls()) == 1 and session.stats()["failed"] == 1
+
+
 # ---------------------------------------------------------------------------- module facts
 
 
