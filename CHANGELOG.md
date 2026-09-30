@@ -237,6 +237,7 @@ Values from earlier versions differ in the cases below. A change reads "before -
 
 ### Changed
 
+- `compute_openfold_metrics` reads the output through the `of3` adapter and analyses the record with `summarize_prediction` (`binding_metrics.metrics.prediction`); its dictionary, keys and warnings are unchanged. The reason for a missing full confidence file now reads "per-atom confidences file not found; OpenFold3 writes it only when write_full_confidence_scores is true" (#73).
 - The default OpenFold3 model presets of `binding-metrics-openfold run`, `refold` and `score` are
   `predict low_mem`. OpenFold3 0.4.1 removed `pae_enabled` (the PAE head is on by default; pTM, ipTM and PAE
   are always written) and 0.5.0 only logs a warning for it. An explicit `pae_enabled` is left out of the runner
@@ -278,6 +279,7 @@ Values from earlier versions differ in the cases below. A change reads "before -
 
 ### Fixed
 
+- `compute_openfold_metrics` finds and reads `.cif.gz` structures (`structure_format: cif.gz`, #78), counts `seed` in the numeric order of the seed directories (`seed_9` before `seed_10`; the string order decided before, which differs when the seed values have different numbers of digits, #79), and opens `.npz` confidences without pickle, reading only `plddt`, `pde`, `pae` and `gpde` (#80).
 - `core/gaff_ncaa.py` writes force-field files and reads antechamber output as UTF-8 whatever the locale.
 - Batch: `--per-sample-log` was never read, and workers overwrote a shared `--log-file` (#19). An
   exception outside the pipeline's own handling is an error row in the sequential case too.

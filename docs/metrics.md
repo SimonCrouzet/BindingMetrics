@@ -500,13 +500,13 @@ algorithm: select the receptor Cα atoms by chain ID; aligned drift superposes e
 
 `compute_openfold_metrics(output_dir, query_name, seed=1, sample=1, include_matrices=False, reference_structure_path=None, binder_chain=None, receptor_chain=None, *, seed_index=None, target_chain=None)` — `binding_metrics.metrics.openfold`
 
-Parses the output of an OpenFold3 run. It needs no OpenFold3 install, only the output files. `seed` is the 1-based index of a `seed_*` directory of the query, not a random seed value (OpenFold3 names the directories after its own transformed seeds); `seed_index` is a clearer name for the same argument and takes precedence.
+Parses the output of an OpenFold3 run. It needs no OpenFold3 install, only the output files. `seed` is the 1-based position of a `seed_*` directory of the query in the numeric order of the seed values (`seed_9` before `seed_10`), not a random seed value (OpenFold3 names the directories after its own seeds); `seed_index` is a clearer name for the same argument and takes precedence. The function reads the output through the `of3` adapter (`get_parser("of3")`, see "Prediction records" below) and analyses the record with `summarize_prediction`.
 
 expected layout:
 
 ```
 {output_dir}/{query_name}/seed_{S}/
-    {prefix}_model.cif                     predicted structure, pLDDT in the B-factor column
+    {prefix}_model.cif (.cif.gz or .pdb)   predicted structure, pLDDT in the B-factor column
     {prefix}_confidences_aggregated.json   scalar scores
     {prefix}_confidences.json (or .npz)    per-atom and per-token arrays
     timing.json
@@ -607,6 +607,8 @@ A model-specific scalar or dictionary goes in `extras` under the key the model u
 **Adapters.** An adapter subclasses `PredictionParser` (`binding_metrics.predictors.base`) and reads the output of one model without running it. It implements `find_files(prediction_dir, name, *, seed_index=1, sample=1) -> PredictionFiles` and `parse(files, *, name, seed_index=1, sample=1) -> PredictionRecord`; the base class supplies `load(prediction_dir, name, *, seed_index=1, sample=1, chain_map=None)`, which chains the two and applies the chain map, and `list_samples(prediction_dir, name)`, which returns `SampleRef(seed_index, sample, ranking_score)` for each sample in the model's natural order. The class attributes are `name`, `display_name`, `family` (`"af2"`: one token per residue; `"af3"`: one token per standard residue and one per heavy atom of a ligand or modified residue) and `capabilities` (None until an adapter declares which inputs its model can take). `sample=1` is the first output in the model's own order, not the best-ranked one. Parsing the scalars imports no biotite and does not open the structure file.
 
 `binding_metrics.predictors.PARSERS` maps a model name to a `ParserSpec` that names the adapter class and imports it only when it is needed; `get_parser(name)` returns an adapter instance (`KeyError` listing the known names for an unknown model) and `register_parser(spec)` adds one. A contract test in `tests/predictors` runs every registered adapter against a synthetic complex; an adapter brings `tests/predictors/synth_<name>.py` with a `write_prediction` function that writes that complex in the model's layout, and needs no other test edit to be covered.
+
+The `of3` adapter reads the layout above: `.cif`, `.cif.gz` or `.pdb` structures, JSON or NPZ confidences (NPZ without pickle), `seed_index` as the position in the numeric order of the seed values, `sample` counted from 1. `bespoke_iptm` is in `record.extras`, `chain_pair_iptm` keys are the strings OpenFold3 writes (`"(A, B)"`), and `record.tokens` is None because the files carry no token layout. Its layout was checked against the OpenFold3 v0.5.0 source, not against a 0.5.0 run.
 
 ---
 

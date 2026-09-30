@@ -55,13 +55,9 @@ Usage (CLI):
         --query-name my_complex
 """
 
-import json
 import subprocess
-import warnings
 from pathlib import Path
 from typing import Optional, Sequence
-
-import numpy as np
 
 from binding_metrics.metrics._common import resolve_chain_role
 from binding_metrics.metrics._openfold_cli import (  # noqa: F401  (re-exported)
@@ -84,6 +80,7 @@ from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     prepare_refolding_query,
     prepare_scoring_query,
 )
+from binding_metrics.metrics.prediction import summarize_prediction
 from binding_metrics.predictors._confidence import (  # noqa: F401  (re-exported)
     _binder_ca_rmsd,
     _binder_plddt_per_residue,
@@ -94,9 +91,20 @@ from binding_metrics.predictors._confidence import (  # noqa: F401  (re-exported
     _interface_pde_stats,
     _load_atoms,
 )
+from binding_metrics.predictors.of3 import (  # noqa: F401  (re-exported)
+    OpenFold3Parser,
+)
+from binding_metrics.predictors.of3 import (  # noqa: F401  (re-exported)
+    parse_aggregated_confidences as _parse_confidences_aggregated,
+)
+from binding_metrics.predictors.of3 import parse_full_confidences as _parse_confidences
+from binding_metrics.predictors.of3 import (  # noqa: F401  (re-exported)
+    parse_timing as _parse_timing,
+)
+from binding_metrics.predictors.registry import get_parser
 
 # ---------------------------------------------------------------------------
-# Output file discovery
+# Output file discovery and parsers (the OpenFold3 adapter of binding_metrics.predictors)
 # ---------------------------------------------------------------------------
 
 
@@ -111,140 +119,25 @@ def _find_prediction_files(
     Args:
         output_dir: Top-level OpenFold3 output directory.
         query_name: Query name as specified in the input JSON.
-        seed: Seed index (1-based index into the sorted list of seed directories),
-              not a seed value. OF3 transforms input seeds, so this selects by
-              position rather than value.
+        seed: Seed index (1-based position of the ``seed_*`` directory in the numeric order
+            of the seed values), not a seed value. OF3 transforms input seeds, so this
+            selects by position rather than value.
         sample: Sample index (default 1).
 
     Returns:
         Dict with keys: ``structure``, ``confidences``, ``confidences_aggregated``,
-        ``timing``. Values are resolved Paths or None if not found.
+        ``timing``. Values are resolved Paths or None if not found. The structure may be a
+        ``.cif``, ``.cif.gz`` or ``.pdb`` file.
     """
-    query_dir = output_dir / query_name
-    seed_dirs = sorted(query_dir.glob("seed_*")) if query_dir.exists() else []
-    if seed_dirs and 1 <= seed <= len(seed_dirs):
-        seed_dir = seed_dirs[seed - 1]
-        actual_seed = seed_dir.name[len("seed_") :]
-    else:
-        actual_seed = str(seed)
-        seed_dir = query_dir / f"seed_{seed}"
-    prefix = f"{query_name}_seed_{actual_seed}_sample_{sample}"
-
-    structure = None
-    for ext in (".cif", ".pdb"):
-        p = seed_dir / f"{prefix}_model{ext}"
-        if p.exists():
-            structure = p
-            break
-
-    confidences = None
-    for ext in (".json", ".npz"):
-        p = seed_dir / f"{prefix}_confidences{ext}"
-        if p.exists():
-            confidences = p
-            break
-
-    agg = seed_dir / f"{prefix}_confidences_aggregated.json"
-    timing = seed_dir / "timing.json"
-
+    files = OpenFold3Parser().find_files(
+        Path(output_dir), query_name, seed_index=seed, sample=sample
+    )
     return {
-        "structure": structure,
-        "confidences": confidences,
-        "confidences_aggregated": agg if agg.exists() else None,
-        "timing": timing if timing.exists() else None,
+        "structure": files.structure,
+        "confidences": files.arrays,
+        "confidences_aggregated": files.scores,
+        "timing": files.timing,
     }
-
-
-# ---------------------------------------------------------------------------
-# Confidence file parsers
-# ---------------------------------------------------------------------------
-
-
-def _parse_confidences_aggregated(path: Path) -> dict:
-    """Parse ``*_confidences_aggregated.json``.
-
-    Contains scalar metrics computed over the full complex.
-
-    Args:
-        path: Path to the aggregated confidence JSON file.
-
-    Returns:
-        Dict with all scalar confidence metrics. Missing keys are NaN.
-        Keys: avg_plddt, gpde, ptm, iptm, disorder, has_clash,
-        sample_ranking_score, chain_ptm (dict), chain_pair_iptm (dict),
-        bespoke_iptm (dict).
-    """
-    with open(path, encoding="utf-8") as fh:
-        raw = json.load(fh)
-
-    def _f(key):
-        val = raw.get(key)
-        return float(val) if val is not None else float("nan")
-
-    return {
-        "avg_plddt": _f("avg_plddt"),
-        "gpde": _f("gpde"),
-        "ptm": _f("ptm"),
-        "iptm": _f("iptm"),
-        "disorder": _f("disorder"),
-        "has_clash": _f("has_clash"),
-        "sample_ranking_score": _f("sample_ranking_score"),
-        "chain_ptm": raw.get("chain_ptm", {}),
-        "chain_pair_iptm": raw.get("chain_pair_iptm", {}),
-        "bespoke_iptm": raw.get("bespoke_iptm", {}),
-    }
-
-
-def _parse_confidences(path: Path) -> dict:
-    """Parse ``*_confidences.json`` or ``*_confidences.npz``.
-
-    Contains per-atom pLDDT, per-token PDE/PAE matrices, and scalar
-    aggregates. The pLDDT array has one value per heavy atom.
-
-    Args:
-        path: Path to the per-atom confidence file (.json or .npz).
-
-    Returns:
-        Dict with keys:
-            plddt_per_atom (np.ndarray): per-atom pLDDT [0–100], shape (n_atoms,)
-            pde (np.ndarray | None): predicted distance error matrix (n_tokens, n_tokens)
-            pae (np.ndarray | None): predicted aligned error matrix (n_tokens, n_tokens)
-            gpde (float): global PDE scalar
-    """
-    path = Path(path)
-
-    if path.suffix == ".npz":
-        data = np.load(path, allow_pickle=True)
-        raw = {k: data[k] for k in data.files}
-    else:
-        with open(path, encoding="utf-8") as fh:
-            raw = json.load(fh)
-
-    def _arr(key):
-        val = raw.get(key)
-        if val is None:
-            return None
-        return np.array(val, dtype=float)
-
-    def _scalar(key):
-        val = raw.get(key)
-        if val is None:
-            return float("nan")
-        arr = np.asarray(val, dtype=float)
-        return float(arr.ravel()[0]) if arr.size > 0 else float("nan")
-
-    return {
-        "plddt_per_atom": _arr("plddt"),
-        "pde": _arr("pde"),
-        "pae": _arr("pae"),
-        "gpde": _scalar("gpde"),
-    }
-
-
-def _parse_timing(path: Path) -> dict:
-    """Parse ``timing.json``."""
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
 
 
 # ---------------------------------------------------------------------------
@@ -437,185 +330,17 @@ def compute_openfold_metrics(
     )
     if seed_index is not None:
         seed = seed_index
-    output_dir = Path(output_dir)
-    files = _find_prediction_files(output_dir, query_name, seed=seed, sample=sample)
-    reasons: list[str] = []
-
-    result: dict = {
-        "query_name": query_name,
-        "seed": seed,
-        "sample": sample,
-        "structure_path": str(files["structure"]) if files["structure"] else None,
-        # Scalar confidence metrics (NaN = not available)
-        "avg_plddt": float("nan"),
-        "gpde": float("nan"),
-        "ptm": float("nan"),
-        "iptm": float("nan"),
-        "disorder": float("nan"),
-        "has_clash": float("nan"),
-        "sample_ranking_score": float("nan"),
-        "chain_ptm": {},
-        "chain_pair_iptm": {},
-        "bespoke_iptm": {},
-        # Per-atom data
-        "plddt_per_atom": None,
-        "n_atoms": 0,
-        "pde": None,
-        "max_pde": float("nan"),
-        "pae": None,
-        "max_pae": float("nan"),
-        # Per-chain structural analysis (populated when binder_chain is given)
-        "binder_plddt_per_residue": None,
-        "binder_avg_plddt": float("nan"),
-        # Interface PDE / PAE (populated when binder_chain + receptor_chain are given)
-        "mean_interface_pde": float("nan"),
-        "max_interface_pde": float("nan"),
-        "pde_interface": None,
-        "mean_interface_pae": float("nan"),
-        "max_interface_pae": float("nan"),
-        "pae_interface": None,
-        # Refolding RMSD (populated when binder_chain + reference_structure_path)
-        "binder_ca_rmsd": float("nan"),
-        # Timing
-        "timing": {},
-    }
-
-    if files["confidences_aggregated"] is None and files["confidences"] is None:
-        reasons.append(
-            f"no confidence files found for query '{query_name}' "
-            f"(seed index {seed}, sample {sample}) in {output_dir}"
-        )
-    elif files["confidences_aggregated"] is None:
-        reasons.append("aggregated confidences file not found")
-    elif files["confidences"] is None:
-        reasons.append("per-atom confidences file not found")
-
-    # --- Aggregated confidence (scalar metrics) ---
-    if files["confidences_aggregated"] is not None:
-        agg = _parse_confidences_aggregated(files["confidences_aggregated"])
-        result.update(agg)
-
-    # --- Per-atom confidence file ---
-    if files["confidences"] is not None:
-        conf = _parse_confidences(files["confidences"])
-        plddt_arr = conf["plddt_per_atom"]
-        result["plddt_per_atom"] = plddt_arr
-        result["n_atoms"] = int(len(plddt_arr)) if plddt_arr is not None else 0
-
-        # avg_plddt from per-atom data as fallback
-        if plddt_arr is not None and np.isnan(result["avg_plddt"]):
-            result["avg_plddt"] = float(np.mean(plddt_arr))
-
-        if include_matrices:
-            result["pde"] = conf["pde"]
-            result["pae"] = conf["pae"]
-
-        pde = conf["pde"]
-        if pde is not None:
-            result["max_pde"] = float(pde.max())
-
-        pae = conf["pae"]
-        if pae is not None:
-            result["max_pae"] = float(pae.max())
-
-    # --- Timing ---
-    if files["timing"] is not None:
-        result["timing"] = _parse_timing(files["timing"])
-
-    # --- Per-chain structural analysis ---
-    # Requires binder_chain; uses the predicted model CIF.
-    if binder_chain is not None and files["structure"] is None:
-        reasons.append("structure file not found; per-chain values not computed")
-    if binder_chain is not None and files["structure"] is not None:
-        try:
-            pred_atoms = _load_atoms(files["structure"])
-
-            # Per-residue binder pLDDT
-            if result["plddt_per_atom"] is not None:
-                try:
-                    per_res = _binder_plddt_per_residue(
-                        result["plddt_per_atom"], pred_atoms, binder_chain
-                    )
-                    result["binder_plddt_per_residue"] = per_res
-                    result["binder_avg_plddt"] = (
-                        float(per_res.mean()) if per_res.size > 0 else float("nan")
-                    )
-                except ValueError as exc:  # pLDDT length differs from the atom count
-                    warnings.warn(
-                        f"compute_openfold_metrics: per-residue binder pLDDT skipped: {exc}",
-                        stacklevel=2,
-                    )
-                    reasons.append(f"binder pLDDT: {exc}")
-            elif files["confidences"] is not None:
-                reasons.append("binder pLDDT: no per-atom pLDDT in the confidences file")
-
-            # Interface PDE statistics (binder × receptor token block)
-            if receptor_chain is not None:
-                pde_src = result.get("pde")
-                if pde_src is None and files["confidences"] is not None:
-                    # Load PDE even when include_matrices=False for stats only
-                    pde_src = _parse_confidences(files["confidences"]).get("pde")
-                if pde_src is not None:
-                    try:
-                        pde_stats = _interface_pde_stats(
-                            pde_src, pred_atoms, binder_chain, receptor_chain
-                        )
-                        result["mean_interface_pde"] = pde_stats["mean_interface_pde"]
-                        result["max_interface_pde"] = pde_stats["max_interface_pde"]
-                        if include_matrices:
-                            result["pde_interface"] = pde_stats["pde_interface"]
-                    except ValueError as exc:  # missing chain or token/residue mismatch
-                        warnings.warn(
-                            f"compute_openfold_metrics: interface PDE skipped: {exc}", stacklevel=2
-                        )
-                        reasons.append(f"interface PDE: {exc}")
-                elif files["confidences"] is not None:
-                    reasons.append("interface PDE: no PDE matrix in the confidences file")
-
-                # Interface PAE statistics (binder × receptor token block)
-                pae_src = result.get("pae")
-                if pae_src is None and files["confidences"] is not None:
-                    pae_src = _parse_confidences(files["confidences"]).get("pae")
-                if pae_src is not None:
-                    try:
-                        pae_stats = _interface_pae_stats(
-                            pae_src, pred_atoms, binder_chain, receptor_chain
-                        )
-                        result["mean_interface_pae"] = pae_stats["mean_interface_pae"]
-                        result["max_interface_pae"] = pae_stats["max_interface_pae"]
-                        if include_matrices:
-                            result["pae_interface"] = pae_stats["pae_interface"]
-                    except ValueError as exc:  # missing chain or token/residue mismatch
-                        warnings.warn(
-                            f"compute_openfold_metrics: interface PAE skipped: {exc}", stacklevel=2
-                        )
-                        reasons.append(f"interface PAE: {exc}")
-                elif files["confidences"] is not None:
-                    reasons.append("interface PAE: no PAE matrix in the confidences file")
-
-            # Binder Cα RMSD vs. reference structure
-            if reference_structure_path is not None:
-                try:
-                    ref_atoms = _load_atoms(Path(reference_structure_path))
-                    result["binder_ca_rmsd"] = _binder_ca_rmsd(
-                        pred_atoms, ref_atoms, binder_chain, receptor_chain
-                    )
-                except (ValueError, OSError) as exc:  # Cα count mismatch or unreadable file
-                    warnings.warn(
-                        f"compute_openfold_metrics: binder RMSD skipped: {exc}", stacklevel=2
-                    )
-                    reasons.append(f"binder RMSD: {exc}")
-
-        except Exception as exc:  # noqa: BLE001 - external model file; recorded in "reason"
-            # Broad on purpose: the model file is external input and structure parsers
-            # raise several exception types. Values computed so far are kept.
-            warnings.warn(
-                f"compute_openfold_metrics: structural analysis failed: {exc}", stacklevel=2
-            )
-            reasons.append(f"structural analysis failed: {type(exc).__name__}: {exc}")
-
-    if reasons:
-        result["reason"] = "; ".join(reasons)
+    record = get_parser("of3").load(output_dir, query_name, seed_index=seed, sample=sample)
+    result = summarize_prediction(
+        record,
+        include_matrices=include_matrices,
+        reference_structure_path=reference_structure_path,
+        binder_chain=binder_chain,
+        receptor_chain=receptor_chain,
+        caller="compute_openfold_metrics",
+        stacklevel=3,  # the caller of compute_openfold_metrics, through summarize_prediction
+    )
+    del result["model"]  # this function has always returned the OpenFold3 keys only
     return result
 
 

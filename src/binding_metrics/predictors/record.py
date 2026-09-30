@@ -464,12 +464,12 @@ def _scalar_problems(
 def _read_structure(path: Path):
     """Read model 1 of a structure file; a ``.gz`` file is decompressed to a temporary copy."""
     if path.suffix.lower() != ".gz":
-        return load_structure(path, purpose="prediction structure")
+        return load_structure(path, purpose="per-chain structural analysis")
     with tempfile.TemporaryDirectory(prefix="bm_prediction_") as scratch:
         plain = Path(scratch) / path.stem  # keeps the inner suffix (.cif or .pdb)
         with gzip.open(path, "rb") as source, open(plain, "wb") as target:
             target.write(source.read())
-        return load_structure(plain, purpose="prediction structure")
+        return load_structure(plain, purpose="per-chain structural analysis")
 
 
 def _rename_chains(atoms, chain_map: Mapping[str, str]):

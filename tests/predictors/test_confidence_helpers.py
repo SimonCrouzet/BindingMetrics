@@ -66,11 +66,11 @@ class TestOldNamesStillResolve:
             "_binder_ca_rmsd",
         ],
     )
-    def test_compute_openfold_metrics_looks_the_helpers_up_on_the_openfold_module(
+    def test_compute_openfold_metrics_looks_the_helpers_up_on_the_prediction_module(
         self, name, tmp_path, monkeypatch
     ):
-        """Tests that patch ``openfold.<helper>`` must still reach the parse path."""
-        from binding_metrics.metrics import openfold
+        """The analysis moved to ``metrics.prediction``, which is where a test patches a helper."""
+        from binding_metrics.metrics import openfold, prediction
         from tests.predictors.test_openfold_golden import _QUERY, _write_reference, _write_run
 
         calls = []
@@ -79,7 +79,7 @@ class TestOldNamesStillResolve:
             calls.append(name)
             raise RuntimeError("spy")
 
-        monkeypatch.setattr(openfold, name, _spy)
+        monkeypatch.setattr(prediction, name, _spy)
         root = _write_run(tmp_path / "run")
         reference = _write_reference(tmp_path)
         with pytest.warns(UserWarning):

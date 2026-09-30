@@ -557,7 +557,8 @@ class TestFailureReasons:
 
         _make_seed_dir(tmp_path, "q", agg=_default_agg(), conf=None)
         assert compute_openfold_metrics(tmp_path, "q")["reason"] == (
-            "per-atom confidences file not found"
+            "per-atom confidences file not found; OpenFold3 writes it only when "
+            "write_full_confidence_scores is true"
         )
 
     def test_missing_structure_when_a_binder_chain_is_requested(self, tmp_path):
@@ -637,12 +638,14 @@ class TestFailureReasons:
     def test_unexpected_errors_are_reported_by_the_outer_guard_not_swallowed_silently(
         self, tmp_path, monkeypatch
     ):
-        from binding_metrics.metrics import openfold
+        from binding_metrics.metrics import openfold, prediction
 
         def _boom(*args, **kwargs):
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(openfold, "_binder_plddt_per_residue", _boom)
+        # the analysis runs in metrics/prediction.py since compute_openfold_metrics went
+        # through the adapter, so that is the module whose helper name is patched
+        monkeypatch.setattr(prediction, "_binder_plddt_per_residue", _boom)
         root = _write_dimer_run(tmp_path)
         with pytest.warns(UserWarning, match="structural analysis failed"):
             metrics = openfold.compute_openfold_metrics(
