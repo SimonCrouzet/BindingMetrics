@@ -436,6 +436,22 @@ class TestRunOnce:
         names = sorted(p.name for p in store.path_for(request).parent.iterdir())
         assert names == [request.key(), f"{request.key()}.lock"]
 
+    def test_a_relative_root_does_not_move_with_the_working_directory(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        relative = PredictionStore("cache")
+        assert relative.root == tmp_path / "cache"
+        request = make_request(tmp_path)
+        entry = relative.get_or_run(request, StubRunner())
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        assert entry.directory.is_absolute() and entry.prediction_dir.is_dir()
+        assert relative.lookup(request).key == entry.key
+
+    def test_a_home_relative_root_is_expanded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert PredictionStore("~/predictions").root == tmp_path / "predictions"
+
     def test_a_lookup_writes_nothing(self, store, tmp_path):
         assert store.lookup(make_request(tmp_path)) is None
         assert not store.root.exists()

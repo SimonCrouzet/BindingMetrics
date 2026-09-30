@@ -420,12 +420,13 @@ class PredictionStore:
     """A directory of model predictions, each run at most once (see the module docstring).
 
     The root is created when something is first written; a store on a read-only file system
-    can be looked up. One instance can be shared by threads, and any number of instances and
-    processes may use one root.
+    can be looked up. It is made absolute (and ``~`` expanded) when the store is made, so a
+    later change of the working directory does not move it. One instance can be shared by
+    threads, and any number of instances and processes may use one root.
     """
 
     def __init__(self, root: str | Path):
-        self.root = Path(root)
+        self.root = Path(root).expanduser().absolute()
 
     # ------------------------------------------------------------------ reading
 
