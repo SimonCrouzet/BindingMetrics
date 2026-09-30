@@ -6,6 +6,10 @@ layouts of ``predictors/af2.py``. Nothing here is real model output.
 """
 
 import gzip
+import json
+import subprocess
+import sys
+import textwrap
 
 import numpy as np
 import pytest
@@ -13,12 +17,16 @@ import pytest
 from binding_metrics.metrics.prediction import summarize_prediction
 from binding_metrics.predictors import af2
 from binding_metrics.predictors.af2 import (
+    AlphaFold2Parser,
     load_bfactor_record,
+    parse_colabfold_scores,
     read_bfactor_plddt,
 )
 from tests.predictors import contract, synth, synth_af2
 
 NAME = contract.NAME
+REPO_ROOT = contract.REPO_ROOT
+GARBAGE = contract.GARBAGE
 
 #: The default complex has two chains of 4 and 3 residues; these are their pLDDT per residue.
 RESIDUE_PLDDT = np.array([93.0, 89.0, 85.0, 79.0, 62.0, 89.0, 77.0])
@@ -26,6 +34,11 @@ RESIDUE_PLDDT = np.array([93.0, 89.0, 85.0, 79.0, 62.0, 89.0, 77.0])
 
 def _truth(**kwargs):
     return synth.synthetic_complex(**kwargs)
+
+
+def _colabfold(tmp_path, **kwargs):
+    synth_af2.write_colabfold(tmp_path, NAME, _truth(), **kwargs)
+    return tmp_path
 
 
 def _atom_line(
@@ -53,6 +66,39 @@ def _biotite_reference(path):
     marks = np.zeros(atoms.array_length(), dtype=int)
     marks[starts] = 1
     return np.asarray(atoms.b_factor), np.cumsum(marks) - 1
+
+
+def _complex_with_atoms_per_residue(counts, *, plddt=None):
+    """A complex with ``counts[chain][i]`` atoms in each residue and one pLDDT per residue."""
+    names = ["N", "CA", "C", "O", "CB", "CG", "CD"]
+    atoms, values, n_residues = [], [], 0
+    for chain, chain_counts in counts.items():
+        for i, n_atoms in enumerate(chain_counts):
+            value = 50.0 + 5.0 * n_residues if plddt is None else plddt[n_residues]
+            n_residues += 1
+            for k in range(n_atoms):
+                atoms.append(
+                    synth.struc.Atom(
+                        [3.8 * i, 1.5 * k, 0.0],
+                        chain_id=chain,
+                        res_id=i + 1,
+                        res_name="ALA",
+                        atom_name=names[k],
+                        element="C",
+                    )
+                )
+                values.append(value)
+    array = synth.struc.array(atoms)
+    index = np.arange(n_residues)[:, None], np.arange(n_residues)[None, :]
+    return synth.SyntheticComplex(
+        atoms=array,
+        plddt_per_atom=np.array(values),
+        pae=1.0 + 0.5 * index[0] + 0.25 * index[1],
+        pde=0.5 + 0.25 * index[0] + 0.125 * index[1],
+        scalars=_truth().scalars,
+        chain_ptm={},
+        chain_pair_iptm={},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -305,3 +351,421 @@ class TestLoadBfactorRecord:
         assert summary["binder_avg_plddt"] == pytest.approx(76.0)
         assert np.isnan(summary["ptm"]) and np.isnan(summary["mean_interface_pae"])
         assert "B-factor column" in summary["reason"]
+
+
+# ---------------------------------------------------------------------------
+# The ColabFold scores JSON
+# ---------------------------------------------------------------------------
+
+
+def _scores_file(tmp_path, payload):
+    path = tmp_path / "scores.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+class TestColabFoldScores:
+    def test_a_multimer_file_with_the_extra_ptm_keys(self, tmp_path):
+        path = _scores_file(tmp_path, synth_af2.colabfold_scores(_truth()))
+        parsed = parse_colabfold_scores(path)
+        np.testing.assert_allclose(parsed["plddt_per_residue"], RESIDUE_PLDDT)
+        assert parsed["pae"].shape == (7, 7)
+        assert parsed["ptm"] == 0.88 and parsed["iptm"] == 0.76
+        assert parsed["chain_ptm"] == {"A": 0.88, "B": 0.8}
+        assert parsed["chain_pair_iptm"] == {"A-B": 0.76}
+        assert set(parsed["extras"]) == {"pairwise_actifptm", "actifptm"}
+
+    def test_the_ipsae_family_of_colabfold_1_6_3_goes_to_the_extras(self, tmp_path):
+        payload = synth_af2.colabfold_scores(_truth())
+        payload.update(ipsae={"A-B": 0.61}, pdockq={"A-B": 0.4}, pdockq2={"A-B": 0.3})
+        extras = parse_colabfold_scores(_scores_file(tmp_path, payload))["extras"]
+        assert extras["ipsae"] == {"A-B": 0.61}
+        assert extras["pdockq"] == {"A-B": 0.4} and extras["pdockq2"] == {"A-B": 0.3}
+
+    def test_the_pae_matrix_is_not_transposed(self, tmp_path):
+        # pae[i][j] = 1 + 0.5 i + 0.25 j: row 0 runs 1.0 .. 2.5, column 0 runs 1.0 .. 4.0
+        pae = parse_colabfold_scores(_scores_file(tmp_path, synth_af2.colabfold_scores(_truth())))[
+            "pae"
+        ]
+        assert pae[0, 6] == pytest.approx(2.5) and pae[6, 0] == pytest.approx(4.0)
+        np.testing.assert_allclose(pae, _truth().pae)
+
+    def test_a_monomer_file_has_only_plddt(self, tmp_path):
+        parsed = parse_colabfold_scores(_scores_file(tmp_path, {"plddt": [90.0, 80.0, 70.0]}))
+        assert parsed["pae"] is None and np.isnan(parsed["ptm"]) and np.isnan(parsed["iptm"])
+        assert parsed["chain_ptm"] == {} and parsed["extras"] == {}
+
+    @pytest.mark.parametrize(
+        "payload, message",
+        [
+            ({"plddt": [0.5, 0.9, 0.7]}, "0-1 scale"),
+            ({"plddt": [50.0, 120.0]}, "outside 0-100"),
+            ({"plddt": []}, "non-empty"),
+            ({"plddt": ["a", "b"]}, "not a list of numbers"),
+            ({"plddt": [50.0, 60.0], "pae": [[1.0, 2.0, 3.0]] * 3}, "3 by 3 but pLDDT has 2"),
+            ({"plddt": [50.0, 60.0], "pae": [1.0, 2.0]}, "square matrix"),
+            ({"plddt": [50.0, 60.0], "ptm": "high"}, "'ptm' is 'high'"),
+            ({"plddt": [50.0, 60.0], "per_chain_ptm": [0.5]}, "must be an object"),
+            ({"pae": [[1.0]]}, "not a ColabFold scores file"),
+            ([1.0, 2.0], "not a ColabFold scores file"),
+        ],
+    )
+    def test_a_file_that_is_not_a_scores_file_raises_with_the_reason(
+        self, tmp_path, payload, message
+    ):
+        with pytest.raises(ValueError, match=message):
+            parse_colabfold_scores(_scores_file(tmp_path, payload))
+
+    def test_garbage_raises_a_value_error(self, tmp_path):
+        path = tmp_path / "scores.json"
+        path.write_bytes(GARBAGE)
+        with pytest.raises(ValueError, match="scores.json is not a valid JSON file"):
+            parse_colabfold_scores(path)
+
+
+# ---------------------------------------------------------------------------
+# ColabFold layout: finding and reading the files of a sample
+# ---------------------------------------------------------------------------
+
+
+def _touch_colabfold(directory, tag, *, name=NAME, kinds=("unrelaxed", "scores")):
+    """Empty files of one ColabFold sample, for the tests of file discovery."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for kind in kinds:
+        suffix = ".json" if kind == "scores" else ".pdb"
+        (directory / f"{name}_{kind}_{tag}{suffix}").write_text("", encoding="utf-8")
+
+
+class TestColabFoldFindFiles:
+    def test_the_files_of_a_sample_are_located(self, tmp_path):
+        tag = synth_af2.write_colabfold(tmp_path, NAME, _truth())
+        files = AlphaFold2Parser().find_files(tmp_path, NAME)
+        assert files.structure == tmp_path / f"{NAME}_unrelaxed_{tag}.pdb"
+        assert files.scores == files.arrays == tmp_path / f"{NAME}_scores_{tag}.json"
+        assert files.timing is None and files.extra == {}
+        assert files.directory == tmp_path
+
+    def test_the_relaxed_structure_is_preferred_and_the_unrelaxed_one_kept(self, tmp_path):
+        tag = synth_af2.write_colabfold(tmp_path, NAME, _truth(), relaxed=True)
+        files = AlphaFold2Parser().find_files(tmp_path, NAME)
+        assert files.structure.name == f"{NAME}_relaxed_{tag}.pdb"
+        assert files.extra["unrelaxed_structure"].name == f"{NAME}_unrelaxed_{tag}.pdb"
+
+    def test_a_rank_that_was_not_relaxed_keeps_its_unrelaxed_structure(self, tmp_path):
+        synth_af2.write_colabfold(tmp_path, NAME, _truth(), relaxed=True)  # rank 1 (--num-relax 1)
+        synth_af2.write_colabfold(tmp_path, NAME, _truth(), sample=2)
+        parser = AlphaFold2Parser()
+        assert parser.find_files(tmp_path, NAME, sample=1).structure.name.startswith(
+            f"{NAME}_relaxed_rank_001"
+        )
+        assert parser.find_files(tmp_path, NAME, sample=2).structure.name.startswith(
+            f"{NAME}_unrelaxed_rank_002"
+        )
+
+    def test_nothing_is_found_in_an_empty_or_absent_directory(self, tmp_path):
+        parser = AlphaFold2Parser()
+        assert not parser.find_files(tmp_path, NAME).any_found()
+        assert not parser.find_files(tmp_path / "nowhere", NAME).any_found()
+
+    def test_the_job_name_must_match_exactly(self, tmp_path):
+        _touch_colabfold(
+            tmp_path, "rank_001_alphafold2_multimer_v3_model_1_seed_000", name="cmplx_2"
+        )
+        parser = AlphaFold2Parser()
+        assert not parser.find_files(tmp_path, "cmplx").has_output()
+        assert parser.find_files(tmp_path, "cmplx_2").has_output()
+
+    def test_the_job_may_sit_in_a_directory_named_like_it(self, tmp_path):
+        tag = synth_af2.write_colabfold(tmp_path / NAME, NAME, _truth())
+        files = AlphaFold2Parser().find_files(tmp_path, NAME)
+        assert files.structure == tmp_path / NAME / f"{NAME}_unrelaxed_{tag}.pdb"
+
+    def test_a_stray_json_of_another_kind_is_not_a_scores_file(self, tmp_path):
+        _colabfold(tmp_path)
+        (tmp_path / f"{NAME}_predicted_aligned_error_v1.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+        files = AlphaFold2Parser().find_files(tmp_path, NAME)
+        assert files.scores.name.startswith(f"{NAME}_scores_rank_001")
+
+    def test_a_sample_position_beyond_the_last_finds_nothing(self, tmp_path):
+        _colabfold(tmp_path)
+        parser = AlphaFold2Parser()
+        assert not parser.find_files(tmp_path, NAME, sample=2).has_output()
+        assert not parser.find_files(tmp_path, NAME, seed_index=2).has_output()
+        assert not parser.find_files(tmp_path, NAME, sample=0).has_output()
+
+
+class TestColabFoldSampleOrder:
+    """``seed_index`` is a position in the numeric order of the seeds, ``sample`` one by rank."""
+
+    def _job(self, tmp_path, seeds, ranks):
+        for seed in seeds:
+            for rank in ranks:
+                _touch_colabfold(
+                    tmp_path, f"rank_{rank}_alphafold2_multimer_v3_model_1_seed_{seed}"
+                )
+        return tmp_path
+
+    def test_seeds_are_ordered_by_value_not_as_text(self, tmp_path):
+        self._job(tmp_path, seeds=(100, 9, 10), ranks=(1,))
+        found = [
+            AlphaFold2Parser().find_files(tmp_path, NAME, seed_index=i).structure.name
+            for i in (1, 2, 3)
+        ]
+        assert [name.rsplit("_seed_", 1)[1] for name in found] == ["9.pdb", "10.pdb", "100.pdb"]
+
+    def test_samples_are_ordered_by_rank_value_not_as_text(self, tmp_path):
+        self._job(tmp_path, seeds=(0,), ranks=(10, 2, 1))
+        parser = AlphaFold2Parser()
+        ranks = [
+            parser.find_files(tmp_path, NAME, sample=i)
+            .structure.name.split("_rank_")[1]
+            .split("_")[0]
+            for i in (1, 2, 3)
+        ]
+        assert ranks == ["1", "2", "10"]
+
+    def test_the_sample_is_counted_inside_its_seed(self, tmp_path):
+        # global ranks 1, 2 belong to seed 5 and 3, 4 to seed 6
+        for rank, seed in ((1, 5), (2, 5), (3, 6), (4, 6)):
+            _touch_colabfold(
+                tmp_path, f"rank_{rank:03d}_alphafold2_multimer_v3_model_1_seed_{seed:03d}"
+            )
+        parser = AlphaFold2Parser()
+        picked = [
+            parser.find_files(tmp_path, NAME, seed_index=s, sample=k).structure.name
+            for s, k in ((1, 1), (1, 2), (2, 1), (2, 2))
+        ]
+        assert [name.split("_rank_")[1][:3] for name in picked] == ["001", "002", "003", "004"]
+
+    def test_a_tag_without_a_seed_counts_as_one_seed(self, tmp_path):
+        for rank in (1, 2):
+            _touch_colabfold(tmp_path, f"rank_{rank}_model_{rank}")  # an older style of names
+        parser = AlphaFold2Parser()
+        assert parser.find_files(tmp_path, NAME, sample=2).structure.name.endswith(
+            "rank_2_model_2.pdb"
+        )
+        assert not parser.find_files(tmp_path, NAME, seed_index=2).has_output()
+
+    def test_list_samples_follows_the_order_without_reading_the_files(self, tmp_path):
+        self._job(tmp_path, seeds=(100, 9), ranks=(2, 1))
+        refs = AlphaFold2Parser().list_samples(tmp_path, NAME)
+        assert [(r.seed_index, r.sample) for r in refs] == [(1, 1), (1, 2), (2, 1), (2, 2)]
+        assert all(np.isnan(r.ranking_score) for r in refs)
+
+    def test_the_contract_writer_gives_a_model_number_that_is_not_the_rank_order(self, tmp_path):
+        # the model numbers 3 and 1 of samples 1 and 2 would swap them if sorted by model
+        synth_af2.write_prediction(tmp_path, NAME, _truth(), sample=1)
+        synth_af2.write_prediction(tmp_path, NAME, _truth(), sample=2)
+        names = [
+            AlphaFold2Parser().find_files(tmp_path, NAME, sample=s).structure.name for s in (1, 2)
+        ]
+        assert "model_3" in names[0] and "model_1" in names[1]
+
+
+class TestColabFoldParse:
+    def test_scalars_arrays_and_chain_values(self, tmp_path):
+        truth = _truth()
+        record = AlphaFold2Parser().load(_colabfold(tmp_path), NAME)
+        record.validate(check_structure=True)
+        assert record.model == "af2" and record.name == NAME
+        assert (record.ptm, record.iptm) == (0.88, 0.76)
+        assert record.avg_plddt == pytest.approx(RESIDUE_PLDDT.mean())
+        np.testing.assert_allclose(record.pae, truth.pae)
+        assert record.pde is None and record.tokens is None
+        assert record.chain_ptm == {"A": 0.88, "B": 0.8}
+        assert record.chain_pair_iptm == {"A-B": 0.76}
+        assert np.isnan(record.gpde) and np.isnan(record.disorder) and np.isnan(record.has_clash)
+        assert np.isnan(record.ranking_score) and record.ranking_score_name == ""
+        assert record.timing == {}
+        assert record.reasons == []
+        assert record.extras["layout"] == "colabfold"
+        assert record.extras["colabfold_rank"] == 1
+        assert record.extras["plddt_source"] == "colabfold_scores"
+        assert record.extras["actifptm"] == 0.74
+
+    def test_plddt_is_one_value_per_residue_repeated_over_its_atoms(self, tmp_path):
+        record = AlphaFold2Parser().load(_colabfold(tmp_path), NAME)
+        np.testing.assert_allclose(record.plddt_per_atom, np.repeat(RESIDUE_PLDDT, 2))
+        np.testing.assert_allclose(record.extras["plddt_per_residue"], RESIDUE_PLDDT)
+
+    def test_the_relaxed_structure_is_the_one_of_the_record(self, tmp_path):
+        tag = synth_af2.write_colabfold(tmp_path, NAME, _truth(), relaxed=True)
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.structure_path.name == f"{NAME}_relaxed_{tag}.pdb"
+        record.validate(check_structure=True)
+
+    def test_the_average_is_over_residues_and_the_expansion_follows_the_atom_counts(self, tmp_path):
+        # residues of 2, 1 and 5 atoms in A and 3 and 4 in B, pLDDT 50, 55, 60, 65, 70 per residue
+        complex_ = _complex_with_atoms_per_residue({"A": [2, 1, 5], "B": [3, 4]})
+        synth_af2.write_colabfold(tmp_path, NAME, complex_)
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        record.validate(check_structure=True)
+        expected = np.repeat([50.0, 55.0, 60.0, 65.0, 70.0], [2, 1, 5, 3, 4])
+        np.testing.assert_allclose(record.plddt_per_atom, expected)
+        assert record.avg_plddt == pytest.approx(60.0)  # residue mean; the atom mean is 60.4
+
+    def test_a_monomer_model_gives_reasons_for_what_it_does_not_compute(self, tmp_path):
+        synth_af2.write_colabfold(
+            tmp_path, NAME, _truth(), scores={"plddt": RESIDUE_PLDDT.tolist()}
+        )
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.pae is None and np.isnan(record.ptm) and np.isnan(record.iptm)
+        joined = "; ".join(record.reasons)
+        assert "PAE and pTM not in" in joined and "ipTM not in" in joined
+        assert "only the multimer models" in joined
+        record.validate(check_structure=True)
+
+    def test_a_ptm_model_without_iptm_only_lacks_the_ipTM(self, tmp_path):
+        scores = {"plddt": RESIDUE_PLDDT.tolist(), "pae": _truth().pae.tolist(), "ptm": 0.7}
+        synth_af2.write_colabfold(tmp_path, NAME, _truth(), scores=scores)
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.ptm == 0.7 and np.isnan(record.iptm) and record.pae is not None
+        assert len(record.reasons) == 1 and record.reasons[0].startswith("ipTM not in")
+
+    def test_the_pae_orientation_is_that_of_alphafold(self, tmp_path):
+        record = AlphaFold2Parser().load(_colabfold(tmp_path), NAME)
+        assert record.pae[0, 6] == pytest.approx(2.5)  # the transpose has 4.0 here
+        assert record.pae[6, 0] == pytest.approx(4.0)
+
+    def test_the_interface_block_is_binder_rows_by_receptor_columns(self, tmp_path):
+        # chain B (tokens 4-6) is the binder, chain A (tokens 0-3) the receptor
+        record = AlphaFold2Parser().load(_colabfold(tmp_path), NAME)
+        summary = summarize_prediction(
+            record, binder_chain="B", receptor_chain="A", include_matrices=True
+        )
+        truth = _truth().pae
+        np.testing.assert_allclose(summary["pae_interface"], truth[4:7, 0:4])
+        assert not np.allclose(summary["pae_interface"], truth[0:4, 4:7].T)
+        expected_mean = (truth[4:7, 0:4].mean() + truth[0:4, 4:7].mean()) / 2
+        assert summary["mean_interface_pae"] == pytest.approx(expected_mean)
+        # AlphaFold2 has no PDE, and the summary says so; nothing else is missing
+        assert summary["reason"] == "interface PDE: no PDE matrix in the confidences file"
+
+    def test_a_directory_without_output_gives_a_reason(self, tmp_path):
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.structure_path is None and record.plddt_per_atom is None
+        assert record.reasons and "no AlphaFold2 or ColabFold output found" in record.reasons[0]
+
+    def test_a_missing_scores_file_falls_back_to_the_b_factor_column(self, tmp_path):
+        _colabfold(tmp_path)
+        next(tmp_path.glob("*_scores_*.json")).unlink()
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        record.validate(check_structure=True)
+        np.testing.assert_allclose(record.plddt_per_atom, np.repeat(RESIDUE_PLDDT, 2))
+        assert record.extras["plddt_source"] == "b_factor"
+        assert np.isnan(record.ptm) and record.pae is None
+        joined = "; ".join(record.reasons)
+        assert "no ColabFold scores file" in joined and "B-factor column" in joined
+
+    def test_a_missing_structure_keeps_the_residue_values_and_says_why(self, tmp_path):
+        _colabfold(tmp_path)
+        next(tmp_path.glob("*_unrelaxed_*.pdb")).unlink()
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.structure_path is None and record.plddt_per_atom is None
+        assert record.avg_plddt == pytest.approx(RESIDUE_PLDDT.mean())
+        np.testing.assert_allclose(record.extras["plddt_per_residue"], RESIDUE_PLDDT)
+        assert "cannot be expanded to atoms" in record.reasons[0]
+        record.validate()
+
+    def test_files_of_different_predictions_are_refused(self, tmp_path):
+        # the scores describe 7 residues, the structure has 5
+        synth_af2.write_colabfold(tmp_path, NAME, _truth())
+        short = _complex_with_atoms_per_residue({"A": [2, 2, 2], "B": [2, 2]})
+        synth.write_structure(synth_af2.af2_atoms(short), next(tmp_path.glob("*_unrelaxed_*.pdb")))
+        with pytest.raises(ValueError, match=r"has 7 pLDDT values but .* has 5 residues"):
+            AlphaFold2Parser().load(tmp_path, NAME)
+
+    def test_a_structure_with_a_ligand_is_refused_not_misaligned(self, tmp_path):
+        synth_af2.write_colabfold(tmp_path, NAME, _truth())
+        path = next(tmp_path.glob("*_unrelaxed_*.pdb"))
+        lines = path.read_text(encoding="utf-8").splitlines()
+        last_atom = max(i for i, line in enumerate(lines) if line.startswith("ATOM"))
+        lines.insert(last_atom + 1, _atom_line(99, " ZN ", " ZN", "C", 1, 50.0, kind="HETATM"))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="8 residues"):
+            AlphaFold2Parser().load(tmp_path, NAME)
+
+    def test_a_corrupt_scores_file_raises(self, tmp_path):
+        _colabfold(tmp_path)
+        next(tmp_path.glob("*_scores_*.json")).write_bytes(GARBAGE)
+        with pytest.raises(ValueError, match="not a valid JSON file"):
+            AlphaFold2Parser().load(tmp_path, NAME)
+
+    def test_a_corrupt_structure_raises(self, tmp_path):
+        _colabfold(tmp_path)
+        next(tmp_path.glob("*_unrelaxed_*.pdb")).write_text("ATOM      1  CA\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="atom record of"):
+            AlphaFold2Parser().load(tmp_path, NAME)
+
+    def test_the_chain_map_renames_the_chains_of_the_atoms_only(self, tmp_path):
+        record = AlphaFold2Parser().load(_colabfold(tmp_path), NAME, chain_map={"A": "R", "B": "P"})
+        assert set(record.atoms().chain_id) == {"R", "P"}
+        assert record.chain_ptm == {"A": 0.88, "B": 0.8}  # keys stay as ColabFold wrote them
+        summary = summarize_prediction(record, binder_chain="P", receptor_chain="R")
+        assert summary["binder_avg_plddt"] == pytest.approx(76.0)
+
+
+class TestParsingNeedsNoBiotite:
+    """The scores, the PAE and the per-atom pLDDT of a PDB structure are read without biotite."""
+
+    SCRIPT = textwrap.dedent(
+        """
+        import sys
+        sys.modules["biotite"] = None  # any import of biotite now fails
+        from binding_metrics.predictors.af2 import AlphaFold2Parser
+
+        record = AlphaFold2Parser().load(sys.argv[1], sys.argv[2])
+        assert record.plddt_per_atom is not None and len(record.plddt_per_atom) == 14
+        assert record.pae is not None and record.avg_plddt > 0
+        assert sys.modules["biotite"] is None
+        print("ok")
+        """
+    )
+
+    def _run(self, directory):
+        done = subprocess.run(
+            [sys.executable, "-c", self.SCRIPT, str(directory), NAME],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=REPO_ROOT,
+            env={**contract.os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        )
+        assert done.returncode == 0 and done.stdout.strip() == "ok", done.stderr[-1500:]
+
+    def test_a_colabfold_job(self, tmp_path):
+        self._run(_colabfold(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# A structure alone in a directory
+# ---------------------------------------------------------------------------
+
+
+class TestBareStructureInADirectory:
+    def test_a_structure_named_like_the_prediction_is_read_from_its_b_factors(self, tmp_path):
+        path = synth_af2.write_bare(tmp_path, NAME, _truth())
+        files = AlphaFold2Parser().find_files(tmp_path, NAME)
+        assert files.structure == path and files.scores is None and files.arrays is None
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        record.validate(check_structure=True)
+        np.testing.assert_allclose(record.plddt_per_atom, np.repeat(RESIDUE_PLDDT, 2))
+        assert record.extras["layout"] == "bare"
+
+    def test_there_is_one_sample(self, tmp_path):
+        synth_af2.write_bare(tmp_path, NAME, _truth())
+        parser = AlphaFold2Parser()
+        assert [(r.seed_index, r.sample) for r in parser.list_samples(tmp_path, NAME)] == [(1, 1)]
+        assert not parser.find_files(tmp_path, NAME, sample=2).has_output()
+
+    def test_a_colabfold_job_wins_over_a_stray_structure_of_the_same_name(self, tmp_path):
+        _colabfold(tmp_path)
+        synth_af2.write_bare(tmp_path, NAME, _truth())
+        assert AlphaFold2Parser().load(tmp_path, NAME).extras["layout"] == "colabfold"
+
+    @pytest.mark.parametrize("suffix", [".cif", ".mmcif", ".pdb.gz", ".cif.gz", ".ent"])
+    def test_the_structure_suffixes(self, tmp_path, suffix):
+        path = tmp_path / f"{NAME}{suffix}"
+        path.write_text("", encoding="utf-8")
+        assert AlphaFold2Parser().find_files(tmp_path, NAME).structure == path
