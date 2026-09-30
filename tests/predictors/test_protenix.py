@@ -4,13 +4,15 @@ Every fixture is written at test time by ``tests/predictors/synth_protenix.py`` 
 that ``predictors/protenix.py`` documents; nothing here is real Protenix output.
 """
 
+import dataclasses
 import json
 
 import numpy as np
 import pytest
 
 from binding_metrics.metrics.prediction import summarize_prediction
-from binding_metrics.predictors.protenix import ProtenixParser
+from binding_metrics.predictors import protenix
+from binding_metrics.predictors.protenix import ProtenixParser, token_layout
 from binding_metrics.predictors.registry import PARSERS, ParserSpec, register_parser
 from tests.predictors import contract, synth, synth_protenix
 
@@ -489,3 +491,168 @@ class TestListSamples:
         _summary(tmp_path).write_bytes(contract.GARBAGE)
         with pytest.raises(ValueError):
             ProtenixParser().list_samples(tmp_path, NAME)
+
+
+# ---------------------------------------------------------------------------
+# Tokens: a modified residue and an ion are tokenised per atom
+# ---------------------------------------------------------------------------
+
+
+def _atom(chain, res_id, res_name, name, x, y, hetero=False):
+    return synth.struc.Atom(
+        [x, y, 0.0],
+        chain_id=chain,
+        res_id=res_id,
+        res_name=res_name,
+        atom_name=name,
+        element=name[0],
+        hetero=hetero,
+    )
+
+
+def _complex_with_a_modified_residue_and_an_ion():
+    """Chain A: ALA, SEP (4 heavy atoms), ALA; chain B: two ALA; chain C: one zinc ion.
+
+    Protenix makes one token of each standard residue and one token of every atom of SEP and
+    of the ion: 1 + 4 + 1 + 2 + 1 = 9 tokens for 5 residues and one ion.
+    """
+    atoms = [
+        _atom("A", 1, "ALA", "CA", 0.0, 0.0),
+        _atom("A", 1, "ALA", "CB", 0.0, 1.5),
+        _atom("A", 2, "SEP", "CA", 3.8, 0.0),
+        _atom("A", 2, "SEP", "CB", 3.8, 1.5),
+        _atom("A", 2, "SEP", "OG", 3.8, 3.0),
+        _atom("A", 2, "SEP", "P", 3.8, 4.5),
+        _atom("A", 3, "ALA", "CA", 7.6, 0.0),
+        _atom("A", 3, "ALA", "CB", 7.6, 1.5),
+        _atom("B", 1, "ALA", "CA", 0.0, 6.0),
+        _atom("B", 1, "ALA", "CB", 0.0, 7.5),
+        _atom("B", 2, "ALA", "CA", 3.8, 6.0),
+        _atom("B", 2, "ALA", "CB", 3.8, 7.5),
+        _atom("C", 1, "ZN", "ZN", 5.0, 3.0, hetero=True),
+    ]
+    array = synth.struc.array(atoms)
+    plddt = np.array([92, 94, 90, 88, 86, 84, 80, 78, 60, 64, 88, 90, 75], dtype=float)
+    array.set_annotation("b_factor", plddt.copy())
+    n_tokens = 9
+    i = np.arange(n_tokens)[:, None]
+    j = np.arange(n_tokens)[None, :]
+    base = synth.synthetic_complex()
+    return dataclasses.replace(
+        base,
+        atoms=array,
+        plddt_per_atom=plddt,
+        pae=1.0 + 0.5 * i + 0.25 * j,
+        pde=0.5 + 0.25 * i + 0.125 * j,
+        scalars={**base.scalars, "avg_plddt": float(plddt.mean())},
+    )
+
+
+class TestTokenLayout:
+    @pytest.fixture
+    def truth(self, tmp_path):
+        return _write(tmp_path, _complex_with_a_modified_residue_and_an_ion())
+
+    def test_the_writer_gives_a_token_to_each_atom_of_the_modified_residue_and_the_ion(
+        self, truth, tmp_path
+    ):
+        record = _load(tmp_path)
+        np.testing.assert_array_equal(
+            record.extras["atom_to_token_idx"], [0, 0, 1, 2, 3, 4, 5, 5, 6, 6, 7, 7, 8]
+        )
+        np.testing.assert_array_equal(record.extras["token_asym_id"], [0, 0, 0, 0, 0, 0, 1, 1, 2])
+        assert record.pae.shape == (9, 9)
+        record.validate(check_structure=True)
+
+    def test_without_a_layout_the_interface_is_refused_with_the_sizes(self, truth, tmp_path):
+        record = _load(tmp_path)
+        assert record.tokens is None
+        with pytest.warns(UserWarning, match="interface PAE skipped"):
+            result = summarize_prediction(record, binder_chain="B", receptor_chain="A")
+        assert np.isnan(result["mean_interface_pae"])
+        assert "9 tokens" in result["reason"] and "6 residues" in result["reason"]
+
+    def test_the_layout_names_the_chain_residue_and_atom_of_each_token(self, truth, tmp_path):
+        layout = token_layout(_load(tmp_path))
+        assert len(layout) == 9
+        assert list(layout.chain_id) == ["A"] * 6 + ["B"] * 2 + ["C"]
+        np.testing.assert_array_equal(layout.res_id, [1, 2, 2, 2, 2, 3, 1, 2, 1])
+        # a residue token is its C-alpha, an atom token is the atom itself
+        np.testing.assert_array_equal(layout.atom_index, [0, 2, 3, 4, 5, 6, 8, 10, 12])
+        np.testing.assert_array_equal(
+            layout.is_atom_token, [False, True, True, True, True, False, False, False, True]
+        )
+        np.testing.assert_array_equal(layout.extras["token_asym_id"], [0] * 6 + [1] * 2 + [2])
+        assert layout.token_ranges() == {"A": (0, 6), "B": (6, 8), "C": (8, 9)}
+        assert layout.problems() == []
+
+    def test_with_the_layout_the_interface_block_is_cut_at_the_chain_boundaries(
+        self, truth, tmp_path
+    ):
+        record = _load(tmp_path)
+        record.tokens = token_layout(record)
+        result = summarize_prediction(
+            record, include_matrices=True, binder_chain="B", receptor_chain="A"
+        )
+        assert "reason" not in result
+        np.testing.assert_allclose(result["pae_interface"], truth.pae[6:8, 0:6])
+        np.testing.assert_allclose(result["pde_interface"], truth.pde[6:8, 0:6], atol=0.01)
+        both_blocks = (truth.pae[6:8, 0:6].mean() + truth.pae[0:6, 6:8].mean()) / 2
+        assert result["mean_interface_pae"] == pytest.approx(both_blocks)
+
+    def test_the_layout_keeps_the_model_chain_ids_when_the_user_renames_them(self, truth, tmp_path):
+        record = _load(tmp_path, chain_map={"A": "R", "B": "P"})
+        layout = token_layout(record)
+        assert list(layout.chain_id) == ["A"] * 6 + ["B"] * 2 + ["C"]
+        record.tokens = layout
+        result = summarize_prediction(
+            record, include_matrices=True, binder_chain="P", receptor_chain="R"
+        )
+        np.testing.assert_allclose(result["pae_interface"], truth.pae[6:8, 0:6])
+
+    def test_a_record_without_the_full_data_file_cannot_have_a_layout(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(synth_protenix, "WRITE_FULL_DATA", False)
+        _write(tmp_path, _complex_with_a_modified_residue_and_an_ion())
+        with pytest.raises(ValueError, match="--need_atom_confidence true"):
+            token_layout(_load(tmp_path))
+
+    def test_a_record_of_another_model_is_refused(self, truth, tmp_path):
+        record = _load(tmp_path)
+        record.model = "of3"
+        with pytest.raises(ValueError, match="needs a Protenix record"):
+            token_layout(record)
+
+    def test_an_atom_to_token_map_of_another_length_than_the_structure_is_refused(
+        self, truth, tmp_path
+    ):
+        record = _load(tmp_path)
+        record.extras["atom_to_token_idx"] = record.extras["atom_to_token_idx"][:-1]
+        with pytest.raises(ValueError, match="not from the same sample"):
+            token_layout(record)
+
+    def test_tokens_that_are_not_consecutive_in_the_structure_are_refused(self, truth, tmp_path):
+        record = _load(tmp_path)
+        record.extras["atom_to_token_idx"] = record.extras["atom_to_token_idx"][::-1].copy()
+        with pytest.raises(ValueError, match="not consecutive"):
+            token_layout(record)
+
+    def test_a_chain_numbering_that_differs_from_the_structure_is_refused(self, truth, tmp_path):
+        record = _load(tmp_path)
+        record.extras["token_asym_id"] = np.array([1, 1, 1, 1, 1, 1, 0, 0, 2])
+        with pytest.raises(ValueError, match="token_asym_id does not match"):
+            token_layout(record)
+
+    def test_a_token_without_an_atom_is_refused(self, truth, tmp_path):
+        record = _load(tmp_path)
+        gap = record.extras["atom_to_token_idx"].copy()
+        gap[gap >= 4] += 1  # token 4 has no atom, and the last token is now 9
+        record.extras["atom_to_token_idx"] = gap
+        record.pae = np.zeros((10, 10))
+        with pytest.raises(ValueError, match="have no atom"):
+            token_layout(record)
+
+    def test_the_standard_residue_names_are_the_ones_protenix_tokenises_whole(self):
+        names = protenix.STANDARD_RESIDUE_NAMES
+        assert {"ALA", "GLY", "UNK", "A", "DT", "N", "DN"} <= names
+        assert not names & {"SEP", "MSE", "ZN", "HOH", "LIG"}
+        assert len(names) == 31

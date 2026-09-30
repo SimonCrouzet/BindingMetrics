@@ -52,12 +52,13 @@ does not read.
   file still has the per-atom pLDDT as its B-factor, 0-100 with 2 decimals (``dumper.py:
   134-147,203``; the model always returns the full data, ``protenix/model/protenix.py:648``).
   That is the finer source, but parsing does not open the structure file.
-* Tokens: a residue named in the standard set that is not a ligand is one token holding all its
-  atoms; every other residue (a modified residue, a ligand, an ion) is one token per atom
-  (``data/tokenizer.py:112-154``). ``pae`` and ``pde`` have one row per token, so they are
-  larger than the residue count when such a residue is present. The chain and residue of a
-  token need the structure, which parsing does not open: ``record.tokens`` is None and the
-  interface statistics apply only when the matrix size equals the residue count.
+* Tokens: a residue named in ``STANDARD_RESIDUE_NAMES`` that is not a ligand is one token
+  holding all its atoms; every other residue (a modified residue, a ligand, an ion) is one
+  token per atom (``data/tokenizer.py:112-154``). ``pae`` and ``pde`` have one row per token, so
+  they are larger than the residue count when such a residue is present. The chain and residue
+  of a token need the structure, which parsing does not open: ``record.tokens`` is None, and
+  the interface statistics apply only when the matrix size equals the residue count, until
+  :func:`token_layout` builds the layout from the record and its structure.
 
 Not provided by Protenix, so NaN or empty: ``bespoke_iptm`` (OpenFold3's), the run time (no
 timing file), and ``disorder``, which the model writes as 0 for every sample
@@ -70,7 +71,8 @@ from the full-data file, ``token_asym_id``, ``token_has_frame`` and ``atom_to_to
 
 Where the source does not settle a point the adapter refuses instead of guessing. TO VERIFY
 against real output: (1) that the atoms of the CIF follow the order of the arrays: the writer
-implies it, and ``record.validate(check_structure=True)`` checks the atom count;
+implies it, and ``record.validate(check_structure=True)`` checks the atom count,
+and :func:`token_layout` checks the chains;
 (2) the 0-1 scale of ``atom_plddt``, where a value above 1 raises; (3) the shape of every
 array, where another shape raises; (4) a chain list of another shape, which is left out and
 explained in ``record.reasons``.
@@ -92,6 +94,7 @@ from binding_metrics.predictors.record import (
     PredictionFiles,
     PredictionRecord,
     SampleRef,
+    TokenLayout,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +103,18 @@ _NAN = float("nan")
 
 #: Bound on the samples ``list_samples`` returns, as in the base class.
 _MAX_SAMPLES = 1000
+
+#: Residue names tokenised as one token per residue (``protenix/data/constants.py:270-314``:
+#: the 20 amino acids and UNK, RNA A G C U N, DNA DA DG DC DT DN). Any other residue is
+#: tokenised per atom.
+STANDARD_RESIDUE_NAMES = frozenset(
+    "ALA ARG ASN ASP CYS GLN GLU GLY HIS ILE LEU LYS MET PHE PRO SER THR TRP TYR VAL UNK "
+    "A G C U N DA DG DC DT DN".split()
+)
+
+#: Atoms that stand for a residue token: the C-alpha of a protein residue and the C1' of a
+#: nucleotide (the centre atom of ``data/core/featurizer.py:150-175``).
+_CENTRE_ATOM_NAMES = ("CA", "C1'")
 
 #: Keys of the summary file that identify it; at least one must be present.
 _SUMMARY_CORE_KEYS = ("plddt", "ptm", "iptm", "ranking_score")
@@ -513,3 +528,124 @@ class ProtenixParser(PredictionParser):
             if not found_in_seed:
                 break
         return refs
+
+
+# ---------------------------------------------------------------------- token layout
+
+
+def token_layout(record: PredictionRecord) -> TokenLayout:
+    """The token layout of a Protenix record, from its full data and its structure.
+
+    ``pae`` and ``pde`` have one row per token, and a modified residue or ligand is one token
+    per atom, so the chain blocks of the matrices are found from ``atom_to_token_idx`` (which
+    tokens the atoms of the structure belong to) and the structure (which chain and residue
+    each atom has). Assign the result to ``record.tokens`` before ``summarize_prediction``::
+
+        record = get_parser("protenix").load(directory, name)
+        record.tokens = token_layout(record)
+
+    Each token is represented by its first atom, except a token of several atoms (a standard
+    residue) that is represented by its C-alpha (C1' for a nucleotide). ``is_atom_token`` is True
+    for a token of a residue that is not in ``STANDARD_RESIDUE_NAMES`` or is a hetero residue.
+    ``chain_id`` is the chain ID of the structure file, before ``record.chain_map``.
+    ``extras`` holds ``token_asym_id`` and ``token_has_frame`` when the file has them.
+
+    Raises:
+        ValueError: The record is not a Protenix record, was parsed without the full-data file
+            (which holds ``atom_to_token_idx``), or the structure does not fit the arrays: a
+            different number of atoms, atoms of a token that are not consecutive, or a chain
+            order that disagrees with ``token_asym_id``.
+        ImportError: biotite is not installed.
+    """
+    if record.model != ProtenixParser.name:
+        raise ValueError(f"token_layout needs a Protenix record, got model '{record.model}'")
+    atom_to_token = record.extras.get("atom_to_token_idx")
+    if atom_to_token is None:
+        raise ValueError(
+            "the record has no atom_to_token_idx: it was parsed without the full-data file, "
+            "which Protenix writes only when run with '--need_atom_confidence true'"
+        )
+    atoms = record.atoms()
+    n_atoms = atoms.array_length()
+    if len(atom_to_token) != n_atoms:
+        raise ValueError(
+            f"atom_to_token_idx has {len(atom_to_token)} entries but the structure has "
+            f"{n_atoms} atoms; the files are not from the same sample"
+        )
+    if record.pae is not None:
+        n_tokens = int(record.pae.shape[0])
+    else:
+        n_tokens = int(atom_to_token.max()) + 1 if len(atom_to_token) else 0
+    if len(atom_to_token) and atom_to_token.max() >= n_tokens:
+        raise ValueError(
+            f"atom_to_token_idx points to token {int(atom_to_token.max())} but the matrices "
+            f"have {n_tokens} tokens"
+        )
+    if np.any(np.diff(atom_to_token) < 0):
+        raise ValueError("the atoms of a token are not consecutive in the structure file")
+    tokens = np.arange(n_tokens)
+    first_atom = np.searchsorted(atom_to_token, tokens, side="left")
+    in_range = first_atom < n_atoms
+    has_atoms = np.zeros(n_tokens, dtype=bool)
+    has_atoms[in_range] = atom_to_token[first_atom[in_range]] == tokens[in_range]
+    if not np.all(has_atoms):
+        raise ValueError(
+            f"{int((~has_atoms).sum())} of the {n_tokens} tokens have no atom in the structure"
+        )
+    atoms_per_token = np.bincount(atom_to_token, minlength=n_tokens)
+
+    to_model_chain = {user: model for model, user in record.chain_map.items()}
+    chain_ids = np.array(
+        [to_model_chain.get(str(c), str(c)) for c in atoms.chain_id[first_atom]], dtype=object
+    )
+    _check_chain_order(record, chain_ids)
+
+    atom_index = first_atom.copy()
+    centre = np.isin(np.asarray(atoms.atom_name), _CENTRE_ATOM_NAMES)
+    for token in np.flatnonzero(atoms_per_token > 1):
+        span = slice(first_atom[token], first_atom[token] + atoms_per_token[token])
+        hits = np.flatnonzero(centre[span])
+        if hits.size:
+            atom_index[token] = first_atom[token] + hits[0]
+
+    hetero = (
+        np.asarray(atoms.hetero, dtype=bool)
+        if "hetero" in atoms.get_annotation_categories()
+        else np.zeros(n_atoms, dtype=bool)
+    )
+    residue_names = np.asarray(atoms.res_name)[first_atom]
+    is_atom_token = ~np.isin(residue_names, list(STANDARD_RESIDUE_NAMES)) | hetero[first_atom]
+
+    extras = {
+        key: record.extras[key]
+        for key in ("token_asym_id", "token_has_frame")
+        if key in record.extras
+    }
+    return TokenLayout(
+        chain_id=chain_ids.astype(str),
+        res_id=np.asarray(atoms.res_id)[first_atom],
+        atom_index=atom_index,
+        is_atom_token=is_atom_token,
+        extras=extras,
+    )
+
+
+def _check_chain_order(record: PredictionRecord, token_chain_ids: np.ndarray) -> None:
+    """Refuse a structure whose chain order is not the one ``token_asym_id`` numbers.
+
+    ``token_asym_id`` is the position of the chain in order of first appearance in the atoms
+    (``data/core/parser.py:3199-3226``). Guessing which chain a token belongs to from the
+    structure alone is safe only when that holds, so it is checked instead of assumed.
+    """
+    asym = record.extras.get("token_asym_id")
+    if asym is None:
+        return
+    order = list(dict.fromkeys(token_chain_ids.tolist()))
+    expected = np.array([order.index(chain) for chain in token_chain_ids.tolist()])
+    if not np.array_equal(expected, asym):
+        raise ValueError(
+            "token_asym_id does not match the chain order of the structure file (chains "
+            f"{order} in order of first appearance); the structure and the full-data file are "
+            "not from the same sample, or Protenix numbers chains differently from the "
+            "layout this adapter was checked against (TO VERIFY)"
+        )
