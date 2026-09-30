@@ -1231,8 +1231,21 @@ def _read_batch_chains(samples: list[_BatchSample], on_unmappable_residue: str) 
     sample. With ``on_unmappable_residue="error"`` the residues that OpenFold3 cannot take
     are collected over all samples and raised together as one
     :class:`UnmappableResidueError`, so one run names every affected sample.
+
+    Raises:
+        ValueError: If two samples share a query name. The name is the key of the query
+            JSON, the stem of the A3M files and the source of the template entry ID, so
+            the second sample would replace the first and OpenFold3 would never predict it.
     """
     import gemmi
+
+    names = [s.query_name for s in samples]
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        raise ValueError(
+            f"Query names must be unique within a batch; repeated: {', '.join(repeated)}. "
+            "A repeated name would make the later sample replace the earlier one."
+        )
 
     rows = []
     problems: list[tuple[str, str, list[str]]] = []
@@ -1297,7 +1310,7 @@ def prepare_batched_scoring_queries(
         Path to the combined query JSON file.
 
     Raises:
-        ValueError: If ``seeds`` is empty.
+        ValueError: If ``seeds`` is empty or two samples share a query name.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     seed_values = _query_seeds(seeds)
@@ -1383,7 +1396,7 @@ def prepare_batched_refolding_queries(
         Path to the combined query JSON file.
 
     Raises:
-        ValueError: If ``seeds`` is empty.
+        ValueError: If ``seeds`` is empty or two samples share a query name.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     seed_values = _query_seeds(seeds)

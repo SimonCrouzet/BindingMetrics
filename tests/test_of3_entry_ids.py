@@ -138,3 +138,46 @@ class TestBatchedQueries:
             "s-1bnd.cif", "s-1rec.cif", "s2bnd.cif", "s2rec.cif",
         ]  # fmt: skip
         assert _template_entry(out / "s_1_receptor.a3m") == "s-1rec"
+
+
+class TestRepeatedQueryNames:
+    """Two samples with one query name used to become one query, silently (#105)."""
+
+    @pytest.fixture
+    def samples(self, tmp_path):
+        first = _write(tmp_path, {"A": ["ALA", "GLY"], "B": ["SER", "LYS"]}, "first.pdb")
+        second = _write(tmp_path, {"A": ["TRP", "TYR"], "B": ["ASP", "GLU"]}, "second.pdb")
+        return [
+            _BatchSample("same", first, "A", "B"),
+            _BatchSample("other", first, "A", "B"),
+            _BatchSample("same", second, "A", "B"),
+            _BatchSample("dup2", first, "A", "B"),
+            _BatchSample("dup2", first, "A", "B"),
+        ]
+
+    @pytest.mark.parametrize(
+        "function",
+        [openfold.prepare_batched_scoring_queries, openfold.prepare_batched_refolding_queries],
+    )
+    def test_the_repeated_names_are_named_and_nothing_is_written(self, tmp_path, samples, function):
+        out = tmp_path / "out"
+        with pytest.raises(ValueError, match="repeated: dup2, same") as info:
+            function(samples, out)
+        assert "other" not in str(info.value)
+        assert not out.exists()
+
+    def test_the_check_comes_before_the_structures_are_read(self, tmp_path):
+        samples = [_BatchSample("x", tmp_path / "missing.pdb", "A", "B")] * 2
+        with pytest.raises(ValueError, match="repeated: x"):
+            openfold.prepare_batched_scoring_queries(samples, tmp_path / "out")
+
+    def test_distinct_names_still_work(self, tmp_path):
+        complex_path = _write(tmp_path, {"A": ["ALA", "GLY"], "B": ["SER", "LYS"]})
+        samples = [
+            _BatchSample("a", complex_path, "A", "B"),
+            _BatchSample("b", complex_path, "A", "B"),
+        ]
+        path = openfold.prepare_batched_scoring_queries(samples, tmp_path / "out")
+        import json
+
+        assert sorted(json.loads(path.read_text(encoding="utf-8"))["queries"]) == ["a", "b"]
