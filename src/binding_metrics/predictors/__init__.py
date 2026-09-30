@@ -1,10 +1,16 @@
-"""Readers for the output of structure-prediction models.
+"""Readers for the output of structure-prediction models, and the store that runs each once.
 
 Each supported model gets an adapter (``PredictionParser``) that turns its files into one
 neutral ``PredictionRecord``, so the confidence metrics and the EvoBind check need no
-per-model code. Adapters read output only and never run a model. Names load on first
-access (PEP 562); importing this package imports nothing heavy, and biotite is imported only
-when a structure is read.
+per-model code. Adapters read output only and never run a model.
+
+A run-once store sits beside them: ``PredictionRequest`` describes a prediction,
+``PredictionStore`` keeps finished ones under a key of that description, ``PredictionSession``
+is what a pipeline asks for a parsed record (running the model on the first miss only), and a
+``PredictionRunner`` such as ``OpenFold3Runner`` starts the model.
+
+Names load on first access (PEP 562); importing this package imports nothing heavy, and
+biotite is imported only when a structure is read.
 """
 
 from typing import TYPE_CHECKING
@@ -18,6 +24,14 @@ _EXPORTS = {
     "SampleRef": "binding_metrics.predictors.record",
     "TokenLayout": "binding_metrics.predictors.record",
     "PredictionParser": "binding_metrics.predictors.base",
+    "PredictionRunner": "binding_metrics.predictors.runners",
+    "OpenFold3Runner": "binding_metrics.predictors.of3_runner",
+    "PredictionRequest": "binding_metrics.predictors.store",
+    "StoredPrediction": "binding_metrics.predictors.store",
+    "PredictionStore": "binding_metrics.predictors.store",
+    "PredictionFailedError": "binding_metrics.predictors.store",
+    "PredictionUnavailableError": "binding_metrics.predictors.store",
+    "PredictionSession": "binding_metrics.predictors.session",
     "PARSERS": "binding_metrics.predictors.registry",
     "ParserSpec": "binding_metrics.predictors.registry",
     "get_parser": "binding_metrics.predictors.registry",
@@ -28,6 +42,7 @@ __getattr__, __dir__ = _lazy_exports(__name__, _EXPORTS, globals())
 
 if TYPE_CHECKING:
     from binding_metrics.predictors.base import PredictionParser
+    from binding_metrics.predictors.of3_runner import OpenFold3Runner
     from binding_metrics.predictors.record import (
         PredictionFiles,
         PredictionRecord,
@@ -40,14 +55,31 @@ if TYPE_CHECKING:
         get_parser,
         register_parser,
     )
+    from binding_metrics.predictors.runners import PredictionRunner
+    from binding_metrics.predictors.session import PredictionSession
+    from binding_metrics.predictors.store import (
+        PredictionFailedError,
+        PredictionRequest,
+        PredictionStore,
+        PredictionUnavailableError,
+        StoredPrediction,
+    )
 
 __all__ = [
+    "OpenFold3Runner",
     "PARSERS",
     "ParserSpec",
+    "PredictionFailedError",
     "PredictionFiles",
     "PredictionParser",
     "PredictionRecord",
+    "PredictionRequest",
+    "PredictionRunner",
+    "PredictionSession",
+    "PredictionStore",
+    "PredictionUnavailableError",
     "SampleRef",
+    "StoredPrediction",
     "TokenLayout",
     "get_parser",
     "register_parser",

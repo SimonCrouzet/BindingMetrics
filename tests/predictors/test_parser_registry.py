@@ -169,12 +169,20 @@ class TestPackageExports:
 
     def test_the_documented_names_are_exported(self):
         assert set(predictors.__all__) == {
+            "OpenFold3Runner",
             "PARSERS",
             "ParserSpec",
+            "PredictionFailedError",
             "PredictionFiles",
             "PredictionParser",
             "PredictionRecord",
+            "PredictionRequest",
+            "PredictionRunner",
+            "PredictionSession",
+            "PredictionStore",
+            "PredictionUnavailableError",
             "SampleRef",
+            "StoredPrediction",
             "TokenLayout",
             "get_parser",
             "register_parser",
