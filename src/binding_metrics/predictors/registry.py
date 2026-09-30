@@ -97,7 +97,18 @@ class ParserSpec:
 
 # One ParserSpec per adapter, in alphabetical order of the name. The dict is keyed by name so
 # that ``sorted(PARSERS)`` lists the models.
-PARSERS: dict[str, ParserSpec] = {}
+PARSERS: dict[str, ParserSpec] = {
+    "of3": ParserSpec(
+        name="of3",
+        import_path="binding_metrics.predictors.of3:OpenFold3Parser",
+        display_name="OpenFold3",
+        family="af3",
+        description=(
+            "OpenFold3 output: seed_*/{query}_seed_*_sample_*_model.cif[.gz]|pdb with "
+            "_confidences_aggregated.json and _confidences.json|npz"
+        ),
+    ),
+}
 
 
 def register_parser(spec: ParserSpec, *, replace: bool = False) -> None:
