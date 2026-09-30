@@ -715,6 +715,7 @@ The individual scoring tools take the binder chain as `--binder-chain` and the t
 | `relax` | energies, RMSD and RMSF, the OpenMM `platform`, `dropped_protein_chains` (protein chains other than the peptide and the receptor, which the relaxation removes) and the structural QC: `qc_passed`, `qc_failed_checks` and (in the JSON) `qc_checks` |
 | `energy`, `interface`, `geometry`, `electrostatics`, `dockq`, `openfold` | one dict per metric: `{"skipped": True}` when it did not run, `{"error": message}` when it failed |
 | `prediction` | with `--predictor`: the confidence scores of the model's prediction, its EvoBind keys and `cache` (how the store served it) |
+| `preflight` | the decision of the [pre-flight check](#pre-flight-check): `status`, `reason`, `policy`, the steps left out and the full report |
 | `nonfinite_fields` | the JSON paths of every NaN or infinite value |
 
 A value that could not be computed keeps its NaN, 0 or None, and its dict gains a string under `reason` that says why; a dict without `reason` was computed in full. The QC of the relaxed structure is advisory: a failed check logs a warning and changes neither the results nor the exit code. `binding-metrics-run` exits with 1 when a step failed, after writing the partial results. The schemas are in [`docs/metrics.md`](docs/metrics.md#15-pipeline-results-and-provenance).
@@ -750,6 +751,7 @@ configure_logging(logging.INFO)
 ## Documentation
 
 - [`docs/metrics.md`](docs/metrics.md): every metric with its signature, result keys, units and algorithm notes; the pipeline results; the metric registry
+- [`docs/preflight.md`](docs/preflight.md): the inputs that a step or a prediction model cannot take, how they are declared, and the pre-flight check
 - [`docs/nonstandard.md`](docs/nonstandard.md): D-amino acids, N-methylated and phosphorylated residues, the GAFF2 route, cyclic closures and their limits
 - [`docs/report_thresholds.md`](docs/report_thresholds.md): the scorecard thresholds
 - [`CHANGELOG.md`](CHANGELOG.md): what changed, with the results that differ from earlier versions
