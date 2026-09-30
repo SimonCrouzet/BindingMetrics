@@ -69,7 +69,10 @@ Crash safety. A run works in a temporary directory ``<key>.tmp-<pid>-<random>`` 
 entry and the finished directory is renamed into place as one step, so a process that is killed
 (SIGKILL, power of the job scheduler) leaves no ``<key>/`` directory and the request looks as
 if it never ran; the next run for that key removes the leftovers. The rename is atomic against
-a killed process, not against loss of power: nothing is flushed to disk before it.
+a killed process, not against loss of power: nothing is flushed to disk before it. The runner
+works inside the temporary directory, so a file it wrote that names its own paths (an OpenFold3
+query file lists its alignment files) keeps the temporary path after the rename; only the
+directory the parser loads is meant to be read.
 
 Concurrency. An advisory lock (``fcntl.flock``) per key, in ``<key>.lock`` beside the entry,
 is held around a run. A process that finds the lock taken waits, then reuses the finished

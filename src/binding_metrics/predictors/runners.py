@@ -31,7 +31,8 @@ Contract, checked for the stub runners of ``tests/predictors/test_runners.py``:
   is empty, and returns the directory (``work_dir`` itself or one inside it) that the parser of
   ``request.model`` loads with ``parser.load(directory, request.name)``. The store keeps the
   whole ``work_dir`` and remembers where that directory is. A runner that returns a path outside
-  ``work_dir`` gets its run recorded as failed.
+  ``work_dir`` gets its run recorded as failed. ``work_dir`` is a temporary directory that is
+  renamed when the run is stored, so nothing may depend on its path after ``run`` returns.
 * A failure raises; the exception text becomes the reason recorded in the store, so it should
   say what went wrong and what to do (``OpenFoldRunError`` does). A run that exits normally but
   wrote no output is a failure too: raise, so that no empty result is stored as done.
