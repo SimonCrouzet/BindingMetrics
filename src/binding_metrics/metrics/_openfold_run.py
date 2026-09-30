@@ -149,6 +149,7 @@ def _write_runner_yaml(
         Path to the written YAML file.
     """
     presets = _drop_removed_presets(presets)
+    # TODO(#67): seeds go here as experiment_settings.seeds; OpenFold3 ignores the query "seeds".
     cfg: dict = {"model_update": {"presets": presets}}
     if template_dir is not None:
         cfg["template_preprocessor_settings"] = {
@@ -815,9 +816,11 @@ def _query_chain(
     as 1-based residue positions; JSON needs them as strings.
     """
     chain: dict = {"molecule_type": "protein", "chain_ids": [chain_id], "sequence": sequence}
+    # TODO(#77): "cyclic": True for a binder closed head to tail.
     if non_canonical_residues:
         chain["non_canonical_residues"] = {str(i): c for i, c in non_canonical_residues.items()}
     if template_alignment_file_path is not None:
+        # TODO(#68): template_cif_paths instead; the MSA-server step overwrites this A3M path.
         chain["template_alignment_file_path"] = template_alignment_file_path
     return chain
 
