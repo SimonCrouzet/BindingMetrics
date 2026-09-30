@@ -12,6 +12,8 @@ analogue) and 3V3B (stapled peptide).
 
 Values from earlier versions differ in the cases below. A change reads "before -> after".
 
+- **Binder RMSD against a reference (#93).** `binder_ca_rmsd` of `compute_openfold_metrics` superposes on the binder Cα when no `receptor_chain` is given, as documented, and is NaN with a `reason` when the receptor Cα counts of the prediction and the reference differ or are fewer than 3. It used to measure the raw distance between two frames in both cases. `binding-metrics-run` always passes the receptor chain, so its value changes only for a receptor of different length.
+  - An identical structure rotated by 40 degrees and translated: without a receptor chain 7.20 -> 0.00 A; with a receptor of another length 7.20 -> NaN.
 - **RMSD superposition (#13).** The Kabsch rotation was applied in the wrong direction, so any pair
   that was not already superposed came out too high.
   - `compute_structure_rmsd`: 1YCR rotated by 30 degrees and translated, `rmsd` 11.23 -> 0.00 A and

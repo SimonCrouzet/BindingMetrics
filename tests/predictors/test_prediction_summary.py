@@ -114,6 +114,31 @@ class TestWarnings:
         assert Path(caught[0].filename).name == Path(__file__).name
 
 
+class TestReferenceRmsd:
+    def test_receptors_of_different_length_give_nan_and_a_reason_not_a_frame_dependent_number(
+        self, tmp_path
+    ):
+        from tests.predictors.test_openfold_golden import _dimer, _write_cif
+
+        atoms = _dimer()
+        short = atoms[~((atoms.chain_id == "A") & (atoms.res_id == 4))]
+        reference = tmp_path / "short_receptor.cif"
+        _write_cif(short, reference)
+        record = openfold.get_parser("of3").load(_run(tmp_path), QUERY)
+        with pytest.warns(UserWarning, match="binder RMSD skipped"):
+            summary = summarize_prediction(
+                record, binder_chain="B", receptor_chain="A", reference_structure_path=reference
+            )
+        assert np.isnan(summary["binder_ca_rmsd"])
+        assert summary["reason"].startswith("binder RMSD: Receptor Cα count mismatch (chain 'A')")
+
+    def test_without_a_receptor_chain_the_binder_shape_is_compared(self, tmp_path):
+        record = openfold.get_parser("of3").load(_run(tmp_path), QUERY)
+        reference = _write_reference(tmp_path, binder_shift_z=1.0)
+        summary = summarize_prediction(record, binder_chain="B", reference_structure_path=reference)
+        assert summary["binder_ca_rmsd"] == pytest.approx(0.0, abs=1e-4)  # a rigid shift only
+
+
 class TestMissingBiotite:
     def test_the_install_hint_names_the_structural_analysis(self, tmp_path):
         root = _run(tmp_path)

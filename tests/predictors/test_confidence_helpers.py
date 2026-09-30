@@ -213,6 +213,58 @@ class TestBinderCaRmsd:
         moved = struc.translate(struc.rotate(predicted, [0.0, 0.0, np.deg2rad(-25)]), [3, 4, 5])
         assert _binder_ca_rmsd(moved, reference, "B", "A") == pytest.approx(1.5, abs=1e-4)
 
+    def test_without_a_receptor_the_binder_is_superposed_on_itself(self):
+        from binding_metrics.predictors._confidence import _binder_ca_rmsd
+
+        reference = _dimer()
+        moved = struc.translate(struc.rotate(reference, [0.0, 0.0, np.deg2rad(40)]), [10, -5, 2])
+        assert _binder_ca_rmsd(moved, reference, "B") == pytest.approx(0.0, abs=1e-4)
+        # a binder bent at the middle residue differs in shape, whatever the frame
+        bent = moved.copy()
+        middle = (bent.chain_id == "B") & (bent.res_id == 2)
+        bent.coord[middle] += [0.0, 0.0, 1.5]
+        rmsd = _binder_ca_rmsd(bent, reference, "B")
+        assert 0.3 < rmsd < 1.0
+
+    def test_receptor_frame_and_binder_frame_differ_for_a_rigid_binder_shift(self):
+        from binding_metrics.predictors._confidence import _binder_ca_rmsd
+
+        reference = _dimer()
+        shifted = reference.copy()
+        shifted.coord[shifted.chain_id == "B", 2] += 2.0
+        assert _binder_ca_rmsd(shifted, reference, "B", "A") == pytest.approx(2.0, abs=1e-4)
+        assert _binder_ca_rmsd(shifted, reference, "B") == pytest.approx(0.0, abs=1e-4)
+
+    def test_receptors_of_different_length_are_refused_not_measured_in_another_frame(self):
+        from binding_metrics.predictors._confidence import _binder_ca_rmsd
+
+        reference = _dimer()
+        short = reference[~((reference.chain_id == "A") & (reference.res_id == 4))]
+        moved = struc.translate(reference, [10.0, 0.0, 0.0])
+        with pytest.raises(
+            ValueError, match=r"Receptor Cα count mismatch .*predicted 4, reference 3"
+        ):
+            _binder_ca_rmsd(moved, short, "B", "A")
+
+    def test_a_receptor_with_fewer_than_three_calphas_or_an_absent_one_is_refused(self):
+        from binding_metrics.predictors._confidence import _binder_ca_rmsd
+
+        reference = _dimer()
+        with pytest.raises(ValueError, match="'Z' has 0 Cα atoms"):
+            _binder_ca_rmsd(reference, reference, "B", "Z")
+        two = reference[~((reference.chain_id == "A") & (reference.res_id > 2))]
+        with pytest.raises(ValueError, match="'A' has 2 Cα atoms; at least 3"):
+            _binder_ca_rmsd(two, two, "B", "A")
+
+    def test_a_binder_of_fewer_than_three_calphas_needs_a_receptor(self):
+        from binding_metrics.predictors._confidence import _binder_ca_rmsd
+
+        reference = _dimer()
+        short = reference[~((reference.chain_id == "B") & (reference.res_id > 2))]
+        assert _binder_ca_rmsd(short, short, "B", "A") == pytest.approx(0.0, abs=1e-4)
+        with pytest.raises(ValueError, match="Binder chain 'B' has 2 Cα atoms"):
+            _binder_ca_rmsd(short, short, "B")
+
     def test_different_binder_lengths_raise_and_a_missing_chain_gives_nan(self):
         from binding_metrics.predictors._confidence import _binder_ca_rmsd
 

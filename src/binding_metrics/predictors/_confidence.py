@@ -153,7 +153,9 @@ def _binder_ca_rmsd(
     superposed onto the reference receptor Cα atoms before measuring the
     binder RMSD. This gives the physically meaningful "receptor-frame" RMSD:
     how much the predicted binder deviates from the reference binder pose
-    relative to the receptor.
+    relative to the receptor. Without a receptor chain the binder Cα atoms are
+    superposed on each other, which measures the binder's shape difference
+    alone.
 
     Args:
         pred_atoms: Biotite AtomArray of the predicted structure.
@@ -163,10 +165,13 @@ def _binder_ca_rmsd(
             If None, superpose directly on binder Cα.
 
     Returns:
-        Binder Cα RMSD in Å, or ``nan`` if there are no matching Cα atoms.
+        Binder Cα RMSD in Å, or ``nan`` if there are no binder Cα atoms.
 
     Raises:
-        ValueError: If binder Cα counts differ between prediction and reference.
+        ValueError: If binder Cα counts differ between prediction and reference;
+            if the receptor Cα counts differ, or the receptor has fewer than 3
+            Cα atoms (a receptor-frame superposition is then not defined); or,
+            without a receptor chain, if the binder has fewer than 3 Cα atoms.
     """
     struc, _ = _import_biotite_struc()
 
@@ -190,12 +195,28 @@ def _binder_ca_rmsd(
     if receptor_chain is not None:
         pred_rec_ca = _ca(pred_atoms, receptor_chain)
         ref_rec_ca = _ca(ref_atoms, receptor_chain)
-        if (
-            pred_rec_ca.array_length() == ref_rec_ca.array_length()
-            and pred_rec_ca.array_length() >= 3
-        ):
-            _, transform = struc.superimpose(ref_rec_ca, pred_rec_ca)
-            pred_binder_ca = transform.apply(pred_binder_ca)
+        n_pred_rec = pred_rec_ca.array_length()
+        n_ref_rec = ref_rec_ca.array_length()
+        if n_pred_rec != n_ref_rec:
+            raise ValueError(
+                f"Receptor Cα count mismatch (chain '{receptor_chain}'): "
+                f"predicted {n_pred_rec}, reference {n_ref_rec}. "
+                "The receptor-frame superposition needs the same residues in both."
+            )
+        if n_pred_rec < 3:
+            raise ValueError(
+                f"Receptor chain '{receptor_chain}' has {n_pred_rec} Cα atoms; "
+                "at least 3 are needed to superpose on the receptor."
+            )
+        _, transform = struc.superimpose(ref_rec_ca, pred_rec_ca)
+    else:
+        if n_pred < 3:
+            raise ValueError(
+                f"Binder chain '{binder_chain}' has {n_pred} Cα atoms; without a receptor "
+                "chain at least 3 are needed to superpose the binder on the reference."
+            )
+        _, transform = struc.superimpose(ref_binder_ca, pred_binder_ca)
+    pred_binder_ca = transform.apply(pred_binder_ca)
 
     return float(struc.rmsd(ref_binder_ca, pred_binder_ca))
 
