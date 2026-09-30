@@ -103,7 +103,11 @@ class TestOldNamesStillResolve:
             """
         )
         out = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True, check=True
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
         ).stdout
         assert out.strip() == "[]"
 
