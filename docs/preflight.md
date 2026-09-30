@@ -134,3 +134,41 @@ Declared on `OpenFold3Parser.capabilities`.
 | Residues that the query builder cannot express | `check_openfold3_residues` calls `metrics._openfold_run._residue_letter_and_ccd`, the rule of `_extract_query_chain`, and the reason is the text of the `UnmappableResidueError` that the builder raises for the same chain. D-amino acids, N-methylated and other peptide-linking Chemical Component Dictionary residues are expressible and pass. |
 
 Warnings, not refusals: a head-to-tail binder is folded as a linear chain, because the query builders of this package do not write `cyclic: true`; terminal capping groups and non-amino-acid groups (ligands, glycans) are left out of the query by `_extract_query_chain`, so the prediction is of the uncapped peptide without them.
+
+### Metrics
+
+Declared on `MetricSpec.capabilities`, a keyword-only optional field.
+
+| Metric | Limit | Evidence that the tests pin |
+|---|---|---|
+| `interface` | needs a receptor chain | raises `ValueError` ("Chain auto-detection failed") for one protein chain |
+| `coulomb` | needs a receptor chain | returns 0.0 kJ/mol and no charged pair, which reads as "no interaction" |
+| `shape_complementarity` | needs a receptor chain | returns NaN with no surface dots |
+| `void_volume` | needs a receptor chain | returns NaN with the reason "fewer than two protein chains" |
+| `delta_sasa_static`, `hbonds`, `saltbridges` | need a receptor chain | `receptor_chain` is a required argument (`TypeError`) |
+| `structure_interaction_energy` | needs a receptor chain; closures limited | returns `success=False` ("Could not identify two protein chains"); see the closure row below |
+| `evobind_score` | needs a receptor chain and a predicted structure | receptor chain required; `evobind_score` is None without per-atom pLDDT |
+| `evobind_adversarial` | needs a receptor chain and a predicted structure | `afm_structure_path` and the receptor chain are required |
+| `interface_pae` | needs a receptor chain and a predicted structure | `confidences_path` and the receptor chain are required |
+| `openfold`, `prediction` | need a predicted structure | `output_dir` / `prediction_dir` are required; they run no model |
+| `dockq` | needs a reference structure | `reference_path` is required |
+| `md_implicit`, `structure_interaction_energy` | closures `none`, `head_to_tail`, `disulfide`, `lactam`, `staple` | both call `core.cyclic.patch_cyclic_topology` without a switch, and it raises `CyclizationError` for another link (a thioether, a macrolactone, a biaryl ether) |
+
+`preflight` checks the receptor need from the profile, and the reference and prediction needs only when the caller passes `provided`.
+
+### Considered and not declared
+
+| Candidate | Why it is not declared |
+|---|---|
+| OpenFold3 binder size (memory) | No source gives a number. |
+| OpenFold3 binder made of several chains, or of a given binder type | Nothing shows a limit. |
+| OpenFold3 on D-amino acids, N-methyl and phospho residues | The builder expresses them through CCD codes; no benchmark or documentation says how well the model predicts them, so no caveat is written. |
+| `requires_gpu` metrics (`receptor_quality`, `md_implicit`, `structure_interaction_energy`) | The field is a scheduling hint ("on CUDA by default"), not a limit of the input. |
+| `receptor_quality` | Runs on a single chain; the receptor argument is optional. |
+| `ramachandran`, `omega` | They score the closing bond of a head-to-tail peptide and work on a linear one; no metric of the registry is cyclic-only. |
+| Antibody or nanobody metrics | None exists in the registry. |
+| `structure_rmsd` | Both structures come from the same run; it is not a reference supplied by the user. |
+| Trajectory metrics | Their input is a trajectory and a topology, which the needs vocabulary does not describe. |
+| Residue limits of `md_implicit` and `structure_interaction_energy` | Unknown residues go through GAFF2 templates whose success depends on the residue and on `antechamber`. |
+| Closure limits of `openfold` and `interface_pae` | They read an existing output that another model may have written; the limit belongs to the predictor that writes it. |
+| `compute_evobind_adversarial_from_records` | It is not a registry entry, so there is no `MetricSpec` to declare on; its needs are those of `evobind_adversarial`. |
