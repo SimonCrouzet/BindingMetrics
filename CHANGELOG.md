@@ -240,6 +240,7 @@ Values from earlier versions differ in the cases below. A change reads "before -
   with ruff pinned to the CI version, and monthly Dependabot updates of the GitHub Actions (#36).
 - A CI job that runs the static metrics with OpenMM blocked, and a `ruff` configuration that also
   enforces flake8-bugbear and the blind-except rule (`B905` stays off) (#21, #36).
+- `--on-unmappable-residue {error,x}` for `binding-metrics-run` and `binding-metrics-batch` (keyword `on_unmappable_residue` of `run_pipeline` and `run_batch`), the option that `binding-metrics-openfold` already had. `error` (default) stops the OpenFold3 step before the model starts when a binder or receptor residue has no one-letter or CCD code OpenFold3 can take; `x` sends an `X` in its place and logs a warning. The batch step runs one OpenFold3 call, so one such residue stops it for every sample.
 
 ### Changed
 

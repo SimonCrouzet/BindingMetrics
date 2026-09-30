@@ -78,8 +78,11 @@ from binding_metrics._constants import (
 )
 from binding_metrics.cli import (
     add_config_arg,
+    add_on_unmappable_residue_arg,
     add_openfold_seeds_arg,
     add_random_seed_arg,
+    check_on_unmappable_residue,
+    on_unmappable_residue_kwargs,
     parse_args_with_config,
 )
 from binding_metrics.cli.run import (
@@ -280,13 +283,16 @@ def _run_batched_openfold(
     peptide_chain: Optional[str],
     receptor_chain: Optional[str],
     openfold_seeds: Optional[Sequence[int]] = None,
+    on_unmappable_residue: str = "error",
 ) -> None:
     """Run OpenFold3 on all successful samples in a single subprocess.
 
     Modifies *rows* in-place, merging OF3 and EvoBind metrics into each
     sample's flat dict.  Also updates each sample's JSON report on disk.
     ``openfold_seeds`` are the seed values written to the query JSON; ``None``
-    keeps the OpenFold default.
+    keeps the OpenFold default. ``on_unmappable_residue`` is passed to the query
+    preparation of every sample; a residue OpenFold3 cannot take then stops the whole
+    batch call (the error names each such residue) before the model starts.
     """
     from binding_metrics.io.structures import detect_chains_from_file
     from binding_metrics.metrics.openfold import (
@@ -355,6 +361,7 @@ def _run_batched_openfold(
             mode=openfold_mode,
             conda_env=openfold_conda_env,
             **({"seeds": tuple(openfold_seeds)} if openfold_seeds else {}),
+            **on_unmappable_residue_kwargs(on_unmappable_residue),
         )
     except Exception as e:  # noqa: BLE001 - the batch call spawns a subprocess; see openfold_error
         # Warning level keeps the line on stdout, where it was printed before.
@@ -507,6 +514,7 @@ def run_batch(
     on_result: Optional[Callable[[dict], None]] = None,
     on_error: str = "record",
     on_start: Optional[Callable[[Path], None]] = None,
+    on_unmappable_residue: str = "error",
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -541,6 +549,8 @@ def run_batch(
             gives a ``"partial"`` row in both modes.
         on_start: Called with the path of each item just before it starts (in
             the sequential case), or as it is submitted (with workers).
+        on_unmappable_residue: ``"error"`` (default) or ``"x"``: what the OpenFold3 call does
+            with a residue it cannot take (see ``--on-unmappable-residue``).
 
     Returns:
         One flat row per path, in the order of ``paths`` whatever the number of
@@ -560,7 +570,8 @@ def run_batch(
 
     Raises:
         ValueError: ``n_workers`` below 1, an unknown ``on_error``, an unknown
-            metric name, or a chain given through both spellings with different IDs.
+            metric name, an ``on_unmappable_residue`` other than ``"error"`` or ``"x"``, or a
+            chain given through both spellings with different IDs.
         Exception: whatever an item raised, when ``on_error="raise"``.
     """
     if n_workers < 1:
@@ -578,6 +589,7 @@ def run_batch(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
+    check_on_unmappable_residue(on_unmappable_residue)
 
     input_paths = [Path(p) for p in paths]
     output_dir = Path(output_dir)
@@ -685,6 +697,7 @@ def run_batch(
             peptide_chain=peptide_chain,
             receptor_chain=receptor_chain,
             openfold_seeds=openfold_seeds,
+            on_unmappable_residue=on_unmappable_residue,
         )
     return finished
 
@@ -836,6 +849,7 @@ def main():
         help="Conda env where OpenFold3 is installed (default: openfold3)",
     )
     add_openfold_seeds_arg(openfold_group)
+    add_on_unmappable_residue_arg(openfold_group)
 
     from binding_metrics.cli import add_log_file_arg
 
@@ -963,6 +977,7 @@ def main():
         openfold_mode=args.openfold_mode,
         openfold_conda_env=args.openfold_conda_env,
         openfold_seeds=args.openfold_seeds,
+        on_unmappable_residue=args.on_unmappable_residue,
         random_seed=args.random_seed,
         log_file=args.log_file,
         n_workers=args.workers,

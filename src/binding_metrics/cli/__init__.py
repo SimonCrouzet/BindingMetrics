@@ -147,6 +147,50 @@ def add_openfold_seeds_arg(parser) -> None:
     )
 
 
+#: Values of ``--on-unmappable-residue``; the first is the default.
+ON_UNMAPPABLE_RESIDUE_CHOICES = ("error", "x")
+
+
+def add_on_unmappable_residue_arg(parser) -> None:
+    """Add ``--on-unmappable-residue {error,x}`` to an argparse parser or group.
+
+    What OpenFold3 does with a residue it cannot take. The default stops the run before
+    anything is written or started, so no model time is spent on a query that would fail.
+    """
+    parser.add_argument(
+        "--on-unmappable-residue",
+        choices=ON_UNMAPPABLE_RESIDUE_CHOICES,
+        default="error",
+        help=(
+            "A residue that OpenFold3 cannot take (not a standard, D-, modified or "
+            "protonation-variant amino acid) stops the run before the model starts "
+            "(default: %(default)s). 'x' sends an X in its place and logs a warning."
+        ),
+    )
+
+
+def on_unmappable_residue_kwargs(value: str) -> dict:
+    """The keyword argument for an OpenFold3 run function, only when it is not the default.
+
+    The default is left out so that a function that predates the option, or a test double
+    that replaces it, is called exactly as before.
+    """
+    return {} if value == "error" else {"on_unmappable_residue": value}
+
+
+def check_on_unmappable_residue(value: str) -> str:
+    """Return ``value`` when it is one of ``ON_UNMAPPABLE_RESIDUE_CHOICES``, else raise.
+
+    Raises:
+        ValueError: naming the accepted values.
+    """
+    if value not in ON_UNMAPPABLE_RESIDUE_CHOICES:
+        raise ValueError(
+            f"on_unmappable_residue must be one of {ON_UNMAPPABLE_RESIDUE_CHOICES}, got {value!r}"
+        )
+    return value
+
+
 _SMALL_MOLECULES_CHOICES = ("auto", "none")
 
 

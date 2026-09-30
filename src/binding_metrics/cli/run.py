@@ -47,8 +47,11 @@ from binding_metrics._constants import (
 )
 from binding_metrics.cli import (
     add_config_arg,
+    add_on_unmappable_residue_arg,
     add_openfold_seeds_arg,
+    check_on_unmappable_residue,
     md_save_interval_for,
+    on_unmappable_residue_kwargs,
     parse_args_with_config,
 )
 from binding_metrics.cli import seed_arg as _seed_arg
@@ -187,6 +190,7 @@ def run_pipeline(
     binder_chain: Optional[str] = None,
     target_chain: Optional[str] = None,
     relaxer: Optional[Relaxer] = None,
+    on_unmappable_residue: str = "error",
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -204,6 +208,9 @@ def run_pipeline(
         random_seed: Seed for hydrogen placement and MD; ``None`` for fresh randomness.
         openfold_seeds: Seed values written to the OpenFold3 query JSON; ``None``
             keeps the OpenFold default. Separate from ``random_seed``.
+        on_unmappable_residue: What the OpenFold3 step does with a residue it cannot take
+            (keyword-only): ``"error"`` (default) records the step as failed before the model
+            starts, ``"x"`` sends an ``X`` in its place and logs a warning.
         The remaining arguments mirror the ``binding-metrics-run`` flags.
 
     Returns:
@@ -228,12 +235,14 @@ def run_pipeline(
 
     Raises:
         ChainNotFoundError: a requested chain ID does not exist in the structure.
-        ValueError: a chain is given through both spellings with different IDs.
+        ValueError: a chain is given through both spellings with different IDs, or
+            ``on_unmappable_residue`` is not ``"error"`` or ``"x"``.
     """
     peptide_chain = resolve_chain_role("peptide_chain", peptide_chain, "binder_chain", binder_chain)
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
+    check_on_unmappable_residue(on_unmappable_residue)
     if sample_id is None:
         sample_id = input_path.stem
 
@@ -555,6 +564,7 @@ def run_pipeline(
             else:
                 of_dir = output_dir / "openfold"
                 seed_kwargs = {"seeds": tuple(openfold_seeds)} if openfold_seeds else {}
+                seed_kwargs.update(on_unmappable_residue_kwargs(on_unmappable_residue))
                 if openfold_mode == "refold":
                     predictions_dir = run_openfold_refolding(
                         complex_structure_path=input_path,
@@ -813,6 +823,7 @@ def main():
         "the current environment if openfold3 is installed there.",
     )
     add_openfold_seeds_arg(openfold_group)
+    add_on_unmappable_residue_arg(openfold_group)
 
     # Report
     report_group = parser.add_argument_group("Report")
@@ -888,6 +899,7 @@ def main():
                 openfold_conda_env=args.openfold_conda_env,
                 random_seed=args.random_seed,
                 openfold_seeds=args.openfold_seeds,
+                on_unmappable_residue=args.on_unmappable_residue,
             )
         except ChainNotFoundError as e:
             print(f"ERROR: {e}", file=sys.stderr)
