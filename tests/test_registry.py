@@ -339,6 +339,9 @@ _NOT_METRICS: dict[str, str] = {
     "binding_metrics.metrics.mlff_energy:compute_mlff_interaction_energy": (
         "interface only; registered when a backend lands"
     ),
+    "binding_metrics.metrics.evobind:compute_evobind_adversarial_from_records": (
+        "takes PredictionRecord objects, not paths; called by code, not by the registry consumers"
+    ),
 }
 
 
