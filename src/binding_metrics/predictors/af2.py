@@ -4,9 +4,11 @@ Layouts checked on 2026-09-29 against ColabFold v1.6.3 (2026-09-14) and AlphaFol
 (2023-04-05) and main (c77e5d2), by reading their source (``colabfold/batch.py``,
 ``colabfold/alphafold/extra_ptm.py``, ``run_alphafold.py``, ``alphafold/model/model.py``,
 ``alphafold/model/confidence.py``, ``alphafold/common/protein.py``) and one real ColabFold
-multimer-v3 scores file. No model was run and no real AlphaFold2 result pickle was seen. What the
-source does not settle is listed under TO VERIFY at the end; the parser then refuses a file it
-does not know, with a message, and does not guess.
+multimer-v3 scores file, and on 2026-09-30 against the source of ColabFold 1.5.4 and
+alphafold-colabfold 2.3.6 (a fork of AlphaFold2 2.3) and of OpenMM 8.4. What the text marks
+"(1.5.4)" comes from that second reading. No model was run and no real AlphaFold2 result pickle
+was seen. What the source does not settle is listed under TO VERIFY at the end; the parser then
+refuses a file it does not know, with a message, and does not guess.
 
 Files
 -----
@@ -77,7 +79,17 @@ Conventions
   ColabFold, in input order except that identical sequences are placed next to each other, so the
   order can differ from the FASTA order. ``chain_ptm`` and ``chain_pair_iptm`` use the same letters.
   Rename chains with ``chain_map``. A bare structure keeps the chains of its file in the order of
-  the file.
+  the file. (1.5.4) A complex predicted with a monomer model is named by the same rule as with a
+  multimer model (``protein.from_prediction`` takes the chain from ``asym_id`` in both cases).
+* (1.5.4) Relaxed files are written by OpenMM with hydrogens, the chains renamed A, B, ... in order
+  and the residues numbered from 1 in each chain (``openmm/app/pdbfile.py``, ``keepIds=False``);
+  ``overwrite_b_factors`` then sets the B-factor of every atom, hydrogens included, to the pLDDT of
+  its residue. A relaxed file therefore has more atoms and can number its residues differently from
+  the unrelaxed one, and the expansion of the per-residue pLDDT over its atoms is unchanged.
+* (1.5.4) ColabFold writes ``plddt`` and ``pae`` of the scores file from the model's ``plddt`` and
+  ``predicted_aligned_error`` without reordering (``batch.py:478-487``), and renames every file of
+  a sample with the same ``rank_{RRR}_{tag}``, the rank counted over all seeds and models
+  (``batch.py:508-535``).
 * ``seed_index`` is the 1-based position of the seed in the numeric order of its value (ColabFold
   ``seed_{SSS}``, AlphaFold2 ``pred_{i}``), and ``sample`` the 1-based position inside that seed:
   by rank for ColabFold (``rank_001`` first, so with one seed ``sample=1`` is the best model) and
@@ -86,18 +98,16 @@ Conventions
 
 TO VERIFY
 ---------
-1. That ColabFold stores ``pae`` as AlphaFold2's ``predicted_aligned_error``, unchanged
-   (``batch.py`` was not read for this).
-2. The file names of older ColabFold versions, and that a scores file carries the same tag as its
-   structure file (only ``rank_{RRR}`` and the ``_seed_{SSS}`` ending are used).
+1. That ColabFold 1.6.3 does what 1.5.4 does where the text says (1.5.4): the score arrays, the
+   rank tags and the chain names. The 1.6.3 source was read only for the file names and keys.
+2. The file names of ColabFold versions before 1.5.4 (only ``rank_{RRR}`` and the
+   ``_seed_{SSS}`` ending are used).
 3. The names ``confidence_*.json`` and ``pae_*.json`` of AlphaFold2 main (with or without
    ``_pred_{i}``), and the names of its mmCIF files (only PDB files are read).
 4. That a real result pickle holds numpy data only and was written with pickle protocol 3 to 5;
    the keys of ``timings.json``.
-5. That relaxed PDB files keep the pLDDT in the B-factor column (the confidence files do not
-   depend on it), and that they carry no hydrogens the residue expansion would miscount.
-6. How ColabFold names the chains of a complex predicted with a monomer model.
-7. The scale of the B-factor column that BindCraft and ColabDesign write.
+5. That a relaxed file from a real run looks as the code says (the relaxation was not run).
+6. The scale of the B-factor column that BindCraft and ColabDesign write.
 """
 
 from __future__ import annotations
