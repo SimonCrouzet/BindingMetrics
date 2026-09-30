@@ -496,7 +496,10 @@ def _pickle_scalar(raw: dict, key: str, source: Path) -> float:
     value = raw.get(key)
     if value is None:
         return _NAN
-    array = np.asarray(value, dtype=float).reshape(-1)
+    try:
+        array = np.asarray(value, dtype=float).reshape(-1)
+    except (TypeError, ValueError):
+        raise ValueError(f"{source}: '{key}' is not a number") from None
     if array.size != 1:
         raise ValueError(f"{source}: '{key}' has {array.size} values, expected one")
     return float(array[0])
@@ -546,10 +549,13 @@ def parse_ranking_debug(path: Path) -> dict:
     raw = _read_json(path)
     for name in ("iptm+ptm", "plddts"):
         if isinstance(raw, dict) and isinstance(raw.get(name), dict):
+            order = raw.get("order", [])
+            if not isinstance(order, list):
+                raise ValueError(f"{path}: 'order' must be a list, got {type(order).__name__}")
             return {
                 "name": name,
                 "scores": _number_dict(raw[name], name, path),
-                "order": [str(item) for item in raw.get("order", [])],
+                "order": [str(item) for item in order],
             }
     raise ValueError(
         f"{path} is not an AlphaFold2 ranking_debug.json: it needs an 'iptm+ptm' or 'plddts' object"

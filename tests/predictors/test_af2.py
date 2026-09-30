@@ -884,6 +884,11 @@ class TestResultPickle:
         with pytest.raises(ValueError, match="5 by 5 but pLDDT has 7 residues"):
             parse_result_pickle(_pickle_file(tmp_path, payload))
 
+    def test_a_scalar_that_is_not_a_number_raises_a_value_error(self, tmp_path):
+        payload = {"plddt": RESIDUE_PLDDT, "ptm": {"a": 1}}
+        with pytest.raises(ValueError, match="'ptm' is not a number"):
+            parse_result_pickle(_pickle_file(tmp_path, payload))
+
     def test_a_scalar_with_several_values_raises(self, tmp_path):
         payload = {"plddt": RESIDUE_PLDDT, "ptm": np.array([0.5, 0.6])}
         with pytest.raises(ValueError, match="'ptm' has 2 values"):
@@ -912,6 +917,12 @@ class TestRankingDebug:
             json.dumps({"plddts": {"model_1": 88.5}, "order": ["model_1"]}), encoding="utf-8"
         )
         assert parse_ranking_debug(path)["name"] == "plddts"
+
+    def test_an_order_that_is_not_a_list_raises_a_value_error(self, tmp_path):
+        path = tmp_path / "ranking_debug.json"
+        path.write_text(json.dumps({"iptm+ptm": {"m_pred_0": 0.7}, "order": 3.5}), encoding="utf-8")
+        with pytest.raises(ValueError, match="'order' must be a list, got float"):
+            parse_ranking_debug(path)
 
     @pytest.mark.parametrize("content", ['{"order": []}', "[1]", '{"iptm+ptm": [1]}'])
     def test_anything_else_raises(self, tmp_path, content):
