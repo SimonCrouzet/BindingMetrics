@@ -279,6 +279,12 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - `--small-molecules` accepts `auto` or `none`. A typo used to register each character as a SMILES (#27).
 - Without gemmi, `save_cif` logs a warning and `extract_model_to_tempfile` raises `ImportError` for a CIF;
   both used to degrade without a message (#28).
+- The `:full` Docker image entrypoint fetches the OpenBind-0 checkpoint (`of3-ob-2025-06-30-174k.pt`, the
+  default of openfold3 0.5.0) with `setup_openfold --non-interactive`. It fed `setup_openfold` a canned
+  answer sequence that raises `EOFError` from openfold3 0.4.2 on when pytest is installed (#70), counted any
+  `*.pt` file as the weights, so a volume with Preview2 weights skipped the download and the first run
+  stopped (#71), and named `openfold3-p2-155k` as the default (#72). Statically checked and run under bash
+  with a stub `conda`; the image was not built.
 - OpenFold3 removes the parent of its template `structure_directory` when a run with the MSA server and
   templates ends (0.3.1 to 0.5.0), and the toolkit's is `<output>/query`. The runner YAML now sets
   `msa_computation_settings.cleanup_msa_dir: false` when it sets `structure_directory`, so the query JSON,
