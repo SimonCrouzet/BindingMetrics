@@ -308,12 +308,24 @@ def _flatten(results: dict) -> dict[str, Any]:
             # ramachandran_*".  Skip the intermediate sub-key and flatten each
             # sub-dict directly under "geometry_".
             for sub in ("ramachandran", "omega", "shape_complementarity"):
-                _add(section, sec_data.get(sub) or {})
+                sub_data = sec_data.get(sub) or {}
+                if sub_data.get("skipped"):
+                    # left out by the pre-flight check: one metric, not the whole step
+                    flat[f"{section}_{sub}_skipped"] = True
+                    flat[f"{section}_{sub}_reason"] = sub_data.get("reason")
+                    continue
+                _add(section, sub_data)
             for k in ("skipped", "error"):
                 if k in sec_data:
                     flat[f"{section}_{k}"] = sec_data[k]
         else:
             _add(section, sec_data)
+
+    preflight = results.get("preflight")
+    if isinstance(preflight, dict):
+        # The full report stays in the JSON; the row gets the decision and its reason.
+        flat["preflight_status"] = preflight.get("status")
+        flat["preflight_reason"] = preflight.get("reason")
 
     return flat
 
@@ -352,6 +364,29 @@ def _md_header(results: dict) -> str:
 
 def _is_skipped(section: dict | None) -> bool:
     return isinstance(section, dict) and section.get("skipped") is True
+
+
+def _md_preflight(pre: dict | None) -> str:
+    """The ``results["preflight"]`` block: the decision, what was left out, and the warnings."""
+    lines = ["## Pre-flight check\n"]
+    if not isinstance(pre, dict):
+        return lines[0] + "_Absent._\n"
+    lines.append(f"Status: `{pre.get('status')}` (policy: `{pre.get('policy')}`).\n")
+    if pre.get("reason"):
+        lines.append(f"{pre['reason']}\n")
+    skipped = dict(pre.get("skipped_steps") or {})
+    skipped.update({f"geometry.{k}": v for k, v in (pre.get("skipped_geometry") or {}).items()})
+    if skipped:
+        lines.append("Left out:\n")
+        lines.extend(f"- `{step}`: {reason}" for step, reason in skipped.items())
+        lines.append("")
+    report = pre.get("report") or {}
+    for title, key in (("Warnings", "warnings"), ("Notes", "notes")):
+        if report.get(key):
+            lines.append(f"{title}:\n")
+            lines.extend(f"- {text}" for text in report[key])
+            lines.append("")
+    return "\n".join(lines)
 
 
 def _md_cyclic(relax: dict | None) -> str | None:
@@ -792,6 +827,7 @@ def _build_summary(results: dict) -> str:
     cyclic = _md_cyclic(results.get("relax"))
     sections = [
         _md_header(results),
+        *([_md_preflight(results["preflight"])] if "preflight" in results else []),
         _md_relax(results.get("relax")),
         *([] if cyclic is None else [cyclic]),
         _md_energy(results.get("energy")),

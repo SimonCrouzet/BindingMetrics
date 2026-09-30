@@ -57,6 +57,7 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
+from binding_metrics.capabilities import POLICIES, IncompatibleInputError
 from binding_metrics.cli import (
     add_config_arg,
     add_on_unmappable_residue_arg,
@@ -77,6 +78,14 @@ from binding_metrics.cli.prediction import (
 )
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.metrics.registry import get_metric
+from binding_metrics.preflight_cli import (
+    BINDER_TYPE_CHOICES,
+    MODEL_STEP,
+    add_preflight_args,
+    check_input,
+    model_step_of,
+    steps_that_run,
+)
 from binding_metrics.protocols.relaxer import Relaxer
 from binding_metrics.provenance import collect_provenance, conda_python_command
 from binding_metrics.utils import configure_logging
@@ -162,6 +171,70 @@ def _warn(msg: str) -> None:
     logger.warning("  [warning] %s", msg)
 
 
+def _check_preflight_options(binder_type: str, on_incompatible: str) -> None:
+    if binder_type not in BINDER_TYPE_CHOICES:
+        raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")
+    if on_incompatible not in POLICIES:
+        raise ValueError(f"on_incompatible must be one of {POLICIES}, got {on_incompatible!r}")
+
+
+def _run_preflight(
+    input_path: Path,
+    peptide_chain: Optional[str],
+    receptor_chain: Optional[str],
+    *,
+    binder_type: str,
+    on_incompatible: str,
+    metrics: frozenset,
+    skip_relax: bool,
+    relaxer: Optional[Relaxer],
+    reference_path: Optional[Path],
+    predictor: Optional[str],
+    prediction_dir: Optional[Path],
+    preflight_model: Optional[tuple],
+    include_plan: bool,
+    on_unmappable_residue: str,
+):
+    """The pre-flight check of one run, before anything is prepared, relaxed or predicted.
+
+    Resolves the chains as ``run_pipeline`` does (an unknown chain ID still raises
+    ``ChainNotFoundError``), lists the steps the run executes and checks them; see
+    ``binding_metrics.preflight_cli``. ``preflight_model`` is the model step that the caller
+    runs after this call (the batch), as ``(model, metric, adopted)``.
+    """
+    from binding_metrics.io.structures import detect_chains_from_file
+    from binding_metrics.preflight_cli import PreflightOutcome
+
+    try:
+        chain_info = detect_chains_from_file(
+            input_path, peptide_chain=peptide_chain, receptor_chain=receptor_chain, verbose=False
+        )
+    except Exception as exc:  # noqa: BLE001 - the run reports an unreadable input itself, later
+        logger.debug("pre-flight: chain detection failed for %s: %s", input_path, exc)
+        return PreflightOutcome(
+            block={
+                "status": "not_checked",
+                "reason": f"the chains could not be detected: {exc}",
+                "policy": on_incompatible,
+                "report": None,
+            }
+        )
+    _require_chains_present(chain_info, peptide_chain, receptor_chain)
+    model = model_step_of(predictor, prediction_dir, metrics) or preflight_model
+    return check_input(
+        input_path,
+        chain_info["peptide_chain"],
+        chain_info["receptor_chain"],
+        binder_type=binder_type,
+        on_incompatible=on_incompatible,
+        steps=steps_that_run(metrics, skip_relax=skip_relax, custom_relaxer=relaxer is not None),
+        model=model,
+        reference_path=reference_path,
+        include_plan=include_plan,
+        on_unmappable_residue=on_unmappable_residue,
+    )
+
+
 def _step(name: str) -> None:
     bar = "=" * 60
     logger.info("\n%s\n  Step: %s\n%s", bar, name, bar)
@@ -204,6 +277,10 @@ def run_pipeline(
     prediction_target_chain: Optional[str] = None,
     prediction_cache: Optional[Path] = None,
     rerun_predictions: bool = False,
+    binder_type: str = "auto",
+    on_incompatible: str = "error",
+    preflight_only: bool = False,
+    preflight_model: Optional[tuple] = None,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -239,6 +316,14 @@ def run_pipeline(
             starts no model (keyword-only).
         rerun_predictions: Run the prediction again although the store has it, once
             (keyword-only). Outputs given as ``prediction_dir`` are never replaced.
+        binder_type, on_incompatible, preflight_only: The pre-flight check (keyword-only), see
+            ``--binder-type``, ``--on-incompatible`` and ``--preflight-only``. The check runs
+            first, before preparation, relaxation, any model run and any use of the prediction
+            store. ``preflight_only`` returns ``{"sample_id", "input", "preflight"}`` (with the
+            text of the plan under ``preflight["plan"]``) and does nothing else, whatever the
+            policy.
+        preflight_model: For a caller that runs the model step itself after this call (the
+            batch): ``(model, metric, adopted)``, so that its limits are checked here, first.
         The remaining arguments mirror the ``binding-metrics-run`` flags.
 
     Returns:
@@ -263,6 +348,11 @@ def run_pipeline(
         ``dropped_protein_chains`` the protein chains, other than the peptide and
         the receptor, that the relaxation removed.
 
+        ``preflight`` holds the decision of the pre-flight check: ``status`` (``ok``,
+        ``warn``, ``skipped``, ``not_checked``), ``reason``, ``policy``, the steps left out
+        under ``--on-incompatible skip`` and the full report. A step that was left out is
+        ``{"skipped": True, "reason": ...}``.
+
         ``prep`` and ``relax`` carry ``ncaa_bond_order_source`` when non-canonical
         residues were parameterised: ``{residue name: "ccd" or "single_bonds"}``,
         where ``"single_bonds"`` marks a residue whose double bonds, aromatic
@@ -270,6 +360,8 @@ def run_pipeline(
 
     Raises:
         ChainNotFoundError: a requested chain ID does not exist in the structure.
+        IncompatibleInputError: the input cannot go through a requested step or model and
+            ``on_incompatible`` is ``"error"``; nothing has run. A ``ValueError``.
         ValueError: a chain is given through both spellings with different IDs,
             ``on_unmappable_residue`` is not ``"error"`` or ``"x"``, ``predictor`` is not a
             registered model, or it has no runner and no ``prediction_dir`` is given.
@@ -280,14 +372,45 @@ def run_pipeline(
     )
     check_on_unmappable_residue(on_unmappable_residue)
     check_predictor(predictor, prediction_dir)
+    _check_preflight_options(binder_type, on_incompatible)
 
     if sample_id is None:
         sample_id = input_path.stem
+
+    # Pre-flight: before the output directory, the provenance probe, prep, relaxation, any model
+    # run and the prediction store, so that a refused input costs nothing.
+    outcome = _run_preflight(
+        input_path,
+        peptide_chain,
+        receptor_chain,
+        binder_type=binder_type,
+        on_incompatible=on_incompatible,
+        metrics=metrics,
+        skip_relax=skip_relax,
+        relaxer=relaxer,
+        reference_path=reference_path,
+        predictor=predictor,
+        prediction_dir=prediction_dir,
+        preflight_model=preflight_model,
+        include_plan=preflight_only,
+        on_unmappable_residue=on_unmappable_residue,
+    )
+    if preflight_only:
+        return {"sample_id": sample_id, "input": str(input_path), "preflight": outcome.block}
+    if outcome.error is not None:
+        raise outcome.error
+    # Steps left out under --on-incompatible skip
+    skipped_steps = outcome.skipped_steps
+    if "relax" in skipped_steps:
+        skip_relax = True
+    metrics = frozenset(metrics) - set(skipped_steps)
+    skipped_geometry = outcome.skipped_geometry
 
     output_dir.mkdir(parents=True, exist_ok=True)
     results: dict = {
         "sample_id": sample_id,
         "input": str(input_path),
+        "preflight": outcome.block,
         "provenance": collect_provenance(
             seed=random_seed,
             openfold3="openfold" in metrics
@@ -524,12 +647,28 @@ def run_pipeline(
                 compute_shape_complementarity,
             )
 
-            rama = compute_ramachandran(relaxed_path, chain=working_peptide)
-            omega = compute_omega_planarity(relaxed_path, chain=working_peptide)
-            sc = compute_shape_complementarity(
-                relaxed_path,
-                peptide_chain=working_peptide,
-                receptor_chain=working_receptor,
+            def left_out(name: str) -> dict:
+                return {"skipped": True, "reason": skipped_geometry[name]}
+
+            # a metric that the pre-flight check left out (--on-incompatible skip) is recorded
+            rama = (
+                left_out("ramachandran")
+                if "ramachandran" in skipped_geometry
+                else compute_ramachandran(relaxed_path, chain=working_peptide)
+            )
+            omega = (
+                left_out("omega")
+                if "omega" in skipped_geometry
+                else compute_omega_planarity(relaxed_path, chain=working_peptide)
+            )
+            sc = (
+                left_out("shape_complementarity")
+                if "shape_complementarity" in skipped_geometry
+                else compute_shape_complementarity(
+                    relaxed_path,
+                    peptide_chain=working_peptide,
+                    receptor_chain=working_receptor,
+                )
             )
             results["geometry"] = {
                 "ramachandran": rama,
@@ -714,6 +853,12 @@ def run_pipeline(
     else:
         results["openfold"] = {"skipped": True}
 
+    # A step that the pre-flight check left out (--on-incompatible skip) says why.
+    for step, reason in skipped_steps.items():
+        if step == MODEL_STEP:
+            step = "prediction" if predictor is not None else "openfold"
+        results[step] = {"skipped": True, "reason": reason}
+
     return results
 
 
@@ -893,6 +1038,7 @@ def main():
     add_on_unmappable_residue_arg(openfold_group)
 
     add_prediction_args(parser)
+    add_preflight_args(parser)
 
     # Report
     report_group = parser.add_argument_group("Report")
@@ -976,10 +1122,20 @@ def main():
                 prediction_target_chain=args.prediction_target_chain,
                 prediction_cache=args.prediction_cache,
                 rerun_predictions=args.rerun_predictions,
+                binder_type=args.binder_type,
+                on_incompatible=args.on_incompatible,
+                preflight_only=args.preflight_only,
             )
         except ChainNotFoundError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
+        except IncompatibleInputError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+        if args.preflight_only:
+            block = results["preflight"]
+            print(block.get("plan") or f"Pre-flight check: {block['status']}: {block['reason']}")
+            sys.exit(1 if block["status"] == "refused" else 0)
         results["total_elapsed_s"] = round(time.time() - t_total, 1)
 
         from binding_metrics.protocols.report import write_report
