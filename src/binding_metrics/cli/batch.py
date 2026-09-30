@@ -270,6 +270,57 @@ def _run_one(
 
 
 # ---------------------------------------------------------------------------
+# Steps that run once for all samples, after the workers
+# ---------------------------------------------------------------------------
+
+
+def _detect_sample_chains(
+    rows: list[dict],
+    sid_to_input: dict[str, Path],
+    peptide_chain: Optional[str],
+    receptor_chain: Optional[str],
+    step: str,
+) -> list[tuple[int, str, Path, str, str]]:
+    """The samples a whole-batch step can process, with their chains.
+
+    A sample qualifies when its worker did not fail, its input file is known and both chains
+    are given or detected (the logic of ``run_pipeline``). ``step`` names the step in the
+    warning for an input whose chains cannot be detected.
+
+    Returns:
+        ``(row index, sample ID, input path, binder chain, receptor chain)`` per sample.
+    """
+    from binding_metrics.io.structures import detect_chains_from_file
+
+    eligible = []
+    for i, row in enumerate(rows):
+        sid = row.get("sample_id")
+        if not sid or row.get("batch_status") == "error":
+            continue
+        input_path = sid_to_input.get(sid)
+        if input_path is None:
+            continue
+
+        # Detect chains from the input file (same logic as run_pipeline)
+        try:
+            chain_info = detect_chains_from_file(
+                input_path,
+                peptide_chain=peptide_chain,
+                receptor_chain=receptor_chain,
+            )
+        except Exception as e:  # noqa: BLE001 - one unreadable input must not stop the batch
+            logger.warning("  %s: skipped for %s, chain detection failed: %s", sid, step, e)
+            continue
+
+        pchain = chain_info.get("peptide_chain")
+        rchain = chain_info.get("receptor_chain")
+        if not pchain or not rchain:
+            continue
+        eligible.append((i, sid, input_path, pchain, rchain))
+    return eligible
+
+
+# ---------------------------------------------------------------------------
 # Batched OpenFold (single subprocess for all samples)
 # ---------------------------------------------------------------------------
 
@@ -294,7 +345,6 @@ def _run_batched_openfold(
     preparation of every sample; a residue OpenFold3 cannot take then stops the whole
     batch call (the error names each such residue) before the model starts.
     """
-    from binding_metrics.io.structures import detect_chains_from_file
     from binding_metrics.metrics.openfold import (
         _BatchSample,
         compute_openfold_metrics,
@@ -309,30 +359,9 @@ def _run_batched_openfold(
     # Map query_name → chain info for metrics extraction
     sid_to_chains: dict[str, dict] = {}
 
-    for i, row in enumerate(rows):
-        sid = row.get("sample_id")
-        if not sid or row.get("batch_status") == "error":
-            continue
-        input_path = sid_to_input.get(sid)
-        if input_path is None:
-            continue
-
-        # Detect chains from the input file (same logic as run_pipeline)
-        try:
-            chain_info = detect_chains_from_file(
-                input_path,
-                peptide_chain=peptide_chain,
-                receptor_chain=receptor_chain,
-            )
-        except Exception as e:  # noqa: BLE001 - one unreadable input must not stop the batch
-            logger.warning("  %s: skipped for OpenFold, chain detection failed: %s", sid, e)
-            continue
-
-        pchain = chain_info.get("peptide_chain")
-        rchain = chain_info.get("receptor_chain")
-        if not pchain or not rchain:
-            continue
-
+    for i, sid, input_path, pchain, rchain in _detect_sample_chains(
+        rows, sid_to_input, peptide_chain, receptor_chain, "OpenFold"
+    ):
         samples.append(
             _BatchSample(
                 query_name=sid,
