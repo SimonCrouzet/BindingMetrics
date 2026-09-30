@@ -17,10 +17,13 @@ import biotite.structure.io.pdb as pdb_io  # noqa: E402
 from scipy.spatial.distance import cdist  # noqa: E402
 
 from binding_metrics.metrics.evobind import (  # noqa: E402
+    _adversarial_from_atoms,
     _auto_interface_mask,
     _cb_atoms,
+    _load_atoms,
     _pairwise_min_dists,
     _per_residue_plddt,
+    _score_from_atoms,
     compute_evobind_adversarial_check,
     compute_evobind_score,
 )
@@ -473,3 +476,39 @@ class TestAdversarialCheck:
         b = _helix_complex(tmp_path, "afm.pdb", pep_names=["TRP", "PRO", "HIS", "GLN"])
         with pytest.raises(ValueError, match="binder residues"):
             compute_evobind_adversarial_check(a, b, "B", "A")
+
+
+# ---------------------------------------------------------------------------
+# The split at the load step: the path functions only load, then call these
+# ---------------------------------------------------------------------------
+
+
+class TestSplitAtTheLoadStep:
+    def test_score_from_atoms_equals_the_path_function(self, tmp_path):
+        path = _line_complex(tmp_path)
+        plddt = np.concatenate([np.full(10, 50.0), np.full(6, 80.0)])
+        from_path = compute_evobind_score(path, plddt, "B", "A", interface_cutoff_angstrom=6.5)
+        from_atoms = _score_from_atoms(_load_atoms(path), plddt, "B", "A", None, 6.5)
+        assert from_atoms == from_path
+
+    def test_adversarial_from_atoms_equals_the_path_function(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb")
+        b = _helix_complex(tmp_path, "afm_shift.pdb", pep_shift=(0.0, 3.0, 4.0))
+        plddt = np.concatenate([np.full(24, 40.0), np.full(8, 80.0)])
+        from_path = compute_evobind_adversarial_check(a, b, "B", "A", afm_plddt_per_atom=plddt)
+        from_atoms = _adversarial_from_atoms(
+            _load_atoms(a), _load_atoms(b), plddt, "B", "A", 8.0, 0.5
+        )
+        assert from_atoms == from_path
+        assert from_atoms["delta_com_angstrom"] == pytest.approx(5.0, abs=1e-2)
+
+    def test_the_adversary_label_names_the_second_structure_in_messages(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb")
+        b = _helix_complex(tmp_path, "afm.pdb", n_rec=2)
+        design, second = _load_atoms(a), _load_atoms(b)
+        with pytest.raises(ValueError, match=r"design 12, AFM 2"):
+            _adversarial_from_atoms(design, second, None, "B", "A", 8.0, 0.5)
+        with pytest.raises(ValueError, match=r"design 12, adversary 2"):
+            _adversarial_from_atoms(
+                design, second, None, "B", "A", 8.0, 0.5, adversary_label="adversary"
+            )
