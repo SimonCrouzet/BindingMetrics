@@ -13,7 +13,12 @@ import pytest
 from binding_metrics.metrics.prediction import summarize_prediction
 from binding_metrics.predictors import protenix
 from binding_metrics.predictors.protenix import ProtenixParser, token_layout
-from binding_metrics.predictors.registry import PARSERS, ParserSpec, register_parser
+from binding_metrics.predictors.registry import (
+    PARSERS,
+    ParserSpec,
+    get_parser,
+    register_parser,
+)
 from tests.predictors import contract, synth, synth_protenix
 
 NAME = contract.NAME
@@ -73,6 +78,17 @@ def _full_data(tmp_path, rank=0, seed=9):
 @pytest.mark.parametrize("check", contract.CHECKS, ids=lambda check: check.__name__)
 def test_the_adapter_meets_the_contract(registered, check, tmp_path):
     check("protenix", tmp_path)
+
+
+class TestRegistration:
+    def test_protenix_is_registered_and_lazy(self):
+        spec = PARSERS["protenix"]
+        assert spec.import_path == "binding_metrics.predictors.protenix:ProtenixParser"
+        assert isinstance(get_parser("protenix"), ProtenixParser)
+        assert (spec.display_name, spec.family) == ("Protenix", "af3")
+
+    def test_no_capabilities_are_declared(self):
+        assert ProtenixParser.capabilities is None
 
 
 # ---------------------------------------------------------------------------

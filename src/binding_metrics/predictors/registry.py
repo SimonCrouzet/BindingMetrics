@@ -108,6 +108,17 @@ PARSERS: dict[str, ParserSpec] = {
             "_confidences_aggregated.json and _confidences.json|npz"
         ),
     ),
+    "protenix": ParserSpec(
+        name="protenix",
+        import_path="binding_metrics.predictors.protenix:ProtenixParser",
+        display_name="Protenix",
+        family="af3",
+        description=(
+            "Protenix output: {name}/seed_*/predictions/{name}_sample_*.cif with "
+            "_summary_confidence_sample_*.json and, with --need_atom_confidence, "
+            "_full_data_sample_*.json"
+        ),
+    ),
 }
 
 
