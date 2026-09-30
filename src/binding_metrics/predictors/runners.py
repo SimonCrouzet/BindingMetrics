@@ -53,8 +53,11 @@ Contract, checked for the stub runners of ``tests/predictors/test_runners.py``:
   remembered as a failed prediction.
 * ``version()`` is the model's version string, or None when it cannot be told. It is part of the
   request key, so predictions of two versions never share a store entry.
-* ``capabilities`` is None until the pre-flight lane defines what a runner can declare (the
-  input classes the model cannot handle); it mirrors ``PredictionParser.capabilities``.
+* ``capabilities`` stays None on a runner. The limits of a model (the input classes it cannot
+  handle) live on ``PredictionParser.capabilities``, which is what ``preflight`` reads, so
+  ``OpenFold3Runner.capabilities`` is None while ``OpenFold3Parser.capabilities`` carries the
+  limits. The attribute exists so that a runner can declare a limit of its own, such as one
+  that depends on how the model is started.
 """
 
 from __future__ import annotations
@@ -77,8 +80,8 @@ class PredictionRunner(ABC):
     #: Name of the model; equal to the name of its ``PredictionParser`` (``"of3"``) and to
     #: ``PredictionRequest.model``. The store refuses a request for another model.
     name: ClassVar[str]
-    #: What inputs the model can be given, as a ``binding_metrics.capabilities.Capabilities``.
-    #: None declares no constraint; a pre-flight check reads it before anything runs.
+    #: A limit of the runner itself, as a ``binding_metrics.capabilities.Capabilities``; None
+    #: (the value on every runner) declares none. The limits of the model are on the parser.
     capabilities: ClassVar[Optional[Any]] = None
 
     @abstractmethod

@@ -18,7 +18,10 @@ Contract, checked for every registered adapter by ``tests/predictors/contract.py
   angstrom with ``pae[i, j]`` the error of token ``j`` aligned on token ``i``, and scalars the
   model lacks are NaN (see ``binding_metrics.predictors.record``);
 * ``seed_index`` and ``sample`` are 1-based positions in the model's natural order of
-  outputs; ``sample=1`` is the first one, not the best-ranked one.
+  outputs, and each adapter's docstring says what that order is. ``sample=1`` is the
+  best-ranked sample for Boltz-2 and Protenix (their files are numbered by rank) and for
+  ColabFold (``rank_001``); it is the first sample written, which is not a ranking, for
+  OpenFold3 (``sample_1``) and for AlphaFold2 (the model number).
 
 Adding a model: write ``predictors/<name>.py`` with a subclass of ``PredictionParser``, add
 one ``ParserSpec`` line to ``predictors/registry.py``, and add
@@ -68,9 +71,9 @@ class PredictionParser(ABC):
     family: ClassVar[str]
     #: What inputs the model can be given, as a ``binding_metrics.capabilities.Capabilities``
     #: (peptide closures, residue classes, binder size, ...). None declares no constraint.
-    #: The class does not exist yet; a later change defines it, and the contract tests check
-    #: that this attribute is None or an instance of it. A pre-flight check reads the value
-    #: to refuse an input the model cannot handle before anything runs.
+    #: The contract tests check that this attribute is None or an instance of that class.
+    #: ``binding_metrics.capabilities.preflight`` reads the value to refuse an input the model
+    #: cannot handle before anything runs.
     capabilities: ClassVar[Optional[Any]] = None
     #: Names of the ``PredictionRecord`` fields the model never provides (AlphaFold2 and
     #: ColabFold write no ``pde``): ``load`` copies them to ``record.not_provided``, and
