@@ -232,7 +232,12 @@ def _md_table(headers: list[str], rows: list[list[str]]) -> str:
 
 
 def _flatten(results: dict) -> dict[str, Any]:
-    """Return a flat {column: value} dict suitable for one CSV row."""
+    """Return a flat {column: value} dict suitable for one CSV row.
+
+    Scalars and the scalars inside nested dicts become columns named by their path. List
+    and numpy array fields are left out (they stay in the JSON), so a per-atom pLDDT
+    array of thousands of values never becomes a truncated text cell.
+    """
     flat: dict[str, Any] = {
         "sample_id": results.get("sample_id"),
         "input": results.get("input"),
@@ -254,7 +259,9 @@ def _flatten(results: dict) -> dict[str, Any]:
                 continue  # skip list fields
             if isinstance(v, dict):
                 _add(f"{prefix}_{k}", v)
-            elif not isinstance(v, list):
+            elif not isinstance(v, (list, np.ndarray)):
+                # An array cell would be ``str(array)``, cut to "[1. 2. 3. ... 8. 9.]" for
+                # more than 1000 values. Arrays stay in the JSON, like the list fields.
                 flat[f"{prefix}_{k}"] = v
 
     for section in (
