@@ -94,7 +94,7 @@ from binding_metrics.cli.run import (
     run_pipeline,
 )
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
-from binding_metrics.provenance import collect_provenance
+from binding_metrics.provenance import collect_provenance, conda_python_command, openfold3_version
 from binding_metrics.utils import configure_logging
 
 # Named explicitly: ``python -m binding_metrics.cli.batch`` executes this file as
@@ -352,6 +352,10 @@ def _run_batched_openfold(
     logger.info(
         "\n%s\n  Step: Batched OpenFold3 (%d samples in one call)\n%s", bar, len(samples), bar
     )
+
+    installed = openfold3_version(conda_python_command(openfold_conda_env))
+    for idx in sid_to_row_idx.values():
+        rows[idx]["provenance_openfold3_version"] = installed
 
     of_dir = output_dir / "_openfold_batch"
     try:

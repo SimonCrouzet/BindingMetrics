@@ -58,7 +58,7 @@ from binding_metrics.cli import seed_arg as _seed_arg
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.metrics.registry import get_metric
 from binding_metrics.protocols.relaxer import Relaxer
-from binding_metrics.provenance import collect_provenance
+from binding_metrics.provenance import collect_provenance, conda_python_command
 from binding_metrics.utils import configure_logging
 
 # Named explicitly: ``python -m binding_metrics.cli.run`` executes this file as
@@ -250,7 +250,11 @@ def run_pipeline(
     results: dict = {
         "sample_id": sample_id,
         "input": str(input_path),
-        "provenance": collect_provenance(seed=random_seed),
+        "provenance": collect_provenance(
+            seed=random_seed,
+            openfold3="openfold" in metrics,
+            openfold3_python_cmd=conda_python_command(openfold_conda_env),
+        ),
     }
 
     # ---------------------------------------------------------- Chain detection

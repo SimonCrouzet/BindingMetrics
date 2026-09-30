@@ -241,6 +241,7 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - A CI job that runs the static metrics with OpenMM blocked, and a `ruff` configuration that also
   enforces flake8-bugbear and the blind-except rule (`B905` stays off) (#21, #36).
 - `--on-unmappable-residue {error,x}` for `binding-metrics-run` and `binding-metrics-batch` (keyword `on_unmappable_residue` of `run_pipeline` and `run_batch`), the option that `binding-metrics-openfold` already had. `error` (default) stops the OpenFold3 step before the model starts when a binder or receptor residue has no one-letter or CCD code OpenFold3 can take; `x` sends an `X` in its place and logs a warning. The batch step runs one OpenFold3 call, so one such residue stops it for every sample.
+- The `provenance` block of a run that starts OpenFold3 carries `openfold3_version`, the installed `openfold3` version (None when it is not installed or unreadable) (#82). `collect_provenance(openfold3=True, openfold3_python_cmd=...)` adds it; `binding-metrics-run` asks when the `openfold` step is selected, the environment of `--openfold-conda-env` through `conda run -n <env> python`, and `binding-metrics-batch` adds the column `provenance_openfold3_version` to the rows the OpenFold3 call covers. A block that was not asked for it keeps its eight keys and schema version 1.
 
 ### Changed
 
