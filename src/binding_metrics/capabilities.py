@@ -1184,9 +1184,11 @@ class PreflightReport:
         metrics_to_run: The metrics that go on: all of them, except under ``skip`` where a metric
             with a violation is left out.
         predictors: The predictors that were checked, as written in the messages.
-        predictor_usable: False when the policy is ``skip`` and a predictor has a violation. The
-            caller then leaves out the predictor and what depends on it: ``preflight`` does not
-            know which metrics read a prediction.
+        predictor_usable: False when the policy of the predictor is ``skip`` and it has a
+            violation. The caller then leaves out the predictor and what depends on it:
+            ``preflight`` does not know which metrics read a prediction.
+        predictor_policy: The policy applied to the predictors when it differs from ``policy``;
+            empty when it is the same.
     """
 
     policy: str
@@ -1198,11 +1200,21 @@ class PreflightReport:
     metrics_to_run: tuple[str, ...] = ()
     predictors: tuple[str, ...] = ()
     predictor_usable: bool = True
+    predictor_policy: str = ""
+
+    def policy_of(self, kind: str) -> str:
+        """The policy that applies to a violation of ``kind`` (``metric`` or ``predictor``)."""
+        return (self.predictor_policy or self.policy) if kind == "predictor" else self.policy
 
     @property
     def compatible(self) -> bool:
         """True when nothing was found."""
         return not self.violations
+
+    @property
+    def refused(self) -> bool:
+        """True when a violation falls under the policy ``error``: ``preflight`` raised for it."""
+        return any(self.policy_of(v.kind) == "error" for v in self.violations)
 
     @property
     def skipped_metrics(self) -> tuple[str, ...]:
@@ -1213,22 +1225,23 @@ class PreflightReport:
     def format(self) -> str:
         """The plan as text: the input, what runs, every problem with its fix, warnings, notes."""
         n = len(self.violations)
+        policy = self.policy
+        if self.predictor_policy and self.predictor_policy != self.policy:
+            policy = f"{self.policy}, predictor: {self.predictor_policy}"
         if not n:
-            heading = (
-                f"Pre-flight check: the input fits everything requested (policy: {self.policy})."
-            )
-        elif self.policy == "error":
+            heading = f"Pre-flight check: the input fits everything requested (policy: {policy})."
+        elif self.refused:
             heading = (
                 f"Pre-flight check failed: {n} incompatibilit{'y' if n == 1 else 'ies'} between "
-                "the input and what was requested (policy: error)."
+                f"the input and what was requested (policy: {policy})."
             )
         else:
             heading = (
                 f"Pre-flight check found {n} incompatibilit{'y' if n == 1 else 'ies'} "
-                f"(policy: {self.policy})."
+                f"(policy: {policy})."
             )
         lines = [heading, f"Input: {self.profile.describe()}"]
-        if self.policy != "error" or not n:
+        if not self.refused:
             runs = [f"metrics {_join(self.metrics_to_run)}"] if self.metrics_requested else []
             runs += [f"predictor {label}" for label in self.predictors if self.predictor_usable]
             lines.append(f"Runs: {'; '.join(runs) if runs else 'nothing was requested'}")
@@ -1252,6 +1265,7 @@ class PreflightReport:
         """JSON-ready form, for ``results["preflight"]``."""
         return {
             "policy": self.policy,
+            "predictor_policy": self.predictor_policy or self.policy,
             "compatible": self.compatible,
             "profile": self.profile.to_dict(),
             "metrics_requested": list(self.metrics_requested),
@@ -1435,8 +1449,8 @@ def _fix_for(step: _Step, profile: InputProfile, provided: Optional[Collection[s
     """
     if step.kind == "metric":
         return (
-            f"leave {step.name!r} out of the metric list, or use policy='skip' to compute only "
-            "the metrics that apply"
+            f"leave {step.name!r} out of the metric list, or use policy='skip' "
+            "(--on-incompatible skip) to compute only the metrics that apply"
         )
     accepting, undeclared, others = _other_predictors(profile, step, provided)
     parts = []
@@ -1452,7 +1466,9 @@ def _fix_for(step: _Step, profile: InputProfile, provided: Optional[Collection[s
                 f"predictors that declare no limits (not validated for this input): "
                 f"{_join(undeclared)}"
             )
-    parts.append("or use policy='skip' to leave the predictor out and run the rest")
+    parts.append(
+        "or use policy='skip' (--on-incompatible skip) to leave the predictor out and run the rest"
+    )
     return "; ".join(parts)
 
 
@@ -1462,6 +1478,7 @@ def preflight(
     predictor: Any = None,
     *,
     policy: str = "error",
+    predictor_policy: Optional[str] = None,
     provided: Optional[Collection[str]] = None,
 ) -> PreflightReport:
     """Check an input against the limits of every requested metric and predictor, before any run.
@@ -1483,6 +1500,9 @@ def preflight(
             (``report.metrics_to_run`` holds the rest) and marks a refused predictor
             ``report.predictor_usable=False``. ``warn`` logs every violation and lets everything
             run.
+        predictor_policy: The policy for the violations of the predictors, when it is not the
+            one of the metrics; None uses ``policy``. A caller that only reads a prediction made
+            elsewhere passes ``warn``, because what the model was given is not known.
         provided: What the caller makes available among ``NEEDS`` besides the receptor chain,
             for example ``{"reference_structure", "gpu"}``; None leaves those needs unchecked and
             the report says so.
@@ -1494,12 +1514,15 @@ def preflight(
     Raises:
         IncompatibleInputError: Policy ``error`` and at least one violation. Subclass of
             ``ValueError``.
-        ValueError: ``policy`` is not one of ``POLICIES``.
+        ValueError: ``policy`` or ``predictor_policy`` is not one of ``POLICIES``.
         KeyError: A predictor name that is not registered.
         TypeError: A ``capabilities`` attribute that is neither None nor a ``Capabilities``.
     """
     if policy not in POLICIES:
         raise ValueError(f"policy must be one of {POLICIES}, got {policy!r}")
+    if predictor_policy is not None and predictor_policy not in POLICIES:
+        raise ValueError(f"predictor_policy must be one of {POLICIES}, got {predictor_policy!r}")
+    effective_predictor_policy = predictor_policy or policy
     steps = _metric_steps(metrics) + _predictor_steps(predictor)
 
     violations: list[Violation] = []
@@ -1539,9 +1562,11 @@ def preflight(
     requested = tuple(s.name for s in steps if s.kind == "metric")
     if policy == "skip":
         to_run = tuple(name for name in requested if ("metric", name) not in refused)
-        usable = not any(kind == "predictor" for kind, _ in refused)
     else:
-        to_run, usable = requested, True
+        to_run = requested
+    usable = not (
+        effective_predictor_policy == "skip" and any(kind == "predictor" for kind, _ in refused)
+    )
     report = PreflightReport(
         policy=policy,
         profile=profile,
@@ -1554,11 +1579,14 @@ def preflight(
             s.subject.removeprefix("predictor ") for s in steps if s.kind == "predictor"
         ),
         predictor_usable=usable,
+        predictor_policy=predictor_policy or "",
     )
-    if violations and policy == "error":
+    if report.refused:
         raise IncompatibleInputError(report)
     for violation in violations:
-        action = "leaving it out" if policy == "skip" else "running anyway"
+        action = (
+            "leaving it out" if report.policy_of(violation.kind) == "skip" else "running anyway"
+        )
         logger.warning(
             "%s is incompatible with the input (%s: %s); %s",
             violation.subject,

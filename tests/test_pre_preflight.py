@@ -530,3 +530,43 @@ class TestReport:
         report = preflight(LINEAR, [])
         with pytest.raises(dataclasses.FrozenInstanceError):
             report.policy = "warn"  # type: ignore[misc]
+
+
+class TestAnotherPolicyForThePredictors:
+    """A caller that only reads a prediction made elsewhere passes ``predictor_policy="warn"``."""
+
+    def test_a_refused_predictor_only_warns_while_the_metrics_stay_under_error(
+        self, three_models, caplog
+    ):
+        with caplog.at_level(logging.WARNING, logger="binding_metrics.capabilities"):
+            report = preflight(BICYCLE, ["interface"], "narrow", predictor_policy="warn")
+        assert report.violations and not report.refused
+        assert report.predictor_usable is True and report.predictor_policy == "warn"
+        assert "running anyway" in caplog.text
+        assert report.format().startswith("Pre-flight check found 1 incompatibility")
+        assert "policy: error, predictor: warn" in report.format()
+
+    def test_a_refused_metric_still_raises(self, three_models):
+        needing = SimpleNamespace(
+            name="dockq",
+            capabilities=Capabilities(needs={"reference_structure"}, reasons={"needs": "Native."}),
+        )
+        with pytest.raises(IncompatibleInputError) as caught:
+            preflight(BICYCLE, [needing], "narrow", predictor_policy="warn", provided=set())
+        assert caught.value.report.refused
+        assert {v.kind for v in caught.value.violations} == {"metric", "predictor"}
+
+    def test_skip_for_the_predictor_marks_it_unusable_while_the_metrics_only_warn(
+        self, three_models
+    ):
+        report = preflight(BICYCLE, ["interface"], "narrow", policy="warn", predictor_policy="skip")
+        assert report.predictor_usable is False and report.metrics_to_run == ("interface",)
+
+    def test_an_unknown_predictor_policy_is_refused(self):
+        with pytest.raises(ValueError, match="predictor_policy must be one of"):
+            preflight(LINEAR, [], predictor_policy="ignore")
+
+    def test_the_dict_names_the_policy_of_the_predictors(self, three_models):
+        report = preflight(BICYCLE, [], "narrow", predictor_policy="warn")
+        assert report.to_dict()["predictor_policy"] == "warn"
+        assert preflight(LINEAR, []).to_dict()["predictor_policy"] == "error"
