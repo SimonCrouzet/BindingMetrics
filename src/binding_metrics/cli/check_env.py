@@ -50,6 +50,68 @@ def _fail(title: str, cause: str, steps: list[str]) -> None:
 _OPENFOLD_CONDA_ENV = "openfold3"
 
 
+def _warn(msg: str) -> None:
+    print(f"  {YELLOW}!{RESET}  {msg}")
+
+
+def _report_openfold_readiness(python_cmd: list[str], where: str) -> bool:
+    """Say which openfold3 version is installed and whether its default checkpoint is on disk.
+
+    Importing ``openfold3`` says little: since 0.5.0 it refuses to run without the OpenBind-0
+    checkpoint (``of3-ob-2025-06-30-174k.pt``), and Preview2 weights of a 0.4.x install do not
+    load into it. ``python_cmd`` starts the interpreter of the installation, for the version;
+    the checkpoint folder is read from ``$OPENFOLD_CACHE`` (default ``~/.openfold3``), which a
+    ``conda run`` of the same user shares. Returns False when openfold3 >= 0.5 has no default
+    checkpoint to load, since every run would stop there.
+    """
+    from binding_metrics.metrics import _openfold_run as run
+
+    version = run.installed_openfold3_version(python_cmd)
+    checkpoint_dir = run._openfold_checkpoint_dir()
+    default_file = run._OPENFOLD_DEFAULT_CHECKPOINT_FILE
+    found = checkpoint_dir / default_file
+    preview = [f for f in run._OPENFOLD_PREVIEW_CHECKPOINT_FILES if (checkpoint_dir / f).is_file()]
+    version_tuple = run._version_tuple(version) if version else ()
+    label = f"openfold3 {version}" if version else "openfold3 (version not readable)"
+    _ok(f"{label} available in {where}")
+
+    if not version_tuple:
+        _warn("The installed version could not be read, so the checkpoint cannot be judged.")
+        return True
+
+    if version_tuple < (0, 5, 0):
+        _warn(
+            f"openfold3 {version} predates 0.5.0, the release this toolkit is written against "
+            "(default checkpoint OpenBind-0, cyclic peptides from 0.4.5). Upgrade with "
+            "'pip install \"openfold3>=0.5.0,<0.6\"' and 'setup_openfold --non-interactive'."
+        )
+        return True
+
+    if found.is_file():
+        _ok(f"default checkpoint {default_file} found in {checkpoint_dir}")
+        return True
+
+    cause = (
+        f"openfold3 {version} loads {default_file} by default and it is not in {checkpoint_dir}."
+    )
+    if preview:
+        cause += (
+            f" Only Preview weights are there ({', '.join(preview)}); they do not load into "
+            "openfold3 >= 0.5."
+        )
+    _fail(
+        title=f"Default checkpoint {default_file} not found",
+        cause=cause + " Every run would stop with 'cowardly refusing to perform inference'.",
+        steps=[
+            f"{BOLD}Download it (about 2.3 GB):{RESET}",
+            "          setup_openfold --non-interactive   # inside the OpenFold3 environment",
+            "",
+            "Or point a run at a checkpoint file with the inference_ckpt_path argument.",
+        ],
+    )
+    return False
+
+
 def _check_openfold() -> bool:
     print(f"\n{BOLD}[ OpenFold3 ]{RESET}")
 
@@ -74,8 +136,7 @@ def _check_openfold() -> bool:
 
     # 1. Check current environment first
     if _of3_importable(sys.executable) or _run_openfold_available(sys.executable):
-        _ok("openfold3 available in current environment")
-        return True
+        return _report_openfold_readiness([sys.executable], "current environment")
 
     # 2. Check dedicated conda env — look for run_openfold binary directly
     import shutil
@@ -96,15 +157,18 @@ def _check_openfold() -> bool:
         encoding="utf-8",
     )
     if result.returncode == 0:
-        _ok(
-            f"openfold3 available in conda env '{_OPENFOLD_CONDA_ENV}'\n"
+        ready = _report_openfold_readiness(
+            [conda, "run", "-n", _OPENFOLD_CONDA_ENV, "python"],
+            f"conda env '{_OPENFOLD_CONDA_ENV}'",
+        )
+        print(
             f"     {DIM}(used automatically — default for --openfold-conda-env){RESET}\n"
             f"     {DIM}Run integration tests with:{RESET}\n"
             f"     {DIM}  conda run -n {_OPENFOLD_CONDA_ENV} pytest "
             f"$(conda run -n {_OPENFOLD_CONDA_ENV} python -c "
             f'"import openfold3; print(openfold3.__path__[0])")/tests/{RESET}'
         )
-        return True
+        return ready
 
     # 3. Check whether the conda env exists at all
     env_check = subprocess.run(
@@ -127,7 +191,7 @@ def _check_openfold() -> bool:
                 f"{BOLD}Step 2{RESET} — Reinstall if needed:",
                 f"          conda activate {_OPENFOLD_CONDA_ENV}",
                 "          pip install openfold3",
-                "          setup_openfold   # downloads model weights",
+                "          setup_openfold --non-interactive   # downloads model weights",
             ],
         )
     else:
@@ -139,10 +203,10 @@ def _check_openfold() -> bool:
             "Binding metrics will still run without it.",
             steps=[
                 f"{BOLD}To install OpenFold3:{RESET}",
-                f"  conda create -n {_OPENFOLD_CONDA_ENV} python=3.10",
+                f"  conda create -n {_OPENFOLD_CONDA_ENV} python=3.10   # 3.10 to 3.13 work",
                 f"  conda activate {_OPENFOLD_CONDA_ENV}",
                 "  pip install openfold3",
-                "  setup_openfold   # downloads model weights",
+                "  setup_openfold --non-interactive   # downloads model weights",
                 "",
                 f"{BOLD}Then pass to binding-metrics-run:{RESET}",
                 f"  --openfold-conda-env {_OPENFOLD_CONDA_ENV}",

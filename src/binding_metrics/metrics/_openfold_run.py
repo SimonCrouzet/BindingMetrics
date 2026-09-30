@@ -386,6 +386,35 @@ def _failed_query_reasons(output_dir: Path, not_before: float = 0.0) -> dict[str
     return reasons
 
 
+#: Key and file name of the checkpoint that openfold3 >= 0.5.0 loads by default (OpenBind-0,
+#: ``openfold3/entry_points/parameters.py`` of v0.5.0). openfold3 0.5.0 does not download it
+#: at first use: it stops with "cowardly refusing to perform inference" when the file is missing.
+_OPENFOLD_DEFAULT_CHECKPOINT_NAME = "openbind-2025-06-30-174k"
+_OPENFOLD_DEFAULT_CHECKPOINT_FILE = "of3-ob-2025-06-30-174k.pt"
+
+#: Files of the Preview and Preview2 checkpoints, which openfold3 >= 0.5 cannot load.
+_OPENFOLD_PREVIEW_CHECKPOINT_FILES = ("of3-p2-145k.pt", "of3-p2-155k.pt", "of3_ft3_v1.pt")
+
+
+def _openfold_cache_dir() -> Path:
+    """OpenFold3's cache directory: ``$OPENFOLD_CACHE``, else ``~/.openfold3``."""
+    return Path(os.environ.get("OPENFOLD_CACHE") or (Path.home() / ".openfold3"))
+
+
+def _openfold_checkpoint_dir() -> Path:
+    """Directory in which openfold3 looks for checkpoint files.
+
+    The file ``<cache>/ckpt_root`` holds the path when the weights were put elsewhere; without
+    it the cache directory itself is used (``get_default_checkpoint_dir`` in openfold3).
+    """
+    cache = _openfold_cache_dir()
+    try:
+        pointer = (cache / "ckpt_root").read_text(encoding="utf-8").strip()
+    except OSError:
+        return cache
+    return Path(pointer) if pointer else cache
+
+
 def _user_default_runner_yaml() -> Optional[Path]:
     """Path of the user-default ``runner.yml`` that OpenFold3 >= 0.5 merges into every run.
 
@@ -394,8 +423,7 @@ def _user_default_runner_yaml() -> Optional[Path]:
     settings the toolkit does not write (structure format, MSA server URL, seeds, ...) come
     from that file. Returns None when there is none.
     """
-    cache = os.environ.get("OPENFOLD_CACHE") or (Path.home() / ".openfold3")
-    candidate = Path(cache) / "runner.yml"
+    candidate = _openfold_cache_dir() / "runner.yml"
     return candidate if candidate.is_file() else None
 
 

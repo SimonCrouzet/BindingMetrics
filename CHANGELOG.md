@@ -240,6 +240,11 @@ Values from earlier versions differ in the cases below. A change reads "before -
   `predict low_mem`. OpenFold3 0.4.1 removed `pae_enabled` (the PAE head is on by default; pTM, ipTM and PAE
   are always written) and 0.5.0 only logs a warning for it. An explicit `pae_enabled` is left out of the runner
   YAML with a `DeprecationWarning`, and the run continues (#49).
+- `binding-metrics-check-env` reports the installed `openfold3` version and whether the default checkpoint
+  (`of3-ob-2025-06-30-174k.pt`, found through `$OPENFOLD_CACHE` or `~/.openfold3` and its `ckpt_root` file)
+  is on disk. openfold3 0.5.0 or later without that file fails the check, since every run would stop there;
+  Preview2 weights alone do not count. A version below 0.5.0, or one that cannot be read, is a warning
+  (#74). The check was a bare `import openfold3`.
 - `import binding_metrics` no longer imports OpenMM. Names load on first access, and a name whose
   optional dependency is missing raises an error that names the extra to install (#21).
 - Library code logs through `logging`. The command-line tools call `configure_logging`, which sends

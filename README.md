@@ -210,7 +210,7 @@ First run downloads the default checkpoint (`openfold3-p2-155k`) and JIT-builds 
 
 **Advanced:**
 
-- `-e BINDING_METRICS_SKIP_WEIGHTS_CHECK=1` — skip the weights check and auto-download. Useful when you know the weights aren't needed (e.g. `binding-metrics-check-env` only verifies that the `openfold3` package is importable, not that weights are present).
+- `-e BINDING_METRICS_SKIP_WEIGHTS_CHECK=1` — skip the weights check and auto-download. Useful when you know the weights aren't needed. `binding-metrics-check-env` reports the `openfold3` version and whether the default checkpoint is on disk.
 - To download a non-default checkpoint or run OpenFold3's integration tests, bypass the entrypoint and run `setup_openfold` interactively:
   ```bash
   docker run -it --rm --gpus all --entrypoint bash \
