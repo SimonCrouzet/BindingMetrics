@@ -49,6 +49,10 @@ sample ID, and never runs the model. The columns are ``prediction_*`` (the only 
 column is ``openfold_skipped``). A sample whose prediction failed is ``partial`` with
 ``prediction`` in ``batch_failed_steps``; the others are not affected.
 
+The legacy batched OpenFold3 call (``--openfold-*`` without ``--predictor``) marks a sample it
+failed for ``partial`` with ``openfold`` in ``batch_failed_steps`` and the reason in
+``batch_failed_reasons``; a failure of the whole call marks every sample it covered.
+
 Concurrency model (--workers > 1)
 ----------------------------------
 Workers are OS processes (ProcessPoolExecutor), not threads. This means:
@@ -428,6 +432,7 @@ def _run_batched_openfold(
         traceback.print_exc()
         for idx in sid_to_row_idx.values():
             rows[idx]["openfold_error"] = str(e)
+            _mark_step_failed(rows[idx], "openfold", str(e))
         return
 
     # Extract per-sample metrics and merge into rows
@@ -503,6 +508,7 @@ def _run_batched_openfold(
         except Exception as e:  # noqa: BLE001 - per-sample isolation; see openfold_error
             logger.warning("  %s: OpenFold metrics failed: %s", sid, e)
             rows[idx]["openfold_error"] = str(e)
+            _mark_step_failed(rows[idx], "openfold", str(e))
 
 
 def _update_sample_json(
