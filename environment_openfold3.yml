@@ -1,21 +1,29 @@
 name: openfold3
-# Dedicated environment for OpenFold3-preview inference.
+# Dedicated environment for OpenFold3 0.5.x inference (default weights: OpenBind-0).
 #
-# Model weights are NOT included — download them once after creating this env:
+# openfold3 is pinned to the 0.5 series. 0.5.0 changed the default checkpoint to OpenBind-0
+# (of3-ob-2025-06-30-174k.pt); Preview2 weights (of3-p2-*.pt) do not load into it, and the
+# 0.4.x releases cannot load OpenBind-0. Widen the pin only after checking the release notes.
+#
+# Model weights are NOT included — download them once after creating this env
+# (about 2.3 GB; --non-interactive asks no questions):
 #   conda env create -f environment_openfold3.yml
 #   conda activate openfold3
-#   setup_openfold
+#   setup_openfold --non-interactive
 #
 # BindingMetrics invokes OpenFold3 via:
 #   --openfold-conda-env openfold3   (default)
+#
+# `binding-metrics-check-env` prints the installed openfold3 version and whether the default
+# checkpoint is on disk.
 channels:
   - conda-forge
   - defaults
 
 dependencies:
-  - python=3.10
+  - python=3.10   # openfold3 requires >=3.10 and supports up to 3.13
   - cuda-version=12.4
   - pip
   - pip:
-      - openfold3
+      - "openfold3>=0.5.0,<0.6"
       - pytest

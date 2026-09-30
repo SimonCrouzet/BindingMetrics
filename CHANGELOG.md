@@ -245,6 +245,9 @@ Values from earlier versions differ in the cases below. A change reads "before -
   is on disk. openfold3 0.5.0 or later without that file fails the check, since every run would stop there;
   Preview2 weights alone do not count. A version below 0.5.0, or one that cannot be read, is a warning
   (#74). The check was a bare `import openfold3`.
+- `environment_openfold3.yml` pins `openfold3>=0.5.0,<0.6` (it was unpinned) and names OpenBind-0, the default
+  weights of the 0.5 series, which the 0.4.x releases and Preview2 weights cannot use (#82). The pin follows
+  the release notes; the resolved torch and CUDA wheels were not tested.
 - `import binding_metrics` no longer imports OpenMM. Names load on first access, and a name whose
   optional dependency is missing raises an error that names the extra to install (#21).
 - Library code logs through `logging`. The command-line tools call `configure_logging`, which sends
