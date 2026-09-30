@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, Optional
@@ -54,15 +54,19 @@ __all__ = [
     "BINDER_TYPES",
     "CLOSURE_FAMILIES",
     "NEEDS",
+    "POLICIES",
     "RESIDUE_CLASSES",
     "Capabilities",
     "Closure",
     "ClosureEnd",
+    "IncompatibleInputError",
     "InputProfile",
+    "PreflightReport",
     "Violation",
     "classify_residue",
     "detect_closures",
     "estimate_binder_type",
+    "preflight",
     "profile_input",
 ]
 
@@ -430,7 +434,7 @@ def _sorted_by(order: tuple[str, ...], values: Iterable[str]) -> list[str]:
 def _closure_fact(profile: InputProfile, family: str) -> str:
     if family == "none":
         return "the binder is linear (no ring closure found)"
-    links = "; ".join(c.describe() for c in profile.closure_bonds if c.family == family)
+    links = "; ".join(f"{c.end1} - {c.end2}" for c in profile.closure_bonds if c.family == family)
     return f"the binder has {_FAMILY_TEXT[family]} ({links})"
 
 
@@ -1025,3 +1029,375 @@ def profile_input(
         chain_ids=chain_ids,
         notes=tuple(dict.fromkeys(notes)),
     )
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight
+# ---------------------------------------------------------------------------
+
+#: What ``preflight`` does with an incompatibility: raise, leave the step out, or log and go on.
+POLICIES: tuple[str, ...] = ("error", "skip", "warn")
+
+
+@dataclass(frozen=True)
+class PreflightReport:
+    """The outcome of ``preflight``: what was found and what will run.
+
+    Attributes:
+        policy: ``error``, ``skip`` or ``warn``.
+        profile: The input that was checked.
+        violations: Every incompatibility found, for every metric and predictor.
+        warnings: Accepted inputs a step never validated (``Capabilities.caveats``).
+        notes: Checks that could not be made (a binder type that is unknown, needs the caller did
+            not describe) and the notes of the profile.
+        metrics_requested: The metric names, in the order given.
+        metrics_to_run: The metrics that go on: all of them, except under ``skip`` where a metric
+            with a violation is left out.
+        predictors: The predictors that were checked, as written in the messages.
+        predictor_usable: False when the policy is ``skip`` and a predictor has a violation. The
+            caller then leaves out the predictor and what depends on it: ``preflight`` does not
+            know which metrics read a prediction.
+    """
+
+    policy: str
+    profile: InputProfile
+    violations: tuple[Violation, ...] = ()
+    warnings: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+    metrics_requested: tuple[str, ...] = ()
+    metrics_to_run: tuple[str, ...] = ()
+    predictors: tuple[str, ...] = ()
+    predictor_usable: bool = True
+
+    @property
+    def compatible(self) -> bool:
+        """True when nothing was found."""
+        return not self.violations
+
+    @property
+    def skipped_metrics(self) -> tuple[str, ...]:
+        """The requested metrics that will not run."""
+        kept = set(self.metrics_to_run)
+        return tuple(name for name in self.metrics_requested if name not in kept)
+
+    def format(self) -> str:
+        """The plan as text: the input, what runs, every problem with its fix, warnings, notes."""
+        n = len(self.violations)
+        if not n:
+            heading = (
+                f"Pre-flight check: the input fits everything requested (policy: {self.policy})."
+            )
+        elif self.policy == "error":
+            heading = (
+                f"Pre-flight check failed: {n} incompatibilit{'y' if n == 1 else 'ies'} between "
+                "the input and what was requested (policy: error)."
+            )
+        else:
+            heading = (
+                f"Pre-flight check found {n} incompatibilit{'y' if n == 1 else 'ies'} "
+                f"(policy: {self.policy})."
+            )
+        lines = [heading, f"Input: {self.profile.describe()}"]
+        if self.policy != "error" or not n:
+            runs = [f"metrics {_join(self.metrics_to_run)}"] if self.metrics_requested else []
+            runs += [f"predictor {label}" for label in self.predictors if self.predictor_usable]
+            lines.append(f"Runs: {'; '.join(runs) if runs else 'nothing was requested'}")
+            if self.skipped_metrics:
+                lines.append(f"Left out: metrics {_join(self.skipped_metrics)}")
+            if not self.predictor_usable:
+                lines.append(f"Left out: predictor {_join(self.predictors)}")
+        subjects_shown: set[str] = set()
+        for violation in self.violations:
+            # the fix belongs to the step, so it is printed once for all its violations
+            repeated = violation.subject in subjects_shown
+            subjects_shown.add(violation.subject)
+            lines += ["", (replace(violation, fix="") if repeated else violation).format()]
+        if self.warnings:
+            lines += ["", "Warnings:"] + [f"  - {text}" for text in self.warnings]
+        if self.notes:
+            lines += ["", "Notes:"] + [f"  - {text}" for text in self.notes]
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict:
+        """JSON-ready form, for ``results["preflight"]``."""
+        return {
+            "policy": self.policy,
+            "compatible": self.compatible,
+            "profile": self.profile.to_dict(),
+            "metrics_requested": list(self.metrics_requested),
+            "metrics_to_run": list(self.metrics_to_run),
+            "metrics_skipped": [
+                {
+                    "name": name,
+                    "reasons": [
+                        v.fact for v in self.violations if v.kind == "metric" and v.name == name
+                    ],
+                }
+                for name in self.skipped_metrics
+            ],
+            "predictors": list(self.predictors),
+            "predictor_usable": self.predictor_usable,
+            "violations": [v.to_dict() for v in self.violations],
+            "warnings": list(self.warnings),
+            "notes": list(self.notes),
+        }
+
+
+class IncompatibleInputError(ValueError):
+    """The input cannot go through a requested metric or predictor (policy ``error``).
+
+    The message lists every incompatibility with the fact found, the requirement and a fix.
+
+    Attributes:
+        report: The ``PreflightReport``; ``report.violations`` holds the details.
+    """
+
+    def __init__(self, report: PreflightReport):
+        self.report = report
+        super().__init__(report.format())
+
+    @property
+    def violations(self) -> tuple[Violation, ...]:
+        return self.report.violations
+
+
+@dataclass(frozen=True)
+class _Step:
+    """A metric or a predictor that ``preflight`` checks."""
+
+    kind: str  # "metric" or "predictor"
+    name: str
+    subject: str  # how the messages call it
+    capabilities: Optional[Capabilities]
+
+
+def _declared_capabilities(owner: str, value: Any) -> Optional[Capabilities]:
+    if value is not None and not isinstance(value, Capabilities):
+        raise TypeError(
+            f"capabilities of {owner} must be None or a Capabilities, got {type(value).__name__}"
+        )
+    return value
+
+
+def _metric_steps(metrics) -> list[_Step]:
+    """The metrics as steps: registry names, or objects with ``name`` and ``capabilities``."""
+    if isinstance(metrics, str):
+        metrics = [metrics]
+    known = None
+    steps = []
+    for item in metrics:
+        if isinstance(item, str):
+            if known is None:
+                from binding_metrics.metrics.registry import METRICS
+
+                known = {spec.name: spec for spec in METRICS}
+            name, declared = item, getattr(known.get(item), "capabilities", None)
+        else:
+            name = getattr(item, "name", None)
+            if not isinstance(name, str):
+                raise TypeError(
+                    f"a metric must be a registry name or have a str name, got {item!r}"
+                )
+            declared = getattr(item, "capabilities", None)
+        steps.append(
+            _Step(
+                "metric",
+                name,
+                f"metric {name!r}",
+                _declared_capabilities(f"metric {name!r}", declared),
+            )
+        )
+    return steps
+
+
+def _text_attribute(obj: Any, attribute: str) -> Optional[str]:
+    value = getattr(obj, attribute, None)
+    return value if isinstance(value, str) and value else None
+
+
+def _predictor_steps(predictor) -> list[_Step]:
+    """The predictors as steps: registry names, adapters or runners (classes or instances)."""
+    if predictor is None:
+        return []
+    items = predictor if isinstance(predictor, (list, tuple)) else [predictor]
+    steps = []
+    for item in items:
+        if isinstance(item, str):
+            from binding_metrics.predictors.registry import PARSERS
+
+            spec = PARSERS.get(item)
+            if spec is None:
+                available = ", ".join(sorted(PARSERS)) or "none registered"
+                raise KeyError(f"Unknown predictor {item!r}. Available: {available}")
+            name, display, declared = item, spec.display_name, spec.load_capabilities()
+        elif isinstance(item, Capabilities):
+            name, display, declared = "predictor", "(unnamed)", item
+        else:
+            display = (
+                _text_attribute(item, "display_name")
+                or _text_attribute(item, "name")
+                or type(item).__name__
+            )
+            name = _text_attribute(item, "name") or display
+            declared = getattr(item, "capabilities", None)
+        declared = _declared_capabilities(f"predictor {display}", declared)
+        label = f"{display} {declared.version}".strip() if declared is not None else display
+        steps.append(_Step("predictor", name, f"predictor {label}", declared))
+    return steps
+
+
+def _other_predictors(
+    profile: InputProfile, exclude: str, provided: Optional[Collection[str]]
+) -> tuple[list[str], list[str]]:
+    """Registered predictors, other than ``exclude``, split into accepting and undeclared."""
+    from binding_metrics.predictors.registry import PARSERS
+
+    accepting, undeclared = [], []
+    for name in sorted(PARSERS):
+        if name == exclude:
+            continue
+        try:
+            declared = PARSERS[name].load_capabilities()
+        except Exception as exc:  # noqa: BLE001 - a broken adapter must not stop the check of another
+            logger.warning("could not read the capabilities of predictor %r: %s", name, exc)
+            continue
+        label = f"{PARSERS[name].display_name} ({name})"
+        if declared is None:
+            undeclared.append(label)
+        elif declared.accepts(profile, provided=provided):
+            accepting.append(label)
+    return accepting, undeclared
+
+
+def _fix_for(step: _Step, profile: InputProfile, provided: Optional[Collection[str]]) -> str:
+    """What to do about a violation of ``step``."""
+    if step.kind == "metric":
+        return (
+            f"leave {step.name!r} out of the metric list, or use policy='skip' to compute only "
+            "the metrics that apply"
+        )
+    accepting, undeclared = _other_predictors(profile, step.name, provided)
+    parts = []
+    if accepting:
+        parts.append(f"use a predictor whose declared limits accept this input: {_join(accepting)}")
+    else:
+        parts.append("no other registered predictor declares support for this input")
+    if undeclared:
+        parts.append(
+            f"predictors with no declared limits (not validated for it): {_join(undeclared)}"
+        )
+    parts.append("or use policy='skip' to leave the predictor out and run the rest")
+    return "; ".join(parts)
+
+
+def preflight(
+    profile: InputProfile,
+    metrics: Iterable[Any] = (),
+    predictor: Any = None,
+    *,
+    policy: str = "error",
+    provided: Optional[Collection[str]] = None,
+) -> PreflightReport:
+    """Check an input against the limits of every requested metric and predictor, before any run.
+
+    Call it first: it reads declarations only and never runs, prepares or instantiates a metric,
+    a predictor or a runner. It collects every incompatibility, not the first one, each with the
+    fact found in the input, the requirement, the step's own reason and a fix.
+
+    Args:
+        profile: The input, from ``profile_input``.
+        metrics: Registry names (``"omega"``) or objects with a ``name`` and a ``capabilities``
+            attribute (a ``MetricSpec``). A name the registry does not know has no declared limit.
+        predictor: None, a registered predictor name (``"of3"``), an adapter or runner (class or
+            instance) with a ``capabilities`` attribute, a ``Capabilities``, or a list of these.
+            When it is refused, the message lists the other registered predictors that accept the
+            input.
+        policy: ``error`` (default) raises ``IncompatibleInputError`` when anything is
+            incompatible, so nothing runs. ``skip`` leaves out each metric that has a violation
+            (``report.metrics_to_run`` holds the rest) and marks a refused predictor
+            ``report.predictor_usable=False``. ``warn`` logs every violation and lets everything
+            run.
+        provided: What the caller makes available among ``NEEDS`` besides the receptor chain,
+            for example ``{"reference_structure", "gpu"}``; None leaves those needs unchecked and
+            the report says so.
+
+    Returns:
+        The ``PreflightReport``. Soft warnings for inputs a step accepts but never validated are
+        in ``report.warnings`` whatever the policy.
+
+    Raises:
+        IncompatibleInputError: Policy ``error`` and at least one violation. Subclass of
+            ``ValueError``.
+        ValueError: ``policy`` is not one of ``POLICIES``.
+        KeyError: A predictor name that is not registered.
+        TypeError: A ``capabilities`` attribute that is neither None nor a ``Capabilities``.
+    """
+    if policy not in POLICIES:
+        raise ValueError(f"policy must be one of {POLICIES}, got {policy!r}")
+    steps = _metric_steps(metrics) + _predictor_steps(predictor)
+
+    violations: list[Violation] = []
+    warnings: list[str] = []
+    notes: list[str] = list(profile.notes)
+    refused: set[tuple[str, str]] = set()
+    for step in steps:
+        declared = step.capabilities
+        if declared is None:
+            continue
+        fix = None  # built once per step: it may list the other registered predictors
+        for found in declared.check(profile, provided=provided):
+            if fix is None:
+                fix = _fix_for(step, profile, provided)
+            violations.append(
+                replace(found, subject=step.subject, kind=step.kind, name=step.name, fix=fix)
+            )
+            refused.add((step.kind, step.name))
+        warnings += [f"{step.subject}: {text}" for text in declared.caveats_for(profile)]
+
+    typed = [s.subject for s in steps if s.capabilities and s.capabilities.binder_types]
+    if profile.binder_type == "unknown" and typed:
+        notes.append(
+            f"the binder type is unknown, so the binder-type check of {_join(typed)} was skipped"
+        )
+        logger.info("binder type unknown: binder-type checks of %s skipped", _join(typed))
+    if provided is None:
+        unchecked = [
+            s.subject for s in steps if s.capabilities and s.capabilities.needs - {"receptor_chain"}
+        ]
+        if unchecked:
+            notes.append(
+                f"the needs of {_join(unchecked)} other than the receptor chain were not checked: "
+                "the caller did not say what it provides"
+            )
+
+    requested = tuple(s.name for s in steps if s.kind == "metric")
+    if policy == "skip":
+        to_run = tuple(name for name in requested if ("metric", name) not in refused)
+        usable = not any(kind == "predictor" for kind, _ in refused)
+    else:
+        to_run, usable = requested, True
+    report = PreflightReport(
+        policy=policy,
+        profile=profile,
+        violations=tuple(violations),
+        warnings=tuple(warnings),
+        notes=tuple(dict.fromkeys(notes)),
+        metrics_requested=requested,
+        metrics_to_run=to_run,
+        predictors=tuple(
+            s.subject.removeprefix("predictor ") for s in steps if s.kind == "predictor"
+        ),
+        predictor_usable=usable,
+    )
+    if violations and policy == "error":
+        raise IncompatibleInputError(report)
+    for violation in violations:
+        action = "leaving it out" if policy == "skip" else "running anyway"
+        logger.warning(
+            "%s is incompatible with the input (%s: %s); %s",
+            violation.subject,
+            violation.constraint,
+            violation.fact,
+            action,
+        )
+    return report

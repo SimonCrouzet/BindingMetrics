@@ -82,3 +82,36 @@ The closure families are `head_to_tail`, `disulfide`, `lactam` (the four lactam 
 ### Binder type
 
 `binder_type="auto"` estimates the type from the number of residues: at most 40 a `peptide`, at most 100 a `miniprotein`, longer `unknown`. The 40-residue line is the one the US FDA uses to separate peptides from proteins (21 CFR 600.3(h)(6)); the 100-residue line is a convention of this package that keeps miniproteins apart from nanobodies, which are about 110 to 130 residues long. Neither is a physical boundary. A nanobody or an antibody chain cannot be told from any other domain of that length by size, so they are only ever set by the caller: `binder_type` accepts `peptide`, `miniprotein`, `nanobody` and `antibody`. `unknown` never refuses an input: the checks that depend on the type are skipped.
+
+---
+
+## The check
+
+`preflight(profile, metrics, predictor=None, *, policy="error", provided=None)` compares the profile with the limits of every requested metric and predictor, before anything runs. It reads declarations only: it never runs, prepares or instantiates a metric, a predictor or a runner.
+
+- `metrics` are registry names (`"omega"`) or objects with a `name` and a `capabilities` attribute (a `MetricSpec`). A name the registry does not know has no declared limit.
+- `predictor` is a registered name (`"of3"`), an adapter or runner (class or instance) with a `capabilities` attribute, a `Capabilities`, or a list of these.
+- `provided` lists what the caller makes available among the needs `reference_structure`, `predicted_structure` and `gpu`. `None` leaves them unchecked and the report says so.
+
+All violations are collected and reported at once. Each has the fact found in the input, the requirement, the step's own reason and a fix. For a refused predictor the fix lists the other registered predictors whose declared limits accept the input, and those that declare no limit (which is not the same as validated).
+
+| Policy | Effect of an incompatibility |
+|---|---|
+| `error` (default) | Raises `IncompatibleInputError`, a `ValueError` that carries `.report`. Nothing runs. |
+| `skip` | The metrics with a violation are left out (`report.metrics_to_run` holds the rest). A refused predictor sets `report.predictor_usable` to `False`; the caller leaves it out with what depends on it, because `preflight` does not know which metrics read a prediction. |
+| `warn` | Every violation is logged and everything runs. |
+
+Inputs a step accepts but never validated give a warning in `report.warnings` under every policy, from `Capabilities.caveats`. `report.to_dict()` is JSON-ready and `report.format()` prints the plan.
+
+An example, with a made-up model that reads head-to-tail closures only and the bicyclic peptide of 3P8F:
+
+```
+Pre-flight check failed: 1 incompatibility between the input and what was requested (policy: error).
+Input: binder chain I: 14 residues; type peptide (estimated from size); closures head_to_tail, disulfide; residue classes canonical; receptor chain A
+
+predictor NarrowFold 9.9: closures
+    found:    the binder has a disulfide bond (CYS 3.SG - CYS 11.SG)
+    requires: closures limited to: none, head_to_tail
+    why:      A disulfide has no field in the query.
+    fix:      use a predictor whose declared limits accept this input: WideFold (wide); or use policy='skip' to leave the predictor out and run the rest
+```

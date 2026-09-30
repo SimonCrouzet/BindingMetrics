@@ -50,6 +50,19 @@ def test_building_and_checking_a_profile_by_hand_stays_light():
     assert out.strip() == "[]"
 
 
+def test_a_pre_flight_check_of_registry_metrics_and_registered_predictors_stays_light():
+    out = _run(
+        f"""
+        import sys
+        from binding_metrics.capabilities import InputProfile, preflight
+        preflight(InputProfile("B", "A"), ["interface", "omega"], "of3")
+        heavy = {tuple(m for m in HEAVY if m != "numpy")!r}  # adapters import numpy
+        print(sorted(m for m in sys.modules if m.split(".")[0] in heavy))
+        """
+    )
+    assert out.strip() == "[]"
+
+
 def test_profiling_a_structure_needs_biotite_but_never_openmm():
     out = _run(
         f"""
