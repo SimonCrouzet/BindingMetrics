@@ -11,7 +11,9 @@ Contract, checked for every registered adapter by ``tests/predictors/contract.py
   ``record.reasons``; a directory with no output at all gives such a record too, it does not
   raise;
 * a corrupt file raises;
-* parsing the scalars imports no biotite and does not open the structure file;
+* parsing the scalars imports no biotite and does not open the structure file (a per-atom
+  array that needs the atoms, such as the per-atom expansion of a per-token pLDDT, may be
+  left None with a reason when the structure cannot be read);
 * pLDDT is per atom on 0-100 in the atom order of the structure file, PAE and PDE are in
   angstrom with ``pae[i, j]`` the error of token ``j`` aligned on token ``i``, and scalars the
   model lacks are NaN (see ``binding_metrics.predictors.record``);

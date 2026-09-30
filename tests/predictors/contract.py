@@ -21,8 +21,8 @@ The rules, from ``binding_metrics.predictors.base`` and ``record``:
 * ``check_missing_files``: an empty or absent directory, or one absent file, gives NaN and a
   reason and never raises.
 * ``check_corrupt_files``: a corrupt scores or arrays file raises a data error.
-* ``check_scalars_parse_without_biotite``: loading needs no biotite and does not open the
-  structure file.
+* ``check_scalars_parse_without_biotite``: loading the scalars needs no biotite and does not
+  open the structure file; a per-atom array that needs the atoms may be None with a reason.
 * ``check_chain_map``: ``chain_map`` renames the chains of ``atoms()``.
 """
 
@@ -301,7 +301,9 @@ _NO_BIOTITE_SCRIPT = textwrap.dedent(
     register_parser(ParserSpec(**json.loads(sys.argv[1])), replace=True)
     record = get_parser(sys.argv[2]).load(sys.argv[3], sys.argv[4])
     assert not math.isnan(record.avg_plddt), "avg_plddt is NaN: " + "; ".join(record.reasons)
-    assert record.plddt_per_atom is not None
+    # a model whose pLDDT is per token or per residue needs the atoms to expand it: it may
+    # leave the per-atom array out when the structure cannot be read, but it must say why
+    assert record.plddt_per_atom is not None or record.reasons, "plddt_per_atom is None, no reason"
     assert sys.modules["biotite"] is None
     print("ok")
     """
