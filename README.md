@@ -1,6 +1,6 @@
 # BindingMetrics
 
-**BindingMetrics** is a Python toolkit for evaluating designed peptide–protein complexes with physics-based metrics. It sits downstream of a design or prediction run and upstream of experimental validation. A confident model is not the same as a physically reasonable interface, so the package reports interface geometry and energetics, backbone quality and force-field interaction energies next to the confidence scores it parses from OpenFold3 (pLDDT, pTM, ipTM, PAE).
+**BindingMetrics** is a Python toolkit for evaluating designed peptide–protein complexes with physics-based metrics. It sits downstream of a design or prediction run and upstream of experimental validation. A confident model is not the same as a physically reasonable interface, so the package reports interface geometry and energetics, backbone quality and force-field interaction energies next to the confidence scores it parses from the output of OpenFold3, AlphaFold2 and ColabFold, Boltz-2 and Protenix (pLDDT, pTM, ipTM, PAE).
 
 The metrics range from static single-structure analysis (buried SASA, hydrogen bonds, salt bridges, Ramachandran and ω validation, shape complementarity, void volume) to force-field interaction energies after minimization and an optional short MD run. The relaxed output goes through a structural QC of seven checks: finite energy that did not rise, heavy-atom RMSD to the input, finite coordinates, no fused atoms, no stretched or broken bonds, no inverted Cα stereocentre, and an unchanged heavy-atom composition. It flags an exploded or corrupted structure; it is not a clash score. The package also reports receptor drift over an MD trajectory and, when a native structure is available, **reference-based CAPRI accuracy** (DockQ, fnat, i-RMSD, L-RMSD), for instance to benchmark predictions of antibody–antigen complexes. The OpenMM-based steps are seeded, so results are reproducible by default (`--random-seed none` opts into fresh randomness); see [Reproducibility](#reproducibility).
 
@@ -15,7 +15,7 @@ Limits:
 - **No antibody-specific analysis.** There is no CDR numbering (no ANARCI), and an antibody is scored like any other chain.
 - **No calibration for non-peptides.** No calibration against binder and non-binder data ships with the package, for peptides or for other binders. The scorecard bands, the shape-complementarity ranges and `delta_g_int` are heuristics.
 - **Chemistry handling is for the binder chain.** Cyclic closures and non-canonical residues are looked for in the binder chain.
-- **OpenFold3 interface PDE and PAE** need one token per residue. A prediction with ligands or modified residues gives NaN for them, with a `reason`.
+- **Interface PDE and PAE** are cut by chain from one token per residue, or from the token layout of the record when the parser builds one (Boltz-2). A prediction with ligands or modified residues from OpenFold3, or from Protenix in the pipeline, gives NaN for them, with a `reason`.
 
 ---
 
@@ -159,7 +159,7 @@ pip install ".[static,simulation]"  # plus force-field energies and relaxation
 
 | Extra | Installs | For |
 |---|---|---|
-| `static` | biotite, hydride, gemmi, scipy | interface, H-bonds, salt bridges, Coulomb, Ramachandran, ω, shape complementarity, void volume, structure comparison, EvoBind, parsing of OpenFold3 output |
+| `static` | biotite, hydride, gemmi, scipy | interface, H-bonds, salt bridges, Coulomb, Ramachandran, ω, shape complementarity, void volume, structure comparison, EvoBind, parsing of prediction output (OpenFold3, AlphaFold2 and ColabFold, Boltz-2, Protenix) |
 | `simulation` | openmm | force-field energies and relaxation; the plain package, a CPU build (use `environment.yml` for a GPU) |
 | `structure` | pdbfixer, gemmi | structure preparation (`binding-metrics-prep`, the pipeline's prep step) |
 | `analysis` | mdtraj | trajectory metrics |
@@ -340,6 +340,8 @@ print(f"Aligned drift — mean: {result['drift_aligned_mean']:.3f} Å  max: {res
 ```
 
 ### Structure-prediction confidence scores
+
+**Supported prediction models.** Parsers read the output of OpenFold3, AlphaFold2 and ColabFold, Boltz-2 and Protenix into one record (`of3`, `af2`, `boltz2`, `protenix`). Only OpenFold3 can be run from here, in its own conda environment ([OpenFold3](#openfold3-optional)); for the other models, run the model yourself and pass its output directory. The parsers were written from the source and documentation of OpenFold3 0.5.0, ColabFold 1.6.3 and AlphaFold2 2.3.2, Boltz 2.2.1 and Protenix 2.0.0, and none has been validated on the output of a real run of that release; [`docs/metrics.md`](docs/metrics.md#model-adapters) lists what each one still has to verify.
 
 ```python
 from binding_metrics import compute_openfold_metrics, compute_prediction_metrics
