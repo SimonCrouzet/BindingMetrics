@@ -16,6 +16,7 @@ def _run(code: str) -> str:
         [sys.executable, "-c", textwrap.dedent(code)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=120,
         check=False,
     )
