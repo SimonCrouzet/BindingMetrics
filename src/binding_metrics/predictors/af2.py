@@ -1,20 +1,32 @@
 """Adapter for the output of AlphaFold2, AlphaFold-Multimer and ColabFold.
 
-Layouts checked on 2026-09-29 against ColabFold v1.6.3 (2026-09-14), by reading its source
-(``colabfold/batch.py``, ``colabfold/alphafold/extra_ptm.py``) and one real multimer-v3 scores file.
-No model was run. What the source does not settle is listed under TO VERIFY at the end.
+Layouts checked on 2026-09-29 against ColabFold v1.6.3 (2026-09-14) and AlphaFold2 v2.3.2
+(2023-04-05) and main (c77e5d2), by reading their source (``colabfold/batch.py``,
+``colabfold/alphafold/extra_ptm.py``, ``run_alphafold.py``, ``alphafold/model/model.py``,
+``alphafold/model/confidence.py``, ``alphafold/common/protein.py``) and one real ColabFold
+multimer-v3 scores file. No model was run and no real AlphaFold2 result pickle was seen. What the
+source does not settle is listed under TO VERIFY at the end; the parser then refuses a file it
+does not know, with a message, and does not guess.
 
 Files
 -----
-``prediction_dir`` is searched, and ``prediction_dir/name`` when it holds none of them.
+``prediction_dir`` is searched, and ``prediction_dir/name`` when it holds none of them. The four
+layouts are told apart by their file names.
 
 ColabFold (``colabfold_batch``; ``name`` is the job name)::
 
     {name}_{unrelaxed|relaxed}_rank_{RRR}_{model_type}_model_{k}_seed_{SSS}.pdb
     {name}_scores_rank_{RRR}_{model_type}_model_{k}_seed_{SSS}.json
 
-A bare structure ``{name}.pdb`` (or ``.cif``, ``.mmcif``, ``.pdb.gz``, ``.cif.gz``, ``.ent``) is the
-second layout, and so is a ColabFold sample whose scores file is missing.
+AlphaFold2 v2.3.2 (``run_alphafold.py``; its files sit in ``{output_dir}/{fasta_name}/``)::
+
+    {unrelaxed|relaxed}_{model}_pred_{i}.pdb        result_{model}_pred_{i}.pkl
+    ranking_debug.json                               timings.json
+
+AlphaFold2 main adds ``confidence_{model}_pred_{i}.json`` and ``pae_{model}_pred_{i}.json``; they
+are read when the sample has no pickle. A bare structure ``{name}.pdb`` (or ``.cif``, ``.mmcif``,
+``.pdb.gz``, ``.cif.gz``, ``.ent``) is the fourth layout, and so is any of the first three with its
+confidence file removed.
 
 Values
 ------
@@ -26,36 +38,50 @@ Values
   ``pairwise_actifptm`` and ``actifptm``; ColabFold 1.6.3 adds ``ipsae``, ``pdockq`` and
   ``pdockq2`` dictionaries keyed ``"A-B"`` for a complex. The last five go to ``record.extras``
   under their own names.
-* Bare structure, or a sample without its scores file: pLDDT is read from the B-factor column,
-  where ColabFold writes it (0-100, one value per residue repeated over its atoms), and every other
-  value is NaN or None with a reason. ``load_bfactor_record`` does this for one file, for example a
-  BindCraft complex. The scale comes from the values: a column whose largest value is at most 1 is
-  multiplied by 100 (noted in ``extras["bfactor_scale"]``), and a column that is all zero or outside
-  0-100 gives no pLDDT and a reason. Nothing distinguishes an experimental B-factor from a pLDDT,
-  so give this reader predicted structures only.
+* AlphaFold2 result pickle: ``plddt`` (per residue, 0-100), ``predicted_aligned_error`` (residues by
+  residues, angstrom), ``max_predicted_aligned_error``, ``ptm``, ``iptm`` (multimer only) and
+  ``ranking_confidence``. A pickle runs code when it is loaded, so the file is read by an
+  unpickler that builds numpy arrays, numpy scalars and dictionaries and refuses any other
+  global, naming it, before it is imported. The whole pickle is read, distogram and logits
+  included, which takes memory in proportion to the square of the number of residues.
+  ``ranking_debug.json`` gives the ranking score under the name AlphaFold2 uses (``iptm+ptm`` for
+  the multimer models, ``plddts`` for the others); ``timings.json`` goes to ``record.timing`` as
+  it is.
+* AlphaFold2 main JSON files: ``confidenceScore`` (per-residue pLDDT) and
+  ``predicted_aligned_error`` (list-wrapped, one decimal). pTM and ipTM are not in them.
+* Bare structure, or a sample without its confidence file: pLDDT is read from the B-factor column,
+  where AlphaFold2 and ColabFold write it (0-100, one value per residue repeated over its atoms),
+  and every other value is NaN or None with a reason. ``load_bfactor_record`` does this for one
+  file, for example a BindCraft complex. The scale comes from the values: a column whose largest
+  value is at most 1 is multiplied by 100 (noted in ``extras["bfactor_scale"]``), and a column that
+  is all zero or outside 0-100 gives no pLDDT and a reason. Nothing distinguishes an experimental
+  B-factor from a pLDDT, so give this reader predicted structures only.
 
 Not provided, so NaN, None or empty: ``gpde``, ``disorder``, ``has_clash``, PDE (``pde`` is None),
-the ranking score (the rank is in the file name, and in ``extras["colabfold_rank"]``), and ``ptm``,
-``iptm`` and PAE for a monomer model without the pTM head and for a bare structure.
+the ranking score of ColabFold (its rank is in the file name, and in ``extras["colabfold_rank"]``),
+and ``ptm``, ``iptm`` and PAE for a monomer model without the pTM head, for AlphaFold2 main JSON
+files and for a bare structure.
 
 Conventions
 -----------
 * Tokens are residues: ``pae`` is ``(n_residues, n_residues)`` and ``record.tokens`` is None.
   ``pae[i, j]`` is the error of residue ``j`` when the structures are aligned on residue ``i``
   (AlphaFold2 ``confidence.py:243-244``). The arrays are stored as written, never transposed.
-* pLDDT is per atom in the record. ColabFold gives one value per residue, which is repeated over
-  the atoms of the structure file; ``avg_plddt`` is the mean over residues, as ColabFold reports it,
-  and the per-residue array stays in ``record.extras["plddt_per_residue"]``. The structure file is
-  read as text for a PDB (no biotite) and with biotite for an mmCIF. The residue counts of the two
-  files must agree, or ``ValueError`` is raised; a structure file that cannot be read leaves
-  ``plddt_per_atom`` None, with a reason.
-* Chains are those of the structure file, in input order except that ColabFold places identical
-  sequences next to each other, so the order can differ from the FASTA order. ``chain_ptm`` and
-  ``chain_pair_iptm`` use the same letters. Rename chains with ``chain_map``. A bare structure
-  keeps the chains of its file in the order of the file.
-* ``seed_index`` is the 1-based position of the seed in the numeric order of ``seed_{SSS}``, and
-  ``sample`` the 1-based position inside that seed by rank (``rank_001`` first, so with one seed
-  ``sample=1`` is the best model). A bare structure is one sample. The structure of a sample is
+* pLDDT is per atom in the record. The models give one value per residue, which is repeated over
+  the atoms of the structure file; ``avg_plddt`` is the mean over residues, as AlphaFold2 and
+  ColabFold report it, and the per-residue array stays in ``record.extras["plddt_per_residue"]``.
+  The structure file is read as text for a PDB (no biotite) and with biotite for an mmCIF. The
+  residue counts of the two files must agree, or ``ValueError`` is raised; a structure file that
+  cannot be read leaves ``plddt_per_atom`` None, with a reason.
+* Chains are those of the structure file: A, B, ... in input order for AlphaFold2 and, for
+  ColabFold, in input order except that identical sequences are placed next to each other, so the
+  order can differ from the FASTA order. ``chain_ptm`` and ``chain_pair_iptm`` use the same letters.
+  Rename chains with ``chain_map``. A bare structure keeps the chains of its file in the order of
+  the file.
+* ``seed_index`` is the 1-based position of the seed in the numeric order of its value (ColabFold
+  ``seed_{SSS}``, AlphaFold2 ``pred_{i}``), and ``sample`` the 1-based position inside that seed:
+  by rank for ColabFold (``rank_001`` first, so with one seed ``sample=1`` is the best model) and
+  by model number for AlphaFold2. A bare structure is one sample. The structure of a sample is
   the relaxed one when it exists; the unrelaxed file is then ``files.extra["unrelaxed_structure"]``.
 
 TO VERIFY
@@ -64,10 +90,14 @@ TO VERIFY
    (``batch.py`` was not read for this).
 2. The file names of older ColabFold versions, and that a scores file carries the same tag as its
    structure file (only ``rank_{RRR}`` and the ``_seed_{SSS}`` ending are used).
-3. That relaxed PDB files keep the pLDDT in the B-factor column (the scores file does not depend on
-   it), and that they carry no hydrogens that the residue expansion would miscount.
-4. How ColabFold names the chains of a complex predicted with a monomer model.
-5. The scale of the B-factor column that BindCraft and ColabDesign write.
+3. The names ``confidence_*.json`` and ``pae_*.json`` of AlphaFold2 main (with or without
+   ``_pred_{i}``), and the names of its mmCIF files (only PDB files are read).
+4. That a real result pickle holds numpy data only and was written with pickle protocol 3 to 5;
+   the keys of ``timings.json``.
+5. That relaxed PDB files keep the pLDDT in the B-factor column (the confidence files do not
+   depend on it), and that they carry no hydrogens the residue expansion would miscount.
+6. How ColabFold names the chains of a complex predicted with a monomer model.
+7. The scale of the B-factor column that BindCraft and ColabDesign write.
 """
 
 from __future__ import annotations
@@ -501,6 +531,59 @@ def parse_result_pickle(path: Path) -> dict:
     }
 
 
+def parse_ranking_debug(path: Path) -> dict:
+    """Parse ``ranking_debug.json`` of AlphaFold2.
+
+    Returns:
+        ``name`` (``"iptm+ptm"`` for the multimer models, ``"plddts"`` for the others, as
+        AlphaFold2 names it), ``scores`` (``{prediction id: score}``) and ``order`` (the
+        prediction ids, best first).
+
+    Raises:
+        ValueError: The file is not JSON or holds neither ranking key.
+    """
+    path = Path(path)
+    raw = _read_json(path)
+    for name in ("iptm+ptm", "plddts"):
+        if isinstance(raw, dict) and isinstance(raw.get(name), dict):
+            return {
+                "name": name,
+                "scores": _number_dict(raw[name], name, path),
+                "order": [str(item) for item in raw.get("order", [])],
+            }
+    raise ValueError(
+        f"{path} is not an AlphaFold2 ranking_debug.json: it needs an 'iptm+ptm' or 'plddts' object"
+    )
+
+
+def parse_confidence_json(path: Path) -> np.ndarray:
+    """Per-residue pLDDT of ``confidence_{model}.json`` (AlphaFold2 main): ``confidenceScore``."""
+    path = Path(path)
+    raw = _read_json(path)
+    if not isinstance(raw, dict) or "confidenceScore" not in raw:
+        raise ValueError(
+            f"{path} has no 'confidenceScore' list; it is not an AlphaFold2 confidence file"
+        )
+    return _plddt_per_residue(raw["confidenceScore"], path)
+
+
+def parse_pae_json(path: Path, n_residues: int) -> np.ndarray:
+    """The PAE matrix of ``pae_{model}.json`` (AlphaFold2 main).
+
+    The file is a list holding one object with ``predicted_aligned_error``, or that object
+    itself (ColabFold's ``predicted_aligned_error_v1.json``).
+    """
+    path = Path(path)
+    raw = _read_json(path)
+    if isinstance(raw, list) and len(raw) == 1:
+        raw = raw[0]
+    if not isinstance(raw, dict) or "predicted_aligned_error" not in raw:
+        raise ValueError(
+            f"{path} has no 'predicted_aligned_error' matrix; it is not an AlphaFold2 PAE file"
+        )
+    return _pae_matrix(raw["predicted_aligned_error"], n_residues, path)
+
+
 # --------------------------------------------------------------------------- finding the files
 
 
@@ -515,9 +598,16 @@ class _Prediction(NamedTuple):
 
 _COLABFOLD_TAG = r"(?P<tag>rank_(?P<rank>\d+)(?:_.*)?)"
 _SEED_IN_TAG = re.compile(r"_seed_(\d+)$")
+_ALPHAFOLD_ID = r"(?P<id>(?P<model>.+)_pred_(?P<pred>\d+))"
+_ALPHAFOLD_STRUCTURE = re.compile(rf"^(?P<kind>unrelaxed|relaxed)_{_ALPHAFOLD_ID}\.pdb$")
+_ALPHAFOLD_RESULT = re.compile(rf"^result_{_ALPHAFOLD_ID}\.pkl$")
+_MODEL_NUMBER = re.compile(r"^model_(\d+)")
 
 #: File-name patterns that tell the layout of the files of a sample.
 _COLABFOLD_NAME = re.compile(r"_(?:unrelaxed|relaxed|scores)_rank_\d+")
+_ALPHAFOLD_NAME = re.compile(
+    r"^(?:(?:unrelaxed|relaxed|result)_.+_pred_\d+\.(?:pdb|pkl)|ranking_debug\.json)$"
+)
 
 
 def _files_of(directory: Path) -> list[Path]:
@@ -551,6 +641,42 @@ def _colabfold_predictions(directory: Path, name: str) -> list[_Prediction]:
     return predictions
 
 
+def _alphafold_predictions(directory: Path, name: str) -> list[_Prediction]:
+    by_id: dict[str, dict[str, Path]] = {}
+    preds: dict[str, int] = {}
+    models: dict[str, str] = {}
+    files = _files_of(directory)
+    for path in files:
+        match = _ALPHAFOLD_STRUCTURE.match(path.name)
+        if match:
+            role = "structure" if match["kind"] == "relaxed" else "unrelaxed_structure"
+        else:
+            match = _ALPHAFOLD_RESULT.match(path.name)
+            role = "arrays"
+        if match:
+            by_id.setdefault(match["id"], {})[role] = path
+            preds[match["id"]] = int(match["pred"])
+            models[match["id"]] = match["model"]
+    shared = {
+        role: directory / filename
+        for role, filename in (("scores", "ranking_debug.json"), ("timing", "timings.json"))
+        if (directory / filename).is_file()
+    }
+    predictions = []
+    for prediction_id, roles in by_id.items():
+        if "structure" not in roles and "unrelaxed_structure" in roles:
+            roles["structure"] = roles.pop("unrelaxed_structure")
+        roles.update(shared)
+        for role, stem in (("pae", "pae_"), ("confidence", "confidence_")):
+            candidate = directory / f"{stem}{prediction_id}.json"
+            if candidate.is_file():
+                roles[role] = candidate
+        number = _MODEL_NUMBER.match(models[prediction_id])
+        order = (int(number[1]) if number else 10**9, prediction_id)
+        predictions.append(_Prediction(preds[prediction_id], order, prediction_id, roles))
+    return predictions
+
+
 def _bare_predictions(directory: Path, name: str) -> list[_Prediction]:
     for suffix in _BARE_SUFFIXES:
         path = directory / f"{name}{suffix}"
@@ -562,11 +688,11 @@ def _bare_predictions(directory: Path, name: str) -> list[_Prediction]:
 def _discover(directory: Path, name: str) -> list[_Prediction]:
     """The predictions of ``name`` under ``directory`` (or ``directory/name``), one layout.
 
-    ColabFold files are looked for first, then a bare structure, so a
+    ColabFold files are looked for first, then AlphaFold2 files, then a bare structure, so a
     directory that has both a job and a stray ``{name}.pdb`` is read as the job.
     """
     searched = [path for path in (directory, directory / name) if path.is_dir()]
-    for enumerate_layout in (_colabfold_predictions, _bare_predictions):
+    for enumerate_layout in (_colabfold_predictions, _alphafold_predictions, _bare_predictions):
         for path in searched:
             found = enumerate_layout(path, name)
             if found:
@@ -600,11 +726,27 @@ def _files_from(directory: Path, roles: dict[str, Path]) -> PredictionFiles:
 
 
 def _layout_of(files: PredictionFiles) -> str:
-    """``"colabfold"`` or ``"bare"``, from the names of the files found."""
+    """``"colabfold"``, ``"alphafold"`` or ``"bare"``, from the names of the files found."""
     names = [path.name for path in files.found().values()]
     if any(_COLABFOLD_NAME.search(file_name) for file_name in names):
         return "colabfold"
+    if any(_ALPHAFOLD_NAME.match(file_name) for file_name in names):
+        return "alphafold"
     return "bare"
+
+
+# --------------------------------------------------------------------------- the record
+
+
+def _prediction_id(files: PredictionFiles) -> Optional[str]:
+    """The AlphaFold2 prediction id (``model_1_multimer_v3_pred_0``) of the files, if any."""
+    for path in (files.arrays, files.structure):
+        if path is not None:
+            for pattern in (_ALPHAFOLD_RESULT, _ALPHAFOLD_STRUCTURE):
+                match = pattern.match(path.name)
+                if match:
+                    return match["id"]
+    return None
 
 
 def _read_confidences(files: PredictionFiles, record: PredictionRecord) -> Optional[dict]:
@@ -614,16 +756,47 @@ def _read_confidences(files: PredictionFiles, record: PredictionRecord) -> Optio
         confidences = parse_colabfold_scores(arrays)
         confidences["source"] = "colabfold_scores"
         return confidences
+    if arrays is not None and arrays.suffix.lower() == ".pkl":
+        confidences = parse_result_pickle(arrays)
+        confidences["source"] = "result_pickle"
+        return confidences
+    confidence = files.extra.get("confidence")
+    if confidence is not None:
+        plddt = parse_confidence_json(confidence)
+        pae_file = files.extra.get("pae")
+        return {
+            "plddt_per_residue": plddt,
+            "pae": None if pae_file is None else parse_pae_json(pae_file, plddt.size),
+            "ptm": _NAN,
+            "iptm": _NAN,
+            "chain_ptm": {},
+            "chain_pair_iptm": {},
+            "extras": {},
+            "source": "confidence_json",
+        }
     layout = _layout_of(files)
     if layout == "colabfold":
         record.reasons.append(
             "no ColabFold scores file (*_scores_rank_*.json) found for this sample"
+        )
+    elif layout == "alphafold":
+        record.reasons.append(
+            "no AlphaFold2 result pickle (result_*_pred_*.pkl) or confidence_*.json found for this "
+            "sample; pTM, ipTM and PAE are only written there"
         )
     return None
 
 
 def _note_missing(record: PredictionRecord, confidences: dict, source_name: str) -> None:
     """One sentence for each value the confidence file does not hold."""
+    if confidences["source"] == "confidence_json":
+        record.reasons.append(
+            f"pTM and ipTM are not in {source_name}; AlphaFold2 writes them only in the result "
+            "pickle, which was not found"
+        )
+        if confidences["pae"] is None:
+            record.reasons.append("no pae_*.json found: PAE is not available")
+        return
     absent = [
         label
         for label, missing in (
@@ -712,7 +885,7 @@ def _parse_files(
         except ValueError as exc:
             structure_problem = f"the structure file cannot be read ({exc})"
     if confidences is not None:
-        source_file = files.arrays
+        source_file = files.arrays or files.extra["confidence"]
         _apply_confidences(record, confidences, source_file.name)
         if scan is not None:
             record.plddt_per_atom = _expand_per_residue(
@@ -735,12 +908,28 @@ def _parse_files(
 def _apply_layout_details(
     record: PredictionRecord, files: PredictionFiles, confidences: Optional[dict]
 ) -> None:
-    """The values that only one layout has: the rank of a ColabFold sample."""
+    """Ranking score, timing and file names that belong to one layout."""
     layout = record.extras["layout"]
     if layout == "colabfold" and files.scores is not None:
         rank = re.search(r"_rank_(\d+)", files.scores.name)
         if rank:
             record.extras["colabfold_rank"] = int(rank[1])
+    if layout == "alphafold":
+        prediction_id = _prediction_id(files)
+        record.extras["prediction_id"] = prediction_id
+        ranking = None if files.scores is None else parse_ranking_debug(files.scores)
+        if ranking is not None and prediction_id in ranking["scores"]:
+            record.ranking_score = ranking["scores"][prediction_id]
+            record.ranking_score_name = ranking["name"]
+        elif confidences is not None and "ranking_confidence" in confidences:
+            if np.isfinite(confidences["ranking_confidence"]):
+                record.ranking_score = confidences["ranking_confidence"]
+                record.ranking_score_name = "ranking_confidence"
+        if files.timing is not None:
+            timing = _read_json(files.timing)
+            if not isinstance(timing, dict):
+                raise ValueError(f"{files.timing} must hold a JSON object of run times")
+            record.timing = timing
 
 
 class AlphaFold2Parser(PredictionParser):
@@ -790,13 +979,24 @@ class AlphaFold2Parser(PredictionParser):
     def list_samples(self, prediction_dir: str | Path, name: str) -> list[SampleRef]:
         """The samples present, by seed position then sample position, without parsing them.
 
-        The ranking score is NaN: ColabFold writes the rank in the file name only.
+        The ranking score is AlphaFold2's from ``ranking_debug.json``, and NaN for ColabFold
+        (its rank is in the file name).
         """
+        directory = Path(prediction_dir)
+        predictions = _discover(directory, name)
+        ranking = None
+        for prediction in predictions:
+            if (
+                "scores" in prediction.roles
+                and prediction.roles["scores"].name == "ranking_debug.json"
+            ):
+                ranking = parse_ranking_debug(prediction.roles["scores"])["scores"]
+                break
         refs = []
-        groups = _by_seed(_discover(Path(prediction_dir), name))
-        for seed_index, group in enumerate(groups, start=1):
-            for sample in range(1, len(group) + 1):
-                refs.append(SampleRef(seed_index, sample))
+        for seed_index, group in enumerate(_by_seed(predictions), start=1):
+            for sample, prediction in enumerate(group, start=1):
+                score = _NAN if ranking is None else ranking.get(prediction.tag, _NAN)
+                refs.append(SampleRef(seed_index, sample, score))
         return refs
 
 

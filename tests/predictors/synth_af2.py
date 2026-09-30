@@ -12,10 +12,9 @@ The scores JSON has the keys of a real ColabFold multimer-v3 file, in its order:
 the sample position to a rank, and the model number is not in rank order, so a parser that sorts
 by model number or by file name fails the seed and sample check of the contract tests.
 
-The other writers serve ``test_af2.py``: ``write_colabfold`` (relaxed file, no extra pTM,
-another directory) and ``write_bare`` (a structure alone).
-
-``result_pickle`` builds the dictionary that AlphaFold2 pickles for a multimer prediction.
+The other writers serve ``test_af2.py``: ``write_colabfold`` (relaxed file, no extra pTM, another
+directory), ``write_alphafold`` (the v2.3.2 layout with a result pickle, ``ranking_debug.json``
+and ``timings.json``, or the AlphaFold2 main JSON files) and ``write_bare`` (a structure alone).
 
 Every writer takes the structure from a ``SyntheticComplex`` and writes what the model writes:
 one pLDDT per residue, the mean over the atoms of the residue in the truth, and the same value in
@@ -24,6 +23,8 @@ the B-factor column of each atom of the residue. The truth has one pLDDT per ato
 complex.
 """
 
+import json
+import pickle
 from pathlib import Path
 from typing import Optional
 
@@ -179,6 +180,13 @@ def write_bare(
     )
 
 
+# ---------------------------------------------------------------------- AlphaFold2 layouts
+
+
+def alphafold_id(model: str = "model_1_multimer_v3", pred: int = 0) -> str:
+    return f"{model}_pred_{pred}"
+
+
 def result_pickle(complex_: synth.SyntheticComplex) -> dict:
     """What ``run_alphafold.py`` pickles for a multimer prediction (the keys of the report)."""
     _check_tokens_are_residues(complex_)
@@ -194,3 +202,83 @@ def result_pickle(complex_: synth.SyntheticComplex) -> dict:
         "iptm": np.float32(scalars["iptm"]),
         "ranking_confidence": np.float32(0.8 * scalars["iptm"] + 0.2 * scalars["ptm"]),
     }
+
+
+def write_alphafold(
+    directory: Path,
+    complex_: synth.SyntheticComplex,
+    *,
+    pred: int = 0,
+    model: str = "model_1_multimer_v3",
+    relaxed: bool = False,
+    unrelaxed: bool = True,
+    result: Optional[dict] = None,
+    write_result: bool = True,
+    protocol: int = 4,
+    main_json: bool = False,
+    ranking: Optional[float] = None,
+    timings: bool = True,
+) -> str:
+    """Write one AlphaFold2 v2.3.2 prediction into ``directory`` and return its id.
+
+    Args:
+        pred: The prediction number (``pred_{i}``), the seed position minus one.
+        model: The model name, whose number gives the sample position.
+        result: Replace the pickled dictionary.
+        write_result: Write the result pickle (False leaves only the structure).
+        protocol: Pickle protocol; AlphaFold2 uses 4.
+        main_json: Also write ``confidence_{id}.json`` and ``pae_{id}.json`` of AlphaFold2 main
+            (list-wrapped, one decimal), and no pickle when ``write_result`` is False.
+        ranking: The ranking score to add to ``ranking_debug.json`` (None: the ipTM+pTM of the
+            complex); the file lists every prediction written so far in its ``order``.
+    """
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    prediction_id = alphafold_id(model, pred)
+    atoms = af2_atoms(complex_)
+    for written, kind in ((unrelaxed, "unrelaxed"), (relaxed, "relaxed")):
+        if written:
+            synth.write_structure(atoms, directory / f"{kind}_{prediction_id}.pdb")
+    if write_result:
+        payload = result_pickle(complex_) if result is None else result
+        with open(directory / f"result_{prediction_id}.pkl", "wb") as handle:
+            pickle.dump(payload, handle, protocol=protocol)
+    if main_json:
+        residues = plddt_per_residue(complex_)
+        synth.write_json(
+            directory / f"confidence_{prediction_id}.json",
+            {
+                "residueNumber": list(range(1, len(residues) + 1)),
+                "confidenceScore": np.round(residues, 2).tolist(),
+                "confidenceCategory": ["D"] * len(residues),
+            },
+        )
+        synth.write_json(
+            directory / f"pae_{prediction_id}.json",
+            [
+                {
+                    "predicted_aligned_error": np.round(complex_.pae, 1).tolist(),
+                    "max_predicted_aligned_error": 31.75,
+                }
+            ],
+        )
+    _update_ranking_debug(directory, prediction_id, complex_, ranking)
+    if timings:
+        synth.write_json(
+            directory / "timings.json", {"features": 1.5, f"predict_{prediction_id}": 7.25}
+        )
+    return prediction_id
+
+
+def _update_ranking_debug(directory: Path, prediction_id: str, complex_, ranking) -> None:
+    path = directory / "ranking_debug.json"
+    debug = (
+        json.loads(path.read_text(encoding="utf-8"))
+        if path.exists()
+        else {"iptm+ptm": {}, "order": []}
+    )
+    scalars = complex_.scalars
+    score = 0.8 * scalars["iptm"] + 0.2 * scalars["ptm"] if ranking is None else ranking
+    debug["iptm+ptm"][prediction_id] = score
+    debug["order"] = sorted(debug["iptm+ptm"], key=lambda key: -debug["iptm+ptm"][key])
+    path.write_text(json.dumps(debug), encoding="utf-8")

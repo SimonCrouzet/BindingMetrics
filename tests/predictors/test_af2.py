@@ -21,6 +21,9 @@ from binding_metrics.predictors.af2 import (
     AlphaFold2Parser,
     load_bfactor_record,
     parse_colabfold_scores,
+    parse_confidence_json,
+    parse_pae_json,
+    parse_ranking_debug,
     parse_result_pickle,
     read_bfactor_plddt,
     read_result_pickle,
@@ -42,6 +45,10 @@ def _truth(**kwargs):
 def _colabfold(tmp_path, **kwargs):
     synth_af2.write_colabfold(tmp_path, NAME, _truth(), **kwargs)
     return tmp_path
+
+
+def _alphafold(tmp_path, complex_=None, **kwargs):
+    return synth_af2.write_alphafold(tmp_path, complex_ or _truth(), **kwargs)
 
 
 def _atom_line(
@@ -878,6 +885,298 @@ class TestResultPickle:
         payload = {"plddt": RESIDUE_PLDDT, "ptm": np.array([0.5, 0.6])}
         with pytest.raises(ValueError, match="'ptm' has 2 values"):
             parse_result_pickle(_pickle_file(tmp_path, payload))
+
+
+class TestRankingDebug:
+    def test_a_multimer_ranking(self, tmp_path):
+        path = tmp_path / "ranking_debug.json"
+        path.write_text(
+            json.dumps(
+                {"iptm+ptm": {"m_pred_0": 0.7, "m_pred_1": 0.8}, "order": ["m_pred_1", "m_pred_0"]}
+            ),
+            encoding="utf-8",
+        )
+        parsed = parse_ranking_debug(path)
+        assert parsed == {
+            "name": "iptm+ptm",
+            "scores": {"m_pred_0": 0.7, "m_pred_1": 0.8},
+            "order": ["m_pred_1", "m_pred_0"],
+        }
+
+    def test_a_monomer_ranking_by_plddt(self, tmp_path):
+        path = tmp_path / "ranking_debug.json"
+        path.write_text(
+            json.dumps({"plddts": {"model_1": 88.5}, "order": ["model_1"]}), encoding="utf-8"
+        )
+        assert parse_ranking_debug(path)["name"] == "plddts"
+
+    @pytest.mark.parametrize("content", ['{"order": []}', "[1]", '{"iptm+ptm": [1]}'])
+    def test_anything_else_raises(self, tmp_path, content):
+        path = tmp_path / "ranking_debug.json"
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(ValueError, match="not an AlphaFold2 ranking_debug.json"):
+            parse_ranking_debug(path)
+
+
+# ---------------------------------------------------------------------------
+# The AlphaFold2 v2.3.2 output directory
+# ---------------------------------------------------------------------------
+
+
+class TestAlphaFoldFindFiles:
+    def test_the_files_of_a_prediction_are_located(self, tmp_path):
+        prediction_id = _alphafold(tmp_path)
+        files = AlphaFold2Parser().find_files(tmp_path, NAME)
+        assert prediction_id == "model_1_multimer_v3_pred_0"
+        assert files.structure == tmp_path / f"unrelaxed_{prediction_id}.pdb"
+        assert files.arrays == tmp_path / f"result_{prediction_id}.pkl"
+        assert files.scores == tmp_path / "ranking_debug.json"
+        assert files.timing == tmp_path / "timings.json"
+        assert files.extra == {}
+
+    def test_the_relaxed_structure_is_preferred(self, tmp_path):
+        prediction_id = _alphafold(tmp_path, relaxed=True)
+        files = AlphaFold2Parser().find_files(tmp_path, NAME)
+        assert files.structure.name == f"relaxed_{prediction_id}.pdb"
+        assert files.extra["unrelaxed_structure"].name == f"unrelaxed_{prediction_id}.pdb"
+
+    def test_the_ranked_copies_are_not_used(self, tmp_path):
+        _alphafold(tmp_path)
+        (tmp_path / "ranked_0.pdb").write_text("", encoding="utf-8")
+        assert AlphaFold2Parser().find_files(tmp_path, NAME).structure.name.startswith("unrelaxed_")
+
+    def test_the_directory_of_the_fasta_name_is_searched(self, tmp_path):
+        _alphafold(tmp_path / NAME)
+        assert AlphaFold2Parser().find_files(tmp_path, NAME).arrays.parent == tmp_path / NAME
+
+    def test_the_main_json_files_of_a_prediction_are_found_by_its_id(self, tmp_path):
+        prediction_id = _alphafold(tmp_path, main_json=True)
+        files = AlphaFold2Parser().find_files(tmp_path, NAME)
+        assert files.extra["pae"].name == f"pae_{prediction_id}.json"
+        assert files.extra["confidence"].name == f"confidence_{prediction_id}.json"
+
+    def test_nothing_is_found_where_no_prediction_was_written(self, tmp_path):
+        (tmp_path / "ranking_debug.json").write_text("{}", encoding="utf-8")
+        assert not AlphaFold2Parser().find_files(tmp_path, NAME).has_output()
+
+
+class TestAlphaFoldSampleOrder:
+    """``seed_index`` is the position of ``pred_{i}`` by value, ``sample`` the model number."""
+
+    def _grid(self, tmp_path):
+        # pred 9 and 10 (text order would put 10 first), models 2 and 1 written out of order
+        for pred in (10, 9):
+            for model in ("model_2_multimer_v3", "model_1_multimer_v3"):
+                _alphafold(tmp_path, pred=pred, model=model)
+        return tmp_path
+
+    def test_seeds_by_value_and_samples_by_model_number(self, tmp_path):
+        self._grid(tmp_path)
+        parser = AlphaFold2Parser()
+        picked = [
+            parser.find_files(tmp_path, NAME, seed_index=s, sample=k).structure.name
+            for s, k in ((1, 1), (1, 2), (2, 1), (2, 2))
+        ]
+        assert picked == [
+            "unrelaxed_model_1_multimer_v3_pred_9.pdb",
+            "unrelaxed_model_2_multimer_v3_pred_9.pdb",
+            "unrelaxed_model_1_multimer_v3_pred_10.pdb",
+            "unrelaxed_model_2_multimer_v3_pred_10.pdb",
+        ]
+
+    def test_list_samples_reads_the_ranking_scores_and_no_pickle(self, tmp_path):
+        self._grid(tmp_path)
+        for path in tmp_path.glob("result_*.pkl"):
+            path.write_bytes(GARBAGE)  # listing must not open them
+        refs = AlphaFold2Parser().list_samples(tmp_path, NAME)
+        assert [(r.seed_index, r.sample) for r in refs] == [(1, 1), (1, 2), (2, 1), (2, 2)]
+        assert all(r.ranking_score == pytest.approx(0.8 * 0.76 + 0.2 * 0.88) for r in refs)
+
+    def test_a_position_beyond_the_last_finds_nothing(self, tmp_path):
+        _alphafold(tmp_path)
+        parser = AlphaFold2Parser()
+        assert not parser.find_files(tmp_path, NAME, sample=2).has_output()
+        assert not parser.find_files(tmp_path, NAME, seed_index=2).has_output()
+
+
+class TestAlphaFoldParse:
+    def test_scalars_arrays_ranking_and_timing(self, tmp_path):
+        truth = _truth()
+        _alphafold(tmp_path)
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        record.validate(check_structure=True)
+        assert record.model == "af2"
+        assert (record.ptm, record.iptm) == (pytest.approx(0.88), pytest.approx(0.76))
+        np.testing.assert_allclose(record.pae, truth.pae, atol=1e-6)
+        np.testing.assert_allclose(record.plddt_per_atom, np.repeat(RESIDUE_PLDDT, 2), atol=1e-4)
+        assert record.avg_plddt == pytest.approx(RESIDUE_PLDDT.mean())
+        assert record.pde is None and record.tokens is None
+        assert record.ranking_score == pytest.approx(0.8 * 0.76 + 0.2 * 0.88)
+        assert record.ranking_score_name == "iptm+ptm"
+        assert record.timing == {"features": 1.5, "predict_model_1_multimer_v3_pred_0": 7.25}
+        assert record.extras["layout"] == "alphafold"
+        assert record.extras["prediction_id"] == "model_1_multimer_v3_pred_0"
+        assert record.extras["plddt_source"] == "result_pickle"
+        assert record.reasons == []
+
+    def test_the_pae_orientation_is_that_of_alphafold(self, tmp_path):
+        _alphafold(tmp_path)
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.pae[0, 6] == pytest.approx(2.5) and record.pae[6, 0] == pytest.approx(4.0)
+        summary = summarize_prediction(
+            record, binder_chain="B", receptor_chain="A", include_matrices=True
+        )
+        np.testing.assert_allclose(summary["pae_interface"], _truth().pae[4:7, 0:4], atol=1e-6)
+
+    def test_the_ranking_of_the_right_prediction_is_used(self, tmp_path):
+        _alphafold(tmp_path, pred=0, ranking=0.55)
+        _alphafold(tmp_path, pred=1, ranking=0.91)
+        parser = AlphaFold2Parser()
+        assert parser.load(tmp_path, NAME, seed_index=1).ranking_score == pytest.approx(0.55)
+        assert parser.load(tmp_path, NAME, seed_index=2).ranking_score == pytest.approx(0.91)
+
+    def test_a_monomer_ranking_by_plddt_is_named_as_alphafold_names_it(self, tmp_path):
+        prediction_id = _alphafold(tmp_path, model="model_1")
+        (tmp_path / "ranking_debug.json").write_text(
+            json.dumps({"plddts": {prediction_id: 84.5}, "order": [prediction_id]}),
+            encoding="utf-8",
+        )
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.ranking_score == 84.5 and record.ranking_score_name == "plddts"
+
+    def test_the_ranking_of_the_pickle_is_the_fallback(self, tmp_path):
+        _alphafold(tmp_path)
+        (tmp_path / "ranking_debug.json").unlink()
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.ranking_score == pytest.approx(0.8 * 0.76 + 0.2 * 0.88)
+        assert record.ranking_score_name == "ranking_confidence"
+
+    def test_a_prediction_missing_from_the_ranking_file_has_no_ranking_score(self, tmp_path):
+        _alphafold(tmp_path)
+        (tmp_path / "ranking_debug.json").write_text(
+            json.dumps({"iptm+ptm": {"other_pred_0": 0.5}, "order": ["other_pred_0"]}),
+            encoding="utf-8",
+        )
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.ranking_score == pytest.approx(0.8 * 0.76 + 0.2 * 0.88)  # from the pickle
+
+    def test_a_monomer_pickle_gives_reasons_for_the_missing_scores(self, tmp_path):
+        payload = {"plddt": RESIDUE_PLDDT.astype(np.float32)}
+        _alphafold(tmp_path, result=payload)
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        assert record.pae is None and np.isnan(record.ptm)
+        assert any("PAE and pTM not in result_" in reason for reason in record.reasons)
+        record.validate(check_structure=True)
+
+    def test_without_the_pickle_the_main_json_files_give_plddt_and_pae(self, tmp_path):
+        _alphafold(tmp_path, main_json=True, write_result=False)
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        record.validate(check_structure=True)
+        np.testing.assert_allclose(record.plddt_per_atom, np.repeat(RESIDUE_PLDDT, 2))
+        np.testing.assert_allclose(record.pae, np.round(_truth().pae, 1))
+        assert record.pae[0, 6] == pytest.approx(2.5) and record.pae[6, 0] == pytest.approx(4.0)
+        assert record.extras["plddt_source"] == "confidence_json"
+        assert np.isnan(record.ptm) and "no pae_*.json" not in "; ".join(record.reasons)
+        assert any(
+            reason.startswith("pTM and ipTM are not in confidence_") for reason in record.reasons
+        )
+
+    def test_the_pickle_wins_over_the_main_json_files(self, tmp_path):
+        _alphafold(tmp_path, main_json=True)
+        assert AlphaFold2Parser().load(tmp_path, NAME).extras["plddt_source"] == "result_pickle"
+
+    def test_without_any_confidence_file_the_b_factor_column_is_read(self, tmp_path):
+        _alphafold(tmp_path, write_result=False)
+        record = AlphaFold2Parser().load(tmp_path, NAME)
+        np.testing.assert_allclose(record.plddt_per_atom, np.repeat(RESIDUE_PLDDT, 2))
+        assert record.extras["plddt_source"] == "b_factor" and record.pae is None
+        joined = "; ".join(record.reasons)
+        assert "no AlphaFold2 result pickle" in joined and "B-factor column" in joined
+        record.validate(check_structure=True)
+
+    def test_a_pickle_of_another_prediction_is_refused(self, tmp_path):
+        short = _complex_with_atoms_per_residue({"A": [2, 2, 2], "B": [2, 2]})
+        _alphafold(tmp_path)
+        with open(next(tmp_path.glob("result_*.pkl")), "wb") as handle:
+            pickle.dump(synth_af2.result_pickle(short), handle, protocol=4)
+        with pytest.raises(ValueError, match=r"has 5 pLDDT values but .* has 7 residues"):
+            AlphaFold2Parser().load(tmp_path, NAME)
+
+    def test_a_corrupt_pickle_raises(self, tmp_path):
+        _alphafold(tmp_path)
+        next(tmp_path.glob("result_*.pkl")).write_bytes(GARBAGE)
+        with pytest.raises(ValueError, match="cannot be read as an AlphaFold2 result pickle"):
+            AlphaFold2Parser().load(tmp_path, NAME)
+
+    def test_a_corrupt_ranking_or_timing_file_raises(self, tmp_path):
+        _alphafold(tmp_path)
+        (tmp_path / "ranking_debug.json").write_bytes(GARBAGE)
+        with pytest.raises(ValueError, match="not a valid JSON file"):
+            AlphaFold2Parser().load(tmp_path, NAME)
+        (tmp_path / "ranking_debug.json").unlink()
+        _alphafold(tmp_path)  # rewrites a valid ranking file
+        (tmp_path / "timings.json").write_text("[1, 2]", encoding="utf-8")
+        with pytest.raises(ValueError, match="must hold a JSON object of run times"):
+            AlphaFold2Parser().load(tmp_path, NAME)
+
+    def test_the_pickle_layout_is_read_without_biotite(self, tmp_path):
+        _alphafold(tmp_path)
+        TestParsingNeedsNoBiotite()._run(tmp_path)
+
+
+class TestMainJsonFiles:
+    def test_the_confidence_file_is_a_per_residue_plddt(self, tmp_path):
+        path = tmp_path / "confidence_x.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "residueNumber": [1, 2],
+                    "confidenceScore": [91.5, 40.25],
+                    "confidenceCategory": ["V", "L"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        np.testing.assert_allclose(parse_confidence_json(path), [91.5, 40.25])
+
+    def test_the_pae_file_is_a_list_holding_one_object(self, tmp_path):
+        path = tmp_path / "pae_x.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {
+                        "predicted_aligned_error": [[0.0, 3.5], [2.0, 0.0]],
+                        "max_predicted_aligned_error": 31.75,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        pae = parse_pae_json(path, 2)
+        assert pae[0, 1] == 3.5 and pae[1, 0] == 2.0
+
+    def test_the_colabfold_form_of_a_dict_is_accepted(self, tmp_path):
+        path = tmp_path / "pae_x.json"
+        path.write_text(
+            json.dumps({"predicted_aligned_error": [[0.0, 3.5], [2.0, 0.0]]}), encoding="utf-8"
+        )
+        assert parse_pae_json(path, 2).shape == (2, 2)
+
+    @pytest.mark.parametrize("content", ["{}", "[[1.0]]", '{"distance": [1.0]}'])
+    def test_a_file_of_another_form_raises(self, tmp_path, content):
+        path = tmp_path / "pae_x.json"
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(ValueError, match="not an AlphaFold2 PAE file"):
+            parse_pae_json(path, 1)
+        path.write_text('{"residueNumber": [1]}', encoding="utf-8")
+        with pytest.raises(ValueError, match="not an AlphaFold2 confidence file"):
+            parse_confidence_json(path)
+
+    def test_a_pae_of_the_wrong_size_raises(self, tmp_path):
+        path = tmp_path / "pae_x.json"
+        path.write_text(json.dumps([{"predicted_aligned_error": [[0.0]]}]), encoding="utf-8")
+        with pytest.raises(ValueError, match="1 by 1 but pLDDT has 3 residues"):
+            parse_pae_json(path, 3)
 
 
 # ---------------------------------------------------------------------------
