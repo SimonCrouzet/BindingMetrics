@@ -15,7 +15,8 @@ import textwrap
 import numpy as np
 import pytest
 
-from binding_metrics.metrics.prediction import summarize_prediction
+from binding_metrics.metrics.evobind import compute_evobind_adversarial_from_records
+from binding_metrics.metrics.prediction import compute_prediction_metrics, summarize_prediction
 from binding_metrics.predictors import af2
 from binding_metrics.predictors.af2 import (
     AlphaFold2Parser,
@@ -28,7 +29,9 @@ from binding_metrics.predictors.af2 import (
     read_bfactor_plddt,
     read_result_pickle,
 )
+from binding_metrics.predictors.registry import PARSERS, get_parser
 from tests.predictors import contract, synth, synth_af2
+from tests.predictors.test_adversarial import _as_synthetic_complex, _complex_atoms
 
 NAME = contract.NAME
 REPO_ROOT = contract.REPO_ROOT
@@ -1210,3 +1213,93 @@ class TestBareStructureInADirectory:
         path = tmp_path / f"{NAME}{suffix}"
         path.write_text("", encoding="utf-8")
         assert AlphaFold2Parser().find_files(tmp_path, NAME).structure == path
+
+
+# ---------------------------------------------------------------------------
+# The registered adapter, and the metrics that read its records
+# ---------------------------------------------------------------------------
+
+
+class TestRegistration:
+    def test_af2_is_registered_and_lazy(self):
+        spec = PARSERS["af2"]
+        assert spec.import_path == "binding_metrics.predictors.af2:AlphaFold2Parser"
+        assert isinstance(get_parser("af2"), AlphaFold2Parser)
+        assert (spec.display_name, spec.family) == ("AlphaFold2 / ColabFold", "af2")
+        assert AlphaFold2Parser.name == "af2"
+
+    def test_no_capabilities_are_declared(self):
+        assert AlphaFold2Parser.capabilities is None
+
+    def test_a_writer_module_exists_for_the_contract_tests(self):
+        assert callable(contract.writer_module("af2").write_prediction)
+
+
+class TestPredictionMetricsOnAlphaFoldOutput:
+    def test_compute_prediction_metrics_reads_a_colabfold_job(self, tmp_path):
+        truth = _truth()
+        result = compute_prediction_metrics(
+            _colabfold(tmp_path), "af2", NAME, binder_chain="B", receptor_chain="A"
+        )
+        assert result["model"] == "af2"
+        assert (result["ptm"], result["iptm"]) == (0.88, 0.76)
+        assert result["avg_plddt"] == pytest.approx(RESIDUE_PLDDT.mean())
+        assert result["binder_avg_plddt"] == pytest.approx(76.0)
+        expected = (truth.pae[4:7, 0:4].mean() + truth.pae[0:4, 4:7].mean()) / 2
+        assert result["mean_interface_pae"] == pytest.approx(expected)
+        assert result["max_pae"] == pytest.approx(truth.pae.max())
+        assert np.isnan(result["gpde"]) and result["pde"] is None
+        assert result["chain_ptm"] == {"A": 0.88, "B": 0.8}
+        assert result["reason"] == "interface PDE: no PDE matrix in the confidences file"
+
+    def test_the_chains_of_the_user_are_reached_through_the_chain_map(self, tmp_path):
+        result = compute_prediction_metrics(
+            _colabfold(tmp_path),
+            "af2",
+            NAME,
+            binder_chain="P",
+            receptor_chain="R",
+            chain_map={"A": "R", "B": "P"},
+        )
+        assert result["binder_avg_plddt"] == pytest.approx(76.0)
+        assert np.isfinite(result["mean_interface_pae"])
+
+    def test_the_official_layout_gives_the_same_scores(self, tmp_path):
+        _alphafold(tmp_path)
+        result = compute_prediction_metrics(
+            tmp_path, "af2", NAME, binder_chain="B", receptor_chain="A"
+        )
+        assert result["iptm"] == pytest.approx(0.76)
+        assert result["binder_avg_plddt"] == pytest.approx(76.0, abs=1e-3)
+        assert result["sample_ranking_score"] == pytest.approx(0.8 * 0.76 + 0.2 * 0.88)
+
+
+class TestBareComplexAsAdversary:
+    """A complex with pLDDT only in its B-factor column can be the EvoBind adversary."""
+
+    def test_the_binder_plddt_of_the_b_factor_column_divides_the_score(self, tmp_path):
+        shifted = (0.0, 3.0, 4.0)  # 5 angstrom
+        design_atoms, _ = _complex_atoms()
+        design = synth.write_structure(design_atoms, tmp_path / "design.pdb")
+        atoms, plddt = _complex_atoms(binder_shift=shifted)
+        bare = synth_af2.write_bare(tmp_path, "adversary", _as_synthetic_complex(atoms, plddt))
+        record = load_bfactor_record(bare)
+        result = compute_evobind_adversarial_from_records(design, record, "B", "A")
+        assert result["adversary_model"] == "af2"
+        assert result["afm_mean_plddt_binder"] == pytest.approx(80.0)
+        assert result["delta_com_angstrom"] == pytest.approx(5.0, abs=1e-2)
+        expected = result["afm_mean_if_dist"] * (100.0 / 80.0) * 5.0
+        assert result["evobind_adversarial_score"] == pytest.approx(expected, rel=1e-2)
+        assert "reason" not in result
+
+    def test_a_file_without_plddt_gives_the_geometry_and_a_reason(self, tmp_path):
+        design_atoms, _ = _complex_atoms()
+        design = synth.write_structure(design_atoms, tmp_path / "design.pdb")
+        atoms, _ = _complex_atoms()
+        atoms.set_annotation("b_factor", np.zeros(atoms.array_length()))
+        record = load_bfactor_record(synth.write_structure(atoms, tmp_path / "zero.pdb"))
+        result = compute_evobind_adversarial_from_records(design, record, "B", "A")
+        assert result["delta_com_angstrom"] == pytest.approx(0.0, abs=1e-2)
+        assert result["evobind_adversarial_score"] is None
+        assert result["reason"].startswith("adversary has no per-atom pLDDT")
+        assert "all zero" in result["reason"]

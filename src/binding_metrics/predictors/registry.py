@@ -98,6 +98,17 @@ class ParserSpec:
 # One ParserSpec per adapter, in alphabetical order of the name. The dict is keyed by name so
 # that ``sorted(PARSERS)`` lists the models.
 PARSERS: dict[str, ParserSpec] = {
+    "af2": ParserSpec(
+        name="af2",
+        import_path="binding_metrics.predictors.af2:AlphaFold2Parser",
+        display_name="AlphaFold2 / ColabFold",
+        family="af2",
+        description=(
+            "AlphaFold2, AlphaFold-Multimer and ColabFold output: {name}_scores_rank_*.json with "
+            "{name}_unrelaxed|relaxed_rank_*.pdb, or result_*_pred_*.pkl with "
+            "ranking_debug.json, or a bare structure whose B-factor column holds the pLDDT"
+        ),
+    ),
     "boltz2": ParserSpec(
         name="boltz2",
         import_path="binding_metrics.predictors.boltz2:Boltz2Parser",
