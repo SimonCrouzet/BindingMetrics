@@ -35,8 +35,8 @@ and the openfold run module are imported when an input is read, never before)::
             weights: Optional[str | Path | WeightsRef] = None,
             constraints: Optional[Mapping] = None,
             covalent_bonds: Optional[Sequence[Mapping]] = None,
-            on_unmappable_residue: str = "error", extra_args: Sequence[str] = ())
-            -> PredictionRequest
+            on_unmappable_residue: str = "error", binder_cyclic: bool | str = "auto",
+            extra_args: Sequence[str] = ()) -> PredictionRequest
         .check_weights(request)                           # raises when the weights cannot be used
         .prepare(request, work_dir) -> Path               # <work_dir>/input/<name>.json
         .run(request, work_dir) -> Path                   # <work_dir>/predictions
@@ -54,7 +54,7 @@ sent, which counts the residues of the chain that are amino acids)::
         {"proteinChain": {"sequence": "<receptor>", "count": 1, "id": ["A"]}},
         {"proteinChain": {"sequence": "<binder>", "count": 1, "id": ["B"],
                           "modifications": [{"ptmType": "CCD_DAL", "ptmPosition": 1}, ...]}}],
-      "covalent_bonds": [...],      # only with covalent_bonds
+      "covalent_bonds": [...],      # the closures of the binder, and covalent_bonds
       "constraint": {...}}]         # only with constraints
 
 Keys and their meaning: ``docs/infer_json_format.md:38-68`` (``proteinChain``), ``206-246``
@@ -72,11 +72,38 @@ backbone that is none of these raises ``ValueError`` naming the chain and the re
 file is written (``on_unmappable_residue="x"`` sends an ``X`` instead). Terminal caps, waters,
 ions and ligands are left out, as in the OpenFold3 query.
 
-No ring closure is written. Protenix documents a head-to-tail amide bond and a disulfide as
-``covalent_bonds`` (``docs/infer_json_format.md:222-229``) and this runner does not derive them
-from the structure: a cyclic binder is predicted as a linear chain unless ``covalent_bonds``
-gives the bond. The option is a passthrough: the list is written under ``covalent_bonds`` as
-given and is not interpreted.
+Closures. ``binder_cyclic`` (``"auto"`` by default, ``True`` or ``False``, as for
+``OpenFold3Runner``) decides whether the binder's ring closures are written as ``covalent_bonds``
+(``docs/infer_json_format.md:206-246``). The documentation supports exactly two polymer-polymer
+bonds, "a head-to-tail amide bond connecting the N- and C-terminal residues" and "a disulfide bond
+between cysteine residues" (lines 224-227); other kinds "are not reliably handled" (line 229).
+Each bond names its two atoms by ``entity``, ``copy``, ``position`` and ``atom`` (lines 233-244):
+the entity is the 1-based place in ``sequences`` (the binder is 2), the copy is 1-based (1, the
+entity has one copy), the position is the 1-based place of the residue in the sequence sent, and
+the atoms are named as the Chemical Component Dictionary names them (line 243). The runner writes
+
+* head to tail: ``C`` of the last residue and ``N`` of the first (``entity`` 2, ``copy`` 1,
+  ``position`` L and 1);
+* a disulfide: ``SG`` and ``SG`` of the two cysteines.
+
+``"auto"`` writes the bonds of the closures that ``binding_metrics.capabilities.detect_closures``
+finds in the binder chain of the input (bond table, or the distances of ``core.cyclic``), of the
+families ``head_to_tail`` and ``disulfide`` only. A lactam, a staple or another cross-link is not
+written (the documentation does not support it, ``ProtenixParser.capabilities`` warns, and the run
+logs a warning that names them), and a disulfide between the binder and the receptor is not a
+closure of the binder. ``True`` writes the head-to-tail bond whether or not the input has one,
+for a binder that is to be predicted closed, besides the detected disulfides; it needs at least
+two residues. ``False`` writes none of them. A position is found from the residue name and number
+of the closure in the sequence sent (the residues that are amino acids of the chain, as the query
+reader counts them); a closure that cannot be placed, or whose atoms are not the ones above, raises
+``ValueError`` instead of a guess, and so does a closure search that fails in ``"auto"`` (a
+linear prediction of a ring is not the fallback). The choice is in the key. A list given as
+``covalent_bonds`` is written after these, as given and not interpreted; a bond that is already
+there is not written twice. TO VERIFY: the documentation has no example of a polymer-polymer bond
+and names the atoms only by the rule of line 243. The code that applies a bond
+(``json_to_feature.py:210-284``) takes any atom pair of the entity and removes the leaving atoms
+of the CCD component (``json_parser.py:181-234``, the OXT of a C-terminal residue); that this
+makes the intended amide bond was read, never run.
 
 Modes. Only ``predict`` (from sequences) is supported. A template enters Protenix as an alignment
 file, ``templatesPath`` in .a3m or .hhr format (``docs/infer_json_format.md:68``;
@@ -175,9 +202,10 @@ defaults included, so two callers that mean one run share its key. The key holds
 version (``version()``; empty when it cannot be told), the mode, the seeds (``[101]``, the
 command-line default, when the caller gives none), the samples per seed, the chain roles, the
 content hash of the structure and ``options``: ``model_name``, ``dtype``, ``use_msa_server``,
-``msa_server_mode``, ``on_unmappable_residue``, ``constraints``, ``covalent_bonds``,
-``extra_args``, ``need_atom_confidence`` (always true) and ``checkpoint_size_bytes``. Not in the
-key: the conda environment and where the input lives.
+``msa_server_mode``, ``on_unmappable_residue``, ``binder_cyclic``, ``constraints``,
+``covalent_bonds``, ``extra_args``, ``need_atom_confidence`` (always true) and
+``checkpoint_size_bytes``, and the weights when given. Not in the key: the conda environment and
+where the input lives.
 
 Output and failures. The output directory ``<work_dir>/predictions`` holds
 ``<name>/seed_<S>/predictions/<name>_sample_<r>.cif``, ``..._summary_confidence_sample_<r>.json``
@@ -233,6 +261,11 @@ _DEFAULT_ON_UNMAPPABLE = "error"
 _DTYPES = ("bf16", "fp32", "fp16")
 _MSA_SERVER_MODES = ("protenix", "colabfold")
 _ON_UNMAPPABLE_CHOICES = ("error", "x")
+_DEFAULT_BINDER_CYCLIC = "auto"
+
+#: The binder is the second entity of the input, and its only copy the first
+#: (``docs/infer_json_format.md:233-235``).
+_BINDER_ENTITY = 2
 
 #: The only model with constraint embedders switched on (``configs/configs_model_type.py:123-136``).
 CONSTRAINT_MODEL_NAME = "protenix_base_constraint_v0.5.0"
@@ -575,6 +608,9 @@ def _resolve_options(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(
             f"on_unmappable_residue must be one of {_ON_UNMAPPABLE_CHOICES}, got {on_unmappable!r}"
         )
+    binder_cyclic = raw.get("binder_cyclic", _DEFAULT_BINDER_CYCLIC)
+    if not (binder_cyclic is True or binder_cyclic is False or binder_cyclic == "auto"):
+        raise ValueError(f'binder_cyclic must be True, False or "auto", got {binder_cyclic!r}')
     constraints = raw.get("constraints") or None
     if constraints is not None:
         if not isinstance(constraints, Mapping):
@@ -597,6 +633,7 @@ def _resolve_options(raw: Mapping[str, Any]) -> dict[str, Any]:
         "use_msa_server": bool(raw.get("use_msa_server", True)),
         "msa_server_mode": msa_server_mode,
         "on_unmappable_residue": on_unmappable,
+        "binder_cyclic": binder_cyclic,
         "constraints": constraints,
         "covalent_bonds": covalent_bonds,
         "extra_args": _check_extra_args(raw.get("extra_args") or ()),
@@ -638,12 +675,38 @@ def _protenix_chain(
     ]
 
 
+def _sequence_residues(
+    structure: Any, chain_id: str, on_unmappable_residue: str
+) -> list[tuple[str, int]]:
+    """``(name, number)`` of the residues that ``_extract_query_chain`` puts in the sequence.
+
+    The same rule as the query reader: a residue that is an amino acid by its name, and with
+    ``on_unmappable_residue="x"`` one that has a backbone. The i-th entry is position i + 1.
+    """
+    from binding_metrics.metrics._openfold_run import _residue_letter_and_ccd
+
+    for chain in structure[0]:
+        if chain.name != chain_id:
+            continue
+        residues = []
+        for residue in chain:
+            backbone = {"N", "CA", "C"} <= {atom.name for atom in residue}
+            if _residue_letter_and_ccd(residue.name) is not None or (
+                on_unmappable_residue == "x" and backbone
+            ):
+                residues.append((residue.name, residue.seqid.num))
+        return residues
+    return []
+
+
 def _read_entities(
     structure_path: Path,
     chain_ids: Sequence[str],
     on_unmappable_residue: str,
-) -> list[tuple[str, str, list[dict[str, Any]]]]:
-    """``(chain ID, sequence, modifications)`` for each of ``chain_ids``, in order.
+) -> list[tuple[str, str, list[dict[str, Any]], list[tuple[str, int]]]]:
+    """``(chain ID, sequence, modifications, residues)`` for each of ``chain_ids``, in order.
+
+    ``residues`` is ``(name, number)`` per position of the sequence (``_sequence_residues``).
 
     Raises:
         ValueError: A chain is not in the structure, has no amino acid, or holds a residue that
@@ -663,7 +726,7 @@ def _read_entities(
                 f"chain {chain_id!r} is not in {structure_path} (chains in its first model: "
                 f"{', '.join(present) or 'none'})"
             )
-    entities: list[tuple[str, str, list[dict[str, Any]]]] = []
+    entities: list[tuple[str, str, list[dict[str, Any]], list[tuple[str, int]]]] = []
     unmappable: list[tuple[str, str, Sequence[str]]] = []
     for chain_id in chain_ids:
         try:
@@ -673,11 +736,143 @@ def _read_entities(
         except UnmappableResidueError as exc:
             unmappable.extend(exc.details)
             continue
+        residues = _sequence_residues(structure, chain_id, on_unmappable_residue)
         sequence, modifications = _protenix_chain(sequence, non_canonical)
-        entities.append((chain_id, sequence, modifications))
+        entities.append((chain_id, sequence, modifications, residues))
     if unmappable:
         raise ValueError(_unmappable_message(unmappable))
     return entities
+
+
+def _bond(position1: int, atom1: str, position2: int, atom2: str) -> dict[str, Any]:
+    """A ``covalent_bonds`` entry inside the binder (``docs/infer_json_format.md:206-246``)."""
+    return {
+        "entity1": _BINDER_ENTITY,
+        "copy1": 1,
+        "position1": position1,
+        "atom1": atom1,
+        "entity2": _BINDER_ENTITY,
+        "copy2": 1,
+        "position2": position2,
+        "atom2": atom2,
+    }
+
+
+def _closure_bonds(
+    structure_path: Path,
+    binder_chain: str,
+    residues: Sequence[tuple[str, int]],
+    binder_cyclic: bool | str,
+) -> list[dict[str, Any]]:
+    """The ``covalent_bonds`` of the binder's closures (see the module docstring).
+
+    Args:
+        structure_path: The complex structure.
+        binder_chain: The binder chain ID.
+        residues: ``(name, number)`` per position of the sequence sent for the binder.
+        binder_cyclic: ``"auto"``, ``True`` or ``False`` (nothing is read for ``False``).
+
+    Raises:
+        ValueError: The closures cannot be searched, a closure residue is not in the sequence
+            sent (or is there twice), the atoms of a closure are not C and N (head to tail) or SG
+            (disulfide), the head-to-tail bond is not between the two ends, or ``True`` is asked
+            of a binder with one residue.
+    """
+    if binder_cyclic is False:
+        return []
+    from binding_metrics.capabilities import _read_atoms, detect_closures
+
+    length = len(residues)
+    try:
+        closures = detect_closures(_read_atoms(structure_path), binder_chain)
+    except Exception as exc:  # noqa: BLE001 - external reader; raised again with the way out
+        raise ValueError(
+            f"could not look for ring closures in chain {binder_chain} of {structure_path} "
+            f"({exc}), and a linear prediction of a ring is not the fallback: pass "
+            "binder_cyclic=False to write no closure, or binder_cyclic=True to write the "
+            "head-to-tail bond"
+        ) from exc
+    places: dict[tuple[str, int], list[int]] = {}
+    for position, key in enumerate(residues, start=1):
+        places.setdefault(key, []).append(position)
+
+    def position_of(end: Any, closure: Any) -> int:
+        found = places.get((end.residue_name, end.residue_number), [])
+        if len(found) != 1:
+            raise ValueError(
+                f"cannot place the {closure.describe()} of chain {binder_chain}: residue "
+                f"{end.residue_name} {end.residue_number} is {'not' if not found else 'twice'} "
+                f"in the {length} residues sent for the chain. Pass binder_cyclic=False to write "
+                "no closure"
+            )
+        return found[0]
+
+    bonds: list[dict[str, Any]] = []
+    not_written: list[str] = []
+    head_to_tail = False
+    for closure in closures:
+        ends = (closure.end1, closure.end2)
+        if closure.family == "head_to_tail":
+            by_atom = {end.atom_name: position_of(end, closure) for end in ends}
+            if set(by_atom) != {"C", "N"} or by_atom["C"] != length or by_atom["N"] != 1:
+                raise ValueError(
+                    f"the {closure.describe()} of chain {binder_chain} is not between C of the "
+                    f"last residue ({length}) and N of the first: {by_atom}. Pass "
+                    "binder_cyclic=False to write no closure"
+                )
+            bonds.append(_bond(length, "C", 1, "N"))
+            head_to_tail = True
+        elif closure.family == "disulfide":
+            if any(end.atom_name != "SG" for end in ends):
+                raise ValueError(
+                    f"the {closure.describe()} of chain {binder_chain} is not between two SG "
+                    "atoms. Pass binder_cyclic=False to write no closure"
+                )
+            first, second = sorted(position_of(end, closure) for end in ends)
+            bonds.append(_bond(first, "SG", second, "SG"))
+        else:
+            not_written.append(closure.describe())
+    if binder_cyclic is True and not head_to_tail:
+        if length < 2:
+            raise ValueError(
+                f"binder_cyclic=True needs a binder of at least two residues, chain "
+                f"{binder_chain} has {length}"
+            )
+        bonds.insert(0, _bond(length, "C", 1, "N"))
+    if not_written:
+        logger.warning(
+            "Chain %s: %s not written as covalent_bonds, which Protenix documents for a "
+            "head-to-tail amide bond and a disulfide only (docs/infer_json_format.md:224-229); "
+            "the binder is predicted without it.",
+            binder_chain,
+            "; ".join(not_written),
+        )
+    if bonds:
+        logger.info("Chain %s: %d closure bond(s) written.", binder_chain, len(bonds))
+    return bonds
+
+
+def _merge_bonds(
+    derived: Sequence[Mapping[str, Any]], given: Optional[Sequence[Mapping[str, Any]]]
+) -> list[dict[str, Any]]:
+    """``derived`` then ``given``, without a bond that is already in the list."""
+
+    def ends(bond: Mapping[str, Any]) -> frozenset:
+        def end(index: int) -> tuple:
+            return tuple(
+                str(bond.get(f"{field}{index}")) for field in ("entity", "copy", "position", "atom")
+            )
+
+        return frozenset((end(1), end(2)))
+
+    merged: list[dict[str, Any]] = []
+    seen: set = set()
+    for bond in [*derived, *(given or ())]:
+        key = ends(bond)
+        if key not in seen:
+            seen.add(key)
+            merged.append(dict(bond))
+    return merged
 
 
 def _job_dict(request: PredictionRequest, options: Mapping[str, Any]) -> dict[str, Any]:
@@ -685,14 +880,18 @@ def _job_dict(request: PredictionRequest, options: Mapping[str, Any]) -> dict[st
     chain_ids = [request.receptor_chain, request.binder_chain]
     entities = _read_entities(Path(request.input_path), chain_ids, options["on_unmappable_residue"])
     sequences = []
-    for chain_id, sequence, modifications in entities:
+    for chain_id, sequence, modifications, _ in entities:
         protein_chain: dict[str, Any] = {"sequence": sequence, "count": 1, "id": [chain_id]}
         if modifications:
             protein_chain["modifications"] = modifications
         sequences.append({"proteinChain": protein_chain})
     job: dict[str, Any] = {"name": request.name, "sequences": sequences}
-    if options["covalent_bonds"] is not None:
-        job["covalent_bonds"] = options["covalent_bonds"]
+    closures = _closure_bonds(
+        Path(request.input_path), request.binder_chain, entities[1][3], options["binder_cyclic"]
+    )
+    bonds = _merge_bonds(closures, options["covalent_bonds"])
+    if bonds:
+        job["covalent_bonds"] = bonds
     if options["constraints"] is not None:
         job["constraint"] = options["constraints"]
     return job
@@ -920,6 +1119,7 @@ class ProtenixRunner(PredictionRunner):
         constraints: Optional[Mapping[str, Any]] = None,
         covalent_bonds: Optional[Sequence[Mapping[str, Any]]] = None,
         on_unmappable_residue: str = _DEFAULT_ON_UNMAPPABLE,
+        binder_cyclic: bool | str = _DEFAULT_BINDER_CYCLIC,
         extra_args: Sequence[str] = (),
     ) -> PredictionRequest:
         """The store request of one Protenix run (see the module docstring for what it holds).
@@ -944,6 +1144,8 @@ class ProtenixRunner(PredictionRunner):
                 model ``protenix_base_constraint_v0.5.0`` reads it.
             covalent_bonds: The ``covalent_bonds`` list, written as given (a ring closure).
             on_unmappable_residue: ``"error"`` or ``"x"`` (see the module docstring).
+            binder_cyclic: ``"auto"`` (default), ``True`` or ``False``: whether the closures of
+                the binder are written as ``covalent_bonds`` (see the module docstring).
             extra_args: Extra command-line arguments, passed verbatim after the runner's own.
 
         Raises:
@@ -970,6 +1172,7 @@ class ProtenixRunner(PredictionRunner):
                 "use_msa_server": use_msa_server,
                 "msa_server_mode": msa_server_mode,
                 "on_unmappable_residue": on_unmappable_residue,
+                "binder_cyclic": binder_cyclic,
                 "constraints": constraints,
                 "covalent_bonds": covalent_bonds,
                 "extra_args": extra_args,

@@ -37,6 +37,25 @@ from binding_metrics.predictors.store import (
 DATA = Path(__file__).resolve().parents[2] / "data"
 P53 = DATA / "example_linear_p53_1YCR.pdb"
 CYCLOSPORIN = DATA / "example_ncaa_cyclosporin_1CWA.cif"
+SFTI1 = DATA / "example_bicyclic_sfti1_3P8F.cif"
+SOMATOSTATIN = DATA / "example_lactam_somatostatin_1XY4.cif"
+STAPLED = DATA / "example_staple_3V3B.pdb"
+
+
+def head_to_tail_bond(length):
+    """The documented head-to-tail bond inside the binder (entity 2, copy 1): C of the last."""
+    return {
+        "entity1": 2, "copy1": 1, "position1": length, "atom1": "C",
+        "entity2": 2, "copy2": 1, "position2": 1, "atom2": "N",
+    }  # fmt: skip
+
+
+def disulfide_bond(first, second):
+    return {
+        "entity1": 2, "copy1": 1, "position1": first, "atom1": "SG",
+        "entity2": 2, "copy2": 1, "position2": second, "atom2": "SG",
+    }  # fmt: skip
+
 
 MDM2 = "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
 P53_PEPTIDE = "ETFSDLWKLLPEN"
@@ -244,7 +263,8 @@ class TestInputJson:
                 ],
             }
         }
-        assert set(job) == {"name", "sequences"}
+        assert job["covalent_bonds"] == [head_to_tail_bond(11)]
+        assert set(job) == {"name", "sequences", "covalent_bonds"}
 
     def test_the_file_is_ascii_and_a_list_of_one_job(self, tmp_path):
         runner = ProtenixRunner()
@@ -405,6 +425,197 @@ class TestModes:
     def test_constraints_that_are_not_a_dict_are_refused(self):
         with pytest.raises(ValueError, match="must be a dict"):
             make(model_name=CONSTRAINT_MODEL_NAME, constraints=[{"entity1": 1}])
+
+
+# ---------------------------------------------------------------------------- the closures
+
+
+class TestClosures:
+    """``binder_cyclic`` writes the documented closures of the binder as ``covalent_bonds``."""
+
+    def job(self, tmp_path, path, binder, receptor, **kwargs):
+        runner = ProtenixRunner()
+        request = make(runner, path, binder_chain=binder, receptor_chain=receptor, **kwargs)
+        (job,) = json.loads(runner.prepare(request, tmp_path).read_text(encoding="utf-8"))
+        return job
+
+    def test_the_default_is_auto_and_a_head_to_tail_binder_gets_its_bond(self, tmp_path):
+        assert make().options["binder_cyclic"] == "auto"
+        job = self.job(tmp_path, CYCLOSPORIN, "C", "A", name="cwa")
+        assert job["covalent_bonds"] == [head_to_tail_bond(11)]  # 11 residues: ALA 11 C to DAL 1 N
+
+    def test_a_bicyclic_binder_gets_the_head_to_tail_bond_and_the_disulfide(self, tmp_path):
+        job = self.job(tmp_path, SFTI1, "I", "A", name="sfti")
+        (_, binder) = job["sequences"]
+        assert len(binder["proteinChain"]["sequence"]) == 14  # the waters of the chain are not sent
+        assert job["covalent_bonds"] == [head_to_tail_bond(14), disulfide_bond(3, 11)]
+
+    def test_a_linear_binder_gets_none(self, tmp_path):
+        assert "covalent_bonds" not in self.job(tmp_path, P53, "B", "A")
+
+    @pytest.mark.parametrize(
+        "path, binder, receptor",
+        [(CYCLOSPORIN, "C", "A"), (SFTI1, "I", "A"), (P53, "B", "A")],
+    )
+    def test_false_writes_none(self, tmp_path, path, binder, receptor):
+        assert "covalent_bonds" not in self.job(
+            tmp_path, path, binder, receptor, binder_cyclic=False
+        )
+
+    def test_true_on_a_linear_binder_writes_the_head_to_tail_bond(self, tmp_path):
+        job = self.job(tmp_path, P53, "B", "A", binder_cyclic=True)
+        assert job["covalent_bonds"] == [head_to_tail_bond(13)]  # 13 residues; no ring in the input
+
+    def test_true_on_a_closed_binder_does_not_write_the_bond_twice(self, tmp_path):
+        job = self.job(tmp_path, SFTI1, "I", "A", binder_cyclic=True)
+        assert job["covalent_bonds"] == [head_to_tail_bond(14), disulfide_bond(3, 11)]
+
+    def test_a_binder_of_one_residue_cannot_be_closed_head_to_tail(self, structure, tmp_path):
+        single = tiny_structure(tmp_path / "single.pdb", residues_b=("ALA",))
+        runner = ProtenixRunner()
+        request = make(runner, single, binder_cyclic=True)
+        with pytest.raises(ValueError, match="at least two residues, chain B has 1"):
+            runner.prepare(request, tmp_path / "work")
+        assert not (tmp_path / "work").exists()
+
+    @pytest.mark.parametrize("bad", ["on", 1, 0, None, "yes"])
+    def test_a_value_that_is_not_true_false_or_auto_is_refused(self, bad):
+        with pytest.raises(ValueError, match='binder_cyclic must be True, False or "auto"'):
+            make(binder_cyclic=bad)
+
+    def test_a_lactam_and_a_staple_are_not_written_and_the_run_says_so(self, caplog):
+        pytest.importorskip("gemmi")
+        for path, chain, expected in [
+            (SOMATOSTATIN, "A", [disulfide_bond(2, 12)]),
+            (STAPLED, "C", []),
+        ]:
+            (entity,) = protenix_runner._read_entities(path, [chain], "error")
+            caplog.clear()
+            with caplog.at_level("WARNING", logger=protenix_runner.logger.name):
+                bonds = protenix_runner._closure_bonds(path, chain, entity[3], "auto")
+            assert bonds == expected
+            assert "not written as covalent_bonds" in caplog.text
+            assert "docs/infer_json_format.md:224-229" in caplog.text
+        assert "lactam" in caplog.text or "staple" in caplog.text
+
+    def test_the_residues_of_the_sequence_are_the_ones_the_query_reader_counts(self):
+        (entity,) = protenix_runner._read_entities(SFTI1, ["I"], "error")
+        residues = entity[3]
+        assert len(residues) == len(entity[1]) == 14
+        assert residues[0] == ("GLY", 1) and residues[-1] == ("ASP", 14)
+        assert residues[2] == ("CYS", 3) and residues[10] == ("CYS", 11)
+
+    def test_the_structure_is_not_searched_for_closures_when_false(self, tmp_path, monkeypatch):
+        import binding_metrics.capabilities as capabilities
+
+        def fail(*args, **kwargs):
+            raise AssertionError("the closures were searched")
+
+        monkeypatch.setattr(capabilities, "detect_closures", fail)
+        assert "covalent_bonds" not in self.job(
+            tmp_path, CYCLOSPORIN, "C", "A", binder_cyclic=False
+        )
+
+    def test_a_search_that_fails_is_an_error_and_not_a_linear_prediction(
+        self, tmp_path, monkeypatch
+    ):
+        import binding_metrics.capabilities as capabilities
+
+        def broken(atoms, chain_id):
+            raise RuntimeError("cannot read the bond table")
+
+        monkeypatch.setattr(capabilities, "detect_closures", broken)
+        runner = ProtenixRunner()
+        with pytest.raises(ValueError, match="could not look for ring closures in chain C") as info:
+            runner.prepare(make(runner, CYCLOSPORIN, binder_chain="C", name="c"), tmp_path)
+        assert "cannot read the bond table" in str(info.value)
+        assert "binder_cyclic=False" in str(info.value) and "binder_cyclic=True" in str(info.value)
+        assert not (tmp_path / "input").exists()
+
+    def closure(self, family, end1, end2):
+        from binding_metrics.capabilities import Closure, ClosureEnd
+
+        return Closure(family, family, ClosureEnd(*end1), ClosureEnd(*end2))
+
+    @pytest.mark.parametrize(
+        "family, end1, end2, message",
+        [
+            ("head_to_tail", (0, "DAL", 1, "C"), (10, "ALA", 11, "N"), "is not between C"),
+            ("head_to_tail", (10, "ALA", 11, "O"), (0, "DAL", 1, "N"), "is not between C"),
+            ("head_to_tail", (10, "ALA", 9, "C"), (0, "DAL", 1, "N"), "residue ALA 9 is not in"),
+            ("disulfide", (1, "ALA", 11, "CB"), (2, "DAL", 1, "SG"), "not between two SG"),
+        ],
+    )
+    def test_a_closure_that_cannot_be_placed_raises_and_names_the_way_out(
+        self, tmp_path, monkeypatch, family, end1, end2, message
+    ):
+        import binding_metrics.capabilities as capabilities
+
+        monkeypatch.setattr(
+            capabilities, "detect_closures", lambda atoms, chain: [self.closure(family, end1, end2)]
+        )
+        runner = ProtenixRunner()
+        request = make(runner, CYCLOSPORIN, binder_chain="C", name="c")
+        with pytest.raises(ValueError, match=message) as info:
+            runner.prepare(request, tmp_path)
+        assert "binder_cyclic=False" in str(info.value)
+
+    def test_a_residue_that_is_there_twice_is_not_guessed(self, monkeypatch):
+        import binding_metrics.capabilities as capabilities
+
+        monkeypatch.setattr(
+            capabilities,
+            "detect_closures",
+            lambda atoms, chain: [
+                self.closure("head_to_tail", (10, "ALA", 11, "C"), (0, "DAL", 1, "N"))
+            ],
+        )
+        residues = [("DAL", 1), ("ALA", 11)] + [("ALA", 11)]
+        with pytest.raises(ValueError, match="is twice in the 3 residues"):
+            protenix_runner._closure_bonds(CYCLOSPORIN, "C", residues, "auto")
+
+    def test_given_bonds_follow_the_closures_and_a_repeat_is_dropped(self, tmp_path):
+        reversed_bond = {
+            "entity1": 2, "copy1": 1, "position1": 1, "atom1": "N",
+            "entity2": 2, "copy2": 1, "position2": 11, "atom2": "C",
+        }  # fmt: skip
+        extra = {
+            "entity1": 1, "copy1": 1, "position1": 5, "atom1": "SG",
+            "entity2": 2, "copy2": 1, "position2": 3, "atom2": "SG",
+        }  # fmt: skip
+        job = self.job(
+            tmp_path, CYCLOSPORIN, "C", "A", name="cwa", covalent_bonds=[reversed_bond, extra]
+        )
+        assert job["covalent_bonds"] == [head_to_tail_bond(11), extra]
+
+    def test_given_bonds_alone_are_written_when_the_binder_is_not_closed(self, tmp_path):
+        job = self.job(tmp_path, P53, "B", "A", covalent_bonds=[disulfide_bond(1, 2)])
+        assert job["covalent_bonds"] == [disulfide_bond(1, 2)]
+
+    def test_the_choice_is_in_the_key_and_the_structure_decides_auto(self):
+        keys = {make(binder_cyclic=value).key() for value in ("auto", True, False)}
+        assert len(keys) == 3
+
+    def test_a_request_made_elsewhere_without_the_option_means_auto(self, tmp_path):
+        request = PredictionRequest(
+            "protenix",
+            "cwa",
+            mode="predict",
+            input_path=CYCLOSPORIN,
+            binder_chain="C",
+            receptor_chain="A",
+        )
+        (job,) = json.loads(ProtenixRunner().prepare(request, tmp_path).read_text(encoding="utf-8"))
+        assert job["covalent_bonds"] == [head_to_tail_bond(11)]
+
+    def test_the_stub_process_receives_the_bonds_in_its_input(self, tmp_path, stub_protenix):
+        runner = ProtenixRunner()
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        request = make(runner, CYCLOSPORIN, binder_chain="C", name="p53", seeds=(3,), num_samples=1)
+        runner.run(request, work_dir)
+        (call,) = stub_protenix.calls()
+        assert call["job"][0]["covalent_bonds"] == [head_to_tail_bond(11)]
 
 
 # ---------------------------------------------------------------------------- the weights
@@ -666,6 +877,7 @@ class TestMakeRequest:
             "use_msa_server": True,
             "msa_server_mode": "protenix",
             "on_unmappable_residue": "error",
+            "binder_cyclic": "auto",
             "constraints": None,
             "covalent_bonds": None,
             "extra_args": [],
@@ -687,6 +899,8 @@ class TestMakeRequest:
             {"use_msa_server": False},
             {"msa_server_mode": "colabfold"},
             {"on_unmappable_residue": "x"},
+            {"binder_cyclic": False},
+            {"binder_cyclic": True},
             {"extra_args": ["--cycle", "4"]},
             {"binder_chain": "A", "receptor_chain": "B"},
         ],
@@ -1290,6 +1504,15 @@ class TestTheSourceBehindTheRunner:
         assert "a **soft constraint**" in lines[255]
         assert "the model is encouraged, but not strictly required, to satisfy it" in lines[255]
         assert "head-to-tail amide bond" in " ".join(lines[221:229])
+        assert "A head-to-tail amide bond connecting the N- and C-terminal residues" in lines[225]
+        assert "A disulfide bond between cysteine residues" in lines[226]
+        assert "not reliably handled" in lines[228]
+        assert "`entity1`, `entity2`" in lines[232] and "starting from 1" in lines[233]
+        assert "`copy1`, `copy2`" in lines[234] and "starting from 1" in lines[234]
+        assert (
+            "starts at 1" in lines[236] and "location of the residue in the sequence" in lines[237]
+        )
+        assert "consistent with those defined in the CCD" in lines[242]
         assert "order in which the entity appears in the `sequences` list" in lines[233]
 
     def test_the_polymer_builder_replaces_the_residue_by_the_ccd_component(self):
