@@ -265,7 +265,7 @@ class TestDocs:
         from pathlib import Path
 
         text = (Path(__file__).parent.parent / "docs" / "metrics.md").read_text(encoding="utf-8")
-        start = text.index("**known limitation: the MSA server and the templates")
+        start = text.index("**the MSA server and the templates (issue #68")
         section = text[start : text.index("\n\n", start)]
         assert "`--openfold-no-msa-server`" in section and "`--no-msa-server`" in section
         assert "lowers accuracy for a natural receptor" in section

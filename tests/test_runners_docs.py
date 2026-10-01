@@ -183,22 +183,24 @@ class TestNothingSaysThatOnlyOpenFold3CanBeRun:
 
 
 class TestTheStatusIsNotOverstated:
-    """Only the Boltz-2 runner has been run on a real model; the others rest on source reading."""
+    """The OpenFold3 and Boltz-2 runners have been run on real models; the others rest on source."""
 
     def test_the_readme_says_which_runners_were_run_and_which_were_not(self):
         text = flat(README)
+        assert "the OpenFold3 runner and adapter, on OpenFold3 0.5.0" in text
+        assert "no held-out complex, so the accuracy of the model is not measured" in text
         assert "the Boltz-2 runner, once, on Boltz-2 2.2.1" in text
         assert (
-            "OpenFold3, Protenix and ColabFold have been tested with a stand-in process only"
+            "The runners of Protenix and ColabFold have been tested with a stand-in process only"
             in text
         )
         assert "rest on reading the source of the model, not on a run" in text
 
     def test_the_metrics_page_says_the_same_in_its_adapter_and_runner_sections(self):
         text = flat(METRICS)
-        assert (
-            "the runners of OpenFold3, Protenix and ColabFold were tested with a stand-in" in text
-        )
+        assert "the OpenFold3 and Boltz-2 runners have been run on the real models" in text
+        assert "and the runners of Protenix and ColabFold were tested with a stand-in" in text
+        assert "none of them is a held-out complex" in text
         assert "it was not run against ColabFold" in text
         assert "it was not run against Protenix" in text
         assert "the exit-0-without-output paths, `use_msa_server=True` and a conda environment" in (

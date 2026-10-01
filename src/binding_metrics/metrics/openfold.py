@@ -357,10 +357,13 @@ def compute_openfold_metrics(
             binder_avg_plddt (float): mean pLDDT over all binder residues
 
         Interface PDE / PAE [requires binder_chain + receptor_chain]:
-            The block is located with one token per residue. When the matrix
-            size differs from the structure's residue count (a ligand, ion or
-            modified residue is tokenised per atom), the interface values stay
-            NaN, a warning is issued and ``reason`` says why.
+            The block is cut with the token layout that the adapter builds from
+            the structure (one token per standard residue, one per heavy atom
+            of a modified residue or ligand), so a binder with modified
+            residues gets its values. They stay NaN, a warning is issued and
+            ``reason`` says why, only when the layout cannot be shown to fit the
+            files (the token count differs from the matrix size, the chains
+            differ from those the confidences name).
             mean_interface_pde (float): mean PDE over binder×receptor tokens (Å)
             max_interface_pde (float): max PDE over binder×receptor tokens (Å)
             pde_interface (np.ndarray | None): raw PDE slice, shape
@@ -621,8 +624,8 @@ def run_openfold_scoring(
     complex it predicts from them. Each chain has its own template and no cross-chain geometry is
     supplied, so OF3 places the binder itself: its confidences describe its own pose, and
     ``binder_ca_rmsd`` and ``delta_com_angstrom`` of the EvoBind adversarial check say how far
-    that pose is from the input pose (see :func:`prepare_scoring_query`; with the MSA server on,
-    issue #68 applies).
+    that pose is from the input pose (see :func:`prepare_scoring_query`; with the MSA server on
+    and ``template_mode="alignment"`` the run has no template, issue #68).
     Use :func:`compute_openfold_metrics` with ``binder_chain`` and
     ``receptor_chain`` to extract per-chain scores after inference.
 

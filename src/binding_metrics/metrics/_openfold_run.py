@@ -1982,9 +1982,14 @@ def prepare_scoring_query(
     binder centre of mass after superposing the receptor). In this mode the binder also has its
     own fold as a template, so ``binder_ca_rmsd`` is less free of the input than in refold mode.
 
-    Known limitation (issue #68): with the ColabFold MSA server on (the default) the server can
-    replace the template alignment of a chain for which it finds hits, so that chain may not be
-    given the structure written here; ``use_msa_server=False`` (``--no-msa-server``) keeps it.
+    Issue #68, measured on one complex (1YCR, OpenFold3 0.5.0, one seed): with the ColabFold MSA
+    server on (the default) OpenFold3 replaces the template alignment of both chains with the
+    server's, finds none of the structures it lists (the toolkit runs it with
+    ``fetch_missing_structures: false``) and goes on without any template, so the run is a
+    template-free prediction (binder Cα RMSD against the input 1.62 A, against 1.12 A with the
+    template read). ``use_msa_server=False`` (``--no-msa-server``) or ``template_mode="structure"``
+    keeps the template; ``run_openfold`` records what became of each template (see
+    :mod:`binding_metrics.metrics._openfold_templates`).
 
     Files written under ``output_dir``:
 
