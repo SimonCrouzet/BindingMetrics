@@ -635,6 +635,45 @@ class TestResultBlock:
         }
         assert "templates" not in block.get("reason", "")  # whether it asked is not known
 
+    def test_the_markdown_report_has_a_templates_row(self, tmp_path, monkeypatch):
+        from binding_metrics.protocols.report import write_report
+
+        StubWithTemplateFiles(
+            monkeypatch, [_chain("A", [], None), _chain("B", [], None)], accounting=_LOST
+        )
+        results = _pipeline(tmp_path, predictor="of3")
+        write_report(results, tmp_path, "s", fmt="json", summary=True)
+        report = (tmp_path / "s_report.md").read_text(encoding="utf-8")
+        row = next(line for line in report.splitlines() if line.startswith("| Templates"))
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        assert cells == [
+            "Templates",
+            "A: not used (replaced_by_msa_server), B: not used (replaced_by_msa_server)",
+        ]
+
+    def test_a_run_without_accounting_has_no_templates_row(self, tmp_path, monkeypatch):
+        from binding_metrics.protocols.report import write_report
+
+        StubOpenFold(monkeypatch)
+        results = _pipeline(tmp_path, predictor="of3")
+        write_report(results, tmp_path, "s", fmt="json", summary=True)
+        assert "Templates" not in (tmp_path / "s_report.md").read_text(encoding="utf-8")
+
+    def test_the_label_names_each_chain(self):
+        from binding_metrics.protocols.report import _templates_label
+
+        label = _templates_label(
+            {
+                "A": {"requested": True, "used": True, "cause": None},
+                "B": {"requested": False, "used": False, "cause": NOT_REQUESTED},
+                "C": {"requested": True, "used": False, "cause": PREPROCESSING_FAILED},
+                "D": {"requested": None, "used": False, "cause": None},
+            }
+        )
+        assert label == (
+            f"A: used, B: none asked for, C: not used ({PREPROCESSING_FAILED}), D: not used"
+        )
+
     def test_a_stub_run_without_any_file_adds_nothing(self, tmp_path, monkeypatch):
         StubOpenFold(monkeypatch)
         block = _pipeline(tmp_path, predictor="of3")["prediction"]

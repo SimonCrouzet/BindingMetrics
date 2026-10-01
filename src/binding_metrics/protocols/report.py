@@ -626,6 +626,28 @@ def _weights_label(weights: dict) -> str:
     return f"default ({name})"
 
 
+def _templates_label(templates: dict) -> str:
+    """One line for what became of the templates, ``A: used, B: not used (cause)``.
+
+    ``templates`` is ``{chain ID: {"requested", "used", "cause", ...}}`` (see
+    ``binding_metrics.metrics._openfold_templates``). A chain that did not ask for one (the
+    binder of a ``refold`` run, a ``predict`` run) says so instead of ``not used``.
+    """
+    parts = []
+    for chain_id in sorted(templates, key=str):
+        record = templates[chain_id]
+        if not isinstance(record, dict):
+            continue
+        if record.get("used"):
+            parts.append(f"{chain_id}: used")
+        elif record.get("requested") is False:
+            parts.append(f"{chain_id}: none asked for")
+        else:
+            cause = record.get("cause")
+            parts.append(f"{chain_id}: not used ({cause})" if cause else f"{chain_id}: not used")
+    return ", ".join(parts)
+
+
 def _md_confidence_lines(section: dict, extra_rows: list[list[str]] | None = None) -> list[str]:
     """The confidence table and the low-pLDDT warning shared by the OpenFold and prediction blocks.
 
@@ -642,6 +664,11 @@ def _md_confidence_lines(section: dict, extra_rows: list[list[str]] | None = Non
     ]
     if "binder_cyclic" in section:  # whether the query sent the binder as `cyclic: true`
         rows.append(["Binder sent as cyclic", "yes" if section["binder_cyclic"] else "no"])
+    templates = section.get("templates")
+    if isinstance(templates, dict) and templates:  # what OpenFold3 did with each template
+        label = _templates_label(templates)
+        if label:
+            rows.append(["Templates", label])
     weights = section.get("weights")
     if isinstance(weights, dict):  # custom weights by content, or the checkpoint the model names
         rows.append(["Weights", _weights_label(weights)])
