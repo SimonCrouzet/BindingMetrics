@@ -1,4 +1,4 @@
-"""What became of the templates of an OpenFold3 run, and what OpenFold3 says about them.
+"""What became of the templates of an OpenFold3 run, and what OpenFold3 says on its streams.
 
 OpenFold3 0.5.0 takes a template as an alignment file (or a list of CIF files) per chain and
 preprocesses it before the model runs. Three things can leave a chain without its template while
@@ -19,8 +19,9 @@ chain that declared a template source has ``template_entry_chain_ids`` set to th
 
 This module reads that file, adds why a chain that asked for a template did not get one (from the
 messages above and from whether the server was on), and keeps the result in
-``<predictions>/template_accounting.json`` so that it can be read again from a stored run. It
-imports the standard library only.
+``<predictions>/template_accounting.json`` so that it can be read again from a stored run. It also
+reads the warning that OpenFold3 prints when a query fails while its features are built (before
+the model runs), for which it writes no log file. It imports the standard library only.
 
 Record of one chain (``chain ID -> record``, below the query name)::
 
@@ -89,22 +90,33 @@ _PREPROCESS_FAILED = re.compile(r"Failed to preprocess template alignment (?P<pa
 _PREPROCESS_TIMED_OUT = re.compile(
     r"Template preprocessing TIMED OUT after (?P<seconds>\S+?)s for (?P<path>.*?)\.?\s*$"
 )
+_QUERY_FAILED = re.compile(
+    r"Failed to process (?P<query>\S+) with preferredException type: (?P<kind>\S+)"
+)
+_DASHES = re.compile(r"^-{20,}\s*$")
 
 #: Lines after a header in which the rest of a block is looked for.
 _BLOCK_LINES = 40
 
+#: Lines of a traceback after which a failed-query block is closed although no closing line came.
+_TRACEBACK_LINES = 400
+
 
 class StreamNotes:
-    """The lines of OpenFold3's output that explain a lost template.
+    """The lines of OpenFold3's output that explain a lost template or a failed query.
 
     Fed with the text of one stream as it arrives (``feed``), because the tail of stderr that
     the error message keeps is cut to a few kilobytes and these lines come before the progress
-    bars. Two kinds are noted:
+    bars. Three kinds are noted:
 
     * ``overwritten``: the ``(query, chain ID)`` pairs whose template alignment the MSA server
       replaced;
     * ``failed_templates``: ``alignment path -> error`` for a template preprocessing that
-      raised or timed out.
+      raised or timed out;
+    * ``failed_queries``: ``query -> "ExceptionType: message"`` for a query whose features
+      could not be built. OpenFold3 writes ``logs/predict_err_rank<N>.log`` only for a failure in
+      the model's forward pass; a failure while the features are built (``single_datasets/
+      inference.py``) is a logger warning and nothing else.
 
     One object per stream; ``merge`` combines them.
     """
@@ -112,8 +124,10 @@ class StreamNotes:
     def __init__(self) -> None:
         self.overwritten: set[tuple[str, str]] = set()
         self.failed_templates: dict[str, str] = {}
+        self.failed_queries: dict[str, str] = {}
         self._partial = ""
         self._template: Optional[dict[str, Any]] = None
+        self._query: Optional[dict[str, Any]] = None
 
     def feed(self, text: str) -> None:
         """Take the next chunk of the stream; a line is read once it is complete."""
@@ -128,16 +142,20 @@ class StreamNotes:
             self._read_line(self._partial.split("\r")[-1].rstrip())
             self._partial = ""
         self._close_template()
+        self._close_query()
 
     def merge(self, other: "StreamNotes") -> "StreamNotes":
         """Add what ``other`` noted to this object and return it."""
         self.overwritten |= other.overwritten
         self.failed_templates.update(other.failed_templates)
+        self.failed_queries.update(other.failed_queries)
         return self
 
     # ---- one line
 
     def _read_line(self, line: str) -> None:
+        if self._query is not None:
+            self._continue_query(line)
         if self._template is not None:
             self._continue_template(line)
         if "overwritten with a path to the template alignment" in line:
@@ -155,6 +173,16 @@ class StreamNotes:
         if timed_out:
             path = timed_out.group("path").strip()
             self.failed_templates[path] = f"timed out after {timed_out.group('seconds')} s"
+            return
+        query = _QUERY_FAILED.search(line) if "Failed to process" in line else None
+        if query:
+            self._close_query()
+            self._query = {
+                "query": query.group("query"),
+                "kind": query.group("kind"),
+                "last": "",
+                "lines": 0,
+            }
 
     # ---- "Failed to preprocess template alignment <path>:" (a print on stdout)
     # followed by the blank-separated blocks "Exception:", the message, "Type:", the type name.
@@ -181,6 +209,24 @@ class StreamNotes:
         kind, message = block.get("type"), block.get("message")
         error = ": ".join(part for part in (kind, message) if part) or "no message"
         self.failed_templates[block["path"]] = error[:_DETAIL_CHARS]
+
+    # ---- "Failed to process <query> with preferredException type: <T>" (a logger warning)
+    # followed by the traceback and a closing line of dashes; the last line of the traceback that
+    # starts with the exception type is the exception.
+
+    def _continue_query(self, line: str) -> None:
+        block = self._query
+        block["lines"] += 1
+        if _DASHES.match(line) or block["lines"] > _TRACEBACK_LINES:
+            self._close_query()
+        elif line.startswith(block["kind"]):
+            block["last"] = line.strip()
+
+    def _close_query(self) -> None:
+        block, self._query = self._query, None
+        if block is None:
+            return
+        self.failed_queries[block["query"]] = (block["last"] or block["kind"])[:_DETAIL_CHARS]
 
 
 # ---------------------------------------------------------------------------

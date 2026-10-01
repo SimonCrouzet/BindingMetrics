@@ -25,6 +25,7 @@ from binding_metrics.metrics._openfold_run import (
     _run_openfold_command,
     _user_default_runner_yaml,
 )
+from binding_metrics.metrics._openfold_templates import StreamNotes
 
 
 def _fake_openfold(code: str) -> list[str]:
@@ -270,8 +271,9 @@ class TestErrorLog:
         reasons = _failed_query_reasons(tmp_path)
         assert reasons == {
             "q2": "OpenFold3 failed on this query: OutOfMemoryError: CUDA out of memory "
-            f"(see {log})"
+            "(logs/predict_err_rank0.log in the output of the run)"
         }
+        assert str(tmp_path) not in reasons["q2"] and log.parent.name == "logs"
 
 
 _WRITE_RUN = """
@@ -313,7 +315,9 @@ class TestExitZeroWithFailedQueries:
         assert list(error.failures) == ["only"]
         assert "failed on every query" in str(error)
         assert "CUDA out of memory" in str(error)
-        assert str(out / "logs" / "predict_err_rank0.log") in str(error)
+        assert "logs/predict_err_rank0.log" in str(error)
+        # the store renames the folder of a run, so no recorded text may name it
+        assert str(out) not in str(error) and error.output_dir == out
 
     def test_a_stale_summary_does_not_make_a_new_run_fail(self, tmp_path):
         out = tmp_path / "o"
@@ -366,3 +370,287 @@ class TestUserDefaultRunnerYaml:
             info = _run_openfold_command(_fake_openfold("pass"), tmp_path / "o")
         assert info.user_default_runner_yaml is None
         assert "runner YAML" not in caplog.text
+
+
+#: The warning that openfold3 0.5.0 logs when the features of a query cannot be built
+#: (``single_datasets/inference.py``), as a real run printed it (1YCR, score, template CIF
+#: rejected). No ``logs/predict_err_rank<N>.log`` exists for it.
+_FEATURE_FAILURE = """\
+----------------------------------------
+Failed to process {query} with preferredException type: ValueError
+Traceback: Traceback (most recent call last):
+  File "openfold3/core/data/framework/single_datasets/inference.py", line 362, in __getitem__
+    features = self.create_all_features(query)
+  File "openfold3/core/data/primitives/structure/labels.py", line 459, in assign_entity_ids
+    atom_array.set_annotation("entity_id", atom_array.label_entity_id.astype(int))
+ValueError: invalid literal for int() with base 10: np.str_('.')
+----------------------------------------
+"""
+
+_WRITE_FEATURE_FAILURE = """
+import pathlib, sys
+out = pathlib.Path(sys.argv[1])
+out.mkdir(parents=True, exist_ok=True)
+(out / "summary.txt").write_text(sys.argv[2], encoding="utf-8")
+sys.stderr.write(sys.argv[3])
+"""
+
+
+class TestFailureWhileTheFeaturesAreBuilt:
+    """OpenFold3 writes no log for it: the exception is only in what it printed."""
+
+    def _run(self, out, names, failed, stderr_for):
+        stderr = "".join(stderr_for(name) for name in failed)
+        cmd = _fake_openfold(_WRITE_FEATURE_FAILURE) + [
+            str(out),
+            _summary_text(len(names), failed),
+            "x" * 12000 + "\n" + stderr + "progress bar noise\n" * 800,  # far from the end
+        ]
+        return _run_openfold_command(cmd, out)
+
+    def test_the_exception_line_is_the_reason(self, tmp_path):
+        out = tmp_path / "o"
+        with pytest.raises(OpenFoldQueryError) as info:
+            self._run(out, ["q"], ["q"], lambda name: _FEATURE_FAILURE.format(query=name))
+        reason = info.value.failures["q"]
+        assert reason == (
+            "OpenFold3 failed while it built the features of this query: "
+            "ValueError: invalid literal for int() with base 10: np.str_('.')"
+        )
+        assert "invalid literal for int()" in str(info.value)
+        assert "see " not in reason and "logs directory" not in reason
+
+    def test_no_reason_names_the_work_directory(self, tmp_path):
+        out = tmp_path / "work" / "predictions"
+        with pytest.raises(OpenFoldQueryError) as info:
+            self._run(out, ["q"], ["q"], lambda name: _FEATURE_FAILURE.format(query=name))
+        assert str(tmp_path) not in str(info.value) + info.value.failures["q"]
+
+    def test_each_failed_query_gets_its_own_exception(self, tmp_path):
+        def stderr_for(name):
+            kind = "KeyError: 'x'" if name == "b" else "ValueError: bad shape"
+            text = _FEATURE_FAILURE.format(query=name)
+            return text.replace(
+                "ValueError: invalid literal for int() with base 10: np.str_('.')", kind
+            ).replace("Exception type: ValueError", f"Exception type: {kind.split(':')[0]}")
+
+        info = self._run(tmp_path / "o", ["a", "b", "c"], ["a", "b"], stderr_for)
+        assert info.failed_queries["a"].endswith("ValueError: bad shape")
+        assert info.failed_queries["b"].endswith("KeyError: 'x'")
+        assert "c" not in info.failed_queries
+
+    def test_a_forward_pass_error_log_still_wins(self, tmp_path):
+        """A query with a log file is explained by it, not by the warning."""
+        out = tmp_path / "o"
+        out.mkdir()
+        (out / "summary.txt").write_text(_summary_text(2, ["q"]), encoding="utf-8")
+        logs = out / "logs"
+        logs.mkdir()
+        (logs / "predict_err_rank0.log").write_text(
+            _error_log_entry(["q"], "OutOfMemoryError", "CUDA out of memory"), encoding="utf-8"
+        )
+        notes = StreamNotes()
+        notes.feed(_FEATURE_FAILURE.format(query="q"))
+        notes.finish()
+        assert "OutOfMemoryError" in _failed_query_reasons(out, notes=notes)["q"]
+
+    def test_without_the_warning_the_reason_says_where_to_look_without_a_path(self, tmp_path):
+        (tmp_path / "summary.txt").write_text(_summary_text(2, ["q2"]), encoding="utf-8")
+        reason = _failed_query_reasons(tmp_path)["q2"]
+        assert "summary.txt" in reason and "stderr" in reason and str(tmp_path) not in reason
+
+
+class TestNotesOfFailedQueries:
+    def test_the_exception_is_the_last_line_that_starts_with_its_type(self):
+        notes = StreamNotes()
+        notes.feed(_FEATURE_FAILURE.format(query="q"))
+        notes.finish()
+        assert notes.failed_queries == {
+            "q": "ValueError: invalid literal for int() with base 10: np.str_('.')"
+        }
+
+    def test_a_block_cut_by_the_end_of_the_stream_is_kept(self):
+        notes = StreamNotes()
+        notes.feed(_FEATURE_FAILURE.format(query="q").rsplit("----", 2)[0])
+        notes.finish()
+        assert "invalid literal" in notes.failed_queries["q"]
+
+    def test_without_a_traceback_line_the_type_is_the_reason(self):
+        notes = StreamNotes()
+        notes.feed(
+            "Failed to process q with preferredException type: MemoryError\n" + "-" * 40 + "\n"
+        )
+        notes.finish()
+        assert notes.failed_queries == {"q": "MemoryError"}
+
+    def test_the_text_of_two_queries_is_kept_apart(self):
+        notes = StreamNotes()
+        notes.feed(_FEATURE_FAILURE.format(query="q1") + _FEATURE_FAILURE.format(query="q2"))
+        notes.finish()
+        assert set(notes.failed_queries) == {"q1", "q2"}
+
+
+class TestTheHeadlineOfAMissingDefaultCheckpoint:
+    """openfold3 0.5.0: the pydantic line says nothing; the reason is a later line."""
+
+    _STDERR = (
+        "Traceback (most recent call last):\n"
+        '  File "run_openfold.py", line 223, in predict\n'
+        "pydantic_core._pydantic_core.ValidationError: 1 validation error for "
+        "InferenceExperimentConfig\n"
+        "  Value error, Default checkpoint openbind-2025-06-30-174k not found in "
+        "/home/u/.openfold3, cowardly refusing to perform inference.Please run `setup_openfold` "
+        "to download the current default\n"
+        "    For further information visit https://errors.pydantic.dev/2.13/v/value_error\n"
+        "ERROR conda.cli.main_run:execute(125): `conda run run_openfold predict` failed\n"
+    )
+
+    def test_the_headline_is_the_reason_and_not_the_validation_error(self, tmp_path):
+        cmd = _fake_openfold(f"import sys; sys.stderr.write({self._STDERR!r}); sys.exit(1)")
+        with pytest.raises(OpenFoldRunError) as info:
+            _run_openfold_command(cmd, tmp_path)
+        headline = str(info.value).splitlines()[0]
+        assert headline.startswith(
+            "OpenFold3 exited with status 1: Value error, Default checkpoint"
+        )
+        assert "cowardly refusing" in headline
+        assert "1 validation error" not in headline
+        assert "setup_openfold --non-interactive" in str(info.value)  # the hint stays
+
+    def test_another_failure_keeps_its_exception_line(self, tmp_path):
+        cmd = _fake_openfold("import sys; sys.stderr.write('RuntimeError: boom\\n'); sys.exit(2)")
+        with pytest.raises(OpenFoldRunError) as info:
+            _run_openfold_command(cmd, tmp_path)
+        assert str(info.value).splitlines()[0].endswith("RuntimeError: boom")
+
+
+class TestAMissingCondaEnvironmentIsNamed:
+    """``conda run -n <env>`` of a typo gives "cannot be started on this machine" and no name."""
+
+    @pytest.fixture
+    def no_openfold3(self, monkeypatch):
+        monkeypatch.setattr(
+            _openfold_run, "installed_openfold3_version", lambda python_cmd=None: None
+        )
+
+    def test_the_runner_says_which_environment_it_looked_in(self, no_openfold3, monkeypatch):
+        from binding_metrics.predictors.of3_runner import OpenFold3Runner
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/conda")
+        reason = OpenFold3Runner(conda_env="no_such_env_xyz").unavailable_reason()
+        assert "'no_such_env_xyz'" in reason
+        assert "does not exist or has no openfold3" in reason
+        assert "conda run -n no_such_env_xyz python" in reason
+
+    def test_without_conda_the_reason_says_so(self, no_openfold3, monkeypatch):
+        from binding_metrics.predictors.of3_runner import OpenFold3Runner
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        reason = OpenFold3Runner(conda_env="of3").unavailable_reason()
+        assert "conda is not on PATH" in reason and "'of3'" in reason
+
+    def test_without_an_environment_the_reason_is_the_executable(self, monkeypatch):
+        from binding_metrics.predictors.of3_runner import OpenFold3Runner
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        assert "run_openfold is not on PATH" in OpenFold3Runner().unavailable_reason()
+
+    def test_an_available_runner_has_no_reason(self, monkeypatch):
+        from binding_metrics.predictors.of3_runner import OpenFold3Runner
+
+        monkeypatch.setattr(
+            _openfold_run, "installed_openfold3_version", lambda python_cmd=None: "0.5.0"
+        )
+        assert OpenFold3Runner(conda_env="openfold3").unavailable_reason() is None
+
+    def test_the_text_of_the_pipeline_names_the_environment(self, no_openfold3, tmp_path):
+        from pathlib import Path
+
+        from binding_metrics.cli.prediction import run_single_prediction
+
+        p53 = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+        block, _ = run_single_prediction(
+            "of3",
+            p53,
+            tmp_path,
+            "s1",
+            binder_chain="B",
+            receptor_chain="A",
+            openfold_conda_env="no_such_env_xyz",
+        )
+        assert "the of3 model cannot be started on this machine" in block["error"]
+        assert "Why: " in block["error"] and "'no_such_env_xyz'" in block["error"]
+        assert "--openfold-conda-env" in block["error"]  # the hint stays
+
+    def test_a_runner_without_the_method_gives_the_old_text(self):
+        from binding_metrics.cli.prediction import error_text
+        from binding_metrics.predictors.store import PredictionUnavailableError
+
+        error = PredictionUnavailableError("the x model cannot be started on this machine")
+        assert "Why:" not in error_text(error, "of3", runner=object())
+        assert "Why:" not in error_text(error, "of3")
+
+
+class TestOutputUnderAnotherKey:
+    """Mode ``predict``: the output is named after the key of the query file."""
+
+    def _folder(self, tmp_path, *keys):
+        from pathlib import Path
+
+        from tests.test_feat_c_support import write_of3_output
+
+        p53 = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+        predictions = tmp_path / "predictions"
+        predictions.mkdir()
+        for key in keys:
+            write_of3_output(predictions, key, p53)
+        (predictions / "msas").mkdir(exist_ok=True)  # not a query
+        (predictions / "logs").mkdir(exist_ok=True)
+        return predictions
+
+    def _request(self, tmp_path, name="requested"):
+        from binding_metrics.predictors.of3_runner import OpenFold3Runner
+
+        query = tmp_path / "query.json"
+        query.write_text('{"queries": {"in_the_file": {"chains": []}}}', encoding="utf-8")
+        return OpenFold3Runner().make_request(query, name=name, mode="predict")
+
+    def test_the_keys_that_have_output_are_named(self, tmp_path):
+        from binding_metrics.predictors.of3_runner import OpenFold3Runner
+
+        predictions = self._folder(tmp_path, "in_the_file")
+        with pytest.raises(RuntimeError) as info:
+            OpenFold3Runner._require_output(self._request(tmp_path), predictions)
+        text = str(info.value)
+        assert text.startswith("OpenFold3 wrote no output for query 'requested'")
+        assert "holds output for 'in_the_file'" in text
+        assert "key of the query in the query file" in text
+        assert "msas" not in text and "logs" not in text and str(tmp_path) not in text
+
+    def test_two_keys_are_both_named(self, tmp_path):
+        from binding_metrics.predictors.of3_runner import OpenFold3Runner
+
+        predictions = self._folder(tmp_path, "b_query", "a_query")
+        with pytest.raises(RuntimeError, match="holds output for 'a_query', 'b_query'"):
+            OpenFold3Runner._require_output(self._request(tmp_path), predictions)
+
+    def test_a_folder_without_output_names_no_key(self, tmp_path):
+        from binding_metrics.predictors.of3_runner import OpenFold3Runner
+
+        predictions = self._folder(tmp_path)
+        with pytest.raises(RuntimeError) as info:
+            OpenFold3Runner._require_output(self._request(tmp_path), predictions)
+        assert "holds output" not in str(info.value)
+
+    def test_a_query_that_failed_keeps_its_own_reason(self, tmp_path):
+        from binding_metrics.predictors.of3_runner import _no_output_message
+
+        request = self._request(tmp_path, name="q")
+        text = _no_output_message(request, {"q": "OpenFold3 failed: boom"}, ["other"])
+        assert text.endswith(": OpenFold3 failed: boom") and "holds output" not in text
+
+    def test_a_request_with_the_right_key_finds_its_output(self, tmp_path):
+        from binding_metrics.predictors.of3_runner import OpenFold3Runner
+
+        predictions = self._folder(tmp_path, "in_the_file")
+        OpenFold3Runner._require_output(self._request(tmp_path, name="in_the_file"), predictions)

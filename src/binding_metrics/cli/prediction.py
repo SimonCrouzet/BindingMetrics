@@ -1139,16 +1139,22 @@ def _evobind_score_of(record, binder_chain: str, receptor_chain: str) -> dict:
     )
 
 
-def error_text(error: BaseException, model: str) -> str:
+def error_text(error: BaseException, model: str, runner: Optional[Any] = None) -> str:
     """The text of a failed prediction for ``results["prediction"]["error"]``.
 
-    A model that cannot be started here gets the ways to start it: its executable on PATH, the
-    conda environment option, or an output you made. Any other error is its own text.
+    A model that cannot be started here gets what was looked for (``runner.unavailable_reason()``
+    when the runner has it: the conda environment is named) and the ways to start it: its
+    executable on PATH, the conda environment option, or an output you made. Any other error is
+    its own text.
     """
     from binding_metrics.predictors.store import PredictionUnavailableError
 
     text = str(error)
     if isinstance(error, PredictionUnavailableError) and "cannot be started" in text:
+        why = getattr(runner, "unavailable_reason", None)
+        reason = why() if callable(why) else None
+        if reason:
+            text += f"\nWhy: {reason}"
         env = "--openfold-conda-env" if model == "of3" else "--prediction-conda-env"
         text += (
             f"\nHint: put the executable of {display_name(model)} on PATH, or name the conda "
@@ -1197,8 +1203,12 @@ def _analyse(
     adopted: bool = False,
     seed_index: int = 1,
     mode: Optional[str] = None,
+    runner: Optional[Any] = None,
 ) -> tuple[dict, dict]:
-    """Every consumer of one prediction, all reading the record the session parsed once."""
+    """Every consumer of one prediction, all reading the record the session parsed once.
+
+    ``runner`` is the runner of the session, asked why the model cannot be started when it cannot.
+    """
     from binding_metrics.metrics.evobind import compute_evobind_adversarial_from_records
     from binding_metrics.metrics.prediction import summarize_prediction
     from binding_metrics.predictors.store import PredictionFailedError, PredictionUnavailableError
@@ -1210,7 +1220,7 @@ def _analyse(
         return {
             "model": request.model,
             "mode": mode,
-            "error": error_text(error, request.model),
+            "error": error_text(error, request.model, runner),
             "cache": _cache_block(session, request, adopted=adopted),
         }, {}
 
@@ -1274,6 +1284,7 @@ def run_prediction_step(
     seed_index: int = 1,
     mode: Optional[str] = None,
     default_chain_map: Optional[Mapping[str, str]] = None,
+    runner: Optional[Any] = None,
 ) -> tuple[dict, dict]:
     """The prediction step for one sample; never raises.
 
@@ -1295,6 +1306,8 @@ def run_prediction_step(
             the runner names them itself (``runner_chain_map``). It is used when neither
             ``prediction_binder_chain`` nor ``prediction_target_chain`` is given, which take
             precedence.
+        runner: The runner of the session; when the model cannot be started, its
+            ``unavailable_reason()`` (if it has one) is added to the error text.
 
     Returns:
         ``(block, provenance)``: the value of ``results["prediction"]`` and the provenance keys
@@ -1319,6 +1332,7 @@ def run_prediction_step(
             adopted=prediction_dir is not None,
             seed_index=seed_index,
             mode=mode,
+            runner=runner,
         )
     except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["prediction"]
         logger.warning("  [warning] %s prediction failed: %s", display_name(request.model), e)
@@ -1426,6 +1440,7 @@ def run_single_prediction(
         seed_index=1 if adopt else scored_seed_index(openfold_seeds),
         mode=mode,
         default_chain_map=default_chain_map,
+        runner=runner,
     )
     if predictor == "of3" and not adopt and not block.get("error"):
         record_binder_cyclic(block, input_path, binder_chain, openfold_cyclic, openfold_conda_env)

@@ -178,6 +178,25 @@ class OpenFold3Runner(PredictionRunner):
             return shutil.which("run_openfold") is not None
         return self.version() is not None
 
+    def unavailable_reason(self) -> Optional[str]:
+        """Why ``is_available()`` is False, naming the conda environment; None when it is True.
+
+        The store's own message says only that the model cannot be started on this machine; this
+        names what was looked for, so that a typo in ``--openfold-conda-env`` is found at once.
+        """
+        if self.is_available():
+            return None
+        if self.conda_env is None:
+            return "run_openfold is not on PATH, and no conda environment was named"
+        if shutil.which("conda") is None:
+            return (
+                f"conda is not on PATH, so the conda environment '{self.conda_env}' cannot be used"
+            )
+        return (
+            f"the conda environment '{self.conda_env}' does not exist or has no openfold3 "
+            f"(`conda run -n {self.conda_env} python -c 'import openfold3'` failed)"
+        )
+
     # ------------------------------------------------------------------ the request
 
     def make_request(
@@ -526,18 +545,44 @@ class OpenFold3Runner(PredictionRunner):
         if OpenFold3Parser().find_files(predictions, request.name).has_output():
             return
         failures = _run_module()._failed_query_reasons(predictions)
-        raise RuntimeError(_no_output_message(request, failures))
+        raise RuntimeError(_no_output_message(request, failures, _output_keys(predictions)))
 
 
-def _no_output_message(request: PredictionRequest, failures: dict[str, str]) -> str:
+def _output_keys(predictions: Path) -> list[str]:
+    """The queries that have output below ``predictions``: folders with a ``seed_*`` directory."""
+    if not Path(predictions).is_dir():
+        return []
+    return sorted(
+        folder.name
+        for folder in Path(predictions).iterdir()
+        if folder.is_dir() and any(seed.is_dir() for seed in folder.glob("seed_*"))
+    )
+
+
+def _no_output_message(
+    request: PredictionRequest, failures: dict[str, str], found: Sequence[str] = ()
+) -> str:
     """The reason of a query without output; it holds no path of the work directory.
 
     The store renames the temporary work directory when it keeps the run, so a path would point
-    at nothing in the recorded reason: the folder is named relative to the stored entry.
+    at nothing in the recorded reason: the folder is named relative to the stored entry. When the
+    folder holds output under other keys (``found``), they are named: in mode ``predict`` OpenFold3
+    names the output after the key of the query in the query file, and a request with another name
+    finds nothing although the prediction exists.
     """
     message = (
         f"OpenFold3 wrote no output for query '{request.name}' in the predictions folder of the "
         "run (outputs/predictions of a stored entry)"
     )
     reason = failures.get(request.name)
-    return f"{message}: {reason}" if reason else message
+    if reason:
+        return f"{message}: {reason}"
+    if found:
+        keys = ", ".join(f"'{key}'" for key in found)
+        message += f"; the folder holds output for {keys}"
+        if request.mode == "predict":
+            message += (
+                ". In mode 'predict' OpenFold3 names the output after the key of the query in "
+                "the query file, so the request must have that name"
+            )
+    return message

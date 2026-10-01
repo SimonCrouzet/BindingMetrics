@@ -729,8 +729,22 @@ def _stderr_lines(text: str) -> list[str]:
     return lines
 
 
+#: Phrases of a line that gives the reason of a failure better than the exception that carries it.
+#: openfold3 0.5.0 without its default checkpoint stops with a pydantic ``ValidationError`` whose
+#: first line says only "1 validation error for InferenceExperimentConfig"; the reason is a later
+#: line, "Value error, Default checkpoint ... cowardly refusing to perform inference".
+_REASON_PHRASES = ("cowardly refusing",)
+
+
 def _key_line(lines: Sequence[str]) -> str:
-    """The line that names the failure: the last exception line, else the last line."""
+    """The line that names the failure.
+
+    A line that states the reason (``_REASON_PHRASES``) wins; else the last exception line; else
+    the last line.
+    """
+    for line in reversed(lines):
+        if any(phrase in line for phrase in _REASON_PHRASES):
+            return line
     for line in reversed(lines):
         if re.match(r"^[\w.]*(Error|Exception|Exit|Interrupt)\b", line):
             return line
@@ -778,9 +792,9 @@ class OpenFoldQueryError(RuntimeError):
         self.output_dir = Path(output_dir)
         self.failures = failures
         lines = "\n".join(f"  {name}: {why}" for name, why in failures.items())
-        super().__init__(
-            f"OpenFold3 exited normally but failed on every query in {output_dir}:\n{lines}"
-        )
+        # No path: the store renames the folder of a run when it keeps it, so a reason that
+        # names it would point at nothing. ``output_dir`` is an attribute.
+        super().__init__(f"OpenFold3 exited normally but failed on every query:\n{lines}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -851,27 +865,42 @@ def _error_log_reasons(output_dir: Path) -> dict[str, tuple[str, Path]]:
     return reasons
 
 
-def _failed_query_reasons(output_dir: Path, not_before: float = 0.0) -> dict[str, str]:
+def _failed_query_reasons(
+    output_dir: Path, not_before: float = 0.0, notes: Optional[StreamNotes] = None
+) -> dict[str, str]:
     """Return ``{query name: reason}`` for the queries OpenFold3 reports as failed.
 
     Reads ``<output_dir>/summary.txt`` for the names and ``logs/predict_err_rank<N>.log``
     for the error of each. OpenFold3 exits with status 0 when a query fails (out of memory
     or any other exception inside the forward pass), so this is the only trace of it. An empty
     dict means no failure was reported, or that there is no summary.
+
+    A query that fails while its features are built (before the model runs: an unreadable
+    template, for one) leaves no log file: OpenFold3 only prints a warning, and removes the empty
+    log directory. ``notes`` (what the run printed, see :class:`StreamNotes`) then gives the
+    exception. No reason names ``output_dir``: the store renames the folder of a run when it
+    keeps it, so a path in a recorded reason would point at nothing.
     """
     summary = _read_run_summary(output_dir, not_before)
     if summary is None:
         return {}
     logged = _error_log_reasons(output_dir)
+    printed = {} if notes is None else notes.failed_queries
     reasons = {}
     for name in summary.failed_queries:
         if name in logged:
             why, log = logged[name]
-            reasons[name] = f"OpenFold3 failed on this query: {why} (see {log})"
+            reasons[name] = (
+                f"OpenFold3 failed on this query: {why} (logs/{log.name} in the output of the run)"
+            )
+        elif name in printed:
+            reasons[name] = (
+                f"OpenFold3 failed while it built the features of this query: {printed[name]}"
+            )
         else:
             reasons[name] = (
-                "OpenFold3 reported this query as failed (see "
-                f"{Path(output_dir) / 'summary.txt'} and the logs directory)"
+                "OpenFold3 reported this query as failed (summary.txt of the run lists it) and "
+                "wrote no log of the error; the reason is in what it printed to stderr"
             )
     return reasons
 
@@ -977,13 +1006,15 @@ def _run_openfold_command(cmd: Sequence[str], output_dir: Path) -> OpenFoldRunIn
 
     stdout and stderr are both echoed as they arrive. The last few kilobytes of stderr are kept,
     so a non-zero exit raises :class:`OpenFoldRunError` with the reason instead of only the exit
-    status. Both streams are also read for the lines that say why a template was lost
-    (:class:`StreamNotes`): OpenFold3 prints a failed template preprocessing on stdout and the
-    replacement of an alignment by the MSA server on stderr, well before the tail that is kept.
-    After an exit with status 0:
+    status. Both streams are also read for the lines that say why a template was lost or a
+    query failed (:class:`StreamNotes`): OpenFold3 prints a failed template preprocessing on
+    stdout, and the replacement of an alignment by the MSA server and a failure while the
+    features of a query are built on stderr, well before the tail that is kept. After an exit
+    with status 0:
 
-    * the run's ``summary.txt`` is read: queries that failed inside OpenFold3 are logged, and
-      when every query failed :class:`OpenFoldQueryError` is raised;
+    * the run's ``summary.txt`` is read: queries that failed inside OpenFold3 are logged with
+      their reasons (the log file of the forward pass, or the warning of the data processing),
+      and when every query failed :class:`OpenFoldQueryError` is raised;
     * ``inference_query_set.json`` is read to see which chains kept the template that the query
       asked for (``--query_json`` of the command says which asked). The accounting is logged as
       a warning for each chain that has none, kept as ``template_accounting.json`` in
@@ -1046,7 +1077,7 @@ def _run_openfold_command(cmd: Sequence[str], output_dir: Path) -> OpenFoldRunIn
 
     # A file written a moment before the run started still counts as an earlier run's.
     not_before = started - 2.0
-    failures = _failed_query_reasons(output_dir, not_before=not_before)
+    failures = _failed_query_reasons(output_dir, not_before=not_before, notes=notes)
     if failures:
         logger.warning(
             "OpenFold3 exited normally but failed on %d quer%s: %s",

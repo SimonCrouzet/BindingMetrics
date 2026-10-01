@@ -834,7 +834,7 @@ def _run_batched_prediction(
         traceback.print_exc()
         for sid in requests:
             outcomes[sid] = (
-                {"model": predictor, "mode": mode, "error": error_text(e, predictor)},
+                {"model": predictor, "mode": mode, "error": error_text(e, predictor, runner)},
                 {},
             )
         requests = {}
@@ -863,6 +863,7 @@ def _run_batched_prediction(
                 seed_index=1 if adopt else scored_seed_index(openfold_seeds),
                 mode=mode,
                 default_chain_map=None if adopt else runner_chain_map(runner, requests[sid]),
+                runner=runner,
             )
             block = outcomes[sid][0]
             if predictor == "of3" and not adopt and not block.get("error"):
