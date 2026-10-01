@@ -63,7 +63,9 @@ CAUSE_TEXT = {
     REPLACED_BY_MSA_SERVER: (
         "the ColabFold MSA server replaced the template alignment of the chain, and OpenFold3 "
         "found none of the structures it lists in the template directory. Run without the "
-        "server to keep the template (use_msa_server=False, --openfold-no-msa-server)"
+        "server to keep the template (use_msa_server=False, --openfold-no-msa-server), or give "
+        "the template as a structure, which the server does not overwrite "
+        "(template_mode='structure', --openfold-templates structure)"
     ),
     PREPROCESSING_FAILED: (
         "OpenFold3 could not preprocess the template of the chain and went on without it"

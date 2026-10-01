@@ -99,12 +99,15 @@ from binding_metrics.cli import (
     add_openfold_cyclic_arg,
     add_openfold_no_msa_server_arg,
     add_openfold_seeds_arg,
+    add_openfold_templates_arg,
     add_random_seed_arg,
     check_on_unmappable_residue,
     check_openfold_cyclic,
+    check_openfold_templates,
     on_unmappable_residue_kwargs,
     openfold_cyclic_kwargs,
     openfold_msa_server_kwargs,
+    openfold_template_kwargs,
     parse_args_with_config,
 )
 from binding_metrics.cli.prediction import (
@@ -466,6 +469,7 @@ def _run_batched_openfold(
     openfold_use_msa_server: bool = True,
     prediction_weights: Optional[Path] = None,
     prediction_cache: Optional[Path] = None,
+    openfold_templates: str = "alignment",
 ) -> None:
     """Run OpenFold3 on all successful samples in a single subprocess.
 
@@ -561,6 +565,7 @@ def _run_batched_openfold(
             **on_unmappable_residue_kwargs(on_unmappable_residue),
             **openfold_cyclic_kwargs(openfold_cyclic),
             **openfold_msa_server_kwargs(openfold_use_msa_server),
+            **openfold_template_kwargs(openfold_templates),
         )
     except Exception as e:  # noqa: BLE001 - the batch call spawns a subprocess; see openfold_error
         # Warning level keeps the line on stdout, where it was printed before.
@@ -728,6 +733,7 @@ def _run_batched_prediction(
     prediction_mode: Optional[str] = None,
     prediction_weights: Optional[Path] = None,
     prediction_lock_threshold: Optional[float] = None,
+    openfold_templates: str = "alignment",
 ) -> None:
     """The ``--predictor`` step of a batch: every sample through one shared prediction store.
 
@@ -820,6 +826,7 @@ def _run_batched_prediction(
                     prediction_mode=prediction_mode,
                     prediction_weights=weights_ref,
                     prediction_lock_threshold=prediction_lock_threshold,
+                    openfold_templates=openfold_templates,
                 )
             except Exception as e:  # noqa: BLE001 - one unreadable input must not stop the batch
                 logger.warning(
@@ -954,6 +961,7 @@ def run_batch(
     prediction_use_msa_server: bool = True,
     prediction_conda_env: Optional[str] = None,
     prediction_lock_threshold: Optional[float] = None,
+    openfold_templates: str = "alignment",
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -1004,6 +1012,12 @@ def run_batch(
             ``--openfold-cyclic``). The ``openfold_*`` (or ``prediction_*``) columns then
             include ``binder_cyclic`` and, when a head-to-tail binder was left linear, the
             reason.
+        openfold_templates: How the template of each chain reaches OpenFold3 (keyword-only):
+            ``"alignment"`` (default; an A3M self-alignment per chain, which the ColabFold MSA
+            server overwrites) or ``"structure"`` (the template CIFs themselves, OpenFold3's CIF
+            Direct Template Mode, which the server does not overwrite); OpenFold3 only. The
+            ``openfold_*`` (or ``prediction_*``) columns include ``templates_<chain>_*`` that say
+            whether OpenFold3 used each template.
         predictor: A key of ``binding_metrics.predictors.PARSERS`` (keyword-only). The
             ``openfold`` step then runs as the prediction step of every sample through one
             shared prediction store and fills the ``prediction_*`` columns instead of the
@@ -1094,6 +1108,7 @@ def run_batch(
     )
     check_on_unmappable_residue(on_unmappable_residue)
     check_openfold_cyclic(openfold_cyclic)
+    check_openfold_templates(openfold_templates)
     route = check_predictor(
         predictor,
         prediction_dir,
@@ -1107,6 +1122,7 @@ def run_batch(
         openfold_conda_env=openfold_conda_env,
         prediction_conda_env=prediction_conda_env,
         prediction_lock_threshold=prediction_lock_threshold,
+        openfold_templates=openfold_templates,
     )
     if predictor is not None and prediction_dir is None:
         # the --prediction-* spellings are merged into the settings of the run
@@ -1276,6 +1292,7 @@ def run_batch(
             prediction_mode=prediction_mode,
             prediction_weights=prediction_weights,
             prediction_lock_threshold=route.lock_threshold,
+            openfold_templates=openfold_templates,
         )
     elif want_openfold:
         _run_batched_openfold(
@@ -1294,6 +1311,7 @@ def run_batch(
             openfold_use_msa_server=openfold_use_msa_server,
             prediction_weights=prediction_weights,
             prediction_cache=prediction_cache,
+            openfold_templates=openfold_templates,
         )
     return finished
 
@@ -1509,6 +1527,7 @@ def main():
     add_openfold_seeds_arg(openfold_group)
     add_openfold_cyclic_arg(openfold_group)
     add_openfold_no_msa_server_arg(openfold_group)
+    add_openfold_templates_arg(openfold_group)
     add_on_unmappable_residue_arg(openfold_group)
 
     add_prediction_args(parser, batch=True)
@@ -1683,6 +1702,7 @@ def main():
         prediction_use_msa_server=not args.prediction_no_msa_server,
         prediction_conda_env=args.prediction_conda_env,
         prediction_lock_threshold=args.prediction_lock_threshold,
+        openfold_templates=args.openfold_templates,
         binder_type=args.binder_type,
         on_incompatible=args.on_incompatible,
         random_seed=args.random_seed,

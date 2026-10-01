@@ -70,11 +70,13 @@ from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     _DEFAULT_MODEL_PRESETS,
     _DEFAULT_QUERY_SEEDS,
     QUERY_BUILDER_VERSION,
+    TEMPLATE_MODES,
     BinderCyclicDecision,
     OpenFoldQueryError,
     OpenFoldRunError,
     UnmappableResidueError,
     _BatchSample,
+    _check_template_mode,
     _extract_chain_to_cif,
     _extract_sequence_from_structure,
     _merge_runner_settings,
@@ -121,6 +123,16 @@ from binding_metrics.predictors.registry import get_parser
 # ---------------------------------------------------------------------------
 # Output file discovery and parsers (the OpenFold3 adapter of binding_metrics.predictors)
 # ---------------------------------------------------------------------------
+
+
+def _template_mode_kwargs(template_mode: str) -> dict:
+    """``{"template_mode": mode}`` for the query builder, or ``{}`` for the default.
+
+    The default is left out so that a query builder that predates the option, or a test double
+    that replaces it, is called exactly as before.
+    """
+    _check_template_mode(template_mode)
+    return {} if template_mode == "alignment" else {"template_mode": template_mode}
 
 
 def _find_prediction_files(
@@ -588,6 +600,7 @@ def run_openfold_scoring(
     *,
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
+    template_mode: str = "alignment",
 ) -> Path:
     """Run OpenFold3 scoring of an existing complex structure (Mode 1).
 
@@ -634,6 +647,11 @@ def run_openfold_scoring(
             structure says; ``False`` never. OpenFold3 wraps the relative positions of the chain
             and does not enforce the closure bond, and with modified residues the flag made the
             one complex tried worse; see :func:`prepare_refolding_query`.
+        template_mode: How the templates reach OpenFold3: ``"alignment"`` (default; an A3M
+            self-alignment per chain, which the ColabFold MSA server overwrites, so with the
+            server on the run has no template) or ``"structure"`` (the template CIFs themselves,
+            OpenFold3's CIF Direct Template Mode, which the server does not overwrite). See
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory
@@ -642,9 +660,9 @@ def run_openfold_scoring(
     Raises:
         UnmappableResidueError: See ``on_unmappable_residue``; raised before any
             file is written or process started.
-        ValueError: ``seeds`` and ``num_model_seeds`` are both given, or ``binder_cyclic`` is
-            ``True`` and the installed OpenFold3 is older than 0.4.5 (checked before anything
-            is written).
+        ValueError: ``seeds`` and ``num_model_seeds`` are both given, ``binder_cyclic`` is
+            ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode`` is not
+            ``"alignment"`` or ``"structure"`` (checked before anything is written).
     """
     _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
@@ -661,6 +679,7 @@ def run_openfold_scoring(
         on_unmappable_residue=on_unmappable_residue,
         binder_cyclic=binder_cyclic,
         conda_env=conda_env,
+        **_template_mode_kwargs(template_mode),
     )
 
     run_openfold(
@@ -699,6 +718,7 @@ def run_openfold_refolding(
     *,
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
+    template_mode: str = "alignment",
 ) -> Path:
     """Run OpenFold3 refolding: binder predicted from sequence, receptor given as template.
 
@@ -751,6 +771,11 @@ def run_openfold_refolding(
             structure says; ``False`` never. OpenFold3 wraps the relative positions of the chain
             and does not enforce the closure bond, and with modified residues the flag made the
             one complex tried worse; see :func:`prepare_refolding_query`.
+        template_mode: How the templates reach OpenFold3: ``"alignment"`` (default; an A3M
+            self-alignment per chain, which the ColabFold MSA server overwrites, so with the
+            server on the run has no template) or ``"structure"`` (the template CIFs themselves,
+            OpenFold3's CIF Direct Template Mode, which the server does not overwrite). See
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory
@@ -759,9 +784,9 @@ def run_openfold_refolding(
     Raises:
         UnmappableResidueError: See ``on_unmappable_residue``; raised before any
             file is written or process started.
-        ValueError: ``seeds`` and ``num_model_seeds`` are both given, or ``binder_cyclic`` is
-            ``True`` and the installed OpenFold3 is older than 0.4.5 (checked before anything
-            is written).
+        ValueError: ``seeds`` and ``num_model_seeds`` are both given, ``binder_cyclic`` is
+            ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode`` is not
+            ``"alignment"`` or ``"structure"`` (checked before anything is written).
     """
     _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
@@ -778,6 +803,7 @@ def run_openfold_refolding(
         on_unmappable_residue=on_unmappable_residue,
         binder_cyclic=binder_cyclic,
         conda_env=conda_env,
+        **_template_mode_kwargs(template_mode),
     )
 
     run_openfold(
@@ -818,6 +844,7 @@ def run_openfold_batched(
     *,
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
+    template_mode: str = "alignment",
 ) -> Path:
     """Run OpenFold3 inference on multiple samples in a single subprocess.
 
@@ -858,6 +885,11 @@ def run_openfold_batched(
             structure says; ``False`` never. OpenFold3 wraps the relative positions of the chain
             and does not enforce the closure bond, and with modified residues the flag made the
             one complex tried worse; see :func:`prepare_refolding_query`.
+        template_mode: How the templates reach OpenFold3: ``"alignment"`` (default; an A3M
+            self-alignment per chain, which the ColabFold MSA server overwrites, so with the
+            server on the run has no template) or ``"structure"`` (the template CIFs themselves,
+            OpenFold3's CIF Direct Template Mode, which the server does not overwrite). See
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory.
@@ -865,9 +897,9 @@ def run_openfold_batched(
     Raises:
         UnmappableResidueError: See ``on_unmappable_residue``; the error names every
             affected sample and is raised before any file is written or process started.
-        ValueError: ``seeds`` and ``num_model_seeds`` are both given, or ``binder_cyclic`` is
-            ``True`` and the installed OpenFold3 is older than 0.4.5 (checked before anything
-            is written).
+        ValueError: ``seeds`` and ``num_model_seeds`` are both given, ``binder_cyclic`` is
+            ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode`` is not
+            ``"alignment"`` or ``"structure"`` (checked before anything is written).
     """
     _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
@@ -883,6 +915,7 @@ def run_openfold_batched(
         on_unmappable_residue=on_unmappable_residue,
         binder_cyclic=binder_cyclic,
         conda_env=conda_env,
+        **_template_mode_kwargs(template_mode),
     )
 
     run_openfold(

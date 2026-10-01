@@ -68,12 +68,15 @@ from binding_metrics.cli import (
     add_openfold_cyclic_arg,
     add_openfold_no_msa_server_arg,
     add_openfold_seeds_arg,
+    add_openfold_templates_arg,
     check_on_unmappable_residue,
     check_openfold_cyclic,
+    check_openfold_templates,
     md_save_interval_for,
     on_unmappable_residue_kwargs,
     openfold_cyclic_kwargs,
     openfold_msa_server_kwargs,
+    openfold_template_kwargs,
     parse_args_with_config,
 )
 from binding_metrics.cli import merge_reason as _merge_reason
@@ -319,6 +322,7 @@ def run_pipeline(
     prediction_use_msa_server: bool = True,
     prediction_conda_env: Optional[str] = None,
     prediction_lock_threshold: Optional[float] = None,
+    openfold_templates: str = "alignment",
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -344,6 +348,14 @@ def run_pipeline(
             written by the toolkit are no longer replaced by the server (issue #68). The value
             is recorded as ``provenance["openfold3_use_msa_server"]`` when OpenFold3 is run
             here, and is part of the key of the prediction store.
+        openfold_templates: How the template of each chain reaches OpenFold3 in ``score`` and
+            ``refold`` mode (keyword-only): ``"alignment"`` (default) writes an A3M
+            self-alignment per chain, which the ColabFold MSA server overwrites, so with the
+            server on (the default) the run has no template; ``"structure"`` gives the template
+            CIF itself (OpenFold3's CIF Direct Template Mode), which the server does not
+            overwrite. ``results["openfold"]["templates"]`` (``results["prediction"]["templates"]``
+            with ``predictor``) says per chain whether OpenFold3 used it. OpenFold3 only: another
+            ``predictor`` with ``"structure"`` raises ``ValueError``. Part of the prediction key.
         on_unmappable_residue: What the OpenFold3 step does with a residue it cannot take
             (keyword-only): ``"error"`` (default) records the step as failed before the model
             starts, ``"x"`` sends an ``X`` in its place and logs a warning.
@@ -467,6 +479,7 @@ def run_pipeline(
     )
     check_on_unmappable_residue(on_unmappable_residue)
     check_openfold_cyclic(openfold_cyclic)
+    check_openfold_templates(openfold_templates)
     route = check_predictor(
         predictor,
         prediction_dir,
@@ -480,6 +493,7 @@ def run_pipeline(
         openfold_conda_env=openfold_conda_env,
         prediction_conda_env=prediction_conda_env,
         prediction_lock_threshold=prediction_lock_threshold,
+        openfold_templates=openfold_templates,
     )
     if predictor is not None and prediction_dir is None:
         # the --prediction-* spellings are merged into the settings of the run
@@ -856,6 +870,7 @@ def run_pipeline(
                 prediction_mode=prediction_mode,
                 prediction_weights=prediction_weights,
                 prediction_lock_threshold=route.lock_threshold,
+                openfold_templates=openfold_templates,
             )
             results["provenance"].update(prediction_provenance)
         else:
@@ -881,6 +896,7 @@ def run_pipeline(
                 seed_kwargs.update(on_unmappable_residue_kwargs(on_unmappable_residue))
                 seed_kwargs.update(openfold_cyclic_kwargs(openfold_cyclic))
                 seed_kwargs.update(openfold_msa_server_kwargs(openfold_use_msa_server))
+                seed_kwargs.update(openfold_template_kwargs(openfold_templates))
                 weights_ref = None
                 if prediction_weights is not None:
                     # hashed once, with the cache in the store root, like the --predictor route
@@ -1170,6 +1186,7 @@ def main():
     add_openfold_seeds_arg(openfold_group)
     add_openfold_cyclic_arg(openfold_group)
     add_openfold_no_msa_server_arg(openfold_group)
+    add_openfold_templates_arg(openfold_group)
     add_on_unmappable_residue_arg(openfold_group)
 
     add_prediction_args(parser)
@@ -1265,6 +1282,7 @@ def main():
                 prediction_use_msa_server=not args.prediction_no_msa_server,
                 prediction_conda_env=args.prediction_conda_env,
                 prediction_lock_threshold=args.prediction_lock_threshold,
+                openfold_templates=args.openfold_templates,
                 binder_type=args.binder_type,
                 on_incompatible=args.on_incompatible,
                 preflight_only=args.preflight_only,

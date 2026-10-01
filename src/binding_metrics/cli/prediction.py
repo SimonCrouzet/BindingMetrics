@@ -70,6 +70,7 @@ from binding_metrics.capabilities import MODES
 from binding_metrics.cli import (
     OPENFOLD_CYCLIC_CHOICES,
     check_openfold_cyclic,
+    check_openfold_templates,
     merge_reason,
 )
 from binding_metrics.predictors.registry import PARSERS
@@ -423,6 +424,12 @@ def check_prediction_args(parser: argparse.ArgumentParser, args: argparse.Namesp
     weights = getattr(args, "prediction_weights", None)
     if weights is not None and args.prediction_dir is not None:
         parser.error(weights_with_a_directory_message())
+    try:
+        check_templates_option(
+            args.predictor, args.prediction_dir, getattr(args, "openfold_templates", "alignment")
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.predictor is None:
         for attribute, option in _NEEDS_PREDICTOR:
             if getattr(args, attribute, None):
@@ -502,6 +509,7 @@ _RUNNER_SETTING_OPTIONS = {
     "weights": "--prediction-weights",
     "seeds": "--openfold-seeds",
     "on_unmappable_residue": "--on-unmappable-residue",
+    "template_mode": "--openfold-templates",
 }
 
 
@@ -532,6 +540,34 @@ def _conflict_message(legacy: str, generic: str, legacy_value: Any, generic_valu
         f"{legacy} {_spelled(legacy_value)} and {generic} {_spelled(generic_value)} set the same "
         "thing for --predictor of3 and disagree; give one of them"
     )
+
+
+def check_templates_option(
+    predictor: Optional[str], prediction_dir: Optional[Path], openfold_templates: str
+) -> None:
+    """Refuse ``--openfold-templates structure`` where it cannot apply.
+
+    The setting is OpenFold3's (``template_mode`` of its runner; the other runners take their
+    templates in their own way, see ``docs/prediction.md``) and there is no ``--prediction-``
+    spelling. It applies to the OpenFold3 step (no ``--predictor``) and to ``--predictor of3``;
+    for another model run from here it is a usage error that says so; with ``--prediction-dir``
+    nothing is run, so it is ignored.
+
+    Raises:
+        ValueError: ``openfold_templates`` is not ``"alignment"`` or ``"structure"``, or it is
+            ``"structure"`` for a model other than OpenFold3.
+    """
+    check_openfold_templates(openfold_templates)
+    if (
+        openfold_templates != "alignment"
+        and predictor not in (None, "of3")
+        and prediction_dir is None
+    ):
+        raise ValueError(
+            f"--openfold-templates {openfold_templates} sets how OpenFold3 is given its templates "
+            f"and does not apply to --predictor {predictor} ({display_name(predictor)}); it has no "
+            "--prediction- spelling"
+        )
 
 
 class PredictionOptions(NamedTuple):
@@ -702,6 +738,7 @@ def check_predictor(
     openfold_conda_env: Optional[str] = None,
     prediction_conda_env: Optional[str] = None,
     prediction_lock_threshold: Optional[float] = None,
+    openfold_templates: str = "alignment",
 ) -> PredictionOptions:
     """The Python-API counterpart of ``check_prediction_args``: raise before any step runs.
 
@@ -711,9 +748,12 @@ def check_predictor(
     Raises:
         ValueError: ``predictor`` is not a registered model, it has no runner and no
             ``prediction_dir`` is given, ``prediction_mode`` is not one of ``MODES`` or needs
-            ``predictor``, ``prediction_weights`` is given with ``prediction_dir``, or a setting
-            is not one the runner of the model has (``resolve_prediction_options``).
+            ``predictor``, ``prediction_weights`` is given with ``prediction_dir``, a setting
+            is not one the runner of the model has (``resolve_prediction_options``), or
+            ``openfold_templates`` is not ``"alignment"`` or ``"structure"``, or is
+            ``"structure"`` for a ``predictor`` other than OpenFold3 that is run from here.
     """
+    check_templates_option(predictor, prediction_dir, openfold_templates)
     if prediction_weights is not None and prediction_dir is not None:
         raise ValueError(weights_with_a_directory_message())
     if prediction_mode is not None and prediction_mode not in MODES:
@@ -871,6 +911,7 @@ def make_request(
     prediction_mode: Optional[str] = None,
     prediction_weights=None,
     prediction_lock_threshold: Optional[float] = None,
+    openfold_templates: str = "alignment",
 ):
     """The store request of one sample.
 
@@ -886,7 +927,8 @@ def make_request(
     The runner is called with the keywords of its ``make_request``. ``name``, the chain roles and
     ``mode`` always; ``seeds`` and ``on_unmappable_residue`` as given; ``binder_cyclic`` (when
     ``openfold_cyclic`` is not ``"auto"``), ``use_msa_server`` (when ``openfold_use_msa_server``
-    is False), ``lock_threshold_angstrom``, and ``weights`` (a path, or the ``WeightsRef`` of
+    is False), ``lock_threshold_angstrom``, ``template_mode`` (when ``openfold_templates`` is not
+    ``"alignment"``), and ``weights`` (a path, or the ``WeightsRef`` of
     ``PredictionStore.weights_reference``; by content in the key) only when they are not at their
     defaults, so a runner without the keyword is never called with it. ``openfold_cyclic`` and
     ``openfold_use_msa_server`` are the settings of the run, after ``resolve_prediction_options``
@@ -926,6 +968,7 @@ def make_request(
             prediction_lock_threshold is not None,
         ),
         ("weights", prediction_weights, prediction_weights is not None),
+        ("template_mode", openfold_templates, openfold_templates != "alignment"),
     )
     keywords: dict[str, Any] = {}
     for keyword, value, passed in settings:
@@ -1370,6 +1413,7 @@ def run_single_prediction(
     prediction_mode: Optional[str] = None,
     prediction_weights: Optional[Path] = None,
     prediction_lock_threshold: Optional[float] = None,
+    openfold_templates: str = "alignment",
 ) -> tuple[dict, dict]:
     """The whole prediction step of ``run_pipeline``: store, session, request, consumers.
 
@@ -1381,7 +1425,9 @@ def run_single_prediction(
     ``openfold_cyclic``, ``openfold_use_msa_server`` and ``openfold_conda_env`` are the settings
     of the run: the pipelines have merged them with the ``--prediction-*`` spelling
     (``resolve_prediction_options``). ``prediction_lock_threshold`` is the threshold of
-    ``score-lock`` in angstrom (None: the runner's own). The runner's ``output_chain_map`` names
+    ``score-lock`` in angstrom (None: the runner's own). ``openfold_templates`` is how OpenFold3 is
+    given its templates (``"alignment"`` or ``"structure"``; ``"structure"`` is refused for a
+    runner without a ``template_mode`` setting). The runner's ``output_chain_map`` names
     the chains of its prediction, unless ``prediction_binder_chain`` or ``prediction_target_chain``
     is given.
 
@@ -1423,6 +1469,7 @@ def run_single_prediction(
             prediction_mode=prediction_mode,
             prediction_weights=weights,
             prediction_lock_threshold=prediction_lock_threshold,
+            openfold_templates=openfold_templates,
         )
         default_chain_map = None if adopt else runner_chain_map(runner, request)
     except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["prediction"]

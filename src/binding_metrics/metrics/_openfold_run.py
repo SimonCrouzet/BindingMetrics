@@ -1625,12 +1625,28 @@ def _write_a3m_self_alignment(
     )
 
 
+#: How a template reaches OpenFold3 (``template_mode`` of the ``prepare_*`` and ``run_openfold_*``
+#: functions). ``"alignment"``: an A3M self-alignment per chain that points to the template CIF
+#: through ``template_alignment_file_path`` (the first way, and the default). ``"structure"``:
+#: the CIF itself in ``template_cif_paths`` (OpenFold3's CIF Direct Template Mode, which needs no
+#: alignment and which the ColabFold MSA-server step does not overwrite).
+TEMPLATE_MODES = ("alignment", "structure")
+
+
+def _check_template_mode(template_mode) -> None:
+    """Raise ``ValueError`` unless ``template_mode`` is ``"alignment"`` or ``"structure"``."""
+    if template_mode not in TEMPLATE_MODES:
+        raise ValueError(f"template_mode must be one of {TEMPLATE_MODES}, got {template_mode!r}.")
+
+
 def _query_chain(
     chain_id: str,
     sequence: str,
     non_canonical_residues: dict[int, str],
     template_alignment_file_path: Optional[str] = None,
     cyclic: bool = False,
+    template_cif_paths: Optional[Sequence[str]] = None,
+    template_cif_chain_ids: Optional[Sequence[Optional[str]]] = None,
 ) -> dict:
     """Build the query JSON dict of one protein chain.
 
@@ -1639,16 +1655,49 @@ def _query_chain(
     as 1-based residue positions; JSON needs them as strings. ``cyclic`` writes
     ``"cyclic": true`` (OpenFold3 >= 0.4.5) and is left out when False; only a binder chain
     is passed ``cyclic=True`` (see :func:`decide_binder_cyclic`).
+
+    A template is either an alignment (``template_alignment_file_path``) or structures
+    (``template_cif_paths``, with ``template_cif_chain_ids`` naming the chain of each file);
+    OpenFold3 refuses a chain that has both. The ColabFold MSA-server step overwrites an
+    alignment path and leaves CIF paths alone (``colabfold_msa_server.py``).
     """
     chain: dict = {"molecule_type": "protein", "chain_ids": [chain_id], "sequence": sequence}
     if cyclic:
         chain["cyclic"] = True
     if non_canonical_residues:
         chain["non_canonical_residues"] = {str(i): c for i, c in non_canonical_residues.items()}
+    if template_alignment_file_path is not None and template_cif_paths:
+        raise ValueError("a chain takes a template alignment or template CIF files, not both")
     if template_alignment_file_path is not None:
-        # TODO(#68): template_cif_paths instead; the MSA-server step overwrites this A3M path.
         chain["template_alignment_file_path"] = template_alignment_file_path
+    if template_cif_paths:
+        chain["template_cif_paths"] = [str(path) for path in template_cif_paths]
+        if template_cif_chain_ids is not None:
+            chain["template_cif_chain_ids"] = list(template_cif_chain_ids)
     return chain
+
+
+def _template_fields(
+    template_mode: str,
+    *,
+    sequence: str,
+    chain_id: str,
+    entry_id: str,
+    cif_path: Path,
+    a3m_path: Path,
+) -> dict:
+    """The arguments of :func:`_query_chain` that give a chain its template.
+
+    ``"alignment"`` writes the A3M self-alignment to ``a3m_path`` (see
+    :func:`_write_a3m_self_alignment`) and gives its path; ``"structure"`` writes nothing more and
+    gives the template CIF and its chain. The chain ID is checked in both: OpenFold3 reads the
+    template as ``<entry>_<chain>`` and splits it on the underscore either way.
+    """
+    if template_mode == "structure":
+        _check_template_chain_id(chain_id)
+        return {"template_cif_paths": [str(cif_path)], "template_cif_chain_ids": [chain_id]}
+    _write_a3m_self_alignment(sequence, f"query_{chain_id}", entry_id, chain_id, a3m_path)
+    return {"template_alignment_file_path": str(a3m_path)}
 
 
 def prepare_refolding_query(
@@ -1663,6 +1712,7 @@ def prepare_refolding_query(
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
     conda_env: Optional[str] = None,
+    template_mode: str = "alignment",
 ) -> Path:
     """Prepare an OpenFold3 query JSON for binder refolding with receptor as template.
 
@@ -1681,7 +1731,7 @@ def prepare_refolding_query(
 
         {output_dir}/
           {query_name}_query.json     — OF3 input JSON
-          {query_name}_receptor.a3m   — self-alignment for receptor
+          {query_name}_receptor.a3m   — self-alignment for receptor (``template_mode`` "alignment")
           templates/
             receptor.cif              — receptor template structure
 
@@ -1731,18 +1781,27 @@ def prepare_refolding_query(
             OpenFold3 input and are not written. See :func:`decide_binder_cyclic`.
         conda_env: Conda environment that runs OpenFold3, asked for its version when
             ``binder_cyclic`` is not ``False``; None asks the current interpreter.
+        template_mode: How the receptor template reaches OpenFold3. ``"alignment"`` (default)
+            writes an A3M self-alignment and gives its path as ``template_alignment_file_path``;
+            the ColabFold MSA server overwrites that path (see ``known limitation`` of the
+            metrics documentation), so a run with the server on has no template. ``"structure"``
+            gives the template CIF as ``template_cif_paths`` (OpenFold3's CIF Direct Template
+            Mode: protein chains only, the best-matching chain of each file, an alignment made by
+            OpenFold3 itself), which the server does not overwrite, and writes no A3M file.
 
     Returns:
         Path to the written query JSON file.
 
     Raises:
         ValueError: If a specified chain is not found or has no amino acids, ``seeds`` is
-            empty, ``binder_cyclic`` is not ``True``, ``False`` or ``"auto"``, or it is ``True``
-            and the installed OpenFold3 is older than 0.4.5. Nothing is written then.
+            empty, ``binder_cyclic`` is not ``True``, ``False`` or ``"auto"``, it is ``True``
+            and the installed OpenFold3 is older than 0.4.5, or ``template_mode`` is not
+            ``"alignment"`` or ``"structure"``. Nothing is written then.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     import gemmi
 
+    _check_template_mode(template_mode)
     _warn_query_seeds_ignored(seeds)
     complex_structure_path = Path(complex_structure_path)
 
@@ -1782,14 +1841,15 @@ def prepare_refolding_query(
         template_src, receptor_chain, template_dest, sequence=receptor_seq, source=template_source
     )
 
-    # A3M self-alignment for receptor — header: receptor_{chain}/{1}-{N}
-    a3m_path = output_dir / f"{query_name}_receptor.a3m"
-    _write_a3m_self_alignment(
-        receptor_seq,
-        f"query_{receptor_chain}",
-        receptor_entry_id,
-        receptor_chain,
-        a3m_path,
+    # The receptor's template: an A3M self-alignment (header receptor_{chain}/{1}-{N}) that
+    # points to the CIF, or the CIF itself
+    receptor_template = _template_fields(
+        template_mode,
+        sequence=receptor_seq,
+        chain_id=receptor_chain,
+        entry_id=receptor_entry_id,
+        cif_path=template_dest,
+        a3m_path=output_dir / f"{query_name}_receptor.a3m",
     )
 
     # Query JSON — receptor has template, binder is free (sequence only)
@@ -1797,12 +1857,7 @@ def prepare_refolding_query(
         "queries": {
             query_name: {
                 "chains": [
-                    _query_chain(
-                        receptor_chain,
-                        receptor_seq,
-                        receptor_nc,
-                        template_alignment_file_path=str(a3m_path),
-                    ),
+                    _query_chain(receptor_chain, receptor_seq, receptor_nc, **receptor_template),
                     _query_chain(binder_chain, binder_seq, binder_nc, cyclic=cyclic),
                 ],
             }
@@ -1825,6 +1880,7 @@ def prepare_scoring_query(
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
     conda_env: Optional[str] = None,
+    template_mode: str = "alignment",
 ) -> Path:
     """Prepare an OpenFold3 query JSON to score an existing complex structure.
 
@@ -1857,8 +1913,8 @@ def prepare_scoring_query(
 
         {output_dir}/
           {query_name}_query.json
-          {query_name}_receptor.a3m
-          {query_name}_binder.a3m
+          {query_name}_receptor.a3m   (``template_mode`` "alignment")
+          {query_name}_binder.a3m     (``template_mode`` "alignment")
           templates/
             receptor.cif
             binder.cif
@@ -1884,17 +1940,21 @@ def prepare_scoring_query(
             gets ``"cyclic": true``; see :func:`prepare_refolding_query`.
         conda_env: Conda environment that runs OpenFold3, asked for its version; see
             :func:`prepare_refolding_query`.
+        template_mode: ``"alignment"`` (default) or ``"structure"``: how each chain's template
+            reaches OpenFold3; see :func:`prepare_refolding_query`.
 
     Returns:
         Path to the written query JSON file.
 
     Raises:
-        ValueError: If ``seeds`` is empty, or ``binder_cyclic`` is ``True`` and the installed
-            OpenFold3 is older than 0.4.5.
+        ValueError: If ``seeds`` is empty, ``binder_cyclic`` is ``True`` and the installed
+            OpenFold3 is older than 0.4.5, or ``template_mode`` is not ``"alignment"`` or
+            ``"structure"``.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     import gemmi
 
+    _check_template_mode(template_mode)
     _warn_query_seeds_ignored(seeds)
     complex_structure_path = Path(complex_structure_path)
 
@@ -1933,37 +1993,40 @@ def prepare_scoring_query(
     receptor_entry_id = "receptor"
     binder_entry_id = "binder"
 
+    receptor_cif = templates_dir / f"{receptor_entry_id}.cif"
+    binder_cif = templates_dir / f"{binder_entry_id}.cif"
     _extract_chain_to_cif(
         template_src,
         receptor_chain,
-        templates_dir / f"{receptor_entry_id}.cif",
+        receptor_cif,
         sequence=receptor_seq,
         source=template_source,
     )
     _extract_chain_to_cif(
         template_src,
         binder_chain,
-        templates_dir / f"{binder_entry_id}.cif",
+        binder_cif,
         sequence=binder_seq,
         source=template_source,
     )
 
-    # A3M self-alignments — header: {entry_id}_{chain_id}/{1}-{N}
-    receptor_a3m = output_dir / f"{query_name}_receptor.a3m"
-    binder_a3m = output_dir / f"{query_name}_binder.a3m"
-    _write_a3m_self_alignment(
-        receptor_seq,
-        f"query_{receptor_chain}",
-        receptor_entry_id,
-        receptor_chain,
-        receptor_a3m,
+    # The templates: A3M self-alignments (header {entry_id}_{chain_id}/{1}-{N}) that point to
+    # the CIFs, or the CIFs themselves
+    receptor_template = _template_fields(
+        template_mode,
+        sequence=receptor_seq,
+        chain_id=receptor_chain,
+        entry_id=receptor_entry_id,
+        cif_path=receptor_cif,
+        a3m_path=output_dir / f"{query_name}_receptor.a3m",
     )
-    _write_a3m_self_alignment(
-        binder_seq,
-        f"query_{binder_chain}",
-        binder_entry_id,
-        binder_chain,
-        binder_a3m,
+    binder_template = _template_fields(
+        template_mode,
+        sequence=binder_seq,
+        chain_id=binder_chain,
+        entry_id=binder_entry_id,
+        cif_path=binder_cif,
+        a3m_path=output_dir / f"{query_name}_binder.a3m",
     )
 
     # Query JSON — OF3 format: {"queries": {"name": {"chains": [...]}}}; the seeds are not part
@@ -1972,18 +2035,9 @@ def prepare_scoring_query(
         "queries": {
             query_name: {
                 "chains": [
+                    _query_chain(receptor_chain, receptor_seq, receptor_nc, **receptor_template),
                     _query_chain(
-                        receptor_chain,
-                        receptor_seq,
-                        receptor_nc,
-                        template_alignment_file_path=str(receptor_a3m),
-                    ),
-                    _query_chain(
-                        binder_chain,
-                        binder_seq,
-                        binder_nc,
-                        template_alignment_file_path=str(binder_a3m),
-                        cyclic=cyclic,
+                        binder_chain, binder_seq, binder_nc, cyclic=cyclic, **binder_template
                     ),
                 ],
             }
@@ -2141,6 +2195,7 @@ def prepare_batched_scoring_queries(
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
     conda_env: Optional[str] = None,
+    template_mode: str = "alignment",
 ) -> Path:
     """Prepare a single OF3 query JSON that scores multiple complexes.
 
@@ -2160,15 +2215,19 @@ def prepare_batched_scoring_queries(
             each sample gets ``"cyclic": true``; see :func:`prepare_refolding_query`. Decided
             sample by sample, before anything is written.
         conda_env: Conda environment that runs OpenFold3, asked for its version once.
+        template_mode: ``"alignment"`` (default) or ``"structure"``: how each chain's template
+            reaches OpenFold3; see :func:`prepare_refolding_query`.
 
     Returns:
         Path to the combined query JSON file.
 
     Raises:
-        ValueError: If ``seeds`` is empty, two samples share a query name, or ``binder_cyclic``
-            is ``True`` and the installed OpenFold3 is older than 0.4.5.
+        ValueError: If ``seeds`` is empty, two samples share a query name, ``binder_cyclic``
+            is ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode``
+            is not ``"alignment"`` or ``"structure"``.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
+    _check_template_mode(template_mode)
     _warn_query_seeds_ignored(seeds)
     rows = _read_batch_chains(samples, on_unmappable_residue)
     _check_batch_template_chain_ids(rows, binder_has_template=True)
@@ -2188,36 +2247,37 @@ def prepare_batched_scoring_queries(
         rec_entry = rec_entries[s.query_name]
         bnd_entry = bnd_entries[s.query_name]
 
-        _extract_chain_to_cif(
-            st, s.receptor_chain, templates_dir / f"{rec_entry}.cif", sequence=receptor_seq
-        )
-        _extract_chain_to_cif(
-            st, s.binder_chain, templates_dir / f"{bnd_entry}.cif", sequence=binder_seq
-        )
+        rec_cif = templates_dir / f"{rec_entry}.cif"
+        bnd_cif = templates_dir / f"{bnd_entry}.cif"
+        _extract_chain_to_cif(st, s.receptor_chain, rec_cif, sequence=receptor_seq)
+        _extract_chain_to_cif(st, s.binder_chain, bnd_cif, sequence=binder_seq)
 
-        rec_a3m = output_dir / f"{s.query_name}_receptor.a3m"
-        bnd_a3m = output_dir / f"{s.query_name}_binder.a3m"
-        _write_a3m_self_alignment(
-            receptor_seq, f"query_{s.receptor_chain}", rec_entry, s.receptor_chain, rec_a3m
+        receptor_template = _template_fields(
+            template_mode,
+            sequence=receptor_seq,
+            chain_id=s.receptor_chain,
+            entry_id=rec_entry,
+            cif_path=rec_cif,
+            a3m_path=output_dir / f"{s.query_name}_receptor.a3m",
         )
-        _write_a3m_self_alignment(
-            binder_seq, f"query_{s.binder_chain}", bnd_entry, s.binder_chain, bnd_a3m
+        binder_template = _template_fields(
+            template_mode,
+            sequence=binder_seq,
+            chain_id=s.binder_chain,
+            entry_id=bnd_entry,
+            cif_path=bnd_cif,
+            a3m_path=output_dir / f"{s.query_name}_binder.a3m",
         )
 
         queries[s.query_name] = {
             "chains": [
-                _query_chain(
-                    s.receptor_chain,
-                    receptor_seq,
-                    receptor_nc,
-                    template_alignment_file_path=str(rec_a3m),
-                ),
+                _query_chain(s.receptor_chain, receptor_seq, receptor_nc, **receptor_template),
                 _query_chain(
                     s.binder_chain,
                     binder_seq,
                     binder_nc,
-                    template_alignment_file_path=str(bnd_a3m),
                     cyclic=cyclic_flags[s.query_name],
+                    **binder_template,
                 ),
             ],
         }
@@ -2235,6 +2295,7 @@ def prepare_batched_refolding_queries(
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
     conda_env: Optional[str] = None,
+    template_mode: str = "alignment",
 ) -> Path:
     """Prepare a single OF3 query JSON that refolds binders for multiple complexes.
 
@@ -2254,15 +2315,19 @@ def prepare_batched_refolding_queries(
             each sample gets ``"cyclic": true``; see :func:`prepare_refolding_query`. Decided
             sample by sample, before anything is written.
         conda_env: Conda environment that runs OpenFold3, asked for its version once.
+        template_mode: ``"alignment"`` (default) or ``"structure"``: how each receptor's template
+            reaches OpenFold3; see :func:`prepare_refolding_query`.
 
     Returns:
         Path to the combined query JSON file.
 
     Raises:
-        ValueError: If ``seeds`` is empty, two samples share a query name, or ``binder_cyclic``
-            is ``True`` and the installed OpenFold3 is older than 0.4.5.
+        ValueError: If ``seeds`` is empty, two samples share a query name, ``binder_cyclic``
+            is ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode``
+            is not ``"alignment"`` or ``"structure"``.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
+    _check_template_mode(template_mode)
     _warn_query_seeds_ignored(seeds)
     rows = _read_batch_chains(samples, on_unmappable_residue)
     _check_batch_template_chain_ids(rows, binder_has_template=False)
@@ -2279,23 +2344,21 @@ def prepare_batched_refolding_queries(
     for s, st, receptor_seq, receptor_nc, binder_seq, binder_nc in rows:
         rec_entry = rec_entries[s.query_name]
 
-        _extract_chain_to_cif(
-            st, s.receptor_chain, templates_dir / f"{rec_entry}.cif", sequence=receptor_seq
-        )
+        rec_cif = templates_dir / f"{rec_entry}.cif"
+        _extract_chain_to_cif(st, s.receptor_chain, rec_cif, sequence=receptor_seq)
 
-        rec_a3m = output_dir / f"{s.query_name}_receptor.a3m"
-        _write_a3m_self_alignment(
-            receptor_seq, f"query_{s.receptor_chain}", rec_entry, s.receptor_chain, rec_a3m
+        receptor_template = _template_fields(
+            template_mode,
+            sequence=receptor_seq,
+            chain_id=s.receptor_chain,
+            entry_id=rec_entry,
+            cif_path=rec_cif,
+            a3m_path=output_dir / f"{s.query_name}_receptor.a3m",
         )
 
         queries[s.query_name] = {
             "chains": [
-                _query_chain(
-                    s.receptor_chain,
-                    receptor_seq,
-                    receptor_nc,
-                    template_alignment_file_path=str(rec_a3m),
-                ),
+                _query_chain(s.receptor_chain, receptor_seq, receptor_nc, **receptor_template),
                 _query_chain(
                     s.binder_chain, binder_seq, binder_nc, cyclic=cyclic_flags[s.query_name]
                 ),

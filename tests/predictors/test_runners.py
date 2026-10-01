@@ -204,6 +204,7 @@ class TestMakeRequest:
             "num_model_seeds": None,
             "on_unmappable_residue": "error",
             "binder_cyclic": "auto",
+            "template_mode": "alignment",
             "extra_args": [],
             "inference_ckpt_path": None,
             "inference_ckpt_size_bytes": None,
@@ -224,6 +225,7 @@ class TestMakeRequest:
             {"on_unmappable_residue": "x"},
             {"extra_args": ["--data_seed=1"]},
             {"inference_ckpt_path": "/weights/other.pt"},
+            {"template_mode": "structure"},
             {"mode": "refold"},
             {"binder_chain": "P"},
             {"content": b"another complex"},
@@ -360,6 +362,9 @@ class TestTheDefaultsMirrorTheRunFunctions:
             assert parameters["on_unmappable_residue"].default == of3_runner._DEFAULT_ON_UNMAPPABLE
         if "binder_cyclic" in parameters:
             assert parameters["binder_cyclic"].default == of3_runner._DEFAULT_BINDER_CYCLIC
+        if "template_mode" in parameters:
+            assert parameters["template_mode"].default == of3_runner._DEFAULT_TEMPLATE_MODE
+            assert of3_runner._DEFAULT_TEMPLATE_MODE == _openfold_run.TEMPLATE_MODES[0]
 
     def test_the_unmappable_choices(self):
         assert of3_runner._ON_UNMAPPABLE_CHOICES == _openfold_run._ON_UNMAPPABLE_CHOICES

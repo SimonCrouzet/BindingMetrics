@@ -188,6 +188,59 @@ def openfold_msa_server_kwargs(use_msa_server: bool) -> dict:
     return {} if use_msa_server else {"use_msa_server": False}
 
 
+#: Values of ``--openfold-templates``; the first is the default.
+OPENFOLD_TEMPLATE_CHOICES = ("alignment", "structure")
+
+
+def add_openfold_templates_arg(parser) -> None:
+    """Add ``--openfold-templates {alignment,structure}`` to an argparse parser or group.
+
+    How the template of each chain reaches OpenFold3 in ``score`` and ``refold`` mode. The
+    default, ``alignment``, writes an A3M self-alignment per chain; the ColabFold MSA server
+    overwrites it, so with the server on (also the default) the run has no template.
+    ``structure`` gives the template CIF itself (OpenFold3's CIF Direct Template Mode), which the
+    server does not overwrite. The setting is OpenFold3's: there is no ``--prediction-templates``.
+    """
+    parser.add_argument(
+        "--openfold-templates",
+        choices=OPENFOLD_TEMPLATE_CHOICES,
+        default="alignment",
+        help=(
+            "How the template of each chain reaches OpenFold3 (modes score and refold; OpenFold3 "
+            "only, also for --predictor of3). alignment (default): an A3M self-alignment that "
+            "points to the template CIF; the ColabFold MSA server overwrites it, so with the "
+            "server on (the default) the run has no template, which results['openfold'] or "
+            "results['prediction'] reports under 'templates' (use --openfold-no-msa-server to "
+            "keep it). structure: the template CIF itself (OpenFold3's CIF Direct Template Mode: "
+            "protein chains only, the best-matching chain of each file, the alignment made by "
+            "OpenFold3), which the server does not overwrite."
+        ),
+    )
+
+
+def check_openfold_templates(value) -> str:
+    """The ``template_mode`` argument for ``value``: ``"alignment"`` or ``"structure"``.
+
+    Raises:
+        ValueError: ``value`` is neither.
+    """
+    if value in OPENFOLD_TEMPLATE_CHOICES:
+        return value
+    raise ValueError(
+        f"openfold_templates must be one of {OPENFOLD_TEMPLATE_CHOICES}, got {value!r}"
+    )
+
+
+def openfold_template_kwargs(value) -> dict:
+    """The keyword argument for an OpenFold3 run function, only when it is not ``"alignment"``.
+
+    The default is left out so that a function that predates the option, or a test double that
+    replaces it, is called exactly as before.
+    """
+    resolved = check_openfold_templates(value)
+    return {} if resolved == "alignment" else {"template_mode": resolved}
+
+
 #: Values of ``--openfold-cyclic``; the first is the default.
 OPENFOLD_CYCLIC_CHOICES = ("auto", "on", "off")
 

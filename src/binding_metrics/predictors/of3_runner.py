@@ -24,7 +24,8 @@ openfold module is imported when a run starts, never before)::
             runner_yaml: Optional[str | Path] = None,
             template_cif_path: Optional[str | Path] = None,
             binder_cyclic: bool | str = "auto",
-            weights: Optional[str | Path | WeightsRef] = None) -> PredictionRequest
+            weights: Optional[str | Path | WeightsRef] = None,
+            template_mode: str = "alignment") -> PredictionRequest
         .prepare(request, work_dir) -> Path
         .run(request, work_dir) -> Path                       # <work_dir>/predictions
         .supports_batch(request) -> bool
@@ -45,7 +46,9 @@ are not hashed). What goes into the key:
 * ``options``: ``presets`` (``["predict", "low_mem"]`` by default, ``predict`` added when
   missing; None when ``runner_yaml`` replaces them), ``use_msa_server``, ``num_model_seeds``,
   ``on_unmappable_residue``, ``binder_cyclic`` (``"auto"``, true or false; None for ``predict``,
-  whose query file names its own chains), ``extra_args`` and ``inference_ckpt_path`` with the
+  whose query file names its own chains), ``template_mode`` (``"alignment"`` or ``"structure"``,
+  how the templates reach OpenFold3; None for ``predict``), ``extra_args`` and
+  ``inference_ckpt_path`` with the
   size of that file. ``"auto"`` writes ``cyclic: true`` on a head-to-tail binder of standard
   residues when OpenFold3 is 0.4.5 or later, which the structure (hashed) and the version (in the
   key) decide;
@@ -103,6 +106,7 @@ _DEFAULT_NUM_MODEL_SEEDS = None
 _DEFAULT_USE_MSA_SERVER = True
 _DEFAULT_ON_UNMAPPABLE = "error"
 _DEFAULT_BINDER_CYCLIC = "auto"
+_DEFAULT_TEMPLATE_MODE = "alignment"
 
 _ON_UNMAPPABLE_CHOICES = ("error", "x")
 
@@ -220,6 +224,7 @@ class OpenFold3Runner(PredictionRunner):
         template_cif_path: Optional[str | Path] = None,
         binder_cyclic: Union[bool, str] = _DEFAULT_BINDER_CYCLIC,
         weights: Optional[str | Path | WeightsRef] = None,
+        template_mode: str = _DEFAULT_TEMPLATE_MODE,
     ) -> PredictionRequest:
         """The store request of one OpenFold3 run (see the module docstring for what it holds).
 
@@ -252,13 +257,21 @@ class OpenFold3Runner(PredictionRunner):
                 ``PredictionStore.weights_reference`` made for it. It goes to OpenFold3 as
                 ``--inference-ckpt-path`` and its content is in the key. A path is hashed here
                 without a cache; give a ``WeightsRef`` to use the store's.
+            template_mode: How the templates of ``score`` and ``refold`` reach OpenFold3:
+                ``"alignment"`` (default; an A3M self-alignment per chain, which the ColabFold
+                MSA server overwrites, so with the server on there is no template) or
+                ``"structure"`` (the template CIFs in ``template_cif_paths``, OpenFold3's CIF
+                Direct Template Mode, which the server does not overwrite). It is in the key.
+                Only for ``score`` and ``refold``: a query file of ``predict`` names its own
+                templates.
 
         Raises:
             ValueError: Mode ``score-lock``, a missing chain role, an unknown mode or choice, a
                 template file with ``predict``, both ``seeds`` and ``num_model_seeds``, a
                 ``binder_cyclic`` that is not ``True``, ``False`` or ``"auto"``, or a value other
-                than the default with ``predict``, or both ``weights`` and
-                ``inference_ckpt_path``.
+                than the default with ``predict``, a ``template_mode`` that is not
+                ``"alignment"`` or ``"structure"`` (or is ``"structure"`` with ``predict``), or
+                both ``weights`` and ``inference_ckpt_path``.
             FileNotFoundError: ``weights`` does not exist.
         """
         if weights is not None and inference_ckpt_path is not None:
@@ -276,10 +289,13 @@ class OpenFold3Runner(PredictionRunner):
             )
         run_module = _run_module()
         run_module._check_binder_cyclic(binder_cyclic)
+        run_module._check_template_mode(template_mode)
         if mode == "predict" and binder_cyclic != _DEFAULT_BINDER_CYCLIC:
             raise ValueError(
                 "a query file for mode 'predict' names its own chains and cyclic flags"
             )
+        if mode == "predict" and template_mode != _DEFAULT_TEMPLATE_MODE:
+            raise ValueError("a query file for mode 'predict' names its own templates")
         seed_values, generated_seeds = run_module._resolve_run_seeds(
             seeds, num_model_seeds, extra_args
         )
@@ -329,6 +345,7 @@ class OpenFold3Runner(PredictionRunner):
                 "num_model_seeds": generated_seeds,
                 "on_unmappable_residue": on_unmappable_residue,
                 "binder_cyclic": None if mode == "predict" else binder_cyclic,
+                "template_mode": None if mode == "predict" else template_mode,
                 "extra_args": [str(argument) for argument in extra_args],
                 "inference_ckpt_path": None if checkpoint is None else str(checkpoint),
                 "inference_ckpt_size_bytes": checkpoint_size,
@@ -508,6 +525,9 @@ class OpenFold3Runner(PredictionRunner):
         binder_cyclic = request.options.get("binder_cyclic", _DEFAULT_BINDER_CYCLIC)
         if request.mode != "predict" and binder_cyclic not in (None, _DEFAULT_BINDER_CYCLIC):
             arguments["binder_cyclic"] = binder_cyclic
+        template_mode = request.options.get("template_mode", _DEFAULT_TEMPLATE_MODE)
+        if request.mode != "predict" and template_mode not in (None, _DEFAULT_TEMPLATE_MODE):
+            arguments["template_mode"] = template_mode
         return arguments
 
     def _run_arguments(self, request: PredictionRequest) -> dict[str, Any]:

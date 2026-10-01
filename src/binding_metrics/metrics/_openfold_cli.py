@@ -182,6 +182,32 @@ def _binder_cyclic_kwargs(args) -> dict:
     return {"binder_cyclic": _CYCLIC_CHOICES[args.binder_cyclic]}
 
 
+def _add_template_mode_arg(p) -> None:
+    """Add ``--openfold-templates`` (how the templates reach OpenFold3) to a subparser."""
+    p.add_argument(
+        "--openfold-templates",
+        dest="template_mode",
+        choices=("alignment", "structure"),
+        default="alignment",
+        help=(
+            "How the template of each chain reaches OpenFold3. alignment (default): an A3M "
+            "self-alignment that points to the template CIF; the ColabFold MSA server overwrites "
+            "it, so with the server on (the default of the run commands) the run has no template "
+            "(use --no-msa-server to keep it). structure: the template CIF itself in "
+            "template_cif_paths (OpenFold3's CIF Direct Template Mode: protein chains only, the "
+            "best-matching chain of each file, alignment made by OpenFold3), which the server "
+            "does not overwrite."
+        ),
+    )
+
+
+def _template_mode_kwargs(args) -> dict:
+    """Keyword argument for the API, only when the mode differs from the default."""
+    if args.template_mode == "alignment":
+        return {}
+    return {"template_mode": args.template_mode}
+
+
 def _add_prepare_conda_env_arg(p) -> None:
     """Add ``--conda-env`` to a query-only subparser: the environment asked for its version."""
     p.add_argument(
@@ -415,6 +441,7 @@ def main():
     _add_query_seeds_arg(p_prep)
     _add_unmappable_residue_arg(p_prep)
     _add_binder_cyclic_arg(p_prep)
+    _add_template_mode_arg(p_prep)
     _add_prepare_conda_env_arg(p_prep)
 
     # --- refold subcommand ---
@@ -493,6 +520,7 @@ def main():
     _add_run_seeds_args(p_refold)
     _add_unmappable_residue_arg(p_refold)
     _add_binder_cyclic_arg(p_refold)
+    _add_template_mode_arg(p_refold)
     _add_parse_args(p_refold, include_chain_args=False)
 
     # --- prepare-scoring-query subcommand ---
@@ -539,6 +567,7 @@ def main():
     _add_query_seeds_arg(p_prep_score)
     _add_unmappable_residue_arg(p_prep_score)
     _add_binder_cyclic_arg(p_prep_score)
+    _add_template_mode_arg(p_prep_score)
     _add_prepare_conda_env_arg(p_prep_score)
 
     # --- score subcommand ---
@@ -605,6 +634,7 @@ def main():
     _add_run_seeds_args(p_score)
     _add_unmappable_residue_arg(p_score)
     _add_binder_cyclic_arg(p_score)
+    _add_template_mode_arg(p_score)
     _add_parse_args(p_score, include_chain_args=False)
 
     from binding_metrics.cli import add_log_file_arg
@@ -630,6 +660,7 @@ def main():
             seeds=args.seeds,
             **_unmappable_residue_kwargs(args),
             **_binder_cyclic_kwargs(args),
+            **_template_mode_kwargs(args),
             **_conda_env_kwargs(args),
         )
         print(f"Scoring query JSON written to: {path}")
@@ -657,6 +688,7 @@ def main():
             seeds=args.seeds,
             **_unmappable_residue_kwargs(args),
             **_binder_cyclic_kwargs(args),
+            **_template_mode_kwargs(args),
         )
         print(f"\nParsing scoring metrics from: {predictions_dir}")
         metrics = of.compute_openfold_metrics(
@@ -684,6 +716,7 @@ def main():
             seeds=args.seeds,
             **_unmappable_residue_kwargs(args),
             **_binder_cyclic_kwargs(args),
+            **_template_mode_kwargs(args),
             **_conda_env_kwargs(args),
         )
         print(f"Query JSON written to: {path}")
@@ -711,6 +744,7 @@ def main():
             seeds=args.seeds,
             **_unmappable_residue_kwargs(args),
             **_binder_cyclic_kwargs(args),
+            **_template_mode_kwargs(args),
         )
         print(f"\nParsing refolding metrics from: {predictions_dir}")
         metrics = of.compute_openfold_metrics(
