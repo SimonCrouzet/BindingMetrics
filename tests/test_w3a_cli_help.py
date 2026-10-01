@@ -20,6 +20,8 @@ options were added to both commands and are recorded here from now on: ``--openf
 and ``--openfold-no-msa-server``. Four more were added with the pre-flight check and are recorded
 the same way: ``--binder-type``, ``--on-incompatible``, ``--preflight-only`` and
 ``--prediction-mode`` (the mode a model is used in: predict, refold, score or score-lock).
+``--prediction-weights`` (custom weights of the model) was added to both commands afterwards and
+is recorded the same way.
 """
 
 import argparse
@@ -331,6 +333,26 @@ GOLDEN = {
                 "--predictor of3 run from here, the value of --openfold-mode;"
                 " for an output read with --prediction-dir, not stated and "
                 "not checked. Needs --predictor.",
+            ),
+            "--prediction-weights": (
+                "Prediction",
+                "PATH",
+                None,
+                None,
+                False,
+                "None",
+                "Custom weights for the model, for instance a fine-tuned "
+                "checkpoint: a file for a model that takes a checkpoint file "
+                "(OpenFold3: --inference-ckpt-path), a directory for a model "
+                "whose weights are a directory. It applies to --predictor "
+                "MODEL run from here and to the OpenFold3 step without "
+                "--predictor (binding-metrics-openfold names it --ckpt). The "
+                "weights are identified by content (SHA-256) in the key of "
+                "the prediction store and recorded in the results. A model "
+                "whose runner cannot take custom weights is refused before "
+                "anything runs. Cannot be combined with --prediction-dir: "
+                "the weights are whatever made that output. Default: the "
+                "model's own weights.",
             ),
             "--binder-type": (
                 "Pre-flight check",
@@ -659,6 +681,26 @@ GOLDEN = {
                 "--predictor of3 run from here, the value of --openfold-mode;"
                 " for an output read with --prediction-dir, not stated and "
                 "not checked. Needs --predictor.",
+            ),
+            "--prediction-weights": (
+                "Prediction",
+                "PATH",
+                None,
+                None,
+                False,
+                "None",
+                "Custom weights for the model, for instance a fine-tuned "
+                "checkpoint: a file for a model that takes a checkpoint file "
+                "(OpenFold3: --inference-ckpt-path), a directory for a model "
+                "whose weights are a directory. It applies to --predictor "
+                "MODEL run from here and to the OpenFold3 step without "
+                "--predictor (binding-metrics-openfold names it --ckpt). The "
+                "weights are identified by content (SHA-256) in the key of "
+                "the prediction store and recorded in the results. A model "
+                "whose runner cannot take custom weights is refused before "
+                "anything runs. Cannot be combined with --prediction-dir: "
+                "the weights are whatever made that output. Default: the "
+                "model's own weights.",
             ),
             "--binder-type": (
                 "Pre-flight check",

@@ -19,9 +19,10 @@ What the step does for one sample, in order::
 
 ``results["prediction"]`` holds the keys of ``summarize_prediction`` (with ``model``), the EvoBind
 keys merged as the OpenFold step merges them, ``mode`` (how the model was used: ``predict``,
-``refold``, ``score`` or ``score-lock``; None for an output whose making is not stated) and
-``cache``: the counters of ``PredictionSession.stats()`` and ``request_key``, the name of the
-store entry. A prediction that failed, or that cannot be run here, gives
+``refold``, ``score`` or ``score-lock``; None for an output whose making is not stated),
+``weights`` (the weights of the run, see ``weights_description``) and ``cache``: the counters
+of ``PredictionSession.stats()`` and ``request_key``, the name of the store entry. A prediction
+that failed, or that cannot be run here, gives
 ``{"model": ..., "mode": ..., "error": <reason>, "cache": ...}``; the sample goes on with its
 other steps.
 
@@ -120,6 +121,23 @@ def add_prediction_args(parser: argparse.ArgumentParser, *, batch: bool = False)
             "against what the model supports before anything runs, and recorded. Default: for "
             "--predictor of3 run from here, the value of --openfold-mode; for an output read "
             "with --prediction-dir, not stated and not checked. Needs --predictor."
+        ),
+    )
+    group.add_argument(
+        "--prediction-weights",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Custom weights for the model, for instance a fine-tuned checkpoint: a file for a "
+            "model that takes a checkpoint file (OpenFold3: --inference-ckpt-path), a directory "
+            "for a model whose weights are a directory. It applies to --predictor MODEL run from "
+            "here and to the OpenFold3 step without --predictor (binding-metrics-openfold "
+            "names it --ckpt). The weights are identified by content (SHA-256) in the key of "
+            "the prediction store and recorded in the results. A model whose runner cannot take "
+            "custom weights is refused before anything runs. Cannot be combined with "
+            "--prediction-dir: the weights are whatever made that output. Default: the model's "
+            "own weights."
         ),
     )
     group.add_argument(
@@ -222,20 +240,44 @@ def check_prediction_args(parser: argparse.ArgumentParser, args: argparse.Namesp
     Ends the program through ``parser.error`` (exit code 2) when a prediction option is given
     without ``--predictor``, or when ``--predictor`` names a model that has no runner and no
     ``--prediction-dir`` is given. Ends with exit code 1 and a message when ``--prediction-dir``
-    is not an existing directory.
+    is not an existing directory, or when ``--prediction-weights`` does not exist or is not the
+    kind the model's runner takes. ``--prediction-weights`` with ``--prediction-dir`` is a usage
+    error: the weights of an output you made are whatever produced it.
     """
+    weights = getattr(args, "prediction_weights", None)
+    if weights is not None and args.prediction_dir is not None:
+        parser.error(weights_with_a_directory_message())
     if args.predictor is None:
         for attribute, option in _NEEDS_PREDICTOR:
             if getattr(args, attribute, None):
                 parser.error(f"{option} needs --predictor (which model made the output?)")
-        return
-    if args.prediction_dir is None and not has_runner(args.predictor):
-        parser.error(no_runner_message(args.predictor))
-    if args.prediction_dir is None and getattr(args, "prediction_mode", None) == "predict":
-        parser.error(predict_needs_a_directory_message(args.predictor))
-    if args.prediction_dir is not None and not Path(args.prediction_dir).is_dir():
-        print(f"ERROR: --prediction-dir is not a directory: {args.prediction_dir}", file=sys.stderr)
-        sys.exit(1)
+    else:
+        if args.prediction_dir is None and not has_runner(args.predictor):
+            parser.error(no_runner_message(args.predictor))
+        if args.prediction_dir is None and getattr(args, "prediction_mode", None) == "predict":
+            parser.error(predict_needs_a_directory_message(args.predictor))
+        if args.prediction_dir is not None and not Path(args.prediction_dir).is_dir():
+            print(
+                f"ERROR: --prediction-dir is not a directory: {args.prediction_dir}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    if weights is not None:
+        try:
+            check_weights_arg(weights, args.predictor)
+        except ValueError as exc:
+            print(f"ERROR: --prediction-weights: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+
+def weights_with_a_directory_message() -> str:
+    """Why ``--prediction-weights`` cannot go with ``--prediction-dir``."""
+    return (
+        "--prediction-weights cannot be combined with --prediction-dir: an output you made is "
+        "read, never run, so the weights are whatever produced it (OpenFold3 records "
+        "inference_ckpt_path and inference_ckpt_name in experiment_config.json, and they are shown "
+        "in results['prediction']['weights'])"
+    )
 
 
 def predict_needs_a_directory_message(model: str) -> str:
@@ -251,14 +293,18 @@ def check_predictor(
     predictor: Optional[str],
     prediction_dir: Optional[Path],
     prediction_mode: Optional[str] = None,
+    prediction_weights: Optional[Path] = None,
 ) -> None:
     """The Python-API counterpart of ``check_prediction_args``: raise before any step runs.
 
     Raises:
         ValueError: ``predictor`` is not a registered model, it has no runner and no
             ``prediction_dir`` is given, ``prediction_mode`` is not one of ``MODES`` or needs
-            ``predictor``, or it is ``predict`` for a run from here.
+            ``predictor``, it is ``predict`` for a run from here, or ``prediction_weights`` is
+            given with ``prediction_dir``.
     """
+    if prediction_weights is not None and prediction_dir is not None:
+        raise ValueError(weights_with_a_directory_message())
     if prediction_mode is not None and prediction_mode not in MODES:
         raise ValueError(f"prediction_mode must be one of {MODES}, got {prediction_mode!r}")
     if predictor is None:
@@ -273,6 +319,64 @@ def check_predictor(
         raise ValueError(no_runner_message(predictor))
     if prediction_dir is None and prediction_mode == "predict":
         raise ValueError(predict_needs_a_directory_message(predictor))
+
+
+def check_weights_arg(
+    prediction_weights: Optional[str | Path], predictor: Optional[str] = None
+) -> Optional[Path]:
+    """Check ``--prediction-weights`` before any step runs; the path as an absolute ``Path``.
+
+    The path must exist and be readable, and be the kind that the runner of the model takes (a
+    file or a directory, from ``runner_weights_kinds``). A model whose runner takes no custom
+    weights is not decided here: the pre-flight check refuses it with the runners that do. Without
+    ``predictor`` the weights are for the OpenFold3 step.
+
+    Raises:
+        ValueError: ``capabilities.check_weights_path`` says what was wrong.
+    """
+    if prediction_weights is None:
+        return None
+    from binding_metrics.capabilities import check_weights_path
+
+    kind = runner_weights_kinds().get(predictor or "of3")
+    return check_weights_path(prediction_weights, kind)
+
+
+def weights_description(extras: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """The weights of a prediction, for ``results[...]["weights"]`` and the provenance.
+
+    ``extras`` is ``record.extras`` (or a dict with the same keys). Custom weights (the
+    ``weights`` entry that ``PredictionSession.record`` sets from the request) give ``custom``
+    True, ``name`` (the file name), ``path``, ``kind``, ``sha256``, ``size`` and ``n_files``.
+    Otherwise the checkpoint that the model recorded for its own default weights is described
+    (``inference_ckpt_name`` and ``inference_ckpt_path`` of OpenFold3; ``custom`` False, ``sha256``
+    and ``size`` None because the file was not read). None when nothing is known.
+    """
+    custom = extras.get("weights")
+    if custom:
+        return {"custom": True, "name": Path(str(custom.get("path", ""))).name or None, **custom}
+    name, path = extras.get("inference_ckpt_name"), extras.get("inference_ckpt_path")
+    if name or path:
+        return {
+            "custom": False,
+            "name": None if name is None else str(name),
+            "path": None if path is None else str(path),
+            "sha256": None,
+            "size": None,
+        }
+    return None
+
+
+def output_weights(prediction_dir: str | Path) -> dict[str, Any]:
+    """The checkpoint that an OpenFold3 run recorded in its output, as record extras.
+
+    Reads ``experiment_config.json`` of the output directory through the adapter (the legacy
+    OpenFold3 step has no record). Empty when the file is absent or has no checkpoint.
+    """
+    from binding_metrics.predictors.of3 import _run_provenance
+
+    found = _run_provenance(Path(prediction_dir))
+    return {key: value for key, value in found.items() if key.startswith("inference_ckpt")}
 
 
 def effective_prediction_mode(
@@ -344,6 +448,7 @@ def make_request(
     openfold_cyclic: bool | str = "auto",
     openfold_use_msa_server: bool = True,
     prediction_mode: Optional[str] = None,
+    prediction_weights=None,
 ):
     """The store request of one sample.
 
@@ -353,7 +458,10 @@ def make_request(
     chain roles. The name is part of that key, so two samples with identical inputs adopt
     their own outputs and not one another's. ``prediction_mode`` (``--prediction-mode``) sets the
     mode of the request, and so its key; without it the mode is ``openfold_mode`` for OpenFold3
-    and ``predict`` for an adopted output of another model, as before.
+    and ``predict`` for an adopted output of another model, as before. ``prediction_weights`` (a
+    path, or the ``WeightsRef`` of ``PredictionStore.weights_reference``) goes to the runner's
+    ``make_request`` as ``weights`` and so into the key by content; it is left out when None, and
+    an adopted request has none (the weights of an output you made are not known).
 
     Raises:
         ValueError: ``runner`` is None and ``adopt`` is False, or the runner refuses a setting.
@@ -382,6 +490,7 @@ def make_request(
         on_unmappable_residue=on_unmappable_residue,
         **openfold_cyclic_kwargs(openfold_cyclic),
         **openfold_msa_server_kwargs(openfold_use_msa_server),
+        **({} if prediction_weights is None else {"weights": prediction_weights}),
     )
 
 
@@ -579,11 +688,16 @@ def _analyse(
             block["adversarial_error"] = str(e)
 
     block["mode"] = mode
+    weights = weights_description(record.extras)
+    if weights is not None:
+        block["weights"] = weights
     block["cache"] = _cache_block(session, request, adopted=adopted)
     provenance: dict[str, Any] = {}
     checkpoint = record.extras.get("inference_ckpt_name")
     if record.model == "of3" and checkpoint:
         provenance["openfold3_checkpoint"] = str(checkpoint)
+    if weights is not None:
+        provenance["prediction_weights"] = weights
     return block, provenance
 
 
@@ -672,11 +786,15 @@ def run_single_prediction(
     openfold_cyclic: bool | str = "auto",
     openfold_use_msa_server: bool = True,
     prediction_mode: Optional[str] = None,
+    prediction_weights: Optional[Path] = None,
 ) -> tuple[dict, dict]:
     """The whole prediction step of ``run_pipeline``: store, session, request, consumers.
 
     Builds one session for the sample on the store in ``prediction_cache`` (default
     ``<output_dir>/predictions``) and calls ``run_prediction_step``. Never raises.
+    ``prediction_weights`` are custom weights for the model: hashed once with the cache in the
+    store root (``PredictionStore.weights_reference``), part of the request key, and recorded in
+    ``block["weights"]`` and ``provenance["prediction_weights"]``; ignored for an adopted output.
 
     Returns:
         ``(block, provenance)`` as ``run_prediction_step``; the block is ``{"skipped": True}``
@@ -693,11 +811,13 @@ def run_single_prediction(
     try:
         adopt = prediction_dir is not None
         runner = None if adopt else make_runner(predictor, openfold_conda_env)
-        session = make_session(
-            make_store(prediction_cache or Path(output_dir) / DEFAULT_CACHE_DIRNAME),
-            runner,
-            rerun=rerun_predictions,
-        )
+        store = make_store(prediction_cache or Path(output_dir) / DEFAULT_CACHE_DIRNAME)
+        session = make_session(store, runner, rerun=rerun_predictions)
+        weights = None
+        if prediction_weights is not None and not adopt:
+            weights = store.weights_reference(
+                prediction_weights, expect=runner_weights_kinds().get(predictor)
+            )
         request = make_request(
             predictor,
             sample_id,
@@ -712,6 +832,7 @@ def run_single_prediction(
             openfold_cyclic=openfold_cyclic,
             openfold_use_msa_server=openfold_use_msa_server,
             prediction_mode=prediction_mode,
+            prediction_weights=weights,
         )
     except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["prediction"]
         logger.warning("  [warning] Prediction failed: %s", e)

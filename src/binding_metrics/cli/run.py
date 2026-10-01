@@ -76,13 +76,18 @@ from binding_metrics.cli import (
 from binding_metrics.cli import merge_reason as _merge_reason
 from binding_metrics.cli import seed_arg as _seed_arg
 from binding_metrics.cli.prediction import (
+    DEFAULT_CACHE_DIRNAME,
     add_prediction_args,
     check_prediction_args,
     check_predictor,
+    check_weights_arg,
     display_name,
+    make_store,
+    output_weights,
     record_binder_cyclic,
     run_single_prediction,
     scored_seed_kwargs,
+    weights_description,
 )
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.metrics.registry import get_metric
@@ -204,6 +209,7 @@ def _run_preflight(
     on_unmappable_residue: str,
     prediction_mode: Optional[str] = None,
     openfold_mode: str = "score",
+    prediction_weights: Optional[Path] = None,
 ):
     """The pre-flight check of one run, before anything is prepared, relaxed or predicted.
 
@@ -251,6 +257,7 @@ def _run_preflight(
         reference_path=reference_path,
         include_plan=include_plan,
         on_unmappable_residue=on_unmappable_residue,
+        prediction_weights=prediction_weights,
     )
 
 
@@ -303,6 +310,7 @@ def run_pipeline(
     openfold_cyclic: bool | str = "auto",
     openfold_use_msa_server: bool = True,
     prediction_mode: Optional[str] = None,
+    prediction_weights: Optional[Path] = None,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -367,6 +375,18 @@ def run_pipeline(
             ``results["prediction"]`` and ``results["preflight"]``. None takes ``openfold_mode``
             for OpenFold3 run from here, and is "not known, not checked" for an output read
             from ``prediction_dir``. Needs ``predictor``.
+        prediction_weights: Custom weights for the model, such as a fine-tuned checkpoint
+            (keyword-only; ``--prediction-weights``): a file for a model that takes a checkpoint
+            file, a directory for one whose weights are a directory. They apply to ``predictor``
+            run from here and to the OpenFold3 step without one (``--inference-ckpt-path``). The
+            path is checked before anything runs (it must exist and be the kind the model's
+            runner takes; a runner that takes no custom weights is refused by the pre-flight
+            check), the weights are identified by content (SHA-256, cached in the store root) in
+            the key of the prediction store, and the block of the step gets ``weights`` (``custom``,
+            ``name``, ``path``, ``kind``, ``sha256``, ``size``, ``n_files``) and the provenance
+            ``prediction_weights``. For an output read from ``prediction_dir`` the weights are
+            whatever made it: giving both raises ``ValueError``, and ``weights`` shows the
+            checkpoint that OpenFold3 recorded.
         preflight_model: For a caller that runs the model step itself after this call (the
             batch): ``(model, metric, adopted, mode)``, so that its limits are checked here, first.
         The remaining arguments mirror the ``binding-metrics-run`` flags.
@@ -418,7 +438,8 @@ def run_pipeline(
     )
     check_on_unmappable_residue(on_unmappable_residue)
     check_openfold_cyclic(openfold_cyclic)
-    check_predictor(predictor, prediction_dir, prediction_mode)
+    check_predictor(predictor, prediction_dir, prediction_mode, prediction_weights)
+    prediction_weights = check_weights_arg(prediction_weights, predictor)
     _check_preflight_options(binder_type, on_incompatible)
 
     if sample_id is None:
@@ -443,6 +464,7 @@ def run_pipeline(
         on_unmappable_residue=on_unmappable_residue,
         prediction_mode=prediction_mode,
         openfold_mode=openfold_mode,
+        prediction_weights=prediction_weights,
     )
     if preflight_only:
         return {"sample_id": sample_id, "input": str(input_path), "preflight": outcome.block}
@@ -783,6 +805,7 @@ def run_pipeline(
                 openfold_cyclic=openfold_cyclic,
                 openfold_use_msa_server=openfold_use_msa_server,
                 prediction_mode=prediction_mode,
+                prediction_weights=prediction_weights,
             )
             results["provenance"].update(prediction_provenance)
         else:
@@ -808,6 +831,13 @@ def run_pipeline(
                 seed_kwargs.update(on_unmappable_residue_kwargs(on_unmappable_residue))
                 seed_kwargs.update(openfold_cyclic_kwargs(openfold_cyclic))
                 seed_kwargs.update(openfold_msa_server_kwargs(openfold_use_msa_server))
+                weights_ref = None
+                if prediction_weights is not None:
+                    # hashed once, with the cache in the store root, like the --predictor route
+                    weights_ref = make_store(
+                        prediction_cache or output_dir / DEFAULT_CACHE_DIRNAME
+                    ).weights_reference(prediction_weights, expect="file")
+                    seed_kwargs["inference_ckpt_path"] = str(weights_ref.path)
                 if openfold_mode == "refold":
                     predictions_dir = run_openfold_refolding(
                         complex_structure_path=input_path,
@@ -851,6 +881,13 @@ def run_pipeline(
                 record_binder_cyclic(
                     of_metrics, input_path, peptide_chain, openfold_cyclic, openfold_conda_env
                 )
+                recorded = output_weights(predictions_dir)
+                if weights_ref is not None:
+                    recorded["weights"] = weights_ref.to_dict()
+                weights = weights_description(recorded)
+                if weights is not None:
+                    of_metrics["weights"] = weights
+                    results["provenance"]["prediction_weights"] = weights
                 # EvoBind metrics — no extra model calls, reuse OF3 outputs
                 of_structure = of_metrics.get("structure_path")
                 plddt = of_metrics.get("plddt_per_atom")
@@ -1172,6 +1209,7 @@ def main():
                 prediction_cache=args.prediction_cache,
                 rerun_predictions=args.rerun_predictions,
                 prediction_mode=args.prediction_mode,
+                prediction_weights=args.prediction_weights,
                 binder_type=args.binder_type,
                 on_incompatible=args.on_incompatible,
                 preflight_only=args.preflight_only,

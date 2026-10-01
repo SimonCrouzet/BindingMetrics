@@ -617,6 +617,15 @@ def _md_electrostatics(elec: dict | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _weights_label(weights: dict) -> str:
+    """One line for the weights of a prediction: custom ones by file name and hash prefix."""
+    name = weights.get("name") or weights.get("path") or "unnamed"
+    if weights.get("custom"):
+        digest = str(weights.get("sha256") or "")[:12]
+        return f"custom: {name} (sha256 {digest}…)" if digest else f"custom: {name}"
+    return f"default ({name})"
+
+
 def _md_confidence_lines(section: dict, extra_rows: list[list[str]] | None = None) -> list[str]:
     """The confidence table and the low-pLDDT warning shared by the OpenFold and prediction blocks.
 
@@ -633,6 +642,9 @@ def _md_confidence_lines(section: dict, extra_rows: list[list[str]] | None = Non
     ]
     if "binder_cyclic" in section:  # whether the query sent the binder as `cyclic: true`
         rows.append(["Binder sent as cyclic", "yes" if section["binder_cyclic"] else "no"])
+    weights = section.get("weights")
+    if isinstance(weights, dict):  # custom weights by content, or the checkpoint the model names
+        rows.append(["Weights", _weights_label(weights)])
     refold_rmsd = section.get("binder_ca_rmsd")
     try:
         import math
