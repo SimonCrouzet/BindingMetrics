@@ -15,9 +15,11 @@ from binding_metrics._constants import (
 )
 from binding_metrics.core.forcefields import get_forcefield
 from binding_metrics.core.residues import (
+    AMBER_PROTONATION_VARIANTS,
     AMBER_STANDARD_RESIDUES,
     ION_NAMES_COMMON,
     METAL_ELEMENTS,
+    STANDARD_AMINO_ACIDS,
     TERMINAL_CAP_NAMES,
     WATER_NAMES_ALL,
     WATER_NAMES_PDB_AMBER,
@@ -313,6 +315,78 @@ def find_chain_breaks(topology, positions) -> list:
                         )
             previous = (res, atoms)
     return breaks
+
+
+def find_open_c_termini(topology) -> list:
+    """Find chains whose last residue is a standard amino acid without its terminal oxygen.
+
+    ``Modeller.addHydrogens`` adds hydrogens and never heavy atoms, and the force field has
+    no template for a standard residue at the end of a chain that lacks OXT: it stops with
+    "No template found for residue ... the bonds are different". PDBFixer adds the OXT in
+    prep. A chain counts when its last residue is a standard amino acid or an AMBER variant
+    (CYX, HID, ...), has a carbonyl carbon, has no OXT and its carbon has no bond to
+    another residue, which a head-to-tail or C-terminal lactam closure and a capping
+    group give it. Call it after ``patch_cyclic_topology``, which adds those bonds.
+
+    Returns:
+        A list with one ``(chain ID, residue name, residue number)`` per such chain, IDs as in
+        ``topology``.
+    """
+    amino_acids = STANDARD_AMINO_ACIDS | AMBER_PROTONATION_VARIANTS
+    found = []
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        if not residues or residues[-1].name not in amino_acids:
+            continue
+        last = residues[-1]
+        atoms = {atom.name: atom for atom in last.atoms()}
+        carbon = atoms.get("C")
+        if carbon is None or "OXT" in atoms:
+            continue
+        bonded_outside = any(
+            (bond.atom1 is carbon and bond.atom2.residue is not last)
+            or (bond.atom2 is carbon and bond.atom1.residue is not last)
+            for bond in topology.bonds()
+        )
+        if not bonded_outside:
+            found.append((chain.id, last.name, str(last.id)))
+    return found
+
+
+def require_closed_c_termini(topology, chain_names: Optional[dict] = None) -> None:
+    """Raise ``ValueError`` when a chain ends in a standard residue without its terminal oxygen.
+
+    The relaxation and the interaction energy expect a prepared structure and would stop
+    later, inside the force field, with a message that does not say why. See
+    :func:`find_open_c_termini` for what counts.
+
+    Args:
+        topology: OpenMM Topology.
+        chain_names: Optional ``{ID in the topology: name to show}``, for the author IDs of
+            a topology that no longer carries them. Defaults to ``author_chain_ids``.
+
+    Raises:
+        ValueError: Naming each chain and residue, and saying that the structure must be
+            prepared (``binding-metrics-prep``, or ``binding-metrics-run`` without
+            ``--skip-prep``) or have a terminal oxygen or a cap on every chain.
+    """
+    open_ends = find_open_c_termini(topology)
+    if not open_ends:
+        return
+    if chain_names is None:
+        chain_names = {}
+        for chain, author_id in zip(topology.chains(), author_chain_ids(topology)):
+            chain_names.setdefault(chain.id, author_id)
+    ends = ", ".join(
+        f"chain {chain_names.get(chain_id, chain_id)} ends in {name}{number}"
+        for chain_id, name, number in open_ends
+    )
+    raise ValueError(
+        f"{ends} without its terminal oxygen (OXT): the structure is not prepared, and the "
+        "force field has no template for the residue. Prepare it first (binding-metrics-prep, "
+        "or binding-metrics-run without --skip-prep), or give a structure whose chains end in "
+        "OXT or a cap (ACE, NME, NH2)."
+    )
 
 
 def _add_hydrogens_cyclic(

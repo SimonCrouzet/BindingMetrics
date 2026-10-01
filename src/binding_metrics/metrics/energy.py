@@ -358,6 +358,8 @@ def _create_implicit_system(
         _patch_nonstandard,
         load_nonstandard_xmls,
     )
+    from binding_metrics.core.system import require_closed_c_termini
+    from binding_metrics.io.structures import author_chain_ids
 
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
@@ -383,8 +385,15 @@ def _create_implicit_system(
             load_nonstandard_xmls(ff, ns_info)
             extra_xmls.extend(ns_info.extra_ff_xmls)
 
+    chain_names: dict = {}  # topology chain ID -> author ID, for the message below
+    for chain, author_id in zip(topology.chains(), author_chain_ids(topology)):
+        chain_names.setdefault(chain.id, author_id)
+
     topology, positions, bond_info = patch_cyclic_topology(topology, positions, peptide_chain)
     topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
+    # Before the force field: a chain that ends in a standard residue without OXT fails
+    # there with a message that does not say what to do.
+    require_closed_c_termini(topology, chain_names)
     if bond_info:
         load_extra_xmls(ff, bond_info)
 

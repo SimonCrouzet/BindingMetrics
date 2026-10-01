@@ -791,6 +791,12 @@ class ImplicitRelaxation(Relaxer):
             hints=self.config.cyclic_bond_hints,
         )
         topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
+        # Before the force field: a chain that ends in a standard residue without OXT fails
+        # there with a message that does not say what to do.
+        from binding_metrics.core.system import require_closed_c_termini
+
+        copy_author_chain_ids(stripped_topology, topology)
+        require_closed_c_termini(topology)
         if bond_info:
             logger.info("  Cyclic peptide detected — %d bond(s):", len(bond_info))
             # Build a residue-name lookup: (chain_id, res_idx_in_chain) → res_name
