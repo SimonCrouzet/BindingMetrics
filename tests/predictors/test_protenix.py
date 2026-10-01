@@ -6,6 +6,8 @@ that ``predictors/protenix.py`` documents; nothing here is real Protenix output.
 
 import dataclasses
 import json
+import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -565,6 +567,80 @@ def _complex_with_a_modified_residue_and_an_ion():
         pde=0.5 + 0.25 * i + 0.125 * j,
         scalars={**base.scalars, "avg_plddt": float(plddt.mean())},
     )
+
+
+def _complex_with_a_standard_named_ligand():
+    """Chain A: ALA, SEP; chain B: UNK; chain L: a ligand that is named ALA (HETATM).
+
+    The tokenizer makes one token of a residue whose name is standard and that is not a ligand
+    (ALA, UNK) and one token per atom of everything else: 1 + 4 + 1 + 2 = 8 tokens.
+    """
+    atoms = [
+        _atom("A", 1, "ALA", "CA", 0.0, 0.0),
+        _atom("A", 1, "ALA", "CB", 0.0, 1.5),
+        _atom("A", 2, "SEP", "CA", 3.8, 0.0),
+        _atom("A", 2, "SEP", "CB", 3.8, 1.5),
+        _atom("A", 2, "SEP", "OG", 3.8, 3.0),
+        _atom("A", 2, "SEP", "P", 3.8, 4.5),
+        _atom("B", 1, "UNK", "CA", 0.0, 6.0),
+        _atom("B", 1, "UNK", "CB", 0.0, 7.5),
+        _atom("L", 1, "ALA", "CA", 5.0, 3.0, hetero=True),
+        _atom("L", 1, "ALA", "CB", 5.0, 4.5, hetero=True),
+    ]
+    array = synth.struc.array(atoms)
+    plddt = np.array([92, 94, 90, 88, 86, 84, 80, 78, 60, 64], dtype=float)
+    array.set_annotation("b_factor", plddt.copy())
+    n_tokens = 8
+    i = np.arange(n_tokens)[:, None]
+    j = np.arange(n_tokens)[None, :]
+    base = synth.synthetic_complex()
+    return dataclasses.replace(
+        base,
+        atoms=array,
+        plddt_per_atom=plddt,
+        pae=1.0 + 0.5 * i + 0.25 * j,
+        pde=0.5 + 0.25 * i + 0.125 * j,
+        scalars={**base.scalars, "avg_plddt": float(plddt.mean())},
+    )
+
+
+def _protenix_source(relative_path: str) -> str:
+    """A file of the Protenix clone (``BINDING_METRICS_MODEL_SOURCES``), or skip the test."""
+    root = os.environ.get("BINDING_METRICS_MODEL_SOURCES")
+    if not root:
+        pytest.skip("BINDING_METRICS_MODEL_SOURCES is not set")
+    path = Path(root) / "Protenix" / relative_path
+    if not path.is_file():
+        pytest.skip(f"{path} is not there")
+    return path.read_text(encoding="utf-8")
+
+
+class TestTokenizerRule:
+    """``is_atom_token`` is the rule of ``AtomArrayTokenizer.tokenize`` (tokenizer.py:112-154)."""
+
+    def test_a_standard_name_is_one_token_unless_the_residue_is_a_ligand(self, tmp_path):
+        _write(tmp_path, _complex_with_a_standard_named_ligand())
+        record = _load(tmp_path)
+        np.testing.assert_array_equal(
+            record.extras["atom_to_token_idx"], [0, 0, 1, 2, 3, 4, 5, 5, 6, 7]
+        )
+        layout = token_layout(record)
+        assert len(layout) == 8
+        np.testing.assert_array_equal(
+            layout.is_atom_token, [False, True, True, True, True, False, True, True]
+        )
+        assert list(layout.chain_id) == ["A"] * 5 + ["B"] + ["L"] * 2
+        np.testing.assert_array_equal(layout.atom_index, [0, 2, 3, 4, 5, 6, 8, 9])
+        assert layout.problems() == []
+
+    def test_the_rule_the_docstring_cites_is_in_the_source(self):
+        tokenizer = _protenix_source("protenix/data/tokenizer.py")
+        assert 'if res_token is not None and mol_type != "ligand":' in tokenizer
+        assert "res_token = STD_RESIDUES.get(res_name, None)" in tokenizer
+        reader = _protenix_source("protenix/data/inference/json_to_feature.py")
+        assert '"ligand": "non-polymer",' in reader and '"ion": "non-polymer",' in reader
+        assert "entity_atom_array.hetero[:] = False" in reader
+        assert "entity_atom_array.hetero[:] = True" in reader
 
 
 class TestTokenLayout:

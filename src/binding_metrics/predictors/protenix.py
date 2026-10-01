@@ -676,6 +676,17 @@ def token_layout(record: PredictionRecord) -> TokenLayout:
     Each token is represented by its first atom, except a token of several atoms (a standard
     residue) that is represented by its C-alpha (C1' for a nucleotide). ``is_atom_token`` is True
     for a token of a residue that is not in ``STANDARD_RESIDUE_NAMES`` or is a hetero residue.
+    That is the rule of the tokenizer (``AtomArrayTokenizer.tokenize``,
+    ``protenix/data/tokenizer.py:112-154``, commit 85767b8): a residue is one token when its name is
+    in the standard set and its ``mol_type`` is not ``ligand``, else one token per atom. The
+    ``mol_type`` is not in the structure file; its stand-in is the ``hetero`` flag, which is exact
+    for the output of ``protenix pred``, because the input reader sets it from the entity type:
+    ligands and ions are ``non-polymer`` and ``hetero``, polymers are not
+    (``protenix/data/inference/json_to_feature.py:65-71,166-169``). A polymer residue with a
+    standard name is therefore one token and not ``hetero``, and a ligand that is named like an
+    amino acid is ``hetero`` and one token per atom. The flag is not the rule for a file of
+    another program, where a standard residue may be written as HETATM (OpenFold3 does that for
+    UNK); this reader is for Protenix files.
     ``chain_id`` is the chain ID of the structure file, before ``record.chain_map``.
     ``extras`` holds ``token_asym_id`` and ``token_has_frame`` when the file has them.
 

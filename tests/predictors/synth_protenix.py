@@ -64,10 +64,16 @@ def token_indices(atoms, n_tokens: int) -> Optional[np.ndarray]:
     """``atom_to_token_idx`` for a structure whose PAE has ``n_tokens`` rows, or None.
 
     One token per residue when that gives ``n_tokens``; otherwise the Protenix rule (a residue
-    outside the standard set is one token per atom); None when neither gives ``n_tokens``.
+    outside the standard set, or a ligand, is one token per atom; ``AtomArrayTokenizer.tokenize``);
+    None when neither gives ``n_tokens``.
     """
     residues = _residues(atoms)
     names = np.asarray(atoms.res_name)
+    hetero = (
+        np.asarray(atoms.hetero, dtype=bool)
+        if "hetero" in atoms.get_annotation_categories()
+        else np.zeros(atoms.array_length(), dtype=bool)
+    )
     per_residue = np.zeros(atoms.array_length(), dtype=int)
     for token, (start, stop) in enumerate(residues):
         per_residue[start:stop] = token
@@ -76,7 +82,7 @@ def token_indices(atoms, n_tokens: int) -> Optional[np.ndarray]:
     token = 0
     per_rule = np.zeros(atoms.array_length(), dtype=int)
     for start, stop in residues:
-        if str(names[start]) in _STANDARD:
+        if str(names[start]) in _STANDARD and not hetero[start]:  # a ligand is per atom
             per_rule[start:stop] = token
             token += 1
         else:
