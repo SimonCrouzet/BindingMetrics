@@ -621,16 +621,16 @@ class Boltz2Parser(PredictionParser):
     # are declared. predict is the plain input; refold and score need a template per chain, which
     # `templates` takes with `chain_id` (docs/prediction.md, Templates); an unforced template
     # carries no pose, because the template module lets features attend within the same chain only
-    # (src/boltz/model/modules/trunkv2.py, "Compute asym mask"). lock is the template with
+    # (src/boltz/model/modules/trunkv2.py, "Compute asym mask"). score-lock is the template with
     # `force: true` and a `threshold`: process_template_features
     # (src/boltz/data/feature/featurizerv2.py) puts all the chains a template file maps into one
     # row, and TemplateReferencePotential (src/boltz/model/potentials/potentials.py) aligns that
     # row rigidly over its templated tokens (weighted_rigid_align) and penalises a deviation
-    # larger than the threshold. It is a guidance term, so lock is a caveat and not a promise.
+    # larger than the threshold. It is a guidance term, so score-lock is a caveat and not a promise.
     capabilities = Capabilities(
-        modes={"predict", "refold", "score", "lock"},
+        modes={"predict", "refold", "score", "score-lock"},
         caveats={
-            "modes:lock": (
+            "modes:score-lock": (
                 "Boltz-2 pins the pose through a template with `force: true` and a `threshold` "
                 "(docs/prediction.md, Templates): TemplateReferencePotential "
                 "(src/boltz/model/potentials/potentials.py) aligns the template rigidly over its "

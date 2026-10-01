@@ -402,14 +402,14 @@ class ProtenixParser(PredictionParser):
     # Not declared because nothing shows it: a limit on the residue classes (modified residues go
     # through a CCD code, D-amino acids and N-methyl are not mentioned), and the 2560-token limit
     # of the model protenix-v2, which is a limit of the whole complex.
-    # Modes: none is declared. A lock is not refused: the `contact` and `pocket` constraints
+    # Modes: none is declared. A score-lock is not refused: the `contact` and `pocket` constraints
     # guide the interface and are documented as soft (docs/infer_json_format.md, section
-    # constraint), so lock is a caveat. Templates only come through `templatesPath` (a3m or hhr
-    # alignments, section protein), so a structure cannot be given as a template: whether refold
-    # and score exist is not shown and nothing is declared for them.
+    # constraint), so score-lock is a caveat. Templates only come through `templatesPath` (a3m
+    # or hhr alignments, section protein), so a structure cannot be given as a template: whether
+    # refold and score exist is not shown and nothing is declared for them.
     capabilities = Capabilities(
         caveats={
-            "modes:lock": (
+            "modes:score-lock": (
                 "Protenix guides the interface of the chains with `contact` and `pocket` "
                 'constraints, which its documentation calls "a soft constraint: the model is '
                 'encouraged, but not strictly required, to satisfy it" (docs/infer_json_format.md, '

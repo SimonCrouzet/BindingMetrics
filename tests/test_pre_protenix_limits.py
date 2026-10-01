@@ -41,7 +41,9 @@ class TestTheDeclaration:
         assert self.caps.closures == frozenset()
 
     def test_the_caveats_are_the_closures_the_documentation_does_not_list(self):
-        assert sorted(self.caps.caveats) == ["closures:lactam", "closures:other", "closures:staple"]
+        closures = [key for key in self.caps.caveats if key.startswith("closures:")]
+        assert sorted(closures) == ["closures:lactam", "closures:other", "closures:staple"]
+        assert sorted(set(self.caps.caveats) - set(closures)) == ["modes:score-lock"]
 
     def test_the_caveat_quotes_the_documentation_with_its_file_and_section(self):
         text = self.caps.caveats["closures:lactam"]

@@ -2,7 +2,7 @@
 
 A mode is how a model is used for a complex: ``predict`` (sequences only), ``refold`` (receptor
 templated, binder free), ``score`` (every chain templated on its own, the pose not given) and
-``lock`` (the pose pinned to the input). A hard limit is declared only where a source says the
+``score-lock`` (the pose pinned to the input). A hard limit is declared only where a source says the
 input cannot be given; "soft", "guidance" and "not reliable" are caveats. The evidence tests read
 the model source when a clone is named by ``BINDING_METRICS_MODEL_SOURCES``.
 """
@@ -31,7 +31,7 @@ PROFILE = InputProfile("B", "A", n_binder_residues=12, binder_type="peptide")
 
 class TestTheField:
     def test_the_vocabulary(self):
-        assert MODES == ("predict", "refold", "score", "lock")
+        assert MODES == ("predict", "refold", "score", "score-lock")
 
     def test_the_store_accepts_the_same_modes(self):
         from binding_metrics.predictors.store import MODES as STORE_MODES
@@ -41,8 +41,8 @@ class TestTheField:
     def test_nothing_is_declared_by_default(self):
         caps = Capabilities()
         assert caps.modes == frozenset() and caps.is_unconstrained
-        assert caps.check(PROFILE, mode="lock") == []
-        assert not caps.declares_mode("lock")
+        assert caps.check(PROFILE, mode="score-lock") == []
+        assert not caps.declares_mode("score-lock")
 
     def test_a_mode_left_out_needs_a_reason(self):
         with pytest.raises(ValueError, match="modes is constrained but reasons has no sentence"):
@@ -67,10 +67,10 @@ class TestTheField:
     def test_a_reason_and_a_caveat_may_name_a_mode(self):
         caps = Capabilities(
             modes={"score"},
-            reasons={"modes": "General.", "modes:lock": "About the pose."},
+            reasons={"modes": "General.", "modes:score-lock": "About the pose."},
             caveats={"modes:score": "Not validated."},
         )
-        assert caps.reason_for("modes", "lock") == "About the pose."
+        assert caps.reason_for("modes", "score-lock") == "About the pose."
         assert caps.reason_for("modes", "refold") == "General."
         with pytest.raises(ValueError, match="unknown key 'modes:dock'"):
             Capabilities(caveats={"modes:dock": "x"})
@@ -87,9 +87,9 @@ class TestTheCheck:
         assert self.caps.check(PROFILE, mode=mode) == []
 
     def test_a_mode_left_out_is_refused_with_the_fact_and_the_supported_modes(self):
-        (violation,) = self.caps.check(PROFILE, mode="lock")
+        (violation,) = self.caps.check(PROFILE, mode="score-lock")
         assert violation.constraint == "modes"
-        assert violation.fact == "mode 'lock' was requested"
+        assert violation.fact == "mode 'score-lock' was requested"
         assert violation.requirement == "supported modes: predict, refold, score"
         assert violation.reason == "The pose cannot be given."
 
@@ -97,11 +97,11 @@ class TestTheCheck:
         assert self.caps.check(PROFILE) == []
 
     def test_a_caveat_applies_to_the_requested_mode_only(self):
-        caps = Capabilities(caveats={"modes:lock": "Soft."})
-        assert caps.caveats_for(PROFILE, "lock") == ["Soft."]
+        caps = Capabilities(caveats={"modes:score-lock": "Soft."})
+        assert caps.caveats_for(PROFILE, "score-lock") == ["Soft."]
         assert caps.caveats_for(PROFILE, "score") == []
         assert caps.caveats_for(PROFILE) == []
-        assert caps.check(PROFILE, mode="lock") == []  # a caveat never refuses
+        assert caps.check(PROFILE, mode="score-lock") == []  # a caveat never refuses
 
 
 # ---------------------------------------------------------------------------
@@ -109,10 +109,12 @@ class TestTheCheck:
 # ---------------------------------------------------------------------------
 
 
-class LockFold(StubParser):
-    name = "lockfold"
-    display_name = "LockFold"
-    capabilities = Capabilities(modes={"predict", "lock"}, reasons={"modes": "Predicts and pins."})
+class ScoreLockFold(StubParser):
+    name = "scorelockfold"
+    display_name = "ScoreLockFold"
+    capabilities = Capabilities(
+        modes={"predict", "score-lock"}, reasons={"modes": "Predicts and pins."}
+    )
 
 
 class ScoreFold(StubParser):
@@ -137,12 +139,12 @@ class NoModesFold(StubParser):
 class SoftFold(StubParser):
     name = "softfold"
     display_name = "SoftFold"
-    capabilities = Capabilities(caveats={"modes:lock": "The pose is only guided."})
+    capabilities = Capabilities(caveats={"modes:score-lock": "The pose is only guided."})
 
 
 @pytest.fixture
 def models(monkeypatch):
-    for cls in (LockFold, ScoreFold, VagueFold, NoModesFold, SoftFold):
+    for cls in (ScoreLockFold, ScoreFold, VagueFold, NoModesFold, SoftFold):
         spec = ParserSpec(
             name=cls.name,
             import_path=f"{cls.__module__}:{cls.__name__}",
@@ -158,36 +160,40 @@ def models(monkeypatch):
 class TestPreflightWithAMode:
     def test_a_mode_the_model_does_not_list_is_refused_with_the_two_lists(self, models):
         with pytest.raises(IncompatibleInputError) as caught:
-            preflight(PROFILE, [], "scorefold", mode="lock")
+            preflight(PROFILE, [], "scorefold", mode="score-lock")
         (violation,) = caught.value.violations
         assert (violation.kind, violation.constraint) == ("predictor", "modes")
         message = str(caught.value)
         assert "predictor ScoreFold: modes" in message
-        assert "found:    mode 'lock' was requested" in message
+        assert "found:    mode 'score-lock' was requested" in message
         assert "requires: supported modes: score" in message
         assert "Only re-docking." in message
-        assert "Mode: lock (the pose of the chains pinned to the input)" in message
-        declared = "predictors that declare the mode 'lock' whose declared limits accept this input"
-        assert f"{declared}: LockFold (lockfold)" in message
+        assert (
+            "Mode: score-lock (score, with the pose of the chains pinned to the input)" in message
+        )
+        declared = (
+            "predictors that declare the mode 'score-lock' whose declared limits accept this input"
+        )
+        assert f"{declared}: ScoreLockFold (scorelockfold)" in message
         assert "predictors that declare no limits (not validated for this input)" in message
         # the models that declare a different set, the rejected one and the lister of no modes
         assert "ScoreFold (scorefold)" not in message.split("fix:")[1]
 
     def test_the_undeclared_list_holds_the_models_with_no_declaration_of_modes(self, models):
         with pytest.raises(IncompatibleInputError) as caught:
-            preflight(PROFILE, [], "scorefold", mode="lock")
+            preflight(PROFILE, [], "scorefold", mode="score-lock")
         fix = caught.value.violations[0].fix
         undeclared = fix.split("not validated for this input): ")[1]
         for label in ("NoModesFold (nomodes)", "SoftFold (softfold)", "VagueFold (vague)"):
             assert label in undeclared
-        assert "LockFold" not in undeclared
+        assert "ScoreLockFold" not in undeclared
 
     def test_a_mode_nobody_declares_is_said_plainly(self, models, monkeypatch):
-        monkeypatch.delitem(PARSERS, "lockfold")
+        monkeypatch.delitem(PARSERS, "scorelockfold")
         with pytest.raises(IncompatibleInputError) as caught:
-            preflight(PROFILE, [], "scorefold", mode="lock")
+            preflight(PROFILE, [], "scorefold", mode="score-lock")
         assert (
-            "no other registered predictor declares support for this input in the mode 'lock'"
+            "no other registered predictor declares support for this input in the mode 'score-lock'"
             in str(caught.value)
         )
 
@@ -200,25 +206,28 @@ class TestPreflightWithAMode:
         assert report.compatible and report.mode is None
 
     def test_a_model_without_declared_modes_is_never_refused_for_one(self, models):
-        assert preflight(PROFILE, [], "vague", mode="lock").compatible
-        assert preflight(PROFILE, [], "nomodes", mode="lock").compatible
+        assert preflight(PROFILE, [], "vague", mode="score-lock").compatible
+        assert preflight(PROFILE, [], "nomodes", mode="score-lock").compatible
 
     def test_a_caveat_is_a_warning_for_the_requested_mode(self, models):
-        report = preflight(PROFILE, [], "softfold", mode="lock")
+        report = preflight(PROFILE, [], "softfold", mode="score-lock")
         assert report.compatible
         assert report.warnings == ("predictor SoftFold: The pose is only guided.",)
         assert preflight(PROFILE, [], "softfold", mode="score").warnings == ()
 
     def test_models_that_cannot_be_run_from_here_are_marked(self, models):
         with pytest.raises(IncompatibleInputError) as caught:
-            preflight(PROFILE, [], "scorefold", mode="lock", runnable={"scorefold", "vague"})
+            preflight(PROFILE, [], "scorefold", mode="score-lock", runnable={"scorefold", "vague"})
         fix = caught.value.violations[0].fix
-        assert "LockFold (lockfold) [no runner here: give its output with --prediction-dir]" in fix
+        assert (
+            "ScoreLockFold (scorelockfold) [no runner here: give its output with --prediction-dir]"
+            in fix
+        )
         assert "VagueFold (vague)" in fix and "VagueFold (vague) [no runner" not in fix
 
     def test_without_the_runnable_list_nothing_is_marked(self, models):
         with pytest.raises(IncompatibleInputError) as caught:
-            preflight(PROFILE, [], "scorefold", mode="lock")
+            preflight(PROFILE, [], "scorefold", mode="score-lock")
         assert "no runner here" not in caught.value.violations[0].fix
 
     def test_a_mode_does_not_apply_to_metrics(self, models):
@@ -227,7 +236,7 @@ class TestPreflightWithAMode:
             (),
             {"name": "m", "capabilities": Capabilities(modes={"score"}, reasons={"modes": "x"})},
         )()
-        assert preflight(PROFILE, [needing], mode="lock").compatible
+        assert preflight(PROFILE, [needing], mode="score-lock").compatible
 
     def test_the_report_names_the_mode(self, models):
         data = preflight(PROFILE, [], "scorefold", mode="score").to_dict()
@@ -247,8 +256,8 @@ class TestPreflightWithAMode:
 
     def test_the_log_names_the_mode_violation(self, models, caplog):
         with caplog.at_level(logging.WARNING, logger="binding_metrics.capabilities"):
-            preflight(PROFILE, [], "scorefold", mode="lock", policy="warn")
-        assert "mode 'lock' was requested" in caplog.text
+            preflight(PROFILE, [], "scorefold", mode="score-lock", policy="warn")
+        assert "mode 'score-lock' was requested" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +272,7 @@ class TestTheDeclarations:
     def test_openfold3_supports_predict_refold_and_score_but_not_lock(self):
         caps = self._caps("of3")
         assert caps.modes == frozenset({"predict", "refold", "score"})
-        reason = caps.reason_for("modes", "lock")
+        reason = caps.reason_for("modes", "score-lock")
         for cited in (
             "create_template_distogram",
             "template_embedders.py",
@@ -273,9 +282,9 @@ class TestTheDeclarations:
         ):
             assert cited in reason
 
-    def test_lock_is_refused_for_openfold3_with_the_alternatives(self):
+    def test_score_lock_is_refused_for_openfold3_with_the_alternatives(self):
         with pytest.raises(IncompatibleInputError) as caught:
-            preflight(PROFILE, [], "of3", mode="lock")
+            preflight(PROFILE, [], "of3", mode="score-lock")
         message = str(caught.value)
         assert "predictor OpenFold3 0.5.0: modes" in message
         assert "supported modes: predict, refold, score" in message
@@ -289,7 +298,7 @@ class TestTheDeclarations:
     def test_boltz2_declares_all_four_and_warns_for_lock(self):
         caps = self._caps("boltz2")
         assert caps.modes == frozenset(MODES) and caps.is_unconstrained
-        report = preflight(PROFILE, [], "boltz2", mode="lock")
+        report = preflight(PROFILE, [], "boltz2", mode="score-lock")
         assert report.compatible
         (warning,) = [w for w in report.warnings if "force: true" in w]
         assert "guidance term" in warning and "never run" in warning
@@ -298,7 +307,7 @@ class TestTheDeclarations:
     def test_protenix_declares_no_modes_and_warns_for_lock(self):
         caps = self._caps("protenix")
         assert caps.modes == frozenset() and caps.is_unconstrained
-        (warning,) = preflight(PROFILE, [], "protenix", mode="lock").warnings
+        (warning,) = preflight(PROFILE, [], "protenix", mode="score-lock").warnings
         assert "soft constraint" in warning and "docs/infer_json_format.md" in warning
         for mode in ("predict", "refold", "score"):
             assert preflight(PROFILE, [], "protenix", mode=mode).warnings == ()
@@ -306,11 +315,11 @@ class TestTheDeclarations:
     def test_alphafold2_declares_nothing_about_modes(self):
         caps = self._caps("af2")
         assert caps.modes == frozenset() and not [k for k in caps.caveats if k.startswith("modes")]
-        assert preflight(PROFILE, [], "af2", mode="lock").compatible
+        assert preflight(PROFILE, [], "af2", mode="score-lock").compatible
 
     def test_the_lists_for_lock_name_boltz2_as_declared_and_the_others_as_undeclared(self):
         with pytest.raises(IncompatibleInputError) as caught:
-            preflight(PROFILE, [], "of3", mode="lock", runnable={"of3"})
+            preflight(PROFILE, [], "of3", mode="score-lock", runnable={"of3"})
         fix = caught.value.violations[0].fix
         declared, undeclared = fix.split("; predictors that declare no limits")
         assert (
@@ -386,15 +395,15 @@ class TestTheEvidence:
 
 
 class TestTheRunnerStopsALock:
-    """The pre-flight check normally refuses ``lock`` first; the runner is the second stop."""
+    """The pre-flight check normally refuses ``score-lock`` first; the runner is the second stop."""
 
     def test_the_request_cannot_be_made(self):
         from binding_metrics.predictors.of3_runner import OpenFold3Runner
         from tests.test_pre_cli_run import LINEAR
 
-        with pytest.raises(ValueError, match="OpenFold3 cannot run mode 'lock'") as caught:
+        with pytest.raises(ValueError, match="OpenFold3 cannot run mode 'score-lock'") as caught:
             OpenFold3Runner().make_request(
-                LINEAR, name="s", binder_chain="B", receptor_chain="A", mode="lock"
+                LINEAR, name="s", binder_chain="B", receptor_chain="A", mode="score-lock"
             )
         assert "create_template_distogram" in str(caught.value)  # the text of the declaration
 
@@ -404,11 +413,11 @@ class TestTheRunnerStopsALock:
         from tests.test_pre_cli_run import LINEAR
 
         request = PredictionRequest(
-            "of3", "s", mode="lock", input_path=LINEAR, binder_chain="B", receptor_chain="A"
+            "of3", "s", mode="score-lock", input_path=LINEAR, binder_chain="B", receptor_chain="A"
         )
         runner = OpenFold3Runner()
         for action in (runner.prepare, runner.run):
-            with pytest.raises(ValueError, match="cannot run mode 'lock'"):
+            with pytest.raises(ValueError, match="cannot run mode 'score-lock'"):
                 action(request, tmp_path)
         assert list(tmp_path.iterdir()) == []
 

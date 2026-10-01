@@ -43,7 +43,7 @@ class TestTheDeclaration:
         assert self.caps.closures == frozenset()  # head-to-tail is not the only closure it takes
 
     def test_the_one_caveat_is_about_a_staple_and_cites_the_documentation(self):
-        assert list(self.caps.caveats) == ["closures:staple"]
+        assert sorted(self.caps.caveats) == ["closures:staple", "modes:score-lock"]
         assert "docs/prediction.md" in self.caps.caveats["closures:staple"]
 
 

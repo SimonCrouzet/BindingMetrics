@@ -220,8 +220,8 @@ class OpenFold3Parser(PredictionParser):
     # check runs. Not declared because nothing shows it: a limit on the binder size or on a binder
     # of several chains.
     # Modes (v0.5.0 source, checked against the clone on 2026-10-01): predict, refold and score
-    # are supported, lock is not. The template pair features are multiplied by a same-chain mask
-    # when they are built (openfold3/core/data/primitives/featurization/template.py,
+    # are supported, score-lock is not. The template pair features are multiplied by a same-chain
+    # mask when they are built (openfold3/core/data/primitives/featurization/template.py,
     # create_template_distogram and create_template_unit_vector; the call is in
     # openfold3/core/data/pipelines/featurization/template.py) and again in the embedder
     # (openfold3/core/model/feature_embedders/template_embedders.py, _embed_feats), so a template

@@ -364,11 +364,11 @@ class TestValidation:
             PredictionRequest(model, "s1", sequences={"A": "G"})
 
     def test_the_mode_is_one_of_the_known_four(self):
-        assert MODES == ("predict", "score", "refold", "lock")
+        assert MODES == ("predict", "score", "refold", "score-lock")
         with pytest.raises(ValueError, match="mode must be one of"):
             PredictionRequest("stub", "s1", mode="dock", sequences={"A": "G"})
 
-    def test_lock_is_a_mode_of_its_own_in_the_key(self):
+    def test_score_lock_is_a_mode_of_its_own_in_the_key(self):
         keys = {
             mode: PredictionRequest("stub", "s1", mode=mode, sequences={"A": "G"}).key()
             for mode in MODES

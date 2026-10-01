@@ -111,15 +111,15 @@ NEEDS: tuple[str, ...] = ("receptor_chain", "reference_structure", "predicted_st
 #: ``Capabilities.modes``. ``predict``: from sequences only. ``refold``: the receptor is given as
 #: a template and the binder is predicted freely. ``score``: every chain is given its own
 #: structure as a template and the relative pose of the chains is NOT given, so the model
-#: re-docks them. ``lock``: the relative pose of the chains is pinned to the input, by a forced
-#: template, constraints or both.
-MODES: tuple[str, ...] = ("predict", "refold", "score", "lock")
+#: re-docks them. ``score-lock``: ``score`` with the relative pose of the chains pinned to the
+#: input, by a forced template, constraints or both.
+MODES: tuple[str, ...] = ("predict", "refold", "score", "score-lock")
 
 _MODE_TEXT = {
     "predict": "predict (sequences only)",
     "refold": "refold (receptor templated, binder predicted freely)",
     "score": "score (every chain templated on its own, the pose not given)",
-    "lock": "lock (the pose of the chains pinned to the input)",
+    "score-lock": "score-lock (score, with the pose of the chains pinned to the input)",
 }
 
 _FAMILY_TEXT = {
@@ -269,12 +269,12 @@ class Capabilities:
         needs: What the step cannot run without, a subset of ``NEEDS``. ``receptor_chain`` is met
             by a receptor given or by any other protein chain in the structure.
         modes: The ways a model can be used that it supports, a subset of ``MODES`` (``predict``,
-            ``refold``, ``score``, ``lock``; see ``MODES``). Empty declares nothing and refuses
-            nothing. A non-empty set that leaves a mode out refuses a request for it and needs
-            ``reasons["modes"]`` (or ``"modes:<mode>"``) naming what is not supported and why;
-            the full set declares full support and refuses nothing. Partial or unreliable support
-            of a listed mode is a caveat, ``caveats["modes:<mode>"]``, which applies to a request
-            for that mode whether or not ``modes`` is declared.
+            ``refold``, ``score``, ``score-lock``; see ``MODES``). Empty declares nothing and
+            refuses nothing. A non-empty set that leaves a mode out refuses a request for it and
+            needs ``reasons["modes"]`` (or ``"modes:<mode>"``) naming what is not supported and
+            why; the full set declares full support and refuses nothing. Partial or unreliable
+            support of a listed mode is a caveat, ``caveats["modes:<mode>"]``, which applies to a
+            request for that mode whether or not ``modes`` is declared.
         extra_checks: Functions ``profile -> violations`` for a limit that the sets above cannot
             state, such as the residue names a model's query builder can express. Each returns
             ``Violation`` objects with ``fact``, ``requirement`` and a ``reason`` that says why and

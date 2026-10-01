@@ -97,15 +97,15 @@ _ON_UNMAPPABLE_CHOICES = ("error", "x")
 
 
 def _lock_message() -> str:
-    """Why OpenFold3 cannot run mode ``lock``: the reason its capabilities declare.
+    """Why OpenFold3 cannot run mode ``score-lock``: the reason its capabilities declare.
 
     The pre-flight check refuses such a request first; this is the stop for a caller that did
     not run it.
     """
     from binding_metrics.predictors.of3 import OpenFold3Parser
 
-    return "OpenFold3 cannot run mode 'lock'. " + OpenFold3Parser.capabilities.reason_for(
-        "modes", "lock"
+    return "OpenFold3 cannot run mode 'score-lock'. " + OpenFold3Parser.capabilities.reason_for(
+        "modes", "score-lock"
     )
 
 
@@ -185,8 +185,8 @@ class OpenFold3Runner(PredictionRunner):
                 (``predict``).
             name: Query name; the output files are named after it.
             binder_chain, receptor_chain: Chain roles; required for ``score`` and ``refold``.
-            mode: ``"score"``, ``"refold"`` or ``"predict"``; ``"lock"`` raises, OpenFold3 cannot
-                pin the pose of the chains (``OpenFold3Parser.capabilities``).
+            mode: ``"score"``, ``"refold"`` or ``"predict"``; ``"score-lock"`` raises, OpenFold3
+                cannot pin the pose of the chains (``OpenFold3Parser.capabilities``).
             seeds: Seed values OpenFold3 samples with; None takes the toolkit's default
                 (``[42]``), or none when ``num_model_seeds`` is given. Cannot be combined with
                 ``num_model_seeds``.
@@ -206,12 +206,12 @@ class OpenFold3Runner(PredictionRunner):
                 ``score`` and ``refold``: a query file of ``predict`` names its own chains.
 
         Raises:
-            ValueError: Mode ``lock``, a missing chain role, an unknown mode or choice, a template
-                file with ``predict``, both ``seeds`` and ``num_model_seeds``, a ``binder_cyclic``
-                that is not ``True``, ``False`` or ``"auto"``, or a value other than the default
-                with ``predict``.
+            ValueError: Mode ``score-lock``, a missing chain role, an unknown mode or choice, a
+                template file with ``predict``, both ``seeds`` and ``num_model_seeds``, a
+                ``binder_cyclic`` that is not ``True``, ``False`` or ``"auto"``, or a value other
+                than the default with ``predict``.
         """
-        if mode == "lock":
+        if mode == "score-lock":
             raise ValueError(_lock_message())
         if mode in ("score", "refold") and not (binder_chain and receptor_chain):
             raise ValueError(f"mode '{mode}' needs binder_chain and receptor_chain")
@@ -421,7 +421,7 @@ class OpenFold3Runner(PredictionRunner):
     # ------------------------------------------------------------------ arguments
 
     def _check_request(self, request: PredictionRequest) -> None:
-        if request.mode == "lock":
+        if request.mode == "score-lock":
             raise ValueError(_lock_message())
         if request.model != self.name:
             raise ValueError(f"the of3 runner cannot run a '{request.model}' request")
