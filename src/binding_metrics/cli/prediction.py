@@ -1199,7 +1199,7 @@ def error_text(error: BaseException, model: str, runner: Optional[Any] = None) -
     if isinstance(error, PredictionUnavailableError) and "cannot be started" in text:
         why = getattr(runner, "unavailable_reason", None)
         reason = why() if callable(why) else None
-        if reason:
+        if reason and "\nWhy: " not in text:  # the store adds the reason of a runner that has one
             text += f"\nWhy: {reason}"
         env = "--openfold-conda-env" if model == "of3" else "--prediction-conda-env"
         text += (

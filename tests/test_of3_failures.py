@@ -582,6 +582,40 @@ class TestAMissingCondaEnvironmentIsNamed:
         assert "Why: " in block["error"] and "'no_such_env_xyz'" in block["error"]
         assert "--openfold-conda-env" in block["error"]  # the hint stays
 
+    def test_a_caller_of_the_session_gets_the_reason_from_the_store_text(
+        self, no_openfold3, tmp_path, monkeypatch
+    ):
+        from pathlib import Path
+
+        from binding_metrics.predictors import OpenFold3Runner, PredictionSession, PredictionStore
+        from binding_metrics.predictors.store import PredictionUnavailableError
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/conda")
+        p53 = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+        runner = OpenFold3Runner(conda_env="no_such_env_xyz")
+        session = PredictionSession(PredictionStore(tmp_path / "store"), [runner])
+        request = runner.make_request(p53, name="s1", binder_chain="B", receptor_chain="A")
+        with pytest.raises(PredictionUnavailableError) as info:
+            session.entry(request)
+        assert "\nWhy: " in str(info.value) and "'no_such_env_xyz'" in str(info.value)
+
+    def test_the_text_of_the_pipeline_has_the_reason_once(self, no_openfold3, tmp_path):
+        from pathlib import Path
+
+        from binding_metrics.cli.prediction import run_single_prediction
+
+        p53 = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+        block, _ = run_single_prediction(
+            "of3",
+            p53,
+            tmp_path,
+            "s1",
+            binder_chain="B",
+            receptor_chain="A",
+            openfold_conda_env="no_such_env_xyz",
+        )
+        assert block["error"].count("Why: ") == 1
+
     def test_a_runner_without_the_method_gives_the_old_text(self):
         from binding_metrics.cli.prediction import error_text
         from binding_metrics.predictors.store import PredictionUnavailableError

@@ -665,6 +665,39 @@ class TestFailedRuns:
         runner.available = True  # the user fixed the environment: no stale failure is remembered
         assert store.get_or_run(request, runner).status == "done"
 
+    def test_the_reason_of_a_runner_that_gives_one_is_in_the_message(self, store, tmp_path):
+        class Explains(StubRunner):
+            def unavailable_reason(self):
+                return "the conda environment 'typo' does not exist"
+
+        with pytest.raises(PredictionUnavailableError) as info:
+            store.get_or_run(make_request(tmp_path), Explains(available=False))
+        message = str(info.value)
+        assert "cannot be started on this machine" in message
+        assert message.endswith("\nWhy: the conda environment 'typo' does not exist")
+
+    def test_a_reason_that_cannot_be_read_does_not_hide_the_error(self, store, tmp_path):
+        class Broken(StubRunner):
+            def unavailable_reason(self):
+                raise OSError("conda is gone")
+
+        with pytest.raises(PredictionUnavailableError, match="cannot be started") as info:
+            store.get_or_run(make_request(tmp_path), Broken(available=False))
+        assert "Why:" not in str(info.value)
+
+    def test_a_runner_without_a_reason_gives_the_plain_message(self, store, tmp_path):
+        with pytest.raises(PredictionUnavailableError) as info:
+            store.get_or_run(make_request(tmp_path), StubRunner(available=False))
+        assert "Why:" not in str(info.value)
+
+    def test_the_run_many_path_names_the_reason_too(self, store, tmp_path):
+        class Explains(StubRunner):
+            def unavailable_reason(self):
+                return "no conda here"
+
+        with pytest.raises(PredictionUnavailableError, match="Why: no conda here"):
+            store.run_missing([make_request(tmp_path)], Explains(available=False))
+
     def test_an_unavailable_runner_does_not_hide_a_stored_result(self, store, tmp_path):
         request = make_request(tmp_path)
         store.get_or_run(request, StubRunner())

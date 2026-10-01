@@ -1036,12 +1036,29 @@ def _check_runner(request: PredictionRequest, runner: PredictionRunner) -> None:
 
 
 def _require_available(request: PredictionRequest, runner: PredictionRunner) -> None:
+    """Raise :class:`PredictionUnavailableError` when the model cannot be started here.
+
+    A runner that has ``unavailable_reason()`` (OpenFold3Runner: the conda environment it looked
+    in) adds it to the message after ``Why:``.
+    """
     if not runner.is_available():
-        raise PredictionUnavailableError(
+        message = (
             f"the {request.model} model cannot be started on this machine, and there is no "
             f"stored prediction for '{request.name}' (key {request.key()[:12]}); nothing was "
             "recorded"
         )
+        why = getattr(runner, "unavailable_reason", None)
+        reason = None
+        if callable(why):
+            try:
+                reason = why()
+            except Exception as exc:  # noqa: BLE001 - the explanation must not hide the error
+                logger.debug(
+                    "the reason the %s model is unavailable was not read: %s", request.model, exc
+                )
+        if reason:
+            message += f"\nWhy: {reason}"
+        raise PredictionUnavailableError(message)
 
 
 def _chunks(group: list[PredictionRequest], size: int) -> list[list[PredictionRequest]]:
