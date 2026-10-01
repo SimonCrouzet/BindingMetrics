@@ -1083,6 +1083,40 @@ def record_binder_cyclic(
         merge_reason(block, {"reason": decision.reason}, "binder_cyclic")
 
 
+def record_templates(block: dict, predictions_dir: Optional[str | Path], query_name: str) -> None:
+    """Add what became of the templates of an OpenFold3 run to a result block.
+
+    OpenFold3 0.5.0 goes on without a template when it cannot use one (the MSA server replaced
+    its alignment, or its preprocessing failed), exits with status 0, and then a ``score`` result
+    is a template-free prediction with the same keys. This adds ``templates``, ``{chain ID:
+    {"requested", "source", "used", "cause", "detail", "entry_ids"}}`` read from the output
+    (see ``binding_metrics.metrics._openfold_templates``), and, when a chain asked for a
+    template and got none, says so in ``reason`` (joined to an existing one). The CSV row gets a
+    column per entry, ``<prefix>_templates_<chain>_used`` and so on.
+
+    Nothing is added when the output has no ``inference_query_set.json`` (an output made by
+    another tool or version) or when it cannot be read.
+    """
+    if predictions_dir is None:
+        return
+    from binding_metrics.metrics._openfold_templates import (
+        describe_missing,
+        read_template_accounting,
+    )
+
+    try:
+        chains = read_template_accounting(predictions_dir, query_name)
+    except Exception as e:  # noqa: BLE001 - provenance of a finished run must not fail it
+        logger.warning("  [warning] template accounting not recorded: %s", e)
+        return
+    if not chains:
+        return
+    block["templates"] = chains
+    sentence = describe_missing(chains)
+    if sentence:
+        merge_reason(block, {"reason": sentence}, "templates")
+
+
 def _cache_block(session, request, *, adopted: bool = False) -> dict[str, Any]:
     """The session's counters and the key of the store entry, for ``results["prediction"]``.
 
@@ -1211,6 +1245,8 @@ def _analyse(
             block["adversarial_error"] = str(e)
 
     block["mode"] = mode
+    if record.model == "of3":
+        record_templates(block, getattr(record.files, "directory", None), record.name)
     weights = weights_description(record.extras)
     if weights is not None:
         block["weights"] = weights

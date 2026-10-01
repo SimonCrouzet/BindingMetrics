@@ -122,6 +122,7 @@ from binding_metrics.cli.prediction import (
     make_store,
     output_weights,
     record_binder_cyclic,
+    record_templates,
     reference_for,
     run_prediction_step,
     runner_chain_map,
@@ -594,6 +595,7 @@ def _run_batched_openfold(
             record_binder_cyclic(
                 of_metrics, sid_to_input[sid], pchain, openfold_cyclic, openfold_conda_env
             )
+            record_templates(of_metrics, predictions_dir, sid)
             recorded = output_weights(predictions_dir)
             if weights_ref is not None:
                 recorded["weights"] = weights_ref.to_dict()

@@ -88,6 +88,7 @@ from binding_metrics.cli.prediction import (
     make_store,
     output_weights,
     record_binder_cyclic,
+    record_templates,
     run_single_prediction,
     scored_seed_kwargs,
     weights_description,
@@ -928,6 +929,7 @@ def run_pipeline(
                 record_binder_cyclic(
                     of_metrics, input_path, peptide_chain, openfold_cyclic, openfold_conda_env
                 )
+                record_templates(of_metrics, predictions_dir, sample_id)
                 recorded = output_weights(predictions_dir)
                 if weights_ref is not None:
                     recorded["weights"] = weights_ref.to_dict()

@@ -90,6 +90,10 @@ from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     prepare_refolding_query,
     prepare_scoring_query,
 )
+from binding_metrics.metrics._openfold_templates import (  # noqa: F401  (re-exported)
+    TEMPLATE_ACCOUNTING_FILE,
+    read_template_accounting,
+)
 from binding_metrics.metrics.prediction import summarize_prediction
 from binding_metrics.predictors._confidence import (  # noqa: F401  (re-exported)
     _binder_ca_rmsd,

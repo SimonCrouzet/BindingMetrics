@@ -77,8 +77,9 @@ the exception text of a failed run (``OpenFoldRunError``, ``OpenFoldQueryError``
 
 Batches. Requests of mode ``score`` or ``refold`` without a template file can be predicted in one
 ``run_openfold_batched`` call (one model load). ``run_many`` copies each query's output into its
-own folder (``<work_dir>/split/<key>``, with ``experiment_config.json``), returns an exception for
-a query that has no output, and leaves the shared query files behind.
+own folder (``<work_dir>/split/<key>``, with ``experiment_config.json`` and, when the run wrote
+them, ``inference_query_set.json`` and ``template_accounting.json``), returns an exception for a
+query that has no output, and leaves the shared query files behind.
 
 OpenFold3 licence: Apache 2.0; no weights or model code are read or shipped here.
 """
@@ -103,6 +104,10 @@ _DEFAULT_ON_UNMAPPABLE = "error"
 _DEFAULT_BINDER_CYCLIC = "auto"
 
 _ON_UNMAPPABLE_CHOICES = ("error", "x")
+
+#: Files below ``predictions/`` that belong to the run and not to one query; ``run_many`` copies
+#: them next to the output of each query it splits off.
+_RUN_FILES = ("experiment_config.json", "inference_query_set.json", "template_accounting.json")
 
 
 def _lock_message() -> str:
@@ -438,9 +443,12 @@ class OpenFold3Runner(PredictionRunner):
                 continue
             target = work_dir / "split" / request.key()
             shutil.copytree(predictions / request.name, target / request.name)
-            config = predictions / "experiment_config.json"
-            if config.is_file():
-                shutil.copy2(config, target / config.name)  # names the checkpoint of the run
+            # the files of the run that name the checkpoint and say what became of the templates
+            # (each lists every query of the batch; a reader picks its own)
+            for shared in _RUN_FILES:
+                source = predictions / shared
+                if source.is_file():
+                    shutil.copy2(source, target / shared)
             results[request.key()] = target
         return results
 

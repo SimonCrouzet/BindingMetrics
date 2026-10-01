@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import warnings
 from pathlib import Path
@@ -29,6 +30,12 @@ from binding_metrics.core.residues import (
     LACTAM_TEMPLATE_RESIDUES,
     TERMINAL_CAP_NAMES,
     VARIANT_TO_PARENT_RESIDUE,
+)
+from binding_metrics.metrics._openfold_templates import (
+    StreamNotes,
+    account_for_templates,
+    warn_about_missing_templates,
+    write_template_accounting,
 )
 
 logger = logging.getLogger(__name__)
@@ -918,30 +925,78 @@ class OpenFoldRunInfo:
 
     ``failed_queries`` maps the queries that OpenFold3 skipped (it still exits with status 0)
     to their reasons; ``user_default_runner_yaml`` is the file it merged under the toolkit's
-    runner YAML, if any.
+    runner YAML, if any. ``templates`` is what became of the templates of the queries that ran:
+    ``{query: {chain ID: record}}`` as :func:`~binding_metrics.metrics._openfold_templates.
+    account_for_templates` describes it (whether OpenFold3 used the template that the query asked
+    for, and if not, why); it is empty when OpenFold3 wrote no ``inference_query_set.json``.
     """
 
     failed_queries: dict[str, str]
     user_default_runner_yaml: Optional[Path]
+    templates: dict[str, dict[str, dict]] = dataclasses.field(default_factory=dict)
+
+
+def _option_value(cmd: Sequence[str], name: str) -> Optional[str]:
+    """The value of the option ``name`` in ``cmd`` (``--name=value`` or ``--name value``).
+
+    OpenFold3's click options take the underscore and the hyphen spelling alike; the last
+    occurrence wins, as it does for click. None when the option is absent.
+    """
+    value = None
+    arguments = [str(argument) for argument in cmd]
+    for index, argument in enumerate(arguments):
+        key, separator, given = argument.partition("=")
+        if key.startswith("--") and key[2:].replace("-", "_") == name:
+            if separator:
+                value = given
+            elif index + 1 < len(arguments):
+                value = arguments[index + 1]
+    return value
+
+
+def _pump_stream(source, destination: str, notes: StreamNotes) -> None:
+    """Copy ``source`` (a binary pipe) to ``sys.<destination>`` as it arrives and note it.
+
+    The destination is looked up for every write, so a test or a caller that replaces
+    ``sys.stdout`` is still honoured. A console that cannot be written to does not stop the run.
+    """
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    while chunk := source.read1(4096):
+        text = decoder.decode(chunk)
+        notes.feed(text)
+        try:
+            stream = getattr(sys, destination)
+            stream.write(text)
+            stream.flush()
+        except (OSError, ValueError):
+            pass
 
 
 def _run_openfold_command(cmd: Sequence[str], output_dir: Path) -> OpenFoldRunInfo:
     """Run an OpenFold3 command line and explain how it failed.
 
-    stdout goes to the parent's stdout untouched. stderr is echoed to ``sys.stderr`` as it
-    arrives and its last few kilobytes are kept, so a non-zero exit raises
-    :class:`OpenFoldRunError` with the reason instead of only the exit status. After an exit
-    with status 0 the run's ``summary.txt`` is read: queries that failed inside OpenFold3 are
-    logged, and when every query failed :class:`OpenFoldQueryError` is raised.
+    stdout and stderr are both echoed as they arrive. The last few kilobytes of stderr are kept,
+    so a non-zero exit raises :class:`OpenFoldRunError` with the reason instead of only the exit
+    status. Both streams are also read for the lines that say why a template was lost
+    (:class:`StreamNotes`): OpenFold3 prints a failed template preprocessing on stdout and the
+    replacement of an alignment by the MSA server on stderr, well before the tail that is kept.
+    After an exit with status 0:
+
+    * the run's ``summary.txt`` is read: queries that failed inside OpenFold3 are logged, and
+      when every query failed :class:`OpenFoldQueryError` is raised;
+    * ``inference_query_set.json`` is read to see which chains kept the template that the query
+      asked for (``--query_json`` of the command says which asked). The accounting is logged as
+      a warning for each chain that has none, kept as ``template_accounting.json`` in
+      ``output_dir``, and returned.
 
     Args:
         cmd: Full command line (``run_openfold predict ...``, possibly behind ``conda run``).
-        output_dir: The ``--output_dir`` of the command; ``summary.txt`` and ``logs/`` are
-            read from there.
+        output_dir: The ``--output_dir`` of the command; ``summary.txt``, ``logs/`` and
+            ``inference_query_set.json`` are read from there.
 
     Returns:
-        The queries that failed in a run that otherwise succeeded, and the user-default
-        runner YAML that was merged in.
+        The queries that failed in a run that otherwise succeeded, the user-default runner YAML
+        that was merged in, and the template accounting.
 
     Raises:
         OpenFoldRunError: The process exited non-zero.
@@ -956,12 +1011,18 @@ def _run_openfold_command(cmd: Sequence[str], output_dir: Path) -> OpenFoldRunIn
             default_yaml,
         )
     started = time.time()
-    process = subprocess.Popen(list(cmd), stderr=subprocess.PIPE)
+    process = subprocess.Popen(list(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout_notes, stderr_notes = StreamNotes(), StreamNotes()
+    stdout_pump = threading.Thread(
+        target=_pump_stream, args=(process.stdout, "stdout", stdout_notes), daemon=True
+    )
+    stdout_pump.start()
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     tail = ""
     try:
         while chunk := process.stderr.read1(4096):
             text = decoder.decode(chunk)
+            stderr_notes.feed(text)
             try:
                 sys.stderr.write(text)
                 sys.stderr.flush()
@@ -974,12 +1035,18 @@ def _run_openfold_command(cmd: Sequence[str], output_dir: Path) -> OpenFoldRunIn
         process.wait()
         raise
     finally:
+        stdout_pump.join(timeout=30)
         process.stderr.close()
+        process.stdout.close()
     if process.returncode != 0:
         raise OpenFoldRunError(process.returncode, list(cmd), tail)
+    stdout_notes.finish()
+    stderr_notes.finish()
+    notes = stdout_notes.merge(stderr_notes)
 
     # A file written a moment before the run started still counts as an earlier run's.
-    failures = _failed_query_reasons(output_dir, not_before=started - 2.0)
+    not_before = started - 2.0
+    failures = _failed_query_reasons(output_dir, not_before=not_before)
     if failures:
         logger.warning(
             "OpenFold3 exited normally but failed on %d quer%s: %s",
@@ -987,10 +1054,24 @@ def _run_openfold_command(cmd: Sequence[str], output_dir: Path) -> OpenFoldRunIn
             "y" if len(failures) == 1 else "ies",
             "; ".join(f"{name}: {why}" for name, why in failures.items()),
         )
-        summary = _read_run_summary(output_dir, not_before=started - 2.0)
+        summary = _read_run_summary(output_dir, not_before=not_before)
         if summary is not None and summary.total and len(failures) >= summary.total:
             raise OpenFoldQueryError(output_dir, failures)
-    return OpenFoldRunInfo(failed_queries=failures, user_default_runner_yaml=default_yaml)
+    use_msa_server = _option_value(cmd, "use_msa_server")
+    templates = account_for_templates(
+        output_dir,
+        query_json=_option_value(cmd, "query_json"),
+        use_msa_server=None if use_msa_server is None else use_msa_server.lower() == "true",
+        notes=notes,
+        not_before=not_before,
+    )
+    templates = {query: chains for query, chains in templates.items() if query not in failures}
+    if templates:
+        write_template_accounting(output_dir, templates)
+        warn_about_missing_templates(templates)
+    return OpenFoldRunInfo(
+        failed_queries=failures, user_default_runner_yaml=default_yaml, templates=templates
+    )
 
 
 #: One-letter codes of the 20 standard amino acids.

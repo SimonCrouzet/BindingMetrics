@@ -764,6 +764,32 @@ class TestBatches:
             assert record.ptm == 0.77 and record.extras["inference_ckpt_name"] == "fake-ckpt"
         assert not (results[requests[0].key()] / "b").exists()  # nothing of the other query
 
+    def test_the_files_that_say_what_became_of_the_templates_go_with_each_query(
+        self, tmp_path, monkeypatch
+    ):
+        wrappers = RecordingWrappers(monkeypatch)
+        recorded = openfold.run_openfold_batched
+
+        def batched(**kwargs):
+            predictions = recorded(**kwargs)
+            for name in ("inference_query_set.json", "template_accounting.json"):
+                (predictions / name).write_text("{}", encoding="utf-8")
+            return predictions
+
+        monkeypatch.setattr(openfold, "run_openfold_batched", batched)
+        requests = self._requests(tmp_path, ["a", "b"])
+        work = tmp_path / "work"
+        work.mkdir()
+        results = OpenFold3Runner().run_many(requests, work)
+        assert len(wrappers.calls) == 1
+        for request in requests:
+            assert {p.name for p in results[request.key()].iterdir()} == {
+                "experiment_config.json",
+                "inference_query_set.json",
+                "template_accounting.json",
+                request.name,
+            }
+
     def test_refold_is_a_mode_of_the_batched_call(self, tmp_path, monkeypatch):
         wrappers = RecordingWrappers(monkeypatch)
         (tmp_path / "w").mkdir()
