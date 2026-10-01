@@ -215,3 +215,21 @@ class TestTheClaimsAboutTheResultKeys:
 
         for model in sorted(PARSERS):
             assert reference_for(model, EXAMPLE_1YCR) == EXAMPLE_1YCR
+
+
+def test_the_docs_list_the_behaviours_of_openfold3_the_toolkit_works_around():
+    text = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
+    start = text.index("**Known OpenFold3 0.5.0 behaviours the toolkit works around.**")
+    section = text[start : text.index("\n### ", start)]
+    assert section.count("\n- ") == 6
+    for fact in (
+        "template_entry_chain_ids: []",
+        "overwrites `template_alignment_file_path`",
+        "not `template_cif_paths`",
+        "splits every header row on `_` into exactly two parts",
+        "`MSASettings.max_seq_counts`",
+        "keyed by the sequence hash and the hash of the A3M content only",
+        "does not record a seed that OpenFold3 generated",
+        "leaves no `logs/predict_err_rank<N>.log`",
+    ):
+        assert fact in section, fact
