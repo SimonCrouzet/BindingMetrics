@@ -556,6 +556,7 @@ Unless `--skip-prep` is given, the pipeline starts with a **prep step** (equival
 | `--on-incompatible {error,skip,warn}` | `error` | an input that a requested step or model cannot take is refused before anything runs (`error`), left out with its reason (`skip`) or logged (`warn`) |
 | `--preflight-only` | off | print the pre-flight plan and stop; exit status 1 when something is refused |
 | `--predictor {af2,boltz2,of3,protenix}` | none | the `openfold` step reads the prediction of this model into `results["prediction"]` and runs the model at most once; see [Other prediction models](#other-prediction-models-and-the-run-once-store) |
+| `--prediction-mode {predict,refold,score,score-lock}` | `--openfold-mode` for `--predictor of3` run from here; not stated for `--prediction-dir` | how the model is used: sequences only, receptor templated, every chain templated (re-docking), or `score` with the pose pinned to the input; checked against what the model supports before anything runs and recorded as `mode` (below) |
 | `--prediction-dir DIR` | none | read the output you made with the model (never run); in `-batch` the root with one output per sample ID |
 | `--prediction-binder-chain`, `--prediction-target-chain` | the input's IDs | chain IDs inside the prediction when they differ |
 | `--prediction-cache DIR`, `--rerun-predictions` | `<output-dir>/predictions` (`-batch`: `_predictions`), off | the store of finished predictions; run again although it has one |
@@ -589,6 +590,8 @@ predictor OpenFold3 0.5.0: closures
 ```
 
 `--on-incompatible skip` computes the steps that apply and records why the others were left out, `--on-incompatible warn` runs everything, and `--preflight-only` prints the plan without running anything (`binding-metrics-batch` prints one per sample, writes no CSV and exits 1 when a sample is refused). In a batch a refused sample is an error row with `preflight_status` and `preflight_reason` and the others go on. A prediction read with `--prediction-dir` was made elsewhere, so the limits of its model only warn. `docs/preflight.md` lists what is declared and why.
+
+The check also knows how each model can be used (`--prediction-mode`): OpenFold3 0.5.0 supports `predict`, `refold` and `score` but not `score-lock`, because its templates carry the fold of each chain and never the pose between chains; Boltz-2 supports `score-lock` through a forced template, with a warning (a guidance term, read from the source, never run); Protenix and AlphaFold2 declare no mode. A request for a mode the model does not list is refused with the models that declare it, and Boltz-2 is marked as readable only (`--prediction-dir`), since only OpenFold3 can be run from here. The mode is recorded in `results["prediction"]["mode"]` and `results["preflight"]["mode"]`; for an output read with `--prediction-dir` it is not known unless you state it.
 
 #### Other prediction models and the run-once store
 

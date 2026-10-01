@@ -24,6 +24,7 @@ Three rules hold everywhere:
 | `min_binder_residues`, `max_binder_residues` | Bounds on the number of amino-acid residues of the binder, ends included. |
 | `multi_chain_binder` | `False` refuses a binder that spans several chains. |
 | `needs` | What the step cannot run without: `receptor_chain`, `reference_structure`, `predicted_structure`, `gpu`. `receptor_chain` is met by a receptor given or by any other protein chain of the structure, because the metrics take the largest other protein chain when none is given. |
+| `modes` | The ways a model can be used that it supports: `predict`, `refold`, `score`, `score-lock` (see [Modes](#modes)). Empty declares nothing and refuses nothing; a set that leaves a mode out refuses a request for it. |
 | `extra_checks` | Functions `profile -> violations` for a limit that the sets above cannot state, such as the residue names that a model's query builder can express. A check reuses the code that enforces the limit at run time and imports it when called, so declaring it costs nothing at import. |
 | `reasons` | One sentence per constraint. Keys are the field name (`"closures"`) or field and value (`"closures:disulfide"`); the second is looked up first. |
 | `caveats` | One sentence per accepted input value that was never validated, keyed `"<field>:<value>"`. |
@@ -31,7 +32,20 @@ Three rules hold everywhere:
 
 A constraint without a `reasons` entry under its field name is rejected when the object is built, so no limit can be declared without saying why. The violations of an `extra_checks` function carry their own reason. `closures={"none", "head_to_tail"}` refuses a binder with a disulfide. A step that needs a ring lists every family except `none`, and a linear binder is refused.
 
-`Capabilities.check(profile, provided=None)` returns every violation, not the first one. Each `Violation` carries the constraint, the fact found in the input, the requirement, and the step's own sentence. `receptor_chain` is checked against the profile. The other needs are facts only the caller knows: they are checked when `provided` lists what the caller makes available, and skipped when it is `None`. `caveats_for(profile)` returns the caveats that apply to the input, and `accepts(profile)` is the boolean form.
+`Capabilities.check(profile, provided=None, mode=None)` returns every violation, not the first one. Each `Violation` carries the constraint, the fact found in the input, the requirement, and the step's own sentence. `receptor_chain` is checked against the profile. The other needs are facts only the caller knows: they are checked when `provided` lists what the caller makes available, and skipped when it is `None`. `caveats_for(profile, mode=None)` returns the caveats that apply to the input and the mode, and `accepts(profile, mode=None)` is the boolean form.
+
+### Modes
+
+A mode is how a model is used for a complex. The words are the constant `capabilities.MODES` and the values of `PredictionRequest.mode` and of `--prediction-mode`; `score-lock` is written with the hyphen everywhere.
+
+| Mode | Meaning |
+|---|---|
+| `predict` | From sequences only. |
+| `refold` | The receptor is given as a template and the binder is predicted freely. |
+| `score` | Every chain is given its own structure as a template and the relative pose of the chains is not given: the model re-docks them. |
+| `score-lock` | `score` with the relative pose of the chains pinned to the input, by a forced template, constraints or both. |
+
+`modes` lists what a model supports. A set that leaves a mode out refuses a request for it and needs `reasons["modes"]` (or `"modes:<mode>"`) saying what is not supported and why; the full set declares full support and refuses nothing. Partial or unreliable support of a mode is a caveat, `caveats["modes:<mode>"]`, a warning that applies to a request for that mode whether or not `modes` is declared. A model that declares nothing is never refused for a mode.
 
 A predictor adapter declares its limits in the class attribute `PredictionParser.capabilities`, read without creating the adapter through `ParserSpec.load_capabilities()`. The value is `None` or a `Capabilities`; the contract tests of `tests/predictors` check it.
 
@@ -89,11 +103,14 @@ The closure families are `head_to_tail`, `disulfide`, `lactam` (the four lactam 
 
 ## The check
 
-`preflight(profile, metrics, predictor=None, *, policy="error", provided=None)` compares the profile with the limits of every requested metric and predictor, before anything runs. It reads declarations only: it never runs, prepares or instantiates a metric, a predictor or a runner.
+`preflight(profile, metrics, predictor=None, *, policy="error", predictor_policy=None, provided=None, mode=None, runnable=None)` compares the profile with the limits of every requested metric and predictor, before anything runs. It reads declarations only: it never runs, prepares or instantiates a metric, a predictor or a runner.
 
 - `metrics` are registry names (`"omega"`) or objects with a `name` and a `capabilities` attribute (a `MetricSpec`). A name the registry does not know has no declared limit.
 - `predictor` is a registered name (`"of3"`), an adapter or runner (class or instance) with a `capabilities` attribute, a `Capabilities`, or a list of these.
 - `provided` lists what the caller makes available among the needs `reference_structure`, `predicted_structure` and `gpu`. `None` leaves them unchecked and the report says so.
+- `predictor_policy` is the policy for the predictors when it is not the one of the metrics; a caller that only reads a prediction made elsewhere passes `warn`.
+- `mode` is how the predictors are asked to run, one of `MODES`; `None` does not say and the mode is not checked. A predictor that declares `modes` without it is refused (constraint `modes`; fact "mode 'score-lock' was requested", requirement "supported modes: ..."), and the fix lists the models that declare the mode, then the models with no declaration. A caveat for the mode is a warning.
+- `runnable` names the predictors that can be run from here; a model outside it that the fix offers is marked `[no runner here: give its output with --prediction-dir]`. The command-line tools pass the keys of `cli.prediction.RUNNERS`, so the mark comes from the registry and not from the text.
 
 All violations are collected and reported at once. Each has the fact found in the input, the requirement, the step's own reason and a fix. For a refused predictor the fix lists the other registered predictors in two lists: those whose declared limits accept the input, and those that declare no limits (which is not the same as validated). The refused predictor is never offered, even when it is passed under another name than its registry entry: the entry is matched by registry name, by display name or by adapter class. When no other predictor declares support for the input, or none is registered, the fix says so.
 
@@ -129,12 +146,15 @@ predictor NarrowFold 9.9: closures
 | `--binder-type {auto,peptide,miniprotein,nanobody,antibody}` | `auto` | The binder type of the profile. |
 | `--on-incompatible {error,skip,warn}` | `error` | The policy of `preflight`. |
 | `--preflight-only` | off | Print the plan and stop. Exit status 1 when the policy is `error` and something is refused. |
+| `--prediction-mode {predict,refold,score,score-lock}` | none | How the model is used (see [Modes](#modes)). With `--predictor of3` run from here the default is the value of `--openfold-mode`, so a run without the option is unchanged; for an output read with `--prediction-dir` the mode is not known and not checked unless it is given. Needs `--predictor`. `predict` cannot be run from here (a run predicts with the structure as template: `score` or `refold`). |
 
 **What is checked.** The steps the run executes, as registry metrics: the relaxation (`md_implicit`), `energy` (`structure_interaction_energy`), `interface`, the metrics of `geometry` one by one (`ramachandran`, `omega`, `shape_complementarity`), `electrostatics` (`coulomb`), and the model step. The model step is `openfold` in `--metrics`: without `--predictor` it is OpenFold3 (metric `openfold`, predictor `of3`); with `--predictor MODEL` it is the metric `prediction` with the limits of that model. `dockq` is left alone: without a reference the pipeline already skips it with a warning. A run with its own `Relaxer` object is not checked for the relaxation.
 
 **What the run provides.** The needs `predicted_structure` (the model step supplies it) and `reference_structure` (when `--reference` is given) come from the arguments. The receptor need is met by a receptor given or by any other protein chain, found as the pipeline finds it.
 
 **`--on-unmappable-residue x`.** The option asks the OpenFold3 query builder to send an `X` for a residue it cannot take and to log a warning, so the residue check of OpenFold3 is lifted and the closure limit stays.
+
+**The mode.** The model step is checked in the mode it runs in: `--prediction-mode`, else `--openfold-mode` for OpenFold3 run from here (and for the legacy `openfold` step, which keeps its own option). A request for a mode the model does not list is refused before anything runs, with the models that declare the mode in the fix: for `score-lock` that is Boltz-2, marked as having no runner here, so its output has to be given with `--prediction-dir`. The mode is recorded as `mode` in `results["prediction"]` (the column `prediction_mode`) and in `results["preflight"]`; it is `null` for an output whose making is not stated. `OpenFold3Runner` also refuses `score-lock` with the declared reason, as the second stop for a caller that did not run the check.
 
 **A prediction made elsewhere.** With `--prediction-dir` the model does not run here and what it was given is not known (it may have been a patched model), so the limits of the model use the policy `warn` whatever `--on-incompatible` says; the metrics keep the policy.
 
@@ -167,21 +187,22 @@ Declared on `OpenFold3Parser.capabilities`.
 | Limit | Basis |
 |---|---|
 | Closures: `none` and `head_to_tail` | `cyclic: true` on a protein chain wraps the whole chain, so it is head-to-tail (`openfold3/core/utils/relpos.py`). The query schema has `covalent_bonds` and nothing reads it (`openfold3/projects/of3_all_atom/config/inference_query_format.py`), so a disulfide, a lactam, a staple or another cross-link cannot be given. |
+| Modes: `predict`, `refold` and `score`, not `score-lock` | A template gives the fold of one chain and never the pose between chains. The template pair features are multiplied by a same-chain mask when they are built (`create_template_distogram` and `create_template_unit_vector` take a `multichain_pair_mask`, `openfold3/core/data/primitives/featurization/template.py`, called from `openfold3/core/data/pipelines/featurization/template.py`) and again in the embedder (`_embed_feats`, `openfold3/core/model/feature_embedders/template_embedders.py`). A multi-chain CIF template gives one chain (`docs/source/template_how_to.md`, CIF Direct Mode). The only constraint is the pocket constraint, documented for small-molecule ligands (`docs/source/input_format_reference.md`, section 4); its use for a peptide binder was not confirmed. No steering term was found in the code. `predict`, `refold` and `score` use sequences and templates per chain, which the documentation supports for protein chains. |
 | Residues that the query builder cannot express | `check_openfold3_residues` calls `metrics._openfold_run._residue_letter_and_ccd`, the rule of `_extract_query_chain`, and the reason is the text of the `UnmappableResidueError` that the builder raises for the same chain. D-amino acids, N-methylated and other peptide-linking Chemical Component Dictionary residues are expressible and pass. |
 
 Warnings, not refusals: a head-to-tail binder is sent with `cyclic: true` by default (`binder_cyclic="auto"`, `--openfold-cyclic`; OpenFold3 0.4.5 or later), which only wraps the relative positions of the chain: OpenFold3 does not enforce the closure bond and has published no accuracy benchmark for cyclic peptides; terminal capping groups and non-amino-acid groups (ligands, glycans) are left out of the query by `_extract_query_chain`, so the prediction is of the uncapped peptide without them.
 
 ### Protenix 2.0.0
 
-Declared on `ProtenixParser.capabilities`: no limit, warnings for a lactam, a staple and another cross-link. `docs/infer_json_format.md` (commit 85767b8, section `covalent_bonds`) supports a covalent bond between two polymer residues for a head-to-tail amide bond and for a disulfide between cysteines, which stay silent. It says other types "can still be specified in the input, but they are not reliably handled by the current model", and that the residues "may tend to be positioned in close proximity, though typically not close enough to form a covalent bond". That is a statement about reliability, not about what can be given, and the source takes any atom pair (`json_to_feature.py`), so refusing the input would claim more than the documentation does: it is a caveat and the input runs under the default policy.
+Declared on `ProtenixParser.capabilities`: no limit, warnings for a lactam, a staple and another cross-link, and for the mode `score-lock`: the `contact` and `pocket` constraints guide the interface and the documentation calls them "a soft constraint: the model is encouraged, but not strictly required, to satisfy it" (`docs/infer_json_format.md`, section constraint), so they do not pin the complete pose. No other mode is declared: templates only come through `templatesPath` (a3m or hhr alignments), so whether `refold` and `score` exist is not shown. `docs/infer_json_format.md` (commit 85767b8, section `covalent_bonds`) supports a covalent bond between two polymer residues for a head-to-tail amide bond and for a disulfide between cysteines, which stay silent. It says other types "can still be specified in the input, but they are not reliably handled by the current model", and that the residues "may tend to be positioned in close proximity, though typically not close enough to form a covalent bond". That is a statement about reliability, not about what can be given, and the source takes any atom pair (`json_to_feature.py`), so refusing the input would claim more than the documentation does: it is a caveat and the input runs under the default policy.
 
 ### Boltz-2 2.2.1
 
-Declared on `Boltz2Parser.capabilities`: no limit, one warning. The `cyclic: true` flag wraps a chain head-to-tail, and the `bond` constraint takes any two atoms of the input (`atom_idx_map` in `boltz/data/parse/schema.py`), which the featuriser turns into a cyclic period when it joins the first and last residue of a chain, so a disulfide or a lactam between canonical residues can be given. The documentation lists the `bond` constraint as supported for "CCD ligands and canonical residues" only (`docs/prediction.md`), which is why a hydrocarbon staple, whose residues are not canonical, gets a warning and not a refusal.
+Declared on `Boltz2Parser.capabilities`: all four modes, no limit, and two warnings. `predict` is the plain input. `refold` and `score` need a template per chain, which `templates` takes with `chain_id` (`docs/prediction.md`, Templates), and an unforced template carries no pose, because the template module lets features attend within the same chain only (`src/boltz/model/modules/trunkv2.py`, "Compute asym mask"). `score-lock` is a template with `force: true` and a `threshold`: `process_template_features` (`src/boltz/data/feature/featurizerv2.py`) puts all the chains that a template file maps into one row, and `TemplateReferencePotential` (`src/boltz/model/potentials/potentials.py`) aligns that row rigidly over its templated tokens (`weighted_rigid_align`) and penalises a deviation larger than the threshold. It is a guidance term with weight 0.1, not a hard constraint, templates are for protein chains only, and this was read from the source and never run, so `score-lock` is supported with a warning. No closure is refused: the `cyclic: true` flag wraps a chain head-to-tail, and the `bond` constraint takes any two atoms of the input (`atom_idx_map` in `boltz/data/parse/schema.py`), which the featuriser turns into a cyclic period when it joins the first and last residue of a chain, so a disulfide or a lactam between canonical residues can be given. The documentation lists the `bond` constraint as supported for "CCD ligands and canonical residues" only (`docs/prediction.md`), which is why a hydrocarbon staple, whose residues are not canonical, gets the second warning and not a refusal.
 
 ### AlphaFold2 and ColabFold
 
-Declared on `AlphaFold2Parser.capabilities`, from the model code (AlphaFold commit c77e5d2, ColabFold 1.6.3).
+Declared on `AlphaFold2Parser.capabilities`, from the model code (AlphaFold commit c77e5d2, ColabFold 1.6.3). No mode is declared: no verified statement says which modes a sequence-and-template model supports (see below).
 
 | Limit | Basis |
 |---|---|
@@ -237,4 +258,8 @@ A limit refuses the input (policy `error`) and is declared only where the source
 | Protenix size (2560 tokens for `protenix-v2`) | It is a limit of the whole complex and of one model name (`runner/inference.py`), and the profile holds the binder only. |
 | AlphaFold2 and ColabFold binder size | The memory figures of the ColabFold FAQ depend on the GPU; no code states a maximum. |
 | Cyclic-offset forks of AlphaFold2 (ColabDesign, BindCraft) | Their outputs are read by the same adapter, and what they add to the input was not checked here. The closure limit above describes AlphaFold2 and ColabFold as released; `policy="warn"` lets such an output through. |
+| OpenFold3 `score-lock` through the pocket constraint | Documented for small-molecule ligands only; its use for a peptide binder was not confirmed, so the refusal rests on the template features and the statement is in the reason. |
+| Boltz-2 `score-lock` as a hard constraint | The forced template is a guidance term (weight 0.1) and the source was never run: it is a warning on a listed mode. |
+| Protenix `refold`, `score` | Structures cannot be given as templates (`templatesPath` takes alignments); nothing shows the modes exist, so nothing is declared. |
+| AlphaFold2 and ColabFold modes | No verified statement; `predict` is the plain input, and a template route exists in ColabFold, but whether it gives `refold` or `score` as defined here was not checked. |
 | `compute_evobind_adversarial_from_records` | It is not a registry entry, so there is no `MetricSpec` to declare on; its needs are those of `evobind_adversarial`. |

@@ -746,6 +746,7 @@ A run is written to a temporary directory and renamed into place, so a killed ru
 |--------|---------|--------|
 | `--predictor {af2,boltz2,of3,protenix}` | none | the model whose prediction the step reads; the choices are `sorted(binding_metrics.predictors.PARSERS)` |
 | `--prediction-dir DIR` | none | read an output you made; the model never runs. `DIR` is the directory the adapter loads with the sample ID (`--sample-id`, default the file stem) as the name; for OpenFold3 the folder that holds `<sample>/seed_*/`. The layout under it is the adapter's own, described in the docstring of `binding_metrics.predictors.<model>`. In `binding-metrics-batch` it is the root that holds one output per sample ID |
+| `--prediction-mode {predict,refold,score,score-lock}` | `--openfold-mode` for `--predictor of3` run from here; not stated for `--prediction-dir` | how the model is used: `predict` (sequences only), `refold` (receptor templated, binder free), `score` (every chain templated, the pose not given), `score-lock` (`score` with the pose pinned to the input). Checked against `Capabilities.modes` of the model; recorded as `mode`. Needs `--predictor`; `predict` cannot be run from here |
 | `--prediction-binder-chain`, `--prediction-target-chain` | the input's IDs | chain IDs inside the prediction when they differ from the input's; they build the `chain_map` of the record (model chain to input chain) |
 | `--prediction-cache DIR` | `<output-dir>/predictions` (`-batch`: `<output-dir>/_predictions`) | the store of finished predictions, shared by all samples of a batch |
 | `--rerun-predictions` | off | run each prediction again although the store has it, once; outputs given with `--prediction-dir` are never replaced |
@@ -777,6 +778,7 @@ outputs/        the model's own files, untouched
 | `seed_value` | the seed behind the sample (`int`, from the name of the seed directory; None for an adapter that names none), as in `compute_openfold_metrics` |
 | `evobind_error`, `adversarial_error` | why the score or the check could not be computed; the rest of the block is unaffected |
 | `reason` | the `reason` strings of the parts, labelled and joined with `; ` (`evobind: ...`, `evobind adversarial: ...`) |
+| `mode` | how the model was used: `predict`, `refold`, `score` or `score-lock`; `null` for an output whose making is not stated |
 | `cache` | `requests`, `memo_hits`, `hits`, `adopted`, `misses`, `runs`, `failed`, `parsed` (the counters of `PredictionSession.stats()`; `runs` is 1 when the model was computed for this sample, 0 when the store or `--prediction-dir` supplied it) and `request_key`, the name of the store entry |
 
 A prediction that failed, or that cannot be started here, gives `{"model": ..., "error": <reason>, "cache": {...}}`; the step counts as failed (exit code 1, `partial` in a batch, with `prediction` in `batch_failed_steps`) and the other steps of the sample go on. The step is `{"skipped": true}` when the chains are unknown, or when `openfold` is not among `--metrics`. `provenance` gains `openfold3_checkpoint` (the checkpoint file name the of3 record names) and, when the pipeline started OpenFold3 itself, `openfold3_version` (below).
@@ -802,6 +804,7 @@ The steps checked are the ones the run executes: the relaxation (`md_implicit`),
 | `status` | `ok`, `warn` (a warning or, with `--on-incompatible warn`, a problem that was logged), `skipped` (steps left out), `refused` (batch error rows only: a refused `binding-metrics-run` raises before it writes anything) or `not_checked` (the input could not be profiled; the run goes on as before) |
 | `reason` | the problems or warnings in one line, `subject: constraint: fact` joined with `; ` |
 | `policy` | the `--on-incompatible` value |
+| `mode` | the mode the model step ran in (`predict`, `refold`, `score`, `score-lock`), `null` when it is not stated (an output read with `--prediction-dir`) |
 | `skipped_steps`, `skipped_geometry` | the steps (and the metrics of `geometry`) that were left out under `skip`, each with its reason; a left-out step is `{"skipped": true, "reason": ...}` in the results |
 | `report` | the full report: the input profile (binder type, closures, residue classes), every violation with its fact, requirement, reason and fix, the warnings and the notes |
 
