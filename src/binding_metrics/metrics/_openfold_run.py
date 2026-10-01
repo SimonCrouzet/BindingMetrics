@@ -7,6 +7,7 @@ re-exports everything defined here.
 """
 
 import codecs
+import copy
 import dataclasses
 import hashlib
 import importlib.metadata
@@ -194,6 +195,155 @@ def _write_runner_yaml(
     yaml_path = output_dir / "runner_config.yaml"
     yaml_path.write_text(content, encoding="utf-8")
     return yaml_path
+
+
+#: Top-level keys that the merge adds to a user's runner YAML; the manual fallback looks for them
+#: in the text because it cannot parse the file.
+_MERGED_YAML_KEYS = re.compile(
+    r"^[\"']?(?:template_preprocessor_settings|msa_computation_settings)[\"']?\s*:", re.MULTILINE
+)
+
+
+def _section(cfg: dict, key: str, runner_yaml: Path) -> dict:
+    """Return ``cfg[key]`` as a dict, creating it when absent; raise if it is not a mapping."""
+    section = cfg.get(key)
+    if section is None:
+        section = cfg[key] = {}
+    if not isinstance(section, dict):
+        raise ValueError(f"{runner_yaml}: '{key}' must be a mapping, got {type(section).__name__}.")
+    return section
+
+
+def _merge_template_settings_with_yaml(
+    text: str, runner_yaml: Path, template_dir: Path
+) -> Optional[str]:
+    """Parse the user's YAML and add the template directory; return the new text or None.
+
+    None means that nothing is to be added: the file already says everything the merge would
+    add, or it names another ``structure_directory`` (which is logged and kept).
+    """
+    import yaml
+
+    try:
+        cfg = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{runner_yaml} is not valid YAML: {exc}") from exc
+    if cfg is None:  # an empty file
+        cfg = {}
+    if not isinstance(cfg, dict):
+        raise ValueError(
+            f"{runner_yaml} must hold a mapping at the top level, got {type(cfg).__name__}."
+        )
+    original = copy.deepcopy(cfg)
+
+    settings = _section(cfg, "template_preprocessor_settings", runner_yaml)
+    users_directory = settings.get("structure_directory")
+    if users_directory is None:
+        settings["structure_directory"] = str(template_dir)
+    elif Path(str(users_directory)).expanduser().resolve() != template_dir.resolve():
+        logger.warning(
+            "The runner YAML %s sets template_preprocessor_settings.structure_directory to %s, "
+            "which is kept, but the templates of this run are in %s. OpenFold3 finds them only "
+            "if the first directory holds them too.",
+            runner_yaml,
+            users_directory,
+            template_dir,
+        )
+        return None
+    # With structure_directory set, OpenFold3 deletes its parent at the end of a run unless
+    # cleanup_msa_dir is false (see _write_runner_yaml); that parent holds the query files.
+    _section(cfg, "msa_computation_settings", runner_yaml).setdefault("cleanup_msa_dir", False)
+    if cfg == original:
+        return None
+    return yaml.dump(cfg, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
+def _merge_template_settings_as_text(text: str, runner_yaml: Path, template_dir: Path) -> str:
+    """Append the template settings to the user's YAML text, without a YAML parser.
+
+    Works only when the file is a plain block mapping that mentions neither
+    ``template_preprocessor_settings`` nor ``msa_computation_settings``; anything else needs
+    PyYAML to be merged safely.
+    """
+    first_line = next(
+        (line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")),
+        "",
+    )
+    if (
+        _MERGED_YAML_KEYS.search(text)
+        or first_line.lstrip().startswith("{")
+        or re.search(r"^\.\.\.\s*$", text, re.MULTILINE)
+    ):
+        raise ValueError(
+            f"PyYAML is not installed and {runner_yaml} sets template_preprocessor_settings or "
+            "msa_computation_settings, or is not a plain block mapping, so the template "
+            f"directory {template_dir} cannot be added to it. Install PyYAML, or set "
+            "template_preprocessor_settings.structure_directory in the file yourself."
+        )
+    lines = [
+        text if text.endswith("\n") or not text else text + "\n",
+        "# added by binding_metrics: where the templates of this run are\n",
+        "template_preprocessor_settings:\n",
+        # a JSON string is valid YAML and survives ': ', ' #' and quotes in the path
+        f"  structure_directory: {json.dumps(str(template_dir))}\n",
+        "msa_computation_settings:\n",
+        "  cleanup_msa_dir: false\n",
+    ]
+    return "".join(lines)
+
+
+def _merge_template_settings(runner_yaml: Path, output_dir: Path, template_dir: Path) -> Path:
+    """Return the runner YAML to pass to OpenFold3 for a run that has templates.
+
+    A runner YAML given by the user says nothing about where the toolkit put the template CIFs
+    that the query's A3M files point to, and OpenFold3 looks for them only in
+    ``template_preprocessor_settings.structure_directory``. This writes a copy of the user's file
+    to ``output_dir / "runner_config_merged.yaml"`` with that key set to ``template_dir``, and
+    ``msa_computation_settings.cleanup_msa_dir: false`` unless the user set it (otherwise
+    OpenFold3 deletes the folder that holds the query files at the end of a run; see
+    :func:`_write_runner_yaml`). Nothing else is added and the user's file is never modified.
+
+    The copy is made by loading and dumping the YAML, so comments and anchors of the original
+    are not kept. Without PyYAML the settings are appended to the text instead, which works only
+    for a plain block mapping that sets neither section.
+
+    A ``structure_directory`` that the user's file already sets is not overwritten. The
+    differing path is logged as a warning that names both directories: the toolkit's templates
+    are found only if the user's directory holds them. When the file already says everything
+    that would be added, the user's own path is returned and no copy is written.
+
+    Args:
+        runner_yaml: The user's runner YAML.
+        output_dir: Directory in which to write the copy.
+        template_dir: Directory that holds the template CIFs of the query.
+
+    Returns:
+        Path of the merged copy, or ``runner_yaml`` when there is nothing to add.
+
+    Raises:
+        FileNotFoundError: ``runner_yaml`` does not exist.
+        ValueError: The file is not valid YAML or not a mapping (the message names it), or
+            PyYAML is missing and the file cannot be extended as text.
+    """
+    runner_yaml = Path(runner_yaml)
+    text = runner_yaml.read_text(encoding="utf-8")
+    try:
+        merged = _merge_template_settings_with_yaml(text, runner_yaml, template_dir)
+    except ImportError:  # no PyYAML
+        merged = _merge_template_settings_as_text(text, runner_yaml, template_dir)
+    if merged is None:
+        return runner_yaml
+    merged_path = output_dir / "runner_config_merged.yaml"
+    merged_path.write_text(merged, encoding="utf-8")
+    logger.info(
+        "Wrote %s: a copy of the runner YAML %s that adds the template directory %s as "
+        "template_preprocessor_settings.structure_directory. %s is not modified.",
+        merged_path,
+        runner_yaml,
+        template_dir,
+        runner_yaml,
+    )
+    return merged_path
 
 
 # ---------------------------------------------------------------------------

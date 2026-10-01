@@ -75,6 +75,7 @@ from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     _BatchSample,
     _extract_chain_to_cif,
     _extract_sequence_from_structure,
+    _merge_template_settings,
     _query_seeds,
     _run_openfold_command,
     _safe_entry_id,
@@ -406,19 +407,37 @@ def run_openfold(
             Ignored if ``runner_yaml`` is also provided.
         runner_yaml: Explicit path to a runner YAML configuration file. Overrides
             ``model_presets`` when both are provided. CLI flags always take
-            precedence over YAML values.
+            precedence over YAML values. The file is never modified. When
+            ``template_dir`` is also given, OpenFold3 gets a copy of it in
+            ``output_dir`` (``runner_config_merged.yaml``) that adds
+            ``template_preprocessor_settings.structure_directory`` and, unless the
+            file sets it, ``msa_computation_settings.cleanup_msa_dir: false``; the
+            copy is logged at INFO. A ``structure_directory`` that the file already
+            sets is kept and a WARNING names both directories: the templates of the
+            run are found only if that directory holds them. Comments of the file
+            are not carried into the copy.
         extra_args: Additional CLI arguments passed verbatim.
         conda_env: Name of the conda environment where OpenFold3 is installed
             (e.g. ``"openfold3"``). When given, the command is wrapped as
             ``conda run -n {conda_env} --no-capture-output run_openfold ...``.
             If None, ``run_openfold`` must be on the current PATH.
+        template_dir: Directory that holds the template CIFs which the query's A3M
+            files point to (the ``run_openfold_*`` wrappers pass
+            ``{output_dir}/query/templates``). It is written to the runner YAML as
+            ``template_preprocessor_settings.structure_directory``, in the generated
+            YAML and in the merged copy of ``runner_yaml``. None leaves the YAML as
+            it is.
 
     Returns:
         Path to the output directory.
 
     Raises:
         FileNotFoundError: If ``run_openfold`` is not on PATH and no
-            ``conda_env`` is specified.
+            ``conda_env`` is specified, or if ``runner_yaml`` and ``template_dir``
+            are given and the file does not exist.
+        ValueError: If ``runner_yaml`` and ``template_dir`` are given and the file
+            is not valid YAML or not a mapping (the message names the file), or
+            PyYAML is missing and the file cannot be extended as text.
         OpenFoldRunError: If OpenFold3 exits non-zero. It is a
             ``subprocess.CalledProcessError``; its message starts with the failing line of
             stderr and adds a fix for missing or incompatible weights, GPU memory and
@@ -443,8 +462,12 @@ def run_openfold(
     # Resolve runner YAML: explicit path takes precedence over model_presets
     effective_yaml: Optional[Path] = None
     if runner_yaml is not None:
-        # TODO(#96): template_dir is dropped here, so a given runner_yaml loses the templates.
         effective_yaml = Path(runner_yaml)
+        if template_dir is not None:
+            # OpenFold3 finds the template CIFs only through the YAML's structure_directory.
+            effective_yaml = _merge_template_settings(
+                effective_yaml, output_dir, Path(template_dir)
+            )
     else:
         presets = list(model_presets) if model_presets is not None else list(_DEFAULT_MODEL_PRESETS)
         if "predict" not in presets:
@@ -528,7 +551,9 @@ def run_openfold_scoring(
             come from a remote service, so results can change over time, and
             the sequences leave the machine. Pass False with pre-computed MSAs.
         model_presets: Model configuration presets.
-        runner_yaml: Explicit runner YAML; overrides ``model_presets``.
+        runner_yaml: Explicit runner YAML; overrides ``model_presets``. OpenFold3 runs a
+            copy of it in ``{output_dir}/predictions/`` that adds the template
+            directory (see :func:`run_openfold`).
         extra_args: Additional CLI args for OF3.
         conda_env: Conda environment where OpenFold3 is installed.
         seeds: Seed values written to the query JSON (default ``(42,)``).
@@ -624,7 +649,9 @@ def run_openfold_refolding(
             come from a remote service, so results can change over time, and
             the sequences leave the machine. Pass False with pre-computed MSAs.
         model_presets: Model configuration presets.
-        runner_yaml: Explicit runner YAML; overrides ``model_presets``.
+        runner_yaml: Explicit runner YAML; overrides ``model_presets``. OpenFold3 runs a
+            copy of it in ``{output_dir}/predictions/`` that adds the template
+            directory (see :func:`run_openfold`).
         extra_args: Additional CLI args for OF3, passed verbatim. The receptor
             template reaches OpenFold3 through ``template_preprocessor_settings.
             structure_directory`` of the runner YAML, which points to
@@ -717,7 +744,9 @@ def run_openfold_batched(
             come from a remote service, so results can change over time, and
             the sequences leave the machine. Pass False with pre-computed MSAs.
         model_presets: Model configuration presets.
-        runner_yaml: Explicit runner YAML; overrides ``model_presets``.
+        runner_yaml: Explicit runner YAML; overrides ``model_presets``. OpenFold3 runs a
+            copy of it in ``{output_dir}/predictions/`` that adds the template
+            directory (see :func:`run_openfold`).
         extra_args: Additional CLI args for OF3.
         conda_env: Conda environment name (default None).
         seeds: Seed values written to the query JSON (default ``(42,)``).

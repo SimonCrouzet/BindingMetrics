@@ -4,7 +4,9 @@ No OpenFold3 install is needed. The tests use temporary files, stub subprocesses
 fake presets; what they cannot show is stated in the docstrings.
 """
 
+import builtins
 import json
+import logging
 import os
 import sys
 import warnings
@@ -265,6 +267,306 @@ class TestInputsStayOnDisk:
         # the folder OpenFold3 would have removed still holds the inputs
         assert (out / "query" / "q_query.json").exists()
         assert (out / "query" / "templates" / "receptor.cif").exists()
+
+
+class TestRunnerYamlKeepsTemplates:
+    """A runner YAML given by the user still tells OpenFold3 where the templates are (#96).
+
+    A stub replaces the OpenFold3 process, so what is checked is the file the command line names;
+    that OpenFold3 then finds the template is not shown here.
+    """
+
+    _USERS_YAML = (
+        "# settings of the user\n"
+        "model_update:\n"
+        "  presets:\n"
+        "    - predict\n"
+        "    - low_mem\n"
+        "experiment_settings:\n"
+        "  seeds: [7, 8]\n"
+    )
+    _LOGGER = "binding_metrics.metrics._openfold_run"
+    _P53 = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+
+    @pytest.fixture
+    def commands(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            openfold, "_run_openfold_command", lambda cmd, output_dir: calls.append(list(cmd))
+        )
+        return calls
+
+    @pytest.fixture
+    def users_yaml(self, tmp_path):
+        path = tmp_path / "mine.yml"
+        path.write_text(self._USERS_YAML, encoding="utf-8")
+        return path
+
+    @staticmethod
+    def _yaml_argument(command) -> Path:
+        (option,) = [a for a in command if a.startswith("--runner_yaml=")]
+        return Path(option.split("=", 1)[1])
+
+    def _run(self, tmp_path, runner_yaml, template_dir, **kwargs):
+        return openfold.run_openfold(
+            tmp_path / "q.json",
+            tmp_path / "out",
+            conda_env="of3",
+            runner_yaml=runner_yaml,
+            template_dir=template_dir,
+            **kwargs,
+        )
+
+    def test_the_merged_copy_holds_the_users_keys_and_the_template_directory(
+        self, tmp_path, users_yaml, commands
+    ):
+        templates = tmp_path / "query" / "templates"
+        self._run(tmp_path, users_yaml, templates)
+        merged = _parse_runner_yaml(self._yaml_argument(commands[0]))
+        assert merged == {
+            "model_update": {"presets": ["predict", "low_mem"]},
+            "experiment_settings": {"seeds": [7, 8]},
+            "template_preprocessor_settings": {"structure_directory": str(templates)},
+            # without it OpenFold3 deletes the folder that holds the query files
+            "msa_computation_settings": {"cleanup_msa_dir": False},
+        }
+
+    def test_the_users_file_is_not_modified(self, tmp_path, users_yaml, commands):
+        before = users_yaml.read_bytes()
+        self._run(tmp_path, users_yaml, tmp_path / "templates")
+        assert users_yaml.read_bytes() == before
+        assert users_yaml.read_text(encoding="utf-8") == self._USERS_YAML
+
+    def test_the_command_uses_the_merged_copy_in_the_output_directory(
+        self, tmp_path, users_yaml, commands
+    ):
+        self._run(tmp_path, users_yaml, tmp_path / "templates")
+        (command,) = commands
+        used = self._yaml_argument(command)
+        assert used != users_yaml
+        assert used.parent == tmp_path / "out" and used.is_file()
+        assert str(users_yaml) not in " ".join(command)
+
+    def test_the_merge_is_logged_at_info_with_both_paths(
+        self, tmp_path, users_yaml, commands, caplog
+    ):
+        with caplog.at_level(logging.INFO, logger=self._LOGGER):
+            self._run(tmp_path, users_yaml, tmp_path / "templates")
+        used = self._yaml_argument(commands[0])
+        (record,) = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert str(used) in record.getMessage() and str(users_yaml) in record.getMessage()
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_other_settings_of_the_users_template_section_stay(self, tmp_path, commands):
+        mine = tmp_path / "mine.yml"
+        mine.write_text(
+            "template_preprocessor_settings:\n"
+            "  fetch_missing_structures: true\n"
+            "  structure_file_format: pdb\n"
+            "msa_computation_settings:\n"
+            "  cleanup_msa_dir: true\n",
+            encoding="utf-8",
+        )
+        self._run(tmp_path, mine, tmp_path / "templates")
+        merged = _parse_runner_yaml(self._yaml_argument(commands[0]))
+        assert merged["template_preprocessor_settings"] == {
+            "fetch_missing_structures": True,
+            "structure_file_format": "pdb",
+            "structure_directory": str(tmp_path / "templates"),
+        }
+        assert merged["msa_computation_settings"] == {"cleanup_msa_dir": True}
+
+    def test_an_empty_file_gives_only_the_template_settings(self, tmp_path, commands):
+        mine = tmp_path / "empty.yml"
+        mine.write_text("", encoding="utf-8")
+        self._run(tmp_path, mine, tmp_path / "templates")
+        assert set(_parse_runner_yaml(self._yaml_argument(commands[0]))) == {
+            "template_preprocessor_settings",
+            "msa_computation_settings",
+        }
+
+    def test_a_different_structure_directory_is_kept_with_a_warning(
+        self, tmp_path, commands, caplog
+    ):
+        mine = tmp_path / "mine.yml"
+        mine.write_text(
+            f"template_preprocessor_settings:\n  structure_directory: {tmp_path / 'theirs'}\n",
+            encoding="utf-8",
+        )
+        ours = tmp_path / "query" / "templates"
+        with caplog.at_level(logging.INFO, logger=self._LOGGER):
+            self._run(tmp_path, mine, ours)
+        (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert str(tmp_path / "theirs") in warning.getMessage()
+        assert str(ours) in warning.getMessage()
+        # nothing is added, so the user's own file is the one OpenFold3 reads
+        assert self._yaml_argument(commands[0]) == mine
+        assert not (tmp_path / "out" / "runner_config_merged.yaml").exists()
+        assert "structure_directory: " + str(tmp_path / "theirs") in mine.read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_same_structure_directory_gives_no_warning(self, tmp_path, commands, caplog):
+        ours = tmp_path / "query" / "templates"
+        mine = tmp_path / "mine.yml"
+        mine.write_text(
+            f"template_preprocessor_settings:\n  structure_directory: {ours}/../templates\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.INFO, logger=self._LOGGER):
+            self._run(tmp_path, mine, ours)
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        merged = _parse_runner_yaml(self._yaml_argument(commands[0]))
+        assert merged["template_preprocessor_settings"]["structure_directory"].endswith(
+            "/../templates"
+        )
+
+    def test_without_a_template_directory_the_users_path_is_passed_unchanged(
+        self, tmp_path, users_yaml, commands
+    ):
+        self._run(tmp_path, users_yaml, None)
+        assert self._yaml_argument(commands[0]) == users_yaml
+        assert not (tmp_path / "out" / "runner_config_merged.yaml").exists()
+
+    def test_without_a_template_directory_the_file_is_not_even_read(self, tmp_path, commands):
+        self._run(tmp_path, tmp_path / "missing.yml", None)
+        assert self._yaml_argument(commands[0]) == tmp_path / "missing.yml"
+
+    def test_without_a_runner_yaml_the_generated_file_is_as_before(self, tmp_path, commands):
+        templates = tmp_path / "templates"
+        self._run(tmp_path, None, templates)
+        used = self._yaml_argument(commands[0])
+        assert used == tmp_path / "out" / "runner_config.yaml"
+        assert (
+            used.read_bytes()
+            == _openfold_run._write_runner_yaml(
+                tmp_path, ["predict", "low_mem"], template_dir=templates
+            ).read_bytes()
+        )
+        assert not (tmp_path / "out" / "runner_config_merged.yaml").exists()
+
+    @pytest.mark.parametrize(
+        "content, message",
+        [
+            ("model_update: [unclosed\n", "not valid YAML"),
+            ("- predict\n- low_mem\n", "mapping at the top level"),
+            ("template_preprocessor_settings: [a, b]\n", "must be a mapping"),
+        ],
+    )
+    def test_a_yaml_that_cannot_be_merged_raises_before_the_run(
+        self, tmp_path, commands, content, message
+    ):
+        mine = tmp_path / "bad.yml"
+        mine.write_text(content, encoding="utf-8")
+        with pytest.raises(ValueError, match=message) as info:
+            self._run(tmp_path, mine, tmp_path / "templates")
+        assert str(mine) in str(info.value)
+        assert commands == []
+
+    def test_a_missing_file_with_templates_raises_before_the_run(self, tmp_path, commands):
+        with pytest.raises(FileNotFoundError, match="missing.yml"):
+            self._run(tmp_path, tmp_path / "missing.yml", tmp_path / "templates")
+        assert commands == []
+
+    @pytest.fixture
+    def no_pyyaml(self, monkeypatch):
+        real_import = builtins.__import__
+
+        def _no_yaml(name, *args, **kwargs):
+            if name == "yaml":
+                raise ImportError("no yaml")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _no_yaml)
+        return monkeypatch
+
+    def test_without_pyyaml_the_settings_are_appended_as_text(
+        self, tmp_path, users_yaml, commands, no_pyyaml
+    ):
+        templates = tmp_path / 'we"ird: #dir' / "templates"  # needs the JSON quoting
+        self._run(tmp_path, users_yaml, templates)
+        used = self._yaml_argument(commands[0])
+        no_pyyaml.undo()
+        merged = _parse_runner_yaml(used)
+        assert merged["template_preprocessor_settings"] == {"structure_directory": str(templates)}
+        assert merged["msa_computation_settings"] == {"cleanup_msa_dir": False}
+        assert merged["model_update"] == {"presets": ["predict", "low_mem"]}
+        assert merged["experiment_settings"] == {"seeds": [7, 8]}
+        assert used.read_text(encoding="utf-8").startswith(self._USERS_YAML)
+        assert users_yaml.read_text(encoding="utf-8") == self._USERS_YAML
+
+    def test_without_pyyaml_a_file_that_sets_the_sections_cannot_be_merged(
+        self, tmp_path, commands, no_pyyaml
+    ):
+        mine = tmp_path / "mine.yml"
+        mine.write_text("template_preprocessor_settings:\n  structure_file_format: cif\n")
+        with pytest.raises(ValueError, match="PyYAML") as info:
+            self._run(tmp_path, mine, tmp_path / "templates")
+        assert str(mine) in str(info.value)
+        assert commands == []
+
+    def _stub_conda(self, tmp_path, monkeypatch) -> Path:
+        """A ``conda`` on PATH that records its arguments and exits 0."""
+        record = tmp_path / "argv.json"
+        conda = tmp_path / "bin" / "conda"
+        conda.parent.mkdir()
+        conda.write_text(
+            f"#!{sys.executable}\nimport json, sys\n"
+            f"open({str(record)!r}, 'w').write(json.dumps(sys.argv[1:]))\n",
+            encoding="utf-8",
+        )
+        conda.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{conda.parent}{os.pathsep}{os.environ['PATH']}")
+        return record
+
+    @pytest.mark.parametrize("runner", ["run_openfold_scoring", "run_openfold_refolding"])
+    def test_scoring_and_refolding_find_their_templates_with_a_runner_yaml(
+        self, tmp_path, monkeypatch, users_yaml, runner
+    ):
+        pytest.importorskip("gemmi")
+        record = self._stub_conda(tmp_path, monkeypatch)
+        out = tmp_path / "out"
+        getattr(openfold, runner)(
+            self._P53, "A", "B", "q", out, conda_env="of3", runner_yaml=users_yaml
+        )
+        argv = json.loads(record.read_text(encoding="utf-8"))
+        used = self._yaml_argument(argv)
+        assert used == out / "predictions" / "runner_config_merged.yaml"
+        merged = _parse_runner_yaml(used)
+        assert merged["template_preprocessor_settings"]["structure_directory"] == str(
+            out / "query" / "templates"
+        )
+        assert merged["experiment_settings"] == {"seeds": [7, 8]}
+        assert (out / "query" / "templates" / "receptor.cif").is_file()
+        assert users_yaml.read_text(encoding="utf-8") == self._USERS_YAML
+
+    def test_the_batched_run_finds_its_templates_with_a_runner_yaml(
+        self, tmp_path, monkeypatch, users_yaml
+    ):
+        pytest.importorskip("gemmi")
+        record = self._stub_conda(tmp_path, monkeypatch)
+        out = tmp_path / "out"
+        samples = [
+            openfold._BatchSample(
+                query_name="p53",
+                complex_structure_path=self._P53,
+                receptor_chain="A",
+                binder_chain="B",
+            )
+        ]
+        openfold.run_openfold_batched(
+            samples, out, mode="score", conda_env="of3", runner_yaml=users_yaml
+        )
+        used = self._yaml_argument(json.loads(record.read_text(encoding="utf-8")))
+        assert used == out / "predictions" / "runner_config_merged.yaml"
+        merged = _parse_runner_yaml(used)
+        assert merged["template_preprocessor_settings"]["structure_directory"] == str(
+            out / "query" / "templates"
+        )
+        assert merged["model_update"] == {"presets": ["predict", "low_mem"]}
+        # receptor and binder CIF of the one sample: the files the merged YAML points to
+        assert len(list((out / "query" / "templates").glob("*.cif"))) == 2
+        assert users_yaml.read_text(encoding="utf-8") == self._USERS_YAML
 
 
 class TestQueryLayoutDocstrings:
