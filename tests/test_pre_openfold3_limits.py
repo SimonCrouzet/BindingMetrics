@@ -119,14 +119,42 @@ class TestClosures:
         assert "folded as a linear chain" not in warning
         assert "do not write" not in warning
 
+    def test_the_warning_gives_what_the_runs_showed_as_one_example_per_case(self):
+        (warning,) = [w for w in preflight(_profile("1CWA"), [], "of3").warnings if "cyclic" in w]
+        # the sources of the mechanism
+        for cited in ("relpos.py", "cyclic_offset", "tokenize_atom_array", "tokenization.py"):
+            assert cited in warning
+        assert "one token per heavy atom" in warning
+        # the measurements, and that they are examples (OpenFold3 0.5.0, no MSA)
+        assert "one example of each case, not a benchmark" in warning
+        assert "C-N 1.38 A with it, 7.40 A without" in warning
+        assert "(3P8F, one seed)" in warning and "(three seeds)" in warning
+        assert "ipTM 0.78-0.81 against 0.91-0.92" in warning
+        assert "3.0-4.8 A against 0.5-0.7 A" in warning
+        # what they do not show
+        assert "no ablation of the model was done" in warning
+        assert "the cause is not established" in warning
+
+    def test_the_warning_says_which_binders_get_the_flag_by_default(self):
+        (warning,) = [w for w in preflight(_profile("1CWA"), [], "of3").warnings if "cyclic" in w]
+        assert "only for a binder of standard residues" in warning
+        assert "binder_cyclic=True (`--openfold-cyclic on`) writes it for any binder" in warning
+        assert "binder_cyclic=False (`--openfold-cyclic off`) never does" in warning
+
+    def test_the_old_wording_is_gone(self):
+        (warning,) = [w for w in preflight(_profile("1CWA"), [], "of3").warnings if "cyclic" in w]
+        assert "so there is no published check of its confidence values" not in warning
+        assert "when binder_cyclic is" not in warning
+
     def test_the_warning_names_the_switch_that_turns_the_flag_off(self):
         (warning,) = [w for w in preflight(_profile("1CWA"), [], "of3").warnings if "cyclic" in w]
         assert "binder_cyclic" in warning and "--openfold-cyclic off" in warning
 
     def test_the_caveat_is_true_of_the_query_builder(self):
         # The caveat "closures:head_to_tail" says that the query builders write `cyclic: true` on
-        # a head-to-tail binder by default. If this fails, the default changed (or the builder no
-        # longer writes the field): reword the caveat in the OpenFold3 declaration.
+        # a head-to-tail binder of standard residues by default, and on any binder when asked. If
+        # this fails, the default changed (or the builder no longer writes the field): reword the
+        # caveat in the OpenFold3 declaration.
         from binding_metrics.metrics import _openfold_run, openfold
 
         tree = ast.parse(textwrap.dedent(inspect.getsource(_openfold_run._query_chain)))
@@ -139,9 +167,7 @@ class TestClosures:
         for builder in (openfold.prepare_scoring_query, openfold.prepare_refolding_query):
             assert inspect.signature(builder).parameters["binder_cyclic"].default == "auto"
 
-    def test_the_builder_writes_the_flag_on_the_binder_of_the_example_by_default(
-        self, tmp_path, monkeypatch
-    ):
+    def _chains_of_the_query(self, tmp_path, monkeypatch, entry, **kwargs):
         import json
 
         from binding_metrics.metrics import _openfold_run, openfold
@@ -149,13 +175,36 @@ class TestClosures:
         monkeypatch.setattr(
             _openfold_run, "installed_openfold3_version", lambda python_cmd=None: "0.5.0"
         )
-        name, binder, receptor = EXAMPLES["1CWA"]
-        path = openfold.prepare_refolding_query(DATA / name, receptor, binder, "q", tmp_path)
+        name, binder, receptor = EXAMPLES[entry]
+        path = openfold.prepare_refolding_query(
+            DATA / name, receptor, binder, "q", tmp_path, **kwargs
+        )
         chains = {
             c["chain_ids"][0]: c
             for c in json.loads(path.read_text(encoding="utf-8"))["queries"]["q"]["chains"]
         }
-        assert chains[binder].get("cyclic") is True and "cyclic" not in chains[receptor]
+        return chains[binder], chains[receptor]
+
+    def test_the_builder_writes_the_flag_by_default_on_a_binder_of_standard_residues(
+        self, tmp_path, monkeypatch
+    ):
+        # SFTI-1 of 3P8F: 14 standard residues closed head to tail (and a disulfide, never written)
+        binder, receptor = self._chains_of_the_query(tmp_path, monkeypatch, "3P8F")
+        assert binder.get("cyclic") is True and "cyclic" not in receptor
+
+    def test_the_builder_writes_the_flag_on_the_binder_with_modified_residues_when_asked(
+        self, tmp_path, monkeypatch
+    ):
+        binder, receptor = self._chains_of_the_query(
+            tmp_path, monkeypatch, "1CWA", binder_cyclic=True
+        )
+        assert binder.get("cyclic") is True and "cyclic" not in receptor
+        assert binder["non_canonical_residues"]  # nine modified residues go to the CCD route
+
+    @pytest.mark.parametrize("entry", ["1CWA", "3P8F"])
+    def test_the_builder_never_writes_the_flag_when_turned_off(self, tmp_path, monkeypatch, entry):
+        binder, _ = self._chains_of_the_query(tmp_path, monkeypatch, entry, binder_cyclic=False)
+        assert "cyclic" not in binder
 
     def test_a_disulfide_is_refused_with_the_model_the_link_and_the_reason(self):
         error = _refusal(_profile("3P8F"))

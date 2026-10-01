@@ -283,6 +283,10 @@ class OpenFold3Parser(PredictionParser):
     # gives one chain (docs/source/template_how_to.md, "CIF Direct Mode"); the only constraint is
     # the pocket constraint, documented for small-molecule ligands (docs/source/
     # input_format_reference.md, section 4).
+    # The head-to-tail caveat rests on relpos.py (cyclic_offset takes the number of tokens of the
+    # chain), tokenization.py (a modified residue is one token per atom) and on the real runs of
+    # 0.5.0 of 2026-10-02: one complex per case (1CWA with nine modified residues, three seeds;
+    # SFTI-1 of 3P8F, one seed), no MSA, so one example of each and not a benchmark.
     capabilities = Capabilities(
         closures={"none", "head_to_tail"},
         modes={"predict", "refold", "score"},
@@ -312,14 +316,28 @@ class OpenFold3Parser(PredictionParser):
         },
         caveats={
             "closures:head_to_tail": (
-                "OpenFold3 takes a head-to-tail closure only through `cyclic: true`, which the "
-                "query builders of this package write on the binder when binder_cyclic is "
-                '"auto" (the default; `--openfold-cyclic off` or binder_cyclic=False turns it '
-                "off) and OpenFold3 is 0.4.5 or later. The flag only wraps the relative "
-                "positions of the chain: OpenFold3 does not enforce the closure bond, documents "
-                "the flag in an example query and not in its documentation, and has published "
-                "no accuracy benchmark for cyclic peptides, so there is no published check of "
-                "its confidence values for a cyclic binder."
+                "OpenFold3 takes a head-to-tail closure only through `cyclic: true`, which wraps "
+                "the relative positions of the chain (cyclic_offset and apply_cyclic_offsets in "
+                "openfold3/core/utils/relpos.py) and does not enforce the closure bond. OpenFold3 "
+                "documents the flag in an example query and not in its documentation "
+                "(examples/example_inference_inputs/query_multimer_cyclic.json) and has published "
+                "no accuracy benchmark for cyclic peptides. The wrapped offsets are built from "
+                "the number of tokens of the chain, and OpenFold3 makes a modified residue one "
+                "token per heavy atom (tokenize_atom_array in openfold3/core/data/primitives/"
+                "structure/tokenization.py), so the offsets between the tokens of one modified "
+                "residue change from 0 to wrapped values (checked on that function with a toy "
+                "chain). Runs of OpenFold3 0.5.0 without an MSA gave one example of each case, "
+                "not a benchmark: for the standard-residue binder of SFTI-1 (3P8F, one seed) the "
+                "flag closed the ring (C-N 1.38 A with it, 7.40 A without); for the cyclosporin of "
+                "1CWA, which has nine modified residues (three seeds), the ring was closed without "
+                "the flag (C-N 1.0-1.3 A) and the prediction was worse with it (ipTM 0.78-0.81 "
+                "against 0.91-0.92, binder RMSD against the input 3.0-4.8 A against 0.5-0.7 A). "
+                "The change of the offsets may be the reason; no ablation of the model was done, "
+                "so the cause is not established. The query builders of this package therefore "
+                'write the flag with binder_cyclic="auto" (the default) only for a binder of '
+                "standard residues, when OpenFold3 is 0.4.5 or later; binder_cyclic=True "
+                "(`--openfold-cyclic on`) writes it for any binder and binder_cyclic=False "
+                "(`--openfold-cyclic off`) never does."
             ),
             "residue_classes:ligand": (
                 "The OpenFold3 query builder (_extract_query_chain) leaves groups that are not "
