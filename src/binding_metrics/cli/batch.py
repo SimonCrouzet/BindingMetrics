@@ -1002,10 +1002,10 @@ def run_batch(
             keeps the default, 42. The sample scored is the first sample of the first seed
             given (see ``--openfold-seeds``).
         openfold_use_msa_server: Whether OpenFold3 uses the ColabFold MSA server (default True;
-            ``--openfold-no-msa-server`` is False). With the server off OpenFold3 runs without a
-            computed MSA (single-sequence unless MSAs are supplied elsewhere), which lowers
-            accuracy for a natural receptor, but the template alignments written by the toolkit
-            are no longer replaced by the server (issue #68). Each row that OpenFold3 was run for
+            ``--openfold-no-msa-server`` is False). With the server off OpenFold3 runs with a dummy
+            MSA that holds only the query sequence of each chain, which lowers accuracy for a
+            natural receptor, but the template alignments written by the toolkit are no longer
+            replaced by the server (issue #68). Each row that OpenFold3 was run for
             records it as ``provenance_openfold3_use_msa_server``.
         openfold_cyclic: ``"auto"`` (default), ``True`` (``"on"``) or ``False`` (``"off"``):
             whether the binder chain of each OpenFold3 query gets ``"cyclic": true`` (see

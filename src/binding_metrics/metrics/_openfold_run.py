@@ -1647,6 +1647,7 @@ def _query_chain(
     cyclic: bool = False,
     template_cif_paths: Optional[Sequence[str]] = None,
     template_cif_chain_ids: Optional[Sequence[Optional[str]]] = None,
+    main_msa_file_paths: Optional[Sequence[str]] = None,
 ) -> dict:
     """Build the query JSON dict of one protein chain.
 
@@ -1659,7 +1660,8 @@ def _query_chain(
     A template is either an alignment (``template_alignment_file_path``) or structures
     (``template_cif_paths``, with ``template_cif_chain_ids`` naming the chain of each file);
     OpenFold3 refuses a chain that has both. The ColabFold MSA-server step overwrites an
-    alignment path and leaves CIF paths alone (``colabfold_msa_server.py``).
+    alignment path and leaves CIF paths alone (``colabfold_msa_server.py``). ``main_msa_file_paths``
+    (the MSA of the chain, see :func:`_msa_fields`) is overwritten by the server too.
     """
     chain: dict = {"molecule_type": "protein", "chain_ids": [chain_id], "sequence": sequence}
     if cyclic:
@@ -1674,7 +1676,44 @@ def _query_chain(
         chain["template_cif_paths"] = [str(path) for path in template_cif_paths]
         if template_cif_chain_ids is not None:
             chain["template_cif_chain_ids"] = list(template_cif_chain_ids)
+    if main_msa_file_paths:
+        chain["main_msa_file_paths"] = [str(path) for path in main_msa_file_paths]
     return chain
+
+
+#: File name of a dummy MSA. OpenFold3 0.5.0 parses an MSA file only when its name (without the
+#: suffix) is a key of ``MSASettings.max_seq_counts`` (``colabfold_main`` is one, and the name of
+#: its own dummy MSA), and skips any other file; a chain with no parsed MSA then fails with
+#: ``IndexError`` while its features are built.
+_DUMMY_MSA_FILE = "colabfold_main.a3m"
+
+
+def _write_dummy_msa(sequence: str, chain_id: str, directory: Path) -> Path:
+    """Write an MSA that holds only the query sequence, and return the path of the A3M file.
+
+    OpenFold3 takes the name of the folder that holds an A3M file as the identifier of the
+    chain's alignment, so each chain gets a folder of its own (``directory``).
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / _DUMMY_MSA_FILE
+    path.write_text(f">query_{chain_id}\n{sequence}\n", encoding="utf-8")
+    return path
+
+
+def _msa_fields(dummy_msa: bool, *, sequence: str, chain_id: str, directory: Path) -> dict:
+    """The arguments of :func:`_query_chain` that give a chain a dummy MSA, or none.
+
+    OpenFold3's input reference suggests MSA-free inference through a dummy MSA that holds only
+    the query sequence and discourages leaving the MSA input out. 0.5.0 builds the same dummy
+    for a chain without MSA files (with a warning), so the prediction is the same either way
+    (measured: three seeds of one complex, within 0.03 ipTM and 0.1 A of binder RMSD); the
+    file is written so that the query says what it uses. Only a run without the ColabFold MSA
+    server needs it: with the server on, OpenFold3 replaces ``main_msa_file_paths`` (with a
+    warning).
+    """
+    if not dummy_msa:
+        return {}
+    return {"main_msa_file_paths": [str(_write_dummy_msa(sequence, chain_id, directory))]}
 
 
 def _template_fields(
@@ -1713,6 +1752,7 @@ def prepare_refolding_query(
     binder_cyclic: bool | str = "auto",
     conda_env: Optional[str] = None,
     template_mode: str = "alignment",
+    dummy_msa: bool = False,
 ) -> Path:
     """Prepare an OpenFold3 query JSON for binder refolding with receptor as template.
 
@@ -1788,6 +1828,12 @@ def prepare_refolding_query(
             gives the template CIF as ``template_cif_paths`` (OpenFold3's CIF Direct Template
             Mode: protein chains only, the best-matching chain of each file, an alignment made by
             OpenFold3 itself), which the server does not overwrite, and writes no A3M file.
+        dummy_msa: Give every chain a dummy MSA that holds only its sequence
+            (``main_msa_file_paths``, one file ``colabfold_main.a3m`` in a folder per chain below
+            ``{output_dir}/msas``). It is for a run without the ColabFold MSA server, which
+            overwrites it: ``run_openfold_*`` sets it when ``use_msa_server`` is False. Default
+            False, which leaves the MSA input out (OpenFold3 then builds the same dummy itself,
+            with a warning; its input reference discourages leaving the MSA input out).
 
     Returns:
         Path to the written query JSON file.
@@ -1857,8 +1903,30 @@ def prepare_refolding_query(
         "queries": {
             query_name: {
                 "chains": [
-                    _query_chain(receptor_chain, receptor_seq, receptor_nc, **receptor_template),
-                    _query_chain(binder_chain, binder_seq, binder_nc, cyclic=cyclic),
+                    _query_chain(
+                        receptor_chain,
+                        receptor_seq,
+                        receptor_nc,
+                        **receptor_template,
+                        **_msa_fields(
+                            dummy_msa,
+                            sequence=receptor_seq,
+                            chain_id=receptor_chain,
+                            directory=output_dir / "msas" / f"{query_name}_{receptor_chain}",
+                        ),
+                    ),
+                    _query_chain(
+                        binder_chain,
+                        binder_seq,
+                        binder_nc,
+                        cyclic=cyclic,
+                        **_msa_fields(
+                            dummy_msa,
+                            sequence=binder_seq,
+                            chain_id=binder_chain,
+                            directory=output_dir / "msas" / f"{query_name}_{binder_chain}",
+                        ),
+                    ),
                 ],
             }
         },
@@ -1881,6 +1949,7 @@ def prepare_scoring_query(
     binder_cyclic: bool | str = "auto",
     conda_env: Optional[str] = None,
     template_mode: str = "alignment",
+    dummy_msa: bool = False,
 ) -> Path:
     """Prepare an OpenFold3 query JSON to score an existing complex structure.
 
@@ -1942,6 +2011,8 @@ def prepare_scoring_query(
             :func:`prepare_refolding_query`.
         template_mode: ``"alignment"`` (default) or ``"structure"``: how each chain's template
             reaches OpenFold3; see :func:`prepare_refolding_query`.
+        dummy_msa: Give every chain a dummy MSA (query sequence only); see
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the written query JSON file.
@@ -2035,9 +2106,30 @@ def prepare_scoring_query(
         "queries": {
             query_name: {
                 "chains": [
-                    _query_chain(receptor_chain, receptor_seq, receptor_nc, **receptor_template),
                     _query_chain(
-                        binder_chain, binder_seq, binder_nc, cyclic=cyclic, **binder_template
+                        receptor_chain,
+                        receptor_seq,
+                        receptor_nc,
+                        **receptor_template,
+                        **_msa_fields(
+                            dummy_msa,
+                            sequence=receptor_seq,
+                            chain_id=receptor_chain,
+                            directory=output_dir / "msas" / f"{query_name}_{receptor_chain}",
+                        ),
+                    ),
+                    _query_chain(
+                        binder_chain,
+                        binder_seq,
+                        binder_nc,
+                        cyclic=cyclic,
+                        **binder_template,
+                        **_msa_fields(
+                            dummy_msa,
+                            sequence=binder_seq,
+                            chain_id=binder_chain,
+                            directory=output_dir / "msas" / f"{query_name}_{binder_chain}",
+                        ),
                     ),
                 ],
             }
@@ -2196,6 +2288,7 @@ def prepare_batched_scoring_queries(
     binder_cyclic: bool | str = "auto",
     conda_env: Optional[str] = None,
     template_mode: str = "alignment",
+    dummy_msa: bool = False,
 ) -> Path:
     """Prepare a single OF3 query JSON that scores multiple complexes.
 
@@ -2217,6 +2310,8 @@ def prepare_batched_scoring_queries(
         conda_env: Conda environment that runs OpenFold3, asked for its version once.
         template_mode: ``"alignment"`` (default) or ``"structure"``: how each chain's template
             reaches OpenFold3; see :func:`prepare_refolding_query`.
+        dummy_msa: Give every chain a dummy MSA (query sequence only); see
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the combined query JSON file.
@@ -2271,13 +2366,30 @@ def prepare_batched_scoring_queries(
 
         queries[s.query_name] = {
             "chains": [
-                _query_chain(s.receptor_chain, receptor_seq, receptor_nc, **receptor_template),
+                _query_chain(
+                    s.receptor_chain,
+                    receptor_seq,
+                    receptor_nc,
+                    **receptor_template,
+                    **_msa_fields(
+                        dummy_msa,
+                        sequence=receptor_seq,
+                        chain_id=s.receptor_chain,
+                        directory=output_dir / "msas" / f"{s.query_name}_{s.receptor_chain}",
+                    ),
+                ),
                 _query_chain(
                     s.binder_chain,
                     binder_seq,
                     binder_nc,
                     cyclic=cyclic_flags[s.query_name],
                     **binder_template,
+                    **_msa_fields(
+                        dummy_msa,
+                        sequence=binder_seq,
+                        chain_id=s.binder_chain,
+                        directory=output_dir / "msas" / f"{s.query_name}_{s.binder_chain}",
+                    ),
                 ),
             ],
         }
@@ -2296,6 +2408,7 @@ def prepare_batched_refolding_queries(
     binder_cyclic: bool | str = "auto",
     conda_env: Optional[str] = None,
     template_mode: str = "alignment",
+    dummy_msa: bool = False,
 ) -> Path:
     """Prepare a single OF3 query JSON that refolds binders for multiple complexes.
 
@@ -2317,6 +2430,8 @@ def prepare_batched_refolding_queries(
         conda_env: Conda environment that runs OpenFold3, asked for its version once.
         template_mode: ``"alignment"`` (default) or ``"structure"``: how each receptor's template
             reaches OpenFold3; see :func:`prepare_refolding_query`.
+        dummy_msa: Give every chain a dummy MSA (query sequence only); see
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the combined query JSON file.
@@ -2358,9 +2473,29 @@ def prepare_batched_refolding_queries(
 
         queries[s.query_name] = {
             "chains": [
-                _query_chain(s.receptor_chain, receptor_seq, receptor_nc, **receptor_template),
                 _query_chain(
-                    s.binder_chain, binder_seq, binder_nc, cyclic=cyclic_flags[s.query_name]
+                    s.receptor_chain,
+                    receptor_seq,
+                    receptor_nc,
+                    **receptor_template,
+                    **_msa_fields(
+                        dummy_msa,
+                        sequence=receptor_seq,
+                        chain_id=s.receptor_chain,
+                        directory=output_dir / "msas" / f"{s.query_name}_{s.receptor_chain}",
+                    ),
+                ),
+                _query_chain(
+                    s.binder_chain,
+                    binder_seq,
+                    binder_nc,
+                    cyclic=cyclic_flags[s.query_name],
+                    **_msa_fields(
+                        dummy_msa,
+                        sequence=binder_seq,
+                        chain_id=s.binder_chain,
+                        directory=output_dir / "msas" / f"{s.query_name}_{s.binder_chain}",
+                    ),
                 ),
             ],
         }

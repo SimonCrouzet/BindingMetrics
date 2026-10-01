@@ -56,17 +56,25 @@ class TestTheOption:
         )
         assert action.default is False and action.nargs == 0
 
-    def test_the_help_is_one_sentence_that_claims_no_more_than_the_source_shows(self):
+    def test_the_help_says_what_the_run_does_and_what_one_complex_showed(self):
         parser = argparse.ArgumentParser()
         from binding_metrics.cli import add_openfold_no_msa_server_arg
 
         add_openfold_no_msa_server_arg(parser)
         help_text = " ".join(parser.format_help().split())
         for stated in (
-            "without a computed MSA",
-            "single-sequence unless MSAs are supplied elsewhere",
+            "dummy MSA that holds only the query sequence of each chain",
+            "input reference suggests this for MSA-free runs",
             "lowers accuracy for a natural receptor",
             "no longer replaced by the server (issue #68)",
+        ):
+            assert stated in help_text
+        # the measurement is stated as one complex, one seed, with its numbers
+        for stated in (
+            "One complex (1YCR, OpenFold3 0.5.0, one seed)",
+            "1.6 A with the server and no template",
+            "21.6 A with no MSA and no template",
+            "1.1 A with a working template and no MSA",
         ):
             assert stated in help_text
 

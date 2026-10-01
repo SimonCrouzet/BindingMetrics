@@ -135,6 +135,17 @@ def _template_mode_kwargs(template_mode: str) -> dict:
     return {} if template_mode == "alignment" else {"template_mode": template_mode}
 
 
+def _dummy_msa_kwargs(dummy_msa: Optional[bool], use_msa_server: bool) -> dict:
+    """``{"dummy_msa": True}`` for the query builder when the run needs a dummy MSA, else ``{}``.
+
+    ``dummy_msa`` None means "when the ColabFold MSA server is off". Nothing is passed for the
+    default (no dummy MSA), so that a query builder that predates the option, or a test double
+    that replaces it, is called exactly as before.
+    """
+    wanted = (not use_msa_server) if dummy_msa is None else bool(dummy_msa)
+    return {"dummy_msa": True} if wanted else {}
+
+
 def _find_prediction_files(
     output_dir: Path,
     query_name: str,
@@ -601,6 +612,7 @@ def run_openfold_scoring(
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
     template_mode: str = "alignment",
+    dummy_msa: Optional[bool] = None,
 ) -> Path:
     """Run OpenFold3 scoring of an existing complex structure (Mode 1).
 
@@ -652,6 +664,11 @@ def run_openfold_scoring(
             server on the run has no template) or ``"structure"`` (the template CIFs themselves,
             OpenFold3's CIF Direct Template Mode, which the server does not overwrite). See
             :func:`prepare_refolding_query`.
+        dummy_msa: Whether the query gives every chain a dummy MSA that holds only its sequence.
+            None (default) writes it when ``use_msa_server`` is False, which is the MSA-free run
+            that OpenFold3's input reference suggests (it discourages leaving the MSA input out);
+            with the server on it would be overwritten. True or False decides it. See
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory
@@ -680,6 +697,7 @@ def run_openfold_scoring(
         binder_cyclic=binder_cyclic,
         conda_env=conda_env,
         **_template_mode_kwargs(template_mode),
+        **_dummy_msa_kwargs(dummy_msa, use_msa_server),
     )
 
     run_openfold(
@@ -719,6 +737,7 @@ def run_openfold_refolding(
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
     template_mode: str = "alignment",
+    dummy_msa: Optional[bool] = None,
 ) -> Path:
     """Run OpenFold3 refolding: binder predicted from sequence, receptor given as template.
 
@@ -776,6 +795,11 @@ def run_openfold_refolding(
             server on the run has no template) or ``"structure"`` (the template CIFs themselves,
             OpenFold3's CIF Direct Template Mode, which the server does not overwrite). See
             :func:`prepare_refolding_query`.
+        dummy_msa: Whether the query gives every chain a dummy MSA that holds only its sequence.
+            None (default) writes it when ``use_msa_server`` is False, which is the MSA-free run
+            that OpenFold3's input reference suggests (it discourages leaving the MSA input out);
+            with the server on it would be overwritten. True or False decides it. See
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory
@@ -804,6 +828,7 @@ def run_openfold_refolding(
         binder_cyclic=binder_cyclic,
         conda_env=conda_env,
         **_template_mode_kwargs(template_mode),
+        **_dummy_msa_kwargs(dummy_msa, use_msa_server),
     )
 
     run_openfold(
@@ -845,6 +870,7 @@ def run_openfold_batched(
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
     template_mode: str = "alignment",
+    dummy_msa: Optional[bool] = None,
 ) -> Path:
     """Run OpenFold3 inference on multiple samples in a single subprocess.
 
@@ -890,6 +916,11 @@ def run_openfold_batched(
             server on the run has no template) or ``"structure"`` (the template CIFs themselves,
             OpenFold3's CIF Direct Template Mode, which the server does not overwrite). See
             :func:`prepare_refolding_query`.
+        dummy_msa: Whether the query gives every chain a dummy MSA that holds only its sequence.
+            None (default) writes it when ``use_msa_server`` is False, which is the MSA-free run
+            that OpenFold3's input reference suggests (it discourages leaving the MSA input out);
+            with the server on it would be overwritten. True or False decides it. See
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory.
@@ -916,6 +947,7 @@ def run_openfold_batched(
         binder_cyclic=binder_cyclic,
         conda_env=conda_env,
         **_template_mode_kwargs(template_mode),
+        **_dummy_msa_kwargs(dummy_msa, use_msa_server),
     )
 
     run_openfold(

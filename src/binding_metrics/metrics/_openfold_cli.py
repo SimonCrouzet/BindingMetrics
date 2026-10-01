@@ -201,6 +201,24 @@ def _add_template_mode_arg(p) -> None:
     )
 
 
+def _add_dummy_msa_arg(p) -> None:
+    """Add ``--dummy-msa`` to a query-only subparser; the run ones follow ``--no-msa-server``."""
+    p.add_argument(
+        "--dummy-msa",
+        action="store_true",
+        help=(
+            "Give every chain a dummy MSA that holds only its sequence (main_msa_file_paths), "
+            "for a run without the ColabFold MSA server. The run subcommands do this when "
+            "--no-msa-server is given."
+        ),
+    )
+
+
+def _dummy_msa_kwargs(args) -> dict:
+    """Keyword argument for the query builders, only when ``--dummy-msa`` was given."""
+    return {"dummy_msa": True} if getattr(args, "dummy_msa", False) else {}
+
+
 def _template_mode_kwargs(args) -> dict:
     """Keyword argument for the API, only when the mode differs from the default."""
     if args.template_mode == "alignment":
@@ -442,6 +460,7 @@ def main():
     _add_unmappable_residue_arg(p_prep)
     _add_binder_cyclic_arg(p_prep)
     _add_template_mode_arg(p_prep)
+    _add_dummy_msa_arg(p_prep)
     _add_prepare_conda_env_arg(p_prep)
 
     # --- refold subcommand ---
@@ -568,6 +587,7 @@ def main():
     _add_unmappable_residue_arg(p_prep_score)
     _add_binder_cyclic_arg(p_prep_score)
     _add_template_mode_arg(p_prep_score)
+    _add_dummy_msa_arg(p_prep_score)
     _add_prepare_conda_env_arg(p_prep_score)
 
     # --- score subcommand ---
@@ -661,6 +681,64 @@ def main():
             **_unmappable_residue_kwargs(args),
             **_binder_cyclic_kwargs(args),
             **_template_mode_kwargs(args),
+            **_dummy_msa_kwargs(args),
+            **_conda_env_kwargs(args),
+        )
+        print(f"Scoring query JSON written to: {path}")
+        return
+
+    # --- score ---
+    if args.command == "score":
+        print(f"Running OF3 structure scoring: {args.complex}")
+        print(f"  Receptor chain (template): {args.receptor_chain}")
+        print(f"  Binder chain  (template): {args.binder_chain}")
+        predictions_dir = of.run_openfold_scoring(
+            complex_structure_path=args.complex,
+            receptor_chain=args.receptor_chain,
+            binder_chain=args.binder_chain,
+            query_name=args.query_name,
+            output_dir=args.output_dir,
+            template_cif_path=args.template_cif,
+            inference_ckpt_path=args.ckpt,
+            num_diffusion_samples=args.num_samples,
+            num_model_seeds=args.num_seeds,
+            use_msa_server=not args.no_msa_server,
+            model_presets=args.presets,
+            runner_yaml=args.runner_yaml,
+            conda_env=args.conda_env,
+            seeds=args.seeds,
+            **_unmappable_residue_kwargs(args),
+            **_binder_cyclic_kwargs(args),
+            **_template_mode_kwargs(args),
+        )
+        print(f"\nParsing scoring metrics from: {predictions_dir}")
+        metrics = of.compute_openfold_metrics(
+            output_dir=predictions_dir,
+            query_name=args.query_name,
+            seed=args.seed,
+            sample=args.sample,
+            include_matrices=args.include_matrices,
+            reference_structure_path=args.reference,
+            binder_chain=args.binder_chain,
+            receptor_chain=args.receptor_chain,
+        )
+        _print_metrics(metrics, args.seed, args.sample)
+        return
+
+    # --- prepare-query ---
+    if args.command == "prepare-scoring-query":
+        path = of.prepare_scoring_query(
+            complex_structure_path=args.complex,
+            receptor_chain=args.receptor_chain,
+            binder_chain=args.binder_chain,
+            query_name=args.query_name,
+            output_dir=args.output_dir,
+            template_cif_path=args.template_cif,
+            seeds=args.seeds,
+            **_unmappable_residue_kwargs(args),
+            **_binder_cyclic_kwargs(args),
+            **_template_mode_kwargs(args),
+            **_dummy_msa_kwargs(args),
             **_conda_env_kwargs(args),
         )
         print(f"Scoring query JSON written to: {path}")
@@ -717,6 +795,7 @@ def main():
             **_unmappable_residue_kwargs(args),
             **_binder_cyclic_kwargs(args),
             **_template_mode_kwargs(args),
+            **_dummy_msa_kwargs(args),
             **_conda_env_kwargs(args),
         )
         print(f"Query JSON written to: {path}")

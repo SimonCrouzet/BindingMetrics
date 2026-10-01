@@ -343,9 +343,9 @@ def run_pipeline(
             given. Separate from ``random_seed``.
         openfold_use_msa_server: Whether the OpenFold3 step uses the ColabFold MSA server
             (keyword-only, default True; ``--openfold-no-msa-server`` is False). With the server
-            off OpenFold3 runs without a computed MSA (single-sequence unless MSAs are supplied
-            elsewhere), which lowers accuracy for a natural receptor, but the template alignments
-            written by the toolkit are no longer replaced by the server (issue #68). The value
+            off OpenFold3 runs with a dummy MSA that holds only the query sequence of each chain,
+            which lowers accuracy for a natural receptor, but the template alignments written by
+            the toolkit are no longer replaced by the server (issue #68). The value
             is recorded as ``provenance["openfold3_use_msa_server"]`` when OpenFold3 is run
             here, and is part of the key of the prediction store.
         openfold_templates: How the template of each chain reaches OpenFold3 in ``score`` and

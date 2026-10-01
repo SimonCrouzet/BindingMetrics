@@ -372,10 +372,14 @@ class OpenFold3Runner(PredictionRunner):
         )
         # the environment that runs OpenFold3 is asked for its version when the flag is decided
         environment = {} if self.conda_env is None else {"conda_env": self.conda_env}
+        # a run without the MSA server needs the dummy MSA in the query; the run functions decide
+        # that themselves from use_msa_server, a direct call of the query builder is told
+        dummy_msa = {"dummy_msa": True} if not request.options.get("use_msa_server", True) else {}
         return Path(
             function(
                 **self._structure_arguments(request, Path(work_dir) / "query"),
                 **self._query_arguments(request),
+                **dummy_msa,
                 **environment,
             )
         )
