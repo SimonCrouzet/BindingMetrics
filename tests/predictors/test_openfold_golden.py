@@ -118,7 +118,7 @@ def _write_run(tmp_path, *, plddt=_PLDDT, pde=_PDE, pae=_PAE, agg=True, atoms=No
         tmp_path,
         _QUERY,
         seed=seed,
-        agg=_default_agg(n_chains=2) if agg else None,
+        agg=_default_agg(n_chains=2) if agg is True else (agg or None),
         conf={"plddt": plddt, "gpde": 1.23, "pde": pde, "pae": pae},
         timing=_TIMING,
     )
@@ -341,10 +341,9 @@ class TestReasonsAndSentinels:
         assert np.isnan(metrics["max_pde"])
         assert metrics["binder_avg_plddt"] == pytest.approx(76.0)
 
-    def test_ligand_tokens_make_the_interface_values_nan_with_a_reason(self, tmp_path):
-        from binding_metrics.metrics.openfold import compute_openfold_metrics
-
-        # 4 + 3 residue tokens and a 5-atom ligand that AlphaFold3-style models tokenise per atom
+    @staticmethod
+    def _dimer_with_a_ligand():
+        """The dimer and a 5-atom ligand that AlphaFold3-style models tokenise per atom."""
         ligand = struc.array(
             [
                 struc.Atom(
@@ -359,8 +358,45 @@ class TestReasonsAndSentinels:
                 for k in range(5)
             ]
         )
-        atoms = struc.concatenate([_dimer(), ligand])
+        return struc.concatenate([_dimer(), ligand])
+
+    def test_ligand_tokens_are_cut_from_the_layout_the_adapter_builds(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        # 4 + 3 residue tokens and 5 atom tokens: 12 tokens. The adapter derives that layout from
+        # the structure, so the interface values are the constants of the matrices, not NaN.
+        atoms = self._dimer_with_a_ligand()
         n_tokens = 12
+        agg = _default_agg(n_chains=2)
+        agg["chain_ptm"] = {"A": 0.88, "B": 0.80, "L": 0.70}
+        agg["chain_pair_iptm"] = {"(A, B)": 0.76, "(A, L)": 0.5, "(B, L)": 0.4}
+        root = _write_run(
+            tmp_path,
+            plddt=np.full(atoms.array_length(), 90.0),
+            pde=np.full((n_tokens, n_tokens), 2.0),
+            pae=np.full((n_tokens, n_tokens), 3.0),
+            atoms=atoms,
+            agg=agg,
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            metrics = compute_openfold_metrics(root, _QUERY, binder_chain="B", receptor_chain="A")
+        assert "reason" not in metrics
+        assert caught == []
+        assert metrics["mean_interface_pde"] == pytest.approx(2.0)
+        assert metrics["max_interface_pde"] == pytest.approx(2.0)
+        assert metrics["mean_interface_pae"] == pytest.approx(3.0)
+        assert metrics["max_interface_pae"] == pytest.approx(3.0)
+
+    def test_ligand_tokens_that_the_layout_cannot_explain_make_the_interface_values_nan(
+        self, tmp_path
+    ):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        # the structure gives 12 tokens but the matrices have 13 rows: the layout is refused
+        # (never guessed), the residue-count refusal of the old code applies and both say why
+        atoms = self._dimer_with_a_ligand()
+        n_tokens = 13
         root = _write_run(
             tmp_path,
             plddt=np.full(atoms.array_length(), 90.0),
@@ -376,9 +412,16 @@ class TestReasonsAndSentinels:
             "(A: 4, B: 3, L: 1). Residue-based chain offsets do not apply, probably because "
             "a ligand, ion or modified residue is tokenised per atom."
         )
+        layout_reason = (
+            "token layout not built, so the interface blocks are cut by residue count: the "
+            "tokenisation of OpenFold3 gives 12 tokens for this structure (7 residues of the "
+            "standard set, one token each, and 5 atoms of other residues, one token each) but "
+            "the PAE matrix has 13 rows"
+        )
         assert metrics["reason"] == (
-            f"interface PDE: PDE matrix has 12 tokens but the structure has 8 residues {tail}; "
-            f"interface PAE: PAE matrix has 12 tokens but the structure has 8 residues {tail}"
+            f"{layout_reason}; "
+            f"interface PDE: PDE matrix has 13 tokens but the structure has 8 residues {tail}; "
+            f"interface PAE: PAE matrix has 13 tokens but the structure has 8 residues {tail}"
         )
         assert np.isnan(metrics["mean_interface_pde"])
         assert np.isnan(metrics["mean_interface_pae"])
