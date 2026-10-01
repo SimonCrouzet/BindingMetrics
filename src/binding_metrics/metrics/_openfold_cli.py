@@ -726,63 +726,6 @@ def main():
         return
 
     # --- prepare-query ---
-    if args.command == "prepare-scoring-query":
-        path = of.prepare_scoring_query(
-            complex_structure_path=args.complex,
-            receptor_chain=args.receptor_chain,
-            binder_chain=args.binder_chain,
-            query_name=args.query_name,
-            output_dir=args.output_dir,
-            template_cif_path=args.template_cif,
-            seeds=args.seeds,
-            **_unmappable_residue_kwargs(args),
-            **_binder_cyclic_kwargs(args),
-            **_template_mode_kwargs(args),
-            **_dummy_msa_kwargs(args),
-            **_conda_env_kwargs(args),
-        )
-        print(f"Scoring query JSON written to: {path}")
-        return
-
-    # --- score ---
-    if args.command == "score":
-        print(f"Running OF3 structure scoring: {args.complex}")
-        print(f"  Receptor chain (template): {args.receptor_chain}")
-        print(f"  Binder chain  (template): {args.binder_chain}")
-        predictions_dir = of.run_openfold_scoring(
-            complex_structure_path=args.complex,
-            receptor_chain=args.receptor_chain,
-            binder_chain=args.binder_chain,
-            query_name=args.query_name,
-            output_dir=args.output_dir,
-            template_cif_path=args.template_cif,
-            inference_ckpt_path=args.ckpt,
-            num_diffusion_samples=args.num_samples,
-            num_model_seeds=args.num_seeds,
-            use_msa_server=not args.no_msa_server,
-            model_presets=args.presets,
-            runner_yaml=args.runner_yaml,
-            conda_env=args.conda_env,
-            seeds=args.seeds,
-            **_unmappable_residue_kwargs(args),
-            **_binder_cyclic_kwargs(args),
-            **_template_mode_kwargs(args),
-        )
-        print(f"\nParsing scoring metrics from: {predictions_dir}")
-        metrics = of.compute_openfold_metrics(
-            output_dir=predictions_dir,
-            query_name=args.query_name,
-            seed=args.seed,
-            sample=args.sample,
-            include_matrices=args.include_matrices,
-            reference_structure_path=args.reference,
-            binder_chain=args.binder_chain,
-            receptor_chain=args.receptor_chain,
-        )
-        _print_metrics(metrics, args.seed, args.sample)
-        return
-
-    # --- prepare-query ---
     if args.command == "prepare-query":
         path = of.prepare_refolding_query(
             complex_structure_path=args.complex,

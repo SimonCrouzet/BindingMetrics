@@ -1466,3 +1466,27 @@ class TestModuleLayout:
         out = openfold.run_openfold_scoring("c.cif", "A", "B", "q", tmp_path, seeds=(9,))
         assert out == tmp_path / "predictions"
         assert calls == [("prepare", "q"), ("run", tmp_path / "predictions", (9,))]
+
+
+def test_the_command_line_has_one_branch_per_subcommand():
+    """A copy of a branch is dead code, and every new option would have to be added to both."""
+    import ast
+    import inspect
+    import textwrap
+    from collections import Counter
+
+    from binding_metrics.metrics import _openfold_cli
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_openfold_cli.main)))
+    branches = Counter(
+        node.comparators[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Attribute)
+        and node.left.attr == "command"
+        and len(node.comparators) == 1
+        and isinstance(node.comparators[0], ast.Constant)
+        and isinstance(node.comparators[0].value, str)
+    )
+    assert {"prepare-query", "prepare-scoring-query", "score", "refold", "run"} <= set(branches)
+    assert {name: n for name, n in branches.items() if n > 1} == {}
