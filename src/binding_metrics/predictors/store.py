@@ -11,6 +11,7 @@ Public names and signatures (the module imports the standard library only)::
     STATUS_DONE = "done"; STATUS_FAILED = "failed"; STATUS_ADOPTED = "adopted"
 
     file_sha256(path) -> str
+    WeightsRef, weights_reference            # from ``binding_metrics.predictors.weights``
 
     @dataclass(frozen=True, eq=False)
     class PredictionRequest:
@@ -121,6 +122,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, Mapping, Optional, Sequence
 
+from binding_metrics.predictors.weights import WeightsRef, weights_reference
+
 try:
     import fcntl
 except ImportError:  # Windows
@@ -208,6 +211,12 @@ class PredictionRequest:
         model_version: The model's version string; empty when unknown.
         options: Everything else that changes the output, as JSON values (presets, MSA mode,
             checkpoint, ...). Copied when the request is made.
+        weights: Custom weights (a fine-tuned model): a path, or a ``WeightsRef`` that
+            ``PredictionStore.weights_reference`` made with the store's hash cache. A path is
+            hashed here without a cache. The key holds the content (kind, SHA-256, size), never
+            the path, so a moved identical file gives the same key and changed weights another;
+            a request without weights has the key it always had. The runner must support custom
+            weights (``PredictionRunner.supports_custom_weights``), or the store refuses it.
         content_hashes: Role to the SHA-256 of the file's content, filled in from ``input_path``
             and ``extra_files`` (the input file has the role ``"input"``).
 
@@ -235,6 +244,7 @@ class PredictionRequest:
     num_samples: int = 5
     model_version: str = ""
     options: Mapping[str, Any] = field(default_factory=dict)
+    weights: Optional[str | Path | WeightsRef] = None
     content_hashes: Mapping[str, str] = field(init=False, default_factory=dict, repr=False)
     adoption_name: Optional[str] = field(init=False, default=None, repr=False)
 
@@ -276,6 +286,8 @@ class PredictionRequest:
         put("options", _plain_options(self.options))
         put("model_version", str(self.model_version or ""))
         put("content_hashes", hashes)
+        if self.weights is not None and not isinstance(self.weights, WeightsRef):
+            put("weights", weights_reference(self.weights))
 
     def canonical(self) -> dict[str, Any]:
         """The fields that the key hashes, as plain JSON values.
@@ -295,6 +307,8 @@ class PredictionRequest:
             "num_samples": self.num_samples,
             "options": copy.deepcopy(self.options),
         }
+        if self.weights is not None:  # absent without weights, so that key is the old key
+            fields["weights"] = self.weights.key_fields()
         if self.adoption_name is not None:
             fields["adopted_name"] = self.adoption_name
         return fields
@@ -320,14 +334,17 @@ class PredictionRequest:
         return hashlib.sha256(_canonical_json(fields).encode("ascii")).hexdigest()
 
     def describe(self) -> dict[str, Any]:
-        """``canonical()`` plus the key, the name and the input paths (``request.json``)."""
-        return {
+        """``canonical()`` plus the key, the name and the paths (``request.json``)."""
+        described = {
             **self.canonical(),
             "key": self.key(),
             "name": self.name,
             "input_path": None if self.input_path is None else str(self.input_path),
             "extra_files": {role: str(path) for role, path in self.extra_files.items()},
         }
+        if self.weights is not None:
+            described["weights"] = self.weights.to_dict()  # the content, and where it was
+        return described
 
     def with_model_version(self, version: str) -> PredictionRequest:
         """A copy with ``model_version`` set; the files are not read again."""
@@ -460,6 +477,25 @@ class PredictionStore:
 
     def __init__(self, root: str | Path):
         self.root = Path(root).expanduser().absolute()
+
+    # ------------------------------------------------------------------ weights
+
+    def weights_reference(self, path: str | Path, *, expect: Optional[str] = None) -> WeightsRef:
+        """The ``WeightsRef`` of custom weights, hashed with the cache kept in the store root.
+
+        A request made with the returned reference does not read the weights again. The cache
+        (``<root>/.weights-sha256.json``) keeps the SHA-256 of each file under its absolute path,
+        size and ``mtime_ns``; see ``binding_metrics.predictors.weights`` for what it cannot
+        detect (a file edited in place with an unchanged size and modification time).
+
+        Args:
+            path: A weights file or directory.
+            expect: ``"file"`` or ``"directory"`` to require that kind.
+
+        Raises:
+            FileNotFoundError, ValueError, OSError: As ``weights_reference``.
+        """
+        return weights_reference(path, cache_dir=self.root, expect=expect)
 
     # ------------------------------------------------------------------ reading
 
@@ -989,11 +1025,14 @@ class PredictionStore:
 
 
 def _check_runner(request: PredictionRequest, runner: PredictionRunner) -> None:
+    from binding_metrics.predictors.runners import require_weights_support
+
     runner_model = getattr(runner, "name", None)
     if runner_model and runner_model != request.model:
         raise ValueError(
             f"the '{runner_model}' runner cannot run a request for the model '{request.model}'"
         )
+    require_weights_support(runner, request)
 
 
 def _require_available(request: PredictionRequest, runner: PredictionRunner) -> None:

@@ -33,6 +33,10 @@ Extension points, for a model whose output has something the record has no field
 * a field that every model could fill is added to ``PredictionRecord`` as the last keyword
   argument (``not_provided`` is the latest), with NaN, None or an empty container as the default, so
   no adapter has to change.
+* the weights of a run started with custom weights are in ``extras["weights"]`` (a dict with
+  ``path``, ``kind``, ``sha256``, ``size`` and ``n_files``), set by ``PredictionSession.record``
+  from the request; what the model itself records about its checkpoint goes in ``extras`` under
+  the adapter's names (``inference_ckpt_path`` and ``inference_ckpt_name`` for OpenFold3);
 * how a value was obtained (for example that the pLDDT came from the B-factor column, or the
   model version the layout was checked against) goes in ``extras``; a reason that a value is
   missing goes in ``reasons``.

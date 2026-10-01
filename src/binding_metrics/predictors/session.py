@@ -177,8 +177,10 @@ class PredictionSession:
         """The parsed, completed record of one sample of ``request``; runs and parses at most once.
 
         The record has been through ``PredictionParser.complete`` of its model, so a consumer
-        gets the token layout and chain names that need the structure. This is the one place
-        the pipeline and ``binding-metrics-prediction`` read records from.
+        gets the token layout and chain names that need the structure. A request with custom
+        weights puts ``request.weights.to_dict()`` (path, kind, sha256, size, n_files) in
+        ``record.extras["weights"]``. This is the one place the pipeline and
+        ``binding-metrics-prediction`` read records from.
 
         Args:
             request: What to predict.
@@ -207,6 +209,10 @@ class PredictionSession:
                         chain_map=chain_map,
                     )
                 )
+                if request.weights is not None:
+                    # what the run was started with; an adapter may add what the model reports
+                    # (OpenFold3: inference_ckpt_path and inference_ckpt_name)
+                    record.extras["weights"] = request.weights.to_dict()
                 with self._guard:
                     self._records[memo_key] = record
                     self._counts["parsed"] += 1
