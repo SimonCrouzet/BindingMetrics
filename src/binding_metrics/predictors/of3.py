@@ -2,7 +2,7 @@
 
 Layout checked against the released source of OpenFold3 v0.5.0 (2026-08-21), against the 0.3
 and 0.4 outputs this toolkit parsed before, and against real output of OpenFold3 0.5.0: the
-adapter read every file of the runs made on 2026-10-02 (1YCR, the cyclosporin of 1CWA and the
+adapter read every file of the runs made on 2026-10-01 (1YCR, the cyclosporin of 1CWA and the
 bicyclic SFTI-1 of 3P8F; OpenBind-0 checkpoint, no MSA, one GPU) without change. The layout did
 not change between 0.4.0 and 0.5.0. A run of 0.5.0 writes
 
@@ -59,9 +59,11 @@ and 13 tokens, one per residue).
   interface statistics only when the matrix size equals the residue count, and so has a
   record whose matrices have one row per residue although the rule gives more tokens (it keeps
   ``tokens`` None and gets no reason, because the sizes agree).
-  Checked on 35 sample files of OpenFold3 0.5.0 runs (2026-10-02; 1YCR, the cyclosporin
-  1CWA with 9 of the files, and the bicyclic SFTI-1 of 3P8F): the rule gives the size of
-  ``pae`` and ``pde`` in every file. 1CWA has 240 tokens: 165 for the receptor, 73 for the
+  Checked on 58 sample files of OpenFold3 0.5.0 runs (2026-10-01): 44 of 1YCR and of the
+  bicyclic SFTI-1 of 3P8F, which have standard residues only, and 14 of the cyclosporin 1CWA.
+  The rule gives the size of ``pae`` and ``pde`` in every file; the interface values of the 44
+  files of standard residues are the same with the layout and without it, and the 14 files of
+  1CWA go from NaN to finite values. 1CWA has 240 tokens: 165 for the receptor, 73 for the
   heavy atoms of the nine modified residues of the binder (D-Ala, N-methyl-Leu,
   N-methyl-Val, MeBmt, Abu, Sar) and 2 for its Val and Ala; 1YCR and 3P8F have one token
   per residue. A ligand whose name is in the standard set (a free amino acid) is the one
@@ -308,7 +310,7 @@ class OpenFold3Parser(PredictionParser):
     # input_format_reference.md, section 4).
     # The head-to-tail caveat rests on relpos.py (cyclic_offset takes the number of tokens of the
     # chain), tokenization.py (a modified residue is one token per atom) and on the real runs of
-    # 0.5.0 of 2026-10-02: one complex per case (1CWA with nine modified residues, three seeds;
+    # 0.5.0 of 2026-10-01: one complex per case (1CWA with nine modified residues, three seeds;
     # SFTI-1 of 3P8F, one seed), no MSA, so one example of each and not a benchmark.
     capabilities = Capabilities(
         closures={"none", "head_to_tail"},
@@ -358,9 +360,10 @@ class OpenFold3Parser(PredictionParser):
                 "The change of the offsets may be the reason; no ablation of the model was done, "
                 "so the cause is not established. The query builders of this package therefore "
                 'write the flag with binder_cyclic="auto" (the default) only for a binder of '
-                "standard residues, when OpenFold3 is 0.4.5 or later; binder_cyclic=True "
-                "(`--openfold-cyclic on`) writes it for any binder and binder_cyclic=False "
-                "(`--openfold-cyclic off`) never does."
+                "standard residues that is closed head to tail (a protonation or cross-link "
+                "variant counts as standard), when OpenFold3 is 0.4.5 or later; "
+                "binder_cyclic=True (`--openfold-cyclic on`) writes it for any binder and "
+                "binder_cyclic=False (`--openfold-cyclic off`) never does."
             ),
             "residue_classes:ligand": (
                 "The OpenFold3 query builder (_extract_query_chain) leaves groups that are not "
