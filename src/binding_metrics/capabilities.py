@@ -978,8 +978,15 @@ class InputProfile:
 
 
 def _read_atoms(structure) -> Any:
-    """A biotite AtomArray with its bond table from a path, an AtomArray or an AtomArrayStack."""
+    """A biotite AtomArray with its bond table from a path, an AtomArray or an AtomArrayStack.
+
+    A path ends in ``.cif`` or ``.mmcif`` (read as mmCIF) or anything else (read as PDB), and may
+    carry a ``.gz`` after that (``.cif.gz``, ``.mmcif.gz``, ``.pdb.gz``), which is decompressed;
+    these are the files that gemmi, which the OpenFold3 query builders use, reads as well.
+    """
     if isinstance(structure, (str, os.PathLike)):
+        import gzip
+
         import biotite.structure.io.pdb as pdb_io
         import biotite.structure.io.pdbx as pdbx
 
@@ -988,11 +995,21 @@ def _read_atoms(structure) -> Any:
         path = Path(structure)
         if not path.is_file():
             raise FileNotFoundError(f"Structure file not found: {path}")
-        if path.suffix.lower() in (".cif", ".mmcif"):
-            cif = pdbx.CIFFile.read(str(path))
-            backfill_auth_columns(cif)
-            return pdbx.get_structure(cif, model=1, include_bonds=True)
-        return pdb_io.get_structure(pdb_io.PDBFile.read(str(path)), model=1, include_bonds=True)
+        suffixes = [suffix.lower() for suffix in path.suffixes]
+        gzipped = suffixes[-1:] == [".gz"]
+        extension = suffixes[-2] if gzipped and len(suffixes) > 1 else (suffixes or [""])[-1]
+        # a plain file is opened by biotite as before; a gzip is decompressed into a text stream
+        stream = gzip.open(path, "rt", encoding="utf-8", errors="replace") if gzipped else None
+        try:
+            source = stream if gzipped else str(path)
+            if extension in (".cif", ".mmcif"):
+                cif = pdbx.CIFFile.read(source)
+                backfill_auth_columns(cif)
+                return pdbx.get_structure(cif, model=1, include_bonds=True)
+            return pdb_io.get_structure(pdb_io.PDBFile.read(source), model=1, include_bonds=True)
+        finally:
+            if stream is not None:
+                stream.close()
     if hasattr(structure, "stack_depth"):  # AtomArrayStack: the first model
         return structure[0]
     return structure
