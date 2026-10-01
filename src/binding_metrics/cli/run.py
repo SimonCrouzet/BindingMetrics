@@ -431,12 +431,10 @@ def run_pipeline(
     _require_chains_present(chain_info, peptide_chain, receptor_chain)
     peptide_chain = chain_info["peptide_chain"]  # auth_asym_id (biotite)
     receptor_chain = chain_info["receptor_chain"]
-    peptide_chain_label = chain_info["peptide_chain_label"]  # as OpenMM names it
-    receptor_chain_label = chain_info["receptor_chain_label"]
-    # The chain IDs OpenMM gives the input file. The two labels above become those of
-    # the prepped file below, which is another file with other names.
-    input_peptide_chain_label = peptide_chain_label
-    input_receptor_chain_label = receptor_chain_label
+    # The chain IDs OpenMM gives the input file, which the energy step needs when it reads
+    # that file. The relaxation and the cyclic-bond detection take the author IDs above.
+    input_peptide_chain_label = chain_info["peptide_chain_label"]
+    input_receptor_chain_label = chain_info["receptor_chain_label"]
     results["chains"] = chain_info
 
     # ------------------------------------------------------------------- Prep
@@ -474,15 +472,13 @@ def run_pipeline(
                     **prep_report,
                 }
                 # save_cif preserves original auth IDs and aligns label IDs to match,
-                # so downstream OpenMM steps will see the original chain IDs.
-                # Re-detect from the cleaned file so peptide_chain_label is up-to-date.
-                prepped_chain_info = detect_chains_from_file(
+                # so downstream OpenMM steps will see the original chain IDs. This logs
+                # the chains of the prepped file.
+                detect_chains_from_file(
                     prepped_path,
                     peptide_chain=peptide_chain,
                     receptor_chain=receptor_chain,
                 )
-                peptide_chain_label = prepped_chain_info["peptide_chain_label"]
-                receptor_chain_label = prepped_chain_info["receptor_chain_label"]
         except Exception as e:  # noqa: BLE001 - per-step isolation; recorded in results["prep"]
             _warn(f"Prep failed: {e} — continuing with raw input")
             traceback.print_exc()
@@ -501,7 +497,7 @@ def run_pipeline(
         from binding_metrics.io.structures import load_structure
 
         _orig_topo, _orig_pos = load_structure(input_path)
-        cyclic_bond_hints = detect_cyclization(_orig_topo, _orig_pos, input_peptide_chain_label)
+        cyclic_bond_hints = detect_cyclization(_orig_topo, _orig_pos, peptide_chain)
         if cyclic_bond_hints:
             logger.info(
                 "  Cyclic bond hints from original file: %s",
@@ -529,8 +525,8 @@ def run_pipeline(
                 md_duration_ps=md_duration_ps,
                 md_save_interval_ps=md_save_interval_for(md_duration_ps),
                 device=device,
-                peptide_chain_id=peptide_chain_label,
-                receptor_chain_id=receptor_chain_label,
+                peptide_chain_id=peptide_chain,
+                receptor_chain_id=receptor_chain,
                 cyclic_bond_hints=cyclic_bond_hints or None,
                 # Auto-parameterise any non-canonical residue (e.g. cyclosporin's
                 # BMT/ABA) with GAFF2 ExternalBond templates so relaxation builds.

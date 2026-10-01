@@ -71,11 +71,12 @@ class TestPreppedFile:
         assert call["path"].name.endswith("_cleaned.cif")
         assert (call["peptide"], call["receptor"]) == ("I", "A")
 
-    def test_cyclic_hints_name_the_chain_of_the_raw_topology(self, tmp_path, monkeypatch):
-        """The hints are found on the raw file, so the chain is the raw file's OpenMM name (B).
+    def test_cyclic_hints_are_found_by_the_author_id(self, tmp_path, monkeypatch):
+        """The hints are found on the raw file, which calls the peptide chain B and I.
 
-        The prepped file calls the peptide I; looked up in the raw topology that name finds
-        no chain, and the hints were silently dropped.
+        The author ID of the pipeline (I) names the chain in the raw topology. The prepped
+        file has no chain I in the raw topology's naming, and the hints were once dropped
+        for want of a chain with that name.
         """
         from binding_metrics.core import cyclic
 
@@ -84,13 +85,13 @@ class TestPreppedFile:
 
         def recording(topology, positions, chain_id):
             hints = real(topology, positions, chain_id)
-            seen.append((chain_id, len(hints)))
+            seen.append((chain_id, [hint.atom1_id[0] for hint in hints]))
             return hints
 
         monkeypatch.setattr(cyclic, "detect_cyclization", recording)
         run_pipeline(BICYCLIC_CIF, tmp_path, skip_relax=True, metrics=frozenset())
-        # Once inside prep and once for the hints; SFTI-1 has two closure bonds.
-        assert seen == [("B", 2), ("B", 2)]
+        # SFTI-1 has two closure bonds; the entries carry the ID of the raw topology
+        assert seen == [("I", ["B", "B"])]
 
 
 class TestRelaxedFile:

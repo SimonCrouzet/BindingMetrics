@@ -73,6 +73,11 @@ from binding_metrics.core.residues import (
     STANDARD_AMINO_ACIDS,
     WATER_NAMES_WITH_H2O,
 )
+from binding_metrics.io.structures import (
+    attach_author_chain_ids,
+    copy_author_chain_ids,
+    openmm_chain_id,
+)
 from binding_metrics.protocols.relaxer import Relaxer
 
 logger = logging.getLogger(__name__)
@@ -160,8 +165,12 @@ class RelaxationConfig:
         ph: pH for hydrogen addition (default 7.4)
         solvent_model: Implicit solvent model ('obc2', 'gbn2')
         device: Compute device ('cuda', 'cpu')
-        peptide_chain_id: Peptide chain ID (auto-detect smallest chain if None)
-        receptor_chain_id: Receptor chain ID (auto-detect largest chain if None)
+        peptide_chain_id: Peptide chain ID (auto-detect smallest chain if None). For an
+            mmCIF it is the author chain ID, the one ``binding-metrics-run`` takes; the ID
+            that OpenMM gives the chain (the label ID when the file has more label IDs
+            than author IDs) is accepted as well. 1CWA: ``"C"`` or ``"B"``.
+        receptor_chain_id: Receptor chain ID (auto-detect largest chain if None), read the
+            same way
         custom_bond_handler: Optional callable invoked after hydrogen addition.
             Signature: (topology, positions, peptide_chain) -> (topology, positions, bond_info)
             where bond_info is a list of tuples passed back to the caller for
@@ -480,6 +489,9 @@ class ImplicitRelaxation(Relaxer):
         self._platform_fallback_reason: Optional[str] = None
         # Set by _setup_system from the GAFF template step, copied into the result.
         self._ncaa_bond_order_source: dict = {}
+        # Set by _setup_system: the peptide and receptor chain IDs in the topology it
+        # returns, which is no longer the one the configured author IDs were read in.
+        self._chain_ids: Optional[tuple] = None
 
     @staticmethod
     def _coerce_molecules(molecules: list) -> list:
@@ -606,7 +618,13 @@ class ImplicitRelaxation(Relaxer):
             ) from e
 
     def _identify_chains(self, topology) -> tuple[str, Optional[str]]:
-        """Identify peptide (smallest) and receptor (largest) protein chains."""
+        """Identify peptide (smallest) and receptor (largest) protein chains.
+
+        Returns the IDs of the two chains in ``topology``. The configured IDs are author
+        IDs when the topology carries them (``io.structures.load_structure``), and the
+        ID of a chain of the topology otherwise or when no amino-acid chain has that
+        author ID.
+        """
         self._import_openmm()
         # Amino acids only — exclude water (HOH), nucleic acids (A/C/G/T/U/I/DA/…)
         chain_sizes = []
@@ -620,8 +638,11 @@ class ImplicitRelaxation(Relaxer):
 
         chain_sizes.sort(key=lambda x: x[1])
 
-        peptide_chain = self.config.peptide_chain_id or chain_sizes[0][0]
-        receptor_chain = self.config.receptor_chain_id or (
+        def in_topology(configured: Optional[str]) -> Optional[str]:
+            return (openmm_chain_id(topology, configured) or configured) if configured else None
+
+        peptide_chain = in_topology(self.config.peptide_chain_id) or chain_sizes[0][0]
+        receptor_chain = in_topology(self.config.receptor_chain_id) or (
             chain_sizes[-1][0] if len(chain_sizes) > 1 else None
         )
         return peptide_chain, receptor_chain
@@ -673,9 +694,13 @@ class ImplicitRelaxation(Relaxer):
         # No PDBFixer repair here — just load and strip any origin placeholders.
         if input_path.suffix.lower() in (".cif", ".mmcif"):
             struct = PDBxFile(str(input_path))
+            # OpenMM's chain IDs are the label IDs for a file with more label IDs than
+            # author IDs. The author IDs are what the configuration and every message use.
+            attach_author_chain_ids(struct.topology, input_path)
         else:
             struct = app.PDBFile(str(input_path))
         topology, positions = struct.topology, struct.positions
+        loaded_topology = topology
 
         modeller = app.Modeller(topology, positions)
         origin_atoms = [
@@ -687,6 +712,7 @@ class ImplicitRelaxation(Relaxer):
             logger.info("  Removing %d origin-placeholder atoms...", len(origin_atoms))
             modeller.delete(origin_atoms)
             topology, positions = modeller.topology, modeller.positions
+            copy_author_chain_ids(loaded_topology, topology)
 
         # OpenMM bonds each residue to the next by name, whatever the distance, so a
         # chain break is closed by the minimisation. Say so; the run is unchanged.
@@ -704,6 +730,7 @@ class ImplicitRelaxation(Relaxer):
 
         # --- Identify chains ---
         peptide_chain, receptor_chain = self._identify_chains(topology)
+        self._chain_ids = (peptide_chain, receptor_chain)
 
         # --- Strip heterogens (non-protein residues outside the two chains) and
         # any third protein chain: E_complex would include it, the isolated
@@ -1315,7 +1342,7 @@ class ImplicitRelaxation(Relaxer):
                     for b in bond_info
                 ]
 
-            peptide_chain, receptor_chain = self._identify_chains(topology)
+            peptide_chain, receptor_chain = self._chain_ids
 
             # Integrator. Seed the Langevin noise stream for reproducibility
             # (config.random_seed None => leave unseeded for fresh randomness).
