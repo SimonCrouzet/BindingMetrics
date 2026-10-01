@@ -186,6 +186,27 @@ def has_runner(model: str) -> bool:
     return model in RUNNERS
 
 
+def runner_weights_kinds() -> dict[str, str]:
+    """Model to the kind of custom weights its runner takes, for the runners that take any.
+
+    Read from the runner classes of ``RUNNERS`` (``supports_custom_weights`` and
+    ``weights_kind``, class attributes: nothing is instantiated and no model started), so a
+    runner added to ``RUNNERS`` appears here without a change. A runner module that cannot be
+    imported is left out and logged.
+    """
+    kinds: dict[str, str] = {}
+    for model, target in RUNNERS.items():
+        module_name, class_name = target.split(":")
+        try:
+            runner_class = getattr(importlib.import_module(module_name), class_name)
+        except Exception as exc:  # noqa: BLE001 - one broken runner must not hide the others
+            logger.warning("could not read the weights support of the %s runner: %s", model, exc)
+            continue
+        if getattr(runner_class, "supports_custom_weights", False):
+            kinds[model] = getattr(runner_class, "weights_kind", "file")
+    return kinds
+
+
 def no_runner_message(model: str) -> str:
     """Why ``model`` cannot be run from here and what to do instead."""
     return (

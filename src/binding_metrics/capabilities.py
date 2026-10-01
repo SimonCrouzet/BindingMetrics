@@ -65,6 +65,7 @@ __all__ = [
     "PreflightReport",
     "Violation",
     "check_openfold3_residues",
+    "check_weights_path",
     "classify_residue",
     "detect_closures",
     "estimate_binder_type",
@@ -1527,6 +1528,85 @@ def _other_predictors(
     return accepting, undeclared, others
 
 
+def _listing(path: Path, limit: int = 8) -> str:
+    """The first entries of the directory ``path``, for a message ("none" when it is empty)."""
+    try:
+        names = sorted(entry.name + ("/" if entry.is_dir() else "") for entry in path.iterdir())
+    except OSError as exc:
+        return f"it cannot be listed ({exc})"
+    if not names:
+        return "it is empty"
+    more = f" and {len(names) - limit} more" if len(names) > limit else ""
+    return f"it holds {_join(names[:limit])}{more}"
+
+
+def check_weights_path(path: str | os.PathLike, kind: Optional[str] = None) -> Path:
+    """Check that custom weights exist, can be read, and are the kind a runner takes.
+
+    Args:
+        path: The weights file or directory (``~`` is expanded).
+        kind: ``"file"`` (a checkpoint file), ``"directory"``, or None for either.
+
+    Returns:
+        The absolute path.
+
+    Raises:
+        ValueError: The path does not exist (the message lists what its directory holds), cannot
+            be read, is a directory where a file is needed or the other way round (the message
+            says what was found), or is a directory without files.
+    """
+    if kind not in (None, "file", "directory"):
+        raise ValueError(f"kind must be 'file', 'directory' or None, got {kind!r}")
+    given = Path(path).expanduser()
+    resolved = given.absolute()
+    if not resolved.exists():
+        parent = resolved.parent
+        where = (
+            f"{parent} exists and {_listing(parent)}"
+            if parent.is_dir()
+            else f"{parent} does not exist"
+        )
+        raise ValueError(f"the custom weights {path} do not exist: {where}")
+    if resolved.is_dir():
+        if not os.access(resolved, os.R_OK | os.X_OK):
+            raise ValueError(f"the custom weights directory {path} cannot be read")
+        if kind == "file":
+            raise ValueError(
+                f"the custom weights {path} are a directory ({_listing(resolved)}), and the "
+                "model takes one checkpoint file: give the file"
+            )
+        if not any(member.is_file() for member in resolved.rglob("*")):
+            raise ValueError(f"the custom weights directory {path} holds no files")
+        return resolved
+    if not os.access(resolved, os.R_OK):
+        raise ValueError(f"the custom weights file {path} cannot be read")
+    if kind == "directory":
+        raise ValueError(
+            f"the custom weights {path} are a file ({resolved.stat().st_size} bytes), and the "
+            "model takes a directory of weights: give the directory"
+        )
+    return resolved
+
+
+def _weights_fix(weights_kinds: Mapping[str, str]) -> str:
+    """What to do when the model's runner cannot take custom weights, from the runner registry."""
+    from binding_metrics.predictors.registry import PARSERS
+
+    takers = [
+        f"{PARSERS[name].display_name if name in PARSERS else name} ({name}, "
+        f"weights as a {'file' if kind == 'file' else 'directory'})"
+        for name, kind in sorted(weights_kinds.items())
+    ]
+    if takers:
+        use = f"use a model whose runner takes custom weights: {_join(takers)}"
+    else:
+        use = "no runner of this package takes custom weights yet"
+    return (
+        f"{use}; or run the model yourself with your weights and read its output with "
+        "--prediction-dir (without --prediction-weights); or leave the custom weights out"
+    )
+
+
 def _fix_for(
     step: _Step,
     profile: InputProfile,
@@ -1572,6 +1652,60 @@ def _fix_for(
     return "; ".join(parts)
 
 
+def _check_weights(
+    steps: list[_Step],
+    weights: str | os.PathLike,
+    weights_kinds: Optional[Mapping[str, str]],
+    violations: list[Violation],
+    notes: list[str],
+    refused: set[tuple[str, str]],
+) -> None:
+    """The custom-weights checks of ``preflight``: adds violations and notes in place."""
+    check_weights_path(weights)  # exists and can be read, whatever the model
+    predictors = [s for s in steps if s.kind == "predictor"]
+    if not predictors:
+        notes.append(
+            f"custom weights were given ({weights}) and no predictor is checked, so they are "
+            "not used"
+        )
+        return
+    for step in predictors:
+        display = step.display or step.name
+        if weights_kinds is None:
+            notes.append(
+                f"the custom weights were not checked against {step.subject}: the caller did not "
+                "say which runners take them"
+            )
+            continue
+        kind = weights_kinds.get(step.name)
+        if kind is None:
+            found = "a directory" if Path(weights).expanduser().is_dir() else "a file"
+            violations.append(
+                Violation(
+                    constraint="weights",
+                    fact=f"custom weights were given ({weights}, {found})",
+                    requirement=f"a runner that starts {display} with weights you choose",
+                    reason=(
+                        f"the {display} runner of this package does not pass weights to the model, "
+                        "so a run would use the default weights and the result would not be the "
+                        "model you asked for"
+                    ),
+                    fix=_weights_fix(weights_kinds),
+                    subject=step.subject,
+                    kind="predictor",
+                    name=step.name,
+                )
+            )
+            refused.add(("predictor", step.name))
+            continue
+        check_weights_path(weights, kind)
+        notes.append(
+            f"custom weights: the limits declared for {display} come from its input format and "
+            "architecture; the caveats about accuracy and published benchmarks refer to the "
+            "standard weights"
+        )
+
+
 def preflight(
     profile: InputProfile,
     metrics: Iterable[Any] = (),
@@ -1582,6 +1716,8 @@ def preflight(
     provided: Optional[Collection[str]] = None,
     mode: Optional[str] = None,
     runnable: Optional[Collection[str]] = None,
+    weights: Optional[str | os.PathLike] = None,
+    weights_kinds: Optional[Mapping[str, str]] = None,
 ) -> PreflightReport:
     """Check an input against the limits of every requested metric and predictor, before any run.
 
@@ -1614,6 +1750,18 @@ def preflight(
             is a warning. None does not say: the mode is not checked.
         runnable: The names of the predictors that can be run from here; a model outside it
             that the fix offers is marked as readable only. None leaves the fix unmarked.
+        weights: Custom weights (``--prediction-weights``) that the run will give the model. The
+            path must exist and be readable (``check_weights_path``). A predictor whose runner
+            does not take custom weights is refused (constraint ``weights``, with a fix that
+            names the runners that do), and one that does gets a note: the limits it declares
+            come from its input format and architecture, and its caveats about accuracy and
+            published benchmarks refer to the standard weights. The declared hard limits stay in
+            force.
+        weights_kinds: Model name to the kind of weights its runner takes (``"file"`` or
+            ``"directory"``), for the models whose runner supports custom weights
+            (``cli.prediction.runner_weights_kinds`` reads it from the runner registry). None
+            says the caller does not know: the weights are not checked against the runners and the
+            report says so.
 
     Returns:
         The ``PreflightReport``. Soft warnings for inputs a step accepts but never validated are
@@ -1622,8 +1770,9 @@ def preflight(
     Raises:
         IncompatibleInputError: Policy ``error`` and at least one violation. Subclass of
             ``ValueError``.
-        ValueError: ``policy`` or ``predictor_policy`` is not one of ``POLICIES``, or ``mode`` is
-            not one of ``MODES``.
+        ValueError: ``policy`` or ``predictor_policy`` is not one of ``POLICIES``, ``mode`` is
+            not one of ``MODES``, or ``weights`` does not exist, cannot be read or is not the kind
+            a runner takes (``check_weights_path``).
         KeyError: A predictor name that is not registered.
         TypeError: A ``capabilities`` attribute that is neither None nor a ``Capabilities``.
     """
@@ -1654,6 +1803,9 @@ def preflight(
             )
             refused.add((step.kind, step.name))
         warnings += [f"{step.subject}: {text}" for text in declared.caveats_for(profile, step_mode)]
+
+    if weights is not None:
+        _check_weights(steps, weights, weights_kinds, violations, notes, refused)
 
     typed = [s.subject for s in steps if s.capabilities and s.capabilities.binder_types]
     if profile.binder_type == "unknown" and typed:

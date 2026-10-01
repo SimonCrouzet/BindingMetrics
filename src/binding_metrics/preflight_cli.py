@@ -197,6 +197,13 @@ def _runnable_models() -> frozenset[str]:
     return frozenset(RUNNERS)
 
 
+def _weights_kinds() -> dict[str, str]:
+    """The models whose runner takes custom weights, and the kind (``cli.prediction``)."""
+    from binding_metrics.cli.prediction import runner_weights_kinds
+
+    return runner_weights_kinds()
+
+
 def _short(violation) -> str:
     return f"{violation.subject}: {violation.constraint}: {violation.fact}"
 
@@ -239,6 +246,7 @@ def check_input(
     reference_path: Optional[Path] = None,
     include_plan: bool = False,
     on_unmappable_residue: str = "error",
+    prediction_weights: Optional[Path] = None,
 ) -> PreflightOutcome:
     """Check one input against the steps and the model a run will execute.
 
@@ -257,7 +265,24 @@ def check_input(
         include_plan: Put the text of the plan into the block (``--preflight-only``).
         on_unmappable_residue: ``x`` lifts the residue check of the OpenFold3 query builder: the
             builder sends an ``X`` and logs a warning, as the option asks.
+        prediction_weights: The custom weights of the model step (``--prediction-weights``). They
+            are checked with the rest: the path, the kind the runner takes, and that the runner
+            takes custom weights at all (see ``binding_metrics.capabilities.preflight``). A bad
+            path raises ``ValueError`` here, before the input is profiled.
+
+    Raises:
+        ValueError: ``prediction_weights`` does not exist, cannot be read or is not the kind the
+            model's runner takes.
     """
+    if prediction_weights is not None and model is None:
+        logger.warning(
+            "--prediction-weights %s is not used: the run has no model step", prediction_weights
+        )
+        prediction_weights = None
+    if prediction_weights is not None:
+        from binding_metrics.capabilities import check_weights_path
+
+        check_weights_path(prediction_weights)
     if not binder_chain:
         return _not_checked(
             "no binder chain was found, so the input was not profiled", on_incompatible
@@ -300,6 +325,8 @@ def check_input(
             provided=provided,
             mode=mode,
             runnable=_runnable_models(),
+            weights=prediction_weights,
+            weights_kinds=_weights_kinds() if prediction_weights is not None else None,
         )
     except IncompatibleInputError as refused:
         error, report = refused, refused.report
