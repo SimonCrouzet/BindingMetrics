@@ -348,14 +348,16 @@ def run_pipeline(
             (keyword-only): ``"error"`` (default) records the step as failed before the model
             starts, ``"x"`` sends an ``X`` in its place and logs a warning.
         openfold_cyclic: Whether the binder chain of the OpenFold3 query gets ``"cyclic": true``
-            (keyword-only): ``"auto"`` (default) when the binder has a head-to-tail bond and the
-            installed OpenFold3 is 0.4.5 or later, ``True`` (``"on"``) always, ``False``
-            (``"off"``) never; see ``prepare_refolding_query``. OpenFold3 uses the flag only to
-            wrap the relative positions of the chain: it does not enforce the closure bond and
-            has published no accuracy benchmark for cyclic peptides. The block of the step
+            (keyword-only): ``"auto"`` (default) when the binder has a head-to-tail bond, standard
+            residues only, and the installed OpenFold3 is 0.4.5 or later, ``True`` (``"on"``)
+            always, ``False`` (``"off"``) never; see ``prepare_refolding_query``. OpenFold3 uses
+            the flag only to wrap the relative positions of the chain: it does not enforce the
+            closure bond and has published no accuracy benchmark for cyclic peptides, and with
+            modified residues the flag made the one complex tried worse. The block of the step
             (``results["openfold"]``, or ``results["prediction"]`` with ``predictor``) gets
             ``binder_cyclic`` (bool), and a ``reason`` when a head-to-tail binder was left
-            linear because the OpenFold3 version is too old or unreadable.
+            linear because it has modified residues or the OpenFold3 version is too old or
+            unreadable.
         predictor: A key of ``binding_metrics.predictors.PARSERS`` (keyword-only). The
             ``openfold`` step then reads that model's prediction through a
             ``PredictionSession`` and writes ``results["prediction"]``; ``results["openfold"]``

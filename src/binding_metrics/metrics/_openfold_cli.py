@@ -159,12 +159,18 @@ def _add_binder_cyclic_arg(p) -> None:
         default="auto",
         help=(
             "Whether the binder chain of the OpenFold3 query gets 'cyclic: true' "
-            "(OpenFold3 >= 0.4.5). auto (default): when the binder has a head-to-tail bond and "
-            "the installed OpenFold3 is new enough; on: always; off: never. OpenFold3 uses the "
-            "flag only to wrap the relative positions of the chain: it does not enforce the "
-            "closure bond, documents the flag only in an example query, and has published no "
-            "accuracy benchmark for cyclic peptides. Disulfide, lactam and staple closures "
-            "cannot be given to OpenFold3 and are not written."
+            "(OpenFold3 >= 0.4.5). auto (default): when the binder has a head-to-tail bond, "
+            "consists of standard residues only and the installed OpenFold3 is new enough; on: "
+            "always; off: never. OpenFold3 uses the flag only to wrap the relative positions of "
+            "the chain: it does not enforce the closure bond, documents the flag only in an "
+            "example query, and has published no accuracy benchmark for cyclic peptides. It "
+            "builds the wrap from the token count of the chain and gives every atom of a "
+            "modified residue its own token: for 1CWA (D-amino acid, N-methylated residues; one "
+            "complex, three seeds) the flag lowered ipTM from 0.91-0.92 to 0.78-0.81 and raised "
+            "the binder C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A, so auto leaves such a binder "
+            "linear (on forces the flag); for SFTI-1 (standard residues; one seed) the flag "
+            "closed the ring (C-N 7.40 A without it, 1.38 A with it). Disulfide, lactam and "
+            "staple closures cannot be given to OpenFold3 and are not written."
         ),
     )
 

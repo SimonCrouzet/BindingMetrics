@@ -20,7 +20,10 @@ pytest.importorskip("gemmi")
 pytest.importorskip("biotite")
 
 DATA = Path(__file__).parent.parent / "data"
-CYCLOSPORIN = DATA / "example_ncaa_cyclosporin_1CWA.cif"  # chain C is closed head to tail
+# chain C is closed head to tail and has D-Ala and N-methylated residues
+CYCLOSPORIN = DATA / "example_ncaa_cyclosporin_1CWA.cif"
+# chain I (SFTI-1) is closed head to tail, has standard residues only, and a disulfide
+SFTI1 = DATA / "example_bicyclic_sfti1_3P8F.cif"
 P53 = DATA / "example_linear_p53_1YCR.pdb"  # chain B is linear
 LOGGER = "binding_metrics.metrics._openfold_run"
 
@@ -56,11 +59,11 @@ def _chains(query_json: Path, query_name: str = "q") -> dict:
     return {c["chain_ids"][0]: c for c in query["queries"][query_name]["chains"]}
 
 
-def _refold(tmp_path, structure=CYCLOSPORIN, receptor="A", binder="C", **kwargs):
+def _refold(tmp_path, structure=SFTI1, receptor="A", binder="I", **kwargs):
     return openfold.prepare_refolding_query(structure, receptor, binder, "q", tmp_path, **kwargs)
 
 
-def _score(tmp_path, structure=CYCLOSPORIN, receptor="A", binder="C", **kwargs):
+def _score(tmp_path, structure=SFTI1, receptor="A", binder="I", **kwargs):
     return openfold.prepare_scoring_query(structure, receptor, binder, "q", tmp_path, **kwargs)
 
 
@@ -104,12 +107,12 @@ class TestDefaultIsAuto:
 
 
 class TestAuto:
-    """``"auto"`` writes the flag for a head-to-tail binder and for no other chain."""
+    """``"auto"`` writes the flag for a head-to-tail binder of standard residues, no other chain."""
 
     @pytest.mark.parametrize("build", [_refold, _score])
     def test_a_head_to_tail_binder_gets_the_flag_and_the_receptor_does_not(self, tmp_path, build):
         chains = _chains(build(tmp_path))
-        assert chains["C"]["cyclic"] is True
+        assert chains["I"]["cyclic"] is True
         assert "cyclic" not in chains["A"]
 
     @pytest.mark.parametrize("build", [_refold, _score])
@@ -127,8 +130,8 @@ class TestAuto:
     def test_the_sequence_and_the_modified_residues_are_those_of_a_query_without_the_flag(
         self, tmp_path
     ):
-        flagged = _chains(_refold(tmp_path / "auto"))["C"]
-        plain = _chains(_refold(tmp_path / "off", binder_cyclic=False))["C"]
+        flagged = _chains(_refold(tmp_path / "auto"))["I"]
+        plain = _chains(_refold(tmp_path / "off", binder_cyclic=False))["I"]
         assert {k: v for k, v in flagged.items() if k != "cyclic"} == plain
 
     def test_the_flag_is_logged_at_info(self, tmp_path, caplog):
@@ -136,18 +139,133 @@ class TestAuto:
             _refold(tmp_path)
         (record,) = [r for r in caplog.records if "cyclic: true" in r.getMessage()]
         assert record.levelno == logging.INFO and "0.5.0" in record.getMessage()
+        assert "standard residues only" in record.getMessage()
 
     @pytest.mark.parametrize("version", ["0.4.5", "0.5.0", "0.5.1.dev3", "1.0"])
     def test_a_new_enough_openfold3_gets_it(self, tmp_path, set_version, version):
         set_version(version)
-        assert _chains(_refold(tmp_path))["C"]["cyclic"] is True
+        assert _chains(_refold(tmp_path))["I"]["cyclic"] is True
 
     def test_a_bicyclic_peptide_with_a_head_to_tail_bond_gets_it(self, tmp_path):
-        structure = (
-            DATA / "example_bicyclic_sfti1_3P8F.cif"
-        )  # SFTI-1: backbone ring and a disulfide
-        chains = _chains(_refold(tmp_path, structure=structure, receptor="A", binder="I"))
+        """SFTI-1: a backbone ring and a disulfide; only the ring has an OpenFold3 input."""
+        chains = _chains(_refold(tmp_path, structure=SFTI1, receptor="A", binder="I"))
         assert chains["I"]["cyclic"] is True
+        assert chains["I"]["sequence"] == "GRCTKSIPPICFPD"
+        assert "non_canonical_residues" not in chains["I"]
+
+    def test_a_protonation_or_cross_link_variant_is_still_standard(self, tmp_path):
+        """HID, CYX and the like are sent as their parent letter: one token each, as a standard
+        residue (the SFTI-1 cysteines renamed CYX stay a standard-residue binder)."""
+        import gemmi
+
+        structure = gemmi.read_structure(str(SFTI1))
+        for residue in structure[0]["I"]:
+            if residue.name == "CYS":
+                residue.name = "CYX"
+        path = tmp_path / "cyx.pdb"
+        structure.write_pdb(str(path))
+        decision = openfold.decide_binder_cyclic(path, "I")
+        assert decision == openfold.BinderCyclicDecision(True)
+
+
+class TestModifiedResiduesLeaveTheBinderLinear:
+    """Measured once: with the flag the cyclosporin got worse (see decide_binder_cyclic)."""
+
+    @pytest.mark.parametrize("build", [_refold, _score])
+    def test_auto_writes_no_flag_for_cyclosporin(self, tmp_path, build):
+        chains = _chains(build(tmp_path, structure=CYCLOSPORIN, binder="C"))
+        assert "cyclic" not in chains["C"] and "cyclic" not in chains["A"]
+        # the modified residues are still sent, as before
+        assert chains["C"]["non_canonical_residues"]["1"] == "DAL"
+
+    def test_the_decision_says_why_and_states_the_measurement_as_one_complex(self, set_version):
+        set_version("0.5.0")
+        decision = openfold.decide_binder_cyclic(CYCLOSPORIN, "C")
+        assert decision.cyclic is False
+        for stated in (
+            "chain C is closed head to tail but has modified residues",
+            "ABA, BMT, DAL, MLE, MVA, SAR",
+            "linear chain",
+            "token of its own",
+            "one complex",
+            "0.91-0.92 to 0.78-0.81",
+            "0.5-0.7 A to 3.0-4.8 A",
+            "SFTI-1",
+            "7.40 A",
+            "1.38 A",
+            "--openfold-cyclic on",
+        ):
+            assert stated in decision.reason
+
+    def test_the_log_warns_with_the_reason(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING, logger=LOGGER):
+            _refold(tmp_path, structure=CYCLOSPORIN, binder="C")
+        (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert "modified residues" in warning.getMessage()
+        assert not [
+            r for r in caplog.records if "cyclic: true" in r.getMessage() and r.levelno < 30
+        ]
+
+    def test_the_record_of_the_pipeline_is_decided_quietly(self, caplog):
+        with caplog.at_level(logging.WARNING, logger=LOGGER):
+            decision = openfold.decide_binder_cyclic(CYCLOSPORIN, "C", log=False)
+        assert decision.cyclic is False and "modified residues" in decision.reason
+        assert caplog.text == ""
+
+    def test_true_still_forces_the_flag_and_warns(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING, logger=LOGGER):
+            chains = _chains(
+                _refold(tmp_path, structure=CYCLOSPORIN, binder="C", binder_cyclic=True)
+            )
+        assert chains["C"]["cyclic"] is True
+        (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert "binder_cyclic=True writes 'cyclic: true' on chain C" in warning.getMessage()
+        assert "DAL" in warning.getMessage() and "one complex" in warning.getMessage()
+
+    def test_true_for_a_standard_binder_does_not_warn(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING, logger=LOGGER):
+            chains = _chains(_refold(tmp_path, binder_cyclic=True))
+        assert chains["I"]["cyclic"] is True and caplog.records == []
+
+    def test_false_never_writes_it(self, tmp_path):
+        chains = _chains(_refold(tmp_path, structure=CYCLOSPORIN, binder="C", binder_cyclic=False))
+        assert "cyclic" not in chains["C"]
+
+    def test_a_binder_with_selenocysteine_counts_as_modified(self, tmp_path):
+        """OpenFold3 tokenises SEC per atom: the letter U is not a standard residue."""
+        import gemmi
+
+        structure = gemmi.read_structure(str(SFTI1))
+        for residue in structure[0]["I"]:
+            if residue.seqid.num == 3:
+                residue.name = "SEC"
+        path = tmp_path / "sec.pdb"
+        structure.write_pdb(str(path))
+        decision = openfold.decide_binder_cyclic(path, "I")
+        assert decision.cyclic is False and "SEC" in decision.reason
+
+    def test_the_old_version_reason_comes_first(self, set_version):
+        """A version that cannot take the field is the first thing to say."""
+        set_version("0.4.1")
+        decision = openfold.decide_binder_cyclic(CYCLOSPORIN, "C")
+        assert "predates the 'cyclic' chain field" in decision.reason
+        assert "modified residues" not in decision.reason
+
+    def test_a_structure_that_cannot_be_classified_leaves_the_binder_linear(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(_openfold_run, "_modified_binder_residues", lambda *a, **k: None)
+        chains = _chains(_refold(tmp_path))
+        assert "cyclic" not in chains["I"]
+        decision = openfold.decide_binder_cyclic(SFTI1, "I")
+        assert "could not be classified" in decision.reason
+
+    def test_the_classification_is_the_one_of_the_query(self):
+        modified = _openfold_run._modified_binder_residues
+        assert modified(SFTI1, "I") == []
+        assert modified(P53, "B") == []
+        assert modified(CYCLOSPORIN, "C") == ["ABA", "BMT", "DAL", "MLE", "MVA", "SAR"]
+        assert modified(CYCLOSPORIN, "Z") is None  # no such chain
 
 
 class TestOtherClosuresAreNeverWritten:
@@ -196,7 +314,7 @@ class TestOn:
         set_version(None)
         with caplog.at_level(logging.WARNING, logger=LOGGER):
             chains = _chains(_refold(tmp_path, binder_cyclic=True))
-        assert chains["C"]["cyclic"] is True
+        assert chains["I"]["cyclic"] is True
         assert "Could not read the installed OpenFold3 version" in caplog.text
 
     def test_true_with_an_unreadable_version_is_decided_quietly_when_log_is_off(
@@ -217,7 +335,7 @@ class TestVersionBelowTheField:
         set_version("0.4.1")
         with caplog.at_level(logging.WARNING, logger=LOGGER):
             chains = _chains(_refold(tmp_path))
-        assert "cyclic" not in chains["C"]
+        assert "cyclic" not in chains["I"]
         (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert "0.4.1" in warning.getMessage() and "0.4.5" in warning.getMessage()
         assert "linear" in warning.getMessage()
@@ -240,7 +358,7 @@ class TestUnreadableVersion:
         set_version(None)
         with caplog.at_level(logging.WARNING, logger=LOGGER):
             chains = _chains(_refold(tmp_path))
-        assert "cyclic" not in chains["C"]
+        assert "cyclic" not in chains["I"]
         (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert "--openfold-cyclic on" in warning.getMessage()
         assert "could not be read" in warning.getMessage()
@@ -304,7 +422,7 @@ class TestSomethingElseThanAChoice:
         monkeypatch.setattr(_openfold_run, "_binder_is_head_to_tail", broken)
         with caplog.at_level(logging.WARNING, logger=LOGGER):
             chains = _chains(_refold(tmp_path))
-        assert "cyclic" not in chains["C"]
+        assert "cyclic" not in chains["I"]
         assert "cannot read" in caplog.text
 
 
@@ -312,6 +430,7 @@ class TestBatched:
     @staticmethod
     def _samples():
         return [
+            openfold._BatchSample("sfti", SFTI1, "A", "I"),
             openfold._BatchSample("cyclo", CYCLOSPORIN, "A", "C"),
             openfold._BatchSample("p53", P53, "A", "B"),
         ]
@@ -323,9 +442,11 @@ class TestBatched:
     def test_each_sample_is_decided_on_its_own_binder(self, tmp_path, function):
         path = function(self._samples(), tmp_path)
         query = json.loads(path.read_text(encoding="utf-8"))["queries"]
+        sfti = {c["chain_ids"][0]: c for c in query["sfti"]["chains"]}
         cyclo = {c["chain_ids"][0]: c for c in query["cyclo"]["chains"]}
         p53 = {c["chain_ids"][0]: c for c in query["p53"]["chains"]}
-        assert cyclo["C"]["cyclic"] is True and "cyclic" not in cyclo["A"]
+        assert sfti["I"]["cyclic"] is True and "cyclic" not in sfti["A"]
+        assert all("cyclic" not in chain for chain in cyclo.values())  # modified residues
         assert all("cyclic" not in chain for chain in p53.values())
 
     @pytest.mark.parametrize(
@@ -348,7 +469,7 @@ class TestBatched:
 
     def test_a_batch_asks_the_version_once(self, tmp_path, set_version):
         calls = set_version("0.5.0")
-        samples = [openfold._BatchSample(f"s{i}", CYCLOSPORIN, "A", "C") for i in range(3)]
+        samples = [openfold._BatchSample(f"s{i}", SFTI1, "A", "I") for i in range(3)]
         openfold.prepare_batched_refolding_queries(samples, tmp_path, conda_env="of3")
         assert len(calls) == 1
 
@@ -374,17 +495,17 @@ class TestWrappers:
             return Path(kwargs["output_dir"])
 
         monkeypatch.setattr(openfold, "run_openfold", fake_run)
-        getattr(openfold, runner)(CYCLOSPORIN, "A", "C", "q", tmp_path / "a")
-        assert captured["chains"]["C"]["cyclic"] is True
-        getattr(openfold, runner)(CYCLOSPORIN, "A", "C", "q", tmp_path / "b", binder_cyclic=False)
-        assert "cyclic" not in captured["chains"]["C"]
+        getattr(openfold, runner)(SFTI1, "A", "I", "q", tmp_path / "a")
+        assert captured["chains"]["I"]["cyclic"] is True
+        getattr(openfold, runner)(SFTI1, "A", "I", "q", tmp_path / "b", binder_cyclic=False)
+        assert "cyclic" not in captured["chains"]["I"]
 
     def test_the_environment_of_the_run_is_the_one_asked_for_the_version(
         self, tmp_path, monkeypatch, set_version
     ):
         calls = set_version("0.4.1")
         monkeypatch.setattr(openfold, "run_openfold", lambda query_json, **kw: tmp_path)
-        openfold.run_openfold_refolding(CYCLOSPORIN, "A", "C", "q", tmp_path / "o", conda_env="of3")
+        openfold.run_openfold_refolding(SFTI1, "A", "I", "q", tmp_path / "o", conda_env="of3")
         assert calls[0][1:] == ["run", "-n", "of3", "python"]
 
     def test_the_batched_run_passes_it_on(self, tmp_path, monkeypatch):
@@ -396,9 +517,9 @@ class TestWrappers:
 
         monkeypatch.setattr(openfold, "run_openfold", fake_run)
         openfold.run_openfold_batched(
-            [openfold._BatchSample("cyclo", CYCLOSPORIN, "A", "C")], tmp_path, mode="score"
+            [openfold._BatchSample("sfti", SFTI1, "A", "I")], tmp_path, mode="score"
         )
-        assert captured["query"]["queries"]["cyclo"]["chains"][1]["cyclic"] is True
+        assert captured["query"]["queries"]["sfti"]["chains"][1]["cyclic"] is True
 
     def test_a_forced_flag_on_an_old_openfold3_stops_before_the_process(
         self, tmp_path, monkeypatch, set_version
@@ -486,8 +607,8 @@ class TestCommandLine:
     @staticmethod
     def _argv(command, out, *extra):
         return [
-            "prog", command, "--complex", str(CYCLOSPORIN), "--receptor-chain", "A",
-            "--binder-chain", "C", "--query-name", "q", "--output-dir", str(out), *extra,
+            "prog", command, "--complex", str(SFTI1), "--receptor-chain", "A",
+            "--binder-chain", "I", "--query-name", "q", "--output-dir", str(out), *extra,
         ]  # fmt: skip
 
     @pytest.mark.parametrize("command", ["prepare-query", "prepare-scoring-query"])
@@ -498,12 +619,12 @@ class TestCommandLine:
         monkeypatch.setattr("sys.argv", self._argv(command, tmp_path / "out", *extra))
         openfold.main()
         chains = _chains(tmp_path / "out" / "q_query.json")
-        assert ("cyclic" in chains["C"]) is written
+        assert ("cyclic" in chains["I"]) is written
 
     def test_a_forced_flag_reaches_the_query_of_a_linear_binder(self, tmp_path, monkeypatch):
         argv = self._argv("prepare-query", tmp_path / "out", "--openfold-cyclic", "on")
-        argv[argv.index(str(CYCLOSPORIN))] = str(P53)
-        argv[argv.index("C")] = "B"
+        argv[argv.index(str(SFTI1))] = str(P53)
+        argv[argv.index("I")] = "B"
         monkeypatch.setattr("sys.argv", argv)
         openfold.main()
         assert _chains(tmp_path / "out" / "q_query.json")["B"]["cyclic"] is True
@@ -534,6 +655,16 @@ class TestCommandLine:
         text = " ".join(capsys.readouterr().out.split())
         assert "--openfold-cyclic {auto,on,off}" in text
         for stated in ("head-to-tail", "does not enforce the closure bond", "example query"):
+            assert stated in text
+        # the rule and what it rests on, stated as one complex each
+        for stated in (
+            "standard residues only",
+            "modified residue its own token",
+            "one complex",
+            "0.91-0.92 to 0.78-0.81",
+            "0.5-0.7 A to 3.0-4.8 A",
+            "7.40 A without it, 1.38 A with it",
+        ):
             assert stated in text
         assert "no accuracy benchmark for cyclic peptides" in text.replace("published no", "no")
 

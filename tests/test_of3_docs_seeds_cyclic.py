@@ -63,8 +63,11 @@ def test_the_argument_table_of_run_openfold_has_the_row(argument):
 def test_the_pre_flight_page_no_longer_says_the_builder_writes_no_cyclic_field():
     text = (ROOT / "docs" / "preflight.md").read_text(encoding="utf-8")
     assert "do not write `cyclic: true`" not in text
-    row = next(line for line in text.splitlines() if "head-to-tail binder is sent" in line)
+    row = next(
+        line for line in text.splitlines() if "head-to-tail binder of standard residues" in line
+    )
     assert "binder_cyclic" in row and "does not enforce the closure bond" in row
+    assert "modified residues" in row and "left linear" in row
 
 
 def test_the_docs_name_the_cyclic_options_and_keys_that_exist():

@@ -21,6 +21,7 @@ pytest.importorskip("biotite")
 pytest.importorskip("gemmi")
 
 DATA = Path(__file__).parent.parent / "data"
+SFTI1 = DATA / "example_bicyclic_sfti1_3P8F.cif"  # chain I: head to tail, standard residues
 CYCLOSPORIN = DATA / "example_ncaa_cyclosporin_1CWA.cif"  # chain C: head-to-tail
 P53 = DATA / "example_linear_p53_1YCR.pdb"  # chain B: linear
 
@@ -72,19 +73,25 @@ def test_a_missing_gzip_is_a_file_not_found(tmp_path):
 
 
 def test_decide_binder_cyclic_auto_sees_the_bond_in_a_gzip(tmp_path):
-    packed = gzip_copy(CYCLOSPORIN, tmp_path, "c.cif.gz")
-    decision = openfold.decide_binder_cyclic(packed, "C")
+    packed = gzip_copy(SFTI1, tmp_path, "s.cif.gz")
+    decision = openfold.decide_binder_cyclic(packed, "I")
     assert decision == openfold.BinderCyclicDecision(True)
     assert openfold.decide_binder_cyclic(gzip_copy(P53, tmp_path, "p.pdb.gz"), "B").cyclic is False
 
 
-def test_a_cyclic_binder_in_a_gzip_gets_the_flag_and_no_warning(tmp_path, caplog):
+def test_decide_binder_cyclic_auto_sees_the_modified_residues_in_a_gzip(tmp_path):
     packed = gzip_copy(CYCLOSPORIN, tmp_path, "c.cif.gz")
+    decision = openfold.decide_binder_cyclic(packed, "C")
+    assert decision.cyclic is False and "modified residues (ABA, BMT, DAL" in decision.reason
+
+
+def test_a_cyclic_binder_in_a_gzip_gets_the_flag_and_no_warning(tmp_path, caplog):
+    packed = gzip_copy(SFTI1, tmp_path, "s.cif.gz")
     with caplog.at_level(logging.WARNING, logger=_openfold_run.logger.name):
-        query = openfold.prepare_refolding_query(packed, "A", "C", "q", tmp_path / "out")
+        query = openfold.prepare_refolding_query(packed, "A", "I", "q", tmp_path / "out")
     chains = {
         c["chain_ids"][0]: c
         for c in json.loads(query.read_text(encoding="utf-8"))["queries"]["q"]["chains"]
     }
-    assert chains["C"]["cyclic"] is True and "cyclic" not in chains["A"]
+    assert chains["I"]["cyclic"] is True and "cyclic" not in chains["A"]
     assert caplog.records == [] or all(r.levelno < logging.WARNING for r in caplog.records)

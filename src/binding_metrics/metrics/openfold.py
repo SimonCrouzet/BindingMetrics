@@ -607,10 +607,11 @@ def run_openfold_scoring(
             when a residue has no one-letter code or CCD code OpenFold3 can take;
             ``"x"`` sends an ``X`` for it and logs a warning.
         binder_cyclic: ``"auto"`` (default) writes ``"cyclic": true`` on the binder chain when
-            it has a head-to-tail bond and the installed OpenFold3 (in ``conda_env``) is 0.4.5
-            or later; ``True`` writes it whatever the structure says; ``False`` never. OpenFold3
-            wraps the relative positions of the chain and does not enforce the closure bond; see
-            :func:`prepare_refolding_query`.
+            it has a head-to-tail bond, is made of standard residues only and the installed
+            OpenFold3 (in ``conda_env``) is 0.4.5 or later; ``True`` writes it whatever the
+            structure says; ``False`` never. OpenFold3 wraps the relative positions of the chain
+            and does not enforce the closure bond, and with modified residues the flag made the
+            one complex tried worse; see :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory
@@ -723,10 +724,11 @@ def run_openfold_refolding(
             when a residue has no one-letter code or CCD code OpenFold3 can take;
             ``"x"`` sends an ``X`` for it and logs a warning.
         binder_cyclic: ``"auto"`` (default) writes ``"cyclic": true`` on the binder chain when
-            it has a head-to-tail bond and the installed OpenFold3 (in ``conda_env``) is 0.4.5
-            or later; ``True`` writes it whatever the structure says; ``False`` never. OpenFold3
-            wraps the relative positions of the chain and does not enforce the closure bond; see
-            :func:`prepare_refolding_query`.
+            it has a head-to-tail bond, is made of standard residues only and the installed
+            OpenFold3 (in ``conda_env``) is 0.4.5 or later; ``True`` writes it whatever the
+            structure says; ``False`` never. OpenFold3 wraps the relative positions of the chain
+            and does not enforce the closure bond, and with modified residues the flag made the
+            one complex tried worse; see :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory
@@ -829,10 +831,11 @@ def run_openfold_batched(
             when a residue has no one-letter code or CCD code OpenFold3 can take;
             ``"x"`` sends an ``X`` for it and logs a warning.
         binder_cyclic: ``"auto"`` (default) writes ``"cyclic": true`` on the binder chain when
-            it has a head-to-tail bond and the installed OpenFold3 (in ``conda_env``) is 0.4.5
-            or later; ``True`` writes it whatever the structure says; ``False`` never. OpenFold3
-            wraps the relative positions of the chain and does not enforce the closure bond; see
-            :func:`prepare_refolding_query`.
+            it has a head-to-tail bond, is made of standard residues only and the installed
+            OpenFold3 (in ``conda_env``) is 0.4.5 or later; ``True`` writes it whatever the
+            structure says; ``False`` never. OpenFold3 wraps the relative positions of the chain
+            and does not enforce the closure bond, and with modified residues the flag made the
+            one complex tried worse; see :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory.

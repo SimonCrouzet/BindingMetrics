@@ -230,10 +230,11 @@ def _check_binder_cyclic(binder_cyclic) -> None:
 class BinderCyclicDecision:
     """Whether the binder chain of a query gets ``"cyclic": true``, and why not when it does not.
 
-    ``cyclic`` is the value to write. ``reason`` is set when "auto" could not decide for the
-    binder: it has a head-to-tail bond and is left as a linear chain because the installed
-    OpenFold3 is too old for the field or its version could not be read, or the structure could
-    not be searched for a bond. It is None otherwise, including when the binder has no such bond.
+    ``cyclic`` is the value to write. ``reason`` is set when "auto" has a head-to-tail binder and
+    leaves it as a linear chain: the installed OpenFold3 is too old for the field or its version
+    could not be read, the binder has modified residues (D-amino acids, N-methylated or other
+    non-standard residues, with which the flag made the one complex tried worse), or the structure
+    could not be searched. It is None otherwise, including when the binder has no such bond.
     """
 
     cyclic: bool
@@ -254,6 +255,52 @@ def _binder_is_head_to_tail(structure_path: str | Path, binder_chain: str) -> bo
     return any(c.family == "head_to_tail" for c in detect_closures(atoms, binder_chain))
 
 
+#: What was measured with the flag on a binder of modified residues, stated wherever the rule that
+#: leaves such a binder linear is explained. One complex, OpenFold3 0.5.0, no MSA, one diffusion
+#: sample per seed, a prediction with the receptor template and the binder from its sequence.
+_MODIFIED_RESIDUE_OBSERVATION = (
+    "OpenFold3 wraps the relative positions of the chain by its token count and gives every atom "
+    "of a modified residue a token of its own, so the wrap does not follow the ring. On one "
+    "complex (1CWA, cyclosporin A, OpenFold3 0.5.0, no MSA, three seeds) the flag lowered ipTM "
+    "from 0.91-0.92 to 0.78-0.81 and raised the binder C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A; "
+    "on a binder of standard residues (SFTI-1, 3P8F, one seed) it closed the ring (C-N 7.40 A "
+    "without the flag, 1.38 A with it, 1.44 A in the input)"
+)
+
+
+def _modified_binder_residues(structure_path: str | Path, binder_chain: str) -> Optional[list[str]]:
+    """The residues of ``binder_chain`` that OpenFold3 would tokenise one token per atom.
+
+    OpenFold3 makes one token of each standard residue and one token of each heavy atom of any
+    other residue, and what it builds follows the query, not the structure file: the standard
+    letters (a protonation variant or a cross-link variant is sent as its parent letter) stay
+    standard, while a residue sent through ``non_canonical_residues`` (a D-amino acid, an
+    N-methylated residue, any other CCD component) and selenocysteine (``U``) do not. The
+    classification is that of :func:`_extract_query_chain`, so it is the one the query uses.
+
+    Returns:
+        The sorted, distinct CCD codes of those residues (``SEC`` for ``U``); an empty list when
+        the binder is all standard; None when the structure cannot be read or the chain has no
+        residue that the query can express.
+    """
+    import gemmi
+
+    try:
+        structure = gemmi.read_structure(str(structure_path))
+        letters, non_canonical = _extract_query_chain(
+            structure, binder_chain, on_unmappable_residue="x"
+        )
+    except Exception as exc:  # noqa: BLE001 - the caller decides what an unreadable file means
+        logger.debug(
+            "residues of chain %s of %s not classified: %s", binder_chain, structure_path, exc
+        )
+        return None
+    modified = set(non_canonical.values())
+    if "U" in letters:
+        modified.add("SEC")
+    return sorted(modified)
+
+
 def decide_binder_cyclic(
     structure_path: str | Path,
     binder_chain: str,
@@ -271,13 +318,24 @@ def decide_binder_cyclic(
     ``examples/example_inference_inputs/query_multimer_cyclic.json`` at tag v0.5.0, and the
     release notes of 0.4.5).
 
+    The offsets are built from the number of tokens of the chain (``cyclic_offset`` in
+    ``openfold3/core/utils/relpos.py``) and ignore the residue indices, while OpenFold3 makes a
+    token of each heavy atom of a modified residue, so for a binder with modified residues the
+    wrap does not follow the ring. Measured once (one complex per case, OpenFold3 0.5.0, no MSA;
+    see ``_MODIFIED_RESIDUE_OBSERVATION``): with the flag, 1CWA (D-Ala and N-methylated residues)
+    lost 0.10 to 0.15 ipTM and gained 2.3 to 4.2 A of binder RMSD over three seeds, and SFTI-1
+    (standard residues) closed its ring (C-N 7.40 A without the flag, 1.38 A with it, one seed).
+
     Args:
         structure_path: The structure the query is built from (the complex file).
         binder_chain: Chain ID of the binder, the only chain that can get the field.
-        binder_cyclic: ``False`` never writes it. ``True`` always writes it. ``"auto"`` (the
-            default) writes it when the binder has a head-to-tail bond and the installed
-            OpenFold3 is 0.4.5 or later, and says in the log (and in ``reason``) when a
-            head-to-tail binder is left linear.
+        binder_cyclic: ``False`` never writes it. ``True`` always writes it (with a warning when
+            the binder has modified residues). ``"auto"`` (the default) writes it when the binder
+            has a head-to-tail bond, is made of standard residues only (a protonation or
+            cross-link variant counts as standard: it is sent as its parent residue) and the
+            installed OpenFold3 is 0.4.5 or later; a head-to-tail binder that is left linear is
+            logged as a warning and the decision says why in ``reason`` (version too old or
+            unreadable, or modified residues).
         conda_env: Conda environment that runs OpenFold3, asked for its version; None asks the
             current interpreter.
         log: False keeps the decision out of the log. The query builders log it when they
@@ -311,6 +369,17 @@ def decide_binder_cyclic(
                 f"chain field; the installed version is {installed}, and older versions reject "
                 "the field. Upgrade OpenFold3, or pass binder_cyclic=False."
             )
+        if log:
+            modified = _modified_binder_residues(structure_path, binder_chain)
+            if modified:
+                logger.warning(
+                    "%s: binder_cyclic=True writes 'cyclic: true' on chain %s, which has modified "
+                    "residues (%s). %s.",
+                    structure_path,
+                    binder_chain,
+                    ", ".join(modified),
+                    _MODIFIED_RESIDUE_OBSERVATION,
+                )
         return BinderCyclicDecision(True)
 
     try:
@@ -341,15 +410,30 @@ def decide_binder_cyclic(
             "predicted as a linear chain. Upgrade OpenFold3 to 0.4.5 or later."
         )
     else:
-        if log:
-            logger.info(
-                "Chain %s of %s has a head-to-tail bond: the query sets 'cyclic: true' on it "
-                "(OpenFold3 %s).",
-                binder_chain,
-                structure_path,
-                installed,
+        modified = _modified_binder_residues(structure_path, binder_chain)
+        if modified is None:
+            reason = (
+                f"chain {binder_chain} is closed head to tail, but its residues could not be "
+                "classified, so 'cyclic: true' is not written and the binder is predicted as a "
+                "linear chain. binder_cyclic=True (--openfold-cyclic on) writes it regardless."
             )
-        return BinderCyclicDecision(True)
+        elif modified:
+            reason = (
+                f"chain {binder_chain} is closed head to tail but has modified residues "
+                f"({', '.join(modified)}), so 'cyclic: true' is not written and the binder is "
+                f"predicted as a linear chain. {_MODIFIED_RESIDUE_OBSERVATION}. "
+                "binder_cyclic=True (--openfold-cyclic on) writes it regardless."
+            )
+        else:
+            if log:
+                logger.info(
+                    "Chain %s of %s has a head-to-tail bond and standard residues only: the query "
+                    "sets 'cyclic: true' on it (OpenFold3 %s).",
+                    binder_chain,
+                    structure_path,
+                    installed,
+                )
+            return BinderCyclicDecision(True)
     if log:
         logger.warning("%s: %s", structure_path, reason)
     return BinderCyclicDecision(False, reason)
@@ -1635,14 +1719,16 @@ def prepare_refolding_query(
             and logs a warning. D-amino acids and modified residues are not affected:
             they go to ``non_canonical_residues`` with their CCD code.
         binder_cyclic: ``"auto"`` (default) writes ``"cyclic": true`` on the binder chain when
-            it has a head-to-tail bond and the installed OpenFold3 is 0.4.5 or later; a
-            head-to-tail binder that is left linear because the version is too old or unreadable
-            is logged as a warning. ``True`` writes it on the binder whatever the structure
-            says, ``False`` never. OpenFold3 uses the field only to wrap the relative positions
-            of the chain; it does not enforce the closure bond, documents the field only in an
-            example query, and has published no accuracy benchmark for cyclic peptides.
-            Disulfide, lactam and staple closures have no OpenFold3 input and are not
-            written. See :func:`decide_binder_cyclic`.
+            it has a head-to-tail bond, is made of standard residues only and the installed
+            OpenFold3 is 0.4.5 or later; a head-to-tail binder that is left linear because it
+            has modified residues (D-amino acids, N-methylated residues; the flag made the one
+            complex tried worse) or because the version is too old or unreadable is logged as a
+            warning. ``True`` writes it on the binder whatever the structure says (with a warning
+            when the binder has modified residues), ``False`` never. OpenFold3 uses the field
+            only to wrap the relative positions of the chain; it does not enforce the closure
+            bond, documents the field only in an example query, and has published no accuracy
+            benchmark for cyclic peptides. Disulfide, lactam and staple closures have no
+            OpenFold3 input and are not written. See :func:`decide_binder_cyclic`.
         conda_env: Conda environment that runs OpenFold3, asked for its version when
             ``binder_cyclic`` is not ``False``; None asks the current interpreter.
 

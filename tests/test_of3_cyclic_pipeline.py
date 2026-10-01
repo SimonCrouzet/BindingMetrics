@@ -21,7 +21,11 @@ from tests.test_feat_c_support import StubOpenFold
 pytest.importorskip("biotite")
 
 DATA = Path(__file__).parent.parent / "data"
-CYCLOSPORIN = DATA / "example_ncaa_cyclosporin_1CWA.cif"  # chain C is closed head to tail
+# chain C is closed head to tail and has D-Ala and N-methylated residues: "auto" leaves it linear
+CYCLOSPORIN = DATA / "example_ncaa_cyclosporin_1CWA.cif"
+# chain I (SFTI-1) is closed head to tail, has standard residues only, and a disulfide, which the
+# pre-flight refuses unless it only warns
+SFTI1 = DATA / "example_bicyclic_sfti1_3P8F.cif"
 P53 = DATA / "example_linear_p53_1YCR.pdb"  # chain B is linear
 
 
@@ -56,6 +60,12 @@ def pipeline(tmp_path, structure=CYCLOSPORIN, binder="C", receptor="A", **kwargs
         receptor_chain=receptor,
         **kwargs,
     )
+
+
+def standard_pipeline(tmp_path, **kwargs):
+    """The pipeline on a head-to-tail binder of standard residues, which "auto" sends as cyclic."""
+    kwargs.setdefault("on_incompatible", "warn")  # the disulfide of SFTI-1 has no OpenFold3 input
+    return pipeline(tmp_path, structure=SFTI1, binder="I", **kwargs)
 
 
 class TestChoices:
@@ -170,9 +180,23 @@ class TestLegacyOpenFoldStep:
         self, tmp_path, monkeypatch, mode
     ):
         seen = self._stub(monkeypatch, tmp_path)
-        block = pipeline(tmp_path, openfold_mode=mode)["openfold"]
+        block = standard_pipeline(tmp_path, openfold_mode=mode)["openfold"]
         assert "binder_cyclic" not in seen  # the run function's own default is "auto"
         assert block["binder_cyclic"] is True and "reason" not in block
+
+    @pytest.mark.parametrize("mode", ["score", "refold"])
+    def test_modified_residues_leave_the_binder_linear_and_the_block_says_why(
+        self, tmp_path, monkeypatch, mode
+    ):
+        seen = self._stub(monkeypatch, tmp_path)
+        block = pipeline(tmp_path, openfold_mode=mode)["openfold"]  # 1CWA chain C
+        assert "binder_cyclic" not in seen  # the choice is still "auto"
+        assert block["binder_cyclic"] is False
+        assert block["reason"].startswith(
+            "binder_cyclic: chain C is closed head to tail but has modified residues "
+            "(ABA, BMT, DAL, MLE, MVA, SAR)"
+        )
+        assert "one complex" in block["reason"] and "--openfold-cyclic on" in block["reason"]
 
     @pytest.mark.parametrize("mode", ["score", "refold"])
     def test_a_linear_binder_is_recorded_as_not_cyclic(self, tmp_path, monkeypatch, mode):
@@ -249,9 +273,22 @@ class TestPredictorPath:
 
     def test_the_default_records_a_cyclic_binder(self, tmp_path, monkeypatch):
         stub = StubOpenFold(monkeypatch)
-        block = pipeline(tmp_path, predictor="of3")["prediction"]
-        assert block["binder_cyclic"] is True and "reason" not in block
+        block = standard_pipeline(tmp_path, predictor="of3")["prediction"]
+        # (the stub's PAE has one token per residue number, so the interface blocks of 3P8F, whose
+        # numbering has insertion codes, may carry a reason of their own)
+        assert block["binder_cyclic"] is True and "binder_cyclic" not in block.get("reason", "")
         assert "binder_cyclic" not in stub.calls[0]["kwargs"]  # the default is left out
+
+    def test_modified_residues_leave_the_binder_linear_and_the_block_says_why(
+        self, tmp_path, monkeypatch
+    ):
+        StubOpenFold(monkeypatch)
+        block = pipeline(tmp_path, predictor="of3")["prediction"]  # 1CWA chain C
+        assert block["binder_cyclic"] is False
+        assert (
+            "binder_cyclic: chain C is closed head to tail but has modified residues"
+            in (block["reason"])
+        )
 
     def test_the_request_key_follows_the_choice(self, tmp_path, monkeypatch):
         StubOpenFold(monkeypatch)
@@ -331,7 +368,7 @@ class TestReportAndRows:
     def test_the_legacy_block_flattens_to_an_openfold_column(self, tmp_path, monkeypatch):
         monkeypatch.setattr(openfold, "run_openfold_scoring", lambda **kw: tmp_path)
         monkeypatch.setattr(openfold, "compute_openfold_metrics", lambda **kw: {})
-        flat = _flatten(pipeline(tmp_path))
+        flat = _flatten(standard_pipeline(tmp_path))
         assert flat["openfold_binder_cyclic"] is True
 
 
@@ -351,18 +388,21 @@ class TestBatch:
             batch,
             "_detect_sample_chains",
             lambda rows, sid_to_input, p, r, label: [
-                (0, "example_ncaa_cyclosporin_1CWA", CYCLOSPORIN, "C", "A"),
-                (1, "example_linear_p53_1YCR", P53, "B", "A"),
+                (0, "example_bicyclic_sfti1_3P8F", SFTI1, "I", "A"),
+                (1, "example_ncaa_cyclosporin_1CWA", CYCLOSPORIN, "C", "A"),
+                (2, "example_linear_p53_1YCR", P53, "B", "A"),
             ],
         )
         monkeypatch.setattr(batch, "_model_step_allowed", lambda *a, **k: (True, None))
         rows = [
+            {"sample_id": "example_bicyclic_sfti1_3P8F", "batch_status": "ok"},
             {"sample_id": "example_ncaa_cyclosporin_1CWA", "batch_status": "ok"},
             {"sample_id": "example_linear_p53_1YCR", "batch_status": "ok"},
         ]
         batch._run_batched_openfold(
             rows=rows,
             sid_to_input={
+                "example_bicyclic_sfti1_3P8F": SFTI1,
                 "example_ncaa_cyclosporin_1CWA": CYCLOSPORIN,
                 "example_linear_p53_1YCR": P53,
             },
@@ -374,7 +414,9 @@ class TestBatch:
         )
         assert "binder_cyclic" not in seen
         assert rows[0]["openfold_binder_cyclic"] is True
-        assert rows[1]["openfold_binder_cyclic"] is False
+        assert rows[1]["openfold_binder_cyclic"] is False  # modified residues
+        assert "modified residues" in rows[1]["openfold_reason"]
+        assert rows[2]["openfold_binder_cyclic"] is False
 
     @pytest.mark.parametrize("choice, forwarded", [("on", True), ("off", False)])
     def test_on_and_off_reach_the_batched_call(self, tmp_path, monkeypatch, choice, forwarded):
@@ -405,6 +447,7 @@ class TestBatch:
         stub = StubOpenFold(monkeypatch)
         set_version("0.5.0")
         sid_to_input = {
+            "example_bicyclic_sfti1_3P8F": SFTI1,
             "example_ncaa_cyclosporin_1CWA": CYCLOSPORIN,
             "example_linear_p53_1YCR": P53,
         }
@@ -412,12 +455,14 @@ class TestBatch:
             batch,
             "_detect_sample_chains",
             lambda *a, **k: [
-                (0, "example_ncaa_cyclosporin_1CWA", CYCLOSPORIN, "C", "A"),
-                (1, "example_linear_p53_1YCR", P53, "B", "A"),
+                (0, "example_bicyclic_sfti1_3P8F", SFTI1, "I", "A"),
+                (1, "example_ncaa_cyclosporin_1CWA", CYCLOSPORIN, "C", "A"),
+                (2, "example_linear_p53_1YCR", P53, "B", "A"),
             ],
         )
         monkeypatch.setattr(batch, "_model_step_allowed", lambda *a, **k: (True, None))
         rows = [
+            {"sample_id": "example_bicyclic_sfti1_3P8F", "batch_status": "ok"},
             {"sample_id": "example_ncaa_cyclosporin_1CWA", "batch_status": "ok"},
             {"sample_id": "example_linear_p53_1YCR", "batch_status": "ok"},
         ]
@@ -429,9 +474,11 @@ class TestBatch:
             peptide_chain=None,
             receptor_chain=None,
         )
-        assert stub.starts == 1  # both samples share one request signature, so one model start
+        assert stub.starts == 1  # the samples share one request signature, so one model start
         assert rows[0]["prediction_binder_cyclic"] is True
-        assert rows[1]["prediction_binder_cyclic"] is False
+        assert rows[1]["prediction_binder_cyclic"] is False  # modified residues
+        assert "modified residues" in rows[1]["prediction_reason"]
+        assert rows[2]["prediction_binder_cyclic"] is False
 
     def test_the_batched_prediction_gives_the_reason_of_an_old_openfold3(
         self, tmp_path, monkeypatch, set_version

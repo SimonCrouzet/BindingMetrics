@@ -177,11 +177,14 @@ def add_prediction_args(parser: argparse.ArgumentParser, *, batch: bool = False)
         default=None,
         help=(
             "Whether the binder is given to the model as cyclic, for --predictor MODEL run from "
-            "here. auto (default): when the binder has a head-to-tail bond; on: always; off: "
-            "never. OpenFold3 (>= 0.4.5) and Boltz-2 get 'cyclic: true' on the binder chain, "
-            "which only wraps its relative positions and does not enforce the closure bond; "
-            "Protenix gets the head-to-tail and disulfide bonds as covalent_bonds; ColabFold has "
-            "no such setting and refuses a value. For --predictor of3 it is the setting of "
+            "here. auto (default): when the binder has a head-to-tail bond (for OpenFold3 also "
+            "only when it consists of standard residues: with a D-amino acid and N-methylated "
+            "residues, 1CWA, the flag lowered ipTM from 0.91-0.92 to 0.78-0.81 in one complex, "
+            "three seeds, so auto leaves such a binder linear); on: always; off: never. "
+            "OpenFold3 (>= 0.4.5) and Boltz-2 get 'cyclic: true' on the binder chain, which only "
+            "wraps its relative positions and does not enforce the closure bond; Protenix gets "
+            "the head-to-tail and disulfide bonds as covalent_bonds; ColabFold has no such "
+            "setting and refuses a value. For --predictor of3 it is the setting of "
             "--openfold-cyclic (both given with different values is an error). Needs "
             "--predictor."
         ),

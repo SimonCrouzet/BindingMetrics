@@ -46,8 +46,9 @@ are not hashed). What goes into the key:
   missing; None when ``runner_yaml`` replaces them), ``use_msa_server``, ``num_model_seeds``,
   ``on_unmappable_residue``, ``binder_cyclic`` (``"auto"``, true or false; None for ``predict``,
   whose query file names its own chains), ``extra_args`` and ``inference_ckpt_path`` with the
-  size of that file. ``"auto"`` writes ``cyclic: true`` on a head-to-tail binder when OpenFold3 is
-  0.4.5 or later, which the structure (hashed) and the version (in the key) decide;
+  size of that file. ``"auto"`` writes ``cyclic: true`` on a head-to-tail binder of standard
+  residues when OpenFold3 is 0.4.5 or later, which the structure (hashed) and the version (in the
+  key) decide;
 * the seeds that OpenFold3 samples with. ``seeds`` is the explicit list, ``[42]`` when the caller
   gives none, and empty when ``num_model_seeds`` asks OpenFold3 to generate them (the count is
   then in ``options``; None there means no generation). ``seeds`` and ``num_model_seeds`` cannot
