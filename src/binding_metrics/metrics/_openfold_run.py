@@ -49,13 +49,23 @@ logger = logging.getLogger(__name__)
 _DEFAULT_QUERY_SEEDS: tuple[int, ...] = (42,)
 
 
-#: Version of what the query builders write: the query JSON, the template CIFs and the A3M
-#: self-alignments. It is raised whenever a change to them can change a prediction, and it is
-#: part of the A3M query row (see :func:`_write_a3m_self_alignment`): OpenFold3 keeps the result
-#: of its template preprocessing in a cache keyed on the chain sequence and the content of the
-#: A3M file only, so an A3M that does not change when the template CIF writer does would be
-#: answered with an entry made from the older CIF.
-QUERY_BUILDER_VERSION = 2
+#: Version of what the query builders write: the query JSON, the template CIFs, the A3M
+#: self-alignments and the dummy MSAs. It is raised whenever a change to them can change a
+#: prediction, and it has two uses:
+#:
+#: * it is part of the request key of ``OpenFold3Runner`` (``options["query_builder_version"]``),
+#:   so a prediction that the store kept from an older builder is not reused for a request that the
+#:   newer builder would write differently;
+#: * it is part of the A3M query row (see :func:`_write_a3m_self_alignment`): OpenFold3 keeps the
+#:   result of its template preprocessing in a cache keyed on the chain sequence and the content of
+#:   the A3M file only, so an A3M that does not change when the template CIF writer does would be
+#:   answered with an entry made from the older CIF.
+#:
+#: History: 1, the builders before the version existed (their template CIF was rejected by
+#: OpenFold3 0.5.0); 2, a template CIF that OpenFold3 0.5.0 reads; 3, the cyclic flag only for a
+#: binder of standard residues, ``template_mode``, and the dummy MSA of a run without the MSA
+#: server.
+QUERY_BUILDER_VERSION = 3
 
 
 def _query_seeds(seeds: Sequence[int]) -> list[int]:

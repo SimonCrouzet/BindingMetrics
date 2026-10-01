@@ -205,6 +205,7 @@ class TestMakeRequest:
             "on_unmappable_residue": "error",
             "binder_cyclic": "auto",
             "template_mode": "alignment",
+            "query_builder_version": _openfold_run.QUERY_BUILDER_VERSION,
             "extra_args": [],
             "inference_ckpt_path": None,
             "inference_ckpt_size_bytes": None,

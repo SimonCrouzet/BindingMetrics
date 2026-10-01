@@ -47,7 +47,9 @@ are not hashed). What goes into the key:
   missing; None when ``runner_yaml`` replaces them), ``use_msa_server``, ``num_model_seeds``,
   ``on_unmappable_residue``, ``binder_cyclic`` (``"auto"``, true or false; None for ``predict``,
   whose query file names its own chains), ``template_mode`` (``"alignment"`` or ``"structure"``,
-  how the templates reach OpenFold3; None for ``predict``), ``extra_args`` and
+  how the templates reach OpenFold3; None for ``predict``), ``query_builder_version`` (the version
+  of the query builders, ``binding_metrics.metrics.openfold.QUERY_BUILDER_VERSION``; None for
+  ``predict``: an entry made by an older builder is not reused), ``extra_args`` and
   ``inference_ckpt_path`` with the
   size of that file. ``"auto"`` writes ``cyclic: true`` on a head-to-tail binder of standard
   residues when OpenFold3 is 0.4.5 or later, which the structure (hashed) and the version (in the
@@ -346,6 +348,11 @@ class OpenFold3Runner(PredictionRunner):
                 "on_unmappable_residue": on_unmappable_residue,
                 "binder_cyclic": None if mode == "predict" else binder_cyclic,
                 "template_mode": None if mode == "predict" else template_mode,
+                # what the query builders write changes with their version; a query file of
+                # ``predict`` is the caller's own
+                "query_builder_version": (
+                    None if mode == "predict" else run_module.QUERY_BUILDER_VERSION
+                ),
                 "extra_args": [str(argument) for argument in extra_args],
                 "inference_ckpt_path": None if checkpoint is None else str(checkpoint),
                 "inference_ckpt_size_bytes": checkpoint_size,
