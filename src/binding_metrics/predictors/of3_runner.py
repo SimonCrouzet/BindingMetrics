@@ -434,9 +434,7 @@ class OpenFold3Runner(PredictionRunner):
         results: dict[str, Union[Path, BaseException]] = {}
         for request in requests:
             if not parser.find_files(predictions, request.name).has_output():
-                results[request.key()] = RuntimeError(
-                    _no_output_message(request, predictions, failures)
-                )
+                results[request.key()] = RuntimeError(_no_output_message(request, failures))
                 continue
             target = work_dir / "split" / request.key()
             shutil.copytree(predictions / request.name, target / request.name)
@@ -520,12 +518,18 @@ class OpenFold3Runner(PredictionRunner):
         if OpenFold3Parser().find_files(predictions, request.name).has_output():
             return
         failures = _run_module()._failed_query_reasons(predictions)
-        raise RuntimeError(_no_output_message(request, predictions, failures))
+        raise RuntimeError(_no_output_message(request, failures))
 
 
-def _no_output_message(
-    request: PredictionRequest, predictions: Path, failures: dict[str, str]
-) -> str:
-    message = f"OpenFold3 wrote no output for query '{request.name}' in {predictions}"
+def _no_output_message(request: PredictionRequest, failures: dict[str, str]) -> str:
+    """The reason of a query without output; it holds no path of the work directory.
+
+    The store renames the temporary work directory when it keeps the run, so a path would point
+    at nothing in the recorded reason: the folder is named relative to the stored entry.
+    """
+    message = (
+        f"OpenFold3 wrote no output for query '{request.name}' in the predictions folder of the "
+        "run (outputs/predictions of a stored entry)"
+    )
     reason = failures.get(request.name)
     return f"{message}: {reason}" if reason else message

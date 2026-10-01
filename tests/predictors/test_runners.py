@@ -511,6 +511,16 @@ class TestRun:
         with pytest.raises(RuntimeError, match="wrote no output for query 'q'"):
             OpenFold3Runner().run(score_request(tmp_path), tmp_path / "w")
 
+    def test_the_recorded_reason_holds_no_path_of_the_work_directory(self, tmp_path, monkeypatch):
+        """The store renames its temporary work directory, so a path in a reason points nowhere."""
+        RecordingWrappers(monkeypatch, write_output=False)
+        store = PredictionStore(tmp_path / "store")
+        (entry,) = store.run_missing([score_request(tmp_path)], OpenFold3Runner())
+        assert entry.status == "failed"
+        assert "wrote no output for query 'q'" in entry.reason
+        assert ".tmp-" not in entry.reason and str(tmp_path) not in entry.reason
+        assert "outputs/predictions of a stored entry" in entry.reason
+
     def test_the_reason_openfold_logged_is_in_the_error(self, tmp_path, monkeypatch):
         def failing(**kwargs):
             predictions = Path(kwargs["output_dir"]) / "predictions"
