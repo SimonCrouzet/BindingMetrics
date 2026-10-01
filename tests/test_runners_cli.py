@@ -488,6 +488,46 @@ class TestTheGenericSettings:
         assert "one seed" in block["error"] and stub.starts == 0
 
 
+class TestCustomWeights:
+    """``--prediction-weights`` reaches the command of the runners that take weights."""
+
+    def test_boltz2_gets_a_checkpoint_file(self, tmp_path, monkeypatch):
+        stub = ModelStub("boltz2", tmp_path, monkeypatch)
+        checkpoint = tmp_path / "fine_tuned.ckpt"
+        checkpoint.write_bytes(b"weights")
+        block = pipeline(tmp_path / "o", "boltz2", prediction_weights=checkpoint)["prediction"]
+        assert "error" not in block, block.get("error")
+        assert stub.argument("--checkpoint") == str(checkpoint)
+        assert block["weights"]["custom"] is True and block["weights"]["kind"] == "file"
+
+    def test_colabfold_gets_a_data_directory(self, tmp_path, monkeypatch):
+        stub = ModelStub("af2", tmp_path, monkeypatch)
+        data = tmp_path / "data"
+        (data / "params").mkdir(parents=True)
+        (data / "params" / "download_complexes_multimer_v3_finished.txt").write_text(
+            "done", encoding="utf-8"
+        )
+        (data / "params" / "params_model_1_multimer_v3.npz").write_bytes(b"weights")
+        block = pipeline(tmp_path / "o", "af2", prediction_weights=data)["prediction"]
+        assert "error" not in block, block.get("error")
+        assert stub.argument("--data") == str(data)
+        assert block["weights"]["custom"] is True and block["weights"]["kind"] == "directory"
+
+    @pytest.mark.parametrize("model, kind", [("af2", "file"), ("boltz2", "directory")])
+    def test_the_wrong_kind_is_refused_before_the_model_starts(
+        self, tmp_path, monkeypatch, model, kind
+    ):
+        stub = ModelStub(model, tmp_path, monkeypatch)
+        path = tmp_path / "weights"
+        if kind == "file":
+            path.write_bytes(b"weights")
+        else:
+            path.mkdir()
+        with pytest.raises(ValueError, match="takes its weights|directory|file"):
+            pipeline(tmp_path / "o", model, prediction_weights=path)
+        assert stub.starts == 0
+
+
 class TestTheTwoSpellings:
     def test_the_openfold_spelling_is_the_setting_of_openfold3(self, tmp_path, monkeypatch):
         stub = ModelStub("of3", tmp_path, monkeypatch)
