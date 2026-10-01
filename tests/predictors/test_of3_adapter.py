@@ -393,7 +393,9 @@ class TestFailedQueries:
         assert record.reasons[1].startswith(
             "OpenFold3 failed on this query: OutOfMemoryError: CUDA out of memory"
         )
-        assert str(tmp_path / "logs" / "predict_err_rank0.log") in record.reasons[1]
+        # the log is named relative to the run: the directory of a stored run is renamed
+        assert "(logs/predict_err_rank0.log in the output of the run)" in record.reasons[1]
+        assert str(tmp_path) not in record.reasons[1]
 
     def test_only_the_query_that_failed_gets_the_reason(self, tmp_path):
         root = self._failed_run(tmp_path)
