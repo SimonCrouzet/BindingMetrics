@@ -14,7 +14,9 @@ help of both commands no longer says that the seeds go to the query JSON (OpenFo
 read them there; they are written to its runner YAML) and says which sample is scored, and the
 ``--openfold-mode`` help of both commands no longer says that ``score`` gives OpenFold3 both
 chains as templates "for the known conformation": a template carries the fold of one chain and
-no inter-chain geometry, so OpenFold3 places the binder itself.
+no inter-chain geometry, so OpenFold3 places the binder itself. Two options were added to both
+commands and are recorded here from now on: ``--openfold-cyclic`` and
+``--openfold-no-msa-server``.
 """
 
 import argparse
@@ -276,6 +278,39 @@ GOLDEN = {
                 "directory per seed; the first seed given, first "
                 "sample, is scored.",
             ),
+            "--openfold-cyclic": (
+                "OpenFold",
+                None,
+                ["auto", "on", "off"],
+                None,
+                False,
+                "'auto'",
+                "Whether the binder chain of the OpenFold3 query gets "
+                "'cyclic: true' (OpenFold3 >= 0.4.5). auto (default): "
+                "when the binder has a head-to-tail bond and the "
+                "installed OpenFold3 is new enough; on: always; off: "
+                "never. OpenFold3 uses the flag only to wrap the "
+                "relative positions of the chain: it does not enforce "
+                "the closure bond, documents the flag only in an "
+                "example query, and has published no accuracy "
+                "benchmark for cyclic peptides. Disulfide, lactam and "
+                "staple closures cannot be given to OpenFold3 and are "
+                "not written.",
+            ),
+            "--openfold-no-msa-server": (
+                "OpenFold",
+                None,
+                None,
+                0,
+                False,
+                "False",
+                "Do not use the ColabFold MSA server for OpenFold3: it "
+                "then runs without a computed MSA (single-sequence "
+                "unless MSAs are supplied elsewhere), which lowers "
+                "accuracy for a natural receptor, but the template "
+                "alignments written by the toolkit are no longer "
+                "replaced by the server (issue #68).",
+            ),
             "--format": (
                 "Report",
                 None,
@@ -513,6 +548,39 @@ GOLDEN = {
                 "runner YAML (default: 42). It makes one seed_<value> "
                 "directory per seed; the first seed given, first "
                 "sample, is scored.",
+            ),
+            "--openfold-cyclic": (
+                "OpenFold",
+                None,
+                ["auto", "on", "off"],
+                None,
+                False,
+                "'auto'",
+                "Whether the binder chain of the OpenFold3 query gets "
+                "'cyclic: true' (OpenFold3 >= 0.4.5). auto (default): "
+                "when the binder has a head-to-tail bond and the "
+                "installed OpenFold3 is new enough; on: always; off: "
+                "never. OpenFold3 uses the flag only to wrap the "
+                "relative positions of the chain: it does not enforce "
+                "the closure bond, documents the flag only in an "
+                "example query, and has published no accuracy "
+                "benchmark for cyclic peptides. Disulfide, lactam and "
+                "staple closures cannot be given to OpenFold3 and are "
+                "not written.",
+            ),
+            "--openfold-no-msa-server": (
+                "OpenFold",
+                None,
+                None,
+                0,
+                False,
+                "False",
+                "Do not use the ColabFold MSA server for OpenFold3: it "
+                "then runs without a computed MSA (single-sequence "
+                "unless MSAs are supplied elsewhere), which lowers "
+                "accuracy for a natural receptor, but the template "
+                "alignments written by the toolkit are no longer "
+                "replaced by the server (issue #68).",
             ),
             "--log-file": (
                 "Logging",

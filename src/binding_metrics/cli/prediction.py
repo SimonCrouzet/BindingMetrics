@@ -42,7 +42,12 @@ import traceback
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
-from binding_metrics.cli import check_openfold_cyclic, merge_reason, openfold_cyclic_kwargs
+from binding_metrics.cli import (
+    check_openfold_cyclic,
+    merge_reason,
+    openfold_cyclic_kwargs,
+    openfold_msa_server_kwargs,
+)
 from binding_metrics.predictors.registry import PARSERS
 
 logger = logging.getLogger("binding_metrics.cli.prediction")
@@ -254,6 +259,7 @@ def make_request(
     openfold_seeds=None,
     on_unmappable_residue: str = "error",
     openfold_cyclic: bool | str = "auto",
+    openfold_use_msa_server: bool = True,
 ):
     """The store request of one sample.
 
@@ -289,6 +295,7 @@ def make_request(
         seeds=openfold_seeds,
         on_unmappable_residue=on_unmappable_residue,
         **openfold_cyclic_kwargs(openfold_cyclic),
+        **openfold_msa_server_kwargs(openfold_use_msa_server),
     )
 
 
@@ -565,6 +572,7 @@ def run_single_prediction(
     openfold_seeds=None,
     on_unmappable_residue: str = "error",
     openfold_cyclic: bool | str = "auto",
+    openfold_use_msa_server: bool = True,
 ) -> tuple[dict, dict]:
     """The whole prediction step of ``run_pipeline``: store, session, request, consumers.
 
@@ -602,6 +610,7 @@ def run_single_prediction(
             openfold_seeds=openfold_seeds,
             on_unmappable_residue=on_unmappable_residue,
             openfold_cyclic=openfold_cyclic,
+            openfold_use_msa_server=openfold_use_msa_server,
         )
     except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["prediction"]
         logger.warning("  [warning] Prediction failed: %s", e)

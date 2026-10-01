@@ -63,12 +63,14 @@ from binding_metrics.cli import (
     add_config_arg,
     add_on_unmappable_residue_arg,
     add_openfold_cyclic_arg,
+    add_openfold_no_msa_server_arg,
     add_openfold_seeds_arg,
     check_on_unmappable_residue,
     check_openfold_cyclic,
     md_save_interval_for,
     on_unmappable_residue_kwargs,
     openfold_cyclic_kwargs,
+    openfold_msa_server_kwargs,
     parse_args_with_config,
 )
 from binding_metrics.cli import merge_reason as _merge_reason
@@ -288,6 +290,7 @@ def run_pipeline(
     preflight_only: bool = False,
     preflight_model: Optional[tuple] = None,
     openfold_cyclic: bool | str = "auto",
+    openfold_use_msa_server: bool = True,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -306,6 +309,13 @@ def run_pipeline(
         openfold_seeds: Seed values OpenFold3 samples with, written to its runner YAML; ``None``
             keeps the default, 42. The sample scored is the first sample of the first seed
             given. Separate from ``random_seed``.
+        openfold_use_msa_server: Whether the OpenFold3 step uses the ColabFold MSA server
+            (keyword-only, default True; ``--openfold-no-msa-server`` is False). With the server
+            off OpenFold3 runs without a computed MSA (single-sequence unless MSAs are supplied
+            elsewhere), which lowers accuracy for a natural receptor, but the template alignments
+            written by the toolkit are no longer replaced by the server (issue #68). The value
+            is recorded as ``provenance["openfold3_use_msa_server"]`` when OpenFold3 is run
+            here, and is part of the key of the prediction store.
         on_unmappable_residue: What the OpenFold3 step does with a residue it cannot take
             (keyword-only): ``"error"`` (default) records the step as failed before the model
             starts, ``"x"`` sends an ``X`` in its place and logs a warning.
@@ -426,17 +436,21 @@ def run_pipeline(
     skipped_geometry = outcome.skipped_geometry
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    runs_openfold3 = "openfold" in metrics and (
+        predictor is None or (predictor == "of3" and prediction_dir is None)
+    )
     results: dict = {
         "sample_id": sample_id,
         "input": str(input_path),
         "preflight": outcome.block,
         "provenance": collect_provenance(
             seed=random_seed,
-            openfold3="openfold" in metrics
-            and (predictor is None or (predictor == "of3" and prediction_dir is None)),
+            openfold3=runs_openfold3,
             openfold3_python_cmd=conda_python_command(openfold_conda_env),
         ),
     }
+    if runs_openfold3:
+        results["provenance"]["openfold3_use_msa_server"] = bool(openfold_use_msa_server)
 
     # ---------------------------------------------------------- Chain detection
     from binding_metrics.io.structures import detect_chains_from_file
@@ -747,6 +761,7 @@ def run_pipeline(
                 openfold_seeds=openfold_seeds,
                 on_unmappable_residue=on_unmappable_residue,
                 openfold_cyclic=openfold_cyclic,
+                openfold_use_msa_server=openfold_use_msa_server,
             )
             results["provenance"].update(prediction_provenance)
         else:
@@ -771,6 +786,7 @@ def run_pipeline(
                 seed_kwargs = {"seeds": tuple(openfold_seeds)} if openfold_seeds else {}
                 seed_kwargs.update(on_unmappable_residue_kwargs(on_unmappable_residue))
                 seed_kwargs.update(openfold_cyclic_kwargs(openfold_cyclic))
+                seed_kwargs.update(openfold_msa_server_kwargs(openfold_use_msa_server))
                 if openfold_mode == "refold":
                     predictions_dir = run_openfold_refolding(
                         complex_structure_path=input_path,
@@ -1041,6 +1057,7 @@ def main():
     )
     add_openfold_seeds_arg(openfold_group)
     add_openfold_cyclic_arg(openfold_group)
+    add_openfold_no_msa_server_arg(openfold_group)
     add_on_unmappable_residue_arg(openfold_group)
 
     add_prediction_args(parser)
@@ -1122,6 +1139,7 @@ def main():
                 random_seed=args.random_seed,
                 openfold_seeds=args.openfold_seeds,
                 openfold_cyclic=args.openfold_cyclic,
+                openfold_use_msa_server=not args.openfold_no_msa_server,
                 on_unmappable_residue=args.on_unmappable_residue,
                 predictor=args.predictor,
                 prediction_dir=args.prediction_dir,

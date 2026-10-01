@@ -97,12 +97,14 @@ from binding_metrics.cli import (
     add_config_arg,
     add_on_unmappable_residue_arg,
     add_openfold_cyclic_arg,
+    add_openfold_no_msa_server_arg,
     add_openfold_seeds_arg,
     add_random_seed_arg,
     check_on_unmappable_residue,
     check_openfold_cyclic,
     on_unmappable_residue_kwargs,
     openfold_cyclic_kwargs,
+    openfold_msa_server_kwargs,
     parse_args_with_config,
 )
 from binding_metrics.cli.prediction import (
@@ -434,6 +436,7 @@ def _run_batched_openfold(
     binder_type: str = "auto",
     on_incompatible: str = "error",
     openfold_cyclic: bool | str = "auto",
+    openfold_use_msa_server: bool = True,
 ) -> None:
     """Run OpenFold3 on all successful samples in a single subprocess.
 
@@ -441,7 +444,9 @@ def _run_batched_openfold(
     sample's flat dict.  Also updates each sample's JSON report on disk.
     ``openfold_seeds`` are the seeds OpenFold3 samples with (written to its runner YAML); ``None``
     keeps the default, 42. ``openfold_cyclic`` decides, sample by sample, whether the binder gets
-    ``"cyclic": true``; each sample's block records ``binder_cyclic``. ``on_unmappable_residue``
+    ``"cyclic": true``; each sample's block records ``binder_cyclic``. ``openfold_use_msa_server``
+    False runs OpenFold3 without the ColabFold MSA server; each row records it as
+    ``provenance_openfold3_use_msa_server``. ``on_unmappable_residue``
     is passed to the query preparation of every sample; a residue OpenFold3 cannot take then
     stops the whole
     batch call (the error names each such residue) before the model starts. A sample that the
@@ -502,6 +507,7 @@ def _run_batched_openfold(
     installed = openfold3_version(conda_python_command(openfold_conda_env))
     for idx in sid_to_row_idx.values():
         rows[idx]["provenance_openfold3_version"] = installed
+        rows[idx]["provenance_openfold3_use_msa_server"] = bool(openfold_use_msa_server)
 
     of_dir = output_dir / "_openfold_batch"
     try:
@@ -513,6 +519,7 @@ def _run_batched_openfold(
             **({"seeds": tuple(openfold_seeds)} if openfold_seeds else {}),
             **on_unmappable_residue_kwargs(on_unmappable_residue),
             **openfold_cyclic_kwargs(openfold_cyclic),
+            **openfold_msa_server_kwargs(openfold_use_msa_server),
         )
     except Exception as e:  # noqa: BLE001 - the batch call spawns a subprocess; see openfold_error
         # Warning level keeps the line on stdout, where it was printed before.
@@ -676,6 +683,7 @@ def _run_batched_prediction(
     binder_type: str = "auto",
     on_incompatible: str = "error",
     openfold_cyclic: bool | str = "auto",
+    openfold_use_msa_server: bool = True,
 ) -> None:
     """The ``--predictor`` step of a batch: every sample through one shared prediction store.
 
@@ -756,6 +764,7 @@ def _run_batched_prediction(
                     openfold_seeds=openfold_seeds,
                     on_unmappable_residue=on_unmappable_residue,
                     openfold_cyclic=openfold_cyclic,
+                    openfold_use_msa_server=openfold_use_msa_server,
                 )
             except Exception as e:  # noqa: BLE001 - one unreadable input must not stop the batch
                 logger.warning("  %s: no prediction request: %s", sid, e)
@@ -774,6 +783,7 @@ def _run_batched_prediction(
         installed = openfold3_version(conda_python_command(openfold_conda_env))
         for idx, *_ in eligible:
             rows[idx]["provenance_openfold3_version"] = installed
+            rows[idx]["provenance_openfold3_use_msa_server"] = bool(openfold_use_msa_server)
 
     for idx, sid, input_path, pchain, rchain in eligible:
         if sid in requests:
@@ -874,6 +884,7 @@ def run_batch(
     on_incompatible: str = "error",
     preflight_only: bool = False,
     openfold_cyclic: bool | str = "auto",
+    openfold_use_msa_server: bool = True,
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -913,6 +924,12 @@ def run_batch(
         openfold_seeds: Seed values OpenFold3 samples with, written to its runner YAML; ``None``
             keeps the default, 42. The sample scored is the first sample of the first seed
             given (see ``--openfold-seeds``).
+        openfold_use_msa_server: Whether OpenFold3 uses the ColabFold MSA server (default True;
+            ``--openfold-no-msa-server`` is False). With the server off OpenFold3 runs without a
+            computed MSA (single-sequence unless MSAs are supplied elsewhere), which lowers
+            accuracy for a natural receptor, but the template alignments written by the toolkit
+            are no longer replaced by the server (issue #68). Each row that OpenFold3 was run for
+            records it as ``provenance_openfold3_use_msa_server``.
         openfold_cyclic: ``"auto"`` (default), ``True`` (``"on"``) or ``False`` (``"off"``):
             whether the binder chain of each OpenFold3 query gets ``"cyclic": true`` (see
             ``--openfold-cyclic``). The ``openfold_*`` (or ``prediction_*``) columns then
@@ -1131,6 +1148,7 @@ def run_batch(
             binder_type=binder_type,
             on_incompatible=on_incompatible,
             openfold_cyclic=openfold_cyclic,
+            openfold_use_msa_server=openfold_use_msa_server,
         )
     elif want_openfold:
         _run_batched_openfold(
@@ -1146,6 +1164,7 @@ def run_batch(
             binder_type=binder_type,
             on_incompatible=on_incompatible,
             openfold_cyclic=openfold_cyclic,
+            openfold_use_msa_server=openfold_use_msa_server,
         )
     return finished
 
@@ -1352,6 +1371,7 @@ def main():
     )
     add_openfold_seeds_arg(openfold_group)
     add_openfold_cyclic_arg(openfold_group)
+    add_openfold_no_msa_server_arg(openfold_group)
     add_on_unmappable_residue_arg(openfold_group)
 
     add_prediction_args(parser, batch=True)
@@ -1508,6 +1528,7 @@ def main():
         openfold_conda_env=args.openfold_conda_env,
         openfold_seeds=args.openfold_seeds,
         openfold_cyclic=args.openfold_cyclic,
+        openfold_use_msa_server=not args.openfold_no_msa_server,
         on_unmappable_residue=args.on_unmappable_residue,
         predictor=args.predictor,
         prediction_dir=args.prediction_dir,

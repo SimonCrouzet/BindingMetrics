@@ -157,6 +157,35 @@ OPENFOLD_MODE_HELP = (
     "Default: score"
 )
 
+
+def add_openfold_no_msa_server_arg(parser) -> None:
+    """Add ``--openfold-no-msa-server`` to an argparse parser or group.
+
+    The OpenFold3 step uses the ColabFold MSA server unless this is given. Without it OpenFold3
+    has no computed MSA, and the server cannot replace the template alignments that the toolkit
+    writes (issue #68).
+    """
+    parser.add_argument(
+        "--openfold-no-msa-server",
+        action="store_true",
+        help=(
+            "Do not use the ColabFold MSA server for OpenFold3: it then runs without a computed "
+            "MSA (single-sequence unless MSAs are supplied elsewhere), which lowers accuracy for "
+            "a natural receptor, but the template alignments written by the toolkit are no longer "
+            "replaced by the server (issue #68)."
+        ),
+    )
+
+
+def openfold_msa_server_kwargs(use_msa_server: bool) -> dict:
+    """The keyword argument for an OpenFold3 run function, only when the server is off.
+
+    The default (server on) is left out so that a function that predates the option, or a test
+    double that replaces it, is called exactly as before.
+    """
+    return {} if use_msa_server else {"use_msa_server": False}
+
+
 #: Values of ``--openfold-cyclic``; the first is the default.
 OPENFOLD_CYCLIC_CHOICES = ("auto", "on", "off")
 
