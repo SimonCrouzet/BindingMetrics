@@ -324,11 +324,11 @@ class TestTheStepsThatAreChecked:
         )
         # an output made elsewhere: the mode is not known unless it is stated
         assert model_step_of("boltz2", Path("d"), openfold) == ("boltz2", "prediction", True, None)
-        assert model_step_of("boltz2", Path("d"), openfold, prediction_mode="lock") == (
+        assert model_step_of("boltz2", Path("d"), openfold, prediction_mode="score-lock") == (
             "boltz2",
             "prediction",
             True,
-            "lock",
+            "score-lock",
         )
         assert model_step_of("of3", None, openfold, prediction_mode="refold")[3] == "refold"
         assert model_step_of("boltz2", None, frozenset({"interface"})) is None
