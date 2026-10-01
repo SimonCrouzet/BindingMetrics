@@ -296,6 +296,11 @@ def check_input(
         skipped_steps[MODEL_STEP] = "; ".join(
             _short(v) for v in report.violations if v.kind == "predictor"
         )
+        # the model's registry metric goes with its predictor; the plan must not list it as run
+        report = dataclasses.replace(
+            report,
+            metrics_to_run=tuple(m for m in report.metrics_to_run if m != model[1]),
+        )
 
     violations = [_short(v) for v in report.violations]
     if error is not None:

@@ -234,6 +234,22 @@ class TestPolicies:
         assert results["preflight"]["status"] == "skipped"
         assert "ramachandran_favoured_pct" in results["geometry"]["ramachandran"]
 
+    def test_the_plan_does_not_list_the_model_step_as_run_when_its_predictor_is_left_out(
+        self, tmp_path
+    ):
+        results = run_pipeline(
+            BICYCLE,
+            tmp_path / "out",
+            skip_relax=True,
+            metrics=frozenset({"openfold", "interface"}),
+            on_incompatible="skip",
+            preflight_only=True,
+        )
+        plan = results["preflight"]["plan"]
+        runs = next(line for line in plan.splitlines() if line.startswith("Runs:"))
+        assert "interface" in runs and "openfold" not in runs
+        assert "Left out: predictor OpenFold3" in plan
+
     def test_the_binder_type_that_was_given_reaches_the_profile(self, tmp_path):
         results = pipeline(
             LINEAR, tmp_path / "out", metrics=frozenset({"interface"}), binder_type="nanobody"
