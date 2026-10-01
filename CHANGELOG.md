@@ -203,6 +203,26 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - **`detect_chains` finds all-D chains (#41).** `io.structures.detect_chains`, which
   `compute_interaction_energy` uses when no chain is named, counts every amino-acid residue. A 20-residue ALA
   chain with a 5-residue DAL chain: `('A', None)` -> `('B', 'A')`.
+- **Author chain IDs in the prep report and the relaxation results of an mmCIF (#64).** OpenMM names the chains
+  of an mmCIF by `label_asym_id` when the file has more label IDs than author IDs, and the report named them so,
+  where every option and metric result uses `auth_asym_id`. `results["prep"]` (`kept_nonstandard`,
+  `removed_heterogens`, `chain_breaks`), `dropped_protein_chains`, `peptide_cyclic_bonds`, `qc_failed_checks` and
+  the matching log lines name the author IDs. PDB inputs are unchanged, and so are the chain IDs of the OpenMM
+  topology and of every file the toolkit writes.
+  - 1CWA prep: `kept_nonstandard` `['DAL (chain B)', ...]` -> `['DAL (chain C)', ...]` (the peptide is author chain C).
+  - 3P8F prep: `removed_heterogens` `['GSH (chain C)']` -> `['GSH (chain A)']` (GSH is in author chain A; the file has
+    no author chain C).
+  - 1CWA relaxed from the raw file (`--skip-prep`): `peptide_cyclic_bonds` `B:11:C`, `B:1:N` -> `C:11:C`, `C:1:N`.
+    A relaxation of the prepped file already gave chain C.
+- **The relaxation reads `peptide_chain_id` and `receptor_chain_id` as author IDs (#64).** The two options of
+  `RelaxationConfig`, and so `binding-metrics-relax --peptide-chain`, were looked up in the OpenMM topology by the ID
+  given, which is another chain for an mmCIF with more label IDs than author IDs. An ID is read as an author ID
+  first and as an ID of the topology otherwise, so the IDs that worked before still work. `binding-metrics-run`
+  hands the relaxer the author IDs, where it handed OpenMM's.
+  - 1CWA, raw file, `peptide_chain_id="C"`, `receptor_chain_id="A"`: the 140 waters of topology chain C were taken
+    for the peptide and the real peptide was dropped as a third protein chain (`dropped_protein_chains` `['B']`),
+    with `success` true; `potential_energy_minimized` -29964.5 -> -21549.6 kJ/mol (`--md-duration-ps 0`, the value
+    that the ID `B` gave), `dropped_protein_chains` `['B']` -> `[]`.
 
 ### Added
 
@@ -293,6 +313,7 @@ Values from earlier versions differ in the cases below. A change reads "before -
 - `binding-metrics-run --predictor {af2,boltz2,of3,protenix}` (the choices are the registered adapters) makes the `openfold` step read the prediction of that model through one `PredictionSession` per sample and write `results["prediction"]`, so a model runs at most once for the confidence scalars, the interface PAE and PDE, the EvoBind score and the adversarial check. `results["prediction"]` holds the keys of `summarize_prediction` (with `model`), the EvoBind keys merged as the OpenFold step merges them, and `cache`: the counters of `session.stats()` and `request_key`, the name of the store entry; `results["openfold"]` is `{"skipped": true}`. Without `--predictor` the step, `--openfold-*` and `results["openfold"]` are as before. Options: `--prediction-dir DIR` reads an output you made (it is adopted into the store, the model never runs), `--prediction-binder-chain` and `--prediction-target-chain` name the chains inside the prediction when they differ from the input's, `--prediction-cache DIR` is the store (default `<output-dir>/predictions`; an identical request starts no model), `--rerun-predictions` runs once again although the store has it (outputs given with `--prediction-dir` are never replaced). Only of3 has a runner: any other model without `--prediction-dir` is refused while the command line is checked, and so is a prediction option without `--predictor`. `run_pipeline` takes the keyword-only `predictor`, `prediction_dir`, `prediction_binder_chain`, `prediction_target_chain`, `prediction_cache` and `rerun_predictions`. The checkpoint the record names goes to `provenance["openfold3_checkpoint"]`. `--openfold-mode`, `--openfold-seeds`, `--openfold-conda-env` and `--on-unmappable-residue` configure the OpenFold3 run of `--predictor of3`; a prediction that fails is recorded as `{"error": ...}` and the other steps go on.
 - `binding-metrics-batch` and `run_batch` take the same prediction options (`predictor`, `prediction_dir`, `prediction_binder_chain`, `prediction_target_chain`, `prediction_cache`, `rerun_predictions`). Like the batched OpenFold3 call, the prediction step runs once for all samples after the workers, in the main process, through one store (`--prediction-cache`, default `<output-dir>/_predictions`): the model starts once for the predictions the store lacks (OpenFold3 predicts them in one call), every sample then reads its prediction from the store with a session of its own, and a second run over the same samples starts no model. `--prediction-dir` is the root with one output per sample ID (the file stem) and is never run. The columns are `prediction_*`, the per-sample JSON gets `prediction`, and a sample whose prediction failed is `partial` with `prediction` in `batch_failed_steps` while the others go on. `provenance_openfold3_version` is added for the samples OpenFold3 predicted.
 - `compute_prediction_metrics` is a lazy export of `binding_metrics` and `binding_metrics.metrics`, and `binding_metrics.predictors` exports `PredictionRequest`, `StoredPrediction`, `PredictionStore`, `PredictionFailedError`, `PredictionUnavailableError`, `PredictionSession`, `PredictionRunner` and `OpenFold3Runner` the same way (importing the package still imports no model code and no heavy dependency).
+- `author_chain_ids(topology)`, `openmm_chain_id(topology, author_id)`, `attach_author_chain_ids(topology, source_path)` and `copy_author_chain_ids(source, target)` (`binding_metrics.io.structures`): the author chain ID (`auth_asym_id`) of each chain of an OpenMM topology read from an mmCIF, and the chain of the topology that holds the amino-acid residues of an author ID. `load_structure` records the author IDs by matching `_atom_site.id` (needs gemmi; without it the author IDs are taken to be the topology's own), and `strip_heterogens`, `drop_other_protein_chains` and `prep_structure` carry them to the topology they return. The chain IDs of the topology are unchanged (#64). 1CWA: topology chains A, B, C, D are author chains A, C, A, C, and `openmm_chain_id(topology, "C")` is `"B"`, not the water chain C. 3P8F: author chain I is chain B.
 
 ### Changed
 
@@ -418,3 +439,5 @@ Values from earlier versions differ in the cases below. A change reads "before -
   file (#41).
 - `prep_structure` on the stapled peptide 3V3B failed with "Chain 'C' not found in topology", because the
   cyclic-bond hints named the input chain and PDBFixer had renamed it (#41).
+- `detect_cyclization` and `patch_cyclic_topology` take the author chain ID of the peptide for a topology read by `load_structure`, and the ID of the chain in the topology as before (#64). `detect_cyclization(topology, positions, "C")` on the 1CWA topology examined the 140 waters of topology chain C, warned "atom N not found on first residue HOH2001" and returned `[]`: `[]` -> `['head_to_tail']`. 3P8F chain I: `ValueError` "Chain 'I' not found in topology." -> head-to-tail and disulfide. The `CyclicBondInfo` entries carry the ID of the chain in the topology.
+- `AtomSnapshot.from_topology` keys residues by the author chain ID of the topology, so a failed structural check of a relaxation of a raw mmCIF names the chain as the file does (#64).
