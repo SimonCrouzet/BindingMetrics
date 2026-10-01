@@ -59,6 +59,7 @@ from binding_metrics._constants import (
 )
 from binding_metrics.capabilities import POLICIES, IncompatibleInputError
 from binding_metrics.cli import (
+    OPENFOLD_MODE_HELP,
     add_config_arg,
     add_on_unmappable_residue_arg,
     add_openfold_cyclic_arg,
@@ -1028,9 +1029,7 @@ def main():
         "--openfold-mode",
         choices=["score", "refold"],
         default="score",
-        help="score: both chains as templates (confidence); "
-        "refold: binder predicted freely (refolding RMSD). "
-        "Default: score",
+        help=OPENFOLD_MODE_HELP,
     )
     openfold_group.add_argument(
         "--openfold-conda-env",

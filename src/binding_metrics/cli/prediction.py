@@ -355,7 +355,8 @@ def prediction_chain_map(
 def reference_for(predictor: str, openfold_mode: str, input_path: Path) -> Optional[Path]:
     """The structure the binder RMSD is measured against: the input pose in refold mode only.
 
-    A scored prediction is templated on the input pose, so its RMSD against it says nothing.
+    In score mode the pipeline reports the displacement of the binder centre of mass instead
+    (``delta_com_angstrom``, in the EvoBind adversarial check) and leaves ``binder_ca_rmsd`` NaN.
     """
     return input_path if predictor == "of3" and openfold_mode == "refold" else None
 

@@ -571,7 +571,7 @@ binding-metrics-run --input complex.cif --output-dir results/ \
     --metrics energy,interface,geometry,electrostatics
 ```
 
-OpenFold3 runs in the `openfold3` conda env by default (see [OpenFold3 install](#openfold3-optional) above). Use `--openfold-mode refold` to measure refolding RMSD (binder predicted freely, receptor fixed as template).
+OpenFold3 runs in the `openfold3` conda env by default (see [OpenFold3 install](#openfold3-optional) above). `--openfold-mode score` (the default) gives each chain its own structure from the input as a template, and OpenFold3 places the binder itself: its confidences (pLDDT, pTM, ipTM) refer to its own pose, and `delta_com_angstrom` of the EvoBind adversarial check shows whether it kept the input pose. `--openfold-mode refold` templates only the receptor, predicts the binder from its sequence and measures `binder_ca_rmsd` against the input (the refolding RMSD). With the ColabFold MSA server on, the default, the server can replace the template alignment of a chain for which it finds hits (a known limitation, issue #68); `use_msa_server=False`, or `--no-msa-server` of `binding-metrics-openfold`, keeps the templates.
 
 #### Pre-flight check
 

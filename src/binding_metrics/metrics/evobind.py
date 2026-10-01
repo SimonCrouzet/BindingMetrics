@@ -819,8 +819,10 @@ def compute_evobind_adversarial_from_records(
     The score divides by the adversary's pLDDT, and pLDDT is calibrated per model, so
     compare ``evobind_adversarial_score`` between designs only when the same adversary
     model made the second prediction. When the adversary was run in OpenFold3 score mode
-    it was templated on the design pose, so agreement with the design is partly by
-    construction; an independent adversary is a sequence-only prediction.
+    each chain was given its own structure from the design as a template, so the folds of the
+    chains agree with the design in part by construction; the relative pose of binder and
+    receptor is not templated (OpenFold3 places the binder itself), so ``delta_com_angstrom``
+    tests the pose. An adversary that is independent of the design is a sequence-only prediction.
 
     Args:
         design: The first prediction, or the input pose. A ``PredictionRecord`` (its

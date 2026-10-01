@@ -136,8 +136,9 @@ logger = logging.getLogger(__name__)
 KEY_FORMAT = 1
 
 #: Values of ``PredictionRequest.mode``: a prediction from the model's own input (``predict``), a
-#: prediction of an existing complex with both chains as templates (``score``), and one with the
-#: binder folded from its sequence next to a templated receptor (``refold``).
+#: prediction of an existing complex with each chain given its own structure as a template
+#: (``score``), and one with the binder folded from its sequence next to a receptor given as
+#: template (``refold``).
 MODES: tuple[str, ...] = ("predict", "score", "refold")
 
 STATUS_DONE = "done"

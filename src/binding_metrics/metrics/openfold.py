@@ -562,8 +562,12 @@ def run_openfold_scoring(
 ) -> Path:
     """Run OpenFold3 scoring of an existing complex structure (Mode 1).
 
-    Both receptor and binder chains are provided as structural templates.
-    OF3 scores the known conformation and outputs confidence metrics.
+    Each chain is given its own structure from the complex as a template (the binder its
+    conformation, the receptor its conformation), and OF3 outputs confidence metrics for the
+    complex it predicts from them. A template carries no inter-chain geometry, so OF3 places
+    the binder itself: its confidences describe its own pose, and ``delta_com_angstrom`` of the
+    EvoBind adversarial check tells whether that pose is the input pose (see
+    :func:`prepare_scoring_query`; with the MSA server on, issue #68 applies).
     Use :func:`compute_openfold_metrics` with ``binder_chain`` and
     ``receptor_chain`` to extract per-chain scores after inference.
 
@@ -665,7 +669,7 @@ def run_openfold_refolding(
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
 ) -> Path:
-    """Run OpenFold3 refolding: binder predicted freely, receptor fixed as template.
+    """Run OpenFold3 refolding: binder predicted from sequence, receptor given as template.
 
     Convenience wrapper for Mode 2. Calls :func:`prepare_refolding_query` to
     build the input JSON, then invokes :func:`run_openfold`. After inference,
@@ -681,7 +685,7 @@ def run_openfold_refolding(
 
     Args:
         complex_structure_path: CIF/PDB of the full complex.
-        receptor_chain: Chain ID of the receptor (fixed as template).
+        receptor_chain: Chain ID of the receptor (given as template).
         binder_chain: Chain ID of the binder (refolded from sequence only).
         query_name: Prediction query name.
         output_dir: Top-level output directory.
@@ -793,8 +797,9 @@ def run_openfold_batched(
     Args:
         samples: Per-sample descriptors.
         output_dir: Top-level output directory.
-        mode: ``"score"`` (both chains as templates) or ``"refold"``
-            (binder predicted from sequence only).
+        mode: ``"score"`` (each chain is given its own structure as a template; OF3 places
+            the binder itself) or ``"refold"`` (only the receptor is templated; the binder is
+            predicted from sequence only).
         inference_ckpt_path: Optional model checkpoint path.
         num_diffusion_samples: Structure samples per query (default 5).
         num_model_seeds: None (default) leaves ``--num_model_seeds`` out; a number makes

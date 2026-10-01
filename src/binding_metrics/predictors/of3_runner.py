@@ -32,9 +32,10 @@ openfold module is imported when a run starts, never before)::
 Requests. ``make_request`` builds the ``PredictionRequest`` of an OpenFold3 run with every
 setting that changes the output written out (the defaults included), so two callers that mean the
 same run get the same key. ``mode`` is ``"score"`` (``run_openfold_scoring``: the complex file
-with both chains as templates), ``"refold"`` (``run_openfold_refolding``: the binder from its
-sequence beside a templated receptor) or ``"predict"`` (``input_path`` is a ready OpenFold3 query
-file for ``run_openfold``; files that the query names are not hashed). What goes into the key:
+with each chain given its own structure as a template), ``"refold"`` (``run_openfold_refolding``:
+the binder from its sequence beside a receptor given as template) or ``"predict"``
+(``input_path`` is a ready OpenFold3 query file for ``run_openfold``; files that the query names
+are not hashed). What goes into the key:
 
 * the OpenFold3 version (``version()``; empty when it cannot be told), the number of samples per
   seed, the chain roles and the content hash of the input file;

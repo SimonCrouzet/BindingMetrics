@@ -1363,11 +1363,14 @@ def prepare_refolding_query(
 ) -> Path:
     """Prepare an OpenFold3 query JSON for binder refolding with receptor as template.
 
-    **Mode 2 — target-fixed refolding:**
-    The receptor chain is provided as a structural template so that OF3 is
-    conditioned on the known receptor geometry. The binder chain is predicted
-    from sequence only (no template). This answers: "given the known receptor,
-    can OF3 recover the bound binder conformation?"
+    **Mode 2 — refolding:**
+    The receptor chain is given its own structure from the complex as a template, so that OF3
+    is conditioned on the receptor fold. The binder chain is predicted from sequence only (no
+    template), so OF3 predicts both the binder conformation and its pose against the receptor.
+    This answers: "next to a receptor of known fold, can OF3 recover the bound binder
+    conformation and pose from its sequence?" ``binder_ca_rmsd`` against the input, in the
+    receptor frame, measures it. The receptor template carries the receptor fold only, not
+    the position of the binder (see the note under Mode 1).
 
     Files written under ``output_dir``:
 
@@ -1394,7 +1397,7 @@ def prepare_refolding_query(
 
     Args:
         complex_structure_path: CIF or PDB file of the full complex.
-        receptor_chain: Chain ID of the receptor/target to fix as template.
+        receptor_chain: Chain ID of the receptor/target to give as template.
         binder_chain: Chain ID of the binder to refold (no template).
         query_name: Name for the prediction query (used in file names and the
             OF3 ``name`` field).
@@ -1521,10 +1524,23 @@ def prepare_scoring_query(
     """Prepare an OpenFold3 query JSON to score an existing complex structure.
 
     **Mode 1 — structure scoring:**
-    Both receptor and binder chains are provided as structural templates so
-    that OF3 evaluates the known conformation rather than predicting de-novo.
-    OF3 outputs confidence scores (pLDDT, pTM, ipTM, etc.) reflecting how
-    self-consistent it finds that specific structure.
+    Each chain is given its own structure from the complex as a template: the binder its
+    conformation (its scaffold) and the receptor its conformation. OF3 outputs confidence
+    scores (pLDDT, pTM, ipTM, etc.) for the complex that it predicts from them.
+
+    A template carries the fold of the chain it is made from and no inter-chain geometry: the
+    template files here hold one chain each, and the template embedder of OpenFold3 (v0.5.0,
+    ``openfold3/core/model/feature_embedders/template_embedders.py``, ``_embed_feats``) restricts
+    the pair masks of the template features to pairs of tokens of one chain. OpenFold3 therefore
+    places the binder against the receptor itself, and its confidences (pLDDT, pTM, ipTM, PAE)
+    describe that pose, not the pose of the input. Whether it kept the input pose is a separate
+    question: ``delta_com_angstrom`` of the EvoBind adversarial check, the displacement of the
+    binder centre of mass between the input and the prediction after superposing the receptor,
+    answers it. ``binder_ca_rmsd`` is computed in refold mode only.
+
+    Known limitation (issue #68): with the ColabFold MSA server on (the default) the server can
+    replace the template alignment of a chain for which it finds hits, so that chain may not be
+    given the structure written here; ``use_msa_server=False`` (``--no-msa-server``) keeps it.
 
     Files written under ``output_dir``:
 
@@ -1913,8 +1929,9 @@ def prepare_batched_refolding_queries(
 ) -> Path:
     """Prepare a single OF3 query JSON that refolds binders for multiple complexes.
 
-    Receptor chains are provided as structural templates; binder chains are
-    predicted from sequence only.
+    Each receptor chain is given its own structure as a template; binder chains are
+    predicted from sequence only, so OF3 predicts their conformation and pose (see
+    :func:`prepare_refolding_query`).
 
     Args:
         samples: Per-sample descriptors.

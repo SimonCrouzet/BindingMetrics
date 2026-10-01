@@ -7,11 +7,14 @@ default literals (pH, device, MD duration, save interval) were replaced by the n
 constants in ``binding_metrics._constants``. New options may be added; an existing one
 must not change.
 
-Three deliberate edits since the capture: ``--peptide-chain`` and ``--receptor-chain`` gained
+Four deliberate edits since the capture: ``--peptide-chain`` and ``--receptor-chain`` gained
 the alias spellings ``--binder-chain`` and ``--target-chain``, the ``--metrics`` help of
-``-batch`` lists ``dockq``, which the option already accepted, and the ``--openfold-seeds``
+``-batch`` lists ``dockq``, which the option already accepted, the ``--openfold-seeds``
 help of both commands no longer says that the seeds go to the query JSON (OpenFold3 does not
-read them there; they are written to its runner YAML) and says which sample is scored.
+read them there; they are written to its runner YAML) and says which sample is scored, and the
+``--openfold-mode`` help of both commands no longer says that ``score`` gives OpenFold3 both
+chains as templates "for the known conformation": a template carries the fold of one chain and
+no inter-chain geometry, so OpenFold3 places the binder itself.
 """
 
 import argparse
@@ -241,9 +244,13 @@ GOLDEN = {
                 None,
                 False,
                 "'score'",
-                "score: both chains as templates (confidence); "
-                "refold: binder predicted freely (refolding RMSD). "
-                "Default: score",
+                "score: each chain is given its own structure from the "
+                "input as a template and OpenFold3 places the binder "
+                "itself, so its confidences refer to its own pose "
+                "(delta_com_angstrom shows whether it kept the input "
+                "pose); refold: only the receptor is templated and the "
+                "binder is predicted from its sequence "
+                "(binder_ca_rmsd, the refolding RMSD). Default: score",
             ),
             "--openfold-conda-env": (
                 "OpenFold",
@@ -478,7 +485,13 @@ GOLDEN = {
                 None,
                 False,
                 "'score'",
-                "score: both chains as templates; refold: binder predicted freely. Default: score",
+                "score: each chain is given its own structure from the "
+                "input as a template and OpenFold3 places the binder "
+                "itself, so its confidences refer to its own pose "
+                "(delta_com_angstrom shows whether it kept the input "
+                "pose); refold: only the receptor is templated and the "
+                "binder is predicted from its sequence "
+                "(binder_ca_rmsd, the refolding RMSD). Default: score",
             ),
             "--openfold-conda-env": (
                 "OpenFold",

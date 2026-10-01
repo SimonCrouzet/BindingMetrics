@@ -270,7 +270,7 @@ def main():
             "  parse         Parse metrics from existing OF3 output.\n"
             "  run           Run OF3 inference, then parse metrics.\n"
             "  prepare-query Prepare a query JSON for binder refolding.\n"
-            "  refold        Run OF3 binder refolding (receptor fixed as template)."
+            "  refold        Run OF3 binder refolding (receptor given as template)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -375,7 +375,7 @@ def main():
         type=str,
         required=True,
         metavar="CHAIN",
-        help="Chain ID of the receptor/target (fixed as template).",
+        help="Chain ID of the receptor/target (given as template).",
     )
     p_prep.add_argument(
         "--binder-chain",
@@ -414,7 +414,7 @@ def main():
     # --- refold subcommand ---
     p_refold = sub.add_parser(
         "refold",
-        help="Run OF3 binder refolding: receptor fixed as template, binder predicted freely.",
+        help="Run OF3 binder refolding: receptor given as template, binder from sequence.",
     )
     p_refold.add_argument(
         "--complex",
@@ -430,7 +430,7 @@ def main():
         type=str,
         required=True,
         metavar="CHAIN",
-        help="Chain ID of the receptor/target (fixed as template).",
+        help="Chain ID of the receptor/target (given as template).",
     )
     p_refold.add_argument(
         "--binder-chain",
@@ -492,7 +492,7 @@ def main():
     # --- prepare-scoring-query subcommand ---
     p_prep_score = sub.add_parser(
         "prepare-scoring-query",
-        help="Prepare OF3 query JSON to score an existing complex (both chains as templates).",
+        help="Prepare OF3 query JSON to score a complex (each chain templated on its own).",
     )
     p_prep_score.add_argument(
         "--complex",
@@ -538,7 +538,7 @@ def main():
     # --- score subcommand ---
     p_score = sub.add_parser(
         "score",
-        help="Run OF3 scoring of an existing complex (both chains as templates).",
+        help="Run OF3 scoring of a complex (each chain templated on its own; OF3 re-docks).",
     )
     p_score.add_argument(
         "--complex",

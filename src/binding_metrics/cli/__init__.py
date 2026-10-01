@@ -147,6 +147,16 @@ def add_openfold_seeds_arg(parser) -> None:
     )
 
 
+#: Help of ``--openfold-mode`` in ``binding-metrics-run`` and ``-batch``. A template carries the
+#: fold of one chain and no inter-chain geometry, so ``score`` does not hand OpenFold3 the pose.
+OPENFOLD_MODE_HELP = (
+    "score: each chain is given its own structure from the input as a template and OpenFold3 "
+    "places the binder itself, so its confidences refer to its own pose (delta_com_angstrom "
+    "shows whether it kept the input pose); refold: only the receptor is templated and the "
+    "binder is predicted from its sequence (binder_ca_rmsd, the refolding RMSD). "
+    "Default: score"
+)
+
 #: Values of ``--openfold-cyclic``; the first is the default.
 OPENFOLD_CYCLIC_CHOICES = ("auto", "on", "off")
 
