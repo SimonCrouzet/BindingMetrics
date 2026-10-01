@@ -37,7 +37,7 @@ and the openfold run module are imported when an input is read, never before)::
             covalent_bonds: Optional[Sequence[Mapping]] = None,
             on_unmappable_residue: str = "error", extra_args: Sequence[str] = ())
             -> PredictionRequest
-        .check_weights(request)                           # raises for any request with weights
+        .check_weights(request)                           # raises when the weights cannot be used
         .prepare(request, work_dir) -> Path               # <work_dir>/input/<name>.json
         .run(request, work_dir) -> Path                   # <work_dir>/predictions
         .is_available() -> bool
@@ -135,18 +135,40 @@ Weights. ``model_name`` selects the model; ``protenix pred`` loads
 ``<load_checkpoint_dir>/<model_name>.pt`` and downloads the file, and the CCD data files, from
 ByteDance's servers when they are missing (``runner/inference.py:398-454``). Custom weights are a
 directory plus the model name: ``request.weights`` is that directory (``weights_kind`` is
-``"directory"``) and the file is ``<directory>/<model_name>.pt``. The command has no option for
-``load_checkpoint_dir``: it is ``$PROTENIX_ROOT_DIR/checkpoint``, ``~/checkpoint`` without the
-variable, fixed when the package is imported (``configs/configs_inference.py:21,29``). Only
-``runner/inference.py``, which does not search the MSA, has ``--load_checkpoint_dir``. So a request
-with ``weights`` cannot be run: ``make_request``, ``check_weights``, ``prepare`` and ``run`` raise
-``ValueError`` that names the route that exists (put or link the file in that directory, or set
-``PROTENIX_ROOT_DIR`` in the environment that runs Protenix; the variable also moves the CCD data
-directory). ``supports_custom_weights`` is True so that the declaration matches the weights of
-Protenix (a directory and a name) and the refusal comes with its reason; the store passes such a
-request to the runner, which records the reason as the failure. The size of the default file at
-``$PROTENIX_ROOT_DIR/checkpoint/<model_name>.pt`` is recorded in the key
-(``checkpoint_size_bytes``; None while it is not there).
+``"directory"``) and the file is ``<directory>/<model_name>.pt``.
+
+``protenix pred`` cannot be given the directory. It forwards no unknown option to the config
+parser: the click context has no ``ignore_unknown_options`` (``runner/batch_inference.py:565``) and
+the configs are parsed without an argument string (``batch_inference.py:334-337``), so
+``load_checkpoint_dir`` keeps the default of ``configs/configs_inference.py:29``,
+``$PROTENIX_ROOT_DIR/checkpoint`` (the variable is read at import, ``configs_inference.py:21``,
+``configs/configs_data.py:22``; ``~`` without it). The option exists in ``runner/inference.py``
+(``run``, ``inference.py:697-778``; the argument parser is ``protenix/config/config.py:244-260``,
+the web service builds that command line at ``colab_request_parser.py:472``), and this runner does
+not use it: that entry point never searches the MSA (``preprocess_input`` is called by
+``inference_jsons`` only, ``batch_inference.py:540``), takes the config keys
+(``--sample_diffusion.N_sample``) instead of the click options, and leaves the cycle and step
+counts to the model's config where ``protenix pred`` writes its own defaults
+(``batch_inference.py:362-365``).
+
+The route the source supports is the variable. With ``weights`` the run sets ``PROTENIX_ROOT_DIR``
+for the process to a temporary root, ``<work_dir>/protenix_root``, that holds one symbolic link to
+every entry of the real root (``$PROTENIX_ROOT_DIR`` or ``~``) except ``checkpoint``, which links
+to the weights directory; the folder is removed when the run ends. The other data under the root is
+therefore the real one: Protenix reads the CCD files from ``<root>/common``
+(``configs_data.py:298-306``) and downloads them when they are missing
+(``inference.py:406-423``), which would put them in the temporary root, so a real root without the
+four files raises ``ValueError`` (run Protenix once with its default weights, which downloads
+them). A weights directory without ``<model_name>.pt``, or without the two extra files of an ESM
+or ISM model (``inference.py:456-489``), raises ``ValueError`` too, because Protenix would download
+the missing file into the user's directory (``inference.py:445-454``) and the run would use other
+weights than the key says. ``make_request`` makes these checks, and ``run`` makes them again. TO
+VERIFY with one run: that Protenix runs with a root of symbolic links, and that a conda
+environment does not set ``PROTENIX_ROOT_DIR`` itself (activation would replace the value). A file
+system without symbolic links raises ``ValueError``. The key holds the weights by content (the
+manifest hash of the directory, ``binding_metrics.predictors.weights``) and ``model_name``; without
+weights it holds the size of the default file at ``$PROTENIX_ROOT_DIR/checkpoint/<model_name>.pt``
+(``checkpoint_size_bytes``; None while it is not there, and always None with weights).
 
 The request. ``make_request`` writes every setting that changes the output into the request, the
 defaults included, so two callers that mean one run share its key. The key holds: the Protenix
@@ -214,6 +236,15 @@ _ON_UNMAPPABLE_CHOICES = ("error", "x")
 
 #: The only model with constraint embedders switched on (``configs/configs_model_type.py:123-136``).
 CONSTRAINT_MODEL_NAME = "protenix_base_constraint_v0.5.0"
+
+#: Files of ``<root>/common`` that ``protenix pred`` reads and downloads when missing
+#: (``runner/inference.py:406-423``, ``configs/configs_data.py:298-306``).
+_DATA_FILES = (
+    "components.cif",
+    "components.cif.rdkit_mol.pkl",
+    "obsolete_release_date.csv",
+    "clusters-by-entity-40.txt",
+)
 
 #: Letters of a ``proteinChain`` sequence: the 20 amino acids and X (``json_parser.py:53-75``).
 _PROTEIN_LETTERS = frozenset("ARNDCQEGHILKMFPSTWYVX")
@@ -339,26 +370,101 @@ def _constraint_model_message(model_name: str) -> str:
     )
 
 
-def _weights_message(weights: Any, model_name: str) -> str:
-    """Why ``weights`` cannot be used, and the route that exists."""
-    path = Path(getattr(weights, "path", weights))
-    kind = getattr(weights, "kind", "directory" if path.is_dir() else "file")
-    if kind != "directory":
-        return (
+def _weights_files(model_name: str) -> tuple[str, ...]:
+    """The files ``protenix pred`` needs in the weights directory for ``model_name``.
+
+    The model file, and for an ESM or ISM model the two files of the language model that
+    ``download_inference_cache`` fetches when they are missing (``runner/inference.py:445-489``).
+    """
+    files = [f"{model_name}.pt"]
+    if "esm" in model_name:
+        files += ["esm2_t36_3B_UR50D.pt", "esm2_t36_3B_UR50D-contact-regression.pt"]
+    if "ism" in model_name:
+        files += ["esm2_t36_3B_UR50D_ism.pt", "esm2_t36_3B_UR50D_ism-contact-regression.pt"]
+    return tuple(files)
+
+
+def _check_weights_directory(path: Path, model_name: str) -> None:
+    """Raise ``ValueError`` unless ``path`` is a directory with the files Protenix loads."""
+    if not path.is_dir():
+        raise ValueError(
             f"the Protenix runner takes its weights as a directory that holds {model_name}.pt, "
-            f"and {path} is a file"
+            f"and {path} is not one"
         )
-    present = "is there" if (path / f"{model_name}.pt").is_file() else "is not there"
-    return (
-        f"weights={str(path)!r} cannot be passed to `protenix pred`: the command has no option "
-        f"for the weights directory. Protenix would load {path}/{model_name}.pt ({model_name}.pt "
-        f"{present}) as <load_checkpoint_dir>/{model_name}.pt, where load_checkpoint_dir is "
-        "$PROTENIX_ROOT_DIR/checkpoint (~/checkpoint without the variable), fixed when the "
-        "package is imported (configs/configs_inference.py:21,29; runner/inference.py:154-160). "
-        "Only runner/inference.py has --load_checkpoint_dir, and it does not search the MSA. "
-        f"Put or link {model_name}.pt in that directory, or set PROTENIX_ROOT_DIR in the "
-        "environment that runs Protenix (the variable also moves the CCD data directory)."
-    )
+    absent = [name for name in _weights_files(model_name) if not (path / name).is_file()]
+    if absent:
+        raise ValueError(
+            f"the weights directory {path} has no {', '.join(absent)}. Protenix would download "
+            "the missing file from its own server into this directory "
+            "(runner/inference.py:445-489), and the run would use other weights than the "
+            f"request says. Put the file there, or change model_name (now {model_name!r})."
+        )
+
+
+def _protenix_root() -> Path:
+    """The data root ``protenix pred`` uses: ``$PROTENIX_ROOT_DIR``, else the home directory."""
+    try:
+        root = os.environ.get("PROTENIX_ROOT_DIR", str(Path.home()))
+    except (RuntimeError, OSError) as exc:
+        raise ValueError(
+            f"cannot tell the Protenix data root: no PROTENIX_ROOT_DIR, {exc}"
+        ) from exc
+    if not root:
+        raise ValueError("PROTENIX_ROOT_DIR is set to an empty string")
+    return Path(root)
+
+
+def _check_weights_environment() -> Path:
+    """The real data root, which must hold the CCD files Protenix reads (see the docstring)."""
+    root = _protenix_root()
+    absent = [name for name in _DATA_FILES if not (root / "common" / name).is_file()]
+    if absent:
+        raise ValueError(
+            f"custom weights need the Protenix data files in {root}/common ({', '.join(absent)} "
+            "missing): the run uses a temporary root that links to this one, so Protenix would "
+            "download them into it (runner/inference.py:406-423, configs/configs_data.py:298-306). "
+            "Run Protenix once with its default weights, which downloads them, or set "
+            "PROTENIX_ROOT_DIR to the root that has them."
+        )
+    return root
+
+
+def _link_root(real_root: Path, weights_dir: Path, target: Path) -> Path:
+    """Make ``target``: a root that links to the entries of ``real_root`` and to the weights.
+
+    ``checkpoint`` is the weights directory, and every other entry of ``real_root`` is linked as
+    it is, so the data Protenix reads under the root is the real one.
+
+    Raises:
+        ValueError: A link cannot be made (a file system without symbolic links).
+    """
+    try:
+        target.mkdir(parents=True)
+        for entry in sorted(os.scandir(real_root), key=lambda entry: entry.name):
+            if entry.name != "checkpoint":
+                os.symlink(entry.path, target / entry.name)
+        os.symlink(weights_dir, target / "checkpoint")
+    except OSError as exc:
+        _unlink_root(target)
+        raise ValueError(
+            f"cannot link the Protenix data root {real_root} and the weights {weights_dir} "
+            f"into {target}: {exc}. Custom weights need symbolic links, because "
+            "`protenix pred` has no option for the weights directory (see the module docstring)"
+        ) from exc
+    return target
+
+
+def _unlink_root(target: Path) -> None:
+    """Remove the root made by ``_link_root``; the links go, what they point at stays."""
+    if not target.is_dir() or target.is_symlink():
+        return
+    for entry in os.scandir(target):
+        if entry.is_symlink():
+            os.unlink(entry.path)
+    try:
+        target.rmdir()
+    except OSError as exc:
+        logger.warning("could not remove %s: %s", target, exc)
 
 
 def _unmappable_message(details: Sequence[tuple[str, str, Sequence[str]]]) -> str:
@@ -635,7 +741,9 @@ def _key_line(lines: Sequence[str]) -> str:
     return lines[-1] if lines else ""
 
 
-def _run_process(cmd: Sequence[str], cwd: Path) -> tuple[int, str, list[str]]:
+def _run_process(
+    cmd: Sequence[str], cwd: Path, env: Optional[Mapping[str, str]] = None
+) -> tuple[int, str, list[str]]:
     """Run ``cmd``, echo its output to ``sys.stderr`` and keep what the error message needs.
 
     stdout and stderr are read as one stream, because Protenix prints the MSA failure to stdout
@@ -650,7 +758,11 @@ def _run_process(cmd: Sequence[str], cwd: Path) -> tuple[int, str, list[str]]:
     """
     try:
         process = subprocess.Popen(
-            list(cmd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=str(cwd)
+            list(cmd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=str(cwd),
+            env=None if env is None else dict(env),
         )
     except FileNotFoundError as exc:
         raise FileNotFoundError(
@@ -721,6 +833,7 @@ def _failure_message(
     recorded: Sequence[str],
     output_tail: str,
     cmd: Sequence[str],
+    notes: Sequence[str] = (),
 ) -> str:
     """The text of a ``ProtenixRunError``: reason first, then the evidence."""
     lines = _lines(output_tail)
@@ -738,6 +851,7 @@ def _failure_message(
         shown = "\n".join(f"  {line[:_LINE_CHARS]}" for line in lines[-_LINES_IN_MESSAGE:])
         parts.append(f"Last lines of output:\n{shown}")
     parts.append(f"Command: {' '.join(cmd)}")
+    parts.extend(notes)
     return "\n".join(parts)
 
 
@@ -822,9 +936,10 @@ class ProtenixRunner(PredictionRunner):
             msa_server_mode: ``"protenix"`` or ``"colabfold"`` (``--msa_server_mode``).
             model_name: Model variant (``--model_name``).
             dtype: ``"bf16"``, ``"fp32"`` or ``"fp16"`` (``--dtype``).
-            weights: A directory that holds ``<model_name>.pt``, or a ``WeightsRef`` of one. Not
-                supported: ``protenix pred`` has no option for the directory, so any value raises
-                ``ValueError`` with the route that exists.
+            weights: A directory that holds ``<model_name>.pt``, or a ``WeightsRef`` of one
+                (``PredictionStore.weights_reference``). ``protenix pred`` has no option for it, so
+                the run points ``PROTENIX_ROOT_DIR`` at a temporary root that links to it (see the
+                module docstring). Its content is in the key.
             constraints: The content of the ``constraint`` section, written as given; only the
                 model ``protenix_base_constraint_v0.5.0`` reads it.
             covalent_bonds: The ``covalent_bonds`` list, written as given (a ring closure).
@@ -832,15 +947,14 @@ class ProtenixRunner(PredictionRunner):
             extra_args: Extra command-line arguments, passed verbatim after the runner's own.
 
         Raises:
-            ValueError: A mode other than ``predict``, ``weights``, a missing or equal
-                chain role, an unusable seed, a choice that is not offered, ``constraints`` with
-                a model that ignores them, or an ``extra_args`` entry that sets what the runner
-                sets.
+            ValueError: A mode other than ``predict``, ``weights`` that Protenix cannot load (not
+                a directory, no ``<model_name>.pt``, no CCD data in the real root), a missing or
+                equal chain role, an unusable seed, a choice that is not offered, ``constraints``
+                with a model that ignores them, or an ``extra_args`` entry that sets what the
+                runner sets.
         """
         if mode != "predict":
             raise ValueError(_unsupported_mode_message(mode))
-        if weights is not None:
-            raise ValueError(_weights_message(weights, model_name))
         _check_name(name)
         if not (binder_chain and receptor_chain):
             raise ValueError("a Protenix request needs binder_chain and receptor_chain")
@@ -861,8 +975,22 @@ class ProtenixRunner(PredictionRunner):
                 "extra_args": extra_args,
             }
         )
-        checkpoint = _default_checkpoint(options["model_name"])
-        checkpoint_size = checkpoint.stat().st_size if checkpoint and checkpoint.is_file() else None
+        checkpoint_size = None
+        if weights is None:
+            checkpoint = _default_checkpoint(options["model_name"])
+            if checkpoint and checkpoint.is_file():
+                checkpoint_size = checkpoint.stat().st_size
+        else:
+            kind = getattr(weights, "kind", "directory")
+            if kind != "directory":
+                raise ValueError(
+                    f"the Protenix runner takes its weights as a directory that holds "
+                    f"{options['model_name']}.pt, and {weights.path} is a {kind}"
+                )
+            _check_weights_directory(
+                Path(getattr(weights, "path", weights)).expanduser(), options["model_name"]
+            )
+            _check_weights_environment()
         return PredictionRequest(
             self.name,
             name,
@@ -870,6 +998,7 @@ class ProtenixRunner(PredictionRunner):
             input_path=input_path,
             binder_chain=binder_chain,
             receptor_chain=receptor_chain,
+            weights=weights,
             seeds=_resolve_seeds(seeds),
             num_samples=num_samples,
             model_version=self.version() or "",
@@ -899,7 +1028,8 @@ class ProtenixRunner(PredictionRunner):
         """Run ``protenix pred`` for ``request`` and return ``<work_dir>/predictions``.
 
         Raises:
-            ValueError: As for ``prepare``, or a mode other than ``predict``.
+            ValueError: As for ``prepare``, ``weights`` that cannot be loaded (``check_weights``) or
+                linked, or a mode other than ``predict``.
             FileNotFoundError: ``protenix`` is not on PATH and no conda environment is set.
             ProtenixRunError: Protenix exited non-zero, reported a failed MSA search, or left no
                 complete output for every seed and sample (see the module docstring).
@@ -909,13 +1039,33 @@ class ProtenixRunner(PredictionRunner):
         output_dir = work_dir / "predictions"
         cmd = self._command(request, job_path, output_dir)
         logger.info("Running Protenix: %s", " ".join(cmd))
-        returncode, tail, msa_failures = _run_process(cmd, work_dir)
+        environment: Optional[dict[str, str]] = None
+        notes: list[str] = []
+        linked_root: Optional[Path] = None
+        try:
+            if request.weights is not None:
+                real_root = _protenix_root()
+                linked_root = _link_root(
+                    real_root, request.weights.path, work_dir / "protenix_root"
+                )
+                environment = {**os.environ, "PROTENIX_ROOT_DIR": str(linked_root)}
+                notes.append(
+                    f"Environment: PROTENIX_ROOT_DIR={linked_root}, a root that links to the "
+                    f"entries of {real_root} and, as checkpoint, to the weights "
+                    f"{request.weights.path}"
+                )
+            returncode, tail, msa_failures = _run_process(cmd, work_dir, environment)
+        finally:
+            if linked_root is not None:
+                _unlink_root(linked_root)
         recorded = _recorded_errors(output_dir, request.name)
 
         def fail(headline: str, code: Optional[int] = None) -> ProtenixRunError:
             # The store renames the work directory when the run is stored, so a reason that
             # names it would point at nothing.
-            message = _failure_message(headline, recorded=recorded, output_tail=tail, cmd=cmd)
+            message = _failure_message(
+                headline, recorded=recorded, output_tail=tail, cmd=cmd, notes=notes
+            )
             return ProtenixRunError(
                 message.replace(str(work_dir), "<work_dir>"),
                 returncode=code,
@@ -945,15 +1095,17 @@ class ProtenixRunner(PredictionRunner):
     # ------------------------------------------------------------------ arguments
 
     def check_weights(self, request: PredictionRequest) -> None:
-        """Raise ``ValueError`` for a request with weights: the command cannot take them.
+        """Raise ``ValueError`` when ``request.weights`` cannot be loaded by ``protenix pred``.
 
-        The ABC check comes first (weights that are a file, not a directory); then every request
-        with weights is refused with the route that exists (see the module docstring).
+        The check of the base class (a directory, not a file) comes first; then the directory must
+        hold the files of the model (``<model_name>.pt``, see the module docstring) and the real
+        data root must hold the CCD files. Nothing is written.
         """
         super().check_weights(request)
         if request.weights is not None:
             model_name = _resolve_options(request.options)["model_name"]
-            raise ValueError(_weights_message(request.weights, model_name))
+            _check_weights_directory(request.weights.path, model_name)
+            _check_weights_environment()
 
     def _check_request(self, request: PredictionRequest) -> dict[str, Any]:
         """Refuse a request this runner cannot run; return its options with defaults written."""

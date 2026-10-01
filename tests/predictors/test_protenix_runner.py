@@ -55,7 +55,18 @@ for index, token in enumerate(argv):
         args[token[2:]] = argv[index + 1]
 job = json.loads(pathlib.Path(args["input"]).read_text(encoding="utf-8"))
 with open({record!r}, "a", encoding="utf-8") as handle:
-    handle.write(json.dumps({{"argv": argv, "job": job, "cwd": os.getcwd()}}) + "\\n")
+    root = os.environ.get("PROTENIX_ROOT_DIR", "")
+    seen = {{"root": root}}
+    if root and os.path.isdir(root):
+        seen["entries"] = sorted(os.listdir(root))
+        seen["links"] = sorted(e for e in os.listdir(root) if os.path.islink(os.path.join(root, e)))
+        checkpoint = os.path.join(root, "checkpoint")
+        if os.path.isdir(checkpoint):
+            seen["checkpoint"] = sorted(os.listdir(checkpoint))
+            seen["checkpoint_target"] = os.path.realpath(checkpoint)
+        common = os.path.join(root, "common")
+        seen["common"] = sorted(os.listdir(common)) if os.path.isdir(common) else None
+    handle.write(json.dumps({{"argv": argv, "job": job, "cwd": os.getcwd(), "env": seen}}) + "\\n")
 name = job[0]["name"]
 out = pathlib.Path(args["out_dir"])
 behavior = config["behavior"]
@@ -399,10 +410,30 @@ class TestModes:
 # ---------------------------------------------------------------------------- the weights
 
 
+DATA_FILES = (
+    "components.cif",
+    "components.cif.rdkit_mol.pkl",
+    "obsolete_release_date.csv",
+    "clusters-by-entity-40.txt",
+)
+
+
 class TestWeights:
-    """Weights are a directory plus a model name; the command has no option for the directory."""
+    """Weights are a directory plus a model name; a linked root carries them to `protenix pred`."""
 
     MODEL_FILE = f"{DEFAULT_MODEL_NAME}.pt"
+
+    @pytest.fixture
+    def real_root(self, tmp_path):
+        """The data root of this machine: the CCD files, a template database, no weights."""
+        root = tmp_path / "protenix_root"
+        (root / "common").mkdir(parents=True)
+        for name in DATA_FILES:
+            (root / "common" / name).write_text(name, encoding="utf-8")
+        (root / "search_database").mkdir()
+        (root / "checkpoint").mkdir()
+        (root / "checkpoint" / self.MODEL_FILE).write_bytes(b"default weights")
+        return root
 
     @pytest.fixture
     def weights_dir(self, tmp_path):
@@ -411,60 +442,115 @@ class TestWeights:
         (directory / self.MODEL_FILE).write_bytes(b"fine-tuned")
         return directory
 
+    def request(self, weights, runner=None, **kwargs):
+        return make(
+            runner or ProtenixRunner(), weights=weights, seeds=(3,), num_samples=1, **kwargs
+        )
+
     def test_the_runner_declares_what_protenix_takes(self):
         assert ProtenixRunner.supports_custom_weights is True
         assert ProtenixRunner.weights_kind == "directory"
 
-    def test_a_directory_is_refused_with_the_route_that_exists(self, weights_dir):
-        with pytest.raises(ValueError) as info:
-            make(weights=weights_dir)
-        message = str(info.value)
-        assert "no option for the weights directory" in message
-        assert f"{weights_dir}/{self.MODEL_FILE}" in message and "is there" in message
-        assert "$PROTENIX_ROOT_DIR/checkpoint" in message
-        assert "configs/configs_inference.py:21,29" in message
-        assert "runner/inference.py has --load_checkpoint_dir" in message
-        assert "set PROTENIX_ROOT_DIR" in message
+    def test_the_request_holds_the_weights_by_content_and_not_the_default_file(
+        self, real_root, weights_dir, tmp_path
+    ):
+        request = self.request(weights_dir)
+        assert request.weights.kind == "directory" and request.weights.path == weights_dir
+        assert request.options["checkpoint_size_bytes"] is None
+        assert request.canonical()["weights"] == request.weights.key_fields()
+        assert str(weights_dir) not in json.dumps(request.canonical())
+        assert request.key() != make().key()
+        copy = tmp_path / "moved"
+        shutil.copytree(weights_dir, copy)
+        assert self.request(copy).key() == request.key()
+        (copy / self.MODEL_FILE).write_bytes(b"other")
+        assert self.request(copy).key() != request.key()
+        assert request.canonical()["options"]["model_name"] == DEFAULT_MODEL_NAME
 
-    def test_the_message_says_when_the_model_file_is_not_in_the_directory(self, weights_dir):
-        with pytest.raises(ValueError, match="protenix-v2.pt is not there"):
-            make(weights=weights_dir, model_name="protenix-v2")
-
-    def test_a_reference_made_by_the_store_is_refused_the_same_way(self, tmp_path, weights_dir):
+    def test_a_reference_made_by_the_store_is_the_same_request(
+        self, tmp_path, real_root, weights_dir
+    ):
         reference = PredictionStore(tmp_path / "store").weights_reference(weights_dir)
-        with pytest.raises(ValueError, match="no option for the weights directory"):
-            make(weights=reference)
+        assert self.request(reference).key() == self.request(weights_dir).key()
 
-    def test_a_file_is_not_the_kind_of_weights_the_runner_takes(self, weights_dir):
-        with pytest.raises(ValueError, match="takes its weights as a directory"):
-            make(weights=weights_dir / self.MODEL_FILE)
+    def test_the_model_name_chooses_the_file_in_the_directory(self, real_root, weights_dir):
+        (weights_dir / "protenix-v2.pt").write_bytes(b"v2")
+        assert (
+            self.request(weights_dir, model_name="protenix-v2").key()
+            != self.request(weights_dir).key()
+        )
 
-    def test_a_request_made_elsewhere_with_weights_is_refused_before_anything_is_written(
-        self, tmp_path, weights_dir, stub_protenix
+    def test_a_directory_without_the_model_file_is_refused_because_protenix_would_download_it(
+        self, real_root, weights_dir
+    ):
+        with pytest.raises(ValueError) as info:
+            self.request(weights_dir, model_name="protenix-v2")
+        message = str(info.value)
+        assert f"{weights_dir} has no protenix-v2.pt" in message
+        assert "runner/inference.py:445-489" in message and "into this directory" in message
+
+    @pytest.mark.parametrize(
+        "model_name, extra",
+        [
+            ("protenix_mini_esm_v0.5.0", ["esm2_t36_3B_UR50D.pt"]),
+            ("protenix_mini_ism_v0.5.0", ["esm2_t36_3B_UR50D_ism.pt"]),
+        ],
+    )
+    def test_a_language_model_needs_its_own_files_in_the_directory(
+        self, real_root, weights_dir, model_name, extra
+    ):
+        (weights_dir / f"{model_name}.pt").write_bytes(b"x")
+        with pytest.raises(ValueError, match=extra[0].replace(".", r"\.")):
+            self.request(weights_dir, model_name=model_name)
+
+    def test_a_file_is_not_the_kind_of_weights_the_runner_takes(self, real_root, weights_dir):
+        reference = PredictionStore(weights_dir / "store").weights_reference(
+            weights_dir / self.MODEL_FILE
+        )
+        with pytest.raises(ValueError, match="is a file"):
+            self.request(reference)
+        with pytest.raises(ValueError, match="is not one"):
+            self.request(weights_dir / self.MODEL_FILE)
+
+    def test_a_real_root_without_the_ccd_files_is_refused_before_the_run(
+        self, real_root, weights_dir
+    ):
+        (real_root / "common" / "components.cif").unlink()
+        with pytest.raises(ValueError) as info:
+            self.request(weights_dir)
+        message = str(info.value)
+        assert "components.cif missing" in message and "download them into it" in message
+        assert "configs/configs_data.py:298-306" in message
+
+    def test_without_any_data_root_the_message_names_the_missing_directory(
+        self, tmp_path, weights_dir
+    ):
+        with pytest.raises(ValueError, match=r"protenix_root/common \(components\.cif"):
+            self.request(weights_dir)
+
+    def test_an_empty_root_variable_is_refused(self, monkeypatch, weights_dir):
+        monkeypatch.setenv("PROTENIX_ROOT_DIR", "")
+        with pytest.raises(ValueError, match="empty string"):
+            self.request(weights_dir)
+
+    def test_the_checks_are_made_again_by_check_weights_prepare_and_run(
+        self, tmp_path, real_root, weights_dir, stub_protenix
     ):
         runner = ProtenixRunner()
-        request = PredictionRequest(
-            "protenix",
-            "p53",
-            mode="predict",
-            input_path=P53,
-            binder_chain="B",
-            receptor_chain="A",
-            weights=weights_dir,
-        )
+        request = self.request(weights_dir)
+        (weights_dir / self.MODEL_FILE).unlink()
         work_dir = tmp_path / "work"
         work_dir.mkdir()
         for call in (runner.check_weights, lambda r: runner.prepare(r, work_dir)):
-            with pytest.raises(ValueError, match="no option for the weights directory"):
+            with pytest.raises(ValueError, match="has no protenix_base_default_v1.0.0.pt"):
                 call(request)
-        with pytest.raises(ValueError, match="no option for the weights directory"):
+        with pytest.raises(ValueError, match="has no protenix_base_default_v1.0.0.pt"):
             runner.run(request, work_dir)
         assert list(work_dir.iterdir()) == [] and stub_protenix.calls() == []
 
-    def test_a_file_reference_is_refused_by_the_check_of_the_base_class(
-        self, tmp_path, weights_dir
+    def test_a_request_made_elsewhere_with_a_file_is_refused_by_the_check_of_the_base_class(
+        self, real_root, weights_dir
     ):
-        runner = ProtenixRunner()
         request = PredictionRequest(
             "protenix",
             "p53",
@@ -475,24 +561,89 @@ class TestWeights:
             weights=weights_dir / self.MODEL_FILE,
         )
         with pytest.raises(ValueError, match="takes its weights as a directory"):
-            runner.check_weights(request)
+            ProtenixRunner().check_weights(request)
 
-    def test_the_store_passes_the_request_on_and_records_the_reason(
-        self, tmp_path, weights_dir, stub_protenix
+    def test_the_run_gives_protenix_a_root_that_links_the_real_data_and_the_weights(
+        self, tmp_path, real_root, weights_dir, stub_protenix
     ):
         runner = ProtenixRunner()
-        request = PredictionRequest(
-            "protenix",
-            "p53",
-            mode="predict",
-            input_path=P53,
-            binder_chain="B",
-            receptor_chain="A",
-            weights=weights_dir,
-        )
-        with pytest.raises(PredictionFailedError, match="no option for the weights directory"):
-            PredictionStore(tmp_path / "store").get_or_run(request, runner)
-        assert stub_protenix.calls() == []
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        runner.run(self.request(weights_dir), work_dir)
+        (call,) = stub_protenix.calls()
+        seen = call["env"]
+        assert seen["root"] == str(work_dir.resolve() / "protenix_root")
+        assert seen["entries"] == ["checkpoint", "common", "search_database"]
+        assert seen["links"] == ["checkpoint", "common", "search_database"]
+        assert seen["checkpoint"] == [self.MODEL_FILE]
+        assert seen["checkpoint_target"] == str(weights_dir.resolve())
+        assert seen["common"] == sorted(DATA_FILES)  # the real data, not a download
+        argv = call["argv"]  # the command is the one without weights
+        assert argv[argv.index("--model_name") + 1] == DEFAULT_MODEL_NAME
+        assert "--load_checkpoint_dir" not in argv
+
+    def test_the_linked_root_is_removed_and_nothing_real_is_touched(
+        self, tmp_path, real_root, weights_dir, stub_protenix
+    ):
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        ProtenixRunner().run(self.request(weights_dir), work_dir)
+        assert not (work_dir / "protenix_root").exists()
+        assert sorted(os.listdir(weights_dir)) == [self.MODEL_FILE]
+        assert (weights_dir / self.MODEL_FILE).read_bytes() == b"fine-tuned"
+        assert sorted(os.listdir(real_root)) == ["checkpoint", "common", "search_database"]
+        assert (real_root / "checkpoint" / self.MODEL_FILE).read_bytes() == b"default weights"
+        assert sorted(os.listdir(real_root / "common")) == sorted(DATA_FILES)
+
+    def test_the_linked_root_is_removed_when_the_run_fails(
+        self, tmp_path, real_root, weights_dir, stub_protenix
+    ):
+        stub_protenix.install("exit")
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        with pytest.raises(ProtenixRunError) as info:
+            ProtenixRunner().run(self.request(weights_dir), work_dir)
+        assert not (work_dir / "protenix_root").exists()
+        message = str(info.value)
+        assert "Environment: PROTENIX_ROOT_DIR=<work_dir>/protenix_root" in message
+        assert f"as checkpoint, to the weights {weights_dir}" in message
+
+    def test_a_run_without_weights_leaves_the_environment_as_it_is(
+        self, tmp_path, real_root, stub_protenix
+    ):
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        ProtenixRunner().run(make(num_samples=1, seeds=(3,)), work_dir)
+        (call,) = stub_protenix.calls()
+        assert call["env"]["root"] == str(real_root)
+        assert not (work_dir / "protenix_root").exists()
+
+    def test_the_store_runs_a_request_with_weights_and_the_adapter_reads_it(
+        self, tmp_path, real_root, weights_dir, stub_protenix
+    ):
+        runner = ProtenixRunner()
+        store = PredictionStore(tmp_path / "store")
+        request = self.request(store.weights_reference(weights_dir))
+        entry = store.get_or_run(request, runner)
+        assert entry.status == "done"
+        assert ProtenixParser().load(entry.prediction_dir, "p53").ptm == 0.88
+        described = json.loads((store.path_for(request) / "request.json").read_text("utf-8"))
+        assert described["weights"]["path"] == str(weights_dir)
+        assert len(stub_protenix.calls()) == 1
+
+    def test_a_file_system_without_links_is_a_clear_error(
+        self, tmp_path, real_root, weights_dir, stub_protenix, monkeypatch
+    ):
+        def no_links(source, target, *args, **kwargs):
+            raise OSError("symbolic links are not supported")
+
+        monkeypatch.setattr(protenix_runner.os, "symlink", no_links)
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        with pytest.raises(ValueError, match="Custom weights need symbolic links") as info:
+            ProtenixRunner().run(self.request(weights_dir), work_dir)
+        assert "symbolic links are not supported" in str(info.value)
+        assert not (work_dir / "protenix_root").exists() and stub_protenix.calls() == []
 
     def test_a_request_without_weights_has_no_weights_in_its_key(self):
         request = make()
@@ -1155,12 +1306,50 @@ class TestTheSourceBehindTheRunner:
         assert 'self.input_dict.get("constraint", {})' in text
 
     def test_the_weights_directory_is_not_an_option_of_the_command(self):
-        assert "load_checkpoint_dir" not in protenix_source("runner/batch_inference.py")
+        text = protenix_source("runner/batch_inference.py")
+        assert "load_checkpoint_dir" not in text
+        lines = text.splitlines()
+        assert lines[564].startswith("CONTEXT_SETTINGS = dict(help_option_names=")
+        assert "ignore_unknown_options" not in text and "allow_extra_args" not in text
+        assert "parse_configs(" in lines[333] and "fill_required_with_null=True" in lines[335]
+        assert "arg_str" not in "\n".join(lines[333:337])
+        assert "preprocess_input(" in lines[539]
         configs = protenix_source("configs/configs_inference.py")
         assert 'os.environ.get("PROTENIX_ROOT_DIR", str(Path.home()))' in configs
         assert '"load_checkpoint_dir": os.path.join(PROTENIX_ROOT_DIR, "checkpoint")' in configs
         inference = protenix_source("runner/inference.py")
         assert 'f"{self.configs.model_name}.pt"' in inference
+
+    def test_the_option_exists_only_in_the_other_entry_point_that_does_not_search_the_msa(self):
+        inference = protenix_source("runner/inference.py")
+        assert "def run() -> None:" in inference and "arg_str = parse_sys_args()" in inference
+        assert "preprocess_input" not in inference
+        assert "def parse_sys_args() -> str:" in protenix_source("protenix/config/config.py")
+        parser = protenix_source("protenix/web_service/colab_request_parser.py")
+        assert 'f"--load_checkpoint_dir {checkpoint_dir}"' in parser
+        batch = protenix_source("runner/batch_inference.py").splitlines()
+        assert "configs.model.N_cycle = n_cycle" in batch[361]
+        assert "configs.sample_diffusion.N_step = n_step" in batch[363]
+
+    def test_the_data_files_and_the_downloads_the_linked_root_must_avoid(self):
+        data = protenix_source("configs/configs_data.py")
+        assert 'os.environ.get("PROTENIX_ROOT_DIR", str(Path.home()))' in data
+        for name in protenix_runner._DATA_FILES:
+            assert f'"common/{name}"' in data, name
+        inference = protenix_source("runner/inference.py")
+        for name in ("ccd_components_file", "ccd_components_rdkit_mol_file", "pdb_cluster_file"):
+            assert f'"{name}"' in inference
+        assert "obsolete_release_data_csv" in inference
+        assert "if not opexists(checkpoint_path):" in inference
+        assert "download_from_url(tos_url, checkpoint_path)" in inference
+        for name in ("esm2_t36_3B_UR50D.pt", "esm2_t36_3B_UR50D-contact-regression.pt"):
+            assert f"{{checkpoint_dir}}/{name}" in inference
+        for name in ("esm2_t36_3B_UR50D_ism.pt", "esm2_t36_3B_UR50D_ism-contact-regression.pt"):
+            assert f"{{checkpoint_dir}}/{name}" in inference
+        assert (
+            '"esm" in configs.model_name' in inference
+            and '"ism" in configs.model_name' in inference
+        )
 
     def test_only_the_constraint_model_has_its_embedders_on(self):
         types = protenix_source("configs/configs_model_type.py")
