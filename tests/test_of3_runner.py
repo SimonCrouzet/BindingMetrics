@@ -501,7 +501,9 @@ class TestRunnerYamlKeepsTemplates:
         self, tmp_path, commands, no_pyyaml
     ):
         mine = tmp_path / "mine.yml"
-        mine.write_text("template_preprocessor_settings:\n  structure_file_format: cif\n")
+        mine.write_text(
+            "template_preprocessor_settings:\n  structure_file_format: cif\n", encoding="utf-8"
+        )
         with pytest.raises(ValueError, match="PyYAML") as info:
             self._run(tmp_path, mine, tmp_path / "templates")
         assert str(mine) in str(info.value)
