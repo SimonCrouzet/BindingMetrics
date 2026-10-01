@@ -373,6 +373,56 @@ class TestRunProvenance:
         assert record.reasons and "inference_ckpt_path" not in record.extras
 
 
+class TestTemplateExtras:
+    """What became of the templates is kept in ``record.extras["templates"]`` (OpenFold3 0.5.0)."""
+
+    def _query_set(self, root, entries_by_chain):
+        chains = [
+            {"chain_ids": [chain_id], "template_entry_chain_ids": entries}
+            for chain_id, entries in entries_by_chain.items()
+        ]
+        body = {"queries": {NAME: {"query_name": NAME, "chains": chains}}}
+        (root / "inference_query_set.json").write_text(json.dumps(body), encoding="utf-8")
+
+    def test_the_query_set_of_the_run_says_which_chains_kept_a_template(self, tmp_path):
+        root = _write(tmp_path)
+        self._query_set(root, {"A": ["receptor_A"], "B": []})
+        templates = OpenFold3Parser().load(root, NAME).extras["templates"]
+        assert templates["A"]["used"] is True and templates["A"]["entry_ids"] == ["receptor_A"]
+        assert templates["B"]["used"] is False and templates["B"]["cause"] == "not_recorded"
+
+    def test_the_accounting_file_of_the_toolkit_gives_the_cause(self, tmp_path):
+        from binding_metrics.metrics._openfold_templates import write_template_accounting
+
+        root = _write(tmp_path)
+        self._query_set(root, {"A": [], "B": []})
+        record = {"requested": True, "source": "alignment", "used": False}
+        record["cause"] = "replaced_by_msa_server"
+        write_template_accounting(root, {NAME: {"A": record, "B": dict(record)}})
+        templates = OpenFold3Parser().load(root, NAME).extras["templates"]
+        assert templates["A"]["cause"] == "replaced_by_msa_server"
+        assert templates["B"]["requested"] is True
+
+    def test_an_output_without_either_file_has_no_templates_key(self, tmp_path):
+        assert "templates" not in OpenFold3Parser().load(_write(tmp_path), NAME).extras
+
+    def test_an_unreadable_query_set_is_ignored(self, tmp_path):
+        root = _write(tmp_path)
+        (root / "inference_query_set.json").write_text("{", encoding="utf-8")
+        record = OpenFold3Parser().load(root, NAME)
+        assert "templates" not in record.extras and record.reasons == []
+
+    def test_a_query_set_of_another_query_is_not_taken_for_this_one(self, tmp_path):
+        root = _write(tmp_path)
+        body = {
+            "queries": {
+                "other": {"chains": [{"chain_ids": ["A"], "template_entry_chain_ids": ["x"]}]}
+            }
+        }
+        (root / "inference_query_set.json").write_text(json.dumps(body), encoding="utf-8")
+        assert "templates" not in OpenFold3Parser().load(root, NAME).extras
+
+
 class TestFailedQueries:
     """OpenFold3 exits with status 0 when a query fails; the run's files say why (issue 84)."""
 

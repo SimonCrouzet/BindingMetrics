@@ -67,6 +67,9 @@ and 13 tokens, one per residue).
   per residue. A ligand whose name is in the standard set (a free amino acid) is the one
   case that the structure file cannot tell from a residue; the rule then counts too few
   tokens, never too many, so the size check of :func:`token_layout` refuses it.
+* ``record.extras["templates"]`` says what became of the templates of the query, chain by chain
+  (:func:`_template_extras`): OpenFold3 0.5.0 goes on without a template that it cannot use
+  and exits with status 0, so the output alone does not say whether a ``score`` run had one.
 * pTM, ipTM and PAE are always written by 0.4.1 and later (the ``pae_enabled`` preset was
   removed); a missing value means a missing file.
 * ``<prediction_dir>/experiment_config.json`` records the checkpoint of the run
@@ -172,6 +175,26 @@ def _run_provenance(output_dir: Path) -> dict:
 
     probed = _user_default_runner_yaml()
     return {} if probed is None else {"user_default_runner_yaml": str(probed)}
+
+
+def _template_extras(output_dir: Path, query_name: str) -> dict:
+    """What became of the templates of the query, ``{"templates": {chain ID: record}}``, or ``{}``.
+
+    The toolkit writes ``template_accounting.json`` next to the output when it runs OpenFold3,
+    and OpenFold3 rewrites ``inference_query_set.json`` after its template preprocessing; the
+    reader is :func:`binding_metrics.metrics._openfold_templates.read_template_accounting`
+    (a record has ``requested``, ``source``, ``used``, ``cause``, ``detail`` and ``entry_ids``).
+    An output that has neither file, or that cannot be read, gives ``{}``: this is provenance,
+    not data, so it never fails a parse.
+    """
+    from binding_metrics.metrics._openfold_templates import read_template_accounting
+
+    try:
+        chains = read_template_accounting(output_dir, query_name)
+    except Exception as exc:  # noqa: BLE001 - provenance of a finished run must not fail a parse
+        logger.debug("the templates of %s could not be read: %s", output_dir, exc)
+        return {}
+    return {"templates": chains} if chains else {}
 
 
 def parse_aggregated_confidences(path: Path) -> dict:
@@ -458,6 +481,7 @@ class OpenFold3Parser(PredictionParser):
             record.timing = parse_timing(files.timing)
 
         record.extras.update(_run_provenance(Path(files.directory)))
+        record.extras.update(_template_extras(Path(files.directory), name))
 
         # The seed is named by the directory only: the config does not record a generated one.
         located = next(iter(files.found().values()), None)
