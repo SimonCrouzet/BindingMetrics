@@ -69,6 +69,7 @@ from binding_metrics.metrics._openfold_cli import (  # noqa: F401  (re-exported)
 from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     _DEFAULT_MODEL_PRESETS,
     _DEFAULT_QUERY_SEEDS,
+    BinderCyclicDecision,
     OpenFoldQueryError,
     OpenFoldRunError,
     UnmappableResidueError,
@@ -82,6 +83,7 @@ from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     _safe_entry_id,
     _write_a3m_self_alignment,
     _write_runner_yaml,
+    decide_binder_cyclic,
     prepare_batched_refolding_queries,
     prepare_batched_scoring_queries,
     prepare_refolding_query,
@@ -550,6 +552,7 @@ def run_openfold_scoring(
     seeds: Optional[Sequence[int]] = None,
     *,
     on_unmappable_residue: str = "error",
+    binder_cyclic: bool | str = "auto",
 ) -> Path:
     """Run OpenFold3 scoring of an existing complex structure (Mode 1).
 
@@ -585,6 +588,11 @@ def run_openfold_scoring(
             :class:`UnmappableResidueError` before anything is written or started
             when a residue has no one-letter code or CCD code OpenFold3 can take;
             ``"x"`` sends an ``X`` for it and logs a warning.
+        binder_cyclic: ``"auto"`` (default) writes ``"cyclic": true`` on the binder chain when
+            it has a head-to-tail bond and the installed OpenFold3 (in ``conda_env``) is 0.4.5
+            or later; ``True`` writes it whatever the structure says; ``False`` never. OpenFold3
+            wraps the relative positions of the chain and does not enforce the closure bond; see
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory
@@ -593,8 +601,9 @@ def run_openfold_scoring(
     Raises:
         UnmappableResidueError: See ``on_unmappable_residue``; raised before any
             file is written or process started.
-        ValueError: ``seeds`` and ``num_model_seeds`` are both given (checked before
-            anything is written).
+        ValueError: ``seeds`` and ``num_model_seeds`` are both given, or ``binder_cyclic`` is
+            ``True`` and the installed OpenFold3 is older than 0.4.5 (checked before anything
+            is written).
     """
     _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
@@ -609,6 +618,8 @@ def run_openfold_scoring(
         output_dir=query_dir,
         template_cif_path=template_cif_path,
         on_unmappable_residue=on_unmappable_residue,
+        binder_cyclic=binder_cyclic,
+        conda_env=conda_env,
     )
 
     run_openfold(
@@ -646,6 +657,7 @@ def run_openfold_refolding(
     seeds: Optional[Sequence[int]] = None,
     *,
     on_unmappable_residue: str = "error",
+    binder_cyclic: bool | str = "auto",
 ) -> Path:
     """Run OpenFold3 refolding: binder predicted freely, receptor fixed as template.
 
@@ -692,6 +704,11 @@ def run_openfold_refolding(
             :class:`UnmappableResidueError` before anything is written or started
             when a residue has no one-letter code or CCD code OpenFold3 can take;
             ``"x"`` sends an ``X`` for it and logs a warning.
+        binder_cyclic: ``"auto"`` (default) writes ``"cyclic": true`` on the binder chain when
+            it has a head-to-tail bond and the installed OpenFold3 (in ``conda_env``) is 0.4.5
+            or later; ``True`` writes it whatever the structure says; ``False`` never. OpenFold3
+            wraps the relative positions of the chain and does not enforce the closure bond; see
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory
@@ -700,8 +717,9 @@ def run_openfold_refolding(
     Raises:
         UnmappableResidueError: See ``on_unmappable_residue``; raised before any
             file is written or process started.
-        ValueError: ``seeds`` and ``num_model_seeds`` are both given (checked before
-            anything is written).
+        ValueError: ``seeds`` and ``num_model_seeds`` are both given, or ``binder_cyclic`` is
+            ``True`` and the installed OpenFold3 is older than 0.4.5 (checked before anything
+            is written).
     """
     _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
@@ -716,6 +734,8 @@ def run_openfold_refolding(
         output_dir=query_dir,
         template_cif_path=template_cif_path,
         on_unmappable_residue=on_unmappable_residue,
+        binder_cyclic=binder_cyclic,
+        conda_env=conda_env,
     )
 
     run_openfold(
@@ -755,6 +775,7 @@ def run_openfold_batched(
     seeds: Optional[Sequence[int]] = None,
     *,
     on_unmappable_residue: str = "error",
+    binder_cyclic: bool | str = "auto",
 ) -> Path:
     """Run OpenFold3 inference on multiple samples in a single subprocess.
 
@@ -788,6 +809,11 @@ def run_openfold_batched(
             :class:`UnmappableResidueError` before anything is written or started
             when a residue has no one-letter code or CCD code OpenFold3 can take;
             ``"x"`` sends an ``X`` for it and logs a warning.
+        binder_cyclic: ``"auto"`` (default) writes ``"cyclic": true`` on the binder chain when
+            it has a head-to-tail bond and the installed OpenFold3 (in ``conda_env``) is 0.4.5
+            or later; ``True`` writes it whatever the structure says; ``False`` never. OpenFold3
+            wraps the relative positions of the chain and does not enforce the closure bond; see
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory.
@@ -795,8 +821,9 @@ def run_openfold_batched(
     Raises:
         UnmappableResidueError: See ``on_unmappable_residue``; the error names every
             affected sample and is raised before any file is written or process started.
-        ValueError: ``seeds`` and ``num_model_seeds`` are both given (checked before
-            anything is written).
+        ValueError: ``seeds`` and ``num_model_seeds`` are both given, or ``binder_cyclic`` is
+            ``True`` and the installed OpenFold3 is older than 0.4.5 (checked before anything
+            is written).
     """
     _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
@@ -806,7 +833,13 @@ def run_openfold_batched(
     prepare = (
         prepare_batched_refolding_queries if mode == "refold" else prepare_batched_scoring_queries
     )
-    query_json = prepare(samples, query_dir, on_unmappable_residue=on_unmappable_residue)
+    query_json = prepare(
+        samples,
+        query_dir,
+        on_unmappable_residue=on_unmappable_residue,
+        binder_cyclic=binder_cyclic,
+        conda_env=conda_env,
+    )
 
     run_openfold(
         query_json=query_json,

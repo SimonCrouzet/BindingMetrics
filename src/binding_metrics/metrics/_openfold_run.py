@@ -170,6 +170,166 @@ def installed_openfold3_version(python_cmd: Optional[Sequence[str]] = None) -> O
     return probe.stdout.strip() or None
 
 
+#: Versions already read from a conda environment, by interpreter command. Starting ``conda run``
+#: costs seconds, and one batch asks once per sample. Only a version that was read is kept, so an
+#: environment that is fixed later is looked at again. The interpreter that runs this code is not
+#: cached: asking it is a metadata lookup.
+_VERSION_BY_PYTHON: dict[tuple[str, ...], str] = {}
+
+
+def _python_command(conda_env: Optional[str]) -> Optional[list[str]]:
+    """The command that starts the interpreter of ``conda_env``; None for the current one."""
+    if not conda_env:
+        return None
+    return [shutil.which("conda") or "conda", "run", "-n", conda_env, "python"]
+
+
+def _installed_version_once(conda_env: Optional[str]) -> Optional[str]:
+    """``installed_openfold3_version`` for the environment ``conda_env``, asked once per process."""
+    python_cmd = _python_command(conda_env)
+    if python_cmd is None:
+        return installed_openfold3_version(None)
+    key = tuple(python_cmd)
+    if key not in _VERSION_BY_PYTHON:
+        version = installed_openfold3_version(python_cmd)
+        if version is None:
+            return None
+        _VERSION_BY_PYTHON[key] = version
+    return _VERSION_BY_PYTHON[key]
+
+
+#: First OpenFold3 release that has the per-chain ``cyclic`` field of the query schema (0.4.5,
+#: ``REL/0.4.5`` of aqlaboratory/openfold-3). Older versions reject the field: the ``Chain`` model
+#: of the query forbids extra keys.
+_CYCLIC_FIELD_SINCE = (0, 4, 5)
+
+
+def _check_binder_cyclic(binder_cyclic) -> None:
+    """Raise ``ValueError`` unless ``binder_cyclic`` is ``True``, ``False`` or ``"auto"``."""
+    if not (isinstance(binder_cyclic, bool) or binder_cyclic == "auto"):
+        raise ValueError(f"binder_cyclic must be True, False or 'auto', got {binder_cyclic!r}.")
+
+
+@dataclasses.dataclass(frozen=True)
+class BinderCyclicDecision:
+    """Whether the binder chain of a query gets ``"cyclic": true``, and why not when it does not.
+
+    ``cyclic`` is the value to write. ``reason`` is set when a binder with a head-to-tail bond is
+    left as a linear chain (the installed OpenFold3 is too old for the field, or its version could
+    not be read); it is None otherwise, including when the binder has no such bond.
+    """
+
+    cyclic: bool
+    reason: Optional[str] = None
+
+
+def _binder_is_head_to_tail(structure_path: str | Path, binder_chain: str) -> bool:
+    """True when ``binder_chain`` of the structure file has a head-to-tail amide bond.
+
+    Reads the file with biotite and looks the closures up with ``capabilities.detect_closures``
+    (C of the last residue to N of the first, from the bond table or within 2.0 A). Only the
+    ``head_to_tail`` family counts: a disulfide, a lactam or a staple is not what the ``cyclic``
+    field of OpenFold3 describes.
+    """
+    from binding_metrics.capabilities import _read_atoms, detect_closures
+
+    atoms = _read_atoms(structure_path)
+    return any(c.family == "head_to_tail" for c in detect_closures(atoms, binder_chain))
+
+
+def decide_binder_cyclic(
+    structure_path: str | Path,
+    binder_chain: str,
+    binder_cyclic: bool | str = "auto",
+    *,
+    conda_env: Optional[str] = None,
+) -> BinderCyclicDecision:
+    """Decide whether the query writes ``"cyclic": true`` for ``binder_chain``.
+
+    OpenFold3 uses the field only to wrap the relative-position offsets of the chain, which
+    describes a head-to-tail closure. It does not enforce the closure bond, the field appears
+    in its documentation only through an example query, and no accuracy figure for cyclic
+    peptides has been published (source: ``input_format_reference.md`` and
+    ``examples/example_inference_inputs/query_multimer_cyclic.json`` at tag v0.5.0, and the
+    release notes of 0.4.5).
+
+    Args:
+        structure_path: The structure the query is built from (the complex file).
+        binder_chain: Chain ID of the binder, the only chain that can get the field.
+        binder_cyclic: ``False`` never writes it. ``True`` always writes it. ``"auto"`` (the
+            default) writes it when the binder has a head-to-tail bond and the installed
+            OpenFold3 is 0.4.5 or later, and says in the log (and in ``reason``) when a
+            head-to-tail binder is left linear.
+        conda_env: Conda environment that runs OpenFold3, asked for its version; None asks the
+            current interpreter.
+
+    Returns:
+        The decision. Nothing is logged for a binder without a head-to-tail bond.
+
+    Raises:
+        ValueError: ``binder_cyclic`` is not ``True``, ``False`` or ``"auto"``, or it is
+            ``True`` and the installed OpenFold3 is known to be older than 0.4.5.
+    """
+    _check_binder_cyclic(binder_cyclic)
+    if binder_cyclic is False:
+        return BinderCyclicDecision(False)
+
+    if binder_cyclic is True:
+        installed = _installed_version_once(conda_env)
+        if installed is None:
+            logger.warning(
+                "Could not read the installed OpenFold3 version. binder_cyclic=True writes "
+                "'cyclic: true' on chain %s anyway; OpenFold3 older than 0.4.5 rejects that field.",
+                binder_chain,
+            )
+        elif _version_tuple(installed) < _CYCLIC_FIELD_SINCE:
+            raise ValueError(
+                f"binder_cyclic=True needs OpenFold3 0.4.5 or later, which added the 'cyclic' "
+                f"chain field; the installed version is {installed}, and older versions reject "
+                "the field. Upgrade OpenFold3, or pass binder_cyclic=False."
+            )
+        return BinderCyclicDecision(True)
+
+    try:
+        head_to_tail = _binder_is_head_to_tail(structure_path, binder_chain)
+    except Exception as exc:  # noqa: BLE001 - "auto" must not fail a run that works without it
+        logger.warning(
+            "Could not look for a head-to-tail bond in chain %s of %s (%s); 'cyclic: true' is "
+            "not written. binder_cyclic=True writes it regardless.",
+            binder_chain,
+            structure_path,
+            exc,
+        )
+        return BinderCyclicDecision(False)
+    if not head_to_tail:
+        return BinderCyclicDecision(False)
+
+    installed = _installed_version_once(conda_env)
+    if installed is None:
+        reason = (
+            f"chain {binder_chain} is closed head to tail, but the installed OpenFold3 version "
+            "could not be read, so 'cyclic: true' is not written and the binder is predicted as "
+            "a linear chain. binder_cyclic=True (--openfold-cyclic on) writes it regardless."
+        )
+    elif _version_tuple(installed) < _CYCLIC_FIELD_SINCE:
+        reason = (
+            f"chain {binder_chain} is closed head to tail, but the installed OpenFold3 "
+            f"({installed}) predates the 'cyclic' chain field (0.4.5), so the binder is "
+            "predicted as a linear chain. Upgrade OpenFold3 to 0.4.5 or later."
+        )
+    else:
+        logger.info(
+            "Chain %s of %s has a head-to-tail bond: the query sets 'cyclic: true' on it "
+            "(OpenFold3 %s).",
+            binder_chain,
+            structure_path,
+            installed,
+        )
+        return BinderCyclicDecision(True)
+    logger.warning("%s: %s", structure_path, reason)
+    return BinderCyclicDecision(False, reason)
+
+
 def _drop_removed_presets(presets: Sequence[str], conda_env: Optional[str] = None) -> list[str]:
     """Return ``presets`` without ``pae_enabled``, warning when it was given.
 
@@ -1160,15 +1320,19 @@ def _query_chain(
     sequence: str,
     non_canonical_residues: dict[int, str],
     template_alignment_file_path: Optional[str] = None,
+    cyclic: bool = False,
 ) -> dict:
     """Build the query JSON dict of one protein chain.
 
     ``non_canonical_residues`` is written only when it is not empty, so queries of chains
     made of standard residues are the same as before it existed. OpenFold3 reads its keys
-    as 1-based residue positions; JSON needs them as strings.
+    as 1-based residue positions; JSON needs them as strings. ``cyclic`` writes
+    ``"cyclic": true`` (OpenFold3 >= 0.4.5) and is left out when False; only a binder chain
+    is passed ``cyclic=True`` (see :func:`decide_binder_cyclic`).
     """
     chain: dict = {"molecule_type": "protein", "chain_ids": [chain_id], "sequence": sequence}
-    # TODO(#77): "cyclic": True for a binder closed head to tail.
+    if cyclic:
+        chain["cyclic"] = True
     if non_canonical_residues:
         chain["non_canonical_residues"] = {str(i): c for i, c in non_canonical_residues.items()}
     if template_alignment_file_path is not None:
@@ -1187,6 +1351,8 @@ def prepare_refolding_query(
     seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
     *,
     on_unmappable_residue: str = "error",
+    binder_cyclic: bool | str = "auto",
+    conda_env: Optional[str] = None,
 ) -> Path:
     """Prepare an OpenFold3 query JSON for binder refolding with receptor as template.
 
@@ -1239,13 +1405,25 @@ def prepare_refolding_query(
             holds a residue that OpenFold3 cannot take; ``"x"`` sends an ``X`` for it
             and logs a warning. D-amino acids and modified residues are not affected:
             they go to ``non_canonical_residues`` with their CCD code.
+        binder_cyclic: ``"auto"`` (default) writes ``"cyclic": true`` on the binder chain when
+            it has a head-to-tail bond and the installed OpenFold3 is 0.4.5 or later; a
+            head-to-tail binder that is left linear because the version is too old or unreadable
+            is logged as a warning. ``True`` writes it on the binder whatever the structure
+            says, ``False`` never. OpenFold3 uses the field only to wrap the relative positions
+            of the chain; it does not enforce the closure bond, documents the field only in an
+            example query, and has published no accuracy benchmark for cyclic peptides.
+            Disulfide, lactam and staple closures have no OpenFold3 input and are not
+            written. See :func:`decide_binder_cyclic`.
+        conda_env: Conda environment that runs OpenFold3, asked for its version when
+            ``binder_cyclic`` is not ``False``; None asks the current interpreter.
 
     Returns:
         Path to the written query JSON file.
 
     Raises:
-        ValueError: If a specified chain is not found or has no amino acids,
-            or ``seeds`` is empty.
+        ValueError: If a specified chain is not found or has no amino acids, ``seeds`` is
+            empty, ``binder_cyclic`` is not ``True``, ``False`` or ``"auto"``, or it is ``True``
+            and the installed OpenFold3 is older than 0.4.5. Nothing is written then.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     import gemmi
@@ -1262,6 +1440,9 @@ def prepare_refolding_query(
     binder_seq, binder_nc = _extract_query_chain(
         st, binder_chain, on_unmappable_residue=on_unmappable_residue
     )
+    cyclic = decide_binder_cyclic(
+        complex_structure_path, binder_chain, binder_cyclic, conda_env=conda_env
+    ).cyclic
 
     # Template source: the provided CIF (e.g. after MD relaxation) or the complex. Its chain is
     # checked before anything is written, because the relaxed file may name chains differently.
@@ -1307,7 +1488,7 @@ def prepare_refolding_query(
                         receptor_nc,
                         template_alignment_file_path=str(a3m_path),
                     ),
-                    _query_chain(binder_chain, binder_seq, binder_nc),
+                    _query_chain(binder_chain, binder_seq, binder_nc, cyclic=cyclic),
                 ],
             }
         },
@@ -1327,6 +1508,8 @@ def prepare_scoring_query(
     seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
     *,
     on_unmappable_residue: str = "error",
+    binder_cyclic: bool | str = "auto",
+    conda_env: Optional[str] = None,
 ) -> Path:
     """Prepare an OpenFold3 query JSON to score an existing complex structure.
 
@@ -1365,12 +1548,17 @@ def prepare_scoring_query(
             holds a residue that OpenFold3 cannot take; ``"x"`` sends an ``X`` for it
             and logs a warning. D-amino acids and modified residues are not affected:
             they go to ``non_canonical_residues`` with their CCD code.
+        binder_cyclic: ``"auto"`` (default), ``True`` or ``False``: whether the binder chain
+            gets ``"cyclic": true``; see :func:`prepare_refolding_query`.
+        conda_env: Conda environment that runs OpenFold3, asked for its version; see
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the written query JSON file.
 
     Raises:
-        ValueError: If ``seeds`` is empty.
+        ValueError: If ``seeds`` is empty, or ``binder_cyclic`` is ``True`` and the installed
+            OpenFold3 is older than 0.4.5.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     import gemmi
@@ -1387,6 +1575,9 @@ def prepare_scoring_query(
     binder_seq, binder_nc = _extract_query_chain(
         st, binder_chain, on_unmappable_residue=on_unmappable_residue
     )
+    cyclic = decide_binder_cyclic(
+        complex_structure_path, binder_chain, binder_cyclic, conda_env=conda_env
+    ).cyclic
 
     # Template source: use template_cif_path if provided, else the complex. Both chains are
     # checked before anything is written, because a relaxed file may name chains differently.
@@ -1460,6 +1651,7 @@ def prepare_scoring_query(
                         binder_seq,
                         binder_nc,
                         template_alignment_file_path=str(binder_a3m),
+                        cyclic=cyclic,
                     ),
                 ],
             }
@@ -1591,12 +1783,32 @@ def _check_batch_template_chain_ids(rows: list[tuple], binder_has_template: bool
         raise ValueError("\n".join(dict.fromkeys(problems)))
 
 
+def _batch_cyclic_flags(
+    rows: list[tuple], binder_cyclic: bool | str, conda_env: Optional[str]
+) -> dict[str, bool]:
+    """Whether the binder of each sample gets ``"cyclic": true``, by query name.
+
+    Decided for every sample before anything is written, so that a ``ValueError`` (``True``
+    with an OpenFold3 that is too old) leaves no files behind. The OpenFold3 version is asked
+    once per environment.
+    """
+    _check_binder_cyclic(binder_cyclic)
+    return {
+        sample.query_name: decide_binder_cyclic(
+            sample.complex_structure_path, sample.binder_chain, binder_cyclic, conda_env=conda_env
+        ).cyclic
+        for sample, *_ in rows
+    }
+
+
 def prepare_batched_scoring_queries(
     samples: list[_BatchSample],
     output_dir: str | Path,
     seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
     *,
     on_unmappable_residue: str = "error",
+    binder_cyclic: bool | str = "auto",
+    conda_env: Optional[str] = None,
 ) -> Path:
     """Prepare a single OF3 query JSON that scores multiple complexes.
 
@@ -1612,17 +1824,23 @@ def prepare_batched_scoring_queries(
             :class:`UnmappableResidueError`, listing every affected sample, before
             anything is written; ``"x"`` sends an ``X`` and logs a warning. See
             :func:`prepare_scoring_query`.
+        binder_cyclic: ``"auto"`` (default), ``True`` or ``False``: whether the binder chain of
+            each sample gets ``"cyclic": true``; see :func:`prepare_refolding_query`. Decided
+            sample by sample, before anything is written.
+        conda_env: Conda environment that runs OpenFold3, asked for its version once.
 
     Returns:
         Path to the combined query JSON file.
 
     Raises:
-        ValueError: If ``seeds`` is empty or two samples share a query name.
+        ValueError: If ``seeds`` is empty, two samples share a query name, or ``binder_cyclic``
+            is ``True`` and the installed OpenFold3 is older than 0.4.5.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     _warn_query_seeds_ignored(seeds)
     rows = _read_batch_chains(samples, on_unmappable_residue)
     _check_batch_template_chain_ids(rows, binder_has_template=True)
+    cyclic_flags = _batch_cyclic_flags(rows, binder_cyclic, conda_env)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1667,6 +1885,7 @@ def prepare_batched_scoring_queries(
                     binder_seq,
                     binder_nc,
                     template_alignment_file_path=str(bnd_a3m),
+                    cyclic=cyclic_flags[s.query_name],
                 ),
             ],
         }
@@ -1682,6 +1901,8 @@ def prepare_batched_refolding_queries(
     seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
     *,
     on_unmappable_residue: str = "error",
+    binder_cyclic: bool | str = "auto",
+    conda_env: Optional[str] = None,
 ) -> Path:
     """Prepare a single OF3 query JSON that refolds binders for multiple complexes.
 
@@ -1696,17 +1917,23 @@ def prepare_batched_refolding_queries(
             :class:`UnmappableResidueError`, listing every affected sample, before
             anything is written; ``"x"`` sends an ``X`` and logs a warning. See
             :func:`prepare_refolding_query`.
+        binder_cyclic: ``"auto"`` (default), ``True`` or ``False``: whether the binder chain of
+            each sample gets ``"cyclic": true``; see :func:`prepare_refolding_query`. Decided
+            sample by sample, before anything is written.
+        conda_env: Conda environment that runs OpenFold3, asked for its version once.
 
     Returns:
         Path to the combined query JSON file.
 
     Raises:
-        ValueError: If ``seeds`` is empty or two samples share a query name.
+        ValueError: If ``seeds`` is empty, two samples share a query name, or ``binder_cyclic``
+            is ``True`` and the installed OpenFold3 is older than 0.4.5.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     _warn_query_seeds_ignored(seeds)
     rows = _read_batch_chains(samples, on_unmappable_residue)
     _check_batch_template_chain_ids(rows, binder_has_template=False)
+    cyclic_flags = _batch_cyclic_flags(rows, binder_cyclic, conda_env)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1736,7 +1963,9 @@ def prepare_batched_refolding_queries(
                     receptor_nc,
                     template_alignment_file_path=str(rec_a3m),
                 ),
-                _query_chain(s.binder_chain, binder_seq, binder_nc),
+                _query_chain(
+                    s.binder_chain, binder_seq, binder_nc, cyclic=cyclic_flags[s.query_name]
+                ),
             ],
         }
 

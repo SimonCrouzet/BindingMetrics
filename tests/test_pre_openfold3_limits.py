@@ -106,17 +106,28 @@ class TestClosures:
         assert preflight(_profile("1YCR"), ["interface"], "of3").compatible
         assert preflight(_profile("1QJB"), [], "of3").compatible
 
-    def test_a_head_to_tail_peptide_passes_with_the_warning_that_the_builder_sends_it_linear(self):
+    def test_a_head_to_tail_peptide_passes_with_the_warning_about_what_the_flag_does_not_do(self):
         report = preflight(_profile("1CWA"), [], "of3")
         assert report.compatible
         (warning,) = [w for w in report.warnings if "cyclic: true" in w]
         assert warning.startswith("predictor OpenFold3 0.5.0: ")
-        assert "folded as a linear chain" in warning
+        # what remains true: no enforced bond, an example only, no published benchmark
+        assert "does not enforce the closure bond" in warning
+        assert "example query" in warning
+        assert "no accuracy benchmark for cyclic peptides" in warning
+        # the builder writes the flag by default now, so the old sentence must be gone
+        assert "folded as a linear chain" not in warning
+        assert "do not write" not in warning
+
+    def test_the_warning_names_the_switch_that_turns_the_flag_off(self):
+        (warning,) = [w for w in preflight(_profile("1CWA"), [], "of3").warnings if "cyclic" in w]
+        assert "binder_cyclic" in warning and "--openfold-cyclic off" in warning
 
     def test_the_caveat_is_true_of_the_query_builder(self):
-        # If this fails, the builder now writes `cyclic` into the chain: remove the caveat
-        # "closures:head_to_tail" from the OpenFold3 declaration, its sentence is no longer true.
-        from binding_metrics.metrics import _openfold_run
+        # The caveat "closures:head_to_tail" says that the query builders write `cyclic: true` on
+        # a head-to-tail binder by default. If this fails, the default changed (or the builder no
+        # longer writes the field): reword the caveat in the OpenFold3 declaration.
+        from binding_metrics.metrics import _openfold_run, openfold
 
         tree = ast.parse(textwrap.dedent(inspect.getsource(_openfold_run._query_chain)))
         strings = {
@@ -124,7 +135,27 @@ class TestClosures:
             for node in ast.walk(tree)
             if isinstance(node, ast.Constant) and isinstance(node.value, str)
         }
-        assert "cyclic" not in strings
+        assert "cyclic" in strings
+        for builder in (openfold.prepare_scoring_query, openfold.prepare_refolding_query):
+            assert inspect.signature(builder).parameters["binder_cyclic"].default == "auto"
+
+    def test_the_builder_writes_the_flag_on_the_binder_of_the_example_by_default(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+
+        from binding_metrics.metrics import _openfold_run, openfold
+
+        monkeypatch.setattr(
+            _openfold_run, "installed_openfold3_version", lambda python_cmd=None: "0.5.0"
+        )
+        name, binder, receptor = EXAMPLES["1CWA"]
+        path = openfold.prepare_refolding_query(DATA / name, receptor, binder, "q", tmp_path)
+        chains = {
+            c["chain_ids"][0]: c
+            for c in json.loads(path.read_text(encoding="utf-8"))["queries"]["q"]["chains"]
+        }
+        assert chains[binder].get("cyclic") is True and "cyclic" not in chains[receptor]
 
     def test_a_disulfide_is_refused_with_the_model_the_link_and_the_reason(self):
         error = _refusal(_profile("3P8F"))

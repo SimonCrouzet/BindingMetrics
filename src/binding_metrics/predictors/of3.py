@@ -235,10 +235,14 @@ class OpenFold3Parser(PredictionParser):
         },
         caveats={
             "closures:head_to_tail": (
-                "OpenFold3 takes a head-to-tail closure through `cyclic: true`, and the query "
-                "builders of this package (metrics/_openfold_run.py, _query_chain) do not write "
-                "that field, so the binder is folded as a linear chain. OpenFold3 does not "
-                "enforce the closure bond even when it is asked for one."
+                "OpenFold3 takes a head-to-tail closure only through `cyclic: true`, which the "
+                "query builders of this package write on the binder when binder_cyclic is "
+                '"auto" (the default; `--openfold-cyclic off` or binder_cyclic=False turns it '
+                "off) and OpenFold3 is 0.4.5 or later. The flag only wraps the relative "
+                "positions of the chain: OpenFold3 does not enforce the closure bond, documents "
+                "the flag in an example query and not in its documentation, and has published "
+                "no accuracy benchmark for cyclic peptides, so there is no published check of "
+                "its confidence values for a cyclic binder."
             ),
             "residue_classes:ligand": (
                 "The OpenFold3 query builder (_extract_query_chain) leaves groups that are not "

@@ -20,7 +20,8 @@ openfold module is imported when a run starts, never before)::
             num_model_seeds: Optional[int] = None, on_unmappable_residue: str = "error",
             extra_args: Sequence[str] = (), inference_ckpt_path: Optional[str | Path] = None,
             runner_yaml: Optional[str | Path] = None,
-            template_cif_path: Optional[str | Path] = None) -> PredictionRequest
+            template_cif_path: Optional[str | Path] = None,
+            binder_cyclic: bool | str = "auto") -> PredictionRequest
         .prepare(request, work_dir) -> Path
         .run(request, work_dir) -> Path                       # <work_dir>/predictions
         .supports_batch(request) -> bool
@@ -39,7 +40,10 @@ file for ``run_openfold``; files that the query names are not hashed). What goes
   seed, the chain roles and the content hash of the input file;
 * ``options``: ``presets`` (``["predict", "low_mem"]`` by default, ``predict`` added when
   missing; None when ``runner_yaml`` replaces them), ``use_msa_server``, ``num_model_seeds``,
-  ``on_unmappable_residue``, ``extra_args`` and ``inference_ckpt_path`` with the size of that file;
+  ``on_unmappable_residue``, ``binder_cyclic`` (``"auto"``, true or false; None for ``predict``,
+  whose query file names its own chains), ``extra_args`` and ``inference_ckpt_path`` with the
+  size of that file. ``"auto"`` writes ``cyclic: true`` on a head-to-tail binder when OpenFold3 is
+  0.4.5 or later, which the structure (hashed) and the version (in the key) decide;
 * the seeds that OpenFold3 samples with. ``seeds`` is the explicit list, ``[42]`` when the caller
   gives none, and empty when ``num_model_seeds`` asks OpenFold3 to generate them (the count is
   then in ``options``; None there means no generation). ``seeds`` and ``num_model_seeds`` cannot
@@ -86,6 +90,7 @@ _DEFAULT_NUM_SAMPLES = 5
 _DEFAULT_NUM_MODEL_SEEDS = None
 _DEFAULT_USE_MSA_SERVER = True
 _DEFAULT_ON_UNMAPPABLE = "error"
+_DEFAULT_BINDER_CYCLIC = "auto"
 
 _ON_UNMAPPABLE_CHOICES = ("error", "x")
 
@@ -157,6 +162,7 @@ class OpenFold3Runner(PredictionRunner):
         inference_ckpt_path: Optional[str | Path] = None,
         runner_yaml: Optional[str | Path] = None,
         template_cif_path: Optional[str | Path] = None,
+        binder_cyclic: Union[bool, str] = _DEFAULT_BINDER_CYCLIC,
     ) -> PredictionRequest:
         """The store request of one OpenFold3 run (see the module docstring for what it holds).
 
@@ -180,10 +186,15 @@ class OpenFold3Runner(PredictionRunner):
             inference_ckpt_path: Checkpoint file; None uses OpenFold3's default.
             runner_yaml: Runner YAML that replaces ``presets``.
             template_cif_path: Pre-prepared complex or receptor template (``score``, ``refold``).
+            binder_cyclic: ``"auto"`` (default), ``True`` or ``False``; whether the binder chain
+                of the query gets ``cyclic: true`` (see ``prepare_refolding_query``). Only for
+                ``score`` and ``refold``: a query file of ``predict`` names its own chains.
 
         Raises:
             ValueError: A missing chain role, an unknown mode or choice, a template file with
-                ``predict``, or both ``seeds`` and ``num_model_seeds``.
+                ``predict``, both ``seeds`` and ``num_model_seeds``, a ``binder_cyclic`` that is
+                not ``True``, ``False`` or ``"auto"``, or a value other than the default with
+                ``predict``.
         """
         if mode in ("score", "refold") and not (binder_chain and receptor_chain):
             raise ValueError(f"mode '{mode}' needs binder_chain and receptor_chain")
@@ -195,6 +206,11 @@ class OpenFold3Runner(PredictionRunner):
                 f"got {on_unmappable_residue!r}"
             )
         run_module = _run_module()
+        run_module._check_binder_cyclic(binder_cyclic)
+        if mode == "predict" and binder_cyclic != _DEFAULT_BINDER_CYCLIC:
+            raise ValueError(
+                "a query file for mode 'predict' names its own chains and cyclic flags"
+            )
         seed_values, generated_seeds = run_module._resolve_run_seeds(
             seeds, num_model_seeds, extra_args
         )
@@ -242,6 +258,7 @@ class OpenFold3Runner(PredictionRunner):
                 "use_msa_server": bool(use_msa_server),
                 "num_model_seeds": generated_seeds,
                 "on_unmappable_residue": on_unmappable_residue,
+                "binder_cyclic": None if mode == "predict" else binder_cyclic,
                 "extra_args": [str(argument) for argument in extra_args],
                 "inference_ckpt_path": None if checkpoint is None else str(checkpoint),
                 "inference_ckpt_size_bytes": checkpoint_size,
@@ -266,10 +283,13 @@ class OpenFold3Runner(PredictionRunner):
             if request.mode == "score"
             else openfold.prepare_refolding_query
         )
+        # the environment that runs OpenFold3 is asked for its version when the flag is decided
+        environment = {} if self.conda_env is None else {"conda_env": self.conda_env}
         return Path(
             function(
                 **self._structure_arguments(request, Path(work_dir) / "query"),
                 **self._query_arguments(request),
+                **environment,
             )
         )
 
@@ -411,6 +431,9 @@ class OpenFold3Runner(PredictionRunner):
         residues = request.options.get("on_unmappable_residue", _DEFAULT_ON_UNMAPPABLE)
         if residues != _DEFAULT_ON_UNMAPPABLE:
             arguments["on_unmappable_residue"] = residues
+        binder_cyclic = request.options.get("binder_cyclic", _DEFAULT_BINDER_CYCLIC)
+        if request.mode != "predict" and binder_cyclic not in (None, _DEFAULT_BINDER_CYCLIC):
+            arguments["binder_cyclic"] = binder_cyclic
         return arguments
 
     def _run_arguments(self, request: PredictionRequest) -> dict[str, Any]:

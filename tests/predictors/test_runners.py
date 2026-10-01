@@ -163,6 +163,7 @@ class TestMakeRequest:
             "use_msa_server": True,
             "num_model_seeds": None,
             "on_unmappable_residue": "error",
+            "binder_cyclic": "auto",
             "extra_args": [],
             "inference_ckpt_path": None,
             "inference_ckpt_size_bytes": None,
@@ -317,6 +318,8 @@ class TestTheDefaultsMirrorTheRunFunctions:
         assert parameters["use_msa_server"].default is of3_runner._DEFAULT_USE_MSA_SERVER
         if "on_unmappable_residue" in parameters:
             assert parameters["on_unmappable_residue"].default == of3_runner._DEFAULT_ON_UNMAPPABLE
+        if "binder_cyclic" in parameters:
+            assert parameters["binder_cyclic"].default == of3_runner._DEFAULT_BINDER_CYCLIC
 
     def test_the_unmappable_choices(self):
         assert of3_runner._ON_UNMAPPABLE_CHOICES == _openfold_run._ON_UNMAPPABLE_CHOICES

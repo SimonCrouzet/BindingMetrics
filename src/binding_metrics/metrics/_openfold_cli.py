@@ -147,6 +147,55 @@ def _unmappable_residue_kwargs(args) -> dict:
     return {"on_unmappable_residue": args.on_unmappable_residue}
 
 
+_CYCLIC_CHOICES = {"auto": "auto", "on": True, "off": False}
+
+
+def _add_binder_cyclic_arg(p) -> None:
+    """Add ``--openfold-cyclic`` (the ``cyclic`` flag of the binder chain) to a subparser."""
+    p.add_argument(
+        "--openfold-cyclic",
+        dest="binder_cyclic",
+        choices=tuple(_CYCLIC_CHOICES),
+        default="auto",
+        help=(
+            "Whether the binder chain of the OpenFold3 query gets 'cyclic: true' "
+            "(OpenFold3 >= 0.4.5). auto (default): when the binder has a head-to-tail bond and "
+            "the installed OpenFold3 is new enough; on: always; off: never. OpenFold3 uses the "
+            "flag only to wrap the relative positions of the chain: it does not enforce the "
+            "closure bond, documents the flag only in an example query, and has published no "
+            "accuracy benchmark for cyclic peptides. Disulfide, lactam and staple closures "
+            "cannot be given to OpenFold3 and are not written."
+        ),
+    )
+
+
+def _binder_cyclic_kwargs(args) -> dict:
+    """Keyword argument for the API, only when the flag differs from the default."""
+    if args.binder_cyclic == "auto":
+        return {}
+    return {"binder_cyclic": _CYCLIC_CHOICES[args.binder_cyclic]}
+
+
+def _add_prepare_conda_env_arg(p) -> None:
+    """Add ``--conda-env`` to a query-only subparser: the environment asked for its version."""
+    p.add_argument(
+        "--conda-env",
+        type=str,
+        default=None,
+        metavar="ENV",
+        help=(
+            "Conda env where OpenFold3 is installed; asked for its version to decide "
+            "--openfold-cyclic auto (default: the current interpreter)."
+        ),
+    )
+
+
+def _conda_env_kwargs(args) -> dict:
+    """Keyword argument for the API, only when ``--conda-env`` was given."""
+    conda_env = getattr(args, "conda_env", None)
+    return {} if conda_env is None else {"conda_env": conda_env}
+
+
 def _print_metrics(metrics: dict, seed: int, sample: int) -> None:
     """Print OpenFold3 metrics to stdout."""
     print(f"\nOpenFold3 confidence metrics (seed={seed}, sample={sample}):")
@@ -359,6 +408,8 @@ def main():
     )
     _add_query_seeds_arg(p_prep)
     _add_unmappable_residue_arg(p_prep)
+    _add_binder_cyclic_arg(p_prep)
+    _add_prepare_conda_env_arg(p_prep)
 
     # --- refold subcommand ---
     p_refold = sub.add_parser(
@@ -435,6 +486,7 @@ def main():
     )
     _add_run_seeds_args(p_refold)
     _add_unmappable_residue_arg(p_refold)
+    _add_binder_cyclic_arg(p_refold)
     _add_parse_args(p_refold, include_chain_args=False)
 
     # --- prepare-scoring-query subcommand ---
@@ -480,6 +532,8 @@ def main():
     )
     _add_query_seeds_arg(p_prep_score)
     _add_unmappable_residue_arg(p_prep_score)
+    _add_binder_cyclic_arg(p_prep_score)
+    _add_prepare_conda_env_arg(p_prep_score)
 
     # --- score subcommand ---
     p_score = sub.add_parser(
@@ -544,6 +598,7 @@ def main():
     )
     _add_run_seeds_args(p_score)
     _add_unmappable_residue_arg(p_score)
+    _add_binder_cyclic_arg(p_score)
     _add_parse_args(p_score, include_chain_args=False)
 
     from binding_metrics.cli import add_log_file_arg
@@ -568,6 +623,8 @@ def main():
             template_cif_path=args.template_cif,
             seeds=args.seeds,
             **_unmappable_residue_kwargs(args),
+            **_binder_cyclic_kwargs(args),
+            **_conda_env_kwargs(args),
         )
         print(f"Scoring query JSON written to: {path}")
         return
@@ -593,6 +650,7 @@ def main():
             conda_env=args.conda_env,
             seeds=args.seeds,
             **_unmappable_residue_kwargs(args),
+            **_binder_cyclic_kwargs(args),
         )
         print(f"\nParsing scoring metrics from: {predictions_dir}")
         metrics = of.compute_openfold_metrics(
@@ -619,6 +677,8 @@ def main():
             template_cif_path=args.template_cif,
             seeds=args.seeds,
             **_unmappable_residue_kwargs(args),
+            **_binder_cyclic_kwargs(args),
+            **_conda_env_kwargs(args),
         )
         print(f"Query JSON written to: {path}")
         return
@@ -644,6 +704,7 @@ def main():
             conda_env=args.conda_env,
             seeds=args.seeds,
             **_unmappable_residue_kwargs(args),
+            **_binder_cyclic_kwargs(args),
         )
         print(f"\nParsing refolding metrics from: {predictions_dir}")
         metrics = of.compute_openfold_metrics(
