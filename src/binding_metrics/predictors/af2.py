@@ -33,7 +33,9 @@ confidence file removed.
 Values
 ------
 * ColabFold scores JSON: ``plddt`` (one value per residue, 0-100, two decimals), ``pae`` (residues
-  by residues, two decimals), ``max_pae``, ``ptm`` and ``iptm`` (two decimals). A monomer model
+  by residues, two decimals), ``ptm`` and ``iptm`` (two decimals) and ``max_pae``, which ColabFold
+  1.6.3 takes from the PAE before it rounds it (``colabfold/batch.py``, ``predict_structure``;
+  read, not checked on a real file), so it need not have two decimals. A monomer model
   without the pTM head writes no ``pae``, ``ptm`` or ``iptm``, and only the multimer models write
   ``iptm``. ``--calc-extra-ptm`` adds ``per_chain_ptm`` (``{"A": x}``, read as ``chain_ptm``),
   ``pairwise_iptm`` (``{"A-B": x}``, upper triangle only, read as ``chain_pair_iptm``),
