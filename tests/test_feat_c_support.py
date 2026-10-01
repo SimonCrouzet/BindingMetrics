@@ -37,6 +37,10 @@ def complex_from(input_path, plddt_low: float = 60.0, plddt_high: float = 95.0):
     n_tokens = len(set(zip(atoms.chain_id.tolist(), atoms.res_id.tolist())))
     i = np.arange(n_tokens)[:, None]
     j = np.arange(n_tokens)[None, :]
+    # OpenFold3 names the chains of its confidences after the chains of the query, which are the
+    # chains of the input (a real run of 1CWA: "(A, C)"), so key them by the chains of the atoms
+    chains = list(dict.fromkeys(atoms.chain_id.tolist()))
+    first, second = chains[0], (chains[1] if len(chains) > 1 else "B")
     return synth.SyntheticComplex(
         atoms=atoms,
         plddt_per_atom=plddt,
@@ -51,8 +55,8 @@ def complex_from(input_path, plddt_low: float = 60.0, plddt_high: float = 95.0):
             "has_clash": 0.0,
             "disorder": 0.12,
         },
-        chain_ptm={"A": 0.88, "B": 0.80},
-        chain_pair_iptm={"A-B": 0.76, "B-A": 0.74},
+        chain_ptm={first: 0.88, second: 0.80},
+        chain_pair_iptm={f"{first}-{second}": 0.76, f"{second}-{first}": 0.74},
     )
 
 
