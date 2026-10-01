@@ -821,19 +821,6 @@ class TestTheVersion:
         monkeypatch.setattr(boltz2_runner, "_installed_boltz_version", lambda env: None)
         assert make_request().model_version == ""
 
-    def test_the_current_interpreter_is_asked_through_the_package_metadata(self, monkeypatch):
-        import importlib.metadata as metadata
-
-        seen = []
-        monkeypatch.setattr(metadata, "version", lambda name: seen.append(name) or "2.2.1")
-        assert _REAL_VERSION_PROBE(None) == "2.2.1" and seen == ["boltz"]
-
-        def absent(name):
-            raise metadata.PackageNotFoundError(name)
-
-        monkeypatch.setattr(metadata, "version", absent)
-        assert _REAL_VERSION_PROBE(None) is None
-
     def test_a_conda_environment_is_asked_to_import_boltz(self, monkeypatch):
         seen = {}
 
@@ -845,8 +832,13 @@ class TestTheVersion:
         monkeypatch.setattr(boltz2_runner.subprocess, "run", fake_run)
         assert _REAL_VERSION_PROBE("boltz") == "2.2.1"
         assert seen["command"][1:5] == ["run", "-n", "boltz", "python"]
-        assert seen["command"][-1] == "import boltz; print(boltz.__version__)"
+        assert seen["command"][-1] == boltz2_runner._VERSION_PROBE
+        assert (
+            "importlib.metadata" in seen["command"][-1]
+            and "version('boltz')" in seen["command"][-1]
+        )
         assert seen["keywords"]["encoding"] == "utf-8"
+        assert _REAL_VERSION_PROBE("boltz") == "2.2.1"
 
     @pytest.mark.parametrize(
         "outcome",
@@ -866,6 +858,158 @@ class TestTheVersion:
 
         monkeypatch.setattr(boltz2_runner.subprocess, "run", fake_run)
         assert _REAL_VERSION_PROBE("boltz") is None
+
+
+def boltz_install(tmp_path, *, shebang="#!{python}", answer="3.4.5", status=0, name="python3.12"):
+    """A ``boltz`` script on PATH whose interpreter is a stub that answers the version probe.
+
+    The stub appends its arguments to ``probe.log`` and prints a banner line and ``answer``.
+    Returns ``(bin directory, probe log)``; PATH is not changed here.
+    """
+    bin_dir = tmp_path / "otherenv" / "bin"
+    bin_dir.mkdir(parents=True)
+    log = tmp_path / "probe.log"
+    interpreter = bin_dir / name
+    interpreter.write_text(
+        f'#!/bin/sh\necho "$@" >> "{log}"\necho "a banner line"\necho "{answer}"\nexit {status}\n',
+        encoding="utf-8",
+    )
+    interpreter.chmod(0o755)
+    script = bin_dir / "boltz"
+    script.write_text(
+        shebang.format(python=interpreter) + "\nfrom boltz.main import cli\ncli()\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return bin_dir, log
+
+
+@pytest.fixture
+def real_version(monkeypatch):
+    """Undo the autouse stub of the version probe, to run the real one against a stub script."""
+    monkeypatch.setattr(boltz2_runner, "_installed_boltz_version", _REAL_VERSION_PROBE)
+
+
+class TestTheVersionOfTheBoltzThatRuns:
+    """``version()`` asks the interpreter of the ``boltz`` that PATH finds, as ``run`` starts it."""
+
+    @pytest.fixture(autouse=True)
+    def _real(self, real_version):
+        """Run the real probe: the autouse stub of the version is undone."""
+
+    def with_path(self, monkeypatch, bin_dir):
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+    def test_a_boltz_in_another_environment_is_read_through_its_own_interpreter(
+        self, tmp_path, monkeypatch
+    ):
+        bin_dir, log = boltz_install(tmp_path)
+        self.with_path(monkeypatch, bin_dir)
+        runner = Boltz2Runner()
+        assert runner.is_available() is True
+        assert runner.version() == "3.4.5"
+        assert log.read_text(encoding="utf-8").strip() == f"-c {boltz2_runner._VERSION_PROBE}"
+
+    def test_the_request_key_holds_that_version(self, tmp_path, monkeypatch):
+        bin_dir, _ = boltz_install(tmp_path)
+        self.with_path(monkeypatch, bin_dir)
+        request = make_request()
+        assert request.model_version == "3.4.5"
+        other = tmp_path / "second"
+        other.mkdir()
+        bin_dir, _ = boltz_install(other, answer="3.4.6")
+        self.with_path(monkeypatch, bin_dir)
+        assert make_request().model_version == "3.4.6"
+        assert make_request().key() != request.key()
+
+    def test_the_interpreter_is_asked_once_per_runner(self, tmp_path, monkeypatch):
+        bin_dir, log = boltz_install(tmp_path)
+        self.with_path(monkeypatch, bin_dir)
+        runner = Boltz2Runner()
+        assert runner.version() == runner.version() == "3.4.5"
+        assert runner.is_available() and len(log.read_text(encoding="utf-8").splitlines()) == 1
+
+    @pytest.mark.parametrize(
+        "shebang, name",
+        [
+            ("#!{python} -s", "python3.12"),
+            ("#!/usr/bin/env python3", "python3"),
+            ("#!/usr/bin/env -S python3 -s", "python3"),
+            ("#!/usr/bin/env PYTHONNOUSERSITE=1 python3", "python3"),
+            ("#!{python}\n# -*- coding: utf-8 -*-", "python"),
+        ],
+    )
+    def test_the_usual_first_lines_of_an_installed_script(
+        self, tmp_path, monkeypatch, shebang, name
+    ):
+        bin_dir, log = boltz_install(tmp_path, shebang=shebang, name=name)
+        self.with_path(monkeypatch, bin_dir)
+        assert Boltz2Runner().version() == "3.4.5"
+        assert log.is_file()
+
+    @pytest.mark.parametrize(
+        "shebang",
+        [
+            "#!/bin/sh",
+            "#!/usr/bin/env bash",
+            "#!/usr/bin/env",
+            "#!/usr/bin/env python3-that-does-not-exist",
+            "#!",
+            "no first line of a script",
+        ],
+    )
+    def test_a_script_that_names_no_python_has_no_version_and_is_still_available(
+        self, tmp_path, monkeypatch, shebang
+    ):
+        bin_dir, log = boltz_install(tmp_path, shebang=shebang)
+        self.with_path(monkeypatch, bin_dir)
+        runner = Boltz2Runner()
+        assert runner.is_available() is True
+        assert runner.version() is None
+        assert not log.exists()
+        assert make_request().model_version == ""
+
+    def test_a_script_that_cannot_be_read_as_text_has_no_version(self, tmp_path, monkeypatch):
+        bin_dir, _ = boltz_install(tmp_path)
+        (bin_dir / "boltz").write_bytes(b"\x7fELF\x02\x01\x01\x00" + bytes(range(256)))
+        self.with_path(monkeypatch, bin_dir)
+        assert Boltz2Runner().version() is None
+
+    def test_an_interpreter_that_cannot_import_boltz_has_no_version(self, tmp_path, monkeypatch):
+        bin_dir, _ = boltz_install(tmp_path, status=1)
+        self.with_path(monkeypatch, bin_dir)
+        assert Boltz2Runner().version() is None
+
+    def test_an_answer_that_is_not_a_version_is_refused(self, tmp_path, monkeypatch):
+        bin_dir, _ = boltz_install(tmp_path, answer="ModuleNotFoundError")
+        self.with_path(monkeypatch, bin_dir)
+        assert Boltz2Runner().version() is None
+
+    def test_an_interpreter_that_is_gone_has_no_version(self, tmp_path, monkeypatch):
+        bin_dir, _ = boltz_install(tmp_path)
+        (bin_dir / "python3.12").unlink()
+        self.with_path(monkeypatch, bin_dir)
+        assert Boltz2Runner().version() is None
+
+    def test_without_boltz_on_path_there_is_nothing_to_ask(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        runner = Boltz2Runner()
+        assert runner.is_available() is False and runner.version() is None
+
+    def test_a_conda_environment_is_asked_instead_of_the_script(self, tmp_path, monkeypatch):
+        bin_dir, log = boltz_install(tmp_path)
+        self.with_path(monkeypatch, bin_dir)
+        (bin_dir / "conda").write_text(
+            f'#!/bin/sh\necho "$@" >> "{tmp_path / "conda.log"}"\necho 5.6.7\n', encoding="utf-8"
+        )
+        (bin_dir / "conda").chmod(0o755)
+        assert Boltz2Runner("someenv").version() == "5.6.7"
+        assert (
+            (tmp_path / "conda.log")
+            .read_text(encoding="utf-8")
+            .startswith("run -n someenv python -c ")
+        )
+        assert not log.exists()
 
 
 class TestAvailability:

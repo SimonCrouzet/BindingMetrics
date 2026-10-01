@@ -108,6 +108,16 @@ Chemical Component Dictionary and is downloaded on first use (network). Boltz-2 
 its failures and exits with status 0 (see below), and takes the model's messages on stdout and
 stderr: both are echoed to stderr and the last 8000 characters are kept for the reason.
 
+Version. ``version()`` and ``is_available()`` describe the same installation, the ``boltz`` that
+``run`` starts. Without ``conda_env`` the version is read by the interpreter named on the first
+line of the ``boltz`` script that ``PATH`` finds (``pip``, ``pipx`` and ``conda`` write that
+line), so a ``boltz`` in an environment other than the one that runs this package has its
+version in the request key. The version is None, and the key holds an empty version, when
+``boltz`` is not on PATH, when the script is not Python (a shell wrapper names no interpreter)
+or when the interpreter has no ``boltz`` distribution (the package metadata is read, as for
+OpenFold3; the package is not imported). With ``conda_env`` the interpreter is
+``conda run -n ENV python``.
+
 Failures. A non-zero exit raises ``Boltz2RunError`` (a ``CalledProcessError`` whose text starts
 with the reason, advice for the failures that have a known fix, the last lines of output and the
 command). ``boltz predict`` catches an exception in the preparation of an input (a YAML or a
@@ -164,7 +174,6 @@ from __future__ import annotations
 
 import codecs
 import dataclasses
-import importlib.metadata
 import logging
 import math
 import os
@@ -260,9 +269,12 @@ _KNOWN_FAILURE_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
     ),
 )
 
-#: Probe that asks an interpreter for the version of ``boltz`` and fails when the package cannot
-#: be imported, which is the case in which ``boltz predict`` cannot start either.
-_VERSION_PROBE = "import boltz; print(boltz.__version__)"
+#: Probe that asks an interpreter for the version of the ``boltz`` distribution (its metadata, as
+#: the OpenFold3 probe does; importing the package is not needed to read it).
+_VERSION_PROBE = "from importlib.metadata import version; print(version('boltz'))"
+
+#: Bytes of the first line of the ``boltz`` script that are read to find its interpreter.
+_SHEBANG_BYTES = 4096
 
 
 # ---------------------------------------------------------------------------- failures
@@ -380,30 +392,65 @@ def _no_output_message(request: PredictionRequest, directory: Path, tail: str) -
 # ---------------------------------------------------------------------------- the version
 
 
-def _installed_boltz_version(conda_env: Optional[str]) -> Optional[str]:
-    """The installed ``boltz`` version, or None when it is not installed or cannot be imported.
+def _script_interpreter(script: str) -> Optional[str]:
+    """The Python interpreter that the script ``script`` starts with, or None.
 
-    The current interpreter is asked through the package metadata. A conda environment is asked
-    through ``conda run``, which starts a process, and the package is imported there, so that an
-    installation that cannot start ``boltz predict`` is not reported as available.
+    ``pip``, ``pipx`` and ``conda`` write ``boltz`` as a script whose first line names the
+    interpreter of the environment that holds the package (``#!/path/to/env/bin/python3.12``, or
+    ``#!/usr/bin/env python3``, which is looked up on ``PATH`` as the shell would). A script that
+    is not Python (a shell wrapper, a binary) has no interpreter to ask, and the result is None.
     """
-    if not conda_env:
-        try:
-            return importlib.metadata.version("boltz")
-        except importlib.metadata.PackageNotFoundError:
-            return None
-    command = [
-        shutil.which("conda") or "conda",
-        "run",
-        "-n",
-        conda_env,
-        "python",
-        "-c",
-        _VERSION_PROBE,
-    ]
+    try:
+        with open(script, "rb") as handle:
+            first = handle.readline(_SHEBANG_BYTES).decode("utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not first.startswith("#!"):
+        return None
+    words = first[2:].split()
+    if words and Path(words[0]).name == "env":
+        words = [word for word in words[1:] if not word.startswith("-") and "=" not in word]
+        found = shutil.which(words[0]) if words else None
+    else:
+        found = words[0] if words else None
+    if found is None or not Path(found).name.startswith("python"):
+        return None
+    return found
+
+
+def _boltz_python_command(conda_env: Optional[str]) -> Optional[list[str]]:
+    """The command that starts the interpreter ``boltz predict`` runs in, or None.
+
+    With ``conda_env`` it is ``conda run -n ENV python``. Without it, it is the interpreter on the
+    first line of the ``boltz`` script that ``shutil.which`` finds, which is the installation that
+    ``is_available()`` reports and ``run`` starts; the interpreter that runs this package is not
+    asked, because ``boltz`` is usually installed in an environment of its own.
+    """
+    if conda_env:
+        return [shutil.which("conda") or "conda", "run", "-n", conda_env, "python"]
+    script = shutil.which("boltz")
+    interpreter = None if script is None else _script_interpreter(script)
+    return None if interpreter is None else [interpreter]
+
+
+def _installed_boltz_version(conda_env: Optional[str]) -> Optional[str]:
+    """The version of the ``boltz`` that a run starts, or None when it cannot be read.
+
+    The interpreter of that installation (``_boltz_python_command``) is started and asked for the
+    metadata of the ``boltz`` distribution. None means that ``boltz`` is not on PATH, that its
+    script does not name a Python interpreter (a shell wrapper), or that the interpreter cannot be
+    started or has no ``boltz`` distribution.
+    """
+    command = _boltz_python_command(conda_env)
+    if command is None:
+        return None
     try:
         probe = subprocess.run(
-            command, capture_output=True, text=True, encoding="utf-8", timeout=60
+            [*command, "-c", _VERSION_PROBE],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("could not ask %s for the boltz version: %s", command, exc)
@@ -784,10 +831,15 @@ class Boltz2Runner(PredictionRunner):
     # ------------------------------------------------------------------ the machine
 
     def version(self) -> Optional[str]:
-        """The installed ``boltz`` version, or None when it cannot be told.
+        """The version of the ``boltz`` that ``run`` starts, or None when it cannot be told.
 
-        Read from the package metadata (in the conda environment when one is set, which starts a
-        process); asked once per runner.
+        It describes the installation that ``is_available()`` looks at. With a conda environment
+        it is asked of ``conda run -n ENV python``; without one, of the interpreter named on the
+        first line of the ``boltz`` script that ``PATH`` finds, so a ``boltz`` installed in an
+        environment other than the one that runs this package is still read. Either way a process
+        is started, once per runner. It is None when ``boltz`` is not on PATH, when its script is
+        not a Python script (a shell wrapper names no interpreter) or when that interpreter cannot
+        import ``boltz``; the request key then holds an empty version.
         """
         if not self._version_probed:
             self._version = _installed_boltz_version(self.conda_env)
@@ -795,7 +847,7 @@ class Boltz2Runner(PredictionRunner):
         return self._version
 
     def is_available(self) -> bool:
-        """True when ``boltz`` is on PATH, or the conda environment has an importable ``boltz``."""
+        """True when ``boltz`` is on PATH, or the conda environment has a ``boltz`` distribution."""
         if self.conda_env is None:
             return shutil.which("boltz") is not None
         return self.version() is not None
