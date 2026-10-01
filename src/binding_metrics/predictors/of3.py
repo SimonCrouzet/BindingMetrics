@@ -20,7 +20,11 @@ and 13 tokens, one per residue).
 
 * ``S`` is a seed value chosen by OpenFold3, not a position; ``seed_index`` is the 1-based
   position of the seed directory in numeric order of ``S`` (``seed_9`` before ``seed_10``).
-  ``k`` counts samples from 1 and is not a ranking.
+  ``k`` counts samples from 1 and is not a ranking. ``record.extras["seed_value"]`` is the
+  ``S`` of the directory the files were read from, and nothing else gives it:
+  ``experiment_config.json`` lists the ``seeds`` of the runner YAML and does not record a seed
+  that OpenFold3 generated (observed on 0.5.0: ``--num_model_seeds=1`` wrote the directory
+  ``seed_2746317213`` and the config says ``seeds: [42]`` and ``num_seeds: null``).
 * The aggregated file holds ``avg_plddt``, ``gpde``, ``ptm``, ``iptm``, ``disorder``,
   ``has_clash``, ``sample_ranking_score`` and the dictionaries ``chain_ptm``,
   ``chain_pair_iptm`` and ``bespoke_iptm``. The chain-pair keys are strings such as
@@ -437,6 +441,7 @@ class OpenFold3Parser(PredictionParser):
 
         record.extras.update(_run_provenance(Path(files.directory)))
 
+        # The seed is named by the directory only: the config does not record a generated one.
         located = next(iter(files.found().values()), None)
         if located is not None and located.parent.name.startswith("seed_"):
             record.extras["seed_value"] = located.parent.name[len("seed_") :]

@@ -111,6 +111,49 @@ class TestSeedDirectories:
         assert record.extras["seed_value"] == "10"
         assert record.seed_index == 2
 
+    def test_a_seed_that_openfold3_generated_is_named_by_its_directory_only(self, tmp_path):
+        from binding_metrics.metrics.prediction import compute_prediction_metrics
+
+        # `--num_model_seeds=1` on OpenFold3 0.5.0: the directory is seed_2746317213 and
+        # experiment_config.json holds `seeds: [42]` and `num_seeds: null`, not the seed it made
+        _write(tmp_path)  # seed_9
+        generated = 2746317213
+        (_seed_dir(tmp_path, 9)).rename(_seed_dir(tmp_path, generated))
+        for path in _seed_dir(tmp_path, generated).glob(f"{NAME}_seed_9_*"):
+            path.rename(path.with_name(path.name.replace("_seed_9_", f"_seed_{generated}_")))
+        config = {
+            "experiment_settings": {"seeds": [42], "num_seeds": None},
+            "inference_ckpt_path": "/w/of3-ob-2025-06-30-174k.pt",
+            "inference_ckpt_name": "openbind-2025-06-30-174k",
+        }
+        (tmp_path / "experiment_config.json").write_text(json.dumps(config), encoding="utf-8")
+
+        record = OpenFold3Parser().load(tmp_path, NAME)
+        assert record.extras["seed_value"] == str(generated)  # not "42"
+        assert record.avg_plddt == 82.0  # the files of that directory were read
+        assert record.extras["inference_ckpt_name"] == "openbind-2025-06-30-174k"
+        summary = compute_prediction_metrics(tmp_path, "of3", NAME)
+        assert summary["seed_value"] == generated and summary["seed"] == 1
+        refs = OpenFold3Parser().list_samples(tmp_path, NAME)
+        assert [(r.seed_index, r.sample) for r in refs] == [(1, 1)]
+
+    def test_the_seed_value_does_not_come_from_the_config_when_it_lists_other_seeds(self, tmp_path):
+        # two directories of a run with seeds 7 and 11: each sample reports its own directory
+        for position, seed in ((1, 7), (2, 11)):
+            _write(tmp_path, seed_index=position)  # written as seed_9 and seed_10
+            (_seed_dir(tmp_path, 8 + position)).rename(_seed_dir(tmp_path, seed))
+            for path in _seed_dir(tmp_path, seed).glob(f"{NAME}_seed_{8 + position}_*"):
+                path.rename(
+                    path.with_name(path.name.replace(f"_seed_{8 + position}_", f"_seed_{seed}_"))
+                )
+        config = {"experiment_settings": {"seeds": [42], "num_seeds": None}}
+        (tmp_path / "experiment_config.json").write_text(json.dumps(config), encoding="utf-8")
+        values = [
+            OpenFold3Parser().load(tmp_path, NAME, seed_index=i).extras["seed_value"]
+            for i in (1, 2)
+        ]
+        assert values == ["7", "11"]
+
     def test_a_directory_that_is_not_numeric_sorts_after_the_numeric_ones(self, tmp_path):
         root = self._three_seeds(tmp_path)
         odd = _seed_dir(root, "final")
