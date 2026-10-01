@@ -175,7 +175,9 @@ def summarize_prediction(
         Interface (needs both chains). The block is cut with ``record.tokens`` when the record
         has a token layout, and otherwise located with one token per residue; it is left NaN,
         with a warning and a reason, when the matrix size differs from the residue count (a
-        ligand or modified residue tokenised per atom):
+        ligand or modified residue tokenised per atom). An OpenFold3 or Protenix record gets its
+        layout from the adapter's ``complete`` (called by ``compute_prediction_metrics`` and
+        ``PredictionSession.record``), so a binder with modified residues has the values there:
             mean_interface_pde, max_interface_pde, pde_interface (only with
             ``include_matrices``), mean_interface_pae (average of both slice directions),
             max_interface_pae, pae_interface (binder rows, receptor columns; only with
