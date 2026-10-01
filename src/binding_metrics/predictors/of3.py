@@ -1,14 +1,22 @@
 """Adapter for the output of OpenFold3 (``run_openfold predict``).
 
-Layout checked against the released source of OpenFold3 v0.5.0 (2026-08-21) and against the
-0.3 and 0.4 outputs this toolkit parsed before; the layout did not change between 0.4.0 and
-0.5.0. No 0.5.0 run was available: what follows comes from reading the writer
-(``openfold3/core/runners/writer.py``) and the option validator, not from running the model.
+Layout checked against the released source of OpenFold3 v0.5.0 (2026-08-21), against the 0.3
+and 0.4 outputs this toolkit parsed before, and against real output of OpenFold3 0.5.0: the
+adapter read every file of the runs made on 2026-10-02 (1YCR, the cyclosporin of 1CWA and the
+bicyclic SFTI-1 of 3P8F; OpenBind-0 checkpoint, no MSA, one GPU) without change. The layout did
+not change between 0.4.0 and 0.5.0. A run of 0.5.0 writes
 
     {prediction_dir}/{query}/seed_{S}/{query}_seed_{S}_sample_{k}_model.{cif|cif.gz|pdb}
     {prediction_dir}/{query}/seed_{S}/{query}_seed_{S}_sample_{k}_confidences_aggregated.json
     {prediction_dir}/{query}/seed_{S}/{query}_seed_{S}_sample_{k}_confidences.{json|npz}
-    {prediction_dir}/{query}/seed_{S}/timing.json                    one per seed directory
+    {prediction_dir}/{query}/seed_{S}/timing.json              {"runtime_s": seconds}, one per seed
+    {prediction_dir}/experiment_config.json, summary.txt, runner_config.yaml,
+        inference_query_set.json, model_config.json and the directory msas/
+
+``.cif`` and ``.json`` are the defaults of the run. The runner YAML (``output_writer_settings``)
+also gave ``.cif.gz`` with ``.npz`` and ``.pdb`` with ``.json``; the adapter read both, for 1YCR
+(one run of each). A real file of 1YCR holds 817 pLDDT values and 98 x 98 ``pae`` and ``pde`` (85
+and 13 tokens, one per residue).
 
 * ``S`` is a seed value chosen by OpenFold3, not a position; ``seed_index`` is the 1-based
   position of the seed directory in numeric order of ``S`` (``seed_9`` before ``seed_10``).
@@ -44,7 +52,9 @@ Layout checked against the released source of OpenFold3 v0.5.0 (2026-08-21) and 
   ``record.tokens`` None and :meth:`OpenFold3Parser.complete` builds the layout with
   :func:`token_layout`. ``compute_prediction_metrics``, ``compute_openfold_metrics`` and
   ``PredictionSession.record`` call it; a record that only went through ``load`` has the
-  interface statistics only when the matrix size equals the residue count.
+  interface statistics only when the matrix size equals the residue count, and so has a
+  record whose matrices have one row per residue although the rule gives more tokens (it keeps
+  ``tokens`` None and gets no reason, because the sizes agree).
   Checked on 35 sample files of OpenFold3 0.5.0 runs (2026-10-02; 1YCR, the cyclosporin
   1CWA with 9 of the files, and the bicyclic SFTI-1 of 3P8F): the rule gives the size of
   ``pae`` and ``pde`` in every file. 1CWA has 240 tokens: 165 for the receptor, 73 for the
