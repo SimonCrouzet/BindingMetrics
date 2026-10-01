@@ -169,6 +169,8 @@ class TestPackageExports:
 
     def test_the_documented_names_are_exported(self):
         assert set(predictors.__all__) == {
+            "Boltz2Runner",
+            "ColabFoldRunner",
             "OpenFold3Runner",
             "PARSERS",
             "ParserSpec",
@@ -181,6 +183,7 @@ class TestPackageExports:
             "PredictionSession",
             "PredictionStore",
             "PredictionUnavailableError",
+            "ProtenixRunner",
             "SampleRef",
             "StoredPrediction",
             "TokenLayout",
