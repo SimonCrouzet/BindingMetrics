@@ -441,6 +441,22 @@ def openmm_chain_id(topology, author_id: str) -> Optional[str]:
     return holders[0] if holders else None
 
 
+def topology_chain_id(topology, chain_id: Optional[str]):
+    """ID, in ``topology``, of the chain that a caller names; None when none is named.
+
+    The ID is read as an author ID first (:func:`openmm_chain_id`) and as an ID of a chain
+    of the topology when no amino-acid chain has it as author ID, so that the IDs of the
+    topology keep working and an unknown ID is handed on as given.
+
+    Call it once, where the caller's ID enters: the result is an ID of the topology, which
+    it would read as an author ID again. In a file whose label and author letters are
+    swapped (label A is author B, label B is author A) that is another chain.
+    """
+    if chain_id is None:
+        return None
+    return openmm_chain_id(topology, chain_id) or chain_id
+
+
 def detect_chains(topology) -> tuple[Optional[str], Optional[str]]:
     """Auto-detect ligand (peptide) and receptor chain IDs from topology.
 

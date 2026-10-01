@@ -77,7 +77,7 @@ from binding_metrics.io.structures import (
     attach_author_chain_ids,
     author_chain_ids,
     copy_author_chain_ids,
-    openmm_chain_id,
+    topology_chain_id,
 )
 from binding_metrics.protocols.relaxer import Relaxer
 
@@ -639,11 +639,9 @@ class ImplicitRelaxation(Relaxer):
 
         chain_sizes.sort(key=lambda x: x[1])
 
-        def in_topology(configured: Optional[str]) -> Optional[str]:
-            return (openmm_chain_id(topology, configured) or configured) if configured else None
-
-        peptide_chain = in_topology(self.config.peptide_chain_id) or chain_sizes[0][0]
-        receptor_chain = in_topology(self.config.receptor_chain_id) or (
+        peptide_chain = topology_chain_id(topology, self.config.peptide_chain_id)
+        peptide_chain = peptide_chain or chain_sizes[0][0]
+        receptor_chain = topology_chain_id(topology, self.config.receptor_chain_id) or (
             chain_sizes[-1][0] if len(chain_sizes) > 1 else None
         )
         return peptide_chain, receptor_chain

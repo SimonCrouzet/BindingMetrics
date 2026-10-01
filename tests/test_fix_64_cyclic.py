@@ -16,12 +16,12 @@ pytest.importorskip("gemmi")
 
 from openmm import app  # noqa: E402
 
-from binding_metrics.core import cyclic  # noqa: E402
 from binding_metrics.core.cyclic import detect_cyclization, patch_cyclic_topology  # noqa: E402
 from binding_metrics.io.structures import (  # noqa: E402
     attach_author_chain_ids,
     author_chain_ids,
     load_structure,
+    topology_chain_id,
 )
 
 DATA = Path(__file__).parent.parent / "data"
@@ -160,9 +160,9 @@ class TestResolution:
             [("GLY", "A", "B")] * 3 + [("GLY", "B", "A")] * 3 + [("HOH", "C", "A")],
         )
         topology, _ = load_structure(path)
-        assert cyclic._topology_chain_id(topology, "A") == "B"
-        assert cyclic._topology_chain_id(topology, "B") == "A"
-        assert cyclic._topology_chain_id(topology, "C") == "C"  # waters only: as named
+        assert topology_chain_id(topology, "A") == "B"
+        assert topology_chain_id(topology, "B") == "A"
+        assert topology_chain_id(topology, "C") == "C"  # waters only: as named
 
 
 def test_no_warning_is_logged_for_the_examples(caplog):

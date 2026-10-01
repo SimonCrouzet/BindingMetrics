@@ -53,7 +53,7 @@ from binding_metrics.core.residues import (
     CYSTEINE_NAMES,
     STANDARD_AMINO_ACIDS,
 )
-from binding_metrics.io.structures import author_chain_ids, openmm_chain_id
+from binding_metrics.io.structures import author_chain_ids, topology_chain_id
 
 # ---------------------------------------------------------------------------
 # Threshold constants (nm)
@@ -315,32 +315,13 @@ def _dist(pos: np.ndarray, i: int, j: int) -> float:
 def _peptide_residues(topology, chain_id: str):
     """Return list of Residue objects for the given chain, ordered by index.
 
-    ``chain_id`` is the ID of the chain in ``topology``; see :func:`_topology_chain_id` for
-    a chain ID that a user gave.
+    ``chain_id`` is the ID of the chain in ``topology``; see
+    :func:`binding_metrics.io.structures.topology_chain_id` for a chain ID that a user gave.
     """
     for chain in topology.chains():
         if chain.id == chain_id:
             return list(chain.residues())
     raise ValueError(f"Chain '{chain_id}' not found in topology.")
-
-
-def _topology_chain_id(topology, chain_id: str) -> str:
-    """ID, in ``topology``, of the peptide chain that a caller names.
-
-    A topology read from an mmCIF by ``io.structures.load_structure`` carries the author
-    chain IDs, which differ from the IDs OpenMM gives the chains when the file has more
-    label IDs than author IDs (1CWA: the peptide is author chain C and chain B of the
-    topology, and chain C of the topology holds waters). A caller's ID is read as an
-    author ID first, and as the ID of a chain of the topology when no amino-acid chain has
-    it as author ID, so that the IDs of the topology keep working. Where neither applies,
-    for a topology that has no author IDs, ``chain_id`` is returned as it is.
-
-    Resolve once, at the entry point that receives the caller's ID
-    (:func:`detect_cyclization`): the result is a topology ID, which this function would
-    read as an author ID again. The code that already holds topology IDs (the patching,
-    the relaxation, the energy) must not call it.
-    """
-    return openmm_chain_id(topology, chain_id) or chain_id
 
 
 # Covalent radii in nm (Cordero et al., Dalton Trans. 2008, 2832-2838; subset
@@ -537,13 +518,13 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
 
     ``chain_id`` is the author chain ID, the one the chain options use, for a topology
     from ``io.structures.load_structure`` of an mmCIF; the ID of the chain in the topology
-    is accepted as well (see :func:`_topology_chain_id`). The ``CyclicBondInfo`` entries
-    carry the ID of the chain in the topology. 1CWA: ``"C"`` and ``"B"`` give the same
+    is accepted as well (see ``io.structures.topology_chain_id``). The ``CyclicBondInfo``
+    entries carry the ID of the chain in the topology. 1CWA: ``"C"`` and ``"B"`` give the same
     head-to-tail amide, where chain C of the topology holds waters.
 
     The remaining text describes the detection itself, in :func:`_detect_cyclization`.
     """
-    return _detect_cyclization(topology, positions, _topology_chain_id(topology, chain_id))
+    return _detect_cyclization(topology, positions, topology_chain_id(topology, chain_id))
 
 
 def _detect_cyclization(topology, positions, chain_id: str) -> list:

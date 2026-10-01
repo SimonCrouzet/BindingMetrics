@@ -26,6 +26,7 @@ from binding_metrics.io.structures import (  # noqa: E402
     load_structure,
     openmm_chain_id,
     strip_heterogens,
+    topology_chain_id,
 )
 
 DATA = Path(__file__).parent.parent / "data"
@@ -127,6 +128,15 @@ class TestBundledExamples:
         assert openmm_chain_id(topology, "B") == "B"
         assert openmm_chain_id(topology, "A") == "A"
         assert openmm_chain_id(topology, "W") is None
+
+
+class TestTopologyChainId:
+    def test_an_author_id_an_id_of_the_topology_and_an_unknown_id(self):
+        topology, _ = load_structure(_example(CWA))
+        assert topology_chain_id(topology, "C") == "B"
+        assert topology_chain_id(topology, "B") == "B"
+        assert topology_chain_id(topology, "Z") == "Z"
+        assert topology_chain_id(topology, None) is None
 
 
 class TestSyntheticFiles:

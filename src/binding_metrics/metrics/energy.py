@@ -737,20 +737,6 @@ def _append_error_message(result: dict, message: str) -> None:
     result["error_message"] = f"{previous}; {message}" if previous else message
 
 
-def _topology_chain_id(topology, chain_id: Optional[str]) -> Optional[str]:
-    """ID, in ``topology``, of the chain a caller names; None when no chain is named.
-
-    An author ID names the amino-acid chain that carries it (``openmm_chain_id``); an ID
-    that no amino-acid chain has as author ID is returned as given, so the IDs of the
-    topology keep working and an unknown ID fails where it always did.
-    """
-    from binding_metrics.io.structures import openmm_chain_id
-
-    if chain_id is None:
-        return None
-    return openmm_chain_id(topology, chain_id) or chain_id
-
-
 def compute_interaction_energy(
     input_path: str | Path,
     peptide_chain: Optional[str] = None,
@@ -857,7 +843,12 @@ def compute_interaction_energy(
     import openmm
     import openmm.unit as unit
 
-    from binding_metrics.io.structures import author_chain_ids, detect_chains, load_structure
+    from binding_metrics.io.structures import (
+        author_chain_ids,
+        detect_chains,
+        load_structure,
+        topology_chain_id,
+    )
 
     input_path = Path(input_path)
     if sample_id is None:
@@ -889,8 +880,8 @@ def compute_interaction_energy(
         # mmCIF by their label IDs when the file has more label IDs than author IDs, so author
         # ID C of 1CWA is chain B of the topology and chain C holds waters. The IDs that
         # ``detect_chains`` finds are IDs of the topology and are not resolved again.
-        peptide_chain = _topology_chain_id(topology, peptide_chain)
-        receptor_chain = _topology_chain_id(topology, receptor_chain)
+        peptide_chain = topology_chain_id(topology, peptide_chain)
+        receptor_chain = topology_chain_id(topology, receptor_chain)
         if peptide_chain is None or receptor_chain is None:
             auto_pep, auto_rec = detect_chains(topology)
             peptide_chain = peptide_chain or auto_pep
