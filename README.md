@@ -267,7 +267,7 @@ binding-metrics-run --input complex.cif --output-dir results/ \
     --metrics energy,interface,geometry,electrostatics
 ```
 
-The default `--metrics` includes `openfold`, so pass a list without it when OpenFold3 is not installed. The pipeline's OpenFold3 queries use the ColabFold MSA server: the sequences leave the machine, and the alignments, and so the predictions, can change over time. The query JSON carries the seed 42 unless `--openfold-seeds` is given. Run `binding-metrics-check-env` to verify whether OpenFold3 is correctly installed.
+The default `--metrics` includes `openfold`, so pass a list without it when OpenFold3 is not installed. The pipeline's OpenFold3 queries use the ColabFold MSA server: the sequences leave the machine, and the alignments, and so the predictions, can change over time. OpenFold3 samples with seed 42, written to its runner YAML, unless `--openfold-seeds` is given; the first seed given, first sample, is the one scored. A binder with a head-to-tail bond is sent as a cyclic chain (`--openfold-cyclic auto`, the default, when the installed OpenFold3 is 0.4.5 or later): the flag only wraps the relative positions of the chain, OpenFold3 does not enforce the closure bond, and it has published no accuracy benchmark for cyclic peptides; `--openfold-cyclic off` sends the binder as a linear chain. Run `binding-metrics-check-env` to verify whether OpenFold3 is correctly installed.
 
 ---
 
@@ -355,7 +355,7 @@ metrics = compute_prediction_metrics(
 )
 ```
 
-`compute_openfold_metrics` keeps its dictionary; `compute_prediction_metrics` returns it with a `model` key for whichever model wrote the output. pLDDT and ipTM are calibrated per model, so compare them within one model.
+`compute_openfold_metrics` keeps its dictionary and gains `seed_value`, the seed in the name of the seed directory that was parsed; `compute_prediction_metrics` returns it with a `model` key for whichever model wrote the output. pLDDT and ipTM are calibrated per model, so compare them within one model.
 
 ### DockQ — reference-based CAPRI accuracy
 
@@ -474,7 +474,7 @@ rows = run_batch(
 )
 ```
 
-`run_pipeline` takes the options of the `binding-metrics-run` flags as keyword arguments and returns the results dict described under [Results](#results-and-provenance). `binder_chain`, `target_chain` and `openfold_seeds` are keyword arguments too, and so are `on_unmappable_residue`, `binder_type`, `on_incompatible`, `preflight_only`, `predictor`, `prediction_dir`, `prediction_binder_chain`, `prediction_target_chain`, `prediction_cache` and `rerun_predictions` (on `run_batch` as well). `run_batch` returns one flat row per path in the order of the paths, whatever the number of workers, and writes the per-sample JSON and log; `on_result` is called with each row as it finishes (in completion order when `n_workers > 1`), and `on_error="raise"` re-raises an exception instead of recording an error row. The CSV of `binding-metrics-batch` is these rows.
+`run_pipeline` takes the options of the `binding-metrics-run` flags as keyword arguments and returns the results dict described under [Results](#results-and-provenance). `binder_chain`, `target_chain`, `openfold_seeds` and `openfold_cyclic` are keyword arguments too, and so are `on_unmappable_residue`, `binder_type`, `on_incompatible`, `preflight_only`, `predictor`, `prediction_dir`, `prediction_binder_chain`, `prediction_target_chain`, `prediction_cache` and `rerun_predictions` (on `run_batch` as well). `run_batch` returns one flat row per path in the order of the paths, whatever the number of workers, and writes the per-sample JSON and log; `on_result` is called with each row as it finishes (in completion order when `n_workers > 1`), and `on_error="raise"` re-raises an exception instead of recording an error row. The CSV of `binding-metrics-batch` is these rows.
 
 The relaxation step is a `Relaxer`. `ImplicitRelaxation` is the one the package ships; pass another implementation, for a different force field or a stub in a test, with `run_pipeline(..., relaxer=...)`. The pipeline reads `success`, `error_message` and the structure path from the returned `RelaxationResult` and records its `to_dict()` under `results["relax"]`:
 
@@ -550,7 +550,7 @@ Unless `--skip-prep` is given, the pipeline starts with a **prep step** (equival
 | `--energy-modes` | `relaxed` | any of `raw`, `relaxed`, `after_md` (the `after_md` run lasts 10 ps, independent of `--md-duration-ps`) |
 | `--random-seed INT\|none` | 1 | seed of the stochastic steps; `none` for fresh randomness |
 | `--reference PATH` | none | native structure; enables DockQ |
-| `--openfold-mode`, `--openfold-conda-env`, `--openfold-seeds` | `score`, `openfold3`, seed 42 | OpenFold3 step |
+| `--openfold-mode`, `--openfold-conda-env`, `--openfold-seeds`, `--openfold-cyclic` | `score`, `openfold3`, seed 42, `auto` | OpenFold3 step; `--openfold-cyclic {auto,on,off}` decides whether the binder chain gets `cyclic: true` |
 | `--on-unmappable-residue {error,x}` | `error` | a residue OpenFold3 cannot take stops the run before the model starts; `x` sends an `X` in its place |
 | `--binder-type {auto,peptide,miniprotein,nanobody,antibody}` | `auto` | what the binder is, for the pre-flight checks that depend on it ([Pre-flight check](#pre-flight-check)) |
 | `--on-incompatible {error,skip,warn}` | `error` | an input that a requested step or model cannot take is refused before anything runs (`error`), left out with its reason (`skip`) or logged (`warn`) |
@@ -740,7 +740,7 @@ configure_logging(logging.INFO)
 ## Reproducibility
 
 - **Seeds.** Hydrogen placement, PDBFixer's rebuilding of missing atoms, the conformer behind the AM1-BCC charges of non-canonical residues, the MD initial velocities and Langevin noise, the ion placement of `binding-metrics-solvate` and the hydrogen placement in the receptor energy term of `binding-metrics-receptor-quality` are seeded. The default seed is 1. Set it with `--random-seed INT` on `binding-metrics-run`, `-batch`, `-relax`, `-energy`, `-prep`, `-solvate` and `-receptor-quality`, or with `random_seed=` in the API; `--random-seed none` draws fresh randomness, for instance to generate independent MD replicas. The static metrics have no random step.
-- **OpenFold3.** The seed above does not drive it. The query JSON carries the seed 42 unless `--openfold-seeds` is given, and the MSA server can return different alignments over time. With `--predictor` a finished prediction is stored under a key of the input's content, the model version, the seeds and the options, and a repeated run reuses it instead of predicting again; `--rerun-predictions` forces a new one. The alignments a remote MSA server returns are not part of the key.
+- **OpenFold3.** The seed above does not drive it. OpenFold3 samples with seed 42, written to its runner YAML, unless `--openfold-seeds` is given, and the MSA server can return different alignments over time. With `--predictor` a finished prediction is stored under a key of the input's content, the model version, the seeds and the options, and a repeated run reuses it instead of predicting again; `--rerun-predictions` forces a new one. The alignments a remote MSA server returns are not part of the key.
 - **GPU precision.** CUDA runs in mixed precision and its force reduction order is not deterministic, so energies and MD from one seed can differ in the last digits between GPU runs.
 - **Provenance.** Every results file carries the `provenance` block (package version, git sha, Python, OS, OpenMM version, platform, seed), and batch CSV rows carry it as `provenance_*` columns, so a result can be tied to the code and settings that produced it.
 - **Environments.** `environment.yml` is the specification that CI and the Dockerfile build from. `environment.lock.yml` is a snapshot of the exact versions of the development environment (`conda env create -n binding-metrics -f environment.lock.yml`, then `pip install --no-deps -e .`); neither CI nor the Dockerfile reads it, and its header says how to regenerate it. The Docker images are built from `environment.yml` (see [Docker](#docker-gpu-recommended-for-production)).
