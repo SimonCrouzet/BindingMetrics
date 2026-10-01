@@ -12,6 +12,7 @@ openfold module is imported when a run starts, never before)::
     class OpenFold3Runner(PredictionRunner):
         OpenFold3Runner(conda_env: Optional[str] = None)
         name = "of3"; capabilities = None
+        supports_custom_weights = True; weights_kind = "file"
         .conda_env
         .make_request(input_path, *, name: str, binder_chain: Optional[str] = None,
             receptor_chain: Optional[str] = None, mode: str = "score",
@@ -21,7 +22,8 @@ openfold module is imported when a run starts, never before)::
             extra_args: Sequence[str] = (), inference_ckpt_path: Optional[str | Path] = None,
             runner_yaml: Optional[str | Path] = None,
             template_cif_path: Optional[str | Path] = None,
-            binder_cyclic: bool | str = "auto") -> PredictionRequest
+            binder_cyclic: bool | str = "auto",
+            weights: Optional[str | Path | WeightsRef] = None) -> PredictionRequest
         .prepare(request, work_dir) -> Path
         .run(request, work_dir) -> Path                       # <work_dir>/predictions
         .supports_batch(request) -> bool
@@ -51,6 +53,11 @@ are not hashed). What goes into the key:
   both be given, because OpenFold3 lets the generated seeds replace the explicit ones. A run
   writes the seeds to the runner YAML (``experiment_settings.seeds``): OpenFold3 0.5.0 does not
   read seeds from the query file;
+* the custom weights, when given (``weights``: a checkpoint file, passed to OpenFold3 as
+  ``--inference-ckpt-path``): the SHA-256 and size of the file, never its path, so a fine-tuned
+  checkpoint has its own entries and a moved copy shares them. Without ``weights`` the key is
+  what it was. ``inference_ckpt_path`` is the older way to name a checkpoint: it keeps its path
+  and size in ``options`` and the two cannot be combined;
 * the content of ``template_cif_path`` and ``runner_yaml`` when given, and of the user-default
   ``runner.yml`` that OpenFold3 merges under the toolkit's YAML (it can carry the MSA server URL
   and the structure format), when the file exists.
@@ -84,6 +91,7 @@ from typing import Any, Optional, Sequence, Union
 
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.store import PredictionRequest
+from binding_metrics.predictors.weights import WeightsRef
 
 #: Defaults of the openfold run functions that are not exposed as module constants. A test
 #: compares them with the signatures, so a change there cannot pass unnoticed.
@@ -128,6 +136,9 @@ class OpenFold3Runner(PredictionRunner):
     """
 
     name = "of3"
+    #: OpenFold3 loads a checkpoint file given with ``--inference-ckpt-path``.
+    supports_custom_weights = True
+    weights_kind = "file"
 
     def __init__(self, conda_env: Optional[str] = None):
         self.conda_env = conda_env
@@ -177,6 +188,7 @@ class OpenFold3Runner(PredictionRunner):
         runner_yaml: Optional[str | Path] = None,
         template_cif_path: Optional[str | Path] = None,
         binder_cyclic: Union[bool, str] = _DEFAULT_BINDER_CYCLIC,
+        weights: Optional[str | Path | WeightsRef] = None,
     ) -> PredictionRequest:
         """The store request of one OpenFold3 run (see the module docstring for what it holds).
 
@@ -198,19 +210,28 @@ class OpenFold3Runner(PredictionRunner):
                 seeds; None (default) leaves it out.
             on_unmappable_residue: ``"error"`` or ``"x"`` (see ``run_openfold_scoring``).
             extra_args: Extra command-line arguments, passed verbatim.
-            inference_ckpt_path: Checkpoint file; None uses OpenFold3's default.
+            inference_ckpt_path: Checkpoint file; None uses OpenFold3's default. The key holds
+                its path and size; ``weights`` identifies a checkpoint by content instead.
             runner_yaml: Runner YAML that replaces ``presets``.
             template_cif_path: Pre-prepared complex or receptor template (``score``, ``refold``).
             binder_cyclic: ``"auto"`` (default), ``True`` or ``False``; whether the binder chain
                 of the query gets ``cyclic: true`` (see ``prepare_refolding_query``). Only for
                 ``score`` and ``refold``: a query file of ``predict`` names its own chains.
+            weights: A custom (fine-tuned) checkpoint file, or the ``WeightsRef`` that
+                ``PredictionStore.weights_reference`` made for it. It goes to OpenFold3 as
+                ``--inference-ckpt-path`` and its content is in the key. A path is hashed here
+                without a cache; give a ``WeightsRef`` to use the store's.
 
         Raises:
             ValueError: Mode ``score-lock``, a missing chain role, an unknown mode or choice, a
                 template file with ``predict``, both ``seeds`` and ``num_model_seeds``, a
                 ``binder_cyclic`` that is not ``True``, ``False`` or ``"auto"``, or a value other
-                than the default with ``predict``.
+                than the default with ``predict``, or both ``weights`` and
+                ``inference_ckpt_path``.
+            FileNotFoundError: ``weights`` does not exist.
         """
+        if weights is not None and inference_ckpt_path is not None:
+            raise ValueError("give weights or inference_ckpt_path, not both")
         if mode == "score-lock":
             raise ValueError(_lock_message())
         if mode in ("score", "refold") and not (binder_chain and receptor_chain):
@@ -267,6 +288,7 @@ class OpenFold3Runner(PredictionRunner):
             binder_chain=binder_chain,
             receptor_chain=receptor_chain,
             extra_files=extra_files,
+            weights=weights,
             seeds=request_seeds,
             num_samples=num_samples,
             model_version=self.version() or "",
@@ -427,6 +449,7 @@ class OpenFold3Runner(PredictionRunner):
             raise ValueError(f"the of3 runner cannot run a '{request.model}' request")
         if request.input_path is None:
             raise ValueError("an OpenFold3 request needs an input file")
+        self.check_weights(request)
 
     @staticmethod
     def _structure_arguments(request: PredictionRequest, output_dir: Path) -> dict[str, Any]:
@@ -477,6 +500,8 @@ class OpenFold3Runner(PredictionRunner):
             arguments["extra_args"] = list(options["extra_args"])
         if options.get("inference_ckpt_path"):
             arguments["inference_ckpt_path"] = options["inference_ckpt_path"]
+        if request.weights is not None:
+            arguments["inference_ckpt_path"] = str(request.weights.path)
         if "runner_yaml" in request.extra_files:
             arguments["runner_yaml"] = request.extra_files["runner_yaml"]
         return arguments
