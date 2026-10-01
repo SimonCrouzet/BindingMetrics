@@ -402,17 +402,30 @@ class ProtenixParser(PredictionParser):
     # Not declared because nothing shows it: a limit on the residue classes (modified residues go
     # through a CCD code, D-amino acids and N-methyl are not mentioned), and the 2560-token limit
     # of the model protenix-v2, which is a limit of the whole complex.
+    # Modes: none is declared. A lock is not refused: the `contact` and `pocket` constraints
+    # guide the interface and are documented as soft (docs/infer_json_format.md, section
+    # constraint), so lock is a caveat. Templates only come through `templatesPath` (a3m or hhr
+    # alignments, section protein), so a structure cannot be given as a template: whether refold
+    # and score exist is not shown and nothing is declared for them.
     capabilities = Capabilities(
         caveats={
-            family: (
-                "Protenix documents a covalent bond between two polymer residues only for a "
-                "head-to-tail amide bond and a disulfide between cysteines; other types "
-                '"can still be specified in the input, but they are not reliably handled by the '
-                "current model. In such cases, the specified residues may tend to be positioned "
-                'in close proximity, though typically not close enough to form a covalent bond" '
-                "(docs/infer_json_format.md, section covalent_bonds)."
-            )
-            for family in ("closures:lactam", "closures:staple", "closures:other")
+            "modes:lock": (
+                "Protenix guides the interface of the chains with `contact` and `pocket` "
+                'constraints, which its documentation calls "a soft constraint: the model is '
+                'encouraged, but not strictly required, to satisfy it" (docs/infer_json_format.md, '
+                "section constraint), and they do not pin the complete pose of the chains."
+            ),
+            **{
+                family: (
+                    "Protenix documents a covalent bond between two polymer residues only for a "
+                    "head-to-tail amide bond and a disulfide between cysteines; other types "
+                    '"can still be specified in the input, but they are not reliably handled by '
+                    "the current model. In such cases, the specified residues may tend to be "
+                    "positioned in close proximity, though typically not close enough to form a "
+                    'covalent bond" (docs/infer_json_format.md, section covalent_bonds).'
+                )
+                for family in ("closures:lactam", "closures:staple", "closures:other")
+            },
         },
         version="2.0.0",
     )

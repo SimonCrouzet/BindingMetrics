@@ -219,10 +219,33 @@ class OpenFold3Parser(PredictionParser):
     # this package's own query builder (binding_metrics.metrics._openfold_run), imported when the
     # check runs. Not declared because nothing shows it: a limit on the binder size or on a binder
     # of several chains.
+    # Modes (v0.5.0 source, checked against the clone on 2026-10-01): predict, refold and score
+    # are supported, lock is not. The template pair features are multiplied by a same-chain mask
+    # when they are built (openfold3/core/data/primitives/featurization/template.py,
+    # create_template_distogram and create_template_unit_vector; the call is in
+    # openfold3/core/data/pipelines/featurization/template.py) and again in the embedder
+    # (openfold3/core/model/feature_embedders/template_embedders.py, _embed_feats), so a template
+    # gives the fold of each chain and never the pose between chains; a multi-chain CIF template
+    # gives one chain (docs/source/template_how_to.md, "CIF Direct Mode"); the only constraint is
+    # the pocket constraint, documented for small-molecule ligands (docs/source/
+    # input_format_reference.md, section 4).
     capabilities = Capabilities(
         closures={"none", "head_to_tail"},
+        modes={"predict", "refold", "score"},
         extra_checks=(check_openfold3_residues,),
         reasons={
+            "modes": (
+                "OpenFold3 0.5.0 cannot be given the relative pose of the chains. A template "
+                "carries the fold of one chain: the template pair features are zeroed between "
+                "chains (create_template_distogram and create_template_unit_vector take a "
+                "same-chain mask in openfold3/core/data/primitives/featurization/template.py, "
+                "and the embedder applies it again in openfold3/core/model/feature_embedders/"
+                "template_embedders.py), and a multi-chain CIF template gives one chain "
+                "(docs/source/template_how_to.md). The pocket constraint is documented for "
+                "small-molecule ligands only (docs/source/input_format_reference.md, section 4), "
+                "and its use for a peptide binder was not confirmed. Use 'score' (the model "
+                "re-docks the chains) or 'refold', or a model that pins the pose."
+            ),
             "closures": (
                 "OpenFold3 0.5.0 takes one kind of ring closure: `cyclic: true` on a protein chain "
                 "wraps the whole chain, which makes it head-to-tail (openfold3/core/utils/"

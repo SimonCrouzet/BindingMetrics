@@ -617,8 +617,28 @@ class Boltz2Parser(PredictionParser):
     # can be given. Not declared because nothing shows it: a limit on the residue classes (a
     # modified residue is a CCD code in `modifications`; D-amino acids and N-methyl are not
     # mentioned), and on the binder size (no maximum is stated).
+    # Modes (v2.2.1 source and documentation, checked against the clone on 2026-10-01): all four
+    # are declared. predict is the plain input; refold and score need a template per chain, which
+    # `templates` takes with `chain_id` (docs/prediction.md, Templates); an unforced template
+    # carries no pose, because the template module lets features attend within the same chain only
+    # (src/boltz/model/modules/trunkv2.py, "Compute asym mask"). lock is the template with
+    # `force: true` and a `threshold`: process_template_features
+    # (src/boltz/data/feature/featurizerv2.py) puts all the chains a template file maps into one
+    # row, and TemplateReferencePotential (src/boltz/model/potentials/potentials.py) aligns that
+    # row rigidly over its templated tokens (weighted_rigid_align) and penalises a deviation
+    # larger than the threshold. It is a guidance term, so lock is a caveat and not a promise.
     capabilities = Capabilities(
+        modes={"predict", "refold", "score", "lock"},
         caveats={
+            "modes:lock": (
+                "Boltz-2 pins the pose through a template with `force: true` and a `threshold` "
+                "(docs/prediction.md, Templates): TemplateReferencePotential "
+                "(src/boltz/model/potentials/potentials.py) aligns the template rigidly over its "
+                "templated tokens and pulls the prediction back when it deviates by more than "
+                "the threshold. That is a guidance term with weight 0.1, not a hard constraint; "
+                "templates are for protein chains only; and this was read from the source and "
+                "never run."
+            ),
             "closures:staple": (
                 "Boltz-2 takes a covalent link between residues only as a `bond` constraint, and "
                 "its documentation lists that constraint as supported for CCD ligands and "

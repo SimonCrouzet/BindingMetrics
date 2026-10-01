@@ -137,9 +137,11 @@ KEY_FORMAT = 1
 
 #: Values of ``PredictionRequest.mode``: a prediction from the model's own input (``predict``), a
 #: prediction of an existing complex with each chain given its own structure as a template
-#: (``score``), and one with the binder folded from its sequence next to a receptor given as
-#: template (``refold``).
-MODES: tuple[str, ...] = ("predict", "score", "refold")
+#: (``score``), one with the binder folded from its sequence next to a receptor given as
+#: template (``refold``), and one with the relative pose of the chains pinned to the input by a
+#: forced template or constraints (``lock``). The same words are the vocabulary of
+#: ``binding_metrics.capabilities.MODES``, which says which model supports which.
+MODES: tuple[str, ...] = ("predict", "score", "refold", "lock")
 
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"

@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "BINDER_TYPES",
     "CLOSURE_FAMILIES",
+    "MODES",
     "NEEDS",
     "POLICIES",
     "RESIDUE_CLASSES",
@@ -106,6 +107,21 @@ RESIDUE_CLASSES: tuple[str, ...] = (
 #: ``preflight``.
 NEEDS: tuple[str, ...] = ("receptor_chain", "reference_structure", "predicted_structure", "gpu")
 
+#: How a structure-prediction model is used for a complex, the vocabulary of
+#: ``Capabilities.modes``. ``predict``: from sequences only. ``refold``: the receptor is given as
+#: a template and the binder is predicted freely. ``score``: every chain is given its own
+#: structure as a template and the relative pose of the chains is NOT given, so the model
+#: re-docks them. ``lock``: the relative pose of the chains is pinned to the input, by a forced
+#: template, constraints or both.
+MODES: tuple[str, ...] = ("predict", "refold", "score", "lock")
+
+_MODE_TEXT = {
+    "predict": "predict (sequences only)",
+    "refold": "refold (receptor templated, binder predicted freely)",
+    "score": "score (every chain templated on its own, the pose not given)",
+    "lock": "lock (the pose of the chains pinned to the input)",
+}
+
 _FAMILY_TEXT = {
     "none": "no ring closure (a linear chain)",
     "head_to_tail": "a head-to-tail amide closure",
@@ -142,9 +158,10 @@ _SET_FIELDS: dict[str, tuple[str, ...]] = {
     "closures": CLOSURE_FAMILIES,
     "residue_classes": RESIDUE_CLASSES,
     "needs": NEEDS,
+    "modes": MODES,
 }
 # Fields whose values a caveat can name (needs is a requirement, not a validation state).
-_CAVEAT_FIELDS = ("binder_types", "closures", "residue_classes")
+_CAVEAT_FIELDS = ("binder_types", "closures", "residue_classes", "modes")
 # Constraints without a vocabulary; their reasons are keyed by the field name alone.
 _REASON_KEYS = frozenset({"min_binder_residues", "max_binder_residues", "multi_chain_binder"})
 
@@ -251,6 +268,13 @@ class Capabilities:
         multi_chain_binder: False refuses a binder that spans several chains.
         needs: What the step cannot run without, a subset of ``NEEDS``. ``receptor_chain`` is met
             by a receptor given or by any other protein chain in the structure.
+        modes: The ways a model can be used that it supports, a subset of ``MODES`` (``predict``,
+            ``refold``, ``score``, ``lock``; see ``MODES``). Empty declares nothing and refuses
+            nothing. A non-empty set that leaves a mode out refuses a request for it and needs
+            ``reasons["modes"]`` (or ``"modes:<mode>"``) naming what is not supported and why;
+            the full set declares full support and refuses nothing. Partial or unreliable support
+            of a listed mode is a caveat, ``caveats["modes:<mode>"]``, which applies to a request
+            for that mode whether or not ``modes`` is declared.
         extra_checks: Functions ``profile -> violations`` for a limit that the sets above cannot
             state, such as the residue names a model's query builder can express. Each returns
             ``Violation`` objects with ``fact``, ``requirement`` and a ``reason`` that says why and
@@ -275,6 +299,7 @@ class Capabilities:
     max_binder_residues: Optional[int] = None
     multi_chain_binder: bool = True
     needs: frozenset[str] = frozenset()
+    modes: frozenset[str] = frozenset()
     extra_checks: tuple[Callable[[InputProfile], Iterable[Violation]], ...] = ()
     # The two mappings are unhashable and long; equality still compares them.
     reasons: Mapping[str, str] = field(default_factory=dict, hash=False, repr=False)
@@ -324,7 +349,11 @@ class Capabilities:
 
     def constrained_fields(self) -> tuple[str, ...]:
         """Names of the fields that differ from "no constraint"."""
-        names = [name for name in _SET_FIELDS if getattr(self, name)]
+        names = [
+            name
+            for name in _SET_FIELDS
+            if getattr(self, name) and not (name == "modes" and set(self.modes) == set(MODES))
+        ]
         if self.min_binder_residues is not None:
             names.append("min_binder_residues")
         if self.max_binder_residues is not None:
@@ -340,6 +369,10 @@ class Capabilities:
         """True when nothing is constrained (caveats aside)."""
         return not self.constrained_fields()
 
+    def declares_mode(self, mode: str) -> bool:
+        """True when ``modes`` lists ``mode``: the model declares that it supports it."""
+        return mode in self.modes
+
     def reason_for(self, name: str, value: Optional[str] = None) -> str:
         """The sentence for a constraint: ``name:value`` if there is one, else ``name``, else ''."""
         if value is not None and f"{name}:{value}" in self.reasons:
@@ -351,6 +384,7 @@ class Capabilities:
         profile: InputProfile,
         *,
         provided: Optional[Collection[str]] = None,
+        mode: Optional[str] = None,
     ) -> list[Violation]:
         """Every way in which ``profile`` breaks a constraint (an empty list when it fits).
 
@@ -359,6 +393,8 @@ class Capabilities:
             provided: What the caller makes available among ``NEEDS`` besides the receptor
                 chain (which the profile knows): ``{"reference_structure", "gpu"}``. None means
                 the caller does not say, and those needs are not checked.
+            mode: The mode the model is asked to run in, one of ``MODES``; None does not say, and
+                ``modes`` is not checked.
 
         The returned violations have no subject yet; ``preflight`` fills it in.
         """
@@ -374,6 +410,15 @@ class Capabilities:
                 )
             )
 
+        if mode is not None and mode not in MODES:
+            raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+        if mode is not None and self.modes and mode not in self.modes:
+            add(
+                "modes",
+                f"mode '{mode}' was requested",
+                "supported modes: " + _join(_sorted_by(MODES, self.modes)),
+                mode,
+            )
         if self.binder_types and profile.binder_type != "unknown":
             if profile.binder_type not in self.binder_types:
                 origin = "given" if profile.binder_type_source == "given" else "estimated from size"
@@ -439,12 +484,13 @@ class Capabilities:
                 found.append(violation)
         return found
 
-    def caveats_for(self, profile: InputProfile) -> list[str]:
-        """The caveats that apply to ``profile``: accepted inputs the step never validated."""
+    def caveats_for(self, profile: InputProfile, mode: Optional[str] = None) -> list[str]:
+        """The caveats that apply to ``profile`` and ``mode``: what the step never validated."""
         present = {
             "binder_types": {profile.binder_type},
             "closures": set(profile.closures),
             "residue_classes": set(profile.residue_classes),
+            "modes": {mode} if mode is not None else set(),
         }
         return [
             sentence
@@ -452,9 +498,15 @@ class Capabilities:
             if key.partition(":")[2] in present[key.partition(":")[0]]
         ]
 
-    def accepts(self, profile: InputProfile, *, provided: Optional[Collection[str]] = None) -> bool:
+    def accepts(
+        self,
+        profile: InputProfile,
+        *,
+        provided: Optional[Collection[str]] = None,
+        mode: Optional[str] = None,
+    ) -> bool:
         """True when ``check`` finds nothing."""
-        return not self.check(profile, provided=provided)
+        return not self.check(profile, provided=provided, mode=mode)
 
 
 def _sorted_by(order: tuple[str, ...], values: Iterable[str]) -> list[str]:
@@ -1206,6 +1258,8 @@ class PreflightReport:
             ``preflight`` does not know which metrics read a prediction.
         predictor_policy: The policy applied to the predictors when it differs from ``policy``;
             empty when it is the same.
+        mode: The mode the predictors were asked to run in, one of ``MODES``; None when the
+            caller did not say (an output whose making is not known).
     """
 
     policy: str
@@ -1218,6 +1272,7 @@ class PreflightReport:
     predictors: tuple[str, ...] = ()
     predictor_usable: bool = True
     predictor_policy: str = ""
+    mode: Optional[str] = None
 
     def policy_of(self, kind: str) -> str:
         """The policy that applies to a violation of ``kind`` (``metric`` or ``predictor``)."""
@@ -1258,6 +1313,8 @@ class PreflightReport:
                 f"(policy: {policy})."
             )
         lines = [heading, f"Input: {self.profile.describe()}"]
+        if self.mode is not None:
+            lines.append(f"Mode: {_MODE_TEXT[self.mode]}")
         if not self.refused:
             runs = [f"metrics {_join(self.metrics_to_run)}"] if self.metrics_requested else []
             runs += [f"predictor {label}" for label in self.predictors if self.predictor_usable]
@@ -1283,6 +1340,7 @@ class PreflightReport:
         return {
             "policy": self.policy,
             "predictor_policy": self.predictor_policy or self.policy,
+            "mode": self.mode,
             "compatible": self.compatible,
             "profile": self.profile.to_dict(),
             "metrics_requested": list(self.metrics_requested),
@@ -1430,12 +1488,19 @@ def _is_registry_entry_of(spec, step: _Step) -> bool:
 
 
 def _other_predictors(
-    profile: InputProfile, rejected: _Step, provided: Optional[Collection[str]]
+    profile: InputProfile,
+    rejected: _Step,
+    provided: Optional[Collection[str]],
+    mode: Optional[str] = None,
+    runnable: Optional[Collection[str]] = None,
 ) -> tuple[list[str], list[str], int]:
     """The registered predictors other than ``rejected``, as (declared compatible, no declared
     limits, number of other predictors).
 
-    A predictor that declares limits and refuses the input is in neither list.
+    A predictor that declares limits and refuses the input is in neither list. When a ``mode``
+    is requested, a predictor is declared compatible only if it lists that mode in ``modes``; one
+    that declares no modes counts as having no declaration. ``runnable`` names the models that
+    can be run from here; a listed model outside it is marked as readable only.
     """
     from binding_metrics.predictors.registry import PARSERS
 
@@ -1450,34 +1515,52 @@ def _other_predictors(
             logger.warning("could not read the capabilities of predictor %r: %s", name, exc)
             continue
         label = f"{PARSERS[name].display_name} ({name})"
+        if runnable is not None and name not in runnable:
+            label += " [no runner here: give its output with --prediction-dir]"
         if declared is None:
             undeclared.append(label)
-        elif declared.accepts(profile, provided=provided):
-            accepting.append(label)
+        elif declared.accepts(profile, provided=provided, mode=mode):
+            if mode is not None and not declared.declares_mode(mode):
+                undeclared.append(label)
+            else:
+                accepting.append(label)
     return accepting, undeclared, others
 
 
-def _fix_for(step: _Step, profile: InputProfile, provided: Optional[Collection[str]]) -> str:
+def _fix_for(
+    step: _Step,
+    profile: InputProfile,
+    provided: Optional[Collection[str]],
+    mode: Optional[str] = None,
+    runnable: Optional[Collection[str]] = None,
+) -> str:
     """What to do about a violation of ``step``.
 
     For a predictor the fix names the other registered predictors in two lists: those whose
-    declared limits accept the input, and those that declare no limits, which is not the same as
-    validated. It says so plainly when a list is empty, and never offers the rejected predictor.
+    declared limits accept the input (and, when a mode is requested, that declare the mode), and
+    those that declare no limits, which is not the same as validated. It says so plainly when a
+    list is empty, and never offers the rejected predictor.
     """
     if step.kind == "metric":
         return (
             f"leave {step.name!r} out of the metric list, or use policy='skip' "
             "(--on-incompatible skip) to compute only the metrics that apply"
         )
-    accepting, undeclared, others = _other_predictors(profile, step, provided)
+    accepting, undeclared, others = _other_predictors(profile, step, provided, mode, runnable)
+    declares = f" that declare the mode '{mode}'" if mode is not None else ""
     parts = []
     if not others:
         parts.append("no other predictor is registered")
     else:
         if accepting:
-            parts.append(f"predictors whose declared limits accept this input: {_join(accepting)}")
+            parts.append(
+                f"predictors{declares} whose declared limits accept this input: {_join(accepting)}"
+            )
         else:
-            parts.append("no other registered predictor declares support for this input")
+            parts.append(
+                "no other registered predictor declares support for this input"
+                + (f" in the mode '{mode}'" if mode is not None else "")
+            )
         if undeclared:
             parts.append(
                 f"predictors that declare no limits (not validated for this input): "
@@ -1497,6 +1580,8 @@ def preflight(
     policy: str = "error",
     predictor_policy: Optional[str] = None,
     provided: Optional[Collection[str]] = None,
+    mode: Optional[str] = None,
+    runnable: Optional[Collection[str]] = None,
 ) -> PreflightReport:
     """Check an input against the limits of every requested metric and predictor, before any run.
 
@@ -1523,6 +1608,12 @@ def preflight(
         provided: What the caller makes available among ``NEEDS`` besides the receptor chain,
             for example ``{"reference_structure", "gpu"}``; None leaves those needs unchecked and
             the report says so.
+        mode: The mode the predictors are asked to run in, one of ``MODES``. A predictor that
+            declares ``modes`` without it is refused (constraint ``modes``) and its fix lists the
+            models that declare the mode, then those with no declaration; a caveat for the mode
+            is a warning. None does not say: the mode is not checked.
+        runnable: The names of the predictors that can be run from here; a model outside it
+            that the fix offers is marked as readable only. None leaves the fix unmarked.
 
     Returns:
         The ``PreflightReport``. Soft warnings for inputs a step accepts but never validated are
@@ -1531,7 +1622,8 @@ def preflight(
     Raises:
         IncompatibleInputError: Policy ``error`` and at least one violation. Subclass of
             ``ValueError``.
-        ValueError: ``policy`` or ``predictor_policy`` is not one of ``POLICIES``.
+        ValueError: ``policy`` or ``predictor_policy`` is not one of ``POLICIES``, or ``mode`` is
+            not one of ``MODES``.
         KeyError: A predictor name that is not registered.
         TypeError: A ``capabilities`` attribute that is neither None nor a ``Capabilities``.
     """
@@ -1539,6 +1631,8 @@ def preflight(
         raise ValueError(f"policy must be one of {POLICIES}, got {policy!r}")
     if predictor_policy is not None and predictor_policy not in POLICIES:
         raise ValueError(f"predictor_policy must be one of {POLICIES}, got {predictor_policy!r}")
+    if mode is not None and mode not in MODES:
+        raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     effective_predictor_policy = predictor_policy or policy
     steps = _metric_steps(metrics) + _predictor_steps(predictor)
 
@@ -1551,14 +1645,15 @@ def preflight(
         if declared is None:
             continue
         fix = None  # built once per step: it may list the other registered predictors
-        for found in declared.check(profile, provided=provided):
+        step_mode = mode if step.kind == "predictor" else None
+        for found in declared.check(profile, provided=provided, mode=step_mode):
             if fix is None:
-                fix = _fix_for(step, profile, provided)
+                fix = _fix_for(step, profile, provided, step_mode, runnable)
             violations.append(
                 replace(found, subject=step.subject, kind=step.kind, name=step.name, fix=fix)
             )
             refused.add((step.kind, step.name))
-        warnings += [f"{step.subject}: {text}" for text in declared.caveats_for(profile)]
+        warnings += [f"{step.subject}: {text}" for text in declared.caveats_for(profile, step_mode)]
 
     typed = [s.subject for s in steps if s.capabilities and s.capabilities.binder_types]
     if profile.binder_type == "unknown" and typed:
@@ -1597,6 +1692,7 @@ def preflight(
         ),
         predictor_usable=usable,
         predictor_policy=predictor_policy or "",
+        mode=mode,
     )
     if report.refused:
         raise IncompatibleInputError(report)

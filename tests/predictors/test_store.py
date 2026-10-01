@@ -363,10 +363,17 @@ class TestValidation:
         with pytest.raises(ValueError, match="lower case letters"):
             PredictionRequest(model, "s1", sequences={"A": "G"})
 
-    def test_the_mode_is_one_of_the_known_three(self):
-        assert MODES == ("predict", "score", "refold")
+    def test_the_mode_is_one_of_the_known_four(self):
+        assert MODES == ("predict", "score", "refold", "lock")
         with pytest.raises(ValueError, match="mode must be one of"):
             PredictionRequest("stub", "s1", mode="dock", sequences={"A": "G"})
+
+    def test_lock_is_a_mode_of_its_own_in_the_key(self):
+        keys = {
+            mode: PredictionRequest("stub", "s1", mode=mode, sequences={"A": "G"}).key()
+            for mode in MODES
+        }
+        assert len(set(keys.values())) == 4
 
     def test_the_name_must_not_be_empty(self):
         with pytest.raises(ValueError, match="name"):
