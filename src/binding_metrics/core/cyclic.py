@@ -335,8 +335,10 @@ def _topology_chain_id(topology, chain_id: str) -> str:
     it as author ID, so that the IDs of the topology keep working. Where neither applies,
     for a topology that has no author IDs, ``chain_id`` is returned as it is.
 
-    Resolve once, at a public entry point: the result is a topology ID, which this
-    function would read as an author ID again.
+    Resolve once, at the entry point that receives the caller's ID
+    (:func:`detect_cyclization`): the result is a topology ID, which this function would
+    read as an author ID again. The code that already holds topology IDs (the patching,
+    the relaxation, the energy) must not call it.
     """
     return openmm_chain_id(topology, chain_id) or chain_id
 
@@ -985,8 +987,10 @@ def patch_cyclic_topology(topology, positions, chain_id: str, hints: list = None
     Args:
         topology: OpenMM Topology (heavy atoms only).
         positions: Atom positions (OpenMM Quantity, nm).
-        chain_id: Peptide chain ID: the author ID or the ID in ``topology``, as for
-            :func:`detect_cyclization`.
+        chain_id: ID of the peptide chain in ``topology``. Unlike
+            :func:`detect_cyclization`, it is not read as an author ID: the relaxation,
+            the energy and prep call this with IDs of the topology, which an author ID of
+            the same letter would shadow in a file with swapped label and author letters.
         hints: Optional list of CyclicBondInfo detected from an earlier
             version of the structure (e.g. before PDBFixer stripped STRUCT_CONN
             records). Used as fallback when detection on the current topology
@@ -1000,9 +1004,6 @@ def patch_cyclic_topology(topology, positions, chain_id: str, hints: list = None
         from openmm import app
     except ImportError as e:
         raise ImportError("OpenMM is required for cyclic peptide patching.") from e
-
-    # The patches replace the topology, and the new one carries no author IDs.
-    chain_id = _topology_chain_id(topology, chain_id)
 
     # Restore the bonds of any non-standard residue that lost them at load time
     # (D-amino acids, N-methyl residues, exotic NCAA building blocks), with the

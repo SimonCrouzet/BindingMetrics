@@ -18,7 +18,11 @@ from openmm import app  # noqa: E402
 
 from binding_metrics.core import cyclic  # noqa: E402
 from binding_metrics.core.cyclic import detect_cyclization, patch_cyclic_topology  # noqa: E402
-from binding_metrics.io.structures import attach_author_chain_ids, load_structure  # noqa: E402
+from binding_metrics.io.structures import (  # noqa: E402
+    attach_author_chain_ids,
+    author_chain_ids,
+    load_structure,
+)
 
 DATA = Path(__file__).parent.parent / "data"
 CWA = DATA / "example_ncaa_cyclosporin_1CWA.cif"
@@ -37,6 +41,19 @@ def _detect(topology, positions, chain_id):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         return detect_cyclization(topology, positions, chain_id)
+
+
+def _swap_author_ids(tmp_path, source, mapping):
+    """A copy of ``source`` whose author chain IDs are renamed by ``mapping``."""
+    import gemmi
+
+    document = gemmi.cif.read(str(source))
+    block = document.sole_block()
+    for row in block.find("_atom_site.", ["auth_asym_id"]):
+        row[0] = mapping.get(row.str(0), row.str(0))
+    path = tmp_path / source.name
+    document.write_file(str(path))
+    return path
 
 
 def _links(found):
@@ -92,18 +109,34 @@ class TestAuthorChainId:
 
 
 class TestPatch:
-    def test_patch_cyclic_topology_takes_the_author_id(self):
+    def test_patch_cyclic_topology_takes_the_topology_id(self):
         topology, positions = _load(CWA)
-        patched, _, info = patch_cyclic_topology(topology, positions, "C")
+        patched, _, info = patch_cyclic_topology(topology, positions, "B")
         assert [b.cyclic_type for b in info] == ["head_to_tail"]
         assert info[0].atom1_id[0] == "B"
         # the patched topology is a new one, still with OpenMM's chain IDs
         assert [chain.id for chain in patched.chains()][:2] == ["A", "B"]
 
-    def test_patch_cyclic_topology_takes_the_topology_id(self):
-        topology, positions = _load(CWA)
+    def test_the_id_of_the_topology_is_never_read_as_an_author_id(self, tmp_path):
+        """Label A is author B and label B is author A: topology ID B is the author A chain.
+
+        The relaxation and the energy hand this function the IDs of the topology, of a
+        topology that still carries its author IDs.
+        """
+        _load(SFTI)
+        swapped = _swap_author_ids(tmp_path, SFTI, {"A": "B", "I": "A"})
+        topology, positions = load_structure(swapped)
+        assert author_chain_ids(topology)[:2] == ["B", "A"]
+        # chain B of the topology is the peptide (author A), chain A the trypsin (author B)
         _, _, info = patch_cyclic_topology(topology, positions, "B")
-        assert [b.cyclic_type for b in info] == ["head_to_tail"]
+        assert [b.cyclic_type for b in info] == ["head_to_tail", "disulfide"]
+        _, _, receptor_info = patch_cyclic_topology(topology, positions, "A")
+        assert {b.cyclic_type for b in receptor_info} == {"disulfide"}
+        # the entry point that takes the caller's ID reads author A as the peptide
+        assert [b.cyclic_type for b in detect_cyclization(topology, positions, "A")] == [
+            "head_to_tail",
+            "disulfide",
+        ]
 
 
 class TestResolution:
