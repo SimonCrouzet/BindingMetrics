@@ -343,9 +343,9 @@ def _add_hydrogens_cyclic(
     )
     from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
     from binding_metrics.core.nonstandard import (
-        detect_nonstandard,
+        _detect_nonstandard,
+        _patch_nonstandard,
         load_nonstandard_xmls,
-        patch_nonstandard,
         restore_nonstandard_names,
     )
 
@@ -362,9 +362,9 @@ def _add_hydrogens_cyclic(
 
     # D-amino-acid / N-methyl rename first (e.g. DAL→ALA, SAR→NMG) so their
     # standard/curated templates match; must precede patch_cyclic_topology.
-    ns_info = detect_nonstandard(topology, cyclic_chain)
+    ns_info = _detect_nonstandard(topology, cyclic_chain)
     if not ns_info.is_empty:
-        topology, positions = patch_nonstandard(topology, positions, cyclic_chain, ns_info)
+        topology, positions = _patch_nonstandard(topology, positions, cyclic_chain, ns_info)
         load_nonstandard_xmls(ff, ns_info)
 
     # patch_cyclic_topology detects the cyclic bond by distance (works even

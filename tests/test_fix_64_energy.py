@@ -149,3 +149,25 @@ class TestRawEnergyOfTheRawFile:
             energies["B"]["raw_interaction_energy"], rel=1e-3
         )
         assert energies["C"]["raw_interaction_energy"] == pytest.approx(-260.4, abs=2.0)
+
+
+@requires_cuda
+@requires_ommff
+@pytest.mark.integration
+def test_the_energy_of_a_file_with_swapped_letters(tmp_path):
+    """1CWA with author IDs A and C renamed to B and A: the peptide is author A, topology B.
+
+    The function holds topology IDs while it patches the peptide, on a topology that still
+    carries its author IDs; the energy is that of the original file.
+    """
+    from tests.test_fix_64_cyclic import _swap_author_ids
+
+    if not CWA.exists():
+        pytest.skip(f"bundled example not found: {CWA}")
+    swapped = _swap_author_ids(tmp_path, CWA, {"A": "B", "C": "A"})
+    result = energy.compute_interaction_energy(
+        swapped, peptide_chain="A", receptor_chain="B", modes=("raw",), device="cuda"
+    )
+    assert result["success"], result["error_message"]
+    assert result["num_contacts"] == 2288
+    assert result["raw_interaction_energy"] == pytest.approx(-260.4, abs=2.0)

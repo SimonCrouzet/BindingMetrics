@@ -757,12 +757,12 @@ class ImplicitRelaxation(Relaxer):
 
         # --- Non-standard residue patching (D-AAs and NMe-AAs, before H addition) ---
         from binding_metrics.core.nonstandard import (
-            detect_nonstandard,
+            _detect_nonstandard,
+            _patch_nonstandard,
             load_nonstandard_xmls,
-            patch_nonstandard,
         )
 
-        ns_info = detect_nonstandard(topology, peptide_chain)
+        ns_info = _detect_nonstandard(topology, peptide_chain)
         self._ns_info = ns_info
         if not ns_info.is_empty:
             if ns_info.has_d_residues:
@@ -771,7 +771,7 @@ class ImplicitRelaxation(Relaxer):
             if ns_info.has_nmethyl:
                 names = [e["original_name"] for e in ns_info.nmethyl_residues]
                 logger.info("  N-methylated residues: %s", names)
-            topology, positions = patch_nonstandard(topology, positions, peptide_chain, ns_info)
+            topology, positions = _patch_nonstandard(topology, positions, peptide_chain, ns_info)
             load_nonstandard_xmls(ff, ns_info)
 
         # --- Cyclic peptide topology patching (before hydrogen addition) ---

@@ -354,9 +354,9 @@ def _create_implicit_system(
     )
     from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
     from binding_metrics.core.nonstandard import (
-        detect_nonstandard,
+        _detect_nonstandard,
+        _patch_nonstandard,
         load_nonstandard_xmls,
-        patch_nonstandard,
     )
 
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
@@ -377,9 +377,9 @@ def _create_implicit_system(
     # D-amino-acid / N-methyl residues are renamed to their L / parent template
     # names (no-op when prep or relaxation already did it).
     if peptide_chain is not None:
-        ns_info = detect_nonstandard(topology, peptide_chain)
+        ns_info = _detect_nonstandard(topology, peptide_chain)
         if not ns_info.is_empty:
-            topology, positions = patch_nonstandard(topology, positions, peptide_chain, ns_info)
+            topology, positions = _patch_nonstandard(topology, positions, peptide_chain, ns_info)
             load_nonstandard_xmls(ff, ns_info)
             extra_xmls.extend(ns_info.extra_ff_xmls)
 
