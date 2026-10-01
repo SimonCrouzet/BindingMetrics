@@ -12,7 +12,11 @@ from pathlib import Path
 import numpy as np
 
 from binding_metrics.metrics._common import ChainAliasAction
-from binding_metrics.metrics._openfold_run import _DEFAULT_MODEL_PRESETS
+from binding_metrics.metrics._openfold_run import (
+    _DEFAULT_MODEL_PRESETS,
+    DEFAULT_TEMPLATE_MODE,
+    TEMPLATE_MODES,
+)
 from binding_metrics.utils import configure_logging
 
 _PRESETS_TEXT = " ".join(_DEFAULT_MODEL_PRESETS)
@@ -187,16 +191,17 @@ def _add_template_mode_arg(p) -> None:
     p.add_argument(
         "--openfold-templates",
         dest="template_mode",
-        choices=("alignment", "structure"),
-        default="alignment",
+        choices=TEMPLATE_MODES,
+        default=DEFAULT_TEMPLATE_MODE,
         help=(
-            "How the template of each chain reaches OpenFold3. alignment (default): an A3M "
-            "self-alignment that points to the template CIF; the ColabFold MSA server overwrites "
-            "it, so with the server on (the default of the run commands) the run has no template "
-            "(use --no-msa-server to keep it). structure: the template CIF itself in "
-            "template_cif_paths (OpenFold3's CIF Direct Template Mode: protein chains only, the "
-            "best-matching chain of each file, alignment made by OpenFold3), which the server "
-            "does not overwrite."
+            "How the template of each chain reaches OpenFold3. structure (default): the template "
+            "CIF itself in template_cif_paths (OpenFold3's CIF Direct Template Mode, OpenFold3 "
+            "0.4.2 or later: protein chains only, the best-matching chain of each file, "
+            "alignment made by OpenFold3), which the ColabFold MSA server does not overwrite. "
+            "alignment: an A3M self-alignment that points to the template CIF, the way earlier "
+            "versions of this package did it; the server overwrites it, so with the server on "
+            "(the default of the run commands) the run has no template (use --no-msa-server to "
+            "keep it)."
         ),
     )
 
@@ -221,7 +226,7 @@ def _dummy_msa_kwargs(args) -> dict:
 
 def _template_mode_kwargs(args) -> dict:
     """Keyword argument for the API, only when the mode differs from the default."""
-    if args.template_mode == "alignment":
+    if args.template_mode == DEFAULT_TEMPLATE_MODE:
         return {}
     return {"template_mode": args.template_mode}
 

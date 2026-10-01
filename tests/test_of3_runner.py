@@ -597,12 +597,15 @@ class TestQueryLayoutDocstrings:
             ),
         ],
     )
-    def test_documented_files_are_written(self, tmp_path, function, files):
+    @pytest.mark.parametrize("mode", ["structure", "alignment"])
+    def test_documented_files_are_written(self, tmp_path, function, files, mode):
         pytest.importorskip("gemmi")
-        function(self._P53, "A", "B", "q", tmp_path)
+        function(self._P53, "A", "B", "q", tmp_path, template_mode=mode)
         for name in files:
             assert Path(name).name in function.__doc__  # the docstring draws a tree
-            assert (tmp_path / name.replace("{query_name}", "q")).is_file()
+            written = (tmp_path / name.replace("{query_name}", "q")).is_file()
+            # the A3M files exist for "alignment" only; "structure" has the CIF in the query
+            assert written == (mode == "alignment" or not name.endswith(".a3m")), name
 
     def test_the_refolding_docstring_does_not_send_users_to_a_missing_option(self):
         doc = openfold.prepare_refolding_query.__doc__
@@ -779,7 +782,9 @@ class TestTemplateChainIdWithUnderscore:
 
     def test_ids_without_an_underscore_are_unchanged(self, tmp_path):
         p53 = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
-        query = openfold.prepare_scoring_query(p53, "A", "B", "q", tmp_path)
+        query = openfold.prepare_scoring_query(
+            p53, "A", "B", "q", tmp_path, template_mode="alignment"
+        )
         a3m = (tmp_path / "q_receptor.a3m").read_text(encoding="utf-8")
         assert ">receptor_A/1-" in a3m
         assert query.exists()

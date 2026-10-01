@@ -262,17 +262,24 @@ class TestQueryJson:
         doc = gemmi.cif.read(str(tmp_path / "out" / "templates" / "receptor.cif"))
         assert doc.sole_block().find_value("_entity_poly.pdbx_seq_one_letter_code_can") == "AAG"
 
-    def test_queries_of_standard_residues_have_no_new_key(self):
-        """The bundled p53-MDM2 complex gives the same chain dicts as before."""
+    @pytest.mark.parametrize(
+        "mode, template_keys",
+        [
+            ("structure", {"template_cif_paths", "template_cif_chain_ids"}),
+            ("alignment", {"template_alignment_file_path"}),
+        ],
+    )
+    def test_queries_of_standard_residues_have_no_new_key(self, mode, template_keys):
+        """The bundled p53-MDM2 complex gives the chain dicts of a template and nothing more."""
         complex_path = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
         import tempfile
 
         with tempfile.TemporaryDirectory() as out:
-            path = openfold.prepare_scoring_query(complex_path, "A", "B", "q", out)
+            path = openfold.prepare_scoring_query(
+                complex_path, "A", "B", "q", out, template_mode=mode
+            )
             receptor, binder = _chain_dicts(path)
-        assert set(receptor) == {
-            "molecule_type", "chain_ids", "sequence", "template_alignment_file_path",
-        }  # fmt: skip
+        assert set(receptor) == {"molecule_type", "chain_ids", "sequence"} | template_keys
         assert set(binder) == set(receptor)
         assert binder["sequence"] == "ETFSDLWKLLPEN"
 

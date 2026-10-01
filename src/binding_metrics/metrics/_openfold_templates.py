@@ -4,10 +4,12 @@ OpenFold3 0.5.0 takes a template as an alignment file (or a list of CIF files) p
 preprocesses it before the model runs. Three things can leave a chain without its template while
 the run goes on, exits with status 0 and reports "Successful Queries":
 
-* with the ColabFold MSA server on (the default), OpenFold3 overwrites the template alignment of
-  every chain with the alignment the server returns (a ``UserWarning`` from
-  ``colabfold_msa_server.py``), and since the toolkit runs with ``fetch_missing_structures:
-  false`` none of the structures it lists is found: the chain ends with no template at all;
+* with the ColabFold MSA server on (the default) and the template given as an alignment
+  (``template_mode="alignment"``), OpenFold3 overwrites the template alignment of every chain
+  with the alignment the server returns (a ``UserWarning`` from ``colabfold_msa_server.py``), and
+  since the toolkit runs with ``fetch_missing_structures: false`` none of the structures it lists
+  is found: the chain ends with no template at all. The default, ``template_mode="structure"``,
+  is not overwritten;
 * a template file that OpenFold3 cannot read makes the preprocessing of the chain raise, which
   OpenFold3 catches and prints (``Failed to preprocess template alignment ...``, on stdout);
 * the hits of an alignment can all be filtered out, which is not reported anywhere.
@@ -62,10 +64,10 @@ NOT_RECORDED = "not_recorded"
 CAUSE_TEXT = {
     REPLACED_BY_MSA_SERVER: (
         "the ColabFold MSA server replaced the template alignment of the chain, and OpenFold3 "
-        "found none of the structures it lists in the template directory. Run without the "
-        "server to keep the template (use_msa_server=False, --openfold-no-msa-server), or give "
-        "the template as a structure, which the server does not overwrite "
-        "(template_mode='structure', --openfold-templates structure)"
+        "found none of the structures it lists in the template directory. Give the template as "
+        "a structure, which the server does not overwrite (template_mode='structure', "
+        "--openfold-templates structure, the default), or run without the server "
+        "(use_msa_server=False, --openfold-no-msa-server)"
     ),
     PREPROCESSING_FAILED: (
         "OpenFold3 could not preprocess the template of the chain and went on without it"

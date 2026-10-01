@@ -5,7 +5,9 @@ the A3M header. Two samples that map to one entry name overwrite each other's CI
 query is then predicted from the other sample's template.
 """
 
+import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -85,6 +87,22 @@ def _template_entry(a3m_path) -> str:
     return header.lstrip(">").split("/")[0].rsplit("_", 1)[0]
 
 
+#: The two ways a template reaches OpenFold3; the entry name is found in the A3M file or in the
+#: ``template_cif_paths`` of the chain, and is the name of the CIF in ``templates/`` either way.
+TEMPLATE_MODES = ["alignment", "structure"]
+
+
+def _entry_of(query_path, out, query_name, role, mode) -> str:
+    """The template entry of the ``receptor`` or ``binder`` chain of a query, in either mode."""
+    if mode == "alignment":
+        return _template_entry(out / f"{query_name}_{role}.a3m")
+    chains = json.loads(Path(query_path).read_text(encoding="utf-8"))["queries"][query_name][
+        "chains"
+    ]
+    chain = next(c for c in chains if c["chain_ids"] == ["A" if role == "receptor" else "B"])
+    return Path(chain["template_cif_paths"][0]).stem
+
+
 class TestBatchedQueries:
     @pytest.fixture
     def colliding_samples(self, tmp_path):
@@ -103,41 +121,46 @@ class TestBatchedQueries:
             (openfold.prepare_batched_refolding_queries, ("receptor",)),
         ],
     )
-    def test_each_sample_keeps_its_own_template(self, tmp_path, colliding_samples, function, roles):
+    @pytest.mark.parametrize("mode", TEMPLATE_MODES)
+    def test_each_sample_keeps_its_own_template(
+        self, tmp_path, colliding_samples, function, roles, mode
+    ):
         out = tmp_path / "out"
-        function(colliding_samples, out)
+        query = function(colliding_samples, out, template_mode=mode)
         expected_sequences = {"a_b": "AGS", "a-b": "WYFV", "plain": "AGS"}
         for sample in colliding_samples:
-            entry = _template_entry(out / f"{sample.query_name}_receptor.a3m")
+            entry = _entry_of(query, out, sample.query_name, "receptor", mode)
             cif = out / "templates" / f"{entry}.cif"
             assert cif.exists(), f"{sample.query_name}: no {cif.name}"
             assert _receptor_sequence(cif) == expected_sequences[sample.query_name]
         files = sorted(p.name for p in (out / "templates").glob("*.cif"))
         assert len(files) == len(set(files)) == len(colliding_samples) * len(roles)
 
+    @pytest.mark.parametrize("mode", TEMPLATE_MODES)
     def test_the_binder_templates_of_colliding_samples_differ_too(
-        self, tmp_path, colliding_samples
+        self, tmp_path, colliding_samples, mode
     ):
         out = tmp_path / "out"
-        openfold.prepare_batched_scoring_queries(colliding_samples, out)
+        query = openfold.prepare_batched_scoring_queries(colliding_samples, out, template_mode=mode)
         sequences = {}
         for name in ("a_b", "a-b"):
-            entry = _template_entry(out / f"{name}_binder.a3m")
+            entry = _entry_of(query, out, name, "binder", mode)
             sequences[name] = _receptor_sequence(out / "templates" / f"{entry}.cif")
         assert sequences == {"a_b": "KR", "a-b": "D"}
 
-    def test_a_batch_without_collisions_writes_the_same_file_names_as_before(self, tmp_path):
+    @pytest.mark.parametrize("mode", TEMPLATE_MODES)
+    def test_a_batch_without_collisions_writes_the_same_file_names_as_before(self, tmp_path, mode):
         complex_path = _write(tmp_path, {"A": ["ALA", "GLY"], "B": ["SER", "LYS"]})
         samples = [
             _BatchSample("s_1", complex_path, "A", "B"),
             _BatchSample("s2", complex_path, "A", "B"),
         ]
         out = tmp_path / "out"
-        openfold.prepare_batched_scoring_queries(samples, out)
+        query = openfold.prepare_batched_scoring_queries(samples, out, template_mode=mode)
         assert sorted(p.name for p in (out / "templates").glob("*.cif")) == [
             "s-1bnd.cif", "s-1rec.cif", "s2bnd.cif", "s2rec.cif",
         ]  # fmt: skip
-        assert _template_entry(out / "s_1_receptor.a3m") == "s-1rec"
+        assert _entry_of(query, out, "s_1", "receptor", mode) == "s-1rec"
 
 
 class TestRepeatedQueryNames:

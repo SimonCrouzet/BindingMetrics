@@ -1,8 +1,9 @@
-"""``template_mode``: the template as an alignment (the default) or as a structure (#68).
+"""``template_mode``: the template as a structure (the default) or as an alignment (#68).
 
 OpenFold3's CIF Direct Template Mode (``template_cif_paths`` and ``template_cif_chain_ids`` of a
 chain, protein chains only) gives the template CIF itself; the ColabFold MSA server overwrites an
-alignment path and leaves CIF paths alone (``colabfold_msa_server.py``). Nothing here runs
+alignment path and leaves CIF paths alone (``colabfold_msa_server.py``), so ``structure`` is the
+default and ``alignment`` stays available. Nothing here runs
 OpenFold3: the query builders, the request key and the command line are the real code, the model is
 a stub. What OpenFold3 does with such a query is in the validation runs of the documentation.
 """
@@ -77,19 +78,26 @@ class TestStructureQueries:
         assert all("template_alignment_file_path" not in c for c in chains.values())
         assert list(tmp_path.glob("*.a3m")) == []
 
-    def test_the_default_is_the_alignment_of_before(self, tmp_path):
-        explicit = _chains(_score(tmp_path / "e", template_mode="alignment"))
+    def test_the_default_is_the_structure(self, tmp_path):
+        explicit = _chains(_score(tmp_path / "e", template_mode="structure"))
         default = _chains(_score(tmp_path / "d"))
-        assert [
-            c.get("template_alignment_file_path", "").rsplit("/", 1)[-1] for c in default.values()
-        ] == [
-            "q_receptor.a3m",
-            "q_binder.a3m",
-        ]
-        assert all("template_cif_paths" not in c for c in default.values())
+        assert all("template_cif_paths" in c for c in default.values())
+        assert all("template_alignment_file_path" not in c for c in default.values())
+        assert list((tmp_path / "d").glob("*.a3m")) == []
         assert {k: sorted(v) for k, v in explicit.items()} == {
             k: sorted(v) for k, v in default.items()
         }
+
+    def test_the_alignment_of_before_stays_available(self, tmp_path):
+        chains = _chains(_score(tmp_path, template_mode="alignment"))
+        assert [
+            c.get("template_alignment_file_path", "").rsplit("/", 1)[-1] for c in chains.values()
+        ] == ["q_receptor.a3m", "q_binder.a3m"]
+        assert all("template_cif_paths" not in c for c in chains.values())
+        assert sorted(p.name for p in tmp_path.glob("*.a3m")) == ["q_binder.a3m", "q_receptor.a3m"]
+        # the marker that keeps a stale template cache from answering (QUERY_BUILDER_VERSION)
+        header = (tmp_path / "q_receptor.a3m").read_text(encoding="utf-8").splitlines()[0]
+        assert header.startswith(f">query-b{_openfold_run.QUERY_BUILDER_VERSION}_A/")
 
     def test_the_cif_in_the_query_is_the_repaired_one(self, tmp_path):
         import gemmi
@@ -144,7 +152,7 @@ class TestStructureQueries:
     )
     def test_the_batched_queries_take_the_mode_too(self, tmp_path, function):
         samples = [openfold._BatchSample("s1", P53, "A", "B")]
-        path = function(samples, tmp_path, template_mode="structure")
+        path = function(samples, tmp_path)  # the default is the structure
         chains = {
             c["chain_ids"][0]: c
             for c in json.loads(path.read_text(encoding="utf-8"))["queries"]["s1"]["chains"]
@@ -154,6 +162,101 @@ class TestStructureQueries:
             function.__name__.endswith("scoring_queries")
         )
         assert list(tmp_path.glob("*.a3m")) == []
+
+    @pytest.mark.parametrize(
+        "function",
+        [openfold.prepare_batched_scoring_queries, openfold.prepare_batched_refolding_queries],
+    )
+    def test_the_batched_queries_keep_the_alignment_when_asked(self, tmp_path, function):
+        samples = [openfold._BatchSample("s1", P53, "A", "B")]
+        path = function(samples, tmp_path, template_mode="alignment")
+        chains = {
+            c["chain_ids"][0]: c
+            for c in json.loads(path.read_text(encoding="utf-8"))["queries"]["s1"]["chains"]
+        }
+        assert chains["A"]["template_alignment_file_path"] == str(tmp_path / "s1_receptor.a3m")
+        assert all("template_cif_paths" not in c for c in chains.values())
+
+
+class TestTheVersionThatHasTheStructureMode:
+    """The CIF Direct Template Mode came with OpenFold3 0.4.2; ``alignment`` has no such need."""
+
+    @pytest.fixture
+    def set_version(self, monkeypatch):
+        def apply(version):
+            calls = []
+
+            def installed(python_cmd=None):
+                calls.append(python_cmd)
+                return version
+
+            monkeypatch.setattr(_openfold_run, "installed_openfold3_version", installed)
+            monkeypatch.setattr(_openfold_run, "_VERSION_BY_PYTHON", {})
+            return calls
+
+        return apply
+
+    @pytest.mark.parametrize("version", ["0.4.2", "0.4.5", "0.5.0", "0.5.1.dev3"])
+    def test_the_versions_that_have_it_are_accepted(self, tmp_path, set_version, version):
+        set_version(version)
+        assert "template_cif_paths" in _chains(_refold(tmp_path))["A"]
+
+    @pytest.mark.parametrize("version", ["0.3.1", "0.4.0", "0.4.1"])
+    @pytest.mark.parametrize("build", [_refold, _score])
+    def test_an_older_openfold3_is_refused_and_the_message_gives_the_way_out(
+        self, tmp_path, set_version, version, build
+    ):
+        set_version(version)
+        out = tmp_path / "out"
+        with pytest.raises(ValueError, match="0.4.2 or later") as info:
+            build(out)
+        message = str(info.value)
+        assert version in message and "--openfold-templates alignment" in message
+        assert not out.exists()
+
+    @pytest.mark.parametrize("version", ["0.3.1", "0.4.1"])
+    def test_alignment_does_not_need_it(self, tmp_path, set_version, version):
+        set_version(version)
+        assert (
+            "template_alignment_file_path"
+            in _chains(_refold(tmp_path, template_mode="alignment"))["A"]
+        )
+
+    def test_an_unreadable_version_does_not_stop_the_query(self, tmp_path, set_version):
+        set_version(None)
+        assert "template_cif_paths" in _chains(_refold(tmp_path))["A"]
+
+    @pytest.mark.parametrize(
+        "function",
+        [openfold.prepare_batched_scoring_queries, openfold.prepare_batched_refolding_queries],
+    )
+    def test_the_batched_queries_refuse_it_too_and_write_nothing(
+        self, tmp_path, set_version, function
+    ):
+        set_version("0.4.1")
+        out = tmp_path / "out"
+        with pytest.raises(ValueError, match="0.4.2 or later"):
+            function([openfold._BatchSample("s1", P53, "A", "B")], out)
+        assert not out.exists()
+
+    def test_the_run_function_stops_before_the_process(self, tmp_path, set_version, monkeypatch):
+        set_version("0.4.1")
+        monkeypatch.setattr(
+            openfold, "run_openfold", lambda **kw: pytest.fail("OpenFold3 must not start")
+        )
+        with pytest.raises(ValueError, match="0.4.2 or later"):
+            openfold.run_openfold_scoring(P53, "A", "B", "q", tmp_path)
+
+    def test_an_unmappable_residue_is_reported_before_the_version_is_asked(
+        self, tmp_path, set_version
+    ):
+        calls = set_version("0.4.1")
+        from tests.test_of3_synth import _write
+
+        bad = _write(tmp_path, {"A": ["ALA", "GLY"], "B": ["ALA", "ZZZ", "GLY"]}, "bad.pdb")
+        with pytest.raises(openfold.UnmappableResidueError):
+            openfold.prepare_scoring_query(bad, "A", "B", "q", tmp_path / "out")
+        assert calls == []
 
 
 class TestWrappers:
@@ -177,7 +280,9 @@ class TestWrappers:
         getattr(openfold, runner)(P53, "A", "B", "q", tmp_path)
         assert "template_mode" not in seen  # the default is left out
         getattr(openfold, runner)(P53, "A", "B", "q", tmp_path, template_mode="structure")
-        assert seen["template_mode"] == "structure"
+        assert "template_mode" not in seen  # also when it is asked for by name
+        getattr(openfold, runner)(P53, "A", "B", "q", tmp_path, template_mode="alignment")
+        assert seen["template_mode"] == "alignment"
 
     def test_the_batched_run_passes_it_on(self, tmp_path, monkeypatch):
         seen = {}
@@ -189,8 +294,11 @@ class TestWrappers:
         monkeypatch.setattr(openfold, "prepare_batched_scoring_queries", fake_prepare)
         monkeypatch.setattr(openfold, "run_openfold", lambda **kw: tmp_path)
         samples = [openfold._BatchSample("s", P53, "A", "B")]
-        openfold.run_openfold_batched(samples, tmp_path, template_mode="structure")
-        assert seen["template_mode"] == "structure"
+        openfold.run_openfold_batched(samples, tmp_path, template_mode="alignment")
+        assert seen["template_mode"] == "alignment"
+        seen.clear()
+        openfold.run_openfold_batched(samples, tmp_path)
+        assert "template_mode" not in seen
 
     def test_a_mode_that_does_not_exist_stops_before_the_process(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
@@ -200,8 +308,37 @@ class TestWrappers:
             openfold.run_openfold_scoring(P53, "A", "B", "q", tmp_path, template_mode="x")
 
     def test_the_names_are_importable_from_the_openfold_module(self):
-        assert openfold.TEMPLATE_MODES == ("alignment", "structure")
+        assert openfold.TEMPLATE_MODES == ("structure", "alignment")
+        assert openfold.DEFAULT_TEMPLATE_MODE == "structure"
         assert openfold._check_template_mode is _openfold_run._check_template_mode
+
+    def test_every_default_is_the_same_mode(self):
+        """The signatures, the runner and the commands all name one default."""
+        import inspect
+
+        from binding_metrics import cli
+        from binding_metrics.predictors import of3_runner
+
+        default = _openfold_run.DEFAULT_TEMPLATE_MODE
+        assert cli.DEFAULT_OPENFOLD_TEMPLATES == default
+        assert cli.OPENFOLD_TEMPLATE_CHOICES == _openfold_run.TEMPLATE_MODES
+        assert of3_runner._DEFAULT_TEMPLATE_MODE == default
+        functions = [
+            openfold.prepare_refolding_query,
+            openfold.prepare_scoring_query,
+            openfold.prepare_batched_refolding_queries,
+            openfold.prepare_batched_scoring_queries,
+            openfold.run_openfold_scoring,
+            openfold.run_openfold_refolding,
+            openfold.run_openfold_batched,
+            OpenFold3Runner.make_request,
+            run_pipeline,
+            batch.run_batch,
+        ]
+        for function in functions:
+            parameters = inspect.signature(function).parameters
+            name = "openfold_templates" if "openfold_templates" in parameters else "template_mode"
+            assert parameters[name].default == default, function.__qualname__
 
 
 class TestRequestKey:
@@ -211,17 +348,23 @@ class TestRequestKey:
             P53, name="q", binder_chain="B", receptor_chain="A", **kwargs
         )
 
-    def test_the_default_request_says_alignment(self):
-        assert self._request().options["template_mode"] == "alignment"
+    def test_the_default_request_says_structure(self):
+        assert self._request().options["template_mode"] == "structure"
 
     def test_each_mode_is_another_key(self):
-        assert self._request().key() == self._request(template_mode="alignment").key()
-        assert self._request().key() != self._request(template_mode="structure").key()
+        assert self._request().key() == self._request(template_mode="structure").key()
+        assert self._request().key() != self._request(template_mode="alignment").key()
+
+    def test_the_default_key_is_not_the_key_it_had_with_the_alignment_default(self):
+        """A stored entry of an earlier default (``template_mode`` "alignment") is not reused."""
+        assert self._request().key() != self._request(template_mode="alignment").key()
+        assert self._request(template_mode="alignment").options["template_mode"] == "alignment"
 
     def test_the_query_arguments_leave_the_default_out(self):
         arguments = OpenFold3Runner._query_arguments
         assert "template_mode" not in arguments(self._request())
-        assert arguments(self._request(template_mode="structure"))["template_mode"] == "structure"
+        assert "template_mode" not in arguments(self._request(template_mode="structure"))
+        assert arguments(self._request(template_mode="alignment"))["template_mode"] == "alignment"
 
     def test_a_query_file_names_its_own_templates(self, tmp_path):
         query = tmp_path / "query.json"
@@ -229,7 +372,7 @@ class TestRequestKey:
         runner = OpenFold3Runner()
         assert runner.make_request(query, name="q", mode="predict").options["template_mode"] is None
         with pytest.raises(ValueError, match="names its own templates"):
-            runner.make_request(query, name="q", mode="predict", template_mode="structure")
+            runner.make_request(query, name="q", mode="predict", template_mode="alignment")
 
     def test_a_mode_that_does_not_exist_is_refused(self):
         with pytest.raises(ValueError, match="template_mode must be one of"):
@@ -255,28 +398,36 @@ class TestRequestKey:
         monkeypatch.setattr(openfold, "prepare_scoring_query", fake_prepare)
         monkeypatch.setattr(openfold, "run_openfold_scoring", fake_run)
         runner = OpenFold3Runner()
-        request = self._request(template_mode="structure")
+        request = self._request(template_mode="alignment")
         (tmp_path / "w").mkdir()
         runner.prepare(request, tmp_path / "w")
         runner.run(request, tmp_path / "w")
-        assert seen["prepare"]["template_mode"] == "structure"
-        assert seen["run"]["template_mode"] == "structure"
+        assert seen["prepare"]["template_mode"] == "alignment"
+        assert seen["run"]["template_mode"] == "alignment"
+        seen.clear()
+        default = self._request()
+        (tmp_path / "w2").mkdir()
+        runner.prepare(default, tmp_path / "w2")
+        runner.run(default, tmp_path / "w2")
+        assert "template_mode" not in seen["prepare"] and "template_mode" not in seen["run"]
 
 
 class TestOptionsOfTheCommands:
     def test_the_choices_and_the_helper(self):
         assert check_openfold_templates("structure") == "structure"
+        assert check_openfold_templates("alignment") == "alignment"
         with pytest.raises(ValueError, match="openfold_templates must be one of"):
             check_openfold_templates("cif")
-        assert openfold_template_kwargs("alignment") == {}
-        assert openfold_template_kwargs("structure") == {"template_mode": "structure"}
+        assert openfold_template_kwargs("structure") == {}  # the default is left out
+        assert openfold_template_kwargs("alignment") == {"template_mode": "alignment"}
 
     def test_the_help_says_what_the_option_does_and_that_it_is_openfold3s(self):
         parser = argparse.ArgumentParser()
         add_openfold_templates_arg(parser)
         text = " ".join(parser.format_help().split())
-        assert "--openfold-templates {alignment,structure}" in text
+        assert "--openfold-templates {structure,alignment}" in text
         for stated in (
+            "structure (default)",
             "CIF Direct Template Mode",
             "overwrites it",
             "does not overwrite",
@@ -289,7 +440,7 @@ class TestOptionsOfTheCommands:
     @pytest.mark.parametrize("module", ["run", "batch"])
     @pytest.mark.parametrize(
         "extra, expected",
-        [([], "alignment"), (["--openfold-templates", "structure"], "structure")],
+        [([], "structure"), (["--openfold-templates", "alignment"], "alignment")],
     )
     def test_the_choice_reaches_the_api(self, monkeypatch, tmp_path, module, extra, expected):
         captured = {}
@@ -310,25 +461,33 @@ class TestOptionsOfTheCommands:
         assert captured["openfold_templates"] == expected
 
     @pytest.mark.parametrize("command", ["prepare-query", "prepare-scoring-query"])
-    def test_binding_metrics_openfold_prepares_a_structure_query(
-        self, tmp_path, monkeypatch, command
+    @pytest.mark.parametrize(
+        "extra, key",
+        [
+            ([], "template_cif_paths"),
+            (["--openfold-templates", "structure"], "template_cif_paths"),
+            (["--openfold-templates", "alignment"], "template_alignment_file_path"),
+        ],
+    )
+    def test_binding_metrics_openfold_prepares_the_query_of_the_mode(
+        self, tmp_path, monkeypatch, command, extra, key
     ):
         argv = [
             "prog", command, "--complex", str(P53), "--receptor-chain", "A",
             "--binder-chain", "B", "--query-name", "q", "--output-dir", str(tmp_path / "out"),
-            "--openfold-templates", "structure",
+            *extra,
         ]  # fmt: skip
         monkeypatch.setattr("sys.argv", argv)
         openfold.main()
         chains = _chains(tmp_path / "out" / "q_query.json")
-        assert "template_cif_paths" in chains["A"]
+        assert key in chains["A"]
 
     @pytest.mark.parametrize(
         "command, target",
         [("score", "run_openfold_scoring"), ("refold", "run_openfold_refolding")],
     )
     @pytest.mark.parametrize(
-        "extra, expected", [([], None), (["--openfold-templates", "structure"], "structure")]
+        "extra, expected", [([], None), (["--openfold-templates", "alignment"], "alignment")]
     )
     def test_the_run_commands_pass_the_mode(
         self, tmp_path, monkeypatch, command, target, extra, expected
@@ -374,8 +533,8 @@ class TestPipeline:
 
     def test_the_predictor_route_passes_the_mode_to_the_run_function(self, tmp_path, monkeypatch):
         stub = StubOpenFold(monkeypatch)
-        self._pipeline(tmp_path, predictor="of3", openfold_templates="structure")
-        assert stub.calls[0]["kwargs"]["template_mode"] == "structure"
+        self._pipeline(tmp_path, predictor="of3", openfold_templates="alignment")
+        assert stub.calls[0]["kwargs"]["template_mode"] == "alignment"
 
     def test_the_default_leaves_the_argument_out(self, tmp_path, monkeypatch):
         stub = StubOpenFold(monkeypatch)
@@ -402,8 +561,8 @@ class TestPipeline:
 
         monkeypatch.setattr(openfold, "run_openfold_scoring", record)
         monkeypatch.setattr(openfold, "compute_openfold_metrics", lambda **kw: {})
-        self._pipeline(tmp_path, openfold_templates="structure")
-        assert seen["template_mode"] == "structure"
+        self._pipeline(tmp_path, openfold_templates="alignment")
+        assert seen["template_mode"] == "alignment"
         seen.clear()
         self._pipeline(tmp_path / "default")
         assert "template_mode" not in seen
@@ -415,13 +574,18 @@ class TestPipeline:
 
     def test_another_model_is_refused_and_the_message_says_it_is_openfold3s(self, tmp_path):
         with pytest.raises(ValueError, match="does not apply to --predictor boltz2") as info:
-            self._pipeline(tmp_path, predictor="boltz2", openfold_templates="structure")
+            self._pipeline(tmp_path, predictor="boltz2", openfold_templates="alignment")
         assert "--prediction- spelling" in str(info.value)
 
+    def test_another_model_takes_the_default_without_a_word(self):
+        """``structure`` is the default of the command, so it is not a request that can fail."""
+        check_templates_option("boltz2", None, "structure")
+        check_templates_option("protenix", None, "structure")
+
     def test_an_adopted_output_ignores_it(self, tmp_path):
-        check_templates_option("boltz2", tmp_path, "structure")  # nothing is run
-        check_templates_option(None, None, "structure")  # the OpenFold3 step
-        check_templates_option("of3", None, "structure")
+        check_templates_option("boltz2", tmp_path, "alignment")  # nothing is run
+        check_templates_option(None, None, "alignment")  # the OpenFold3 step
+        check_templates_option("of3", None, "alignment")
 
     def test_make_request_refuses_a_runner_without_the_setting(self):
         runner = make_runner("boltz2")
@@ -433,24 +597,24 @@ class TestPipeline:
                 binder_chain="B",
                 receptor_chain="A",
                 runner=runner,
-                openfold_templates="structure",
+                openfold_templates="alignment",
             )
 
     def test_make_request_gives_the_openfold3_runner_the_mode_only_when_set(self):
         runner = OpenFold3Runner()
         plain = make_request("of3", "q", P53, binder_chain="B", receptor_chain="A", runner=runner)
-        structure = make_request(
+        alignment = make_request(
             "of3",
             "q",
             P53,
             binder_chain="B",
             receptor_chain="A",
             runner=runner,
-            openfold_templates="structure",
+            openfold_templates="alignment",
         )
-        assert plain.options["template_mode"] == "alignment"
-        assert structure.options["template_mode"] == "structure"
-        assert plain.key() != structure.key()
+        assert plain.options["template_mode"] == "structure"
+        assert alignment.options["template_mode"] == "alignment"
+        assert plain.key() != alignment.key()
 
 
 class TestBatchedCommandLine:
@@ -473,9 +637,9 @@ class TestBatchedCommandLine:
             openfold_conda_env=None,
             peptide_chain=None,
             receptor_chain=None,
-            openfold_templates="structure",
+            openfold_templates="alignment",
         )
-        assert seen["template_mode"] == "structure"
+        assert seen["template_mode"] == "alignment"
 
     def test_the_batched_prediction_gives_each_request_the_mode(self, tmp_path, monkeypatch):
         stub = StubOpenFold(monkeypatch)
@@ -491,6 +655,6 @@ class TestBatchedCommandLine:
             predictor="of3",
             peptide_chain=None,
             receptor_chain=None,
-            openfold_templates="structure",
+            openfold_templates="alignment",
         )
-        assert stub.calls[0]["kwargs"]["template_mode"] == "structure"
+        assert stub.calls[0]["kwargs"]["template_mode"] == "alignment"

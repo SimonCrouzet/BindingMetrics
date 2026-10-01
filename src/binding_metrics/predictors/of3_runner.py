@@ -25,7 +25,7 @@ openfold module is imported when a run starts, never before)::
             template_cif_path: Optional[str | Path] = None,
             binder_cyclic: bool | str = "auto",
             weights: Optional[str | Path | WeightsRef] = None,
-            template_mode: str = "alignment") -> PredictionRequest
+            template_mode: str = "structure") -> PredictionRequest
         .prepare(request, work_dir) -> Path
         .run(request, work_dir) -> Path                       # <work_dir>/predictions
         .supports_batch(request) -> bool
@@ -46,10 +46,11 @@ are not hashed). What goes into the key:
 * ``options``: ``presets`` (``["predict", "low_mem"]`` by default, ``predict`` added when
   missing; None when ``runner_yaml`` replaces them), ``use_msa_server``, ``num_model_seeds``,
   ``on_unmappable_residue``, ``binder_cyclic`` (``"auto"``, true or false; None for ``predict``,
-  whose query file names its own chains), ``template_mode`` (``"alignment"`` or ``"structure"``,
-  how the templates reach OpenFold3; None for ``predict``), ``query_builder_version`` (the version
-  of the query builders, ``binding_metrics.metrics.openfold.QUERY_BUILDER_VERSION``; None for
-  ``predict``: an entry made by an older builder is not reused), ``extra_args`` and
+  whose query file names its own chains), ``template_mode`` (``"structure"``, the default, or
+  ``"alignment"``, how the templates reach OpenFold3; None for ``predict``),
+  ``query_builder_version`` (the version of the query builders,
+  ``binding_metrics.metrics.openfold.QUERY_BUILDER_VERSION``; None for ``predict``: an entry made
+  by an older builder is not reused), ``extra_args`` and
   ``inference_ckpt_path`` with the
   size of that file. ``"auto"`` writes ``cyclic: true`` on a head-to-tail binder of standard
   residues when OpenFold3 is 0.4.5 or later, which the structure (hashed) and the version (in the
@@ -108,7 +109,7 @@ _DEFAULT_NUM_MODEL_SEEDS = None
 _DEFAULT_USE_MSA_SERVER = True
 _DEFAULT_ON_UNMAPPABLE = "error"
 _DEFAULT_BINDER_CYCLIC = "auto"
-_DEFAULT_TEMPLATE_MODE = "alignment"
+_DEFAULT_TEMPLATE_MODE = "structure"
 
 _ON_UNMAPPABLE_CHOICES = ("error", "x")
 
@@ -260,10 +261,12 @@ class OpenFold3Runner(PredictionRunner):
                 ``--inference-ckpt-path`` and its content is in the key. A path is hashed here
                 without a cache; give a ``WeightsRef`` to use the store's.
             template_mode: How the templates of ``score`` and ``refold`` reach OpenFold3:
-                ``"alignment"`` (default; an A3M self-alignment per chain, which the ColabFold
-                MSA server overwrites, so with the server on there is no template) or
-                ``"structure"`` (the template CIFs in ``template_cif_paths``, OpenFold3's CIF
-                Direct Template Mode, which the server does not overwrite). It is in the key.
+                ``"structure"`` (default; the template CIFs in ``template_cif_paths``,
+                OpenFold3's CIF Direct Template Mode, OpenFold3 0.4.2 or later, which the
+                ColabFold MSA server does not overwrite) or ``"alignment"`` (an A3M
+                self-alignment per chain, which the server overwrites, so with the server on
+                there is no template). It is in the key, so the key of a default ``score`` or
+                ``refold`` request is not the one it had when ``"alignment"`` was the default.
                 Only for ``score`` and ``refold``: a query file of ``predict`` names its own
                 templates.
 
@@ -272,7 +275,7 @@ class OpenFold3Runner(PredictionRunner):
                 template file with ``predict``, both ``seeds`` and ``num_model_seeds``, a
                 ``binder_cyclic`` that is not ``True``, ``False`` or ``"auto"``, or a value other
                 than the default with ``predict``, a ``template_mode`` that is not
-                ``"alignment"`` or ``"structure"`` (or is ``"structure"`` with ``predict``), or
+                ``"structure"`` or ``"alignment"`` (or is ``"alignment"`` with ``predict``), or
                 both ``weights`` and ``inference_ckpt_path``.
             FileNotFoundError: ``weights`` does not exist.
         """

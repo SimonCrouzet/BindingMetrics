@@ -231,11 +231,11 @@ class TestLegacyOpenFoldStep:
         self, tmp_path, monkeypatch, set_version
     ):
         self._stub(monkeypatch, tmp_path)
-        set_version("0.4.1")
+        set_version("0.4.4")
         block = pipeline(tmp_path)["openfold"]
         assert block["binder_cyclic"] is False
         assert block["reason"].startswith("binder_cyclic: chain C is closed head to tail")
-        assert "0.4.1" in block["reason"] and "0.4.5" in block["reason"]
+        assert "0.4.4" in block["reason"] and "0.4.5" in block["reason"]
 
     def test_an_unreadable_version_says_how_to_force_the_flag(
         self, tmp_path, monkeypatch, set_version
@@ -253,19 +253,19 @@ class TestLegacyOpenFoldStep:
         monkeypatch.setattr(
             openfold, "compute_openfold_metrics", lambda **kw: {"reason": "interface PDE: size"}
         )
-        set_version("0.4.1")
+        set_version("0.4.4")
         reason = pipeline(tmp_path)["openfold"]["reason"]
         assert reason.startswith("interface PDE: size; binder_cyclic: chain C")
 
     def test_a_forced_flag_with_an_old_openfold3_is_a_failed_step_not_a_silent_one(
         self, tmp_path, monkeypatch, set_version
     ):
-        set_version("0.4.1")
+        set_version("0.4.4")
         monkeypatch.setattr(
             openfold, "run_openfold", lambda **kw: pytest.fail("OpenFold3 must not start")
         )
         block = pipeline(tmp_path, openfold_cyclic="on")["openfold"]
-        assert "0.4.5" in block["error"] and "0.4.1" in block["error"]
+        assert "0.4.5" in block["error"] and "0.4.4" in block["error"]
 
 
 class TestPredictorPath:
@@ -317,9 +317,9 @@ class TestPredictorPath:
 
     def test_an_old_openfold3_gives_the_reason(self, tmp_path, monkeypatch, set_version):
         StubOpenFold(monkeypatch)
-        set_version("0.4.1")
+        set_version("0.4.4")
         block = pipeline(tmp_path, predictor="of3")["prediction"]
-        assert block["binder_cyclic"] is False and "0.4.1" in block["reason"]
+        assert block["binder_cyclic"] is False and "0.4.4" in block["reason"]
 
     def test_an_adopted_output_says_nothing_of_its_query(self, tmp_path, monkeypatch):
         from tests.test_feat_c_support import write_of3_output
@@ -338,7 +338,7 @@ class TestPredictorPath:
         self, tmp_path, monkeypatch, caplog, set_version
     ):
         StubOpenFold(monkeypatch)
-        set_version("0.4.1")
+        set_version("0.4.4")
         with caplog.at_level(logging.INFO, logger=_openfold_run.logger.name):
             pipeline(tmp_path, predictor="of3")
         # the stub replaces the query builder, so the pipeline's own record logs nothing
@@ -350,11 +350,11 @@ class TestReportAndRows:
         self, tmp_path, monkeypatch, set_version
     ):
         StubOpenFold(monkeypatch)
-        set_version("0.4.1")
+        set_version("0.4.4")
         results = pipeline(tmp_path, predictor="of3")
         flat = _flatten(results)
         assert flat["prediction_binder_cyclic"] is False
-        assert "0.4.1" in flat["prediction_reason"]
+        assert "0.4.4" in flat["prediction_reason"]
         path = write_report(results, tmp_path, "s", fmt="json", summary=True)
         assert json.loads(path.read_text(encoding="utf-8"))["prediction"]["binder_cyclic"] is False
 
@@ -484,7 +484,7 @@ class TestBatch:
         self, tmp_path, monkeypatch, set_version
     ):
         StubOpenFold(monkeypatch)
-        set_version("0.4.1")
+        set_version("0.4.4")
         monkeypatch.setattr(
             batch, "_detect_sample_chains", lambda *a, **k: [(0, "c", CYCLOSPORIN, "C", "A")]
         )
@@ -499,4 +499,4 @@ class TestBatch:
             receptor_chain=None,
         )
         assert rows[0]["prediction_binder_cyclic"] is False
-        assert "0.4.1" in rows[0]["prediction_reason"]
+        assert "0.4.4" in rows[0]["prediction_reason"]

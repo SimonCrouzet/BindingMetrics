@@ -67,14 +67,16 @@ class TestTheOption:
             "input reference suggests this for MSA-free runs",
             "lowers accuracy for a natural receptor",
             "no longer replaced by the server (issue #68)",
+            "the default, structure, keeps the template with the server on too",
         ):
             assert stated in help_text
         # the measurement is stated as one complex, one seed, with its numbers
         for stated in (
             "One complex (1YCR, OpenFold3 0.5.0, one seed)",
-            "1.6 A with the server and no template",
+            "1.57 A with the server and the template as a structure (the default)",
+            "1.62 A with the server and the template as an alignment",
             "21.6 A with no MSA and no template",
-            "1.1 A with a working template and no MSA",
+            "1.12 A with a working template and no MSA",
         ):
             assert stated in help_text
 

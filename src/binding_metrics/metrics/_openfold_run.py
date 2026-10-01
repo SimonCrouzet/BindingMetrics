@@ -1636,17 +1636,43 @@ def _write_a3m_self_alignment(
 
 
 #: How a template reaches OpenFold3 (``template_mode`` of the ``prepare_*`` and ``run_openfold_*``
-#: functions). ``"alignment"``: an A3M self-alignment per chain that points to the template CIF
-#: through ``template_alignment_file_path`` (the first way, and the default). ``"structure"``:
-#: the CIF itself in ``template_cif_paths`` (OpenFold3's CIF Direct Template Mode, which needs no
-#: alignment and which the ColabFold MSA-server step does not overwrite).
-TEMPLATE_MODES = ("alignment", "structure")
+#: functions). ``"structure"``: the CIF itself in ``template_cif_paths`` (OpenFold3's CIF Direct
+#: Template Mode, which needs no alignment and which the ColabFold MSA-server step does not
+#: overwrite; the default). ``"alignment"``: an A3M self-alignment per chain that points to the
+#: template CIF through ``template_alignment_file_path`` (the first way, and the default until
+#: the toolkit changed it; the server overwrites that path, so a run with the server on has no
+#: template).
+TEMPLATE_MODES = ("structure", "alignment")
+
+#: The ``template_mode`` that the functions and commands use when none is given.
+DEFAULT_TEMPLATE_MODE = "structure"
+
+#: First OpenFold3 release that has the CIF Direct Template Mode (``template_cif_paths``, 0.4.2,
+#: ``REL/0.4.2`` of aqlaboratory/openfold-3: "Cifs direct template structure").
+_TEMPLATE_CIF_SINCE = (0, 4, 2)
 
 
 def _check_template_mode(template_mode) -> None:
-    """Raise ``ValueError`` unless ``template_mode`` is ``"alignment"`` or ``"structure"``."""
+    """Raise ``ValueError`` unless ``template_mode`` is ``"structure"`` or ``"alignment"``."""
     if template_mode not in TEMPLATE_MODES:
         raise ValueError(f"template_mode must be one of {TEMPLATE_MODES}, got {template_mode!r}.")
+
+
+def _check_template_mode_supported(template_mode, conda_env: Optional[str] = None) -> None:
+    """Raise ``ValueError`` when ``"structure"`` is asked of an OpenFold3 older than 0.4.2.
+
+    Older releases have no ``template_cif_paths`` and reject the query. A version that cannot be
+    read does not stop anything (the run says why if it fails); ``"alignment"`` needs no check.
+    """
+    if template_mode != "structure":
+        return
+    installed = _installed_version_once(conda_env)
+    if installed is not None and _version_tuple(installed) < _TEMPLATE_CIF_SINCE:
+        raise ValueError(
+            f"template_mode='structure' needs OpenFold3 0.4.2 or later, which added the CIF "
+            f"Direct Template Mode; the installed version is {installed}. Upgrade OpenFold3, or "
+            "pass template_mode='alignment' (--openfold-templates alignment)."
+        )
 
 
 def _query_chain(
@@ -1761,7 +1787,7 @@ def prepare_refolding_query(
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
     conda_env: Optional[str] = None,
-    template_mode: str = "alignment",
+    template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: bool = False,
 ) -> Path:
     """Prepare an OpenFold3 query JSON for binder refolding with receptor as template.
@@ -1781,7 +1807,8 @@ def prepare_refolding_query(
 
         {output_dir}/
           {query_name}_query.json     — OF3 input JSON
-          {query_name}_receptor.a3m   — self-alignment for receptor (``template_mode`` "alignment")
+          {query_name}_receptor.a3m   — self-alignment for receptor (``template_mode`` "alignment"
+                                        only; with "structure" the CIF is in the query)
           templates/
             receptor.cif              — receptor template structure
 
@@ -1831,13 +1858,15 @@ def prepare_refolding_query(
             OpenFold3 input and are not written. See :func:`decide_binder_cyclic`.
         conda_env: Conda environment that runs OpenFold3, asked for its version when
             ``binder_cyclic`` is not ``False``; None asks the current interpreter.
-        template_mode: How the receptor template reaches OpenFold3. ``"alignment"`` (default)
-            writes an A3M self-alignment and gives its path as ``template_alignment_file_path``;
-            the ColabFold MSA server overwrites that path (see ``known limitation`` of the
-            metrics documentation), so a run with the server on has no template. ``"structure"``
+        template_mode: How the receptor template reaches OpenFold3. ``"structure"`` (default)
             gives the template CIF as ``template_cif_paths`` (OpenFold3's CIF Direct Template
-            Mode: protein chains only, the best-matching chain of each file, an alignment made by
-            OpenFold3 itself), which the server does not overwrite, and writes no A3M file.
+            Mode, OpenFold3 0.4.2 or later: protein chains only, the best-matching chain of each
+            file, an alignment made by OpenFold3 itself), which the ColabFold MSA server does
+            not overwrite, and writes no A3M file. ``"alignment"`` writes an A3M self-alignment
+            and gives its path as ``template_alignment_file_path``; the server overwrites that
+            path (see ``the MSA server and the templates`` of the metrics documentation), so a
+            run with the server on has no template. ``"alignment"`` is what the default was
+            before the toolkit changed it.
         dummy_msa: Give every chain a dummy MSA that holds only its sequence
             (``main_msa_file_paths``, one file ``colabfold_main.a3m`` in a folder per chain below
             ``{output_dir}/msas``). It is for a run without the ColabFold MSA server, which
@@ -1852,7 +1881,8 @@ def prepare_refolding_query(
         ValueError: If a specified chain is not found or has no amino acids, ``seeds`` is
             empty, ``binder_cyclic`` is not ``True``, ``False`` or ``"auto"``, it is ``True``
             and the installed OpenFold3 is older than 0.4.5, or ``template_mode`` is not
-            ``"alignment"`` or ``"structure"``. Nothing is written then.
+            ``"structure"`` or ``"alignment"``, or it is ``"structure"`` and the installed
+            OpenFold3 is older than 0.4.2. Nothing is written then.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     import gemmi
@@ -1870,6 +1900,7 @@ def prepare_refolding_query(
     binder_seq, binder_nc = _extract_query_chain(
         st, binder_chain, on_unmappable_residue=on_unmappable_residue
     )
+    _check_template_mode_supported(template_mode, conda_env)
     cyclic = decide_binder_cyclic(
         complex_structure_path, binder_chain, binder_cyclic, conda_env=conda_env
     ).cyclic
@@ -1958,7 +1989,7 @@ def prepare_scoring_query(
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
     conda_env: Optional[str] = None,
-    template_mode: str = "alignment",
+    template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: bool = False,
 ) -> Path:
     """Prepare an OpenFold3 query JSON to score an existing complex structure.
@@ -1983,12 +2014,13 @@ def prepare_scoring_query(
     own fold as a template, so ``binder_ca_rmsd`` is less free of the input than in refold mode.
 
     Issue #68, measured on one complex (1YCR, OpenFold3 0.5.0, one seed): with the ColabFold MSA
-    server on (the default) OpenFold3 replaces the template alignment of both chains with the
-    server's, finds none of the structures it lists (the toolkit runs it with
-    ``fetch_missing_structures: false``) and goes on without any template, so the run is a
-    template-free prediction (binder Cα RMSD against the input 1.62 A, against 1.12 A with the
-    template read). ``use_msa_server=False`` (``--no-msa-server``) or ``template_mode="structure"``
-    keeps the template; ``run_openfold`` records what became of each template (see
+    server on OpenFold3 replaces the template alignment of both chains with the server's, finds
+    none of the structures it lists (the toolkit runs it with ``fetch_missing_structures:
+    false``) and goes on without any template, so a run with ``template_mode="alignment"`` is a
+    template-free prediction (binder Cα RMSD against the input 1.62 A, against 1.57 A with the
+    template given as a structure and 1.12 A with the template read and the server off). The
+    default ``template_mode="structure"`` is not affected, because the server does not overwrite
+    ``template_cif_paths``; ``run_openfold`` records what became of each template (see
     :mod:`binding_metrics.metrics._openfold_templates`).
 
     Files written under ``output_dir``:
@@ -1997,8 +2029,8 @@ def prepare_scoring_query(
 
         {output_dir}/
           {query_name}_query.json
-          {query_name}_receptor.a3m   (``template_mode`` "alignment")
-          {query_name}_binder.a3m     (``template_mode`` "alignment")
+          {query_name}_receptor.a3m   (``template_mode`` "alignment" only)
+          {query_name}_binder.a3m     (``template_mode`` "alignment" only)
           templates/
             receptor.cif
             binder.cif
@@ -2024,7 +2056,7 @@ def prepare_scoring_query(
             gets ``"cyclic": true``; see :func:`prepare_refolding_query`.
         conda_env: Conda environment that runs OpenFold3, asked for its version; see
             :func:`prepare_refolding_query`.
-        template_mode: ``"alignment"`` (default) or ``"structure"``: how each chain's template
+        template_mode: ``"structure"`` (default) or ``"alignment"``: how each chain's template
             reaches OpenFold3; see :func:`prepare_refolding_query`.
         dummy_msa: Give every chain a dummy MSA (query sequence only); see
             :func:`prepare_refolding_query`.
@@ -2034,8 +2066,8 @@ def prepare_scoring_query(
 
     Raises:
         ValueError: If ``seeds`` is empty, ``binder_cyclic`` is ``True`` and the installed
-            OpenFold3 is older than 0.4.5, or ``template_mode`` is not ``"alignment"`` or
-            ``"structure"``.
+            OpenFold3 is older than 0.4.5, or ``template_mode`` is not ``"structure"`` or
+            ``"alignment"`` (or it is ``"structure"`` and OpenFold3 is older than 0.4.2).
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     import gemmi
@@ -2053,6 +2085,7 @@ def prepare_scoring_query(
     binder_seq, binder_nc = _extract_query_chain(
         st, binder_chain, on_unmappable_residue=on_unmappable_residue
     )
+    _check_template_mode_supported(template_mode, conda_env)
     cyclic = decide_binder_cyclic(
         complex_structure_path, binder_chain, binder_cyclic, conda_env=conda_env
     ).cyclic
@@ -2302,7 +2335,7 @@ def prepare_batched_scoring_queries(
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
     conda_env: Optional[str] = None,
-    template_mode: str = "alignment",
+    template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: bool = False,
 ) -> Path:
     """Prepare a single OF3 query JSON that scores multiple complexes.
@@ -2323,7 +2356,7 @@ def prepare_batched_scoring_queries(
             each sample gets ``"cyclic": true``; see :func:`prepare_refolding_query`. Decided
             sample by sample, before anything is written.
         conda_env: Conda environment that runs OpenFold3, asked for its version once.
-        template_mode: ``"alignment"`` (default) or ``"structure"``: how each chain's template
+        template_mode: ``"structure"`` (default) or ``"alignment"``: how each chain's template
             reaches OpenFold3; see :func:`prepare_refolding_query`.
         dummy_msa: Give every chain a dummy MSA (query sequence only); see
             :func:`prepare_refolding_query`.
@@ -2334,12 +2367,14 @@ def prepare_batched_scoring_queries(
     Raises:
         ValueError: If ``seeds`` is empty, two samples share a query name, ``binder_cyclic``
             is ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode``
-            is not ``"alignment"`` or ``"structure"``.
+            is not ``"structure"`` or ``"alignment"`` (or it is ``"structure"`` and OpenFold3
+            is older than 0.4.2).
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     _check_template_mode(template_mode)
     _warn_query_seeds_ignored(seeds)
     rows = _read_batch_chains(samples, on_unmappable_residue)
+    _check_template_mode_supported(template_mode, conda_env)
     _check_batch_template_chain_ids(rows, binder_has_template=True)
     cyclic_flags = _batch_cyclic_flags(rows, binder_cyclic, conda_env)
 
@@ -2422,7 +2457,7 @@ def prepare_batched_refolding_queries(
     on_unmappable_residue: str = "error",
     binder_cyclic: bool | str = "auto",
     conda_env: Optional[str] = None,
-    template_mode: str = "alignment",
+    template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: bool = False,
 ) -> Path:
     """Prepare a single OF3 query JSON that refolds binders for multiple complexes.
@@ -2443,7 +2478,7 @@ def prepare_batched_refolding_queries(
             each sample gets ``"cyclic": true``; see :func:`prepare_refolding_query`. Decided
             sample by sample, before anything is written.
         conda_env: Conda environment that runs OpenFold3, asked for its version once.
-        template_mode: ``"alignment"`` (default) or ``"structure"``: how each receptor's template
+        template_mode: ``"structure"`` (default) or ``"alignment"``: how each receptor's template
             reaches OpenFold3; see :func:`prepare_refolding_query`.
         dummy_msa: Give every chain a dummy MSA (query sequence only); see
             :func:`prepare_refolding_query`.
@@ -2454,12 +2489,14 @@ def prepare_batched_refolding_queries(
     Raises:
         ValueError: If ``seeds`` is empty, two samples share a query name, ``binder_cyclic``
             is ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode``
-            is not ``"alignment"`` or ``"structure"``.
+            is not ``"structure"`` or ``"alignment"`` (or it is ``"structure"`` and OpenFold3
+            is older than 0.4.2).
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     _check_template_mode(template_mode)
     _warn_query_seeds_ignored(seeds)
     rows = _read_batch_chains(samples, on_unmappable_residue)
+    _check_template_mode_supported(template_mode, conda_env)
     _check_batch_template_chain_ids(rows, binder_has_template=False)
     cyclic_flags = _batch_cyclic_flags(rows, binder_cyclic, conda_env)
 

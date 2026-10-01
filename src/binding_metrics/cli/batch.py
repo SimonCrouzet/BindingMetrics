@@ -93,6 +93,7 @@ from binding_metrics._constants import (
 )
 from binding_metrics.capabilities import POLICIES, IncompatibleInputError
 from binding_metrics.cli import (
+    DEFAULT_OPENFOLD_TEMPLATES,
     OPENFOLD_MODE_HELP,
     add_config_arg,
     add_on_unmappable_residue_arg,
@@ -469,7 +470,7 @@ def _run_batched_openfold(
     openfold_use_msa_server: bool = True,
     prediction_weights: Optional[Path] = None,
     prediction_cache: Optional[Path] = None,
-    openfold_templates: str = "alignment",
+    openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
 ) -> None:
     """Run OpenFold3 on all successful samples in a single subprocess.
 
@@ -733,7 +734,7 @@ def _run_batched_prediction(
     prediction_mode: Optional[str] = None,
     prediction_weights: Optional[Path] = None,
     prediction_lock_threshold: Optional[float] = None,
-    openfold_templates: str = "alignment",
+    openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
 ) -> None:
     """The ``--predictor`` step of a batch: every sample through one shared prediction store.
 
@@ -961,7 +962,7 @@ def run_batch(
     prediction_use_msa_server: bool = True,
     prediction_conda_env: Optional[str] = None,
     prediction_lock_threshold: Optional[float] = None,
-    openfold_templates: str = "alignment",
+    openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -1004,18 +1005,18 @@ def run_batch(
         openfold_use_msa_server: Whether OpenFold3 uses the ColabFold MSA server (default True;
             ``--openfold-no-msa-server`` is False). With the server off OpenFold3 runs with a dummy
             MSA that holds only the query sequence of each chain, which lowers accuracy for a
-            natural receptor, but the template alignments written by the toolkit are no longer
-            replaced by the server (issue #68). Each row that OpenFold3 was run for
-            records it as ``provenance_openfold3_use_msa_server``.
+            natural receptor; with ``openfold_templates="alignment"`` it also keeps the template
+            alignments that the server would replace (issue #68). Each row that OpenFold3 was run
+            for records it as ``provenance_openfold3_use_msa_server``.
         openfold_cyclic: ``"auto"`` (default), ``True`` (``"on"``) or ``False`` (``"off"``):
             whether the binder chain of each OpenFold3 query gets ``"cyclic": true`` (see
             ``--openfold-cyclic``). The ``openfold_*`` (or ``prediction_*``) columns then
             include ``binder_cyclic`` and, when a head-to-tail binder was left linear, the
             reason.
         openfold_templates: How the template of each chain reaches OpenFold3 (keyword-only):
-            ``"alignment"`` (default; an A3M self-alignment per chain, which the ColabFold MSA
-            server overwrites) or ``"structure"`` (the template CIFs themselves, OpenFold3's CIF
-            Direct Template Mode, which the server does not overwrite); OpenFold3 only. The
+            ``"structure"`` (default; the template CIFs themselves, OpenFold3's CIF Direct
+            Template Mode, which the ColabFold MSA server does not overwrite) or ``"alignment"``
+            (an A3M self-alignment per chain, which the server overwrites); OpenFold3 only. The
             ``openfold_*`` (or ``prediction_*``) columns include ``templates_<chain>_*`` that say
             whether OpenFold3 used each template.
         predictor: A key of ``binding_metrics.predictors.PARSERS`` (keyword-only). The

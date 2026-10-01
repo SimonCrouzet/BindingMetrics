@@ -124,7 +124,8 @@ class TestAuto:
 
     def test_a_linear_binder_does_not_ask_for_the_version(self, tmp_path, set_version):
         calls = set_version("0.5.0")
-        _refold(tmp_path, structure=P53, receptor="A", binder="B")
+        # "alignment" does not look at the version; the default "structure" does (it needs 0.4.2)
+        _refold(tmp_path, structure=P53, receptor="A", binder="B", template_mode="alignment")
         assert calls == []
 
     def test_the_sequence_and_the_modified_residues_are_those_of_a_query_without_the_flag(
@@ -246,7 +247,7 @@ class TestModifiedResiduesLeaveTheBinderLinear:
 
     def test_the_old_version_reason_comes_first(self, set_version):
         """A version that cannot take the field is the first thing to say."""
-        set_version("0.4.1")
+        set_version("0.4.4")
         decision = openfold.decide_binder_cyclic(CYCLOSPORIN, "C")
         assert "predates the 'cyclic' chain field" in decision.reason
         assert "modified residues" not in decision.reason
@@ -286,7 +287,7 @@ class TestOff:
         self, tmp_path, build, set_version
     ):
         calls = set_version("0.5.0")
-        chains = _chains(build(tmp_path, binder_cyclic=False))
+        chains = _chains(build(tmp_path, binder_cyclic=False, template_mode="alignment"))
         assert all("cyclic" not in chain for chain in chains.values())
         assert calls == []  # neither the structure nor the version is looked at
 
@@ -303,11 +304,11 @@ class TestOn:
     def test_true_is_refused_before_anything_is_written_when_openfold3_is_too_old(
         self, tmp_path, set_version
     ):
-        set_version("0.4.1")
+        set_version("0.4.4")
         out = tmp_path / "out"
         with pytest.raises(ValueError, match="0.4.5") as info:
             _refold(out, binder_cyclic=True)
-        assert "0.4.1" in str(info.value)
+        assert "0.4.4" in str(info.value)
         assert not out.exists()
 
     def test_true_with_an_unreadable_version_warns_and_writes(self, tmp_path, set_version, caplog):
@@ -332,22 +333,22 @@ class TestVersionBelowTheField:
     """OpenFold3 older than 0.4.5 rejects the field, so "auto" leaves the binder linear."""
 
     def test_the_binder_stays_linear_and_the_log_says_why(self, tmp_path, set_version, caplog):
-        set_version("0.4.1")
+        set_version("0.4.4")
         with caplog.at_level(logging.WARNING, logger=LOGGER):
             chains = _chains(_refold(tmp_path))
         assert "cyclic" not in chains["I"]
         (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert "0.4.1" in warning.getMessage() and "0.4.5" in warning.getMessage()
+        assert "0.4.4" in warning.getMessage() and "0.4.5" in warning.getMessage()
         assert "linear" in warning.getMessage()
 
     def test_the_decision_carries_the_reason(self, set_version):
-        set_version("0.4.1")
+        set_version("0.4.4")
         decision = openfold.decide_binder_cyclic(CYCLOSPORIN, "C")
         assert decision.cyclic is False
-        assert "0.4.1" in decision.reason and "head to tail" in decision.reason
+        assert "0.4.4" in decision.reason and "head to tail" in decision.reason
 
     def test_a_linear_binder_has_no_reason(self, set_version):
-        set_version("0.4.1")
+        set_version("0.4.4")
         assert openfold.decide_binder_cyclic(P53, "B") == openfold.BinderCyclicDecision(False)
 
 
@@ -474,7 +475,7 @@ class TestBatched:
         assert len(calls) == 1
 
     def test_true_with_an_old_openfold3_writes_nothing(self, tmp_path, set_version):
-        set_version("0.4.0")
+        set_version("0.4.4")
         out = tmp_path / "out"
         with pytest.raises(ValueError, match="0.4.5"):
             openfold.prepare_batched_scoring_queries(self._samples(), out, binder_cyclic=True)
@@ -503,7 +504,7 @@ class TestWrappers:
     def test_the_environment_of_the_run_is_the_one_asked_for_the_version(
         self, tmp_path, monkeypatch, set_version
     ):
-        calls = set_version("0.4.1")
+        calls = set_version("0.4.4")
         monkeypatch.setattr(openfold, "run_openfold", lambda query_json, **kw: tmp_path)
         openfold.run_openfold_refolding(SFTI1, "A", "I", "q", tmp_path / "o", conda_env="of3")
         assert calls[0][1:] == ["run", "-n", "of3", "python"]
@@ -524,7 +525,7 @@ class TestWrappers:
     def test_a_forced_flag_on_an_old_openfold3_stops_before_the_process(
         self, tmp_path, monkeypatch, set_version
     ):
-        set_version("0.4.1")
+        set_version("0.4.4")
         monkeypatch.setattr(
             openfold, "run_openfold", lambda **kw: pytest.fail("OpenFold3 must not start")
         )

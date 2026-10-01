@@ -68,6 +68,7 @@ from typing import Any, Mapping, NamedTuple, Optional, Sequence
 
 from binding_metrics.capabilities import MODES
 from binding_metrics.cli import (
+    DEFAULT_OPENFOLD_TEMPLATES,
     OPENFOLD_CYCLIC_CHOICES,
     check_openfold_cyclic,
     check_openfold_templates,
@@ -426,7 +427,9 @@ def check_prediction_args(parser: argparse.ArgumentParser, args: argparse.Namesp
         parser.error(weights_with_a_directory_message())
     try:
         check_templates_option(
-            args.predictor, args.prediction_dir, getattr(args, "openfold_templates", "alignment")
+            args.predictor,
+            args.prediction_dir,
+            getattr(args, "openfold_templates", DEFAULT_OPENFOLD_TEMPLATES),
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -545,7 +548,7 @@ def _conflict_message(legacy: str, generic: str, legacy_value: Any, generic_valu
 def check_templates_option(
     predictor: Optional[str], prediction_dir: Optional[Path], openfold_templates: str
 ) -> None:
-    """Refuse ``--openfold-templates structure`` where it cannot apply.
+    """Refuse ``--openfold-templates alignment`` where it cannot apply.
 
     The setting is OpenFold3's (``template_mode`` of its runner; the other runners take their
     templates in their own way, see ``docs/prediction.md``) and there is no ``--prediction-``
@@ -554,12 +557,12 @@ def check_templates_option(
     nothing is run, so it is ignored.
 
     Raises:
-        ValueError: ``openfold_templates`` is not ``"alignment"`` or ``"structure"``, or it is
-            ``"structure"`` for a model other than OpenFold3.
+        ValueError: ``openfold_templates`` is not ``"structure"`` or ``"alignment"``, or it is
+            ``"alignment"`` (not the default) for a model other than OpenFold3.
     """
     check_openfold_templates(openfold_templates)
     if (
-        openfold_templates != "alignment"
+        openfold_templates != DEFAULT_OPENFOLD_TEMPLATES
         and predictor not in (None, "of3")
         and prediction_dir is None
     ):
@@ -738,7 +741,7 @@ def check_predictor(
     openfold_conda_env: Optional[str] = None,
     prediction_conda_env: Optional[str] = None,
     prediction_lock_threshold: Optional[float] = None,
-    openfold_templates: str = "alignment",
+    openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
 ) -> PredictionOptions:
     """The Python-API counterpart of ``check_prediction_args``: raise before any step runs.
 
@@ -750,7 +753,7 @@ def check_predictor(
             ``prediction_dir`` is given, ``prediction_mode`` is not one of ``MODES`` or needs
             ``predictor``, ``prediction_weights`` is given with ``prediction_dir``, a setting
             is not one the runner of the model has (``resolve_prediction_options``), or
-            ``openfold_templates`` is not ``"alignment"`` or ``"structure"``, or is
+            ``openfold_templates`` is not ``"structure"`` or ``"alignment"``, or is
             ``"structure"`` for a ``predictor`` other than OpenFold3 that is run from here.
     """
     check_templates_option(predictor, prediction_dir, openfold_templates)
@@ -911,7 +914,7 @@ def make_request(
     prediction_mode: Optional[str] = None,
     prediction_weights=None,
     prediction_lock_threshold: Optional[float] = None,
-    openfold_templates: str = "alignment",
+    openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
 ):
     """The store request of one sample.
 
@@ -928,7 +931,7 @@ def make_request(
     ``mode`` always; ``seeds`` and ``on_unmappable_residue`` as given; ``binder_cyclic`` (when
     ``openfold_cyclic`` is not ``"auto"``), ``use_msa_server`` (when ``openfold_use_msa_server``
     is False), ``lock_threshold_angstrom``, ``template_mode`` (when ``openfold_templates`` is not
-    ``"alignment"``), and ``weights`` (a path, or the ``WeightsRef`` of
+    the default, ``"structure"``), and ``weights`` (a path, or the ``WeightsRef`` of
     ``PredictionStore.weights_reference``; by content in the key) only when they are not at their
     defaults, so a runner without the keyword is never called with it. ``openfold_cyclic`` and
     ``openfold_use_msa_server`` are the settings of the run, after ``resolve_prediction_options``
@@ -968,7 +971,11 @@ def make_request(
             prediction_lock_threshold is not None,
         ),
         ("weights", prediction_weights, prediction_weights is not None),
-        ("template_mode", openfold_templates, openfold_templates != "alignment"),
+        (
+            "template_mode",
+            openfold_templates,
+            openfold_templates != DEFAULT_OPENFOLD_TEMPLATES,
+        ),
     )
     keywords: dict[str, Any] = {}
     for keyword, value, passed in settings:
@@ -1413,7 +1420,7 @@ def run_single_prediction(
     prediction_mode: Optional[str] = None,
     prediction_weights: Optional[Path] = None,
     prediction_lock_threshold: Optional[float] = None,
-    openfold_templates: str = "alignment",
+    openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
 ) -> tuple[dict, dict]:
     """The whole prediction step of ``run_pipeline``: store, session, request, consumers.
 
@@ -1426,10 +1433,10 @@ def run_single_prediction(
     of the run: the pipelines have merged them with the ``--prediction-*`` spelling
     (``resolve_prediction_options``). ``prediction_lock_threshold`` is the threshold of
     ``score-lock`` in angstrom (None: the runner's own). ``openfold_templates`` is how OpenFold3 is
-    given its templates (``"alignment"`` or ``"structure"``; ``"structure"`` is refused for a
-    runner without a ``template_mode`` setting). The runner's ``output_chain_map`` names
-    the chains of its prediction, unless ``prediction_binder_chain`` or ``prediction_target_chain``
-    is given.
+    given its templates (``"structure"``, the default, or ``"alignment"``; ``"alignment"`` is
+    refused for a runner without a ``template_mode`` setting). The runner's ``output_chain_map``
+    names the chains of its prediction, unless ``prediction_binder_chain`` or
+    ``prediction_target_chain`` is given.
 
     Returns:
         ``(block, provenance)`` as ``run_prediction_step``; the block is ``{"skipped": True}``

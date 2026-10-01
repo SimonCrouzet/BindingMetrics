@@ -62,6 +62,7 @@ from binding_metrics._constants import (
 )
 from binding_metrics.capabilities import POLICIES, IncompatibleInputError
 from binding_metrics.cli import (
+    DEFAULT_OPENFOLD_TEMPLATES,
     OPENFOLD_MODE_HELP,
     add_config_arg,
     add_on_unmappable_residue_arg,
@@ -322,7 +323,7 @@ def run_pipeline(
     prediction_use_msa_server: bool = True,
     prediction_conda_env: Optional[str] = None,
     prediction_lock_threshold: Optional[float] = None,
-    openfold_templates: str = "alignment",
+    openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -344,18 +345,19 @@ def run_pipeline(
         openfold_use_msa_server: Whether the OpenFold3 step uses the ColabFold MSA server
             (keyword-only, default True; ``--openfold-no-msa-server`` is False). With the server
             off OpenFold3 runs with a dummy MSA that holds only the query sequence of each chain,
-            which lowers accuracy for a natural receptor, but the template alignments written by
-            the toolkit are no longer replaced by the server (issue #68). The value
-            is recorded as ``provenance["openfold3_use_msa_server"]`` when OpenFold3 is run
+            which lowers accuracy for a natural receptor; with ``openfold_templates="alignment"``
+            it also keeps the template alignments that the server would replace (issue #68). The
+            value is recorded as ``provenance["openfold3_use_msa_server"]`` when OpenFold3 is run
             here, and is part of the key of the prediction store.
         openfold_templates: How the template of each chain reaches OpenFold3 in ``score`` and
-            ``refold`` mode (keyword-only): ``"alignment"`` (default) writes an A3M
-            self-alignment per chain, which the ColabFold MSA server overwrites, so with the
-            server on (the default) the run has no template; ``"structure"`` gives the template
-            CIF itself (OpenFold3's CIF Direct Template Mode), which the server does not
-            overwrite. ``results["openfold"]["templates"]`` (``results["prediction"]["templates"]``
-            with ``predictor``) says per chain whether OpenFold3 used it. OpenFold3 only: another
-            ``predictor`` with ``"structure"`` raises ``ValueError``. Part of the prediction key.
+            ``refold`` mode (keyword-only): ``"structure"`` (default) gives the template
+            CIF itself (OpenFold3's CIF Direct Template Mode, OpenFold3 0.4.2 or later), which
+            the ColabFold MSA server does not overwrite; ``"alignment"`` writes an A3M
+            self-alignment per chain, the way earlier versions did, which the server overwrites,
+            so with the server on (the default) the run has no template.
+            ``results["openfold"]["templates"]`` (``results["prediction"]["templates"]`` with
+            ``predictor``) says per chain whether OpenFold3 used it. OpenFold3 only: another
+            ``predictor`` with ``"alignment"`` raises ``ValueError``. Part of the prediction key.
         on_unmappable_residue: What the OpenFold3 step does with a residue it cannot take
             (keyword-only): ``"error"`` (default) records the step as failed before the model
             starts, ``"x"`` sends an ``X`` in its place and logs a warning.

@@ -165,8 +165,9 @@ def add_openfold_no_msa_server_arg(parser) -> None:
 
     The OpenFold3 step uses the ColabFold MSA server unless this is given. Without it OpenFold3
     has no computed MSA (a dummy MSA that holds only the query sequence is written for each chain,
-    as OpenFold3's input reference suggests), and the server cannot replace the template
-    alignments that the toolkit writes (issue #68).
+    as OpenFold3's input reference suggests). The template is kept either way with the default
+    ``--openfold-templates structure``; with ``alignment`` only the run without the server keeps
+    it, because the server replaces the template alignments that the toolkit writes (issue #68).
     """
     parser.add_argument(
         "--openfold-no-msa-server",
@@ -174,12 +175,14 @@ def add_openfold_no_msa_server_arg(parser) -> None:
         help=(
             "Do not use the ColabFold MSA server for OpenFold3: it then runs with a dummy MSA "
             "that holds only the query sequence of each chain (OpenFold3's input reference "
-            "suggests this for MSA-free runs), which lowers accuracy for a natural receptor, but "
-            "the template alignments written by the toolkit are no longer replaced by the server "
-            "(issue #68). One complex (1YCR, OpenFold3 0.5.0, one seed), binder C-alpha RMSD "
-            "against the crystal pose: 1.6 A with the server and no template (the server "
-            "replaces the template), 21.6 A with no MSA and no template, 1.1 A with a working "
-            "template and no MSA."
+            "suggests this for MSA-free runs), which lowers accuracy for a natural receptor. "
+            "With --openfold-templates alignment the template alignments written by the toolkit "
+            "are no longer replaced by the server (issue #68); the default, structure, keeps the "
+            "template with the server on too. One complex (1YCR, OpenFold3 0.5.0, one seed), "
+            "binder C-alpha RMSD against the crystal pose: 1.57 A with the server and the "
+            "template as a structure (the default), 1.62 A with the server and the template as "
+            "an alignment (the server replaces it: no template), 21.6 A with no MSA and no "
+            "template, 1.12 A with a working template and no MSA."
         ),
     )
 
@@ -193,38 +196,43 @@ def openfold_msa_server_kwargs(use_msa_server: bool) -> dict:
     return {} if use_msa_server else {"use_msa_server": False}
 
 
-#: Values of ``--openfold-templates``; the first is the default.
-OPENFOLD_TEMPLATE_CHOICES = ("alignment", "structure")
+#: Values of ``--openfold-templates``, and its default (the ``template_mode`` of the run
+#: functions: ``binding_metrics.metrics._openfold_run.TEMPLATE_MODES`` and
+#: ``DEFAULT_TEMPLATE_MODE``, which a test keeps equal; this module does not import the metrics).
+OPENFOLD_TEMPLATE_CHOICES = ("structure", "alignment")
+DEFAULT_OPENFOLD_TEMPLATES = "structure"
 
 
 def add_openfold_templates_arg(parser) -> None:
-    """Add ``--openfold-templates {alignment,structure}`` to an argparse parser or group.
+    """Add ``--openfold-templates {structure,alignment}`` to an argparse parser or group.
 
     How the template of each chain reaches OpenFold3 in ``score`` and ``refold`` mode. The
-    default, ``alignment``, writes an A3M self-alignment per chain; the ColabFold MSA server
-    overwrites it, so with the server on (also the default) the run has no template.
-    ``structure`` gives the template CIF itself (OpenFold3's CIF Direct Template Mode), which the
-    server does not overwrite. The setting is OpenFold3's: there is no ``--prediction-templates``.
+    default, ``structure``, gives the template CIF itself (OpenFold3's CIF Direct Template Mode,
+    OpenFold3 0.4.2 or later), which the ColabFold MSA server does not overwrite. ``alignment``
+    writes an A3M self-alignment per chain, the way earlier versions did it; the server
+    overwrites it, so with the server on (also the default) the run has no template. The setting
+    is OpenFold3's: there is no ``--prediction-templates``.
     """
     parser.add_argument(
         "--openfold-templates",
         choices=OPENFOLD_TEMPLATE_CHOICES,
-        default="alignment",
+        default=DEFAULT_OPENFOLD_TEMPLATES,
         help=(
             "How the template of each chain reaches OpenFold3 (modes score and refold; OpenFold3 "
-            "only, also for --predictor of3). alignment (default): an A3M self-alignment that "
-            "points to the template CIF; the ColabFold MSA server overwrites it, so with the "
-            "server on (the default) the run has no template, which results['openfold'] or "
-            "results['prediction'] reports under 'templates' (use --openfold-no-msa-server to "
-            "keep it). structure: the template CIF itself (OpenFold3's CIF Direct Template Mode: "
-            "protein chains only, the best-matching chain of each file, the alignment made by "
-            "OpenFold3), which the server does not overwrite."
+            "only, also for --predictor of3). structure (default): the template CIF itself "
+            "(OpenFold3's CIF Direct Template Mode, OpenFold3 0.4.2 or later: protein chains "
+            "only, the best-matching chain of each file, the alignment made by OpenFold3), which "
+            "the ColabFold MSA server does not overwrite. alignment: an A3M self-alignment that "
+            "points to the template CIF, the way earlier versions did it; the server overwrites "
+            "it, so with the server on (the default) the run has no template, which "
+            "results['openfold'] or results['prediction'] reports under 'templates' (use "
+            "--openfold-no-msa-server to keep it)."
         ),
     )
 
 
 def check_openfold_templates(value) -> str:
-    """The ``template_mode`` argument for ``value``: ``"alignment"`` or ``"structure"``.
+    """The ``template_mode`` argument for ``value``: ``"structure"`` or ``"alignment"``.
 
     Raises:
         ValueError: ``value`` is neither.
@@ -237,13 +245,13 @@ def check_openfold_templates(value) -> str:
 
 
 def openfold_template_kwargs(value) -> dict:
-    """The keyword argument for an OpenFold3 run function, only when it is not ``"alignment"``.
+    """The keyword argument for an OpenFold3 run function, only when it is not the default.
 
     The default is left out so that a function that predates the option, or a test double that
     replaces it, is called exactly as before.
     """
     resolved = check_openfold_templates(value)
-    return {} if resolved == "alignment" else {"template_mode": resolved}
+    return {} if resolved == DEFAULT_OPENFOLD_TEMPLATES else {"template_mode": resolved}
 
 
 #: Values of ``--openfold-cyclic``; the first is the default.
