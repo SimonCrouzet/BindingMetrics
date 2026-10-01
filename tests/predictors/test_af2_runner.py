@@ -29,6 +29,7 @@ from binding_metrics.predictors.store import (
     PredictionStore,
     PredictionUnavailableError,
 )
+from binding_metrics.predictors.weights import WeightsRef
 
 DATA = Path(__file__).resolve().parents[2] / "data"
 P53 = DATA / "example_linear_p53_1YCR.pdb"
@@ -976,9 +977,175 @@ class TestAgainstTheColabFoldSource:
             assert "continue" in text[start : start + 200]
         assert "Could not predict {jobname}. Not Enough GPU memory?" in text
 
+    def test_the_marker_files_and_the_download_that_the_weights_check_guards_against(self):
+        text = colabfold_source("colabfold/download.py")
+        for model_type, marker in af2_runner._PARAMS_MARKERS.items():
+            assert f'"{marker}"' in text, model_type
+        assert text.count("success_marker.is_file()") == 1
+        assert "file.extractall(path=params_dir)" in text
+        batch = colabfold_source("colabfold/batch.py")
+        start = batch.index("if args.num_models > 0:")
+        assert "download_alphafold_params(model_type, data_dir)" in batch[start : start + 120]
+        assert "data_dir = Path(args.data or default_data_dir)" in batch
+
+    def test_the_parameter_files_are_read_from_params_below_data(self):
+        text = colabfold_source("colabfold/alphafold/models.py")
+        assert 'path = os.path.join(data_dir, "params", file)' in text
+        assert 'file = f"params_model_{model_number}_multimer_v3.npz"' in text
+
     def test_the_script_is_named_colabfold_batch(self):
         pyproject = colabfold_source("pyproject.toml")
         assert "colabfold_batch = 'colabfold.batch:main'" in pyproject
+
+
+# ---------------------------------------------------------------------------- custom weights
+
+
+def parameter_directory(base, name="weights", *, model_type="alphafold2_multimer_v3", content=b"a"):
+    """A ``--data`` directory: ``params/`` with one parameter file and the marker file."""
+    params = Path(base) / name / "params"
+    params.mkdir(parents=True, exist_ok=True)
+    (params / "params_model_1_multimer_v3.npz").write_bytes(content)
+    (params / af2_runner._PARAMS_MARKERS[model_type]).write_bytes(b"")
+    return params.parent
+
+
+class TestCustomWeights:
+    def test_the_runner_takes_a_directory_of_weights(self):
+        assert ColabFoldRunner.supports_custom_weights is True
+        assert ColabFoldRunner.weights_kind == "directory"
+
+    def test_a_request_without_weights_has_no_weights_field(self):
+        request = p53_request()
+        assert request.weights is None and "weights" not in request.canonical()
+
+    def test_the_weights_are_in_the_key_by_content_and_not_by_path(self, tmp_path):
+        first = p53_request(weights=parameter_directory(tmp_path, "one"))
+        moved = p53_request(weights=parameter_directory(tmp_path, "two"))
+        changed = p53_request(weights=parameter_directory(tmp_path, "three", content=b"b"))
+        assert first.weights.kind == "directory"
+        assert first.key() == moved.key() != p53_request().key()
+        assert changed.key() != first.key()
+        assert "one" not in json.dumps(first.canonical())
+        assert first.describe()["weights"]["path"] == str(tmp_path / "one")
+
+    def test_a_weights_reference_of_the_store_gives_the_same_key(self, tmp_path):
+        directory = parameter_directory(tmp_path)
+        store = PredictionStore(tmp_path / "store")
+        reference = store.weights_reference(directory)
+        assert isinstance(reference, WeightsRef)
+        assert p53_request(weights=reference).key() == p53_request(weights=directory).key()
+
+    def test_the_weights_directory_is_passed_as_data(self, tmp_path):
+        directory = parameter_directory(tmp_path)
+        command = TestCommandLine.command(p53_request(weights=directory))
+        assert command[command.index("--data") + 1] == str(directory)
+        assert command.count("--data") == 1
+
+    def test_weights_and_data_dir_cannot_be_combined(self, tmp_path):
+        directory = parameter_directory(tmp_path)
+        with pytest.raises(ValueError, match="weights or data_dir, not both"):
+            p53_request(weights=directory, data_dir=directory)
+
+    def test_data_dir_keeps_its_meaning(self, tmp_path):
+        directory = parameter_directory(tmp_path)
+        request = p53_request(data_dir=directory)
+        assert request.weights is None and request.options["data_dir"] == str(directory)
+        assert TestCommandLine.command(request).count("--data") == 1
+
+    def test_a_file_is_not_a_weights_directory(self, tmp_path):
+        checkpoint = tmp_path / "params.npz"
+        checkpoint.write_bytes(b"x")
+        with pytest.raises(ValueError, match="are a directory"):
+            p53_request(weights=checkpoint)
+        with pytest.raises(ValueError, match="takes its weights as a directory"):
+            ColabFoldRunner().prepare(
+                self.by_hand(WeightsRef(checkpoint, "file", "0" * 64, 1)), tmp_path
+            )
+
+    def test_a_missing_weights_path_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="are a directory"):
+            p53_request(weights=tmp_path / "nothing")
+
+    def test_the_params_directory_itself_is_refused(self, tmp_path):
+        params = parameter_directory(tmp_path) / "params"
+        with pytest.raises(ValueError, match="no params/ directory"):
+            p53_request(weights=params)
+
+    def test_a_directory_without_the_marker_is_refused_because_colabfold_would_download(
+        self, tmp_path
+    ):
+        directory = parameter_directory(tmp_path)
+        (directory / "params" / "download_complexes_multimer_v3_finished.txt").unlink()
+        with pytest.raises(ValueError) as error:
+            p53_request(weights=directory)
+        text = str(error.value)
+        assert "download_complexes_multimer_v3_finished.txt" in text
+        assert "downloads the default parameters" in text and "over the files of the same" in text
+
+    def test_the_marker_is_the_one_of_the_model_type(self, tmp_path):
+        directory = parameter_directory(tmp_path, model_type="alphafold2_multimer_v2")
+        with pytest.raises(ValueError, match="download_complexes_multimer_v3_finished.txt"):
+            p53_request(weights=directory)
+        request = p53_request(weights=directory, model_type="alphafold2_multimer_v2")
+        assert request.options["model_type"] == "alphafold2_multimer_v2"
+
+    def test_an_unknown_model_type_is_refused_before_the_directory_is_read(self, tmp_path):
+        with pytest.raises(ValueError, match="model_type must be one of"):
+            p53_request(weights=parameter_directory(tmp_path), model_type="auto")
+
+    def test_a_request_built_by_hand_is_checked_when_it_is_prepared(self, tmp_path):
+        directory = parameter_directory(tmp_path)
+        request = self.by_hand(WeightsRef(directory, "directory", "0" * 64, 1))
+        assert ColabFoldRunner().prepare(request, tmp_path / "w").is_file()
+        (directory / "params" / "download_complexes_multimer_v3_finished.txt").unlink()
+        with pytest.raises(ValueError, match="download_complexes_multimer_v3_finished.txt"):
+            ColabFoldRunner().prepare(request, tmp_path / "w2")
+        assert not (tmp_path / "w2").exists()
+
+    @staticmethod
+    def by_hand(weights):
+        return PredictionRequest(
+            "af2",
+            "q",
+            mode="predict",
+            binder_chain="B",
+            receptor_chain="A",
+            sequences={"A": "ACDE", "B": "AGK"},
+            weights=weights,
+        )
+
+    def test_a_run_with_weights_reaches_the_process_and_a_moved_copy_shares_the_entry(
+        self, tmp_path, stub_colabfold
+    ):
+        store = PredictionStore(tmp_path / "store")
+        runner = ColabFoldRunner()
+        first = parameter_directory(tmp_path, "tuned")
+        entry = store.get_or_run(
+            p53_request(runner, weights=store.weights_reference(first)), runner
+        )
+        (call,) = stub_colabfold.calls()
+        assert call["argv"][call["argv"].index("--data") + 1] == str(first)
+        again = store.get_or_run(
+            p53_request(runner, weights=parameter_directory(tmp_path, "copy")), runner
+        )
+        assert again.key == entry.key and len(stub_colabfold.calls()) == 1
+        other = parameter_directory(tmp_path, "another", content=b"fine-tuned")
+        store.get_or_run(p53_request(runner, weights=other), runner)
+        assert len(stub_colabfold.calls()) == 2
+
+    def test_the_store_refuses_the_weights_of_a_runner_that_cannot_take_them(
+        self, tmp_path, stub_colabfold
+    ):
+        """The contract of the ABC: a request with weights never runs with the default model."""
+
+        class Plain(ColabFoldRunner):
+            supports_custom_weights = False
+
+        request = p53_request(weights=parameter_directory(tmp_path))
+        with pytest.raises(ValueError, match="does not take custom weights"):
+            PredictionStore(tmp_path / "store").get_or_run(request, Plain())
+        assert stub_colabfold.calls() == []
 
 
 # ---------------------------------------------------------------------------- module facts

@@ -13,13 +13,15 @@ is imported when a request is made, never before)::
     class ColabFoldRunner(PredictionRunner):
         ColabFoldRunner(conda_env: Optional[str] = None)
         name = "af2"; capabilities = None
+        supports_custom_weights = True; weights_kind = "directory"
         .conda_env
         .make_request(input_path, *, name: str, binder_chain: str, receptor_chain: str,
             mode: str = "predict", seeds: Optional[Sequence[int]] = None, num_samples: int = 5,
             num_recycles: Optional[int] = None, use_msa_server: bool = True,
             model_type: str = "alphafold2_multimer_v3", num_relax: int = 0,
             data_dir: Optional[str | Path] = None, on_unmappable_residue: str = "error",
-            extra_args: Sequence[str] = ()) -> PredictionRequest
+            extra_args: Sequence[str] = (),
+            weights: Optional[str | Path | WeightsRef] = None) -> PredictionRequest
         .fasta_text(request) -> str
         .output_chain_map(request) -> dict[str, str]          # {"A": receptor, "B": binder}
         .prepare(request, work_dir) -> Path                   # <work_dir>/query/<name>.fasta
@@ -119,12 +121,26 @@ Settings that change the output
 * ``num_relax``: ``--num-relax``, the number of top-ranked structures relaxed with OpenMM; 0 (the
   default of ColabFold, line 2036) writes only ``unrelaxed`` files. ``--amber`` is not written:
   it only sets ``num_relax`` when that is 0 (line 2282), so ``--num-relax`` says it alone.
-* ``data_dir``: ``--data`` (line 2025). It is the directory that holds ``params/``, the
-  parameter files (``download.py:39``, ``alphafold/models.py:59``); ColabFold downloads the
-  parameters of the model type into it when they are missing, which needs the network. ``None``
-  leaves the flag out and ColabFold uses its cache directory. The path is part of the key, as
-  the checkpoint path is for OpenFold3; a path that is not a directory raises ``ValueError``,
-  since ColabFold would create it and download into it.
+* ``weights``: custom (fine-tuned) parameters, a directory (``supports_custom_weights``,
+  ``weights_kind = "directory"``), or the ``WeightsRef`` that ``PredictionStore.weights_reference``
+  made for it. ``request.weights.path`` goes to ``--data`` (line 2025), the directory that holds
+  ``params/``, the parameter files (``download.py:39``, ``alphafold/models.py:59``). The key holds
+  the content of the directory (a manifest of the size and SHA-256 of every file below it) and
+  never its path, so a moved copy shares the entries; the directory is hashed as a whole, so
+  put in it what the run reads and keep it unchanged. A run is refused (``ValueError``, before
+  the process starts) unless ``<weights>/params/`` holds the marker file of the model type
+  (``download_complexes_multimer_v3_finished.txt`` for ``alphafold2_multimer_v3``, and so on, see
+  ``_PARAMS_MARKERS``). The reason: ``main`` calls ``download_alphafold_params`` before the run
+  (line 2270), which, when that marker is missing, downloads the default parameters and extracts
+  them into ``<data>/params`` (``download.py:70-85``), over the files of the same name. Without
+  the check a directory of fine-tuned parameters could be overwritten by the default ones and the
+  prediction stored under the key of the custom weights. Create the marker (an empty file) once
+  the parameter files are in place.
+* ``data_dir``: the older way to name the directory: ``--data`` with a path that is in the key
+  (as ``inference_ckpt_path`` is for OpenFold3). ``None`` leaves the flag out and ColabFold uses
+  its cache directory and downloads into it what is missing, which needs the network. A path that
+  is not a directory raises ``ValueError``, since ColabFold would create it. It cannot be
+  combined with ``weights``.
 * ``extra_args``: more command-line arguments, passed after the others and part of the key. A
   flag that the runner writes itself, one that changes what the adapter reads (``--zip``,
   ``--jobname-prefix``) and one that turns ``predict`` into a templated run (``--templates``,
@@ -182,6 +198,7 @@ from typing import Any, Optional, Sequence
 
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.store import PredictionRequest
+from binding_metrics.predictors.weights import WeightsRef
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +220,17 @@ _MODEL_TYPES = (
 )
 _MSA_SERVER_MODE = "mmseqs2_uniref_env"
 _NO_MSA_MODE = "single_sequence"
+
+#: The file ColabFold looks for in ``<data>/params`` before it downloads the parameters of a model
+#: type (``download.py:42-66``, tested against the source when a clone is at hand).
+_PARAMS_MARKERS = {
+    "alphafold2_multimer_v3": "download_complexes_multimer_v3_finished.txt",
+    "alphafold2_multimer_v2": "download_complexes_multimer_v2_finished.txt",
+    "alphafold2_multimer_v1": "download_complexes_multimer_v1_finished.txt",
+    "alphafold2_ptm": "download_finished.txt",
+    "alphafold2": "download_finished.txt",
+    "deepfold_v1": "download_deepfold-v1_finished.txt",
+}
 
 #: The 20 amino acids and X, the residue types of AlphaFold2 (``AlphaFold2Parser.capabilities``).
 _SEQUENCE_LETTERS = frozenset("ACDEFGHIKLMNPQRSTVWY") | {"X"}
@@ -508,6 +536,9 @@ class ColabFoldRunner(PredictionRunner):
     """
 
     name = _MODEL
+    #: ColabFold takes a directory of parameter files with ``--data`` (see the module docstring).
+    supports_custom_weights = True
+    weights_kind = "directory"
 
     def __init__(self, conda_env: Optional[str] = None):
         self.conda_env = conda_env
@@ -565,6 +596,7 @@ class ColabFoldRunner(PredictionRunner):
         data_dir: Optional[str | Path] = None,
         on_unmappable_residue: str = "error",
         extra_args: Sequence[str] = (),
+        weights: Optional[str | Path | WeightsRef] = None,
     ) -> PredictionRequest:
         """The store request of one ColabFold run (see the module docstring for what it holds).
 
@@ -584,16 +616,23 @@ class ColabFoldRunner(PredictionRunner):
                 folds from the single sequence (``--msa-mode single_sequence``).
             model_type: ``--model-type``.
             num_relax: ``--num-relax``, the number of top-ranked structures to relax.
-            data_dir: ``--data``, the directory that holds ``params/``.
+            data_dir: ``--data``, the directory that holds ``params/``; its path is in the key.
+                Cannot be combined with ``weights``.
             on_unmappable_residue: Only ``"error"`` (see the module docstring).
             extra_args: Extra command-line arguments, passed verbatim after the others.
+            weights: A directory of custom parameters, or the ``WeightsRef`` that
+                ``PredictionStore.weights_reference`` made for it (it uses the store's hash
+                cache; a path is hashed here without one). Passed as ``--data``; its content is
+                in the key.
 
         Raises:
             ValueError: A mode other than ``predict``, a missing or equal chain role, a chain the
                 structure lacks, a residue AlphaFold2 cannot take, a job name ColabFold would
                 change, seeds that are not consecutive from 0 up, an unknown model type or a
-                setting out of range, a ``data_dir`` that is not a directory, or an argument in
-                ``extra_args`` that the runner owns.
+                setting out of range, a ``data_dir`` that is not a directory, both ``weights`` and
+                ``data_dir``, ``weights`` that are not a directory with the marker file of the
+                model type in ``params/``, or an argument in ``extra_args`` that the runner owns.
+            FileNotFoundError: ``weights`` does not exist.
             OSError: The structure file cannot be read.
         """
         if mode != "predict":
@@ -608,6 +647,12 @@ class ColabFoldRunner(PredictionRunner):
                 f"{on_unmappable_residue!r}: the only substitute for a residue AlphaFold2 has no "
                 "letter for is X, and the runner does not send it"
             )
+        if weights is not None and data_dir is not None:
+            raise ValueError("give weights or data_dir, not both")
+        if weights is not None:  # before the directory is hashed, which can take a while
+            _check_weights_directory(
+                weights.path if isinstance(weights, WeightsRef) else Path(weights), model_type
+            )
         sequences = _complex_sequences(input_path, receptor_chain, binder_chain)
         request = PredictionRequest(
             self.name,
@@ -616,6 +661,7 @@ class ColabFoldRunner(PredictionRunner):
             binder_chain=binder_chain,
             receptor_chain=receptor_chain,
             sequences=sequences,
+            weights=weights,
             seeds=(_DEFAULT_SEED,) if seeds is None else tuple(sorted(int(s) for s in seeds)),
             num_samples=num_samples,
             model_version=self.version() or "",
@@ -739,6 +785,11 @@ class ColabFoldRunner(PredictionRunner):
             if value is not None and (not isinstance(value, int) or value < 0):
                 raise ValueError(f"{key} must be a non-negative integer or None, got {value!r}")
         data_dir = options.get("data_dir")
+        if request.weights is not None:
+            self.check_weights(request)
+            if data_dir:
+                raise ValueError("a request holds weights or data_dir, not both")
+            _check_weights_directory(request.weights.path, model_type)
         if data_dir and not Path(data_dir).is_dir():
             raise ValueError(
                 f"data_dir '{data_dir}' is not a directory. It must hold the parameter files in "
@@ -770,7 +821,9 @@ class ColabFoldRunner(PredictionRunner):
             arguments += ["--num-recycle", str(options["num_recycles"])]
         if options.get("num_relax"):
             arguments += ["--num-relax", str(options["num_relax"])]
-        if options.get("data_dir"):
+        if request.weights is not None:
+            arguments += ["--data", str(request.weights.path)]
+        elif options.get("data_dir"):
             arguments += ["--data", str(options["data_dir"])]
         arguments += [str(argument) for argument in options.get("extra_args") or []]
         if self.conda_env is None:
@@ -799,6 +852,39 @@ class ColabFoldRunner(PredictionRunner):
             if advice:
                 message += f"\nHint: {advice}"
         raise RuntimeError(message)
+
+
+def _check_weights_directory(path: Path, model_type: str) -> None:
+    """Raise ``ValueError`` unless ``path`` is a ``--data`` directory ColabFold will not refill.
+
+    ColabFold downloads the default parameters into ``<data>/params`` when the marker file of
+    the model type is missing there (see the module docstring), so a directory of custom
+    parameters without it would be overwritten.
+    """
+    if model_type not in _PARAMS_MARKERS:
+        raise ValueError(f"model_type must be one of {_MODEL_TYPES}, got {model_type!r}")
+    path = Path(path)
+    if not path.is_dir():
+        raise ValueError(
+            f"the weights of ColabFold are a directory, and {path} is not one. --data takes the "
+            "directory that holds params/ with the parameter files (alphafold/models.py)."
+        )
+    params = path / "params"
+    marker = params / _PARAMS_MARKERS[model_type]
+    if not params.is_dir():
+        raise ValueError(
+            f"{path} has no params/ directory. --data takes the directory that holds params/, "
+            "not params/ itself: ColabFold reads <data>/params/params_model_*.npz and would "
+            "otherwise download the default parameters into <data>/params."
+        )
+    if not marker.is_file():
+        raise ValueError(
+            f"{params} has no {marker.name}, the file ColabFold looks for before it downloads the "
+            f"parameters of the model type {model_type}. Without it ColabFold downloads the "
+            "default parameters into this directory and extracts them over the files of the same "
+            "name (colabfold/download.py), so the run would not use your weights. Create the "
+            "file (it can be empty) once the parameter files are in place."
+        )
 
 
 def _check_extra_args(extra_args: Sequence[str]) -> None:
