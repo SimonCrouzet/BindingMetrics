@@ -359,13 +359,17 @@ def prediction_chain_map(
     return mapping or None
 
 
-def reference_for(predictor: str, openfold_mode: str, input_path: Path) -> Optional[Path]:
-    """The structure the binder RMSD is measured against: the input pose in refold mode only.
+def reference_for(predictor: str, input_path: Path) -> Optional[Path]:
+    """The structure the binder RMSD is measured against: the input pose, for OpenFold3.
 
-    In score mode the pipeline reports the displacement of the binder centre of mass instead
-    (``delta_com_angstrom``, in the EvoBind adversarial check) and leaves ``binder_ca_rmsd`` NaN.
+    Both modes of OpenFold3 place the binder themselves, because a template holds one chain and
+    no inter-chain geometry, so the binder RMSD in the receptor frame (``binder_ca_rmsd``) says
+    how far the predicted pose is from the input pose, in ``score`` as in ``refold`` mode. In
+    ``score`` the binder also has its own fold as a template, so the number is less free of
+    the input than in ``refold``. ``delta_com_angstrom`` of the EvoBind adversarial check is the
+    displacement of the binder centre of mass between the same two poses.
     """
-    return input_path if predictor == "of3" and openfold_mode == "refold" else None
+    return input_path if predictor == "of3" else None
 
 
 # ---------------------------------------------------------------------------
@@ -625,7 +629,7 @@ def run_single_prediction(
         prediction_dir=prediction_dir,
         prediction_binder_chain=prediction_binder_chain,
         prediction_target_chain=prediction_target_chain,
-        reference_path=reference_for(predictor, openfold_mode, input_path),
+        reference_path=reference_for(predictor, input_path),
         # an adopted output is the user's own: its seeds are not the ones given here
         seed_index=1 if adopt else scored_seed_index(openfold_seeds),
     )

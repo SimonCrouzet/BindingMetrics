@@ -321,8 +321,10 @@ def compute_openfold_metrics(
             pae_interface (np.ndarray | None): raw PAE slice (binder→receptor);
                 only if include_matrices=True
 
-        Refolding RMSD [requires binder_chain + reference_structure_path]:
-            binder_ca_rmsd (float): binder Cα RMSD vs. reference (Å).
+        Binder RMSD [requires binder_chain + reference_structure_path]:
+            binder_ca_rmsd (float): binder Cα RMSD vs. reference (Å); the refolding RMSD
+                of a refold run, and how far OpenFold3's own pose is from the reference
+                pose in a score run.
                 Computed in the receptor frame if receptor_chain is given
                 (predicted structure superposed on receptor Cα first).
 
@@ -564,10 +566,11 @@ def run_openfold_scoring(
 
     Each chain is given its own structure from the complex as a template (the binder its
     conformation, the receptor its conformation), and OF3 outputs confidence metrics for the
-    complex it predicts from them. A template carries no inter-chain geometry, so OF3 places
-    the binder itself: its confidences describe its own pose, and ``delta_com_angstrom`` of the
-    EvoBind adversarial check tells whether that pose is the input pose (see
-    :func:`prepare_scoring_query`; with the MSA server on, issue #68 applies).
+    complex it predicts from them. Each chain has its own template and no cross-chain geometry is
+    supplied, so OF3 places the binder itself: its confidences describe its own pose, and
+    ``binder_ca_rmsd`` and ``delta_com_angstrom`` of the EvoBind adversarial check say how far
+    that pose is from the input pose (see :func:`prepare_scoring_query`; with the MSA server on,
+    issue #68 applies).
     Use :func:`compute_openfold_metrics` with ``binder_chain`` and
     ``receptor_chain`` to extract per-chain scores after inference.
 

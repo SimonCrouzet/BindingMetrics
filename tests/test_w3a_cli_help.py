@@ -14,9 +14,10 @@ help of both commands no longer says that the seeds go to the query JSON (OpenFo
 read them there; they are written to its runner YAML) and says which sample is scored, and the
 ``--openfold-mode`` help of both commands no longer says that ``score`` gives OpenFold3 both
 chains as templates "for the known conformation": a template carries the fold of one chain and
-no inter-chain geometry, so OpenFold3 places the binder itself. Two options were added to both
-commands and are recorded here from now on: ``--openfold-cyclic`` and
-``--openfold-no-msa-server``.
+no cross-chain geometry, so OpenFold3 places the binder itself (the help names ``binder_ca_rmsd``
+and ``delta_com_angstrom`` as the keys that say how far its pose is from the input pose). Two
+options were added to both commands and are recorded here from now on: ``--openfold-cyclic``
+and ``--openfold-no-msa-server``.
 """
 
 import argparse
@@ -249,10 +250,11 @@ GOLDEN = {
                 "score: each chain is given its own structure from the "
                 "input as a template and OpenFold3 places the binder "
                 "itself, so its confidences refer to its own pose "
-                "(delta_com_angstrom shows whether it kept the input "
-                "pose); refold: only the receptor is templated and the "
-                "binder is predicted from its sequence "
-                "(binder_ca_rmsd, the refolding RMSD). Default: score",
+                "(binder_ca_rmsd and delta_com_angstrom show how far it "
+                "is from the input pose); refold: only the receptor "
+                "is templated and the binder is predicted from its "
+                "sequence (binder_ca_rmsd is the refolding RMSD). "
+                "Default: score",
             ),
             "--openfold-conda-env": (
                 "OpenFold",
@@ -523,10 +525,11 @@ GOLDEN = {
                 "score: each chain is given its own structure from the "
                 "input as a template and OpenFold3 places the binder "
                 "itself, so its confidences refer to its own pose "
-                "(delta_com_angstrom shows whether it kept the input "
-                "pose); refold: only the receptor is templated and the "
-                "binder is predicted from its sequence "
-                "(binder_ca_rmsd, the refolding RMSD). Default: score",
+                "(binder_ca_rmsd and delta_com_angstrom show how far it "
+                "is from the input pose); refold: only the receptor "
+                "is templated and the binder is predicted from its "
+                "sequence (binder_ca_rmsd is the refolding RMSD). "
+                "Default: score",
             ),
             "--openfold-conda-env": (
                 "OpenFold",

@@ -822,6 +822,9 @@ def run_pipeline(
                         query_name=sample_id,
                         binder_chain=peptide_chain,
                         receptor_chain=receptor_chain,
+                        # OpenFold3 places the binder itself in score mode too (templates are
+                        # per chain), so the input pose is the reference in both modes
+                        reference_structure_path=input_path,
                         **metrics_seed,
                     )
                 record_binder_cyclic(

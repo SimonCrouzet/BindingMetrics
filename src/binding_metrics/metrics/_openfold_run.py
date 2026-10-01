@@ -1369,8 +1369,8 @@ def prepare_refolding_query(
     template), so OF3 predicts both the binder conformation and its pose against the receptor.
     This answers: "next to a receptor of known fold, can OF3 recover the bound binder
     conformation and pose from its sequence?" ``binder_ca_rmsd`` against the input, in the
-    receptor frame, measures it. The receptor template carries the receptor fold only, not
-    the position of the binder (see the note under Mode 1).
+    receptor frame, measures it (the refolding RMSD). The receptor template carries the
+    receptor fold only, not the position of the binder (see the note under Mode 1).
 
     Files written under ``output_dir``:
 
@@ -1528,15 +1528,19 @@ def prepare_scoring_query(
     conformation (its scaffold) and the receptor its conformation. OF3 outputs confidence
     scores (pLDDT, pTM, ipTM, etc.) for the complex that it predicts from them.
 
-    A template carries the fold of the chain it is made from and no inter-chain geometry: the
-    template files here hold one chain each, and the template embedder of OpenFold3 (v0.5.0,
-    ``openfold3/core/model/feature_embedders/template_embedders.py``, ``_embed_feats``) restricts
-    the pair masks of the template features to pairs of tokens of one chain. OpenFold3 therefore
-    places the binder against the receptor itself, and its confidences (pLDDT, pTM, ipTM, PAE)
-    describe that pose, not the pose of the input. Whether it kept the input pose is a separate
-    question: ``delta_com_angstrom`` of the EvoBind adversarial check, the displacement of the
-    binder centre of mass between the input and the prediction after superposing the receptor,
-    answers it. ``binder_ca_rmsd`` is computed in refold mode only.
+    A template carries the fold of the chain it is made from and no inter-chain geometry. Each
+    query chain gets its own template structures (the template files here hold one chain each),
+    so no cross-chain geometry is ever supplied; and ``_embed_feats`` of the template embedder
+    of OpenFold3 (v0.5.0, ``openfold3/core/model/feature_embedders/template_embedders.py``)
+    applies the same-chain mask (``asym_id[i] == asym_id[j]``) to the validity indicators of the
+    template pair features, so cross-chain pairs are marked invalid (the distogram and
+    unit-vector tensors are not multiplied by that mask there). OpenFold3 therefore places the
+    binder against the receptor itself, and its confidences (pLDDT, pTM, ipTM, PAE) describe
+    that pose, not the pose of the input. How far the predicted pose is from the input pose is
+    a separate result: ``binder_ca_rmsd`` (binder Cα RMSD against the input, in the receptor
+    frame) and ``delta_com_angstrom`` of the EvoBind adversarial check (the displacement of the
+    binder centre of mass after superposing the receptor). In this mode the binder also has its
+    own fold as a template, so ``binder_ca_rmsd`` is less free of the input than in refold mode.
 
     Known limitation (issue #68): with the ColabFold MSA server on (the default) the server can
     replace the template alignment of a chain for which it finds hits, so that chain may not be

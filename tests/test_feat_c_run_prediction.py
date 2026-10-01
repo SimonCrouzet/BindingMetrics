@@ -149,9 +149,14 @@ class TestRunnerArguments:
         assert stub.calls[0]["kind"] == "refolding"
         assert block["binder_ca_rmsd"] == pytest.approx(0.0, abs=1e-2)
 
-    def test_the_rmsd_is_not_measured_in_score_mode(self, tmp_path, monkeypatch):
+    def test_the_rmsd_is_measured_in_score_mode_too_in_the_receptor_frame(
+        self, tmp_path, monkeypatch
+    ):
+        # A template holds one chain and no cross-chain geometry, so OpenFold3 places the binder
+        # itself in score mode as well, and the input is the reference in both modes.
         StubOpenFold(monkeypatch)
-        assert math.isnan(pipeline(tmp_path, predictor="of3")["prediction"]["binder_ca_rmsd"])
+        block = pipeline(tmp_path, predictor="of3")["prediction"]
+        assert block["binder_ca_rmsd"] == pytest.approx(0.0, abs=1e-2)
 
     def test_seeds_reach_the_run(self, tmp_path, monkeypatch):
         stub = StubOpenFold(monkeypatch)

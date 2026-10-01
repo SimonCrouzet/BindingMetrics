@@ -1,11 +1,13 @@
 """What the text says about the OpenFold3 modes matches what the code does.
 
-A template carries the fold of one chain and no inter-chain geometry (the template CIFs here are
-single-chain files, and OpenFold3's template embedder keeps only same-chain pairs of the template
-features), so ``score`` does not hand OpenFold3 the pose of the input. The text used to say that
+A template carries the fold of one chain and no cross-chain geometry: each query chain gets its
+own template structures (the template CIFs here are single-chain files), and OpenFold3's
+``_embed_feats`` applies the same-chain mask to the validity indicators of the template pair
+features. So ``score`` does not hand OpenFold3 the pose of the input. The text used to say that
 both chains were given as templates "so that OF3 evaluates the known conformation", and that an
 adversary run in score mode agrees with the design "partly by construction". These tests keep
-that wording out and check the two claims that the text now makes about the result keys.
+that wording out and check what the text now says about the result keys: the binder RMSD against
+the input, in the receptor frame, is measured in both modes, next to ``delta_com_angstrom``.
 """
 
 import argparse
@@ -18,7 +20,12 @@ import pytest
 
 from binding_metrics.cli import OPENFOLD_MODE_HELP
 from binding_metrics.cli.run import run_pipeline
-from tests.test_feat_c_support import EXAMPLE_1YCR, StubOpenFold
+from tests.test_feat_c_support import (
+    EXAMPLE_1YCR,
+    PEPTIDE_CHAIN,
+    RECEPTOR_CHAIN,
+    StubOpenFold,
+)
 
 ROOT = Path(__file__).parent.parent
 
@@ -65,12 +72,29 @@ def test_the_mode_help_of_both_commands_is_the_shared_text(module, monkeypatch):
     assert "only the receptor is templated" in OPENFOLD_MODE_HELP
 
 
-def test_the_docs_name_the_key_that_measures_the_pose_and_the_mode_of_the_rmsd():
+def test_the_docs_name_the_keys_that_measure_the_pose():
     text = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
     section = text[text.index("**the two modes.**") :]
     section = section[: section.index("\n\n")]
-    assert "`delta_com_angstrom`" in section
-    assert "`binder_ca_rmsd` is computed in `refold` mode only" in section
+    assert "`delta_com_angstrom`" in section and "`binder_ca_rmsd`" in section
+    assert "given in both modes by `binder_ca_rmsd`" in section
+    assert "refold` mode only" not in section and "NaN in `score`" not in section
+
+
+def test_the_docs_state_exactly_what_the_template_embedder_does():
+    """Only the validity indicators are masked; the distogram and unit-vector tensors are not."""
+    text = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
+    section = text[text.index("**the two modes.**") :]
+    section = section[: section.index("\n\n")]
+    assert "validity indicators of the template pair features" in section
+    assert "each query chain gets its own template structures" in section
+    assert "not multiplied by that mask" in section
+    for overstated in (
+        "every template feature",
+        "all template features",
+        "restricts the pair masks",
+    ):
+        assert overstated not in section
 
 
 def test_the_docs_describe_the_msa_server_limitation_as_open_and_give_the_workaround():
@@ -81,59 +105,101 @@ def test_the_docs_describe_the_msa_server_limitation_as_open_and_give_the_workar
     assert "`use_msa_server=False`" in section and "`--no-msa-server`" in section
 
 
+def _displaced_binder_run():
+    """A stub run function that writes the input with the binder moved 2.0 A along z."""
+    from tests.predictors import synth_of3
+    from tests.test_feat_c_support import complex_from
+
+    def write(*, samples=None, output_dir=None, **kw):
+        names_and_inputs = (
+            [(s.query_name, s.complex_structure_path) for s in samples]
+            if samples is not None
+            else [(kw["query_name"], kw["complex_structure_path"])]
+        )
+        predictions = Path(output_dir if output_dir is not None else kw["output_dir"])
+        predictions = predictions / "predictions"
+        for name, input_path in names_and_inputs:
+            synthetic = complex_from(input_path)
+            synthetic.atoms.coord[synthetic.atoms.chain_id == PEPTIDE_CHAIN, 2] += 2.0
+            synth_of3.write_prediction(predictions, name, synthetic)
+        return predictions
+
+    return write
+
+
 class TestTheClaimsAboutTheResultKeys:
-    """In score mode the pose is reported by ``delta_com_angstrom``, not by ``binder_ca_rmsd``."""
+    """The binder RMSD against the input is measured in both modes, in the receptor frame."""
 
-    def test_score_mode_has_the_com_displacement_and_no_binder_rmsd(self, tmp_path, monkeypatch):
-        StubOpenFold(monkeypatch)
-        block = run_pipeline(
+    @staticmethod
+    def _run(tmp_path, **kwargs):
+        return run_pipeline(
             EXAMPLE_1YCR,
             tmp_path,
             skip_prep=True,
             skip_relax=True,
             metrics=frozenset({"openfold"}),
-            peptide_chain="B",
-            receptor_chain="A",
+            peptide_chain=PEPTIDE_CHAIN,
+            receptor_chain=RECEPTOR_CHAIN,
             openfold_conda_env=None,
-            predictor="of3",
-        )["prediction"]
+            **kwargs,
+        )
+
+    @pytest.mark.parametrize("mode", ["score", "refold"])
+    def test_the_predictor_step_measures_both_keys_in_both_modes(self, tmp_path, monkeypatch, mode):
+        StubOpenFold(monkeypatch)
+        block = self._run(tmp_path, predictor="of3", openfold_mode=mode)["prediction"]
         assert math.isfinite(block["delta_com_angstrom"])
-        assert math.isnan(block["binder_ca_rmsd"])
+        assert block["binder_ca_rmsd"] == pytest.approx(0.0, abs=1e-2)
 
-    def test_refold_mode_measures_the_binder_rmsd(self, tmp_path, monkeypatch):
-        StubOpenFold(monkeypatch)
-        block = run_pipeline(
-            EXAMPLE_1YCR,
-            tmp_path,
-            skip_prep=True,
-            skip_relax=True,
-            metrics=frozenset({"openfold"}),
-            peptide_chain="B",
-            receptor_chain="A",
-            openfold_conda_env=None,
-            predictor="of3",
-            openfold_mode="refold",
-        )["prediction"]
-        assert math.isfinite(block["binder_ca_rmsd"])
-
-    def test_the_legacy_step_agrees(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("mode", ["score", "refold"])
+    def test_a_displaced_binder_is_seen_in_both_modes(self, tmp_path, monkeypatch, mode):
         from binding_metrics.metrics import openfold
-        from tests.test_feat_c_support import write_of3_output
 
-        def write(**kwargs):
-            predictions = Path(kwargs["output_dir"]) / "predictions"
-            write_of3_output(predictions, kwargs["query_name"], kwargs["complex_structure_path"])
-            return predictions
+        stub = StubOpenFold(monkeypatch)
+        monkeypatch.setattr(openfold, "run_openfold_scoring", _displaced_binder_run())
+        monkeypatch.setattr(openfold, "run_openfold_refolding", _displaced_binder_run())
+        block = self._run(tmp_path, predictor="of3", openfold_mode=mode)["prediction"]
+        assert stub.starts == 0  # the patched functions replaced the stub's
+        # the receptor does not move, so the receptor-frame RMSD is the displacement
+        assert block["binder_ca_rmsd"] == pytest.approx(2.0, abs=1e-2)
+        assert block["delta_com_angstrom"] == pytest.approx(2.0, abs=1e-2)
 
-        monkeypatch.setattr(openfold, "run_openfold_scoring", write)
-        block = run_pipeline(
-            EXAMPLE_1YCR,
-            tmp_path,
-            skip_prep=True,
-            skip_relax=True,
-            metrics=frozenset({"openfold"}),
-            peptide_chain="B",
-            receptor_chain="A",
+    @pytest.mark.parametrize("mode", ["score", "refold"])
+    def test_the_legacy_step_agrees(self, tmp_path, monkeypatch, mode):
+        from binding_metrics.metrics import openfold
+
+        monkeypatch.setattr(openfold, "run_openfold_scoring", _displaced_binder_run())
+        monkeypatch.setattr(openfold, "run_openfold_refolding", _displaced_binder_run())
+        block = self._run(tmp_path, openfold_mode=mode)["openfold"]
+        assert block["binder_ca_rmsd"] == pytest.approx(2.0, abs=1e-2)
+        assert block["delta_com_angstrom"] == pytest.approx(2.0, abs=1e-2)
+
+    @pytest.mark.parametrize("mode", ["score", "refold"])
+    def test_the_batched_openfold_step_agrees(self, tmp_path, monkeypatch, mode):
+        from binding_metrics.cli import batch
+        from binding_metrics.metrics import openfold
+
+        monkeypatch.setattr(openfold, "run_openfold_batched", _displaced_binder_run())
+        monkeypatch.setattr(
+            batch,
+            "_detect_sample_chains",
+            lambda *a, **k: [(0, EXAMPLE_1YCR.stem, EXAMPLE_1YCR, PEPTIDE_CHAIN, RECEPTOR_CHAIN)],
+        )
+        monkeypatch.setattr(batch, "_model_step_allowed", lambda *a, **k: (True, None))
+        rows = [{"sample_id": EXAMPLE_1YCR.stem, "batch_status": "ok"}]
+        batch._run_batched_openfold(
+            rows=rows,
+            sid_to_input={EXAMPLE_1YCR.stem: EXAMPLE_1YCR},
+            output_dir=tmp_path,
+            openfold_mode=mode,
             openfold_conda_env=None,
-        )["openfold"]
-        assert math.isfinite(block["delta_com_angstrom"]) and math.isnan(block["binder_ca_rmsd"])
+            peptide_chain=None,
+            receptor_chain=None,
+        )
+        assert rows[0]["openfold_binder_ca_rmsd"] == pytest.approx(2.0, abs=1e-2)
+
+    def test_the_reference_is_the_input_for_openfold3_only(self):
+        from binding_metrics.cli.prediction import reference_for
+
+        assert reference_for("of3", EXAMPLE_1YCR) == EXAMPLE_1YCR
+        assert reference_for("boltz2", EXAMPLE_1YCR) is None

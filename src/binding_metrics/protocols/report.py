@@ -622,7 +622,8 @@ def _md_confidence_lines(section: dict, extra_rows: list[list[str]] | None = Non
 
     ``section`` is a ``compute_openfold_metrics`` or ``summarize_prediction`` dict; its
     values are read with ``get``, so a missing key shows as an em dash. ``extra_rows`` go
-    below the refolding RMSD row.
+    below the RMSD row (labelled "Refolding RMSD": the binder RMSD against the input, which in
+    a score run is the distance of OpenFold3's own pose from the input pose).
     """
     rows = [
         ["avg pLDDT", _fmt(section.get("avg_plddt"), 2)],

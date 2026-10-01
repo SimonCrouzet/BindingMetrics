@@ -541,23 +541,15 @@ def _run_batched_openfold(
         rchain = chains["receptor"]
 
         try:
-            if openfold_mode == "refold":
-                of_metrics = compute_openfold_metrics(
-                    output_dir=predictions_dir,
-                    query_name=sid,
-                    binder_chain=pchain,
-                    receptor_chain=rchain,
-                    reference_structure_path=sid_to_input[sid],
-                    **scored_seed_kwargs(openfold_seeds, predictions_dir, sid),
-                )
-            else:
-                of_metrics = compute_openfold_metrics(
-                    output_dir=predictions_dir,
-                    query_name=sid,
-                    binder_chain=pchain,
-                    receptor_chain=rchain,
-                    **scored_seed_kwargs(openfold_seeds, predictions_dir, sid),
-                )
+            # the input pose is the reference in both modes: OpenFold3 places the binder itself
+            of_metrics = compute_openfold_metrics(
+                output_dir=predictions_dir,
+                query_name=sid,
+                binder_chain=pchain,
+                receptor_chain=rchain,
+                reference_structure_path=sid_to_input[sid],
+                **scored_seed_kwargs(openfold_seeds, predictions_dir, sid),
+            )
 
             record_binder_cyclic(
                 of_metrics, sid_to_input[sid], pchain, openfold_cyclic, openfold_conda_env
@@ -798,7 +790,7 @@ def _run_batched_prediction(
                 prediction_dir=prediction_dir,
                 prediction_binder_chain=prediction_binder_chain,
                 prediction_target_chain=prediction_target_chain,
-                reference_path=reference_for(predictor, openfold_mode, input_path),
+                reference_path=reference_for(predictor, input_path),
                 # an adopted output is the user's own: its seeds are not the ones given here
                 seed_index=1 if adopt else scored_seed_index(openfold_seeds),
             )
