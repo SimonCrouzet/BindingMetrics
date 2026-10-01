@@ -312,7 +312,7 @@ class TestMetricsThatCannotRunHere:
         monkeypatch.setattr(
             openfold,
             "_interface_pae_stats",
-            lambda pae, atoms, binder, receptor: (binder, receptor),
+            lambda pae, atoms, binder, receptor, token_ranges=None: (binder, receptor),
         )
         assert openfold.compute_interface_pae("c.json", "s.cif", "B", target_chain="A") == (
             "B",
