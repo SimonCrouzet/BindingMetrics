@@ -95,10 +95,13 @@ from binding_metrics.capabilities import POLICIES, IncompatibleInputError
 from binding_metrics.cli import (
     add_config_arg,
     add_on_unmappable_residue_arg,
+    add_openfold_cyclic_arg,
     add_openfold_seeds_arg,
     add_random_seed_arg,
     check_on_unmappable_residue,
+    check_openfold_cyclic,
     on_unmappable_residue_kwargs,
+    openfold_cyclic_kwargs,
     parse_args_with_config,
 )
 from binding_metrics.cli.prediction import (
@@ -111,6 +114,7 @@ from binding_metrics.cli.prediction import (
     make_runner,
     make_session,
     make_store,
+    record_binder_cyclic,
     reference_for,
     run_prediction_step,
 )
@@ -426,14 +430,17 @@ def _run_batched_openfold(
     on_unmappable_residue: str = "error",
     binder_type: str = "auto",
     on_incompatible: str = "error",
+    openfold_cyclic: bool | str = "auto",
 ) -> None:
     """Run OpenFold3 on all successful samples in a single subprocess.
 
     Modifies *rows* in-place, merging OF3 and EvoBind metrics into each
     sample's flat dict.  Also updates each sample's JSON report on disk.
-    ``openfold_seeds`` are the seed values written to the query JSON; ``None``
-    keeps the OpenFold default. ``on_unmappable_residue`` is passed to the query
-    preparation of every sample; a residue OpenFold3 cannot take then stops the whole
+    ``openfold_seeds`` are the seeds OpenFold3 samples with (written to its runner YAML); ``None``
+    keeps the default, 42. ``openfold_cyclic`` decides, sample by sample, whether the binder gets
+    ``"cyclic": true``; each sample's block records ``binder_cyclic``. ``on_unmappable_residue``
+    is passed to the query preparation of every sample; a residue OpenFold3 cannot take then
+    stops the whole
     batch call (the error names each such residue) before the model starts. A sample that the
     pre-flight check leaves out (``on_incompatible="skip"``) gets ``openfold_skipped`` and the
     reason in ``openfold_reason`` and is not part of the call.
@@ -502,6 +509,7 @@ def _run_batched_openfold(
             conda_env=openfold_conda_env,
             **({"seeds": tuple(openfold_seeds)} if openfold_seeds else {}),
             **on_unmappable_residue_kwargs(on_unmappable_residue),
+            **openfold_cyclic_kwargs(openfold_cyclic),
         )
     except Exception as e:  # noqa: BLE001 - the batch call spawns a subprocess; see openfold_error
         # Warning level keeps the line on stdout, where it was printed before.
@@ -538,6 +546,10 @@ def _run_batched_openfold(
                     binder_chain=pchain,
                     receptor_chain=rchain,
                 )
+
+            record_binder_cyclic(
+                of_metrics, sid_to_input[sid], pchain, openfold_cyclic, openfold_conda_env
+            )
 
             # EvoBind metrics — reuse OF3 outputs
             of_structure = of_metrics.get("structure_path")
@@ -658,6 +670,7 @@ def _run_batched_prediction(
     on_unmappable_residue: str = "error",
     binder_type: str = "auto",
     on_incompatible: str = "error",
+    openfold_cyclic: bool | str = "auto",
 ) -> None:
     """The ``--predictor`` step of a batch: every sample through one shared prediction store.
 
@@ -737,6 +750,7 @@ def _run_batched_prediction(
                     openfold_mode=openfold_mode,
                     openfold_seeds=openfold_seeds,
                     on_unmappable_residue=on_unmappable_residue,
+                    openfold_cyclic=openfold_cyclic,
                 )
             except Exception as e:  # noqa: BLE001 - one unreadable input must not stop the batch
                 logger.warning("  %s: no prediction request: %s", sid, e)
@@ -771,6 +785,9 @@ def _run_batched_prediction(
                 prediction_target_chain=prediction_target_chain,
                 reference_path=reference_for(predictor, openfold_mode, input_path),
             )
+            block = outcomes[sid][0]
+            if predictor == "of3" and not adopt and not block.get("error"):
+                record_binder_cyclic(block, input_path, pchain, openfold_cyclic, openfold_conda_env)
         block, provenance = outcomes[sid]
         for key, value in _flatten({"prediction": block}).items():
             if key.startswith("prediction_"):
@@ -849,6 +866,7 @@ def run_batch(
     binder_type: str = "auto",
     on_incompatible: str = "error",
     preflight_only: bool = False,
+    openfold_cyclic: bool | str = "auto",
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -885,6 +903,11 @@ def run_batch(
             the sequential case), or as it is submitted (with workers).
         on_unmappable_residue: ``"error"`` (default) or ``"x"``: what the OpenFold3 call does
             with a residue it cannot take (see ``--on-unmappable-residue``).
+        openfold_cyclic: ``"auto"`` (default), ``True`` (``"on"``) or ``False`` (``"off"``):
+            whether the binder chain of each OpenFold3 query gets ``"cyclic": true`` (see
+            ``--openfold-cyclic``). The ``openfold_*`` (or ``prediction_*``) columns then
+            include ``binder_cyclic`` and, when a head-to-tail binder was left linear, the
+            reason.
         predictor: A key of ``binding_metrics.predictors.PARSERS`` (keyword-only). The
             ``openfold`` step then runs as the prediction step of every sample through one
             shared prediction store and fills the ``prediction_*`` columns instead of the
@@ -930,7 +953,8 @@ def run_batch(
         ValueError: ``n_workers`` below 1, an unknown ``on_error``, an unknown
             metric name, an ``on_unmappable_residue`` other than ``"error"`` or ``"x"``, a
             ``predictor`` that is not registered or has no runner and no ``prediction_dir``, or
-            a chain given through both spellings with different IDs.
+            a chain given through both spellings with different IDs, or an ``openfold_cyclic``
+            that is not ``"auto"``, ``"on"``, ``"off"``, ``True`` or ``False``.
         Exception: whatever an item raised, when ``on_error="raise"``.
     """
     if n_workers < 1:
@@ -949,6 +973,7 @@ def run_batch(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
     check_on_unmappable_residue(on_unmappable_residue)
+    check_openfold_cyclic(openfold_cyclic)
     check_predictor(predictor, prediction_dir)
     if binder_type not in BINDER_TYPE_CHOICES:
         raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")
@@ -1095,6 +1120,7 @@ def run_batch(
             on_unmappable_residue=on_unmappable_residue,
             binder_type=binder_type,
             on_incompatible=on_incompatible,
+            openfold_cyclic=openfold_cyclic,
         )
     elif want_openfold:
         _run_batched_openfold(
@@ -1109,6 +1135,7 @@ def run_batch(
             on_unmappable_residue=on_unmappable_residue,
             binder_type=binder_type,
             on_incompatible=on_incompatible,
+            openfold_cyclic=openfold_cyclic,
         )
     return finished
 
@@ -1314,6 +1341,7 @@ def main():
         help="Conda env where OpenFold3 is installed (default: openfold3)",
     )
     add_openfold_seeds_arg(openfold_group)
+    add_openfold_cyclic_arg(openfold_group)
     add_on_unmappable_residue_arg(openfold_group)
 
     add_prediction_args(parser, batch=True)
@@ -1469,6 +1497,7 @@ def main():
         openfold_mode=args.openfold_mode,
         openfold_conda_env=args.openfold_conda_env,
         openfold_seeds=args.openfold_seeds,
+        openfold_cyclic=args.openfold_cyclic,
         on_unmappable_residue=args.on_unmappable_residue,
         predictor=args.predictor,
         prediction_dir=args.prediction_dir,

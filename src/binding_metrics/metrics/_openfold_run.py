@@ -214,9 +214,10 @@ def _check_binder_cyclic(binder_cyclic) -> None:
 class BinderCyclicDecision:
     """Whether the binder chain of a query gets ``"cyclic": true``, and why not when it does not.
 
-    ``cyclic`` is the value to write. ``reason`` is set when a binder with a head-to-tail bond is
-    left as a linear chain (the installed OpenFold3 is too old for the field, or its version could
-    not be read); it is None otherwise, including when the binder has no such bond.
+    ``cyclic`` is the value to write. ``reason`` is set when "auto" could not decide for the
+    binder: it has a head-to-tail bond and is left as a linear chain because the installed
+    OpenFold3 is too old for the field or its version could not be read, or the structure could
+    not be searched for a bond. It is None otherwise, including when the binder has no such bond.
     """
 
     cyclic: bool
@@ -243,6 +244,7 @@ def decide_binder_cyclic(
     binder_cyclic: bool | str = "auto",
     *,
     conda_env: Optional[str] = None,
+    log: bool = True,
 ) -> BinderCyclicDecision:
     """Decide whether the query writes ``"cyclic": true`` for ``binder_chain``.
 
@@ -262,6 +264,9 @@ def decide_binder_cyclic(
             head-to-tail binder is left linear.
         conda_env: Conda environment that runs OpenFold3, asked for its version; None asks the
             current interpreter.
+        log: False keeps the decision out of the log. The query builders log it when they
+            write a query; a caller that only wants to record the decision (the pipeline, for its
+            result) passes False, so a warning is not given twice.
 
     Returns:
         The decision. Nothing is logged for a binder without a head-to-tail bond.
@@ -276,7 +281,7 @@ def decide_binder_cyclic(
 
     if binder_cyclic is True:
         installed = _installed_version_once(conda_env)
-        if installed is None:
+        if installed is None and log:
             logger.warning(
                 "Could not read the installed OpenFold3 version. binder_cyclic=True writes "
                 "'cyclic: true' on chain %s anyway; OpenFold3 older than 0.4.5 rejects that field.",
@@ -293,14 +298,14 @@ def decide_binder_cyclic(
     try:
         head_to_tail = _binder_is_head_to_tail(structure_path, binder_chain)
     except Exception as exc:  # noqa: BLE001 - "auto" must not fail a run that works without it
-        logger.warning(
-            "Could not look for a head-to-tail bond in chain %s of %s (%s); 'cyclic: true' is "
-            "not written. binder_cyclic=True writes it regardless.",
-            binder_chain,
-            structure_path,
-            exc,
+        reason = (
+            f"could not look for a head-to-tail bond in chain {binder_chain} ({exc}), so "
+            "'cyclic: true' is not written. binder_cyclic=True (--openfold-cyclic on) writes "
+            "it regardless."
         )
-        return BinderCyclicDecision(False)
+        if log:
+            logger.warning("%s: %s", structure_path, reason)
+        return BinderCyclicDecision(False, reason)
     if not head_to_tail:
         return BinderCyclicDecision(False)
 
@@ -318,15 +323,17 @@ def decide_binder_cyclic(
             "predicted as a linear chain. Upgrade OpenFold3 to 0.4.5 or later."
         )
     else:
-        logger.info(
-            "Chain %s of %s has a head-to-tail bond: the query sets 'cyclic: true' on it "
-            "(OpenFold3 %s).",
-            binder_chain,
-            structure_path,
-            installed,
-        )
+        if log:
+            logger.info(
+                "Chain %s of %s has a head-to-tail bond: the query sets 'cyclic: true' on it "
+                "(OpenFold3 %s).",
+                binder_chain,
+                structure_path,
+                installed,
+            )
         return BinderCyclicDecision(True)
-    logger.warning("%s: %s", structure_path, reason)
+    if log:
+        logger.warning("%s: %s", structure_path, reason)
     return BinderCyclicDecision(False, reason)
 
 

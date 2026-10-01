@@ -42,7 +42,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from binding_metrics.cli import merge_reason
+from binding_metrics.cli import check_openfold_cyclic, merge_reason, openfold_cyclic_kwargs
 from binding_metrics.predictors.registry import PARSERS
 
 logger = logging.getLogger("binding_metrics.cli.prediction")
@@ -253,6 +253,7 @@ def make_request(
     openfold_mode: str = "score",
     openfold_seeds=None,
     on_unmappable_residue: str = "error",
+    openfold_cyclic: bool | str = "auto",
 ):
     """The store request of one sample.
 
@@ -287,6 +288,7 @@ def make_request(
         mode=openfold_mode,
         seeds=openfold_seeds,
         on_unmappable_residue=on_unmappable_residue,
+        **openfold_cyclic_kwargs(openfold_cyclic),
     )
 
 
@@ -319,6 +321,43 @@ def reference_for(predictor: str, openfold_mode: str, input_path: Path) -> Optio
 # ---------------------------------------------------------------------------
 # One sample
 # ---------------------------------------------------------------------------
+
+
+def record_binder_cyclic(
+    block: dict,
+    input_path: str | Path,
+    binder_chain: str,
+    openfold_cyclic: bool | str = "auto",
+    conda_env: Optional[str] = None,
+) -> None:
+    """Add what the OpenFold3 query did with the binder's ``cyclic`` flag to a result block.
+
+    Adds ``binder_cyclic`` (bool: the binder chain was sent as ``"cyclic": true``) and, when a
+    head-to-tail binder was left linear because the OpenFold3 version is too old or unreadable,
+    the reason under ``reason`` (joined to an existing one). The query builders decide the same
+    way from the same input; this repeats the decision without logging it again, because the
+    functions that run OpenFold3 return a path and nothing else. The block of a model that
+    did not run here (an adopted output) is not given the key: nothing is known of its query.
+
+    Nothing is added when the decision cannot be made (``True`` with an OpenFold3 that is too
+    old, which the run itself refused), and a failure is logged.
+    """
+    from binding_metrics.metrics.openfold import decide_binder_cyclic
+
+    try:
+        decision = decide_binder_cyclic(
+            input_path,
+            binder_chain,
+            check_openfold_cyclic(openfold_cyclic),
+            conda_env=conda_env or None,
+            log=False,
+        )
+    except ValueError as e:
+        logger.warning("  [warning] binder_cyclic not recorded: %s", e)
+        return
+    block["binder_cyclic"] = decision.cyclic
+    if decision.reason:
+        merge_reason(block, {"reason": decision.reason}, "binder_cyclic")
 
 
 def _cache_block(session, request, *, adopted: bool = False) -> dict[str, Any]:
@@ -478,6 +517,7 @@ def run_single_prediction(
     openfold_conda_env: Optional[str] = None,
     openfold_seeds=None,
     on_unmappable_residue: str = "error",
+    openfold_cyclic: bool | str = "auto",
 ) -> tuple[dict, dict]:
     """The whole prediction step of ``run_pipeline``: store, session, request, consumers.
 
@@ -514,12 +554,13 @@ def run_single_prediction(
             openfold_mode=openfold_mode,
             openfold_seeds=openfold_seeds,
             on_unmappable_residue=on_unmappable_residue,
+            openfold_cyclic=openfold_cyclic,
         )
     except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["prediction"]
         logger.warning("  [warning] Prediction failed: %s", e)
         traceback.print_exc()
         return {"model": predictor, "error": str(e)}, {}
-    return run_prediction_step(
+    block, provenance = run_prediction_step(
         session,
         request,
         input_path=input_path,
@@ -530,3 +571,6 @@ def run_single_prediction(
         prediction_target_chain=prediction_target_chain,
         reference_path=reference_for(predictor, openfold_mode, input_path),
     )
+    if predictor == "of3" and not adopt and not block.get("error"):
+        record_binder_cyclic(block, input_path, binder_chain, openfold_cyclic, openfold_conda_env)
+    return block, provenance

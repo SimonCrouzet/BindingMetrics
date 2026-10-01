@@ -61,10 +61,13 @@ from binding_metrics.capabilities import POLICIES, IncompatibleInputError
 from binding_metrics.cli import (
     add_config_arg,
     add_on_unmappable_residue_arg,
+    add_openfold_cyclic_arg,
     add_openfold_seeds_arg,
     check_on_unmappable_residue,
+    check_openfold_cyclic,
     md_save_interval_for,
     on_unmappable_residue_kwargs,
+    openfold_cyclic_kwargs,
     parse_args_with_config,
 )
 from binding_metrics.cli import merge_reason as _merge_reason
@@ -74,6 +77,7 @@ from binding_metrics.cli.prediction import (
     check_prediction_args,
     check_predictor,
     display_name,
+    record_binder_cyclic,
     run_single_prediction,
 )
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
@@ -281,6 +285,7 @@ def run_pipeline(
     on_incompatible: str = "error",
     preflight_only: bool = False,
     preflight_model: Optional[tuple] = None,
+    openfold_cyclic: bool | str = "auto",
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -301,6 +306,15 @@ def run_pipeline(
         on_unmappable_residue: What the OpenFold3 step does with a residue it cannot take
             (keyword-only): ``"error"`` (default) records the step as failed before the model
             starts, ``"x"`` sends an ``X`` in its place and logs a warning.
+        openfold_cyclic: Whether the binder chain of the OpenFold3 query gets ``"cyclic": true``
+            (keyword-only): ``"auto"`` (default) when the binder has a head-to-tail bond and the
+            installed OpenFold3 is 0.4.5 or later, ``True`` (``"on"``) always, ``False``
+            (``"off"``) never; see ``prepare_refolding_query``. OpenFold3 uses the flag only to
+            wrap the relative positions of the chain: it does not enforce the closure bond and
+            has published no accuracy benchmark for cyclic peptides. The block of the step
+            (``results["openfold"]``, or ``results["prediction"]`` with ``predictor``) gets
+            ``binder_cyclic`` (bool), and a ``reason`` when a head-to-tail binder was left
+            linear because the OpenFold3 version is too old or unreadable.
         predictor: A key of ``binding_metrics.predictors.PARSERS`` (keyword-only). The
             ``openfold`` step then reads that model's prediction through a
             ``PredictionSession`` and writes ``results["prediction"]``; ``results["openfold"]``
@@ -363,7 +377,8 @@ def run_pipeline(
         IncompatibleInputError: the input cannot go through a requested step or model and
             ``on_incompatible`` is ``"error"``; nothing has run. A ``ValueError``.
         ValueError: a chain is given through both spellings with different IDs,
-            ``on_unmappable_residue`` is not ``"error"`` or ``"x"``, ``predictor`` is not a
+            ``on_unmappable_residue`` is not ``"error"`` or ``"x"``, ``openfold_cyclic`` is
+            not ``"auto"``, ``"on"``, ``"off"``, ``True`` or ``False``, ``predictor`` is not a
             registered model, or it has no runner and no ``prediction_dir`` is given.
     """
     peptide_chain = resolve_chain_role("peptide_chain", peptide_chain, "binder_chain", binder_chain)
@@ -371,6 +386,7 @@ def run_pipeline(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
     check_on_unmappable_residue(on_unmappable_residue)
+    check_openfold_cyclic(openfold_cyclic)
     check_predictor(predictor, prediction_dir)
     _check_preflight_options(binder_type, on_incompatible)
 
@@ -727,6 +743,7 @@ def run_pipeline(
                 openfold_conda_env=openfold_conda_env,
                 openfold_seeds=openfold_seeds,
                 on_unmappable_residue=on_unmappable_residue,
+                openfold_cyclic=openfold_cyclic,
             )
             results["provenance"].update(prediction_provenance)
         else:
@@ -750,6 +767,7 @@ def run_pipeline(
                 of_dir = output_dir / "openfold"
                 seed_kwargs = {"seeds": tuple(openfold_seeds)} if openfold_seeds else {}
                 seed_kwargs.update(on_unmappable_residue_kwargs(on_unmappable_residue))
+                seed_kwargs.update(openfold_cyclic_kwargs(openfold_cyclic))
                 if openfold_mode == "refold":
                     predictions_dir = run_openfold_refolding(
                         complex_structure_path=input_path,
@@ -783,6 +801,9 @@ def run_pipeline(
                         binder_chain=peptide_chain,
                         receptor_chain=receptor_chain,
                     )
+                record_binder_cyclic(
+                    of_metrics, input_path, peptide_chain, openfold_cyclic, openfold_conda_env
+                )
                 # EvoBind metrics — no extra model calls, reuse OF3 outputs
                 of_structure = of_metrics.get("structure_path")
                 plddt = of_metrics.get("plddt_per_atom")
@@ -1014,6 +1035,7 @@ def main():
         "the current environment if openfold3 is installed there.",
     )
     add_openfold_seeds_arg(openfold_group)
+    add_openfold_cyclic_arg(openfold_group)
     add_on_unmappable_residue_arg(openfold_group)
 
     add_prediction_args(parser)
@@ -1094,6 +1116,7 @@ def main():
                 openfold_conda_env=args.openfold_conda_env,
                 random_seed=args.random_seed,
                 openfold_seeds=args.openfold_seeds,
+                openfold_cyclic=args.openfold_cyclic,
                 on_unmappable_residue=args.on_unmappable_residue,
                 predictor=args.predictor,
                 prediction_dir=args.prediction_dir,

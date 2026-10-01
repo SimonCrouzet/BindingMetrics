@@ -147,6 +147,63 @@ def add_openfold_seeds_arg(parser) -> None:
     )
 
 
+#: Values of ``--openfold-cyclic``; the first is the default.
+OPENFOLD_CYCLIC_CHOICES = ("auto", "on", "off")
+
+
+def add_openfold_cyclic_arg(parser) -> None:
+    """Add ``--openfold-cyclic {auto,on,off}`` to an argparse parser or group.
+
+    Whether the binder chain of the OpenFold3 query gets ``"cyclic": true``. The default,
+    ``auto``, writes it for a binder with a head-to-tail bond when the installed OpenFold3 can
+    read it (0.4.5 or later).
+    """
+    parser.add_argument(
+        "--openfold-cyclic",
+        choices=OPENFOLD_CYCLIC_CHOICES,
+        default="auto",
+        help=(
+            "Whether the binder chain of the OpenFold3 query gets 'cyclic: true' (OpenFold3 "
+            ">= 0.4.5). auto (default): when the binder has a head-to-tail bond and the "
+            "installed OpenFold3 is new enough; on: always; off: never. OpenFold3 uses the "
+            "flag only to wrap the relative positions of the chain: it does not enforce the "
+            "closure bond, documents the flag only in an example query, and has published no "
+            "accuracy benchmark for cyclic peptides. Disulfide, lactam and staple closures "
+            "cannot be given to OpenFold3 and are not written."
+        ),
+    )
+
+
+def check_openfold_cyclic(value) -> bool | str:
+    """The ``binder_cyclic`` argument for ``value``: ``"auto"``, ``True`` or ``False``.
+
+    Takes the command-line choices (``"auto"``, ``"on"``, ``"off"``) and the API values
+    (``True``, ``False``, ``"auto"``).
+
+    Raises:
+        ValueError: ``value`` is none of these.
+    """
+    if value is True or value == "on":
+        return True
+    if value is False or value == "off":
+        return False
+    if value == "auto":
+        return "auto"
+    raise ValueError(
+        f"openfold_cyclic must be one of {OPENFOLD_CYCLIC_CHOICES}, True or False, got {value!r}"
+    )
+
+
+def openfold_cyclic_kwargs(value) -> dict:
+    """The keyword argument for an OpenFold3 run function, only when it is not ``"auto"``.
+
+    The default is left out so that a function that predates the option, or a test double
+    that replaces it, is called exactly as before.
+    """
+    resolved = check_openfold_cyclic(value)
+    return {} if resolved == "auto" else {"binder_cyclic": resolved}
+
+
 def merge_reason(target: dict, extra: dict, label: str) -> None:
     """Move ``extra["reason"]`` into ``target["reason"]`` as ``"<label>: <reason>"``.
 

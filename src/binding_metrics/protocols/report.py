@@ -630,6 +630,8 @@ def _md_confidence_lines(section: dict, extra_rows: list[list[str]] | None = Non
         ["ipTM", _fmt(section.get("iptm"), 3)],
         ["gPDE", f"{_fmt(section.get('gpde'), 2)} Å"],
     ]
+    if "binder_cyclic" in section:  # whether the query sent the binder as `cyclic: true`
+        rows.append(["Binder sent as cyclic", "yes" if section["binder_cyclic"] else "no"])
     refold_rmsd = section.get("binder_ca_rmsd")
     try:
         import math
