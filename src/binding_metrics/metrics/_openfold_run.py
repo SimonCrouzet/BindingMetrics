@@ -42,6 +42,15 @@ logger = logging.getLogger(__name__)
 _DEFAULT_QUERY_SEEDS: tuple[int, ...] = (42,)
 
 
+#: Version of what the query builders write: the query JSON, the template CIFs and the A3M
+#: self-alignments. It is raised whenever a change to them can change a prediction, and it is
+#: part of the A3M query row (see :func:`_write_a3m_self_alignment`): OpenFold3 keeps the result
+#: of its template preprocessing in a cache keyed on the chain sequence and the content of the
+#: A3M file only, so an A3M that does not change when the template CIF writer does would be
+#: answered with an entry made from the older CIF.
+QUERY_BUILDER_VERSION = 2
+
+
 def _query_seeds(seeds: Sequence[int]) -> list[int]:
     """Validate ``seeds`` and return them as a list of ints."""
     if isinstance(seeds, (str, bytes)):
@@ -1205,69 +1214,158 @@ def _require_chain(structure, chain_id: str, source: str = "") -> None:
         )
 
 
+#: Types of the amino-acid components that are not plain L-amino acids in the Chemical Component
+#: Dictionary: glycine and sarcosine have no chirality; the D-amino acids that the toolkit knows
+#: have their own type. OpenFold3 maps all three to the protein molecule type.
+_ACHIRAL_PEPTIDE_COMPONENTS = frozenset({"GLY", "SAR"})
+
+
+def _template_component_name(residue_name: str) -> str:
+    """The Chemical Component Dictionary name that a template residue is written under.
+
+    OpenFold3 looks every template residue up in the CCD. Protonation and cross-link variants
+    (HID, CYX, ...) and the lactam-bridge templates are written as their parent residue, the
+    way the query sends them, and the N-methyl names of ``core.nonstandard`` as the CCD codes
+    of the same residues (see ``_TEMPLATE_NAME_TO_CCD``). Anything else keeps its name.
+    """
+    if residue_name in VARIANT_TO_PARENT_RESIDUE:
+        return VARIANT_TO_PARENT_RESIDUE[residue_name]
+    if residue_name in LACTAM_TEMPLATE_RESIDUES:
+        return residue_name[:3]
+    return _TEMPLATE_NAME_TO_CCD.get(residue_name, residue_name)
+
+
+def _template_chem_comp_type(component_name: str) -> str:
+    """The ``_chem_comp.type`` of a peptide component (one that OpenFold3 maps to protein)."""
+    if component_name in D_AA_MAP:
+        return "D-PEPTIDE LINKING"
+    if component_name in _ACHIRAL_PEPTIDE_COMPONENTS:
+        return "PEPTIDE LINKING"
+    return "L-PEPTIDE LINKING"
+
+
+def _template_residues(chain) -> list[tuple]:
+    """The residues of ``chain`` that make up its template, as ``(residue, component name)``.
+
+    These are the residues that :func:`_extract_query_chain` turns into letters of the query
+    sequence: amino acids and the residues that are sent as ``X`` (an ``UNK`` component).
+    Waters, ligands and terminal caps are left out, as in the query, so that residue ``i`` of
+    the template is letter ``i`` of the sequence that the alignment indexes.
+    """
+    residues = []
+    for residue in chain:
+        if _residue_letter_and_ccd(residue.name) is not None:
+            residues.append((residue, _template_component_name(residue.name)))
+        elif {"N", "CA", "C"} <= {atom.name for atom in residue}:
+            residues.append((residue, "UNK"))
+    return residues
+
+
 def _extract_chain_to_cif(
     structure, chain_id: str, output_path: Path, sequence: str = "", *, source: str = ""
 ) -> None:
-    """Write a single chain from a gemmi Structure to a CIF file.
+    """Write one chain of a gemmi Structure as the template CIF that OpenFold3 reads.
 
-    Also patches the missing mmCIF metadata tables required by OF3's template
-    preprocessor (``_pdbx_audit_revision_history``, ``_entity_poly``,
-    ``_pdbx_poly_seq_scheme``).
+    OpenFold3 0.5.0 reads the file twice, with the parsers it uses for PDB entries: the
+    template preprocessor takes the canonical sequence of each chain and the release date, and
+    the data loader reads the atoms and indexes the residues by ``label_seq_id``. A file as
+    gemmi writes a bare chain is rejected (``label_entity_id`` is ``.``, there is no
+    ``_entity_poly_seq``, ``label_seq_id`` is ``.`` and ``_chem_comp.type`` is ``.``), and an
+    ``_entity_poly`` without ``pdbx_seq_one_letter_code_can`` makes the preprocessing fail with
+    a message that OpenFold3 only prints, after which the chain has no template. The file written
+    here has:
+
+    * one polymer entity with the integer id 1, in ``_entity``, ``_entity_poly`` (with
+      ``pdbx_seq_one_letter_code_can``), ``_entity_poly_seq`` and ``_struct_asym``, and
+      ``_pdbx_poly_seq_scheme`` for the chain;
+    * the chain under its own ID as ``label_asym_id``, and ``label_seq_id`` counting the residues
+      1..N, which is how the A3M self-alignment of :func:`_write_a3m_self_alignment` numbers
+      them (OpenFold3 would take the author numbers when ``label_seq_id`` is ``.``);
+    * ``_chem_comp.type`` set for every component (``L-PEPTIDE LINKING``, ``D-PEPTIDE LINKING``
+      for the D-amino acids, ``PEPTIDE LINKING`` for glycine and sarcosine), and a release date
+      far in the past, so that no release-date filter discards the template.
+
+    Only the residues of the query sequence are written (:func:`_template_residues`), under the
+    component names that the CCD knows (:func:`_template_component_name`).
 
     Args:
         structure: Source ``gemmi.Structure``.
         chain_id: Chain ID to extract (taken from the first model).
         output_path: Destination CIF file path.
-        sequence: One-letter amino acid sequence for this chain (used to
-            populate ``_entity_poly``). If empty, extracted from structure atoms.
+        sequence: One-letter amino acid sequence for this chain, written as the canonical
+            sequence of the entity and the one the alignment carries. If empty, it is read from
+            the residues.
         source: File the structure was read from, named in the error message.
 
     Raises:
-        ValueError: If the chain is not in the structure; nothing is written then.
+        ValueError: If the chain is not in the structure, has no residue that the query would
+            send, or has another number of them than ``sequence`` has letters; nothing is
+            written then.
     """
     import gemmi
 
     _require_chain(structure, chain_id, source)
 
+    source_chain = next(c for c in structure[0] if c.name == chain_id)
+    template = _template_residues(source_chain)
+    if not template:
+        raise ValueError(
+            f"Chain '{chain_id}' of the template structure"
+            f"{' ' + source if source else ''} has no amino-acid residue to write as a template."
+        )
+    if sequence and len(sequence) != len(template):
+        raise ValueError(
+            f"Chain '{chain_id}' of the template structure{' ' + source if source else ''} has "
+            f"{len(template)} amino-acid residues but the query sequence has {len(sequence)}; the "
+            "template must hold the residues of the query, one for one. A template file that "
+            "adds or removes residues (caps excepted) cannot be used."
+        )
+    if not sequence:
+        sequence = "".join(
+            (_residue_letter_and_ccd(residue.name) or ("X",))[0] for residue, _ in template
+        )
+
+    chain = gemmi.Chain(chain_id)
+    components = [component for _, component in template]
+    for number, (residue, component) in enumerate(template, start=1):
+        written = chain.add_residue(residue)  # a copy; the source structure is not changed
+        written.name = component
+        written.subchain = chain_id
+        written.entity_id = "1"
+        written.entity_type = gemmi.EntityType.Polymer
+        written.label_seq = number
+
+    entity = gemmi.Entity("1")
+    entity.entity_type = gemmi.EntityType.Polymer
+    entity.polymer_type = gemmi.PolymerType.PeptideL
+    entity.subchains = [chain_id]
+    entity.full_sequence = components
+
     new_st = gemmi.Structure()
     new_st.cell = structure.cell
     new_st.spacegroup_hm = structure.spacegroup_hm
     new_model = gemmi.Model("1")
-    for chain in structure[0]:
-        if chain.name == chain_id:
-            new_model.add_chain(chain.clone())
-            break
+    new_model.add_chain(chain)
     new_st.add_model(new_model)
-    new_st.make_mmcif_document().write_file(str(output_path))
+    new_st.entities.append(entity)
 
-    # OF3 template preprocessor requires metadata tables that OpenMM/gemmi
-    # do not write. Patch them in using gemmi's CIF API.
-    if not sequence:
-        sequence = _extract_sequence_from_structure(new_st, chain_id)
-
-    doc = gemmi.cif.read(str(output_path))
+    doc = new_st.make_mmcif_document()
     block = doc.sole_block()
 
-    # 1. Release date — OF3 requires this; use a sentinel far-past date so
-    #    no template release-date filter will discard it.
-    rdh = block.init_loop("_pdbx_audit_revision_history.", ["ordinal", "revision_date"])
-    rdh.add_row(["1", "1900-01-01"])
+    # gemmi leaves the component types open and writes no canonical sequence.
+    chem_comp_ids = [str(value).strip("'\"") for value in block.find_values("_chem_comp.id")]
+    chem_comp_types = block.find_values("_chem_comp.type")
+    for index, component in enumerate(chem_comp_ids):
+        chem_comp_types[index] = gemmi.cif.quote(_template_chem_comp_type(component))
+    entity_poly = block.find_loop("_entity_poly.entity_id").get_loop()
+    entity_poly.add_columns(["_entity_poly.pdbx_seq_one_letter_code_can"], sequence)
 
-    # 2. entity_poly — entity_id → canonical 1-letter sequence.
-    #    gemmi's make_mmcif_document() writes entity_id as "?" in struct_asym,
-    #    so we always use "1" (single-chain, single-entity template).
-    entity_id = "1"
-    ep = block.init_loop("_entity_poly.", ["entity_id", "pdbx_seq_one_letter_code_can"])
-    ep.add_row([entity_id, sequence])
-
-    # 3. pdbx_poly_seq_scheme — asym_id → entity_id.
-    #    Materialise struct_asym rows eagerly before init_loop (block.find()
-    #    returns a lazy view that is invalidated by subsequent init_loop calls).
-    sa = block.find(["_struct_asym.id"])
-    asym_ids = [row[0] for row in sa] if sa else [chain_id]
-    pss = block.init_loop("_pdbx_poly_seq_scheme.", ["asym_id", "entity_id"])
-    for asym_id in asym_ids:
-        pss.add_row([asym_id, entity_id])
+    # A far-past release date: the preprocessor filters templates by it.
+    revisions = block.init_loop("_pdbx_audit_revision_history.", ["ordinal", "revision_date"])
+    revisions.add_row(["1", "1900-01-01"])
+    # asym_id to entity_id: how OpenFold3 finds the canonical sequence of a chain.
+    scheme = block.init_loop("_pdbx_poly_seq_scheme.", ["asym_id", "entity_id"])
+    scheme.add_row([chain_id, "1"])
 
     doc.write_file(str(output_path))
 
@@ -1306,11 +1404,16 @@ def _write_a3m_self_alignment(
         >{entry_id}_{chain_id}/{start}-{end}
 
     OF3 splits on ``_`` to get (entry_id, chain_id), then looks for
-    ``{entry_id}.cif`` in the ``template_preprocessor_settings.structure_directory``.
+    ``{entry_id}.cif`` in the ``template_preprocessor_settings.structure_directory``. It splits
+    the header of the query row the same way, so ``query_id`` has the form ``<name>_<chain>``.
+
+    The header of the query row carries ``-b<QUERY_BUILDER_VERSION>`` after the name, which has
+    no effect on the alignment and changes the content hash that OpenFold3 keys its template
+    cache on whenever the builders change (see :data:`QUERY_BUILDER_VERSION`).
 
     Args:
         sequence: One-letter amino acid sequence.
-        query_id: Identifier for the query (first) sequence.
+        query_id: Identifier for the query (first) sequence, ``<name>_<chain>``.
         entry_id: Template entry identifier — must contain no underscores.
             OF3 looks for ``{entry_id}.cif`` in the template directory.
         chain_id: Chain identifier within the template CIF (e.g. ``"A"``).
@@ -1318,9 +1421,11 @@ def _write_a3m_self_alignment(
     """
     _check_template_chain_id(chain_id)
     n = len(sequence)
+    name, separator, chain = query_id.rpartition("_")
+    query_header = f"{name}-b{QUERY_BUILDER_VERSION}{separator}{chain}"
     template_header = f"{entry_id}_{chain_id}/{1}-{n}"
     output_path.write_text(
-        f">{query_id}/1-{n}\n{sequence}\n>{template_header}\n{sequence}\n", encoding="utf-8"
+        f">{query_header}/1-{n}\n{sequence}\n>{template_header}\n{sequence}\n", encoding="utf-8"
     )
 
 

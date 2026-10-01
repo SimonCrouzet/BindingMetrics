@@ -69,6 +69,7 @@ from binding_metrics.metrics._openfold_cli import (  # noqa: F401  (re-exported)
 from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     _DEFAULT_MODEL_PRESETS,
     _DEFAULT_QUERY_SEEDS,
+    QUERY_BUILDER_VERSION,
     BinderCyclicDecision,
     OpenFoldQueryError,
     OpenFoldRunError,
