@@ -117,6 +117,8 @@ from binding_metrics.cli.prediction import (
     record_binder_cyclic,
     reference_for,
     run_prediction_step,
+    scored_seed_index,
+    scored_seed_kwargs,
 )
 from binding_metrics.cli.run import (
     ALL_METRICS,
@@ -538,6 +540,7 @@ def _run_batched_openfold(
                     binder_chain=pchain,
                     receptor_chain=rchain,
                     reference_structure_path=sid_to_input[sid],
+                    **scored_seed_kwargs(openfold_seeds, predictions_dir, sid),
                 )
             else:
                 of_metrics = compute_openfold_metrics(
@@ -545,6 +548,7 @@ def _run_batched_openfold(
                     query_name=sid,
                     binder_chain=pchain,
                     receptor_chain=rchain,
+                    **scored_seed_kwargs(openfold_seeds, predictions_dir, sid),
                 )
 
             record_binder_cyclic(
@@ -784,6 +788,8 @@ def _run_batched_prediction(
                 prediction_binder_chain=prediction_binder_chain,
                 prediction_target_chain=prediction_target_chain,
                 reference_path=reference_for(predictor, openfold_mode, input_path),
+                # an adopted output is the user's own: its seeds are not the ones given here
+                seed_index=1 if adopt else scored_seed_index(openfold_seeds),
             )
             block = outcomes[sid][0]
             if predictor == "of3" and not adopt and not block.get("error"):
@@ -903,6 +909,9 @@ def run_batch(
             the sequential case), or as it is submitted (with workers).
         on_unmappable_residue: ``"error"`` (default) or ``"x"``: what the OpenFold3 call does
             with a residue it cannot take (see ``--on-unmappable-residue``).
+        openfold_seeds: Seed values OpenFold3 samples with, written to its runner YAML; ``None``
+            keeps the default, 42. The sample scored is the first sample of the first seed
+            given (see ``--openfold-seeds``).
         openfold_cyclic: ``"auto"`` (default), ``True`` (``"on"``) or ``False`` (``"off"``):
             whether the binder chain of each OpenFold3 query gets ``"cyclic": true`` (see
             ``--openfold-cyclic``). The ``openfold_*`` (or ``prediction_*``) columns then

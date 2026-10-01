@@ -45,7 +45,9 @@ _PDE = 0.5 + 0.25 * _I + 0.125 * _J
 _PAE = 1.0 + 0.5 * _I + 0.25 * _J
 
 # The order of the keys is part of the contract: ``report._flatten`` writes the CSV
-# columns in this order.
+# columns in this order. ``seed_value`` is the one key added since the capture of this list: a
+# deliberate, additive change (the seed behind the sample, from the name of the seed directory),
+# appended after ``timing`` so that no older key moves; ``reason`` still comes last.
 _KEYS = [
     "query_name",
     "seed",
@@ -77,6 +79,7 @@ _KEYS = [
     "pae_interface",
     "binder_ca_rmsd",
     "timing",
+    "seed_value",
 ]
 
 
@@ -162,6 +165,7 @@ class TestResultDict:
         root, metrics = _full(tmp_path)
         assert metrics["query_name"] == _QUERY
         assert metrics["seed"] == 1
+        assert metrics["seed_value"] == 1  # the directory is seed_1
         assert metrics["sample"] == 1
         assert metrics["structure_path"] == str(
             root / _QUERY / "seed_1" / "gold_seed_1_sample_1_model.cif"
@@ -542,6 +546,20 @@ class TestSeedIndexAndSample:
         assert metrics["seed"] == 2
         assert metrics["avg_plddt"] == pytest.approx(77.7)
 
+    def test_seed_value_is_the_seed_in_the_directory_name(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = self._two_seed_dirs(tmp_path)
+        by_position = [compute_openfold_metrics(root, "q", seed=i)["seed_value"] for i in (1, 2)]
+        assert by_position == [42, 777]  # numeric order, and the value, not the position
+
+    def test_seed_value_is_none_when_nothing_was_found(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = self._two_seed_dirs(tmp_path)
+        assert compute_openfold_metrics(root, "q", seed=3)["seed_value"] is None
+        assert compute_openfold_metrics(tmp_path / "nowhere", "q")["seed_value"] is None
+
     def test_a_position_beyond_the_last_directory_finds_nothing(self, tmp_path):
         from binding_metrics.metrics.openfold import compute_openfold_metrics
 
@@ -588,6 +606,7 @@ _CSV_SCALAR_COLUMNS = [
     ("openfold_binder_ca_rmsd", 1.0),
     ("openfold_timing_inference", 45.2),
     ("openfold_timing_msa", 12.3),
+    ("openfold_seed_value", 1),
 ]
 
 

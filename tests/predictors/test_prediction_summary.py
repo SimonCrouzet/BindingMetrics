@@ -38,6 +38,24 @@ class TestParityWithComputeOpenfoldMetrics:
         assert "model" not in openfold.compute_openfold_metrics(_run(tmp_path), QUERY)
 
 
+class TestSeedValue:
+    """``seed_value`` is the seed of the sample's directory, for the adapters that name one."""
+
+    @pytest.mark.parametrize(
+        "extras, expected",
+        [({"seed_value": "9"}, 9), ({"seed_value": "2746317213"}, 2746317213)]
+        + [({"seed_value": "abc"}, None), ({}, None)],
+    )
+    def test_it_is_an_int_when_the_directory_name_is_a_number(self, extras, expected):
+        record = PredictionRecord("of3", "q")
+        record.extras.update(extras)
+        assert summarize_prediction(record)["seed_value"] == expected
+
+    def test_it_comes_after_timing_so_that_no_older_key_moves(self):
+        keys = list(summarize_prediction(PredictionRecord("of3", "q")))
+        assert keys[-2:] == ["timing", "seed_value"]
+
+
 class TestOptions:
     def test_target_chain_is_an_alias_of_receptor_chain(self, tmp_path):
         record = openfold.get_parser("of3").load(_run(tmp_path), QUERY)

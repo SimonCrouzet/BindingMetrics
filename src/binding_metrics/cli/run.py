@@ -79,6 +79,7 @@ from binding_metrics.cli.prediction import (
     display_name,
     record_binder_cyclic,
     run_single_prediction,
+    scored_seed_kwargs,
 )
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.metrics.registry import get_metric
@@ -301,8 +302,9 @@ def run_pipeline(
             ``device`` and the chain IDs are not passed to it; ``random_seed`` still
             seeds prep and the energy step. Ignored when ``skip_relax`` is true.
         random_seed: Seed for hydrogen placement and MD; ``None`` for fresh randomness.
-        openfold_seeds: Seed values written to the OpenFold3 query JSON; ``None``
-            keeps the OpenFold default. Separate from ``random_seed``.
+        openfold_seeds: Seed values OpenFold3 samples with, written to its runner YAML; ``None``
+            keeps the default, 42. The sample scored is the first sample of the first seed
+            given. Separate from ``random_seed``.
         on_unmappable_residue: What the OpenFold3 step does with a residue it cannot take
             (keyword-only): ``"error"`` (default) records the step as failed before the model
             starts, ``"x"`` sends an ``X`` in its place and logs a warning.
@@ -778,12 +780,14 @@ def run_pipeline(
                         conda_env=openfold_conda_env,
                         **seed_kwargs,
                     )
+                    metrics_seed = scored_seed_kwargs(openfold_seeds, predictions_dir, sample_id)
                     of_metrics = compute_openfold_metrics(
                         output_dir=predictions_dir,
                         query_name=sample_id,
                         binder_chain=peptide_chain,
                         receptor_chain=receptor_chain,
                         reference_structure_path=input_path,
+                        **metrics_seed,
                     )
                 else:  # score (default)
                     predictions_dir = run_openfold_scoring(
@@ -795,11 +799,13 @@ def run_pipeline(
                         conda_env=openfold_conda_env,
                         **seed_kwargs,
                     )
+                    metrics_seed = scored_seed_kwargs(openfold_seeds, predictions_dir, sample_id)
                     of_metrics = compute_openfold_metrics(
                         output_dir=predictions_dir,
                         query_name=sample_id,
                         binder_chain=peptide_chain,
                         receptor_chain=receptor_chain,
+                        **metrics_seed,
                     )
                 record_binder_cyclic(
                     of_metrics, input_path, peptide_chain, openfold_cyclic, openfold_conda_env

@@ -7,9 +7,11 @@ default literals (pH, device, MD duration, save interval) were replaced by the n
 constants in ``binding_metrics._constants``. New options may be added; an existing one
 must not change.
 
-Two deliberate edits since the capture: ``--peptide-chain`` and ``--receptor-chain`` gained
-the alias spellings ``--binder-chain`` and ``--target-chain``, and the ``--metrics`` help of
-``-batch`` lists ``dockq``, which the option already accepted.
+Three deliberate edits since the capture: ``--peptide-chain`` and ``--receptor-chain`` gained
+the alias spellings ``--binder-chain`` and ``--target-chain``, the ``--metrics`` help of
+``-batch`` lists ``dockq``, which the option already accepted, and the ``--openfold-seeds``
+help of both commands no longer says that the seeds go to the query JSON (OpenFold3 does not
+read them there; they are written to its runner YAML) and says which sample is scored.
 """
 
 import argparse
@@ -262,9 +264,10 @@ GOLDEN = {
                 "+",
                 False,
                 "None",
-                "Seed values written to the OpenFold3 query JSON "
-                "(default: the OpenFold module default, 42). The "
-                "first seed's first sample is scored.",
+                "Seed values OpenFold3 samples with, written to its "
+                "runner YAML (default: 42). It makes one seed_<value> "
+                "directory per seed; the first seed given, first "
+                "sample, is scored.",
             ),
             "--format": (
                 "Report",
@@ -493,9 +496,10 @@ GOLDEN = {
                 "+",
                 False,
                 "None",
-                "Seed values written to the OpenFold3 query JSON "
-                "(default: the OpenFold module default, 42). The "
-                "first seed's first sample is scored.",
+                "Seed values OpenFold3 samples with, written to its "
+                "runner YAML (default: 42). It makes one seed_<value> "
+                "directory per seed; the first seed given, first "
+                "sample, is scored.",
             ),
             "--log-file": (
                 "Logging",

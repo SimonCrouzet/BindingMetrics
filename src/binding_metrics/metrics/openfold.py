@@ -329,6 +329,12 @@ def compute_openfold_metrics(
         Timing:
             timing (dict): runtime entries from timing.json, empty if absent
 
+        Seed:
+            seed_value (int | None): the seed value in the name of the ``seed_<value>``
+                directory of this sample, that is the seed OpenFold3 sampled with (``seed`` is
+                the position of that directory in numeric order); None if the directory name
+                is not a number
+
         Failures:
             reason (str): present only when a value could not be computed (it
                 keeps its NaN or None sentinel). Names each affected analysis

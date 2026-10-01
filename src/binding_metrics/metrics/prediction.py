@@ -114,6 +114,16 @@ def _token_ranges(record: PredictionRecord) -> Optional[dict[str, tuple[int, int
     }
 
 
+def _seed_value_of(record: PredictionRecord) -> Optional[int]:
+    """The seed value of the record's seed directory (``record.extras["seed_value"]``), or None.
+
+    OpenFold3 and Protenix name a seed directory after the seed that produced it, and their
+    adapters keep that name in ``extras``; the other adapters have none.
+    """
+    value = record.extras.get("seed_value")
+    return int(value) if value is not None and str(value).isdecimal() else None
+
+
 def summarize_prediction(
     record: PredictionRecord,
     *,
@@ -174,8 +184,11 @@ def summarize_prediction(
         Reference (needs ``binder_chain`` and ``reference_structure_path``):
             binder_ca_rmsd (A)
 
-        timing (dict), and ``reason`` (str) only when a value could not be computed: the
-        parser's reasons followed by one clause for each affected analysis, joined by "; ".
+        timing (dict), seed_value (int | None: the seed behind the sample, which OpenFold3 and
+        Protenix name in the seed directory and the other adapters leave None; ``seed`` is
+        the position among those directories), and ``reason`` (str) only when a value could
+        not be computed: the parser's reasons followed by one clause for each affected
+        analysis, joined by "; ".
     """
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
@@ -225,6 +238,8 @@ def summarize_prediction(
         "binder_ca_rmsd": _NAN,
         # Timing
         "timing": record.timing,
+        # The seed behind the sample (appended, so the order of the older keys is unchanged)
+        "seed_value": _seed_value_of(record),
     }
 
     # --- Per-chain structural analysis ---

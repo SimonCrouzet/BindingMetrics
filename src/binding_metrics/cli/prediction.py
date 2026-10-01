@@ -40,7 +40,7 @@ import logging
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from binding_metrics.cli import check_openfold_cyclic, merge_reason, openfold_cyclic_kwargs
 from binding_metrics.predictors.registry import PARSERS
@@ -292,6 +292,48 @@ def make_request(
     )
 
 
+def scored_seed_index(
+    openfold_seeds: Optional[Sequence[int]],
+    directory: Optional[str | Path] = None,
+    query_name: Optional[str] = None,
+) -> int:
+    """The ``seed_index`` of the sample the pipeline scores: that of the first seed given.
+
+    OpenFold3 writes one ``seed_<value>`` directory per seed, and the adapters count them in the
+    numeric order of the values, so ``--openfold-seeds 9 3`` scores seed 9, the second directory.
+    With ``directory`` and ``query_name`` the position is looked up among the directories that
+    exist, which also holds when an earlier run left other seed directories in the same output
+    directory; without them (the prediction store, where every request has a directory of its
+    own) it is the position among the seeds given.
+
+    Returns:
+        1-based position; 1 when no seeds were given (the lowest seed, the only one by default).
+    """
+    if not openfold_seeds:
+        return 1
+    first = int(openfold_seeds[0])
+    if directory is not None and query_name is not None:
+        from binding_metrics.predictors.of3 import _seed_directories
+
+        names = [d.name[len("seed_") :] for d in _seed_directories(Path(directory) / query_name)]
+        if str(first) in names:
+            return names.index(str(first)) + 1
+    return sorted({int(seed) for seed in openfold_seeds}).index(first) + 1
+
+
+def scored_seed_kwargs(
+    openfold_seeds: Optional[Sequence[int]], directory: str | Path, query_name: str
+) -> dict:
+    """``{"seed": index}`` for ``compute_openfold_metrics`` when seeds were given, else ``{}``.
+
+    Without ``--openfold-seeds`` the call is the one that always scored the first sample of the
+    first seed directory, so a function that predates the option is called as before.
+    """
+    if not openfold_seeds:
+        return {}
+    return {"seed": scored_seed_index(openfold_seeds, directory, query_name)}
+
+
 def prediction_chain_map(
     prediction_binder_chain: Optional[str],
     prediction_target_chain: Optional[str],
@@ -392,6 +434,7 @@ def _analyse(
     chain_map: Optional[Mapping[str, str]],
     reference_path: Optional[Path],
     adopted: bool = False,
+    seed_index: int = 1,
 ) -> tuple[dict, dict]:
     """Every consumer of one prediction, all reading the record the session parsed once."""
     from binding_metrics.metrics.evobind import compute_evobind_adversarial_from_records
@@ -399,7 +442,7 @@ def _analyse(
     from binding_metrics.predictors.store import PredictionFailedError, PredictionUnavailableError
 
     try:
-        record = session.record(request, chain_map=chain_map)
+        record = session.record(request, seed_index=seed_index, chain_map=chain_map)
     except (PredictionFailedError, PredictionUnavailableError) as error:
         logger.warning("  [warning] Prediction failed: %s", error)
         return {
@@ -454,6 +497,7 @@ def run_prediction_step(
     prediction_binder_chain: Optional[str] = None,
     prediction_target_chain: Optional[str] = None,
     reference_path: Optional[Path] = None,
+    seed_index: int = 1,
 ) -> tuple[dict, dict]:
     """The prediction step for one sample; never raises.
 
@@ -468,6 +512,7 @@ def run_prediction_step(
         prediction_binder_chain, prediction_target_chain: Chain IDs inside the prediction, when
             they differ from the input's.
         reference_path: Structure for ``binder_ca_rmsd`` (``reference_for``).
+        seed_index: Position of the seed directory to read (``scored_seed_index``).
 
     Returns:
         ``(block, provenance)``: the value of ``results["prediction"]`` and the provenance keys
@@ -489,6 +534,7 @@ def run_prediction_step(
             ),
             reference_path=reference_path,
             adopted=prediction_dir is not None,
+            seed_index=seed_index,
         )
     except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["prediction"]
         logger.warning("  [warning] Prediction failed: %s", e)
@@ -570,6 +616,8 @@ def run_single_prediction(
         prediction_binder_chain=prediction_binder_chain,
         prediction_target_chain=prediction_target_chain,
         reference_path=reference_for(predictor, openfold_mode, input_path),
+        # an adopted output is the user's own: its seeds are not the ones given here
+        seed_index=1 if adopt else scored_seed_index(openfold_seeds),
     )
     if predictor == "of3" and not adopt and not block.get("error"):
         record_binder_cyclic(block, input_path, binder_chain, openfold_cyclic, openfold_conda_env)
