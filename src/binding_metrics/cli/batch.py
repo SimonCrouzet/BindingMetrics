@@ -115,6 +115,7 @@ from binding_metrics.cli.prediction import (
     check_weights_arg,
     display_name,
     effective_prediction_mode,
+    error_text,
     make_request,
     make_runner,
     make_session,
@@ -830,7 +831,10 @@ def _run_batched_prediction(
         logger.warning("  [ERROR] Batched %s prediction failed: %s", display_name(predictor), e)
         traceback.print_exc()
         for sid in requests:
-            outcomes[sid] = ({"model": predictor, "mode": mode, "error": str(e)}, {})
+            outcomes[sid] = (
+                {"model": predictor, "mode": mode, "error": error_text(e, predictor)},
+                {},
+            )
         requests = {}
 
     if predictor == "of3" and not adopt:

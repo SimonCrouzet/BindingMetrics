@@ -189,6 +189,33 @@ class TestOneRun:
         )
 
 
+class TestAModelThatIsNotInstalled:
+    @pytest.mark.parametrize("model", MODELS)
+    def test_the_error_says_how_to_start_the_model_and_nothing_is_recorded(
+        self, tmp_path, monkeypatch, model
+    ):
+        stub = ModelStub(model, tmp_path, monkeypatch)
+        if model == "of3":
+            monkeypatch.setattr(
+                "binding_metrics.predictors.of3_runner.OpenFold3Runner.is_available",
+                lambda runner: False,
+            )
+        else:
+            empty = tmp_path / "empty"
+            empty.mkdir()
+            monkeypatch.setenv("PATH", str(empty))
+        block = pipeline(tmp_path / "o", model)["prediction"]
+        assert "cannot be started on this machine" in block["error"]
+        env = "--openfold-conda-env" if model == "of3" else "--prediction-conda-env"
+        assert (
+            f"Hint: put the executable of {prediction.display_name(model)} on PATH"
+            in block["error"]
+        )
+        assert f"{env} NAME" in block["error"] and "--prediction-dir DIR" in block["error"]
+        assert stub.starts == 0
+        assert not list((tmp_path / "o" / "predictions").glob(f"{model}/*/*/STATUS.json"))
+
+
 class TestTheModeOfARun:
     @pytest.mark.parametrize("model", MODELS)
     def test_every_mode_the_runner_runs_runs_through_the_stub(self, tmp_path, monkeypatch, model):

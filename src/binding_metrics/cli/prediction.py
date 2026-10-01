@@ -1105,6 +1105,25 @@ def _evobind_score_of(record, binder_chain: str, receptor_chain: str) -> dict:
     )
 
 
+def error_text(error: BaseException, model: str) -> str:
+    """The text of a failed prediction for ``results["prediction"]["error"]``.
+
+    A model that cannot be started here gets the ways to start it: its executable on PATH, the
+    conda environment option, or an output you made. Any other error is its own text.
+    """
+    from binding_metrics.predictors.store import PredictionUnavailableError
+
+    text = str(error)
+    if isinstance(error, PredictionUnavailableError) and "cannot be started" in text:
+        env = "--openfold-conda-env" if model == "of3" else "--prediction-conda-env"
+        text += (
+            f"\nHint: put the executable of {display_name(model)} on PATH, or name the conda "
+            f"environment that has it with {env} NAME, or read an output you made with "
+            "--prediction-dir DIR"
+        )
+    return text
+
+
 def missing_chains_reason(record, binder_chain: str, receptor_chain: str) -> Optional[str]:
     """Why the metrics cannot find the chains in the prediction, or None when both are there.
 
@@ -1157,7 +1176,7 @@ def _analyse(
         return {
             "model": request.model,
             "mode": mode,
-            "error": str(error),
+            "error": error_text(error, request.model),
             "cache": _cache_block(session, request, adopted=adopted),
         }, {}
 
