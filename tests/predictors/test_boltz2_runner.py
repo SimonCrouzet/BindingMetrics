@@ -1233,6 +1233,23 @@ class TestTheRoundTripThroughTheStore:
         assert entry.prediction_dir.parent.parent.name == "boltz_results_ycr"
         assert session.stats()["runs"] == 1
 
+    def test_the_stored_yaml_names_the_temporary_template_directory_by_design(
+        self, tmp_path, fake_boltz
+    ):
+        """The path is not part of the key; the CIF itself is kept in the entry."""
+        fake_boltz.canned("ycr")
+        runner = Boltz2Runner()
+        session = PredictionSession(PredictionStore(tmp_path / "store"), [runner])
+        request = make_request(runner, mode="score-lock")
+        session.record(request)
+        outputs = session.entry(request).prediction_dir.parents[2]
+        document = read_yaml(outputs / "input" / "ycr.yaml")
+        named = Path(document["templates"][0]["cif"])
+        assert ".tmp-" in str(named) and not named.exists()
+        assert (outputs / "input" / "templates" / named.name).is_file()
+        assert runner.make_request(YCR, name="ycr", binder_chain="B", receptor_chain="A",
+                                   mode="score-lock").key() == request.key()  # fmt: skip
+
     def test_the_model_runs_once_for_one_request(self, tmp_path, fake_boltz):
         fake_boltz.canned("ycr")
         runner = Boltz2Runner()

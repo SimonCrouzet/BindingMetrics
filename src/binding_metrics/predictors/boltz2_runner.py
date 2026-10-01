@@ -79,6 +79,15 @@ The coordinates are those of the input; hydrogens are dropped. The chain names o
 are its ``label_asym_id`` values (``Subchain.subchain_id`` in Boltz-2's reader), which are set to
 the chain IDs of the input.
 
+Stored input. The YAML lists each template CIF by an absolute path below the ``work_dir`` of the
+run. ``PredictionStore`` runs in a temporary directory (``<key>.tmp-<pid>-<random>``) and renames
+it when it keeps the run, so the YAML of a stored entry (``outputs/input/<name>.yaml``) names the
+temporary path, which no longer exists, while the CIFs are in the entry
+(``outputs/input/templates/``). That is by design. The path is not part of the key, and a relative
+path would not be simpler: Boltz-2 opens ``cif`` as written (``schema.py:1611-1672``, relative to
+its working directory, not to the YAML). A stored YAML records what was run; it cannot be given to
+``boltz predict`` as it stands, and ``prepare`` writes a fresh one.
+
 Cyclic binder. ``binder_cyclic`` is ``"auto"``, True or False, with the meaning it has for
 OpenFold3: True writes ``cyclic: true`` on the binder entity, False never does, ``"auto"``
 writes it when the binder has a head-to-tail bond (``capabilities.detect_closures``). Boltz-2
