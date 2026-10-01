@@ -328,13 +328,16 @@ GOLDEN = {
                 "Do not use the ColabFold MSA server for OpenFold3: it then "
                 "runs with a dummy MSA that holds only the query sequence of "
                 "each chain (OpenFold3's input reference suggests this for "
-                "MSA-free runs), which lowers accuracy for a natural receptor, "
-                "but the template alignments written by the toolkit are no "
-                "longer replaced by the server (issue #68). One complex (1YCR, "
-                "OpenFold3 0.5.0, one seed), binder C-alpha RMSD against the "
-                "crystal pose: 1.6 A with the server and no template (the "
-                "server replaces the template), 21.6 A with no MSA and no "
-                "template, 1.1 A with a working template and no MSA.",
+                "MSA-free runs), which lowers accuracy for a natural receptor. "
+                "With --openfold-templates alignment the template alignments "
+                "written by the toolkit are no longer replaced by the server "
+                "(issue #68); the default, structure, keeps the template with "
+                "the server on too. One complex (1YCR, OpenFold3 0.5.0, one "
+                "seed), binder C-alpha RMSD against the crystal pose: 1.57 A "
+                "with the server and the template as a structure (the default), "
+                "1.62 A with the server and the template as an alignment (the "
+                "server replaces it: no template), 21.6 A with no MSA and no "
+                "template, 1.12 A with a working template and no MSA.",
             ),
             "--prediction-mode": (
                 "Prediction",
@@ -757,13 +760,16 @@ GOLDEN = {
                 "Do not use the ColabFold MSA server for OpenFold3: it then "
                 "runs with a dummy MSA that holds only the query sequence of "
                 "each chain (OpenFold3's input reference suggests this for "
-                "MSA-free runs), which lowers accuracy for a natural receptor, "
-                "but the template alignments written by the toolkit are no "
-                "longer replaced by the server (issue #68). One complex (1YCR, "
-                "OpenFold3 0.5.0, one seed), binder C-alpha RMSD against the "
-                "crystal pose: 1.6 A with the server and no template (the "
-                "server replaces the template), 21.6 A with no MSA and no "
-                "template, 1.1 A with a working template and no MSA.",
+                "MSA-free runs), which lowers accuracy for a natural receptor. "
+                "With --openfold-templates alignment the template alignments "
+                "written by the toolkit are no longer replaced by the server "
+                "(issue #68); the default, structure, keeps the template with "
+                "the server on too. One complex (1YCR, OpenFold3 0.5.0, one "
+                "seed), binder C-alpha RMSD against the crystal pose: 1.57 A "
+                "with the server and the template as a structure (the default), "
+                "1.62 A with the server and the template as an alignment (the "
+                "server replaces it: no template), 21.6 A with no MSA and no "
+                "template, 1.12 A with a working template and no MSA.",
             ),
             "--prediction-mode": (
                 "Prediction",
