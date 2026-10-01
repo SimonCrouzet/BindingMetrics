@@ -20,10 +20,13 @@ Structure prediction:
     The ``openfold`` step runs OpenFold3 and writes ``results["openfold"]``. With
     ``--predictor MODEL`` it reads the prediction of that model instead (af2, boltz2, of3 or
     protenix), runs the model at most once for all the metrics that use it, and writes
-    ``results["prediction"]``. Only of3 can be run from here; for another model pass its
-    output with ``--prediction-dir DIR``. The finished predictions are kept in
-    ``--prediction-cache`` (default ``<output-dir>/predictions``) and a repeated run reuses
-    them; ``--rerun-predictions`` runs the model again.
+    ``results["prediction"]``. Every model can be run from here (af2 starts ColabFold); to
+    read an output you made instead, pass it with ``--prediction-dir DIR``. The finished
+    predictions are kept in ``--prediction-cache`` (default ``<output-dir>/predictions``) and a
+    repeated run reuses them; ``--rerun-predictions`` runs the model again.
+
+        binding-metrics-run --input complex.cif --output-dir results/ \\
+            --predictor boltz2 --prediction-conda-env boltz
 
         binding-metrics-run --input complex.cif --output-dir results/ \\
             --predictor boltz2 --prediction-dir boltz_out/
@@ -311,6 +314,10 @@ def run_pipeline(
     openfold_use_msa_server: bool = True,
     prediction_mode: Optional[str] = None,
     prediction_weights: Optional[Path] = None,
+    prediction_cyclic: Optional[bool | str] = None,
+    prediction_use_msa_server: bool = True,
+    prediction_conda_env: Optional[str] = None,
+    prediction_lock_threshold: Optional[float] = None,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -352,8 +359,8 @@ def run_pipeline(
             ``openfold`` step then reads that model's prediction through a
             ``PredictionSession`` and writes ``results["prediction"]``; ``results["openfold"]``
             is ``{"skipped": True}``. ``None`` (default) keeps the OpenFold3 step and
-            ``results["openfold"]``. Only ``"of3"`` can be run from here; another model needs
-            ``prediction_dir``.
+            ``results["openfold"]``. Every registered model has a runner and can be run from here
+            (``cli.prediction.RUNNERS``); ``prediction_dir`` reads an output you made instead.
         prediction_dir: With ``predictor``, the directory of an output you made; it is adopted
             into the store and the model never runs (keyword-only).
         prediction_binder_chain, prediction_target_chain: With ``predictor``, the chain IDs
@@ -371,10 +378,13 @@ def run_pipeline(
             policy.
         prediction_mode: How the model is used for the complex: ``predict``, ``refold``,
             ``score`` or ``score-lock`` (keyword-only; ``--prediction-mode``). It is checked against
-            what the model supports in the pre-flight check and recorded as ``mode`` in
-            ``results["prediction"]`` and ``results["preflight"]``. None takes ``openfold_mode``
-            for OpenFold3 run from here, and is "not known, not checked" for an output read
-            from ``prediction_dir``. Needs ``predictor``.
+            what the model supports in the pre-flight check, and for a run from here against what
+            its runner runs (``supported_modes``: of3 ``refold`` and ``score``, boltz2 all four,
+            af2 and protenix ``predict``; another one raises ``ValueError``), and recorded as
+            ``mode`` in ``results["prediction"]`` and ``results["preflight"]``. None takes
+            ``openfold_mode`` for OpenFold3 run from here, the ``default_mode`` of the runner for
+            another model (boltz2 ``score``, af2 and protenix ``predict``), and is "not known, not
+            checked" for an output read from ``prediction_dir``. Needs ``predictor``.
         prediction_weights: Custom weights for the model, such as a fine-tuned checkpoint
             (keyword-only; ``--prediction-weights``): a file for a model that takes a checkpoint
             file, a directory for one whose weights are a directory. They apply to ``predictor``
@@ -387,6 +397,22 @@ def run_pipeline(
             ``prediction_weights``. For an output read from ``prediction_dir`` the weights are
             whatever made it: giving both raises ``ValueError``, and ``weights`` shows the
             checkpoint that OpenFold3 recorded.
+        prediction_cyclic, prediction_use_msa_server, prediction_conda_env,
+        prediction_lock_threshold: The settings of ``predictor`` run from here, for every model
+            (keyword-only; ``--prediction-cyclic``, ``--prediction-no-msa-server``,
+            ``--prediction-conda-env``, ``--prediction-lock-threshold``). ``prediction_cyclic`` is
+            ``"auto"`` (the default when None), ``True`` (``"on"``) or ``False`` (``"off"``);
+            ``prediction_use_msa_server`` False runs without an MSA server; ``prediction_conda_env``
+            is the environment that has the model (None: its executable on PATH);
+            ``prediction_lock_threshold`` is the threshold of ``score-lock`` in angstrom (None: the
+            runner's own, 2.0 for Boltz-2). For ``predictor="of3"`` they are the settings of
+            ``openfold_cyclic``, ``openfold_use_msa_server`` and ``openfold_conda_env``: both
+            spellings with different values raise ``ValueError``; for another model the
+            ``openfold_*`` ones other than their defaults raise it, naming the ``prediction_*`` one.
+            A setting that the runner of the model has no keyword for (``prediction_cyclic`` for
+            ColabFold, the lock threshold outside ``score-lock``) raises it too, and so does a
+            mode the runner does not run. They are refused with ``prediction_dir``: the model is
+            not run.
         preflight_model: For a caller that runs the model step itself after this call (the
             batch): ``(model, metric, adopted, mode)``, so that its limits are checked here, first.
         The remaining arguments mirror the ``binding-metrics-run`` flags.
@@ -438,7 +464,27 @@ def run_pipeline(
     )
     check_on_unmappable_residue(on_unmappable_residue)
     check_openfold_cyclic(openfold_cyclic)
-    check_predictor(predictor, prediction_dir, prediction_mode, prediction_weights)
+    route = check_predictor(
+        predictor,
+        prediction_dir,
+        prediction_mode,
+        prediction_weights,
+        openfold_mode=openfold_mode,
+        openfold_cyclic=openfold_cyclic,
+        prediction_cyclic=prediction_cyclic,
+        openfold_use_msa_server=openfold_use_msa_server,
+        prediction_use_msa_server=prediction_use_msa_server,
+        openfold_conda_env=openfold_conda_env,
+        prediction_conda_env=prediction_conda_env,
+        prediction_lock_threshold=prediction_lock_threshold,
+    )
+    if predictor is not None and prediction_dir is None:
+        # the --prediction-* spellings are merged into the settings of the run
+        openfold_cyclic, openfold_use_msa_server, openfold_conda_env = (
+            route.cyclic,
+            route.use_msa_server,
+            route.conda_env,
+        )
     prediction_weights = check_weights_arg(prediction_weights, predictor)
     _check_preflight_options(binder_type, on_incompatible)
 
@@ -806,6 +852,7 @@ def run_pipeline(
                 openfold_use_msa_server=openfold_use_msa_server,
                 prediction_mode=prediction_mode,
                 prediction_weights=prediction_weights,
+                prediction_lock_threshold=route.lock_threshold,
             )
             results["provenance"].update(prediction_provenance)
         else:
@@ -1210,6 +1257,10 @@ def main():
                 rerun_predictions=args.rerun_predictions,
                 prediction_mode=args.prediction_mode,
                 prediction_weights=args.prediction_weights,
+                prediction_cyclic=args.prediction_cyclic,
+                prediction_use_msa_server=not args.prediction_no_msa_server,
+                prediction_conda_env=args.prediction_conda_env,
+                prediction_lock_threshold=args.prediction_lock_threshold,
                 binder_type=args.binder_type,
                 on_incompatible=args.on_incompatible,
                 preflight_only=args.preflight_only,

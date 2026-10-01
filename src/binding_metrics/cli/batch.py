@@ -123,6 +123,7 @@ from binding_metrics.cli.prediction import (
     record_binder_cyclic,
     reference_for,
     run_prediction_step,
+    runner_chain_map,
     runner_weights_kinds,
     scored_seed_index,
     scored_seed_kwargs,
@@ -723,6 +724,7 @@ def _run_batched_prediction(
     openfold_use_msa_server: bool = True,
     prediction_mode: Optional[str] = None,
     prediction_weights: Optional[Path] = None,
+    prediction_lock_threshold: Optional[float] = None,
 ) -> None:
     """The ``--predictor`` step of a batch: every sample through one shared prediction store.
 
@@ -814,15 +816,18 @@ def _run_batched_prediction(
                     openfold_use_msa_server=openfold_use_msa_server,
                     prediction_mode=prediction_mode,
                     prediction_weights=weights_ref,
+                    prediction_lock_threshold=prediction_lock_threshold,
                 )
             except Exception as e:  # noqa: BLE001 - one unreadable input must not stop the batch
-                logger.warning("  %s: no prediction request: %s", sid, e)
+                logger.warning(
+                    "  %s: no %s prediction request: %s", sid, display_name(predictor), e
+                )
                 outcomes[sid] = ({"model": predictor, "mode": mode, "error": str(e)}, {})
         if requests and not adopt:
             make_session(store, runner, rerun=rerun_predictions).prefetch(requests.values())
     except Exception as e:  # noqa: BLE001 - the batch call starts a model; see prediction_error
         # Warning level keeps the line on stdout, where the OpenFold step printed its own.
-        logger.warning("  [ERROR] Batched prediction failed: %s", e)
+        logger.warning("  [ERROR] Batched %s prediction failed: %s", display_name(predictor), e)
         traceback.print_exc()
         for sid in requests:
             outcomes[sid] = ({"model": predictor, "mode": mode, "error": str(e)}, {})
@@ -851,6 +856,7 @@ def _run_batched_prediction(
                 # an adopted output is the user's own: its seeds are not the ones given here
                 seed_index=1 if adopt else scored_seed_index(openfold_seeds),
                 mode=mode,
+                default_chain_map=None if adopt else runner_chain_map(runner, requests[sid]),
             )
             block = outcomes[sid][0]
             if predictor == "of3" and not adopt and not block.get("error"):
@@ -937,6 +943,10 @@ def run_batch(
     openfold_use_msa_server: bool = True,
     prediction_mode: Optional[str] = None,
     prediction_weights: Optional[Path] = None,
+    prediction_cyclic: Optional[bool | str] = None,
+    prediction_use_msa_server: bool = True,
+    prediction_conda_env: Optional[str] = None,
+    prediction_lock_threshold: Optional[float] = None,
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -991,8 +1001,9 @@ def run_batch(
             ``openfold`` step then runs as the prediction step of every sample through one
             shared prediction store and fills the ``prediction_*`` columns instead of the
             ``openfold_*`` ones; ``None`` (default) keeps the batched OpenFold3 call. Like
-            ``openfold`` it runs once for all samples after the others. Only ``"of3"`` can be
-            run from here; another model needs ``prediction_dir``.
+            ``openfold`` it runs once for all samples after the others. Every registered model
+            has a runner and can be run from here (``cli.prediction.RUNNERS``); ``prediction_dir``
+            reads outputs you made instead.
         prediction_dir: With ``predictor``, the root that holds one output per sample ID (the
             file stem); the outputs are adopted into the store and the model never runs.
         prediction_binder_chain, prediction_target_chain: With ``predictor``, the chain IDs
@@ -1010,9 +1021,19 @@ def run_batch(
             recorded as skipped with their reason and the rest runs.
         prediction_mode: How the model is used for the complex (``--prediction-mode``): ``predict``,
             ``refold``, ``score`` or ``score-lock``. It is checked against what the model supports
-            in the pre-flight check of every sample and recorded as ``prediction_mode``. None takes
-            ``openfold_mode`` for OpenFold3 run from here and is "not known, not checked" for
-            outputs read from ``prediction_dir``. Needs ``predictor``.
+            in the pre-flight check of every sample, for a run from here against what the runner
+            of the model runs (``ValueError`` for another mode), and recorded as
+            ``prediction_mode``. None takes ``openfold_mode`` for OpenFold3 run from here, the
+            ``default_mode`` of the runner for another model (boltz2 ``score``, af2 and protenix
+            ``predict``) and is "not known, not checked" for outputs read from
+            ``prediction_dir``. Needs ``predictor``.
+        prediction_cyclic, prediction_use_msa_server, prediction_conda_env,
+        prediction_lock_threshold: The settings of ``predictor`` run from here, for every model
+            (``--prediction-cyclic``, ``--prediction-no-msa-server``, ``--prediction-conda-env``,
+            ``--prediction-lock-threshold``), with the meaning and the checks they have in
+            ``run_pipeline``: for ``predictor="of3"`` they are the settings of ``openfold_cyclic``,
+            ``openfold_use_msa_server`` and ``openfold_conda_env``, and a setting that the model's
+            runner has no keyword for raises ``ValueError``.
         prediction_weights: Custom weights for the model, such as a fine-tuned checkpoint
             (``--prediction-weights``): a file or a directory, as the model's runner takes it. They
             apply to ``predictor`` run from here and to the batched OpenFold3 step
@@ -1066,7 +1087,27 @@ def run_batch(
     )
     check_on_unmappable_residue(on_unmappable_residue)
     check_openfold_cyclic(openfold_cyclic)
-    check_predictor(predictor, prediction_dir, prediction_mode, prediction_weights)
+    route = check_predictor(
+        predictor,
+        prediction_dir,
+        prediction_mode,
+        prediction_weights,
+        openfold_mode=openfold_mode,
+        openfold_cyclic=openfold_cyclic,
+        prediction_cyclic=prediction_cyclic,
+        openfold_use_msa_server=openfold_use_msa_server,
+        prediction_use_msa_server=prediction_use_msa_server,
+        openfold_conda_env=openfold_conda_env,
+        prediction_conda_env=prediction_conda_env,
+        prediction_lock_threshold=prediction_lock_threshold,
+    )
+    if predictor is not None and prediction_dir is None:
+        # the --prediction-* spellings are merged into the settings of the run
+        openfold_cyclic, openfold_use_msa_server, openfold_conda_env = (
+            route.cyclic,
+            route.use_msa_server,
+            route.conda_env,
+        )
     prediction_weights = check_weights_arg(prediction_weights, predictor)
     if binder_type not in BINDER_TYPE_CHOICES:
         raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")
@@ -1227,6 +1268,7 @@ def run_batch(
             openfold_use_msa_server=openfold_use_msa_server,
             prediction_mode=prediction_mode,
             prediction_weights=prediction_weights,
+            prediction_lock_threshold=route.lock_threshold,
         )
     elif want_openfold:
         _run_batched_openfold(
@@ -1630,6 +1672,10 @@ def main():
         rerun_predictions=args.rerun_predictions,
         prediction_mode=args.prediction_mode,
         prediction_weights=args.prediction_weights,
+        prediction_cyclic=args.prediction_cyclic,
+        prediction_use_msa_server=not args.prediction_no_msa_server,
+        prediction_conda_env=args.prediction_conda_env,
+        prediction_lock_threshold=args.prediction_lock_threshold,
         binder_type=args.binder_type,
         on_incompatible=args.on_incompatible,
         random_seed=args.random_seed,

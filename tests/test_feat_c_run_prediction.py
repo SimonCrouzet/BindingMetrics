@@ -14,6 +14,7 @@ import sys
 import pytest
 
 from binding_metrics.cli import run
+from binding_metrics.cli.prediction import RUNNERS
 from binding_metrics.cli.run import _collect_failures, run_pipeline
 from binding_metrics.predictors import PARSERS
 from binding_metrics.protocols.report import write_report
@@ -399,8 +400,9 @@ class TestApiChecks:
             pipeline(tmp_path, metrics=frozenset(), predictor="nope")
         assert not any(tmp_path.iterdir())
 
-    @pytest.mark.parametrize("model", [m for m in sorted(PARSERS) if m != "of3"])
-    def test_a_model_without_a_runner_needs_a_directory(self, tmp_path, model):
+    @pytest.mark.parametrize("model", sorted(PARSERS))
+    def test_a_model_without_a_runner_needs_a_directory(self, tmp_path, monkeypatch, model):
+        monkeypatch.delitem(RUNNERS, model)  # every registered model has one: take it away
         with pytest.raises(ValueError, match="has no runner yet"):
             pipeline(tmp_path, metrics=frozenset(), predictor=model)
         assert not any(tmp_path.iterdir())
@@ -467,10 +469,11 @@ class TestCommandLine:
         assert "invalid choice" in err
         assert all(model in err for model in PARSERS)
 
-    @pytest.mark.parametrize("model", [m for m in sorted(PARSERS) if m != "of3"])
+    @pytest.mark.parametrize("model", sorted(PARSERS))
     def test_a_model_without_a_runner_fails_while_the_arguments_are_checked(
         self, monkeypatch, tmp_path, capsys, model
     ):
+        monkeypatch.delitem(RUNNERS, model)  # every registered model has one: take it away
         with pytest.raises(SystemExit) as stop:
             self._parsed(monkeypatch, tmp_path, ["--predictor", model])
         assert stop.value.code == 2

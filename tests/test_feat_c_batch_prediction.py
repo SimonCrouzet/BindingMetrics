@@ -16,6 +16,7 @@ import pytest
 
 from binding_metrics.cli import batch
 from binding_metrics.cli.batch import run_batch
+from binding_metrics.cli.prediction import RUNNERS
 from tests.test_feat_c_support import EXAMPLE_1YCR, StubOpenFold, write_of3_output
 
 NAMES = ("a", "b", "c")
@@ -332,7 +333,8 @@ class TestApiChecks:
             batch_of(samples, tmp_path / "out", predictor="nope")
         assert not (tmp_path / "out").exists()
 
-    def test_a_model_without_a_runner_needs_a_directory(self, tmp_path, samples):
+    def test_a_model_without_a_runner_needs_a_directory(self, tmp_path, samples, monkeypatch):
+        monkeypatch.delitem(RUNNERS, "af2")  # every registered model has one: take it away
         with pytest.raises(ValueError, match="has no runner yet"):
             batch_of(samples, tmp_path / "out", predictor="af2")
         assert not (tmp_path / "out").exists()
@@ -459,10 +461,11 @@ class TestCommandLine:
         assert seen["predictor"] is None and seen["prediction_dir"] is None
         assert seen["rerun_predictions"] is False
 
-    @pytest.mark.parametrize("model", ["af2", "boltz2", "protenix"])
+    @pytest.mark.parametrize("model", ["af2", "boltz2", "of3", "protenix"])
     def test_a_model_without_a_runner_fails_while_the_arguments_are_checked(
         self, tmp_path, samples, monkeypatch, capsys, model
     ):
+        monkeypatch.delitem(RUNNERS, model)  # every registered model has one: take it away
         code, _ = self._main(monkeypatch, tmp_path, samples, ["--predictor", model])
         assert code == 2
         err = capsys.readouterr().err

@@ -198,8 +198,9 @@ class TestTheClaimsAboutTheResultKeys:
         )
         assert rows[0]["openfold_binder_ca_rmsd"] == pytest.approx(2.0, abs=1e-2)
 
-    def test_the_reference_is_the_input_for_openfold3_only(self):
+    def test_the_reference_is_the_input_for_every_model(self):
         from binding_metrics.cli.prediction import reference_for
+        from binding_metrics.predictors import PARSERS
 
-        assert reference_for("of3", EXAMPLE_1YCR) == EXAMPLE_1YCR
-        assert reference_for("boltz2", EXAMPLE_1YCR) is None
+        for model in sorted(PARSERS):
+            assert reference_for(model, EXAMPLE_1YCR) == EXAMPLE_1YCR

@@ -21,7 +21,11 @@ and ``--openfold-no-msa-server``. Four more were added with the pre-flight check
 the same way: ``--binder-type``, ``--on-incompatible``, ``--preflight-only`` and
 ``--prediction-mode`` (the mode a model is used in: predict, refold, score or score-lock).
 ``--prediction-weights`` (custom weights of the model) was added to both commands afterwards and
-is recorded the same way.
+is recorded the same way. When the runners of ColabFold, Boltz-2 and Protenix were registered, the
+``--openfold-seeds`` help gained a sentence on what the seeds mean for those runners, the
+``--prediction-mode`` help says what each runner can do and what its default is, and four options
+were added to both commands and are recorded here: ``--prediction-cyclic``,
+``--prediction-no-msa-server``, ``--prediction-conda-env`` and ``--prediction-lock-threshold``.
 """
 
 import argparse
@@ -279,10 +283,12 @@ GOLDEN = {
                 "+",
                 False,
                 "None",
-                "Seed values OpenFold3 samples with, written to its "
-                "runner YAML (default: 42). It makes one seed_<value> "
-                "directory per seed; the first seed given, first "
-                "sample, is scored.",
+                "Seed values OpenFold3 samples with, written to its runner "
+                "YAML (default: 42). It makes one seed_<value> directory "
+                "per seed; the first seed given, first sample, is scored. "
+                "With --predictor MODEL the seeds go to that model's runner"
+                " (ColabFold: consecutive integers from 0, default 0; "
+                "Boltz-2: exactly one, default 42; Protenix: default 101).",
             ),
             "--openfold-cyclic": (
                 "OpenFold",
@@ -325,14 +331,80 @@ GOLDEN = {
                 False,
                 "None",
                 "How the model is used for the complex: predict (sequences "
-                "only), refold (receptor templated, binder predicted freely),"
-                " score (every chain templated on its own, the pose not "
-                "given: re-docking) or score-lock (score, with the pose "
-                "pinned to the input). It is checked against what the model "
-                "supports before anything runs, and recorded. Default: for "
-                "--predictor of3 run from here, the value of --openfold-mode;"
-                " for an output read with --prediction-dir, not stated and "
-                "not checked. Needs --predictor.",
+                "only), refold (receptor templated, binder predicted "
+                "freely), score (every chain templated on its own, the pose"
+                " not given: re-docking) or score-lock (score, with the "
+                "pose pinned to the input). It is checked against what the "
+                "model supports and, for a run from here, against what its "
+                "runner can do (of3: refold, score; boltz2: all four; af2 "
+                "and protenix: predict), before anything runs, and "
+                "recorded. Default: the runner's own mode, that is for "
+                "--predictor of3 the value of --openfold-mode (score), "
+                "score for boltz2 and predict for af2 and protenix; for an "
+                "output read with --prediction-dir, not stated and not "
+                "checked. Needs --predictor.",
+            ),
+            "--prediction-cyclic": (
+                "Prediction",
+                None,
+                ["auto", "on", "off"],
+                None,
+                False,
+                "None",
+                "Whether the binder is given to the model as cyclic, for "
+                "--predictor MODEL run from here. auto (default): when the "
+                "binder has a head-to-tail bond; on: always; off: never. "
+                "OpenFold3 (>= 0.4.5) and Boltz-2 get 'cyclic: true' on the"
+                " binder chain, which only wraps its relative positions and"
+                " does not enforce the closure bond; Protenix gets the "
+                "head-to-tail and disulfide bonds as covalent_bonds; "
+                "ColabFold has no such setting and refuses a value. For "
+                "--predictor of3 it is the setting of --openfold-cyclic "
+                "(both given with different values is an error). Needs "
+                "--predictor.",
+            ),
+            "--prediction-no-msa-server": (
+                "Prediction",
+                None,
+                None,
+                0,
+                False,
+                "False",
+                "Do not use an MSA server, for --predictor MODEL run from "
+                "here: ColabFold runs single_sequence, Boltz-2 writes 'msa:"
+                " empty', Protenix runs with --use_msa false, OpenFold3 as "
+                "--openfold-no-msa-server. The accuracy for a natural "
+                "receptor drops; no sequence leaves the machine. Needs "
+                "--predictor.",
+            ),
+            "--prediction-conda-env": (
+                "Prediction",
+                "NAME",
+                None,
+                None,
+                False,
+                "None",
+                "Conda environment that has the model, for --predictor "
+                "MODEL run from here (conda run -n NAME). Default: the "
+                "model's executable on PATH, that is the current "
+                "environment; an empty string says the same. For "
+                "--predictor of3 it is the setting of --openfold-conda-env "
+                "(default openfold3) and wins over its default; both given "
+                "with different values is an error. Needs --predictor.",
+            ),
+            "--prediction-lock-threshold": (
+                "Prediction",
+                "ANGSTROM",
+                None,
+                None,
+                False,
+                "None",
+                "Only for --prediction-mode score-lock: how far, in "
+                "angstrom, a residue may move from the pinned template "
+                "before the model pulls it back (the threshold of the "
+                "forced template of Boltz-2). Default: 2.0, the choice of "
+                "the Boltz-2 runner (Boltz-2 documents none). A runner or a"
+                " mode that does not use it refuses it. Needs --predictor.",
             ),
             "--prediction-weights": (
                 "Prediction",
@@ -627,10 +699,12 @@ GOLDEN = {
                 "+",
                 False,
                 "None",
-                "Seed values OpenFold3 samples with, written to its "
-                "runner YAML (default: 42). It makes one seed_<value> "
-                "directory per seed; the first seed given, first "
-                "sample, is scored.",
+                "Seed values OpenFold3 samples with, written to its runner "
+                "YAML (default: 42). It makes one seed_<value> directory "
+                "per seed; the first seed given, first sample, is scored. "
+                "With --predictor MODEL the seeds go to that model's runner"
+                " (ColabFold: consecutive integers from 0, default 0; "
+                "Boltz-2: exactly one, default 42; Protenix: default 101).",
             ),
             "--openfold-cyclic": (
                 "OpenFold",
@@ -673,14 +747,80 @@ GOLDEN = {
                 False,
                 "None",
                 "How the model is used for the complex: predict (sequences "
-                "only), refold (receptor templated, binder predicted freely),"
-                " score (every chain templated on its own, the pose not "
-                "given: re-docking) or score-lock (score, with the pose "
-                "pinned to the input). It is checked against what the model "
-                "supports before anything runs, and recorded. Default: for "
-                "--predictor of3 run from here, the value of --openfold-mode;"
-                " for an output read with --prediction-dir, not stated and "
-                "not checked. Needs --predictor.",
+                "only), refold (receptor templated, binder predicted "
+                "freely), score (every chain templated on its own, the pose"
+                " not given: re-docking) or score-lock (score, with the "
+                "pose pinned to the input). It is checked against what the "
+                "model supports and, for a run from here, against what its "
+                "runner can do (of3: refold, score; boltz2: all four; af2 "
+                "and protenix: predict), before anything runs, and "
+                "recorded. Default: the runner's own mode, that is for "
+                "--predictor of3 the value of --openfold-mode (score), "
+                "score for boltz2 and predict for af2 and protenix; for an "
+                "output read with --prediction-dir, not stated and not "
+                "checked. Needs --predictor.",
+            ),
+            "--prediction-cyclic": (
+                "Prediction",
+                None,
+                ["auto", "on", "off"],
+                None,
+                False,
+                "None",
+                "Whether the binder is given to the model as cyclic, for "
+                "--predictor MODEL run from here. auto (default): when the "
+                "binder has a head-to-tail bond; on: always; off: never. "
+                "OpenFold3 (>= 0.4.5) and Boltz-2 get 'cyclic: true' on the"
+                " binder chain, which only wraps its relative positions and"
+                " does not enforce the closure bond; Protenix gets the "
+                "head-to-tail and disulfide bonds as covalent_bonds; "
+                "ColabFold has no such setting and refuses a value. For "
+                "--predictor of3 it is the setting of --openfold-cyclic "
+                "(both given with different values is an error). Needs "
+                "--predictor.",
+            ),
+            "--prediction-no-msa-server": (
+                "Prediction",
+                None,
+                None,
+                0,
+                False,
+                "False",
+                "Do not use an MSA server, for --predictor MODEL run from "
+                "here: ColabFold runs single_sequence, Boltz-2 writes 'msa:"
+                " empty', Protenix runs with --use_msa false, OpenFold3 as "
+                "--openfold-no-msa-server. The accuracy for a natural "
+                "receptor drops; no sequence leaves the machine. Needs "
+                "--predictor.",
+            ),
+            "--prediction-conda-env": (
+                "Prediction",
+                "NAME",
+                None,
+                None,
+                False,
+                "None",
+                "Conda environment that has the model, for --predictor "
+                "MODEL run from here (conda run -n NAME). Default: the "
+                "model's executable on PATH, that is the current "
+                "environment; an empty string says the same. For "
+                "--predictor of3 it is the setting of --openfold-conda-env "
+                "(default openfold3) and wins over its default; both given "
+                "with different values is an error. Needs --predictor.",
+            ),
+            "--prediction-lock-threshold": (
+                "Prediction",
+                "ANGSTROM",
+                None,
+                None,
+                False,
+                "None",
+                "Only for --prediction-mode score-lock: how far, in "
+                "angstrom, a residue may move from the pinned template "
+                "before the model pulls it back (the threshold of the "
+                "forced template of Boltz-2). Default: 2.0, the choice of "
+                "the Boltz-2 runner (Boltz-2 documents none). A runner or a"
+                " mode that does not use it refuses it. Needs --predictor.",
             ),
             "--prediction-weights": (
                 "Prediction",

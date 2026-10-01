@@ -57,7 +57,9 @@ class TestTheOption:
         ):
             assert part in text
         assert "score-lock (score, with the pose pinned to the input)" in text
-        assert "for --predictor of3 run from here, the value of --openfold-mode" in text
+        assert "for --predictor of3 the value of --openfold-mode" in text
+        # the default of a run from here is the mode of its runner
+        assert "score for boltz2 and predict for af2 and protenix" in text
 
     def test_it_needs_a_predictor(self):
         parser = self._parser()
@@ -117,8 +119,8 @@ class TestThePreflightRefusesALock:
         assert (
             "Mode: score-lock (score, with the pose of the chains pinned to the input)" in message
         )
-        # the alternatives come from the registry; Boltz-2 has a parser and no runner
-        assert "Boltz-2 (boltz2) [no runner here: give its output with --prediction-dir]" in message
+        # the alternatives come from the registry; Boltz-2 can be run from here, so it is not marked
+        assert "Boltz-2 (boltz2)" in message and "[no runner here" not in message
         assert "OpenFold3 (of3)" not in message.split("fix:")[1]
 
     def test_the_same_through_the_openfold_step_is_not_reachable_by_the_option(self):
@@ -360,5 +362,5 @@ class TestTheRunCommandLine:
         assert exit_info.value.code == 1
         assert "Pre-flight check failed" in out
         assert "mode 'score-lock' was requested" in out
-        assert "Boltz-2 (boltz2) [no runner here" in out
+        assert "Boltz-2 (boltz2)" in out and "[no runner here" not in out
         assert not (tmp_path / "out").exists()

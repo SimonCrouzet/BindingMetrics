@@ -142,7 +142,9 @@ def add_openfold_seeds_arg(parser) -> None:
         help=(
             "Seed values OpenFold3 samples with, written to its runner YAML (default: 42). "
             "It makes one seed_<value> directory per seed; the first seed given, first sample, "
-            "is scored."
+            "is scored. With --predictor MODEL the seeds go to that model's runner (ColabFold: "
+            "consecutive integers from 0, default 0; Boltz-2: exactly one, default 42; Protenix: "
+            "default 101)."
         ),
     )
 
