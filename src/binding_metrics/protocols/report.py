@@ -502,10 +502,15 @@ def _md_interface(iface: dict | None) -> str:
             ],
         )
     )
-    # Per-residue buried SASA for peptide
-    peptide_chain = iface.get("peptide_chain", "B")
+    # Per-residue buried SASA for peptide. Without the chain the result names, no chain is
+    # guessed: the table is left out.
+    peptide_chain = iface.get("peptide_chain")
     pep_res = sorted(
-        [r for r in (iface.get("per_residue") or []) if r.get("chain") == peptide_chain],
+        [
+            r
+            for r in (iface.get("per_residue") or [])
+            if peptide_chain is not None and r.get("chain") == peptide_chain
+        ],
         key=lambda r: r.get("res_id", 0),
     )
     if pep_res:
