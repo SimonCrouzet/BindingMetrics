@@ -97,23 +97,48 @@ def test_the_docs_state_exactly_what_the_template_embedder_does():
         assert overstated not in section
 
 
-def test_the_docs_give_the_measured_msa_server_effect_and_the_ways_to_keep_the_template():
+def test_the_docs_give_the_measured_msa_server_effect_and_the_default_that_avoids_it():
     text = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
     start = text.index("**the MSA server and the templates (issue #68")
     section = text[start : text.index("\n\n", start)]
     assert "#68" in section and "measured on one complex" in section
-    # what the run showed: the default has no template at all, with the numbers of one complex
-    assert "the default `score` run has no template at all" in section
+    # the default route is not affected by the server's overwrite, and `alignment` reproduces
+    # the old behaviour
+    assert "does not overwrite `template_cif_paths`" in section
+    assert "The default template route, `structure`" in section
+    assert "`--openfold-templates alignment`, which reproduces the earlier default" in section
+    # what the run showed with `alignment`: no template at all, with the numbers of one complex
+    assert "has no template at all" in section
     assert "135 template hits" in section and "70 for the 13-residue binder" in section
-    assert "1.62 A" in section and "1.12 A" in section
-    # the two ways to keep it
+    assert "1.62 A" in section and "1.57 A" in section and "1.12 A" in section
+    # the other way to keep the template with `alignment`
     assert "`use_msa_server=False`" in section and "`--no-msa-server`" in section
     assert "`--openfold-no-msa-server`" in section
-    assert (
-        '`template_mode="structure"`' in section and "`--openfold-templates structure`" in section
-    )
+    # the keys of the default requests changed once
+    assert "changed once when `structure` became the default" in section
     # not tried is said
     assert "Not tried" in section and "fetch_missing_structures: true" in section
+
+
+def test_the_template_mode_paragraph_gives_the_default_and_the_commands_that_were_run():
+    text = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
+    start = text.index(
+        "**template mode (`template_mode`, `--openfold-templates {structure,alignment}`).**"
+    )
+    section = text[start : text.index("\n\n", start)]
+    assert "`structure` (the default)" in section and "OpenFold3 0.4.2 or later" in section
+    assert "`alignment` gives each templated chain an A3M self-alignment" in section
+    assert "`--openfold-templates alignment` with another `--predictor` is a usage error" in section
+    # the default run through the command line, with its numbers
+    for stated in (
+        "both chains `used` with `source: structure`",
+        "binder 1.58 A, ipTM 0.865, 106 s",
+        "`replaced_by_msa_server`",
+        "1.62 A, ipTM 0.847, 91 s",
+        "1CWA with `--openfold-no-msa-server`, both chains used, ipTM 0.970, binder 0.39 A, 89 s",
+        "`binding-metrics-batch --predictor of3 --openfold-no-msa-server`",
+    ):
+        assert stated in section, stated
 
 
 def _displaced_binder_run():
