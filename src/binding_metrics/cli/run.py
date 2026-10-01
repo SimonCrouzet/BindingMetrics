@@ -431,10 +431,6 @@ def run_pipeline(
     _require_chains_present(chain_info, peptide_chain, receptor_chain)
     peptide_chain = chain_info["peptide_chain"]  # auth_asym_id (biotite)
     receptor_chain = chain_info["receptor_chain"]
-    # The chain IDs OpenMM gives the input file, which the energy step needs when it reads
-    # that file. The relaxation and the cyclic-bond detection take the author IDs above.
-    input_peptide_chain_label = chain_info["peptide_chain_label"]
-    input_receptor_chain_label = chain_info["receptor_chain_label"]
     results["chains"] = chain_info
 
     # ------------------------------------------------------------------- Prep
@@ -581,25 +577,12 @@ def run_pipeline(
         try:
             from binding_metrics.metrics.energy import compute_interaction_energy
 
-            # The energy reads the file through OpenMM, which names the chains as
-            # detect_chains_from_file reports for that file.
-            if relaxed_path == input_path:
-                openmm_peptide = input_peptide_chain_label
-                openmm_receptor = input_receptor_chain_label
-            else:
-                openmm_ids = detect_chains_from_file(
-                    relaxed_path,
-                    peptide_chain=peptide_chain,
-                    receptor_chain=receptor_chain,
-                    verbose=False,
-                )
-                openmm_peptide = openmm_ids["peptide_chain_label"]
-                openmm_receptor = openmm_ids["receptor_chain_label"]
-
+            # The energy reads the file through OpenMM and finds the chains by their author
+            # IDs, whichever IDs OpenMM gives them in that file.
             energy = compute_interaction_energy(
                 relaxed_path,
-                peptide_chain=openmm_peptide,
-                receptor_chain=openmm_receptor,
+                peptide_chain=working_peptide,
+                receptor_chain=working_receptor,
                 device=device,
                 sample_id=sample_id,
                 modes=energy_modes,

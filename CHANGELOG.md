@@ -223,6 +223,14 @@ Values from earlier versions differ in the cases below. A change reads "before -
     for the peptide and the real peptide was dropped as a third protein chain (`dropped_protein_chains` `['B']`),
     with `success` true; `potential_energy_minimized` -29964.5 -> -21549.6 kJ/mol (`--md-duration-ps 0`, the value
     that the ID `B` gave), `dropped_protein_chains` `['B']` -> `[]`.
+- **`compute_interaction_energy` and `binding-metrics-energy` read the chain IDs as author IDs (#112).** The IDs went to
+  `strip_heterogens`, `drop_other_protein_chains` and the chain lookup as IDs of the OpenMM topology, which for an
+  mmCIF with more label IDs than author IDs selects another chain, and the run still reported success. An ID is read as an
+  author ID first and as an ID of the topology otherwise, so the IDs that worked before still work, and the log line names
+  the author IDs. `binding-metrics-run` hands the energy step the author IDs.
+  - 1CWA, raw file, `peptide_chain="C"`, `receptor_chain="A"`, `modes=("raw",)`: the waters of topology chain C were taken for
+    the peptide, DAL, BMT, ABA and SAR were removed as heterogens and chain B was dropped; `num_contacts` 7542 -> 2288 and
+    `raw_interaction_energy` -674.7 -> -260.4 kJ/mol, the values that the ID `B` gave.
 
 ### Added
 

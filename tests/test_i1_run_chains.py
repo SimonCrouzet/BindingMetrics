@@ -1,5 +1,8 @@
 """Chain IDs in ``run_pipeline``: author, label and OpenMM names of one chain.
 
+Every step is handed the author IDs; the energy step and the relaxation find the chains in
+the OpenMM topology from them.
+
 3P8F (trypsin with the bicyclic SFTI-1 inhibitor) has the peptide as author chain I and
 label chain B, and the receptor as author chain A and label chain A; waters and a ligand
 give the file more label IDs than author IDs, so OpenMM names the chains by label.
@@ -48,7 +51,7 @@ class TestSkippedPrepAndRelax:
         assert results["interface"]["peptide_chain"] == "I"
         assert results["interface"]["receptor_chain"] == "A"
 
-    def test_energy_reads_the_raw_file_through_openmm_names(self, tmp_path, recorded_energy_chains):
+    def test_energy_is_given_the_author_ids_of_the_raw_file(self, tmp_path, recorded_energy_chains):
         run_pipeline(
             BICYCLIC_CIF,
             tmp_path,
@@ -58,7 +61,7 @@ class TestSkippedPrepAndRelax:
         )
         (call,) = recorded_energy_chains
         assert call["path"] == BICYCLIC_CIF
-        assert (call["peptide"], call["receptor"]) == ("B", "A")
+        assert (call["peptide"], call["receptor"]) == ("I", "A")
 
 
 class TestPreppedFile:
