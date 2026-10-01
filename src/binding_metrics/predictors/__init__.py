@@ -7,7 +7,8 @@ per-model code. Adapters read output only and never run a model.
 A run-once store sits beside them: ``PredictionRequest`` describes a prediction,
 ``PredictionStore`` keeps finished ones under a key of that description, ``PredictionSession``
 is what a pipeline asks for a parsed record (running the model on the first miss only), and a
-``PredictionRunner`` such as ``OpenFold3Runner`` starts the model.
+``PredictionRunner`` starts the model: ``OpenFold3Runner``, ``ColabFoldRunner`` (AlphaFold2),
+``Boltz2Runner`` and ``ProtenixRunner``.
 
 Names load on first access (PEP 562); importing this package imports nothing heavy, and
 biotite is imported only when a structure is read.
@@ -26,6 +27,9 @@ _EXPORTS = {
     "PredictionParser": "binding_metrics.predictors.base",
     "PredictionRunner": "binding_metrics.predictors.runners",
     "OpenFold3Runner": "binding_metrics.predictors.of3_runner",
+    "ColabFoldRunner": "binding_metrics.predictors.af2_runner",
+    "Boltz2Runner": "binding_metrics.predictors.boltz2_runner",
+    "ProtenixRunner": "binding_metrics.predictors.protenix_runner",
     "PredictionRequest": "binding_metrics.predictors.store",
     "StoredPrediction": "binding_metrics.predictors.store",
     "PredictionStore": "binding_metrics.predictors.store",
@@ -41,8 +45,11 @@ _EXPORTS = {
 __getattr__, __dir__ = _lazy_exports(__name__, _EXPORTS, globals())
 
 if TYPE_CHECKING:
+    from binding_metrics.predictors.af2_runner import ColabFoldRunner
     from binding_metrics.predictors.base import PredictionParser
+    from binding_metrics.predictors.boltz2_runner import Boltz2Runner
     from binding_metrics.predictors.of3_runner import OpenFold3Runner
+    from binding_metrics.predictors.protenix_runner import ProtenixRunner
     from binding_metrics.predictors.record import (
         PredictionFiles,
         PredictionRecord,
@@ -66,6 +73,8 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "Boltz2Runner",
+    "ColabFoldRunner",
     "OpenFold3Runner",
     "PARSERS",
     "ParserSpec",
@@ -78,6 +87,7 @@ __all__ = [
     "PredictionSession",
     "PredictionStore",
     "PredictionUnavailableError",
+    "ProtenixRunner",
     "SampleRef",
     "StoredPrediction",
     "TokenLayout",

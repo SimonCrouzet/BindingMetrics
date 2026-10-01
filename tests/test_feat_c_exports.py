@@ -19,6 +19,9 @@ STORE_NAMES = {
     "PredictionSession": "binding_metrics.predictors.session",
     "PredictionRunner": "binding_metrics.predictors.runners",
     "OpenFold3Runner": "binding_metrics.predictors.of3_runner",
+    "ColabFoldRunner": "binding_metrics.predictors.af2_runner",
+    "Boltz2Runner": "binding_metrics.predictors.boltz2_runner",
+    "ProtenixRunner": "binding_metrics.predictors.protenix_runner",
 }
 
 
