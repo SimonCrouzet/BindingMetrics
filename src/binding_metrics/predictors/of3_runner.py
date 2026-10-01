@@ -17,7 +17,7 @@ openfold module is imported when a run starts, never before)::
             receptor_chain: Optional[str] = None, mode: str = "score",
             seeds: Optional[Sequence[int]] = None, num_samples: int = 5,
             presets: Optional[Sequence[str]] = None, use_msa_server: bool = True,
-            num_model_seeds: int = 1, on_unmappable_residue: str = "error",
+            num_model_seeds: Optional[int] = None, on_unmappable_residue: str = "error",
             extra_args: Sequence[str] = (), inference_ckpt_path: Optional[str | Path] = None,
             runner_yaml: Optional[str | Path] = None,
             template_cif_path: Optional[str | Path] = None) -> PredictionRequest
@@ -35,14 +35,20 @@ with both chains as templates), ``"refold"`` (``run_openfold_refolding``: the bi
 sequence beside a templated receptor) or ``"predict"`` (``input_path`` is a ready OpenFold3 query
 file for ``run_openfold``; files that the query names are not hashed). What goes into the key:
 
-* the OpenFold3 version (``version()``; empty when it cannot be told), the seeds, the number of
-  samples per seed, the chain roles and the content hash of the input file;
+* the OpenFold3 version (``version()``; empty when it cannot be told), the number of samples per
+  seed, the chain roles and the content hash of the input file;
 * ``options``: ``presets`` (``["predict", "low_mem"]`` by default, ``predict`` added when
   missing; None when ``runner_yaml`` replaces them), ``use_msa_server``, ``num_model_seeds``,
   ``on_unmappable_residue``, ``extra_args`` and ``inference_ckpt_path`` with the size of that file;
+* the seeds that OpenFold3 samples with. ``seeds`` is the explicit list, ``[42]`` when the caller
+  gives none, and empty when ``num_model_seeds`` asks OpenFold3 to generate them (the count is
+  then in ``options``; None there means no generation). ``seeds`` and ``num_model_seeds`` cannot
+  both be given, because OpenFold3 lets the generated seeds replace the explicit ones. A run
+  writes the seeds to the runner YAML (``experiment_settings.seeds``): OpenFold3 0.5.0 does not
+  read seeds from the query file;
 * the content of ``template_cif_path`` and ``runner_yaml`` when given, and of the user-default
-  ``runner.yml`` that OpenFold3 merges under the toolkit's YAML (it can carry seeds, the MSA server
-  URL and the structure format), when the file exists.
+  ``runner.yml`` that OpenFold3 merges under the toolkit's YAML (it can carry the MSA server URL
+  and the structure format), when the file exists.
 
 Not in the key: the conda environment (the version is), where the input file lives, and what an
 MSA server returns (results from a remote server can change over time; ``use_msa_server`` is
@@ -77,7 +83,7 @@ from binding_metrics.predictors.store import PredictionRequest
 #: Defaults of the openfold run functions that are not exposed as module constants. A test
 #: compares them with the signatures, so a change there cannot pass unnoticed.
 _DEFAULT_NUM_SAMPLES = 5
-_DEFAULT_NUM_MODEL_SEEDS = 1
+_DEFAULT_NUM_MODEL_SEEDS = None
 _DEFAULT_USE_MSA_SERVER = True
 _DEFAULT_ON_UNMAPPABLE = "error"
 
@@ -145,7 +151,7 @@ class OpenFold3Runner(PredictionRunner):
         num_samples: int = _DEFAULT_NUM_SAMPLES,
         presets: Optional[Sequence[str]] = None,
         use_msa_server: bool = _DEFAULT_USE_MSA_SERVER,
-        num_model_seeds: int = _DEFAULT_NUM_MODEL_SEEDS,
+        num_model_seeds: Optional[int] = _DEFAULT_NUM_MODEL_SEEDS,
         on_unmappable_residue: str = _DEFAULT_ON_UNMAPPABLE,
         extra_args: Sequence[str] = (),
         inference_ckpt_path: Optional[str | Path] = None,
@@ -160,12 +166,15 @@ class OpenFold3Runner(PredictionRunner):
             name: Query name; the output files are named after it.
             binder_chain, receptor_chain: Chain roles; required for ``score`` and ``refold``.
             mode: ``"score"``, ``"refold"`` or ``"predict"``.
-            seeds: Seed values of the query; None takes the toolkit's default.
+            seeds: Seed values OpenFold3 samples with; None takes the toolkit's default
+                (``[42]``), or none when ``num_model_seeds`` is given. Cannot be combined with
+                ``num_model_seeds``.
             num_samples: Structures per seed (``--num_diffusion_samples``).
             presets: Model presets; None takes the toolkit's default. Ignored with
                 ``runner_yaml``.
             use_msa_server: Use the ColabFold MSA server (sequences leave the machine).
-            num_model_seeds: ``--num_model_seeds``.
+            num_model_seeds: ``--num_model_seeds``, which makes OpenFold3 generate that many
+                seeds; None (default) leaves it out.
             on_unmappable_residue: ``"error"`` or ``"x"`` (see ``run_openfold_scoring``).
             extra_args: Extra command-line arguments, passed verbatim.
             inference_ckpt_path: Checkpoint file; None uses OpenFold3's default.
@@ -173,8 +182,8 @@ class OpenFold3Runner(PredictionRunner):
             template_cif_path: Pre-prepared complex or receptor template (``score``, ``refold``).
 
         Raises:
-            ValueError: A missing chain role, an unknown mode or choice, or a template file with
-                ``predict``.
+            ValueError: A missing chain role, an unknown mode or choice, a template file with
+                ``predict``, or both ``seeds`` and ``num_model_seeds``.
         """
         if mode in ("score", "refold") and not (binder_chain and receptor_chain):
             raise ValueError(f"mode '{mode}' needs binder_chain and receptor_chain")
@@ -186,6 +195,15 @@ class OpenFold3Runner(PredictionRunner):
                 f"got {on_unmappable_residue!r}"
             )
         run_module = _run_module()
+        seed_values, generated_seeds = run_module._resolve_run_seeds(
+            seeds, num_model_seeds, extra_args
+        )
+        if seed_values is not None:
+            request_seeds: tuple[int, ...] = tuple(seed_values)
+        elif generated_seeds is not None:
+            request_seeds = ()  # OpenFold3 generates them; the count is in the options
+        else:
+            request_seeds = tuple(run_module._DEFAULT_QUERY_SEEDS)
         if runner_yaml is not None:
             presets_option = None
         else:
@@ -216,13 +234,13 @@ class OpenFold3Runner(PredictionRunner):
             binder_chain=binder_chain,
             receptor_chain=receptor_chain,
             extra_files=extra_files,
-            seeds=run_module._DEFAULT_QUERY_SEEDS if seeds is None else seeds,
+            seeds=request_seeds,
             num_samples=num_samples,
             model_version=self.version() or "",
             options={
                 "presets": presets_option,
                 "use_msa_server": bool(use_msa_server),
-                "num_model_seeds": int(num_model_seeds),
+                "num_model_seeds": generated_seeds,
                 "on_unmappable_residue": on_unmappable_residue,
                 "extra_args": [str(argument) for argument in extra_args],
                 "inference_ckpt_path": None if checkpoint is None else str(checkpoint),
@@ -390,8 +408,6 @@ class OpenFold3Runner(PredictionRunner):
     def _query_arguments(request: PredictionRequest) -> dict[str, Any]:
         """The arguments that go into the query file, when they differ from the defaults."""
         arguments: dict[str, Any] = {}
-        if tuple(request.seeds) != tuple(_run_module()._DEFAULT_QUERY_SEEDS):
-            arguments["seeds"] = tuple(request.seeds)
         residues = request.options.get("on_unmappable_residue", _DEFAULT_ON_UNMAPPABLE)
         if residues != _DEFAULT_ON_UNMAPPABLE:
             arguments["on_unmappable_residue"] = residues
@@ -405,6 +421,9 @@ class OpenFold3Runner(PredictionRunner):
             arguments["conda_env"] = self.conda_env
         if request.num_samples != _DEFAULT_NUM_SAMPLES:
             arguments["num_diffusion_samples"] = request.num_samples
+        seeds = tuple(request.seeds)
+        if seeds and seeds != tuple(_run_module()._DEFAULT_QUERY_SEEDS):
+            arguments["seeds"] = seeds
         if options.get("num_model_seeds", _DEFAULT_NUM_MODEL_SEEDS) != _DEFAULT_NUM_MODEL_SEEDS:
             arguments["num_model_seeds"] = int(options["num_model_seeds"])
         if options.get("use_msa_server", _DEFAULT_USE_MSA_SERVER) != _DEFAULT_USE_MSA_SERVER:

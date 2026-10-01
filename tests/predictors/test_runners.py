@@ -161,7 +161,7 @@ class TestMakeRequest:
         assert request.options == {
             "presets": ["predict", "low_mem"],
             "use_msa_server": True,
-            "num_model_seeds": 1,
+            "num_model_seeds": None,
             "on_unmappable_residue": "error",
             "extra_args": [],
             "inference_ckpt_path": None,
@@ -408,7 +408,6 @@ class TestRun:
             seeds=(7, 8),
             num_samples=3,
             use_msa_server=False,
-            num_model_seeds=2,
             on_unmappable_residue="x",
             extra_args=["--a=1"],
             inference_ckpt_path="/weights/x.pt",
@@ -419,12 +418,19 @@ class TestRun:
         runner.run(request, tmp_path / "w")
         ((_, kwargs),) = wrappers.calls
         assert kwargs["conda_env"] == "of3" and kwargs["seeds"] == (7, 8)
-        assert kwargs["num_diffusion_samples"] == 3 and kwargs["num_model_seeds"] == 2
+        assert kwargs["num_diffusion_samples"] == 3 and "num_model_seeds" not in kwargs
         assert kwargs["use_msa_server"] is False and kwargs["on_unmappable_residue"] == "x"
         assert kwargs["extra_args"] == ["--a=1"]
         assert kwargs["inference_ckpt_path"] == "/weights/x.pt"
         assert kwargs["runner_yaml"] == config and kwargs["template_cif_path"] == template
         assert "model_presets" not in kwargs  # the runner YAML replaces them
+
+    def test_generated_seeds_reach_the_wrapper_without_seed_values(self, tmp_path, monkeypatch):
+        wrappers = RecordingWrappers(monkeypatch)
+        (tmp_path / "w").mkdir()
+        OpenFold3Runner().run(score_request(tmp_path, num_model_seeds=2), tmp_path / "w")
+        ((_, kwargs),) = wrappers.calls
+        assert kwargs["num_model_seeds"] == 2 and "seeds" not in kwargs
 
     def test_other_presets_are_passed(self, tmp_path, monkeypatch):
         wrappers = RecordingWrappers(monkeypatch)
@@ -503,7 +509,8 @@ class TestRun:
         request = score_request(tmp_path, seeds=(3,))
         query = OpenFold3Runner().prepare(request, tmp_path / "w")
         assert query == tmp_path / "w" / "query" / "q_query.json"
-        assert seen["seeds"] == (3,) and seen["query_name"] == "q"
+        # seeds are not part of the query file; the run writes them to the runner YAML
+        assert "seeds" not in seen and seen["query_name"] == "q"
 
     def test_prepare_raises_the_input_errors_of_a_run(self, tmp_path):
         pytest.importorskip("gemmi")
@@ -849,7 +856,12 @@ class TestWithAStubExecutable:
         query = json.loads(
             (entry.directory / "outputs" / "query" / "p53_query.json").read_text(encoding="utf-8")
         )
-        assert query["seeds"] == [1, 2] and list(query["queries"]) == ["p53"]
+        assert "seeds" not in query and list(query["queries"]) == ["p53"]
+        assert not any(a.startswith("--num_model_seeds") for a in argv)
+        yaml = pytest.importorskip("yaml")
+        runner_yaml = entry.directory / "outputs" / "predictions" / "runner_config.yaml"
+        config = yaml.safe_load(runner_yaml.read_text(encoding="utf-8"))
+        assert config["experiment_settings"] == {"seeds": [1, 2]}
         record = OpenFold3Parser().load(entry.prediction_dir, "p53")
         assert (record.avg_plddt, record.ptm, record.iptm) == (77.0, 0.5, 0.25)
 

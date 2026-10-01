@@ -682,50 +682,73 @@ def batch_sample():
 
 
 class TestQuerySeeds:
-    """The query JSON pins the seeds OpenFold3 samples with; 42 is only the default."""
+    """OpenFold3 0.5.0 ignores a ``seeds`` field in the query JSON (#67).
+
+    The seeds go to the runner YAML through ``run_openfold``; the ``seeds`` argument of the
+    ``prepare_*`` functions is kept but has no effect. What OpenFold3 then does with the YAML is
+    not run here; ``tests/test_of3_seeds.py`` checks the YAML and the command line.
+    """
 
     @pytest.fixture(autouse=True)
     def _require_gemmi(self):
         pytest.importorskip("gemmi")
 
-    def _seeds(self, query_json: Path):
-        return json.loads(query_json.read_text(encoding="utf-8"))["seeds"]
+    @staticmethod
+    def _query(query_json: Path) -> dict:
+        return json.loads(query_json.read_text(encoding="utf-8"))
 
-    def test_scoring_query_defaults_to_42(self, tmp_path):
+    def test_scoring_query_has_no_seeds(self, tmp_path):
         from binding_metrics.metrics.openfold import prepare_scoring_query
 
         path = prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path)
-        assert self._seeds(path) == [42]
+        assert "seeds" not in self._query(path)
 
-    def test_refolding_query_defaults_to_42(self, tmp_path):
+    def test_refolding_query_has_no_seeds(self, tmp_path):
         from binding_metrics.metrics.openfold import prepare_refolding_query
 
         path = prepare_refolding_query(_P53_MDM2, "A", "B", "q", tmp_path)
-        assert self._seeds(path) == [42]
+        assert "seeds" not in self._query(path)
 
-    def test_seeds_argument_reaches_the_json(self, tmp_path):
+    def test_a_seeds_argument_is_accepted_but_not_written(self, tmp_path):
         from binding_metrics.metrics.openfold import (
             prepare_refolding_query,
             prepare_scoring_query,
         )
 
-        scoring = prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path / "s", seeds=(7, 8, 9))
-        refolding = prepare_refolding_query(_P53_MDM2, "A", "B", "q", tmp_path / "r", seeds=[3])
-        assert self._seeds(scoring) == [7, 8, 9]
-        assert self._seeds(refolding) == [3]
+        with pytest.warns(DeprecationWarning, match="no effect"):
+            scoring = prepare_scoring_query(
+                _P53_MDM2, "A", "B", "q", tmp_path / "s", seeds=(7, 8, 9)
+            )
+        with pytest.warns(DeprecationWarning, match="run_openfold"):
+            refolding = prepare_refolding_query(_P53_MDM2, "A", "B", "q", tmp_path / "r", seeds=[3])
+        assert "seeds" not in self._query(scoring)
+        assert "seeds" not in self._query(refolding)
 
-    def test_batched_queries_take_seeds(self, tmp_path, batch_sample):
+    def test_the_default_seeds_argument_does_not_warn(self, tmp_path):
+        import warnings
+
+        from binding_metrics.metrics.openfold import prepare_scoring_query
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path / "a")
+            prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path / "b", seeds=(42,))
+
+    def test_batched_queries_have_no_seeds(self, tmp_path, batch_sample):
         from binding_metrics.metrics.openfold import (
             prepare_batched_refolding_queries,
             prepare_batched_scoring_queries,
         )
 
         default = prepare_batched_scoring_queries([batch_sample], tmp_path / "d")
-        scoring = prepare_batched_scoring_queries([batch_sample], tmp_path / "s", seeds=(1, 2))
-        refolding = prepare_batched_refolding_queries([batch_sample], tmp_path / "r", seeds=(5,))
-        assert self._seeds(default) == [42]
-        assert self._seeds(scoring) == [1, 2]
-        assert self._seeds(refolding) == [5]
+        with pytest.warns(DeprecationWarning):
+            scoring = prepare_batched_scoring_queries([batch_sample], tmp_path / "s", seeds=(1, 2))
+        with pytest.warns(DeprecationWarning):
+            refolding = prepare_batched_refolding_queries(
+                [batch_sample], tmp_path / "r", seeds=(5,)
+            )
+        for path in (default, scoring, refolding):
+            assert set(self._query(path)) == {"queries"}
 
     @pytest.mark.parametrize("bad", [(), []])
     def test_empty_seeds_are_rejected_before_anything_is_written(self, tmp_path, bad):
@@ -742,24 +765,39 @@ class TestQuerySeeds:
             prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path, seeds="42")
 
     @pytest.mark.parametrize("runner", ["run_openfold_scoring", "run_openfold_refolding"])
-    def test_run_wrappers_forward_seeds(self, tmp_path, monkeypatch, runner):
+    def test_run_wrappers_forward_seeds_to_run_openfold(self, tmp_path, monkeypatch, runner):
         from binding_metrics.metrics import openfold
 
         captured = {}
 
         def _fake_run(query_json, **kwargs):
-            captured["seeds"] = self._seeds(Path(query_json))
-            captured["num_model_seeds"] = kwargs["num_model_seeds"]
+            captured.update(kwargs)
+            captured["query"] = self._query(Path(query_json))
             return Path(kwargs["output_dir"])
 
         monkeypatch.setattr(openfold, "run_openfold", _fake_run)
-        getattr(openfold, runner)(
-            _P53_MDM2, "A", "B", "q", tmp_path, seeds=(11, 12), num_model_seeds=2
-        )
-        assert captured == {"seeds": [11, 12], "num_model_seeds": 2}
+        getattr(openfold, runner)(_P53_MDM2, "A", "B", "q", tmp_path, seeds=(11, 12))
+        assert captured["seeds"] == (11, 12)
+        assert captured["num_model_seeds"] is None
+        assert "seeds" not in captured["query"]
 
         getattr(openfold, runner)(_P53_MDM2, "A", "B", "q", tmp_path / "again")
-        assert captured["seeds"] == [42]
+        assert captured["seeds"] is None  # run_openfold then writes the default [42]
+
+    @pytest.mark.parametrize("runner", ["run_openfold_scoring", "run_openfold_refolding"])
+    def test_run_wrappers_refuse_both_seed_options_before_writing_anything(
+        self, tmp_path, monkeypatch, runner
+    ):
+        from binding_metrics.metrics import openfold
+
+        monkeypatch.setattr(
+            openfold, "run_openfold", lambda **kw: pytest.fail("OpenFold3 must not start")
+        )
+        with pytest.raises(ValueError, match="cannot be combined"):
+            getattr(openfold, runner)(
+                _P53_MDM2, "A", "B", "q", tmp_path / "out", seeds=(1,), num_model_seeds=2
+            )
+        assert not (tmp_path / "out").exists()
 
     def test_batched_wrapper_forwards_seeds(self, tmp_path, monkeypatch, batch_sample):
         from binding_metrics.metrics import openfold
@@ -767,28 +805,80 @@ class TestQuerySeeds:
         captured = {}
 
         def _fake_run(query_json, **kwargs):
-            captured["seeds"] = self._seeds(Path(query_json))
+            captured.update(kwargs)
+            captured["query"] = self._query(Path(query_json))
             return Path(kwargs["output_dir"])
 
         monkeypatch.setattr(openfold, "run_openfold", _fake_run)
         openfold.run_openfold_batched([batch_sample], tmp_path, mode="refold", seeds=(4, 5))
-        assert captured["seeds"] == [4, 5]
+        assert captured["seeds"] == (4, 5)
+        assert "seeds" not in captured["query"]
 
-    @pytest.mark.parametrize(
-        "argv, expected",
-        [([], [42]), (["--seeds", "5", "6"], [5, 6])],
-    )
-    def test_cli_seeds_flag(self, tmp_path, monkeypatch, argv, expected):
+    def test_the_prepare_commands_still_take_seeds_but_ignore_them(self, tmp_path, monkeypatch):
         from binding_metrics.metrics import openfold
 
         out = tmp_path / "out"
         monkeypatch.setattr(
             "sys.argv",
             ["prog", "prepare-scoring-query", "--complex", str(_P53_MDM2), "--receptor-chain",
-             "A", "--binder-chain", "B", "--query-name", "q", "--output-dir", str(out), *argv],
+             "A", "--binder-chain", "B", "--query-name", "q", "--output-dir", str(out),
+             "--seeds", "5", "6"],
         )  # fmt: skip
+        with pytest.warns(DeprecationWarning, match="no effect"):
+            openfold.main()
+        assert "seeds" not in self._query(out / "q_query.json")
+
+    @pytest.mark.parametrize("command", ["score", "refold"])
+    @pytest.mark.parametrize("flag", ["--seeds", "--openfold-seeds"])
+    def test_the_run_commands_pass_seeds_to_the_wrapper(self, tmp_path, monkeypatch, command, flag):
+        from binding_metrics.metrics import _openfold_cli, openfold
+
+        seen = {}
+        target = {"score": "run_openfold_scoring", "refold": "run_openfold_refolding"}[command]
+        monkeypatch.setattr(openfold, target, lambda **kw: seen.update(kw) or tmp_path)
+        monkeypatch.setattr(openfold, "compute_openfold_metrics", lambda **kw: {})
+        monkeypatch.setattr(_openfold_cli, "_print_metrics", lambda *a, **kw: None)
+        argv = ["prog", command, "--complex", "c.cif", "--receptor-chain", "A", "--binder-chain",
+                "B", "--query-name", "q", "--output-dir", str(tmp_path)]  # fmt: skip
+        monkeypatch.setattr("sys.argv", argv + [flag, "5", "6"])
         openfold.main()
-        assert self._seeds(out / "q_query.json") == expected
+        assert seen["seeds"] == [5, 6] and seen["num_model_seeds"] is None
+
+        seen.clear()
+        monkeypatch.setattr("sys.argv", argv)
+        openfold.main()
+        assert seen["seeds"] is None and seen["num_model_seeds"] is None
+
+    def test_the_run_command_takes_seeds_and_num_seeds(self, tmp_path, monkeypatch):
+        from binding_metrics.metrics import _openfold_cli, openfold
+
+        seen = {}
+        monkeypatch.setattr(openfold, "run_openfold", lambda **kw: seen.update(kw) or tmp_path)
+        monkeypatch.setattr(openfold, "compute_openfold_metrics", lambda **kw: {})
+        monkeypatch.setattr(_openfold_cli, "_print_metrics", lambda *a, **kw: None)
+        argv = ["prog", "run", "--query-json", "q.json", "--output-dir", str(tmp_path),
+                "--query-name", "q"]  # fmt: skip
+        monkeypatch.setattr("sys.argv", argv + ["--seeds", "3"])
+        openfold.main()
+        assert seen["seeds"] == [3] and seen["num_model_seeds"] is None
+        monkeypatch.setattr("sys.argv", argv + ["--num-seeds", "4"])
+        openfold.main()
+        assert seen["seeds"] is None and seen["num_model_seeds"] == 4
+
+    @pytest.mark.parametrize("command", ["run", "score", "refold"])
+    def test_the_commands_refuse_seeds_with_num_seeds(self, tmp_path, monkeypatch, capsys, command):
+        from binding_metrics.metrics import openfold
+
+        argv = ["prog", command, "--output-dir", str(tmp_path), "--query-name", "q"]
+        if command == "run":
+            argv += ["--query-json", "q.json"]
+        else:
+            argv += ["--complex", "c.cif", "--receptor-chain", "A", "--binder-chain", "B"]
+        monkeypatch.setattr("sys.argv", argv + ["--seeds", "1", "--num-seeds", "2"])
+        with pytest.raises(SystemExit) as info:
+            openfold.main()
+        assert info.value.code == 2
+        assert "cannot be combined" in capsys.readouterr().err
 
 
 class TestSeedIndex:
@@ -1291,11 +1381,13 @@ class TestModuleLayout:
         monkeypatch.setattr(
             openfold,
             "prepare_scoring_query",
-            lambda **kw: calls.append(("prepare", kw["seeds"])) or tmp_path / "q.json",
+            lambda **kw: calls.append(("prepare", kw["query_name"])) or tmp_path / "q.json",
         )
         monkeypatch.setattr(
-            openfold, "run_openfold", lambda **kw: calls.append(("run", kw["output_dir"]))
+            openfold,
+            "run_openfold",
+            lambda **kw: calls.append(("run", kw["output_dir"], kw["seeds"])),
         )
         out = openfold.run_openfold_scoring("c.cif", "A", "B", "q", tmp_path, seeds=(9,))
         assert out == tmp_path / "predictions"
-        assert calls == [("prepare", (9,)), ("run", tmp_path / "predictions")]
+        assert calls == [("prepare", "q"), ("run", tmp_path / "predictions", (9,))]

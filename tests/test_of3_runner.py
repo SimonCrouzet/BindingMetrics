@@ -432,7 +432,9 @@ class TestRunnerYamlKeepsTemplates:
         self._run(tmp_path, tmp_path / "missing.yml", None)
         assert self._yaml_argument(commands[0]) == tmp_path / "missing.yml"
 
-    def test_without_a_runner_yaml_the_generated_file_is_as_before(self, tmp_path, commands):
+    def test_without_a_runner_yaml_the_generated_file_is_as_before_plus_the_seeds(
+        self, tmp_path, commands
+    ):
         templates = tmp_path / "templates"
         self._run(tmp_path, None, templates)
         used = self._yaml_argument(commands[0])
@@ -440,7 +442,7 @@ class TestRunnerYamlKeepsTemplates:
         assert (
             used.read_bytes()
             == _openfold_run._write_runner_yaml(
-                tmp_path, ["predict", "low_mem"], template_dir=templates
+                tmp_path, ["predict", "low_mem"], template_dir=templates, seeds=[42]
             ).read_bytes()
         )
         assert not (tmp_path / "out" / "runner_config_merged.yaml").exists()

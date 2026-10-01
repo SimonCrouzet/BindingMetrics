@@ -75,8 +75,9 @@ from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     _BatchSample,
     _extract_chain_to_cif,
     _extract_sequence_from_structure,
-    _merge_template_settings,
+    _merge_runner_settings,
     _query_seeds,
+    _resolve_run_seeds,
     _run_openfold_command,
     _safe_entry_id,
     _write_a3m_self_alignment,
@@ -126,8 +127,9 @@ def _find_prediction_files(
         output_dir: Top-level OpenFold3 output directory.
         query_name: Query name as specified in the input JSON.
         seed: Seed index (1-based position of the ``seed_*`` directory in the numeric order
-            of the seed values), not a seed value. OF3 transforms input seeds, so this
-            selects by position rather than value.
+            of the seed values), not a seed value. The directories are named after the seed
+            values OpenFold3 used, which a caller usually does not know in advance, so this
+            selects by position.
         sample: Sample index (default 1).
 
     Returns:
@@ -242,9 +244,9 @@ def compute_openfold_metrics(
         output_dir: Top-level OpenFold3 output directory.
         query_name: Query name as specified in the input JSON (used to locate
             the ``{output_dir}/{query_name}/`` subdirectory).
-        seed: 1-based index into the sorted ``seed_*`` directories of the query,
-            not a random seed value: OpenFold3 names the directories after its
-            own transformed seeds, so they are selected by position (default 1).
+        seed: 1-based index into the ``seed_*`` directories of the query in the numeric
+            order of their seed values, not a seed value itself (default 1). The directory
+            name is the seed value OpenFold3 sampled with.
         sample: Sample index to parse (default 1).
         include_matrices: If True, include the full PDE matrix in the result
             (can be large). Default False.
@@ -363,13 +365,14 @@ def run_openfold(
     output_dir: str | Path,
     inference_ckpt_path: Optional[str | Path] = None,
     num_diffusion_samples: int = 5,
-    num_model_seeds: int = 1,
+    num_model_seeds: Optional[int] = None,
     use_msa_server: bool = True,
     model_presets: Optional[list[str]] = None,
     runner_yaml: Optional[str | Path] = None,
     extra_args: Optional[list[str]] = None,
     conda_env: Optional[str] = None,
     template_dir: Optional[str | Path] = None,
+    seeds: Optional[Sequence[int]] = None,
 ) -> Path:
     """Run OpenFold3 inference as a subprocess.
 
@@ -383,10 +386,10 @@ def run_openfold(
         inference_ckpt_path: Optional path to a model checkpoint (.pt file).
             Uses the default downloaded checkpoint if None.
         num_diffusion_samples: Number of structure samples per query (default 5).
-        num_model_seeds: Passed to OpenFold3 as ``--num_model_seeds``. The seed
-            values of a query are the ``"seeds"`` list in ``query_json``, which
-            the ``prepare_*`` functions set from their ``seeds`` argument
-            (default ``[42]``).
+        num_model_seeds: None (default) leaves ``--num_model_seeds`` out. A number is passed
+            to OpenFold3 as ``--num_model_seeds``: OpenFold3 then generates that many seeds
+            (from ``random.seed(42)``) and uses them in place of any seeds of the runner YAML.
+            It cannot be combined with ``seeds``.
         use_msa_server: Use the ColabFold MSA server for alignment generation
             (default True). MSAs then come from a remote service, so results can
             change over time, and the sequences leave the machine. Set False if
@@ -408,14 +411,16 @@ def run_openfold(
         runner_yaml: Explicit path to a runner YAML configuration file. Overrides
             ``model_presets`` when both are provided. CLI flags always take
             precedence over YAML values. The file is never modified. When
-            ``template_dir`` is also given, OpenFold3 gets a copy of it in
+            ``template_dir`` or ``seeds`` is also given, OpenFold3 gets a copy of it in
             ``output_dir`` (``runner_config_merged.yaml``) that adds
             ``template_preprocessor_settings.structure_directory`` and, unless the
-            file sets it, ``msa_computation_settings.cleanup_msa_dir: false``; the
-            copy is logged at INFO. A ``structure_directory`` that the file already
-            sets is kept and a WARNING names both directories: the templates of the
-            run are found only if that directory holds them. Comments of the file
-            are not carried into the copy.
+            file sets it, ``msa_computation_settings.cleanup_msa_dir: false`` (for
+            ``template_dir``) and ``experiment_settings.seeds`` (for ``seeds``, replacing
+            the file's value); the copy is logged at INFO. A ``structure_directory`` that
+            the file already sets is kept and a WARNING names both directories: the
+            templates of the run are found only if that directory holds them. Comments of
+            the file are not carried into the copy. Without ``seeds`` the seeds of the file
+            are kept untouched.
         extra_args: Additional CLI arguments passed verbatim.
         conda_env: Name of the conda environment where OpenFold3 is installed
             (e.g. ``"openfold3"``). When given, the command is wrapped as
@@ -427,15 +432,24 @@ def run_openfold(
             ``template_preprocessor_settings.structure_directory``, in the generated
             YAML and in the merged copy of ``runner_yaml``. None leaves the YAML as
             it is.
+        seeds: Seed values OpenFold3 samples with, one set of ``num_diffusion_samples``
+            structures per seed, in ``seed_<value>`` directories. They are written to
+            ``experiment_settings.seeds`` of the runner YAML (the generated one, or the
+            merged copy of ``runner_yaml``, where they win over the file's own). OpenFold3
+            0.5.0 ignores a ``seeds`` field in the query JSON. None takes the default
+            ``(42,)`` for the generated YAML, keeps the seeds of a ``runner_yaml``, and
+            writes none when ``num_model_seeds`` is given. Giving both ``seeds`` and
+            ``num_model_seeds`` (also through ``extra_args``) raises ``ValueError``.
 
     Returns:
         Path to the output directory.
 
     Raises:
         FileNotFoundError: If ``run_openfold`` is not on PATH and no
-            ``conda_env`` is specified, or if ``runner_yaml`` and ``template_dir``
-            are given and the file does not exist.
-        ValueError: If ``runner_yaml`` and ``template_dir`` are given and the file
+            ``conda_env`` is specified, or if ``runner_yaml`` is given with
+            ``template_dir`` or ``seeds`` and the file does not exist.
+        ValueError: If ``seeds`` and ``num_model_seeds`` are both given, ``seeds`` is empty
+            or ``num_model_seeds`` is below 1; or if ``runner_yaml`` is merged and the file
             is not valid YAML or not a mapping (the message names the file), or
             PyYAML is missing and the file cannot be extended as text.
         OpenFoldRunError: If OpenFold3 exits non-zero. It is a
@@ -447,6 +461,7 @@ def run_openfold(
     """
     import shutil
 
+    seed_values, generated_seeds = _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -462,21 +477,26 @@ def run_openfold(
     # Resolve runner YAML: explicit path takes precedence over model_presets
     effective_yaml: Optional[Path] = None
     if runner_yaml is not None:
-        effective_yaml = Path(runner_yaml)
-        if template_dir is not None:
-            # OpenFold3 finds the template CIFs only through the YAML's structure_directory.
-            effective_yaml = _merge_template_settings(
-                effective_yaml, output_dir, Path(template_dir)
-            )
+        # OpenFold3 finds the template CIFs only through the YAML's structure_directory, and
+        # reads seeds only from its experiment_settings (explicit seeds win over the file's).
+        effective_yaml = _merge_runner_settings(
+            Path(runner_yaml),
+            output_dir,
+            Path(template_dir) if template_dir is not None else None,
+            seed_values,
+        )
     else:
         presets = list(model_presets) if model_presets is not None else list(_DEFAULT_MODEL_PRESETS)
         if "predict" not in presets:
             presets.insert(0, "predict")
+        if seed_values is None and generated_seeds is None:
+            seed_values = list(_DEFAULT_QUERY_SEEDS)
         effective_yaml = _write_runner_yaml(
             output_dir,
             presets,
             template_dir=Path(template_dir) if template_dir is not None else None,
             conda_env=conda_env,
+            seeds=seed_values,
         )
 
     of3_cmd = [
@@ -485,10 +505,12 @@ def run_openfold(
         f"--query_json={query_json}",
         f"--output_dir={output_dir}",
         f"--num_diffusion_samples={num_diffusion_samples}",
-        f"--num_model_seeds={num_model_seeds}",
         f"--use_msa_server={str(use_msa_server).lower()}",
         f"--runner_yaml={effective_yaml}",
     ]
+    if generated_seeds is not None:
+        # A truthy --num_model_seeds replaces the seeds of the YAML (experiment_runner.py).
+        of3_cmd.append(f"--num_model_seeds={generated_seeds}")
 
     if inference_ckpt_path is not None:
         of3_cmd.append(f"--inference_ckpt_path={inference_ckpt_path}")
@@ -519,13 +541,13 @@ def run_openfold_scoring(
     template_cif_path: Optional[str | Path] = None,
     inference_ckpt_path: Optional[str | Path] = None,
     num_diffusion_samples: int = 5,
-    num_model_seeds: int = 1,
+    num_model_seeds: Optional[int] = None,
     use_msa_server: bool = True,
     model_presets: Optional[list[str]] = None,
     runner_yaml: Optional[str | Path] = None,
     extra_args: Optional[list[str]] = None,
     conda_env: Optional[str] = None,
-    seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
+    seeds: Optional[Sequence[int]] = None,
     *,
     on_unmappable_residue: str = "error",
 ) -> Path:
@@ -545,8 +567,9 @@ def run_openfold_scoring(
         template_cif_path: Optional pre-prepared complex CIF (e.g., MD-relaxed).
         inference_ckpt_path: Optional model checkpoint path.
         num_diffusion_samples: Structure samples per query (default 5).
-        num_model_seeds: Passed to OpenFold3 as ``--num_model_seeds``. The seed
-            values themselves are set by ``seeds``.
+        num_model_seeds: None (default) leaves ``--num_model_seeds`` out; a number makes
+            OpenFold3 generate that many seeds (see :func:`run_openfold`). Not combinable with
+            ``seeds``.
         use_msa_server: Use the ColabFold MSA server (default True). MSAs then
             come from a remote service, so results can change over time, and
             the sequences leave the machine. Pass False with pre-computed MSAs.
@@ -556,7 +579,8 @@ def run_openfold_scoring(
             directory (see :func:`run_openfold`).
         extra_args: Additional CLI args for OF3.
         conda_env: Conda environment where OpenFold3 is installed.
-        seeds: Seed values written to the query JSON (default ``(42,)``).
+        seeds: Seed values OpenFold3 samples with (default ``(42,)``), written to the
+            runner YAML; see :func:`run_openfold`. OpenFold3 ignores seeds in the query JSON.
         on_unmappable_residue: ``"error"`` (default) raises
             :class:`UnmappableResidueError` before anything is written or started
             when a residue has no one-letter code or CCD code OpenFold3 can take;
@@ -569,7 +593,10 @@ def run_openfold_scoring(
     Raises:
         UnmappableResidueError: See ``on_unmappable_residue``; raised before any
             file is written or process started.
+        ValueError: ``seeds`` and ``num_model_seeds`` are both given (checked before
+            anything is written).
     """
+    _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
     query_dir = output_dir / "query"
     predictions_dir = output_dir / "predictions"
@@ -581,7 +608,6 @@ def run_openfold_scoring(
         query_name=query_name,
         output_dir=query_dir,
         template_cif_path=template_cif_path,
-        seeds=seeds,
         on_unmappable_residue=on_unmappable_residue,
     )
 
@@ -597,6 +623,7 @@ def run_openfold_scoring(
         extra_args=extra_args,
         conda_env=conda_env,
         template_dir=query_dir / "templates",
+        seeds=seeds,
     )
     return predictions_dir
 
@@ -610,13 +637,13 @@ def run_openfold_refolding(
     template_cif_path: Optional[str | Path] = None,
     inference_ckpt_path: Optional[str | Path] = None,
     num_diffusion_samples: int = 5,
-    num_model_seeds: int = 1,
+    num_model_seeds: Optional[int] = None,
     use_msa_server: bool = True,
     model_presets: Optional[list[str]] = None,
     runner_yaml: Optional[str | Path] = None,
     extra_args: Optional[list[str]] = None,
     conda_env: Optional[str] = None,
-    seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
+    seeds: Optional[Sequence[int]] = None,
     *,
     on_unmappable_residue: str = "error",
 ) -> Path:
@@ -643,8 +670,9 @@ def run_openfold_refolding(
         template_cif_path: Optional pre-prepared receptor template CIF.
         inference_ckpt_path: Optional model checkpoint path.
         num_diffusion_samples: Structure samples per query (default 5).
-        num_model_seeds: Passed to OpenFold3 as ``--num_model_seeds``. The seed
-            values themselves are set by ``seeds``.
+        num_model_seeds: None (default) leaves ``--num_model_seeds`` out; a number makes
+            OpenFold3 generate that many seeds (see :func:`run_openfold`). Not combinable with
+            ``seeds``.
         use_msa_server: Use the ColabFold MSA server (default True). MSAs then
             come from a remote service, so results can change over time, and
             the sequences leave the machine. Pass False with pre-computed MSAs.
@@ -658,7 +686,8 @@ def run_openfold_refolding(
             ``{output_dir}/query/templates/``; there is no command-line flag for
             it.
         conda_env: Conda environment where OpenFold3 is installed.
-        seeds: Seed values written to the query JSON (default ``(42,)``).
+        seeds: Seed values OpenFold3 samples with (default ``(42,)``), written to the
+            runner YAML; see :func:`run_openfold`. OpenFold3 ignores seeds in the query JSON.
         on_unmappable_residue: ``"error"`` (default) raises
             :class:`UnmappableResidueError` before anything is written or started
             when a residue has no one-letter code or CCD code OpenFold3 can take;
@@ -671,7 +700,10 @@ def run_openfold_refolding(
     Raises:
         UnmappableResidueError: See ``on_unmappable_residue``; raised before any
             file is written or process started.
+        ValueError: ``seeds`` and ``num_model_seeds`` are both given (checked before
+            anything is written).
     """
+    _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
     query_dir = output_dir / "query"
     predictions_dir = output_dir / "predictions"
@@ -683,7 +715,6 @@ def run_openfold_refolding(
         query_name=query_name,
         output_dir=query_dir,
         template_cif_path=template_cif_path,
-        seeds=seeds,
         on_unmappable_residue=on_unmappable_residue,
     )
 
@@ -699,6 +730,7 @@ def run_openfold_refolding(
         extra_args=extra_args,
         conda_env=conda_env,
         template_dir=query_dir / "templates",
+        seeds=seeds,
     )
     return predictions_dir
 
@@ -714,13 +746,13 @@ def run_openfold_batched(
     mode: str = "score",
     inference_ckpt_path: Optional[str | Path] = None,
     num_diffusion_samples: int = 5,
-    num_model_seeds: int = 1,
+    num_model_seeds: Optional[int] = None,
     use_msa_server: bool = True,
     model_presets: Optional[list[str]] = None,
     runner_yaml: Optional[str | Path] = None,
     extra_args: Optional[list[str]] = None,
     conda_env: Optional[str] = None,
-    seeds: Sequence[int] = _DEFAULT_QUERY_SEEDS,
+    seeds: Optional[Sequence[int]] = None,
     *,
     on_unmappable_residue: str = "error",
 ) -> Path:
@@ -738,8 +770,9 @@ def run_openfold_batched(
             (binder predicted from sequence only).
         inference_ckpt_path: Optional model checkpoint path.
         num_diffusion_samples: Structure samples per query (default 5).
-        num_model_seeds: Passed to OpenFold3 as ``--num_model_seeds``. The seed
-            values themselves are set by ``seeds``.
+        num_model_seeds: None (default) leaves ``--num_model_seeds`` out; a number makes
+            OpenFold3 generate that many seeds (see :func:`run_openfold`). Not combinable with
+            ``seeds``.
         use_msa_server: Use the ColabFold MSA server (default True). MSAs then
             come from a remote service, so results can change over time, and
             the sequences leave the machine. Pass False with pre-computed MSAs.
@@ -749,7 +782,8 @@ def run_openfold_batched(
             directory (see :func:`run_openfold`).
         extra_args: Additional CLI args for OF3.
         conda_env: Conda environment name (default None).
-        seeds: Seed values written to the query JSON (default ``(42,)``).
+        seeds: Seed values OpenFold3 samples with (default ``(42,)``), written to the
+            runner YAML; see :func:`run_openfold`. OpenFold3 ignores seeds in the query JSON.
         on_unmappable_residue: ``"error"`` (default) raises
             :class:`UnmappableResidueError` before anything is written or started
             when a residue has no one-letter code or CCD code OpenFold3 can take;
@@ -761,7 +795,10 @@ def run_openfold_batched(
     Raises:
         UnmappableResidueError: See ``on_unmappable_residue``; the error names every
             affected sample and is raised before any file is written or process started.
+        ValueError: ``seeds`` and ``num_model_seeds`` are both given (checked before
+            anything is written).
     """
+    _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
     query_dir = output_dir / "query"
     predictions_dir = output_dir / "predictions"
@@ -769,9 +806,7 @@ def run_openfold_batched(
     prepare = (
         prepare_batched_refolding_queries if mode == "refold" else prepare_batched_scoring_queries
     )
-    query_json = prepare(
-        samples, query_dir, seeds=seeds, on_unmappable_residue=on_unmappable_residue
-    )
+    query_json = prepare(samples, query_dir, on_unmappable_residue=on_unmappable_residue)
 
     run_openfold(
         query_json=query_json,
@@ -785,6 +820,7 @@ def run_openfold_batched(
         extra_args=extra_args,
         conda_env=conda_env,
         template_dir=query_dir / "templates",
+        seeds=seeds,
     )
     return predictions_dir
 

@@ -59,7 +59,13 @@ def _add_parse_args(p, include_chain_args: bool = False) -> None:
 
 
 def _add_query_seeds_arg(p) -> None:
-    """Add ``--seeds`` (seed values for the query JSON) to a subparser."""
+    """Add ``--seeds`` to a subparser that only writes a query file.
+
+    The option is kept so that existing command lines work, but OpenFold3 does not read seeds
+    from a query JSON, so it has no effect there (a value other than the default raises a
+    ``DeprecationWarning``). The commands that run OpenFold3 take the seeds through
+    :func:`_add_run_seeds_args`.
+    """
     from binding_metrics.metrics import openfold as of
 
     p.add_argument(
@@ -68,8 +74,53 @@ def _add_query_seeds_arg(p) -> None:
         nargs="+",
         default=list(of._DEFAULT_QUERY_SEEDS),
         metavar="SEED",
-        help="Seed values written to the query JSON (default: %(default)s).",
+        help=(
+            "Ignored: OpenFold3 does not read seeds from a query JSON. Give --seeds to the "
+            "command that runs OpenFold3 (run, score, refold)."
+        ),
     )
+
+
+def _add_run_seeds_args(p) -> None:
+    """Add ``--seeds`` and ``--num-seeds`` to a subparser that runs OpenFold3."""
+    from binding_metrics.metrics import openfold as of
+
+    p.add_argument(
+        "--seeds",
+        "--openfold-seeds",
+        dest="seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="SEED",
+        help=(
+            "Seed values OpenFold3 samples with, written to experiment_settings.seeds of the "
+            f"runner YAML (default: {' '.join(map(str, of._DEFAULT_QUERY_SEEDS))}, or the "
+            "seeds of --runner-yaml). One set of samples is made per seed, in a seed_<value> "
+            "directory; --seed selects the directory by position. Cannot be combined with "
+            "--num-seeds."
+        ),
+    )
+    p.add_argument(
+        "--num-seeds",
+        type=int,
+        default=None,
+        help=(
+            "Ask OpenFold3 to generate this many seeds (--num_model_seeds N; the seeds come "
+            "from random.seed(42)). OpenFold3 then ignores any seeds of the runner YAML, so "
+            "this cannot be combined with --seeds (default: not passed)."
+        ),
+    )
+
+
+def _check_run_seeds(parser, args) -> None:
+    """Stop with the usage message when ``--seeds`` and ``--num-seeds`` are both given."""
+    from binding_metrics.metrics import openfold as of
+
+    try:
+        of._resolve_run_seeds(args.seeds, args.num_seeds)
+    except ValueError as exc:
+        parser.error(str(exc))
 
 
 def _add_unmappable_residue_arg(p) -> None:
@@ -228,12 +279,7 @@ def main():
     p_run.add_argument(
         "--num-samples", type=int, default=5, help="Number of diffusion samples (default: 5)."
     )
-    p_run.add_argument(
-        "--num-seeds",
-        type=int,
-        default=1,
-        help="Passed to OpenFold3 as --num_model_seeds (default: 1).",
-    )
+    _add_run_seeds_args(p_run)
     p_run.add_argument(
         "--no-msa-server",
         action="store_true",
@@ -368,12 +414,6 @@ def main():
         "--num-samples", type=int, default=5, help="Number of diffusion samples (default: 5)."
     )
     p_refold.add_argument(
-        "--num-seeds",
-        type=int,
-        default=1,
-        help="Passed to OpenFold3 as --num_model_seeds (default: 1).",
-    )
-    p_refold.add_argument(
         "--no-msa-server", action="store_true", help="Disable ColabFold MSA server."
     )
     p_refold.add_argument(
@@ -393,7 +433,7 @@ def main():
         metavar="ENV",
         help="Conda env where OpenFold3 is installed (e.g. 'openfold3').",
     )
-    _add_query_seeds_arg(p_refold)
+    _add_run_seeds_args(p_refold)
     _add_unmappable_residue_arg(p_refold)
     _add_parse_args(p_refold, include_chain_args=False)
 
@@ -483,12 +523,6 @@ def main():
         "--num-samples", type=int, default=5, help="Number of diffusion samples (default: 5)."
     )
     p_score.add_argument(
-        "--num-seeds",
-        type=int,
-        default=1,
-        help="Passed to OpenFold3 as --num_model_seeds (default: 1).",
-    )
-    p_score.add_argument(
         "--no-msa-server", action="store_true", help="Disable ColabFold MSA server."
     )
     p_score.add_argument(
@@ -508,7 +542,7 @@ def main():
         metavar="ENV",
         help="Conda env where OpenFold3 is installed (e.g. 'openfold3').",
     )
-    _add_query_seeds_arg(p_score)
+    _add_run_seeds_args(p_score)
     _add_unmappable_residue_arg(p_score)
     _add_parse_args(p_score, include_chain_args=False)
 
@@ -516,6 +550,8 @@ def main():
 
     add_log_file_arg(parser)
     args = parser.parse_args()
+    if args.command in ("run", "score", "refold"):
+        _check_run_seeds(parser, args)
 
     from binding_metrics.cli import _apply_log_redirect
 
@@ -637,6 +673,7 @@ def main():
             model_presets=args.presets,
             runner_yaml=args.runner_yaml,
             conda_env=args.conda_env,
+            seeds=args.seeds,
         )
 
     # --- parse (and fallthrough from run) ---

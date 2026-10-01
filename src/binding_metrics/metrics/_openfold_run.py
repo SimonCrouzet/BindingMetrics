@@ -33,21 +33,89 @@ from binding_metrics.core.residues import (
 
 logger = logging.getLogger(__name__)
 
-#: Seed values written into the ``"seeds"`` field of the query JSON. OpenFold3
-#: derives its sampling from these, so the same query gives the same prediction
-#: (up to GPU non-determinism). The value carries no meaning; pass ``seeds=`` to
-#: the ``prepare_*`` and ``run_openfold_*`` functions to use others.
+#: Seed values written to ``experiment_settings.seeds`` of the runner YAML that the toolkit
+#: generates, when the caller gives neither ``seeds`` nor ``num_model_seeds``. OpenFold3 samples
+#: from these, so the same query gives the same prediction (up to GPU non-determinism). The
+#: value carries no meaning; pass ``seeds=`` to the ``run_openfold*`` functions to use others.
+#: OpenFold3 0.5.0 does not read seeds from the query JSON (its input reference says so), which
+#: is why the ``prepare_*`` functions no longer write them.
 _DEFAULT_QUERY_SEEDS: tuple[int, ...] = (42,)
 
 
 def _query_seeds(seeds: Sequence[int]) -> list[int]:
-    """Validate ``seeds`` and return them as a list of ints for the query JSON."""
+    """Validate ``seeds`` and return them as a list of ints."""
     if isinstance(seeds, (str, bytes)):
         raise TypeError("seeds must be a sequence of integers, not a string.")
     values = [int(s) for s in seeds]
     if not values:
         raise ValueError("seeds must contain at least one integer.")
     return values
+
+
+_SEEDS_CONFLICT = (
+    "seeds and num_model_seeds cannot be combined. seeds are the values to sample with "
+    "(written to experiment_settings.seeds of the runner YAML); num_model_seeds asks "
+    "OpenFold3 to generate that many seeds, and OpenFold3 lets --num_model_seeds replace the "
+    "seeds of the runner YAML, so the explicit seeds would never be used. Give seeds, or "
+    "num_model_seeds, not both."
+)
+
+#: Spellings of the OpenFold3 option that generates seeds (both are accepted by its CLI).
+_NUM_MODEL_SEEDS_FLAGS = ("--num_model_seeds", "--num-model-seeds")
+
+
+def _resolve_run_seeds(
+    seeds: Optional[Sequence[int]],
+    num_model_seeds: Optional[int],
+    extra_args: Optional[Sequence[str]] = None,
+) -> tuple[Optional[list[int]], Optional[int]]:
+    """Check the two ways of choosing seeds and return ``(seed values, generated count)``.
+
+    OpenFold3 0.5.0 takes seeds from ``experiment_settings.seeds`` of the runner YAML, or
+    generates them from ``--num_model_seeds`` (seeds from ``random.seed(42)``), and the option
+    replaces the YAML seeds whenever it is given. Both being set therefore loses the explicit
+    values silently, and is refused. ``extra_args`` is read for the option too, because a
+    caller can pass it there.
+
+    Returns:
+        ``(None, None)`` when the caller chose neither (the toolkit's default seeds then apply
+        to the YAML it writes), the validated seed list, or the generated-seed count.
+
+    Raises:
+        ValueError: Both are given, ``seeds`` is empty, or ``num_model_seeds`` is below 1.
+        TypeError: ``seeds`` is a string.
+    """
+    values = None if seeds is None else _query_seeds(seeds)
+    count = None
+    if num_model_seeds is not None:
+        count = int(num_model_seeds)
+        if count < 1:
+            raise ValueError(f"num_model_seeds must be at least 1, got {num_model_seeds!r}.")
+    overridden_in_extra_args = any(
+        str(argument).split("=", 1)[0] in _NUM_MODEL_SEEDS_FLAGS for argument in extra_args or ()
+    )
+    if values is not None and (count is not None or overridden_in_extra_args):
+        raise ValueError(_SEEDS_CONFLICT)
+    return values, count
+
+
+def _warn_query_seeds_ignored(seeds: Sequence[int]) -> None:
+    """Validate the ``seeds`` of a ``prepare_*`` function and warn when they are not the default.
+
+    The argument is kept so that existing calls work, but a query JSON carries no seeds that
+    OpenFold3 reads. A value other than the default would have changed the run before; the
+    warning says where it goes now.
+    """
+    values = _query_seeds(seeds)
+    if tuple(values) != _DEFAULT_QUERY_SEEDS:
+        warnings.warn(
+            "The seeds argument of the prepare_* functions has no effect: OpenFold3 does not "
+            "read seeds from the query JSON. Pass seeds to run_openfold, run_openfold_scoring, "
+            "run_openfold_refolding or run_openfold_batched (or experiment_settings.seeds in the "
+            "runner YAML).",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
 
 #: Model presets used when the caller names none. ``predict`` is the inference base and
@@ -136,8 +204,9 @@ def _write_runner_yaml(
     template_dir: Optional[Path] = None,
     *,
     conda_env: Optional[str] = None,
+    seeds: Optional[Sequence[int]] = None,
 ) -> Path:
-    """Write a runner YAML with model presets and optional template settings.
+    """Write a runner YAML with model presets, optional template settings and optional seeds.
 
     Args:
         output_dir: Directory in which to write the file.
@@ -156,14 +225,18 @@ def _write_runner_yaml(
             that deletion; 0.4.0 also removed the MSA output directory with it.
         conda_env: Conda environment that will run OpenFold3, asked for its version when
             ``presets`` names ``pae_enabled``; None asks the current interpreter.
+        seeds: If given, written as ``experiment_settings.seeds``, the seeds OpenFold3 samples
+            with. OpenFold3 0.5.0 reads seeds from this key or from ``--num_model_seeds`` and
+            ignores the query JSON; the command-line option replaces the YAML value, so it must
+            not be passed alongside. None writes no seeds (OpenFold3's own default is ``[42]``).
 
     Returns:
         Path to the written YAML file.
     """
     presets = _drop_removed_presets(presets, conda_env)
-    # TODO(#67): seeds go here as experiment_settings.seeds; OpenFold3 ignores the query "seeds".
-    # Also check whether --num_model_seeds overrides them (openfold3/entry_points/validator.py).
     cfg: dict = {"model_update": {"presets": presets}}
+    if seeds is not None:
+        cfg["experiment_settings"] = {"seeds": _query_seeds(seeds)}
     if template_dir is not None:
         cfg["template_preprocessor_settings"] = {
             "structure_directory": str(template_dir),
@@ -180,6 +253,8 @@ def _write_runner_yaml(
         # Fallback: write YAML manually
         lines = ["model_update:\n", "  presets:\n"]
         lines += [f"    - {p}\n" for p in presets]
+        if seeds is not None:
+            lines += ["experiment_settings:\n", f"  seeds: {json.dumps(_query_seeds(seeds))}\n"]
         if template_dir is not None:
             lines += [
                 "template_preprocessor_settings:\n",
@@ -197,11 +272,14 @@ def _write_runner_yaml(
     return yaml_path
 
 
-#: Top-level keys that the merge adds to a user's runner YAML; the manual fallback looks for them
-#: in the text because it cannot parse the file.
-_MERGED_YAML_KEYS = re.compile(
-    r"^[\"']?(?:template_preprocessor_settings|msa_computation_settings)[\"']?\s*:", re.MULTILINE
-)
+def _mentions_top_level_key(text: str, keys: Sequence[str]) -> bool:
+    """True when a line of ``text`` starts one of the top-level ``keys`` of a YAML mapping.
+
+    The text fallback cannot parse the file, so it only appends a section that the file does
+    not mention yet.
+    """
+    pattern = r"^[\"']?(?:" + "|".join(re.escape(k) for k in keys) + r")[\"']?\s*:"
+    return re.search(pattern, text, re.MULTILINE) is not None
 
 
 def _section(cfg: dict, key: str, runner_yaml: Path) -> dict:
@@ -214,13 +292,17 @@ def _section(cfg: dict, key: str, runner_yaml: Path) -> dict:
     return section
 
 
-def _merge_template_settings_with_yaml(
-    text: str, runner_yaml: Path, template_dir: Path
-) -> Optional[str]:
-    """Parse the user's YAML and add the template directory; return the new text or None.
+def _merge_runner_settings_with_yaml(
+    text: str,
+    runner_yaml: Path,
+    template_dir: Optional[Path],
+    seeds: Optional[list[int]],
+) -> tuple[Optional[str], list[str]]:
+    """Parse the user's YAML and add the template directory and the seeds.
 
-    None means that nothing is to be added: the file already says everything the merge would
-    add, or it names another ``structure_directory`` (which is logged and kept).
+    Returns the new text and a description of each setting added. The text is None when nothing
+    is to be added: the file already says everything the merge would add, or it names another
+    ``structure_directory`` (which is logged and kept) and no seeds are to be set.
     """
     import yaml
 
@@ -235,112 +317,171 @@ def _merge_template_settings_with_yaml(
             f"{runner_yaml} must hold a mapping at the top level, got {type(cfg).__name__}."
         )
     original = copy.deepcopy(cfg)
+    added: list[str] = []
 
-    settings = _section(cfg, "template_preprocessor_settings", runner_yaml)
-    users_directory = settings.get("structure_directory")
-    if users_directory is None:
-        settings["structure_directory"] = str(template_dir)
-    elif Path(str(users_directory)).expanduser().resolve() != template_dir.resolve():
-        logger.warning(
-            "The runner YAML %s sets template_preprocessor_settings.structure_directory to %s, "
-            "which is kept, but the templates of this run are in %s. OpenFold3 finds them only "
-            "if the first directory holds them too.",
-            runner_yaml,
-            users_directory,
-            template_dir,
-        )
-        return None
-    # With structure_directory set, OpenFold3 deletes its parent at the end of a run unless
-    # cleanup_msa_dir is false (see _write_runner_yaml); that parent holds the query files.
-    _section(cfg, "msa_computation_settings", runner_yaml).setdefault("cleanup_msa_dir", False)
+    if template_dir is not None:
+        settings = _section(cfg, "template_preprocessor_settings", runner_yaml)
+        users_directory = settings.get("structure_directory")
+        if users_directory is None:
+            settings["structure_directory"] = str(template_dir)
+        elif Path(str(users_directory)).expanduser().resolve() != template_dir.resolve():
+            logger.warning(
+                "The runner YAML %s sets template_preprocessor_settings.structure_directory to "
+                "%s, which is kept, but the templates of this run are in %s. OpenFold3 finds them "
+                "only if the first directory holds them too.",
+                runner_yaml,
+                users_directory,
+                template_dir,
+            )
+            cfg = copy.deepcopy(original)  # leave the template sections as the user wrote them
+            template_dir = None
+        if template_dir is not None:
+            # With structure_directory set, OpenFold3 deletes its parent at the end of a run
+            # unless cleanup_msa_dir is false (see _write_runner_yaml); that parent holds the
+            # query files.
+            _section(cfg, "msa_computation_settings", runner_yaml).setdefault(
+                "cleanup_msa_dir", False
+            )
+            if cfg != original:
+                added.append(f"the template directory {template_dir}")
+    if seeds is not None:
+        before_seeds = copy.deepcopy(cfg)
+        _section(cfg, "experiment_settings", runner_yaml)["seeds"] = list(seeds)
+        if cfg != before_seeds:
+            added.append(f"the seeds {list(seeds)}")
     if cfg == original:
-        return None
-    return yaml.dump(cfg, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        return None, []
+    return yaml.dump(cfg, default_flow_style=False, sort_keys=False, allow_unicode=True), added
 
 
-def _merge_template_settings_as_text(text: str, runner_yaml: Path, template_dir: Path) -> str:
-    """Append the template settings to the user's YAML text, without a YAML parser.
+def _merge_runner_settings_as_text(
+    text: str,
+    runner_yaml: Path,
+    template_dir: Optional[Path],
+    seeds: Optional[list[int]],
+) -> tuple[str, list[str]]:
+    """Append the template and seed settings to the user's YAML text, without a YAML parser.
 
-    Works only when the file is a plain block mapping that mentions neither
-    ``template_preprocessor_settings`` nor ``msa_computation_settings``; anything else needs
-    PyYAML to be merged safely.
+    Works only when the file is a plain block mapping that mentions none of the sections that
+    are appended (``template_preprocessor_settings`` and ``msa_computation_settings`` for the
+    template directory, ``experiment_settings`` for the seeds); anything else needs PyYAML to be
+    merged safely.
     """
+    sections = []
+    if template_dir is not None:
+        sections += ["template_preprocessor_settings", "msa_computation_settings"]
+    if seeds is not None:
+        sections.append("experiment_settings")
     first_line = next(
         (line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")),
         "",
     )
     if (
-        _MERGED_YAML_KEYS.search(text)
+        _mentions_top_level_key(text, sections)
         or first_line.lstrip().startswith("{")
         or re.search(r"^\.\.\.\s*$", text, re.MULTILINE)
     ):
-        raise ValueError(
-            f"PyYAML is not installed and {runner_yaml} sets template_preprocessor_settings or "
-            "msa_computation_settings, or is not a plain block mapping, so the template "
-            f"directory {template_dir} cannot be added to it. Install PyYAML, or set "
-            "template_preprocessor_settings.structure_directory in the file yourself."
+        wanted = " and ".join(
+            what
+            for what, needed in (
+                (f"the template directory {template_dir}", template_dir is not None),
+                (f"the seeds {seeds}", seeds is not None),
+            )
+            if needed
         )
-    lines = [
-        text if text.endswith("\n") or not text else text + "\n",
-        "# added by binding_metrics: where the templates of this run are\n",
-        "template_preprocessor_settings:\n",
-        # a JSON string is valid YAML and survives ': ', ' #' and quotes in the path
-        f"  structure_directory: {json.dumps(str(template_dir))}\n",
-        "msa_computation_settings:\n",
-        "  cleanup_msa_dir: false\n",
-    ]
-    return "".join(lines)
+        raise ValueError(
+            f"PyYAML is not installed and {runner_yaml} sets one of {', '.join(sections)}, or is "
+            f"not a plain block mapping, so {wanted} cannot be added to it. Install PyYAML, or "
+            "set the same keys in the file yourself (template_preprocessor_settings."
+            "structure_directory, experiment_settings.seeds)."
+        )
+    lines = [text if text.endswith("\n") or not text else text + "\n"]
+    added = []
+    if template_dir is not None:
+        added.append(f"the template directory {template_dir}")
+        lines += [
+            "# added by binding_metrics: where the templates of this run are\n",
+            "template_preprocessor_settings:\n",
+            # a JSON string is valid YAML and survives ': ', ' #' and quotes in the path
+            f"  structure_directory: {json.dumps(str(template_dir))}\n",
+            "msa_computation_settings:\n",
+            "  cleanup_msa_dir: false\n",
+        ]
+    if seeds is not None:
+        added.append(f"the seeds {list(seeds)}")
+        lines += [
+            "# added by binding_metrics: the seeds of this run\n",
+            "experiment_settings:\n",
+            f"  seeds: {json.dumps(list(seeds))}\n",
+        ]
+    return "".join(lines), added
 
 
-def _merge_template_settings(runner_yaml: Path, output_dir: Path, template_dir: Path) -> Path:
-    """Return the runner YAML to pass to OpenFold3 for a run that has templates.
+def _merge_runner_settings(
+    runner_yaml: Path,
+    output_dir: Path,
+    template_dir: Optional[Path] = None,
+    seeds: Optional[Sequence[int]] = None,
+) -> Path:
+    """Return the runner YAML to pass to OpenFold3 once the toolkit's settings are added.
 
     A runner YAML given by the user says nothing about where the toolkit put the template CIFs
     that the query's A3M files point to, and OpenFold3 looks for them only in
-    ``template_preprocessor_settings.structure_directory``. This writes a copy of the user's file
-    to ``output_dir / "runner_config_merged.yaml"`` with that key set to ``template_dir``, and
-    ``msa_computation_settings.cleanup_msa_dir: false`` unless the user set it (otherwise
-    OpenFold3 deletes the folder that holds the query files at the end of a run; see
-    :func:`_write_runner_yaml`). Nothing else is added and the user's file is never modified.
+    ``template_preprocessor_settings.structure_directory``. With ``template_dir`` this writes a
+    copy of the user's file to ``output_dir / "runner_config_merged.yaml"`` with that key set to
+    ``template_dir``, and ``msa_computation_settings.cleanup_msa_dir: false`` unless the user
+    set it (otherwise OpenFold3 deletes the folder that holds the query files at the end of a
+    run; see :func:`_write_runner_yaml`).
+
+    With ``seeds`` the copy also sets ``experiment_settings.seeds``, replacing the user's value:
+    seeds the caller asked for explicitly win over the file. Without ``seeds`` the file's own
+    seeds (or OpenFold3's default of ``[42]``) apply, and nothing about seeds is touched. Nothing
+    else is added and the user's file is never modified.
 
     The copy is made by loading and dumping the YAML, so comments and anchors of the original
     are not kept. Without PyYAML the settings are appended to the text instead, which works only
-    for a plain block mapping that sets neither section.
+    for a plain block mapping that sets none of the sections that are appended.
 
     A ``structure_directory`` that the user's file already sets is not overwritten. The
     differing path is logged as a warning that names both directories: the toolkit's templates
     are found only if the user's directory holds them. When the file already says everything
-    that would be added, the user's own path is returned and no copy is written.
+    that would be added, the user's own path is returned and no copy is written; so it is when
+    there is nothing to add (neither ``template_dir`` nor ``seeds``), and the file is not read.
 
     Args:
         runner_yaml: The user's runner YAML.
         output_dir: Directory in which to write the copy.
-        template_dir: Directory that holds the template CIFs of the query.
+        template_dir: Directory that holds the template CIFs of the query, or None.
+        seeds: Seeds that replace the file's, or None to leave them.
 
     Returns:
         Path of the merged copy, or ``runner_yaml`` when there is nothing to add.
 
     Raises:
-        FileNotFoundError: ``runner_yaml`` does not exist.
+        FileNotFoundError: ``runner_yaml`` does not exist (only when something is to be added).
         ValueError: The file is not valid YAML or not a mapping (the message names it), or
             PyYAML is missing and the file cannot be extended as text.
     """
     runner_yaml = Path(runner_yaml)
+    if template_dir is None and seeds is None:
+        return runner_yaml
+    seed_values = None if seeds is None else _query_seeds(seeds)
     text = runner_yaml.read_text(encoding="utf-8")
     try:
-        merged = _merge_template_settings_with_yaml(text, runner_yaml, template_dir)
+        merged, added = _merge_runner_settings_with_yaml(
+            text, runner_yaml, template_dir, seed_values
+        )
     except ImportError:  # no PyYAML
-        merged = _merge_template_settings_as_text(text, runner_yaml, template_dir)
+        merged, added = _merge_runner_settings_as_text(text, runner_yaml, template_dir, seed_values)
     if merged is None:
         return runner_yaml
     merged_path = output_dir / "runner_config_merged.yaml"
     merged_path.write_text(merged, encoding="utf-8")
     logger.info(
-        "Wrote %s: a copy of the runner YAML %s that adds the template directory %s as "
-        "template_preprocessor_settings.structure_directory. %s is not modified.",
+        "Wrote %s: a copy of the runner YAML %s that adds %s. %s is not modified.",
         merged_path,
         runner_yaml,
-        template_dir,
+        " and ".join(added),
         runner_yaml,
     )
     return merged_path
@@ -584,8 +725,10 @@ def _user_default_runner_yaml() -> Optional[Path]:
 
     ``run_openfold predict`` loads ``$OPENFOLD_CACHE/runner.yml`` (default
     ``~/.openfold3/runner.yml``) first and layers the runner YAML it is given over it, so
-    settings the toolkit does not write (structure format, MSA server URL, seeds, ...) come
-    from that file. Returns None when there is none.
+    settings the toolkit does not write (structure format, MSA server URL, ...) come from that
+    file. The seeds of the YAML that the toolkit generates replace the file's; a runner YAML
+    of the user's own keeps whatever seeds it sets, and without any the file's seeds apply.
+    Returns None when there is none.
     """
     candidate = _openfold_cache_dir() / "runner.yml"
     return candidate if candidate.is_file() else None
@@ -631,7 +774,7 @@ def _run_openfold_command(cmd: Sequence[str], output_dir: Path) -> OpenFoldRunIn
         logger.warning(
             "OpenFold3 merges the user-default runner YAML %s under the toolkit's runner YAML "
             "(openfold3 >= 0.5); settings it holds that the toolkit does not write, such as "
-            "seeds, structure_format or the MSA server URL, apply to this run.",
+            "structure_format or the MSA server URL, apply to this run.",
             default_yaml,
         )
     started = time.time()
@@ -1087,8 +1230,10 @@ def prepare_refolding_query(
             (e.g., after MD relaxation). Must be a monomer (one chain).
             If None, the receptor chain is extracted from
             ``complex_structure_path``.
-        seeds: Seed values written to the query JSON's ``"seeds"`` field
-            (default ``(42,)``). One prediction is made per seed.
+        seeds: Ignored. OpenFold3 does not read seeds from the query JSON, so none are
+            written; give ``seeds`` to :func:`run_openfold` or a ``run_openfold_*`` wrapper,
+            which write them to the runner YAML. A value other than the default ``(42,)``
+            raises a ``DeprecationWarning``.
         on_unmappable_residue: ``"error"`` (default) raises
             :class:`UnmappableResidueError` before anything is written when a chain
             holds a residue that OpenFold3 cannot take; ``"x"`` sends an ``X`` for it
@@ -1105,7 +1250,7 @@ def prepare_refolding_query(
     """
     import gemmi
 
-    seed_values = _query_seeds(seeds)
+    _warn_query_seeds_ignored(seeds)
     complex_structure_path = Path(complex_structure_path)
 
     # Read the sequences first: a residue OpenFold3 cannot take must stop the run before
@@ -1153,7 +1298,6 @@ def prepare_refolding_query(
 
     # Query JSON — receptor has template, binder is free (sequence only)
     query = {
-        "seeds": seed_values,
         "queries": {
             query_name: {
                 "chains": [
@@ -1213,8 +1357,9 @@ def prepare_scoring_query(
         template_cif_path: Optional pre-prepared complex or receptor CIF
             (e.g., after MD relaxation). When provided, both chain templates
             are extracted from this file instead of ``complex_structure_path``.
-        seeds: Seed values written to the query JSON's ``"seeds"`` field
-            (default ``(42,)``). One prediction is made per seed.
+        seeds: Ignored, as for :func:`prepare_refolding_query`: no seeds are written to the
+            query JSON, and a value other than the default ``(42,)`` raises a
+            ``DeprecationWarning``.
         on_unmappable_residue: ``"error"`` (default) raises
             :class:`UnmappableResidueError` before anything is written when a chain
             holds a residue that OpenFold3 cannot take; ``"x"`` sends an ``X`` for it
@@ -1230,7 +1375,7 @@ def prepare_scoring_query(
     """
     import gemmi
 
-    seed_values = _query_seeds(seeds)
+    _warn_query_seeds_ignored(seeds)
     complex_structure_path = Path(complex_structure_path)
 
     # Source structure for sequences (always the original complex). Read first: a residue
@@ -1298,9 +1443,9 @@ def prepare_scoring_query(
         binder_a3m,
     )
 
-    # Query JSON — OF3 format: {"seeds": [...], "queries": {"name": {"chains": [...]}}}
+    # Query JSON — OF3 format: {"queries": {"name": {"chains": [...]}}}; the seeds are not part
+    # of it (OpenFold3 reads them from the runner YAML or --num_model_seeds).
     query = {
-        "seeds": seed_values,
         "queries": {
             query_name: {
                 "chains": [
@@ -1462,7 +1607,7 @@ def prepare_batched_scoring_queries(
     Args:
         samples: Per-sample descriptors.
         output_dir: Directory to write query JSON and supporting files.
-        seeds: Seed values written to the query JSON (default ``(42,)``).
+        seeds: Ignored, as for :func:`prepare_scoring_query`.
         on_unmappable_residue: ``"error"`` (default) raises
             :class:`UnmappableResidueError`, listing every affected sample, before
             anything is written; ``"x"`` sends an ``X`` and logs a warning. See
@@ -1475,7 +1620,7 @@ def prepare_batched_scoring_queries(
         ValueError: If ``seeds`` is empty or two samples share a query name.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
-    seed_values = _query_seeds(seeds)
+    _warn_query_seeds_ignored(seeds)
     rows = _read_batch_chains(samples, on_unmappable_residue)
     _check_batch_template_chain_ids(rows, binder_has_template=True)
 
@@ -1527,9 +1672,7 @@ def prepare_batched_scoring_queries(
         }
 
     query_json_path = output_dir / "batch_query.json"
-    query_json_path.write_text(
-        json.dumps({"seeds": seed_values, "queries": queries}, indent=2), encoding="utf-8"
-    )
+    query_json_path.write_text(json.dumps({"queries": queries}, indent=2), encoding="utf-8")
     return query_json_path
 
 
@@ -1548,7 +1691,7 @@ def prepare_batched_refolding_queries(
     Args:
         samples: Per-sample descriptors.
         output_dir: Directory to write query JSON and supporting files.
-        seeds: Seed values written to the query JSON (default ``(42,)``).
+        seeds: Ignored, as for :func:`prepare_refolding_query`.
         on_unmappable_residue: ``"error"`` (default) raises
             :class:`UnmappableResidueError`, listing every affected sample, before
             anything is written; ``"x"`` sends an ``X`` and logs a warning. See
@@ -1561,7 +1704,7 @@ def prepare_batched_refolding_queries(
         ValueError: If ``seeds`` is empty or two samples share a query name.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
-    seed_values = _query_seeds(seeds)
+    _warn_query_seeds_ignored(seeds)
     rows = _read_batch_chains(samples, on_unmappable_residue)
     _check_batch_template_chain_ids(rows, binder_has_template=False)
 
@@ -1598,7 +1741,5 @@ def prepare_batched_refolding_queries(
         }
 
     query_json_path = output_dir / "batch_query.json"
-    query_json_path.write_text(
-        json.dumps({"seeds": seed_values, "queries": queries}, indent=2), encoding="utf-8"
-    )
+    query_json_path.write_text(json.dumps({"queries": queries}, indent=2), encoding="utf-8")
     return query_json_path
