@@ -117,19 +117,29 @@ def steps_that_run(metrics, *, skip_relax: bool, custom_relaxer: bool = False) -
 
 
 def model_step_of(
-    predictor: Optional[str], prediction_dir: Optional[Path], metrics
-) -> Optional[tuple[str, str, bool]]:
-    """The model step a run executes as ``(model, metric name, output made elsewhere)``.
+    predictor: Optional[str],
+    prediction_dir: Optional[Path],
+    metrics,
+    *,
+    prediction_mode: Optional[str] = None,
+    openfold_mode: str = "score",
+) -> Optional[tuple[str, str, bool, Optional[str]]]:
+    """The model step a run executes as ``(model, metric name, output made elsewhere, mode)``.
 
     None when the run has no model step. The step is ``openfold`` in ``--metrics``: without
     ``--predictor`` it runs OpenFold3 (metric ``openfold``); with it, that model's prediction
-    through the store (metric ``prediction``), adopted from ``--prediction-dir`` when given.
+    through the store (metric ``prediction``), adopted from ``--prediction-dir`` when given. The
+    mode is ``--prediction-mode``, else ``--openfold-mode`` for a run of OpenFold3 from here, else
+    None (the making of an adopted output is not known, so its mode is not checked).
     """
+    from binding_metrics.cli.prediction import effective_prediction_mode
+
     if MODEL_STEP not in metrics:
         return None
+    mode = effective_prediction_mode(predictor, prediction_dir, prediction_mode, openfold_mode)
     if predictor is None:
-        return ("of3", "openfold", False)
-    return (predictor, "prediction", prediction_dir is not None)
+        return ("of3", "openfold", False, mode)
+    return (predictor, "prediction", prediction_dir is not None, mode)
 
 
 @dataclass
@@ -180,13 +190,26 @@ def _without_residue_check(model: str) -> Any:
     )
 
 
+def _runnable_models() -> frozenset[str]:
+    """The models this package can run itself (``cli.prediction.RUNNERS``), for the fix text."""
+    from binding_metrics.cli.prediction import RUNNERS
+
+    return frozenset(RUNNERS)
+
+
 def _short(violation) -> str:
     return f"{violation.subject}: {violation.constraint}: {violation.fact}"
 
 
 def _not_checked(reason: str, policy: str) -> PreflightOutcome:
     return PreflightOutcome(
-        block={"status": "not_checked", "reason": reason, "policy": policy, "report": None}
+        block={
+            "status": "not_checked",
+            "reason": reason,
+            "policy": policy,
+            "mode": None,
+            "report": None,
+        }
     )
 
 
@@ -199,6 +222,7 @@ def refusal_block(error: IncompatibleInputError) -> dict:
         "policy": report.policy,
         "skipped_steps": {},
         "skipped_geometry": {},
+        "mode": report.mode,
         "report": report.to_dict(),
     }
 
@@ -211,7 +235,7 @@ def check_input(
     binder_type: str = "auto",
     on_incompatible: str = "error",
     steps: frozenset[str] = frozenset(),
-    model: Optional[tuple[str, str, bool]] = None,
+    model: Optional[tuple[str, str, bool, Optional[str]]] = None,
     reference_path: Optional[Path] = None,
     include_plan: bool = False,
     on_unmappable_residue: str = "error",
@@ -228,7 +252,7 @@ def check_input(
         binder_type: ``auto`` or one of ``BINDER_TYPES``.
         on_incompatible: ``error``, ``skip`` or ``warn``.
         steps: The pipeline steps that run, from ``steps_that_run``.
-        model: The model step, from ``model_step_of``.
+        model: The model step, from ``model_step_of``; its fourth element is the mode.
         reference_path: The reference structure, when one is given.
         include_plan: Put the text of the plan into the block (``--preflight-only``).
         on_unmappable_residue: ``x`` lifts the residue check of the OpenFold3 query builder: the
@@ -253,11 +277,12 @@ def check_input(
                 step_of_metric[name] = step
     predictor = None
     adopted = False
+    mode = None
     provided: set[str] = set()
     if reference_path is not None:
         provided.add("reference_structure")
     if model is not None:
-        predictor, model_metric, adopted = model
+        predictor, model_metric, adopted, mode = model
         if on_unmappable_residue == "x":
             predictor = _without_residue_check(predictor)
         metric_names.append(model_metric)
@@ -273,6 +298,8 @@ def check_input(
             policy=on_incompatible,
             predictor_policy="warn" if adopted else None,
             provided=provided,
+            mode=mode,
+            runnable=_runnable_models(),
         )
     except IncompatibleInputError as refused:
         error, report = refused, refused.report
@@ -319,6 +346,7 @@ def check_input(
         "policy": on_incompatible,
         "skipped_steps": dict(skipped_steps),
         "skipped_geometry": dict(skipped_geometry),
+        "mode": report.mode,
         "report": report.to_dict(),
     }
     if include_plan:

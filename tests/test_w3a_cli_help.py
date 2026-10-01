@@ -17,7 +17,9 @@ chains as templates "for the known conformation": a template carries the fold of
 no cross-chain geometry, so OpenFold3 places the binder itself (the help names ``binder_ca_rmsd``
 and ``delta_com_angstrom`` as the keys that say how far its pose is from the input pose). Two
 options were added to both commands and are recorded here from now on: ``--openfold-cyclic``
-and ``--openfold-no-msa-server``.
+and ``--openfold-no-msa-server``. Four more were added with the pre-flight check and are recorded
+the same way: ``--binder-type``, ``--on-incompatible``, ``--preflight-only`` and
+``--prediction-mode`` (the mode a model is used in: predict, refold, score or score-lock).
 """
 
 import argparse
@@ -313,6 +315,62 @@ GOLDEN = {
                 "alignments written by the toolkit are no longer "
                 "replaced by the server (issue #68).",
             ),
+            "--prediction-mode": (
+                "Prediction",
+                None,
+                ["predict", "refold", "score", "score-lock"],
+                None,
+                False,
+                "None",
+                "How the model is used for the complex: predict (sequences "
+                "only), refold (receptor templated, binder predicted freely),"
+                " score (every chain templated on its own, the pose not "
+                "given: re-docking) or score-lock (score, with the pose "
+                "pinned to the input). It is checked against what the model "
+                "supports before anything runs, and recorded. Default: for "
+                "--predictor of3 run from here, the value of --openfold-mode;"
+                " for an output read with --prediction-dir, not stated and "
+                "not checked. Needs --predictor.",
+            ),
+            "--binder-type": (
+                "Pre-flight check",
+                None,
+                ["auto", "peptide", "miniprotein", "nanobody", "antibody"],
+                None,
+                False,
+                "'auto'",
+                "What the binder is, for the checks that depend on it. auto "
+                "(default) estimates it from the number of residues: at most "
+                "40 a peptide, at most 100 a miniprotein, longer unknown, "
+                "which skips the type checks. A nanobody or an antibody chain"
+                " is never guessed: name it.",
+            ),
+            "--on-incompatible": (
+                "Pre-flight check",
+                None,
+                ["error", "skip", "warn"],
+                None,
+                False,
+                "'error'",
+                "What to do when the input cannot go through a requested step"
+                " or model, found before anything runs. error (default): "
+                "refuse, listing every problem with its fix. skip: leave out "
+                "the incompatible steps, record why, and run the rest. warn: "
+                "log the problems and run everything. An output read with "
+                "--prediction-dir only warns.",
+            ),
+            "--preflight-only": (
+                "Pre-flight check",
+                None,
+                None,
+                0,
+                False,
+                "False",
+                "Print the pre-flight plan (what would run, what is "
+                "incompatible and why) and stop, without preparing, relaxing "
+                "or predicting anything. Exit status 1 when --on-incompatible"
+                " is error and something is refused.",
+            ),
             "--format": (
                 "Report",
                 None,
@@ -584,6 +642,62 @@ GOLDEN = {
                 "accuracy for a natural receptor, but the template "
                 "alignments written by the toolkit are no longer "
                 "replaced by the server (issue #68).",
+            ),
+            "--prediction-mode": (
+                "Prediction",
+                None,
+                ["predict", "refold", "score", "score-lock"],
+                None,
+                False,
+                "None",
+                "How the model is used for the complex: predict (sequences "
+                "only), refold (receptor templated, binder predicted freely),"
+                " score (every chain templated on its own, the pose not "
+                "given: re-docking) or score-lock (score, with the pose "
+                "pinned to the input). It is checked against what the model "
+                "supports before anything runs, and recorded. Default: for "
+                "--predictor of3 run from here, the value of --openfold-mode;"
+                " for an output read with --prediction-dir, not stated and "
+                "not checked. Needs --predictor.",
+            ),
+            "--binder-type": (
+                "Pre-flight check",
+                None,
+                ["auto", "peptide", "miniprotein", "nanobody", "antibody"],
+                None,
+                False,
+                "'auto'",
+                "What the binder is, for the checks that depend on it. auto "
+                "(default) estimates it from the number of residues: at most "
+                "40 a peptide, at most 100 a miniprotein, longer unknown, "
+                "which skips the type checks. A nanobody or an antibody chain"
+                " is never guessed: name it.",
+            ),
+            "--on-incompatible": (
+                "Pre-flight check",
+                None,
+                ["error", "skip", "warn"],
+                None,
+                False,
+                "'error'",
+                "What to do when the input cannot go through a requested step"
+                " or model, found before anything runs. error (default): "
+                "refuse, listing every problem with its fix. skip: leave out "
+                "the incompatible steps, record why, and run the rest. warn: "
+                "log the problems and run everything. An output read with "
+                "--prediction-dir only warns.",
+            ),
+            "--preflight-only": (
+                "Pre-flight check",
+                None,
+                None,
+                0,
+                False,
+                "False",
+                "Print the pre-flight plan (what would run, what is "
+                "incompatible and why) and stop, without preparing, relaxing "
+                "or predicting anything. Exit status 1 when --on-incompatible"
+                " is error and something is refused.",
             ),
             "--log-file": (
                 "Logging",

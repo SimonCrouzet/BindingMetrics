@@ -202,13 +202,15 @@ def _run_preflight(
     preflight_model: Optional[tuple],
     include_plan: bool,
     on_unmappable_residue: str,
+    prediction_mode: Optional[str] = None,
+    openfold_mode: str = "score",
 ):
     """The pre-flight check of one run, before anything is prepared, relaxed or predicted.
 
     Resolves the chains as ``run_pipeline`` does (an unknown chain ID still raises
     ``ChainNotFoundError``), lists the steps the run executes and checks them; see
     ``binding_metrics.preflight_cli``. ``preflight_model`` is the model step that the caller
-    runs after this call (the batch), as ``(model, metric, adopted)``.
+    runs after this call (the batch), as ``(model, metric, adopted, mode)``.
     """
     from binding_metrics.io.structures import detect_chains_from_file
     from binding_metrics.preflight_cli import PreflightOutcome
@@ -228,7 +230,16 @@ def _run_preflight(
             }
         )
     _require_chains_present(chain_info, peptide_chain, receptor_chain)
-    model = model_step_of(predictor, prediction_dir, metrics) or preflight_model
+    model = (
+        model_step_of(
+            predictor,
+            prediction_dir,
+            metrics,
+            prediction_mode=prediction_mode,
+            openfold_mode=openfold_mode,
+        )
+        or preflight_model
+    )
     return check_input(
         input_path,
         chain_info["peptide_chain"],
@@ -291,6 +302,7 @@ def run_pipeline(
     preflight_model: Optional[tuple] = None,
     openfold_cyclic: bool | str = "auto",
     openfold_use_msa_server: bool = True,
+    prediction_mode: Optional[str] = None,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -349,8 +361,14 @@ def run_pipeline(
             store. ``preflight_only`` returns ``{"sample_id", "input", "preflight"}`` (with the
             text of the plan under ``preflight["plan"]``) and does nothing else, whatever the
             policy.
+        prediction_mode: How the model is used for the complex: ``predict``, ``refold``,
+            ``score`` or ``score-lock`` (keyword-only; ``--prediction-mode``). It is checked against
+            what the model supports in the pre-flight check and recorded as ``mode`` in
+            ``results["prediction"]`` and ``results["preflight"]``. None takes ``openfold_mode``
+            for OpenFold3 run from here, and is "not known, not checked" for an output read
+            from ``prediction_dir``. Needs ``predictor``.
         preflight_model: For a caller that runs the model step itself after this call (the
-            batch): ``(model, metric, adopted)``, so that its limits are checked here, first.
+            batch): ``(model, metric, adopted, mode)``, so that its limits are checked here, first.
         The remaining arguments mirror the ``binding-metrics-run`` flags.
 
     Returns:
@@ -400,7 +418,7 @@ def run_pipeline(
     )
     check_on_unmappable_residue(on_unmappable_residue)
     check_openfold_cyclic(openfold_cyclic)
-    check_predictor(predictor, prediction_dir)
+    check_predictor(predictor, prediction_dir, prediction_mode)
     _check_preflight_options(binder_type, on_incompatible)
 
     if sample_id is None:
@@ -423,6 +441,8 @@ def run_pipeline(
         preflight_model=preflight_model,
         include_plan=preflight_only,
         on_unmappable_residue=on_unmappable_residue,
+        prediction_mode=prediction_mode,
+        openfold_mode=openfold_mode,
     )
     if preflight_only:
         return {"sample_id": sample_id, "input": str(input_path), "preflight": outcome.block}
@@ -762,6 +782,7 @@ def run_pipeline(
                 on_unmappable_residue=on_unmappable_residue,
                 openfold_cyclic=openfold_cyclic,
                 openfold_use_msa_server=openfold_use_msa_server,
+                prediction_mode=prediction_mode,
             )
             results["provenance"].update(prediction_provenance)
         else:
@@ -1150,6 +1171,7 @@ def main():
                 prediction_target_chain=args.prediction_target_chain,
                 prediction_cache=args.prediction_cache,
                 rerun_predictions=args.rerun_predictions,
+                prediction_mode=args.prediction_mode,
                 binder_type=args.binder_type,
                 on_incompatible=args.on_incompatible,
                 preflight_only=args.preflight_only,

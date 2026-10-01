@@ -41,7 +41,7 @@ class TestCheckInput:
             BICYCLE.parent / "example_ncaa_cyclosporin_1CWA.cif",
             "C",
             "A",
-            model=("of3", "openfold", False),
+            model=("of3", "openfold", False, "score"),
         )
         assert outcome.block["status"] == "warn"
         assert "cyclic: true" in outcome.block["reason"]
@@ -70,13 +70,13 @@ class TestCheckInput:
         import json
 
         outcome = check_input(
-            BICYCLE, "I", "A", model=("of3", "openfold", False), include_plan=True
+            BICYCLE, "I", "A", model=("of3", "openfold", False, "score"), include_plan=True
         )
         json.dumps(outcome.block)
         assert outcome.block["plan"].startswith("Pre-flight check failed")
 
     def test_a_refusal_block_keeps_the_report(self):
-        outcome = check_input(BICYCLE, "I", "A", model=("of3", "openfold", False))
+        outcome = check_input(BICYCLE, "I", "A", model=("of3", "openfold", False, "score"))
         block = refusal_block(outcome.error)
         assert block["status"] == "refused" and block["report"]["violations"]
 

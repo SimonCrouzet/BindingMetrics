@@ -113,6 +113,7 @@ from binding_metrics.cli.prediction import (
     check_prediction_args,
     check_predictor,
     display_name,
+    effective_prediction_mode,
     make_request,
     make_runner,
     make_session,
@@ -136,6 +137,7 @@ from binding_metrics.preflight_cli import (
     BINDER_TYPE_CHOICES,
     add_preflight_args,
     check_input,
+    model_step_of,
     refusal_block,
 )
 from binding_metrics.provenance import collect_provenance, conda_python_command, openfold3_version
@@ -475,7 +477,7 @@ def _run_batched_openfold(
             input_path,
             pchain,
             rchain,
-            ("of3", "openfold", False),
+            ("of3", "openfold", False, openfold_mode),
             binder_type,
             on_incompatible,
             on_unmappable_residue,
@@ -676,6 +678,7 @@ def _run_batched_prediction(
     on_incompatible: str = "error",
     openfold_cyclic: bool | str = "auto",
     openfold_use_msa_server: bool = True,
+    prediction_mode: Optional[str] = None,
 ) -> None:
     """The ``--predictor`` step of a batch: every sample through one shared prediction store.
 
@@ -701,6 +704,7 @@ def _run_batched_prediction(
         rows, sid_to_input, peptide_chain, receptor_chain, "prediction"
     )
     adopted = prediction_dir is not None
+    mode = effective_prediction_mode(predictor, prediction_dir, prediction_mode, openfold_mode)
     eligible = []
     for entry in candidates:
         idx, sid, input_path, pchain, rchain = entry
@@ -709,7 +713,7 @@ def _run_batched_prediction(
             input_path,
             pchain,
             rchain,
-            (predictor, "prediction", adopted),
+            (predictor, "prediction", adopted, mode),
             binder_type,
             on_incompatible,
             on_unmappable_residue,
@@ -717,7 +721,7 @@ def _run_batched_prediction(
         if allowed:
             eligible.append(entry)
             continue
-        block = {"model": predictor, "skipped": True, "reason": why_not}
+        block = {"model": predictor, "mode": mode, "skipped": True, "reason": why_not}
         for key, value in _flatten({"prediction": block}).items():
             if key.startswith("prediction_"):
                 rows[idx][key] = value
@@ -757,10 +761,11 @@ def _run_batched_prediction(
                     on_unmappable_residue=on_unmappable_residue,
                     openfold_cyclic=openfold_cyclic,
                     openfold_use_msa_server=openfold_use_msa_server,
+                    prediction_mode=prediction_mode,
                 )
             except Exception as e:  # noqa: BLE001 - one unreadable input must not stop the batch
                 logger.warning("  %s: no prediction request: %s", sid, e)
-                outcomes[sid] = ({"model": predictor, "error": str(e)}, {})
+                outcomes[sid] = ({"model": predictor, "mode": mode, "error": str(e)}, {})
         if requests and not adopt:
             make_session(store, runner, rerun=rerun_predictions).prefetch(requests.values())
     except Exception as e:  # noqa: BLE001 - the batch call starts a model; see prediction_error
@@ -768,7 +773,7 @@ def _run_batched_prediction(
         logger.warning("  [ERROR] Batched prediction failed: %s", e)
         traceback.print_exc()
         for sid in requests:
-            outcomes[sid] = ({"model": predictor, "error": str(e)}, {})
+            outcomes[sid] = ({"model": predictor, "mode": mode, "error": str(e)}, {})
         requests = {}
 
     if predictor == "of3" and not adopt:
@@ -793,6 +798,7 @@ def _run_batched_prediction(
                 reference_path=reference_for(predictor, input_path),
                 # an adopted output is the user's own: its seeds are not the ones given here
                 seed_index=1 if adopt else scored_seed_index(openfold_seeds),
+                mode=mode,
             )
             block = outcomes[sid][0]
             if predictor == "of3" and not adopt and not block.get("error"):
@@ -877,6 +883,7 @@ def run_batch(
     preflight_only: bool = False,
     openfold_cyclic: bool | str = "auto",
     openfold_use_msa_server: bool = True,
+    prediction_mode: Optional[str] = None,
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -948,6 +955,11 @@ def run_batch(
             sample is an ``"error"`` row with ``preflight_status`` ``refused`` and the reason;
             it does not stop the batch. Under ``"skip"`` the incompatible steps of a sample are
             recorded as skipped with their reason and the rest runs.
+        prediction_mode: How the model is used for the complex (``--prediction-mode``): ``predict``,
+            ``refold``, ``score`` or ``score-lock``. It is checked against what the model supports
+            in the pre-flight check of every sample and recorded as ``prediction_mode``. None takes
+            ``openfold_mode`` for OpenFold3 run from here and is "not known, not checked" for
+            outputs read from ``prediction_dir``. Needs ``predictor``.
         preflight_only: Check every sample and return one row each (``preflight_status``,
             ``preflight_reason``, ``preflight_plan``) without preparing, relaxing or predicting
             anything and without creating ``output_dir``.
@@ -993,7 +1005,7 @@ def run_batch(
     )
     check_on_unmappable_residue(on_unmappable_residue)
     check_openfold_cyclic(openfold_cyclic)
-    check_predictor(predictor, prediction_dir)
+    check_predictor(predictor, prediction_dir, prediction_mode)
     if binder_type not in BINDER_TYPE_CHOICES:
         raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")
     if on_incompatible not in POLICIES:
@@ -1015,6 +1027,9 @@ def run_batch(
             references=references,
             predictor=predictor,
             prediction_dir=prediction_dir,
+            prediction_mode=prediction_mode,
+            openfold_mode=openfold_mode,
+            on_unmappable_residue=on_unmappable_residue,
             binder_type=binder_type,
             on_incompatible=on_incompatible,
         )
@@ -1023,12 +1038,17 @@ def run_batch(
     # subprocess after all other metrics finish.
     want_openfold = "openfold" in selected
     # The model step runs after the workers, but each worker checks its limits first.
-    if not want_openfold:
-        preflight_model = None
-    elif predictor is not None:
-        preflight_model = (predictor, "prediction", prediction_dir is not None)
-    else:
-        preflight_model = ("of3", "openfold", False)
+    preflight_model = (
+        model_step_of(
+            predictor,
+            prediction_dir,
+            selected,
+            prediction_mode=prediction_mode,
+            openfold_mode=openfold_mode,
+        )
+        if want_openfold
+        else None
+    )
 
     common_kwargs = dict(
         output_dir=output_dir,
@@ -1141,6 +1161,7 @@ def run_batch(
             on_incompatible=on_incompatible,
             openfold_cyclic=openfold_cyclic,
             openfold_use_msa_server=openfold_use_msa_server,
+            prediction_mode=prediction_mode,
         )
     elif want_openfold:
         _run_batched_openfold(
@@ -1172,6 +1193,9 @@ def _preflight_only_rows(
     references: Mapping[str, Path],
     predictor: Optional[str],
     prediction_dir: Optional[Path],
+    prediction_mode: Optional[str],
+    openfold_mode: str,
+    on_unmappable_residue: str,
     binder_type: str,
     on_incompatible: str,
 ) -> list[dict]:
@@ -1197,6 +1221,9 @@ def _preflight_only_rows(
                 reference_path=references.get(sid),
                 predictor=predictor,
                 prediction_dir=prediction_dir,
+                prediction_mode=prediction_mode,
+                openfold_mode=openfold_mode,
+                on_unmappable_residue=on_unmappable_residue,
                 binder_type=binder_type,
                 on_incompatible=on_incompatible,
                 preflight_only=True,
@@ -1455,6 +1482,9 @@ def main():
             references=reference_map,
             predictor=args.predictor,
             prediction_dir=args.prediction_dir,
+            prediction_mode=args.prediction_mode,
+            openfold_mode=args.openfold_mode,
+            on_unmappable_residue=args.on_unmappable_residue,
             binder_type=args.binder_type,
             on_incompatible=args.on_incompatible,
             preflight_only=True,
@@ -1528,6 +1558,7 @@ def main():
         prediction_target_chain=args.prediction_target_chain,
         prediction_cache=args.prediction_cache,
         rerun_predictions=args.rerun_predictions,
+        prediction_mode=args.prediction_mode,
         binder_type=args.binder_type,
         on_incompatible=args.on_incompatible,
         random_seed=args.random_seed,

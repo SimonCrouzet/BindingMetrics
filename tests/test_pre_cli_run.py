@@ -315,9 +315,22 @@ class TestTheStepsThatAreChecked:
 
     def test_the_model_step(self):
         openfold = frozenset({"openfold"})
-        assert model_step_of(None, None, openfold) == ("of3", "openfold", False)
-        assert model_step_of("boltz2", None, openfold) == ("boltz2", "prediction", False)
-        assert model_step_of("boltz2", Path("d"), openfold) == ("boltz2", "prediction", True)
+        assert model_step_of(None, None, openfold) == ("of3", "openfold", False, "score")
+        assert model_step_of(None, None, openfold, openfold_mode="refold") == (
+            "of3",
+            "openfold",
+            False,
+            "refold",
+        )
+        # an output made elsewhere: the mode is not known unless it is stated
+        assert model_step_of("boltz2", Path("d"), openfold) == ("boltz2", "prediction", True, None)
+        assert model_step_of("boltz2", Path("d"), openfold, prediction_mode="lock") == (
+            "boltz2",
+            "prediction",
+            True,
+            "lock",
+        )
+        assert model_step_of("of3", None, openfold, prediction_mode="refold")[3] == "refold"
         assert model_step_of("boltz2", None, frozenset({"interface"})) is None
 
     def test_a_missing_dockq_reference_is_not_a_refusal(self, tmp_path):

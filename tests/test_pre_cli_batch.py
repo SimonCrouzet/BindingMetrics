@@ -166,7 +166,7 @@ class TestTheWholeBatchModelStep:
         seen = []
         monkeypatch.setattr(batch, "check_input", lambda *a, **k: seen.append(a))
         allowed, why = batch._model_step_allowed(
-            "s", tmp_path / "x.pdb", "B", "A", ("of3", "openfold", False), "auto", "warn"
+            "s", tmp_path / "x.pdb", "B", "A", ("of3", "openfold", False, "score"), "auto", "warn"
         )
         assert allowed and why == "" and seen == []
 

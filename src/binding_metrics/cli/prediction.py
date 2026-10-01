@@ -18,10 +18,12 @@ What the step does for one sample, in order::
     EvoBind adversarial check                 # the input pose against the record
 
 ``results["prediction"]`` holds the keys of ``summarize_prediction`` (with ``model``), the EvoBind
-keys merged as the OpenFold step merges them, and ``cache``: the counters of
-``PredictionSession.stats()`` and ``request_key``, the name of the store entry. A prediction that
-failed, or that cannot be run here, gives ``{"model": ..., "error": <reason>, "cache": ...}``; the
-sample goes on with its other steps.
+keys merged as the OpenFold step merges them, ``mode`` (how the model was used: ``predict``,
+``refold``, ``score`` or ``score-lock``; None for an output whose making is not stated) and
+``cache``: the counters of ``PredictionSession.stats()`` and ``request_key``, the name of the
+store entry. A prediction that failed, or that cannot be run here, gives
+``{"model": ..., "mode": ..., "error": <reason>, "cache": ...}``; the sample goes on with its
+other steps.
 
 Only OpenFold3 has a runner (``RUNNERS``). ``check_prediction_args`` refuses any other model
 without ``--prediction-dir`` while the command line is checked, before anything runs.
@@ -42,6 +44,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
+from binding_metrics.capabilities import MODES
 from binding_metrics.cli import (
     check_openfold_cyclic,
     merge_reason,
@@ -106,6 +109,20 @@ def add_prediction_args(parser: argparse.ArgumentParser, *, batch: bool = False)
         ),
     )
     group.add_argument(
+        "--prediction-mode",
+        choices=MODES,
+        default=None,
+        help=(
+            "How the model is used for the complex: predict (sequences only), refold (receptor "
+            "templated, binder predicted freely), score (every chain templated on its own, the "
+            "pose not given: re-docking) or score-lock (score, with the pose pinned to the input). "
+            "It is checked "
+            "against what the model supports before anything runs, and recorded. Default: for "
+            "--predictor of3 run from here, the value of --openfold-mode; for an output read "
+            "with --prediction-dir, not stated and not checked. Needs --predictor."
+        ),
+    )
+    group.add_argument(
         "--prediction-binder-chain",
         type=str,
         default=None,
@@ -150,6 +167,7 @@ def add_prediction_args(parser: argparse.ArgumentParser, *, batch: bool = False)
 #: Options that mean nothing without ``--predictor``, as (attribute, option string).
 _NEEDS_PREDICTOR = (
     ("prediction_dir", "--prediction-dir"),
+    ("prediction_mode", "--prediction-mode"),
     ("prediction_binder_chain", "--prediction-binder-chain"),
     ("prediction_target_chain", "--prediction-target-chain"),
     ("prediction_cache", "--prediction-cache"),
@@ -192,19 +210,39 @@ def check_prediction_args(parser: argparse.ArgumentParser, args: argparse.Namesp
         return
     if args.prediction_dir is None and not has_runner(args.predictor):
         parser.error(no_runner_message(args.predictor))
+    if args.prediction_dir is None and getattr(args, "prediction_mode", None) == "predict":
+        parser.error(predict_needs_a_directory_message(args.predictor))
     if args.prediction_dir is not None and not Path(args.prediction_dir).is_dir():
         print(f"ERROR: --prediction-dir is not a directory: {args.prediction_dir}", file=sys.stderr)
         sys.exit(1)
 
 
-def check_predictor(predictor: Optional[str], prediction_dir: Optional[Path]) -> None:
+def predict_needs_a_directory_message(model: str) -> str:
+    """Why ``--prediction-mode predict`` cannot be run from here."""
+    return (
+        f"--prediction-mode predict cannot be run from here: a run predicts the complex with its "
+        f"structure as template (score or refold). Read an output made from sequences with "
+        f"--prediction-dir DIR (--predictor {model})"
+    )
+
+
+def check_predictor(
+    predictor: Optional[str],
+    prediction_dir: Optional[Path],
+    prediction_mode: Optional[str] = None,
+) -> None:
     """The Python-API counterpart of ``check_prediction_args``: raise before any step runs.
 
     Raises:
-        ValueError: ``predictor`` is not a registered model, or it has no runner and no
-            ``prediction_dir`` is given.
+        ValueError: ``predictor`` is not a registered model, it has no runner and no
+            ``prediction_dir`` is given, ``prediction_mode`` is not one of ``MODES`` or needs
+            ``predictor``, or it is ``predict`` for a run from here.
     """
+    if prediction_mode is not None and prediction_mode not in MODES:
+        raise ValueError(f"prediction_mode must be one of {MODES}, got {prediction_mode!r}")
     if predictor is None:
+        if prediction_mode is not None:
+            raise ValueError("prediction_mode needs a predictor (which model made the output?)")
         return
     if predictor not in PARSERS:
         raise ValueError(
@@ -212,6 +250,30 @@ def check_predictor(predictor: Optional[str], prediction_dir: Optional[Path]) ->
         )
     if prediction_dir is None and not has_runner(predictor):
         raise ValueError(no_runner_message(predictor))
+    if prediction_dir is None and prediction_mode == "predict":
+        raise ValueError(predict_needs_a_directory_message(predictor))
+
+
+def effective_prediction_mode(
+    predictor: Optional[str],
+    prediction_dir: Optional[Path],
+    prediction_mode: Optional[str],
+    openfold_mode: str = "score",
+) -> Optional[str]:
+    """The mode a prediction step runs in, or None when it is not known.
+
+    ``--prediction-mode`` wins. Without it, the OpenFold3 step (no ``--predictor``) and
+    ``--predictor of3`` run from here use ``--openfold-mode``, so a run that did not use the new
+    option behaves as before; an output read with ``--prediction-dir`` was made elsewhere, and
+    its mode is not known unless the user says it.
+    """
+    if prediction_mode is not None:
+        return prediction_mode
+    if predictor is None:
+        return openfold_mode
+    if prediction_dir is None and predictor == "of3":
+        return openfold_mode
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +322,7 @@ def make_request(
     on_unmappable_residue: str = "error",
     openfold_cyclic: bool | str = "auto",
     openfold_use_msa_server: bool = True,
+    prediction_mode: Optional[str] = None,
 ):
     """The store request of one sample.
 
@@ -267,7 +330,9 @@ def make_request(
     out, so two callers that mean one run share its key). With ``adopt`` True it describes
     outputs the user made: the model, the sample name, the content of the input file and the
     chain roles. The name is part of that key, so two samples with identical inputs adopt
-    their own outputs and not one another's.
+    their own outputs and not one another's. ``prediction_mode`` (``--prediction-mode``) sets the
+    mode of the request, and so its key; without it the mode is ``openfold_mode`` for OpenFold3
+    and ``predict`` for an adopted output of another model, as before.
 
     Raises:
         ValueError: ``runner`` is None and ``adopt`` is False, or the runner refuses a setting.
@@ -279,7 +344,7 @@ def make_request(
         return PredictionRequest(
             predictor,
             sample_id,
-            mode=openfold_mode if predictor == "of3" else "predict",
+            mode=prediction_mode or (openfold_mode if predictor == "of3" else "predict"),
             input_path=input_path,
             binder_chain=binder_chain,
             receptor_chain=receptor_chain,
@@ -291,7 +356,7 @@ def make_request(
         name=sample_id,
         binder_chain=binder_chain,
         receptor_chain=receptor_chain,
-        mode=openfold_mode,
+        mode=prediction_mode or openfold_mode,
         seeds=openfold_seeds,
         on_unmappable_residue=on_unmappable_residue,
         **openfold_cyclic_kwargs(openfold_cyclic),
@@ -447,6 +512,7 @@ def _analyse(
     reference_path: Optional[Path],
     adopted: bool = False,
     seed_index: int = 1,
+    mode: Optional[str] = None,
 ) -> tuple[dict, dict]:
     """Every consumer of one prediction, all reading the record the session parsed once."""
     from binding_metrics.metrics.evobind import compute_evobind_adversarial_from_records
@@ -459,6 +525,7 @@ def _analyse(
         logger.warning("  [warning] Prediction failed: %s", error)
         return {
             "model": request.model,
+            "mode": mode,
             "error": str(error),
             "cache": _cache_block(session, request, adopted=adopted),
         }, {}
@@ -490,6 +557,7 @@ def _analyse(
             logger.warning("  [warning] EvoBind adversarial check failed: %s", e)
             block["adversarial_error"] = str(e)
 
+    block["mode"] = mode
     block["cache"] = _cache_block(session, request, adopted=adopted)
     provenance: dict[str, Any] = {}
     checkpoint = record.extras.get("inference_ckpt_name")
@@ -510,6 +578,7 @@ def run_prediction_step(
     prediction_target_chain: Optional[str] = None,
     reference_path: Optional[Path] = None,
     seed_index: int = 1,
+    mode: Optional[str] = None,
 ) -> tuple[dict, dict]:
     """The prediction step for one sample; never raises.
 
@@ -525,6 +594,8 @@ def run_prediction_step(
             they differ from the input's.
         reference_path: Structure for ``binder_ca_rmsd`` (``reference_for``).
         seed_index: Position of the seed directory to read (``scored_seed_index``).
+        mode: The mode the prediction was made in (``effective_prediction_mode``); recorded as
+            ``mode`` in the block, None when it is not known.
 
     Returns:
         ``(block, provenance)``: the value of ``results["prediction"]`` and the provenance keys
@@ -547,12 +618,14 @@ def run_prediction_step(
             reference_path=reference_path,
             adopted=prediction_dir is not None,
             seed_index=seed_index,
+            mode=mode,
         )
     except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["prediction"]
         logger.warning("  [warning] Prediction failed: %s", e)
         traceback.print_exc()
         return {
             "model": request.model,
+            "mode": mode,
             "error": str(e),
             "cache": _cache_block(session, request, adopted=prediction_dir is not None),
         }, {}
@@ -577,6 +650,7 @@ def run_single_prediction(
     on_unmappable_residue: str = "error",
     openfold_cyclic: bool | str = "auto",
     openfold_use_msa_server: bool = True,
+    prediction_mode: Optional[str] = None,
 ) -> tuple[dict, dict]:
     """The whole prediction step of ``run_pipeline``: store, session, request, consumers.
 
@@ -594,6 +668,7 @@ def run_single_prediction(
             "(or auto-detect); skipping."
         )
         return {"skipped": True}, {}
+    mode = effective_prediction_mode(predictor, prediction_dir, prediction_mode, openfold_mode)
     try:
         adopt = prediction_dir is not None
         runner = None if adopt else make_runner(predictor, openfold_conda_env)
@@ -615,11 +690,12 @@ def run_single_prediction(
             on_unmappable_residue=on_unmappable_residue,
             openfold_cyclic=openfold_cyclic,
             openfold_use_msa_server=openfold_use_msa_server,
+            prediction_mode=prediction_mode,
         )
     except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["prediction"]
         logger.warning("  [warning] Prediction failed: %s", e)
         traceback.print_exc()
-        return {"model": predictor, "error": str(e)}, {}
+        return {"model": predictor, "mode": mode, "error": str(e)}, {}
     block, provenance = run_prediction_step(
         session,
         request,
@@ -632,6 +708,7 @@ def run_single_prediction(
         reference_path=reference_for(predictor, input_path),
         # an adopted output is the user's own: its seeds are not the ones given here
         seed_index=1 if adopt else scored_seed_index(openfold_seeds),
+        mode=mode,
     )
     if predictor == "of3" and not adopt and not block.get("error"):
         record_binder_cyclic(block, input_path, binder_chain, openfold_cyclic, openfold_conda_env)
