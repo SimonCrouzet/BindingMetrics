@@ -162,10 +162,20 @@ were also read by Boltz-2's own ``parse_yaml`` (CPU) for 1YCR and 1CWA.
 What was not run: ``use_msa_server=True`` (network), a conda environment, ``weights``, any
 version other than 2.2.1, and a run that exits with status 0 without output (the swallowed
 preparation error and the batch skipped for memory rest on the source and on the stub of the
-tests). The effect of ``score-lock`` is not shown: on 1YCR a ``score`` and a ``score-lock`` run
-both return the input pose (binder C-alpha RMSD in the receptor frame 1.1 to 1.4 A), so they do
-not tell the modes apart. Whether the forced template holds a pose that the model would not
-find alone has not been tested.
+tests).
+
+What was measured about the modes. A second set of runs moved the binder of 1YCR as a rigid body
+(receptor fixed; 3, 6 and 10 A away from the pocket, and a 30 degree tilt or roll with 4 A of
+translation) and ran each pose as the input, with seeds 42 to 44, one diffusion sample and
+single-sequence mode. ``score`` returned the same structure for every pose of the binder
+(identical coordinates for five decoys). ``score-lock`` kept the prediction within about the
+threshold of the supplied pose and not on it: the representative atom of every templated residue
+ended within 2.06 A of the input after a rigid alignment in 18 of 18 runs (threshold 2.0 A), so
+the binder C-alpha RMSD to the input pose was 1.8 to 2.3 A (means over the seeds) for decoys 3 to
+10 A out. A lower threshold held the pose tighter (one seed each), and the same two-chain
+template without ``force`` did not carry the pose (one seed, three decoys). This is one complex
+that Boltz-2 very likely saw in training and three seeds: nothing follows for a design, another
+complex or another version. The table is in ``docs/metrics.md``, "Observed behaviour".
 
 Boltz-2 licence: MIT; no weights or model code are read or shipped here.
 """

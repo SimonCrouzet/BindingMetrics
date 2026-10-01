@@ -301,7 +301,7 @@ class TestTheDeclarations:
         report = preflight(PROFILE, [], "boltz2", mode="score-lock")
         assert report.compatible
         (warning,) = [w for w in report.warnings if "force: true" in w]
-        assert "guidance term" in warning and "never run" in warning
+        assert "guidance term" in warning and "measured once" in warning
         assert preflight(PROFILE, [], "boltz2", mode="score").warnings == ()
 
     def test_protenix_declares_no_modes_and_warns_for_lock(self):

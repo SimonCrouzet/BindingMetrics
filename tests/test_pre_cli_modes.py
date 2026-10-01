@@ -202,7 +202,7 @@ class TestAnOutputMadeElsewhere:
         )
         block = results["preflight"]
         assert block["status"] == "warn" and block["mode"] == "score-lock"
-        assert "force: true" in block["reason"] and "never run" in block["reason"]
+        assert "force: true" in block["reason"] and "measured once" in block["reason"]
         assert results["prediction"]["mode"] == "score-lock"
         assert results["prediction"]["model"] == "boltz2" and "error" not in results["prediction"]
 

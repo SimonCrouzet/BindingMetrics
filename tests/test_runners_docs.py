@@ -204,7 +204,7 @@ class TestTheStatusIsNotOverstated:
         assert "the exit-0-without-output paths, `use_msa_server=True` and a conda environment" in (
             text.replace("The exit", "the exit")
         )
-        assert "the effect of `score-lock` is not shown" in text
+        assert "the effect of `score-lock` was measured once, on one complex" in text
 
     def test_the_changelog_names_what_was_not_exercised(self):
         text = flat(CHANGELOG)

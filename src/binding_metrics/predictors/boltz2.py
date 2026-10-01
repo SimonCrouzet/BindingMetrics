@@ -1,11 +1,13 @@
 """Adapter for the output of Boltz-2 (``boltz predict``).
 
 Layout checked against the source of Boltz v2.2.1 (released 2025-09-08; main b1ebfc4, read on
-2026-09-29). No Boltz-2 run and no real output file was available: everything below comes from
-reading the writers (``boltz/data/write/writer.py``, ``mmcif.py``, ``pdb.py``), the confidence
-heads (``boltz/model/modules/confidencev2.py``, ``confidence_utils.py``) and the tokenizer
-(``boltz/data/tokenize/boltz2.py``), and from one Boltz mmCIF excerpt in the ipSAE script
-(``ipsae.py:186-207`` of https://github.com/DunbrackLab/IPSAE). Line numbers refer to that source.
+2026-09-29). The layout below comes from reading the writers (``boltz/data/write/writer.py``,
+``mmcif.py``, ``pdb.py``), the confidence heads (``boltz/model/modules/confidencev2.py``,
+``confidence_utils.py``) and the tokenizer (``boltz/data/tokenize/boltz2.py``), and from one
+Boltz mmCIF excerpt in the ipSAE script (``ipsae.py:186-207`` of
+https://github.com/DunbrackLab/IPSAE). Line numbers refer to that source.
+Real outputs of v2.2.1 (1YCR and 1CWA, single-sequence mode, from ``Boltz2Runner``) were read
+without a reason; the points that they did not settle are listed under TO VERIFY.
 
     {out}/boltz_results_{stem}/predictions/{stem}/          (main.py:1134, 752)
         {stem}_model_{r}.cif | .pdb                          the structure (--output_format)
@@ -81,12 +83,14 @@ and ``bfactor_matches_plddt``.
 
 TO VERIFY against a real Boltz-2 run (each is marked where it is used):
 
-1. The whole layout: no real output file was read. Versions after 2.2.1 are not checked. Boltz-1
-   writes the same file names with other semantics (it tokenises modified residues per atom), which
-   this adapter does not implement: a token count that differs raises.
+1. The layout for versions after 2.2.1, which are not checked, and for outputs other than the
+   two complexes above. Boltz-1 writes the same file names with other semantics (it tokenises
+   modified residues per atom), which this adapter does not implement: a token count that
+   differs raises.
 2. That the mmCIF written through the ihm library has ``auth_asym_id`` and ``auth_seq_id`` (the
    Boltz-1 excerpt in ``ipsae.py`` does) and that they equal the chain name and the residue number
-   ``res_idx + 1``. Without them the label columns are read.
+   ``res_idx + 1``: confirmed on the real outputs of 1YCR and 1CWA. Without them the label
+   columns are read.
 3. That the chain index of the confidence file is the position of the chain in the structure
    file for complexes of three or more chains and for identical chains listed apart (the input
    is grouped by entity, so ``A: x, B: y, C: x`` gives the chains A, C, B; ``schema.py:1014-1037``).
@@ -636,8 +640,11 @@ class Boltz2Parser(PredictionParser):
                 "(src/boltz/model/potentials/potentials.py) aligns the template rigidly over its "
                 "templated tokens and pulls the prediction back when it deviates by more than "
                 "the threshold. That is a guidance term with weight 0.1, not a hard constraint; "
-                "templates are for protein chains only; and this was read from the source and "
-                "never run."
+                "templates are for protein chains only; and its effect was measured once, on one "
+                "complex (1YCR, Boltz-2 v2.2.1, single-sequence mode, three seeds): the "
+                "prediction stayed within about the threshold of the supplied pose, not on it "
+                "(binder C-alpha RMSD to the supplied pose 1.8 to 2.3 A for decoys 3 to 10 A "
+                "away, at the default threshold of 2.0 A)."
             ),
             "closures:staple": (
                 "Boltz-2 takes a covalent link between residues only as a `bond` constraint, and "
