@@ -1,4 +1,4 @@
-"""The relaxation reads its chain options as author IDs (#64).
+"""The relaxation reads its chain options as author IDs and reports author IDs (#64).
 
 1CWA: the peptide is author chain C and chain B of the OpenMM topology, whose chain C holds
 140 waters. Before the fix, ``RelaxationConfig(peptide_chain_id="C")`` on the raw file took the
@@ -6,6 +6,7 @@ waters for the peptide, dropped the real peptide as a third protein chain and fi
 ``success`` true.
 """
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,8 +14,11 @@ import pytest
 pytest.importorskip("openmm")
 pytest.importorskip("gemmi")
 
+sys.path.insert(0, str(Path(__file__).parent))
+from conftest import requires_cuda  # noqa: E402
 
-from binding_metrics.io.structures import load_structure  # noqa: E402
+from binding_metrics.io.structures import author_chain_ids, load_structure  # noqa: E402
+from binding_metrics.protocols.qc import AtomSnapshot  # noqa: E402
 from binding_metrics.protocols.relaxation import (  # noqa: E402
     ImplicitRelaxation,
     RelaxationConfig,
@@ -76,6 +80,21 @@ class TestIdentifyChains:
         assert _identified(path, "B", "A") == ("A", "B")
 
 
+class TestQcNames:
+    def test_the_snapshot_names_the_chains_by_author_id(self):
+        topology, positions = _load(CWA)
+        snapshot = AtomSnapshot.from_topology(topology, positions)
+        assert {key[0] for key in snapshot.residue_keys} == {"A", "C"}
+        # the 11 residues of the peptide, and the 4 waters, are in author chain C
+        peptide = {key for key in snapshot.residue_keys if key[0] == "C"}
+        assert len(peptide) == 11 + 4
+
+    def test_a_topology_without_author_ids_keeps_its_own(self):
+        topology, positions = _load(P53)
+        snapshot = AtomSnapshot.from_topology(topology, positions)
+        assert {key[0] for key in snapshot.residue_keys} == set(author_chain_ids(topology))
+
+
 @pytest.fixture(scope="module")
 def cwa_system():
     """The relaxer and its ``_setup_system`` result for the raw 1CWA (peptide: author ID C)."""
@@ -96,6 +115,10 @@ class TestSetupSystem:
         chains = {chain.id: sum(1 for _ in chain.residues()) for chain in topology.chains()}
         assert chains == {"A": 165, "B": 11}
         assert [b.cyclic_type for b in bond_info] == ["head_to_tail"]
+
+    def test_the_returned_topology_carries_the_author_ids(self, cwa_system):
+        _, (_, topology, _, _) = cwa_system
+        assert author_chain_ids(topology) == ["A", "C"]
 
 
 class TestPipelineHandsOverAuthorIds:
@@ -121,3 +144,40 @@ class TestPipelineHandsOverAuthorIds:
         assert [(h.cyclic_type, h.atom1_id[0]) for h in config.cyclic_bond_hints] == [
             ("head_to_tail", "B")
         ]
+
+
+@pytest.fixture(scope="module")
+def relaxed_raw_cwa(tmp_path_factory):
+    """A short minimisation of the raw 1CWA with the peptide named by its author ID."""
+    if not CWA.exists():
+        pytest.skip(f"bundled example not found: {CWA}")
+    config = RelaxationConfig(
+        peptide_chain_id="C",
+        receptor_chain_id="A",
+        md_duration_ps=0.0,
+        min_steps_initial=200,
+        min_steps_restrained=100,
+        min_steps_final=200,
+        device="cuda",
+        small_molecules="auto",
+    )
+    return ImplicitRelaxation(config).run(CWA, tmp_path_factory.mktemp("relax_raw"))
+
+
+@requires_cuda
+@requires_ommff
+@pytest.mark.integration
+class TestRelaxRawFile:
+    def test_it_relaxes_the_peptide_and_names_its_chain_c(self, relaxed_raw_cwa):
+        assert relaxed_raw_cwa.success, relaxed_raw_cwa.error_message
+        assert relaxed_raw_cwa.dropped_protein_chains == []
+        assert relaxed_raw_cwa.peptide_cyclic_bonds == [
+            {"type": "head_to_tail", "atom1": "C:11:C", "atom2": "C:1:N"}
+        ]
+
+    def test_the_relaxed_file_has_the_peptide_in_author_chain_c(self, relaxed_raw_cwa):
+        import gemmi
+
+        model = gemmi.read_structure(relaxed_raw_cwa.minimized_structure_path)[0]
+        assert sorted(chain.name for chain in model) == ["A", "C"]
+        assert len(model["C"]) == 11

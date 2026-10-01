@@ -689,7 +689,8 @@ def strip_heterogens(
             Behaviour is identical when ``report`` is None.
 
     Returns:
-        Tuple (topology, positions) with heterogens removed.
+        Tuple (topology, positions) with heterogens removed. The topology keeps the
+        author chain IDs of the one passed in.
     """
     import numpy as np
 
@@ -766,6 +767,7 @@ def strip_heterogens(
 
         modeller = app.Modeller(topology, positions)
         modeller.delete(atoms_to_remove)
+        copy_author_chain_ids(topology, modeller.topology)
         topology, positions = modeller.topology, modeller.positions
 
     return topology, positions
@@ -823,7 +825,8 @@ def drop_other_protein_chains(
             accumulate when one dict is passed to several calls.
 
     Returns:
-        Tuple (topology, positions) without the other protein chains.
+        Tuple (topology, positions) without the other protein chains, with the author
+        chain IDs of the topology passed in.
     """
     kept = {peptide_chain, receptor_chain}
     present = {chain.id for chain in topology.chains()}
@@ -861,6 +864,7 @@ def drop_other_protein_chains(
 
     modeller = app.Modeller(topology, positions)
     modeller.delete(atoms_to_remove)
+    copy_author_chain_ids(topology, modeller.topology)
     return modeller.topology, modeller.positions
 
 

@@ -75,6 +75,7 @@ from binding_metrics.core.residues import (
 )
 from binding_metrics.io.structures import (
     attach_author_chain_ids,
+    author_chain_ids,
     copy_author_chain_ids,
     openmm_chain_id,
 )
@@ -740,6 +741,7 @@ class ImplicitRelaxation(Relaxer):
             topology, positions, peptide_chain, receptor_chain, report=strip_report
         )
         self._dropped_protein_chains = list(strip_report.get("dropped_protein_chains", []))
+        stripped_topology = topology  # still carries the author IDs; the steps below rebuild it
 
         # --- Force field setup ---
         gb_file = (
@@ -951,6 +953,7 @@ class ImplicitRelaxation(Relaxer):
             constraints=app.HBonds,
         )
 
+        copy_author_chain_ids(stripped_topology, topology)
         return system, topology, positions, bond_info
 
     def _add_restraints(self, system, topology, positions, backbone_only: bool = True) -> int:
@@ -1321,8 +1324,10 @@ class ImplicitRelaxation(Relaxer):
                 # For display we want the actual residue number (auth_seq_id).
                 # Build a per-chain index→res_id lookup from the topology.
                 _chain_res_ids: dict[str, list[str]] = {}
-                for _chain in topology.chains():
+                _author_ids: dict[str, str] = {}  # chain ID in the topology -> author ID
+                for _chain, _author_id in zip(topology.chains(), author_chain_ids(topology)):
                     _chain_res_ids[_chain.id] = [r.id for r in _chain.residues()]
+                    _author_ids.setdefault(_chain.id, _author_id)
 
                 def _fmt_atom(aid: tuple) -> str:
                     ch, idx, name = aid
@@ -1331,7 +1336,7 @@ class ImplicitRelaxation(Relaxer):
                         if idx < len(_chain_res_ids.get(ch, []))
                         else idx
                     )
-                    return f"{ch}:{res_id}:{name}"
+                    return f"{_author_ids.get(ch, ch)}:{res_id}:{name}"
 
                 result.peptide_cyclic_bonds = [
                     {

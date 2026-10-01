@@ -279,6 +279,26 @@ class TestRemovalMessages:
         )
         assert [chain.id for chain in kept.chains()] == ["A", "B", "D"]
 
+    def test_the_stripped_topology_keeps_the_author_ids(self):
+        topology, positions = load_structure(_example(CWA))
+        stripped, _ = strip_heterogens(topology, positions, "B", "A")
+        assert [chain.id for chain in stripped.chains()] == ["A", "B"]
+        assert author_chain_ids(stripped) == ["A", "C"]
+        assert openmm_chain_id(stripped, "C") == "B"
+
+    def test_the_topology_after_dropping_chains_keeps_the_author_ids(self, tmp_path):
+        path = _write_cif(
+            tmp_path / "three.cif",
+            [("GLY", "A", "A")] * 4
+            + [("GLY", "B", "C")] * 3
+            + [("GLY", "C", "E")] * 2
+            + [("HOH", "D", "A")] * 2,
+        )
+        topology, positions = load_structure(path)
+        kept, _ = drop_other_protein_chains(topology, positions, "B", "A")
+        assert [chain.id for chain in kept.chains()] == ["A", "B", "D"]
+        assert author_chain_ids(kept) == ["A", "C", "A"]
+
     def test_a_pdb_input_names_its_own_chains(self, caplog):
         topology, positions = load_structure(_example(P53))
         report: dict = {}
