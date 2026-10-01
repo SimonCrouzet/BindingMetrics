@@ -95,6 +95,46 @@ class TestTheOptionalSteps:
             Nameless().run_many([], Path("."))
 
 
+class TestModesAndTheChainMap:
+    def test_a_runner_runs_predict_only_unless_it_says_more(self):
+        assert PredictionRunner.supported_modes == frozenset({"predict"})
+        assert _Minimal.supported_modes == frozenset({"predict"})
+
+    def test_the_default_mode_is_left_to_make_request_unless_the_runner_names_one(self):
+        assert PredictionRunner.default_mode is None
+        assert _Minimal.default_mode is None
+
+    def test_a_runner_may_declare_its_modes_and_a_sibling_is_unaffected(self):
+        class Templated(_Minimal):
+            supported_modes = frozenset({"score", "refold"})
+            default_mode = "score"
+
+        assert Templated.supported_modes == {"score", "refold"}
+        assert Templated.default_mode == "score"
+        assert _Minimal.supported_modes == frozenset({"predict"})
+
+    def test_the_prediction_keeps_the_chain_ids_of_the_input_by_default(self):
+        assert _Minimal().output_chain_map(object()) is None
+
+    def test_a_runner_may_name_the_chains_of_its_prediction(self):
+        class Renaming(_Minimal):
+            def output_chain_map(self, request):
+                return {"A": request.receptor_chain, "B": request.binder_chain}
+
+        request = type("Request", (), {"receptor_chain": "R", "binder_chain": "L"})()
+        assert Renaming().output_chain_map(request) == {"A": "R", "B": "L"}
+
+    def test_openfold3_runs_score_and_refold_on_a_structure_and_score_by_default(self):
+        """Mode predict takes a query file of the caller's, score-lock cannot be run."""
+        assert OpenFold3Runner.supported_modes == frozenset({"score", "refold"})
+        assert OpenFold3Runner.default_mode == "score"
+        assert OpenFold3Runner().output_chain_map(object()) is None
+
+    def test_the_default_mode_of_openfold3_is_the_default_of_make_request(self):
+        parameter = inspect.signature(OpenFold3Runner.make_request).parameters["mode"]
+        assert parameter.default == OpenFold3Runner.default_mode
+
+
 # ---------------------------------------------------------------------------- OpenFold3Runner
 
 

@@ -13,6 +13,7 @@ openfold module is imported when a run starts, never before)::
         OpenFold3Runner(conda_env: Optional[str] = None)
         name = "of3"; capabilities = None
         supports_custom_weights = True; weights_kind = "file"
+        supported_modes = frozenset({"score", "refold"}); default_mode = "score"
         .conda_env
         .make_request(input_path, *, name: str, binder_chain: Optional[str] = None,
             receptor_chain: Optional[str] = None, mode: str = "score",
@@ -139,6 +140,11 @@ class OpenFold3Runner(PredictionRunner):
     #: OpenFold3 loads a checkpoint file given with ``--inference-ckpt-path``.
     supports_custom_weights = True
     weights_kind = "file"
+    #: For a complex structure: ``score`` and ``refold``. Mode ``predict`` takes a query file that
+    #: the caller wrote, and ``score-lock`` cannot be run (see ``make_request``). ``score`` is the
+    #: default of the OpenFold3 step (``--openfold-mode``): every chain is given its own structure.
+    supported_modes = frozenset({"score", "refold"})
+    default_mode = "score"
 
     def __init__(self, conda_env: Optional[str] = None):
         self.conda_env = conda_env

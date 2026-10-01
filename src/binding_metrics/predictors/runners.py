@@ -12,6 +12,8 @@ Public names and signatures (this module imports the standard library only)::
         capabilities: ClassVar[Optional[Any]] = None
         supports_custom_weights: ClassVar[bool] = False
         weights_kind: ClassVar[str] = "file"   # "file" or "directory"
+        supported_modes: ClassVar[frozenset[str]] = frozenset({"predict"})
+        default_mode: ClassVar[Optional[str]] = None
         @abstractmethod
         def prepare(self, request: PredictionRequest, work_dir: Path) -> Path
         @abstractmethod
@@ -22,6 +24,7 @@ Public names and signatures (this module imports the standard library only)::
         def is_available(self) -> bool                                        # True
         def version(self) -> Optional[str]                                    # None
         def check_weights(self, request: PredictionRequest) -> None           # raises ValueError
+        def output_chain_map(self, request: PredictionRequest) -> Optional[dict[str, str]]  # None
 
     require_weights_support(runner, request) -> None     # what the store calls; any runner object
 
@@ -68,6 +71,23 @@ Contract, checked for the stub runners of ``tests/predictors/test_runners.py``:
   that does not subclass this class), and a runner's ``prepare`` and ``run`` call
   ``self.check_weights(request)`` so that a direct call is refused too. A runner that ignored the
   weights would run the default model and store the result under the key of the custom one.
+* Modes. ``supported_modes`` is the set of modes (``binding_metrics.predictors.store.MODES``) the
+  runner can run when ``request.input_path`` is a complex structure, which is what the command
+  line gives it: ``predict`` (the model folds the sequences), ``refold`` (the receptor is given
+  as template), ``score`` (every chain is given its own structure as template) and ``score-lock``
+  (``score`` with the pose pinned). The default is ``{"predict"}``, the one mode that needs
+  nothing but sequences. ``default_mode`` is the mode used when the caller names none and must
+  be in ``supported_modes``; None (the default) means the default of the ``mode`` parameter of
+  the runner's ``make_request``. A request for a mode outside ``supported_modes`` raises
+  ``ValueError`` in ``make_request``, and ``binding_metrics.cli.prediction`` refuses it while the
+  command line is checked, with the modes the runner has. A runner that has not declared
+  ``supported_modes`` but names the modes it builds an input for ``run_modes``
+  (``Boltz2Runner``) is read through that name.
+* ``output_chain_map(request)`` is the chain IDs of the prediction when they are not the input's:
+  ``{chain ID in the prediction: chain ID in the input}``, or None (the default) when the
+  prediction keeps the input's IDs. A reader that wants the input's IDs on the atoms passes the
+  map as ``chain_map`` to ``PredictionSession.record``; ``ColabFoldRunner`` gives the receptor
+  the ID ``A`` and the binder ``B`` whatever their IDs in the input.
 * ``capabilities`` stays None on a runner. The limits of a model (the input classes it cannot
   handle) live on ``PredictionParser.capabilities``, which is what ``preflight`` reads, so
   ``OpenFold3Runner.capabilities`` is None while ``OpenFold3Parser.capabilities`` carries the
@@ -103,6 +123,11 @@ class PredictionRunner(ABC):
     #: How the model takes its weights when ``supports_custom_weights``: ``"file"`` (one
     #: checkpoint) or ``"directory"``.
     weights_kind: ClassVar[str] = "file"
+    #: The modes the runner can run for a complex structure (see the module docstring).
+    supported_modes: ClassVar[frozenset[str]] = frozenset({"predict"})
+    #: The mode used when the caller names none, one of ``supported_modes``; None takes the
+    #: default of the ``mode`` parameter of ``make_request``.
+    default_mode: ClassVar[Optional[str]] = None
 
     @abstractmethod
     def prepare(self, request: PredictionRequest, work_dir: Path) -> Path:
@@ -135,6 +160,15 @@ class PredictionRunner(ABC):
         before a run, so a runner started through the store never sees such a request.
         """
         require_weights_support(self, request)
+
+    def output_chain_map(self, request: PredictionRequest) -> Optional[dict[str, str]]:
+        """Chain ID in the prediction to chain ID in the input, or None when they are the same.
+
+        The default says the prediction keeps the input's chain IDs. A runner whose model names
+        the chains itself overrides it (``ColabFoldRunner``). The pipeline passes the map to the
+        reader as ``chain_map``, so that the metrics find the chains under the IDs of the input.
+        """
+        return None
 
     def is_available(self) -> bool:
         """True when the model can be started here. The default assumes it can."""
