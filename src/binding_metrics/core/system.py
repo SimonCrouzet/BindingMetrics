@@ -15,13 +15,16 @@ from binding_metrics._constants import (
 )
 from binding_metrics.core.forcefields import get_forcefield
 from binding_metrics.core.residues import (
+    AMBER_PROTONATION_VARIANTS,
     AMBER_STANDARD_RESIDUES,
     ION_NAMES_COMMON,
     METAL_ELEMENTS,
+    STANDARD_AMINO_ACIDS,
     TERMINAL_CAP_NAMES,
     WATER_NAMES_ALL,
     WATER_NAMES_PDB_AMBER,
 )
+from binding_metrics.io.structures import author_chain_ids, copy_author_chain_ids
 from binding_metrics.utils import add_to_report, extend_report
 
 log = logging.getLogger(__name__)
@@ -273,12 +276,15 @@ def find_chain_breaks(topology, positions) -> list:
     be judged and is not listed.
 
     Returns:
-        A list with one dict per break: ``chain`` (chain ID), ``residue_before`` and
-        ``residue_after`` (residue numbers as strings) and ``c_n_distance_angstrom``.
+        A list with one dict per break: ``chain`` (the author chain ID of a topology read
+        from an mmCIF, see ``io.structures.author_chain_ids``, otherwise the chain ID),
+        ``residue_before`` and ``residue_after`` (residue numbers as strings) and
+        ``c_n_distance_angstrom``.
     """
     import numpy as np
 
     coords_nm = np.array(positions.value_in_unit(unit.nanometer))
+    author_ids = author_chain_ids(topology)
 
     def _atom_angstrom(atoms: dict, name: str):
         index = atoms.get(name)
@@ -301,7 +307,7 @@ def find_chain_breaks(topology, positions) -> list:
                     if distance > _PEPTIDE_BOND_MAX_ANGSTROM:
                         breaks.append(
                             {
-                                "chain": chain.id,
+                                "chain": author_ids[chain.index],
                                 "residue_before": str(previous[0].id),
                                 "residue_after": str(res.id),
                                 "c_n_distance_angstrom": round(distance, 2),
@@ -309,6 +315,78 @@ def find_chain_breaks(topology, positions) -> list:
                         )
             previous = (res, atoms)
     return breaks
+
+
+def find_open_c_termini(topology) -> list:
+    """Find chains whose last residue is a standard amino acid without its terminal oxygen.
+
+    ``Modeller.addHydrogens`` adds hydrogens and never heavy atoms, and the force field has
+    no template for a standard residue at the end of a chain that lacks OXT: it stops with
+    "No template found for residue ... the bonds are different". PDBFixer adds the OXT in
+    prep. A chain counts when its last residue is a standard amino acid or an AMBER variant
+    (CYX, HID, ...), has a carbonyl carbon, has no OXT and its carbon has no bond to
+    another residue, which a head-to-tail or C-terminal lactam closure and a capping
+    group give it. Call it after ``patch_cyclic_topology``, which adds those bonds.
+
+    Returns:
+        A list with one ``(chain ID, residue name, residue number)`` per such chain, IDs as in
+        ``topology``.
+    """
+    amino_acids = STANDARD_AMINO_ACIDS | AMBER_PROTONATION_VARIANTS
+    found = []
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        if not residues or residues[-1].name not in amino_acids:
+            continue
+        last = residues[-1]
+        atoms = {atom.name: atom for atom in last.atoms()}
+        carbon = atoms.get("C")
+        if carbon is None or "OXT" in atoms:
+            continue
+        bonded_outside = any(
+            (bond.atom1 is carbon and bond.atom2.residue is not last)
+            or (bond.atom2 is carbon and bond.atom1.residue is not last)
+            for bond in topology.bonds()
+        )
+        if not bonded_outside:
+            found.append((chain.id, last.name, str(last.id)))
+    return found
+
+
+def require_closed_c_termini(topology, chain_names: Optional[dict] = None) -> None:
+    """Raise ``ValueError`` when a chain ends in a standard residue without its terminal oxygen.
+
+    The relaxation and the interaction energy expect a prepared structure and would stop
+    later, inside the force field, with a message that does not say why. See
+    :func:`find_open_c_termini` for what counts.
+
+    Args:
+        topology: OpenMM Topology.
+        chain_names: Optional ``{ID in the topology: name to show}``, for the author IDs of
+            a topology that no longer carries them. Defaults to ``author_chain_ids``.
+
+    Raises:
+        ValueError: Naming each chain and residue, and saying that the structure must be
+            prepared (``binding-metrics-prep``, or ``binding-metrics-run`` without
+            ``--skip-prep``) or have a terminal oxygen or a cap on every chain.
+    """
+    open_ends = find_open_c_termini(topology)
+    if not open_ends:
+        return
+    if chain_names is None:
+        chain_names = {}
+        for chain, author_id in zip(topology.chains(), author_chain_ids(topology)):
+            chain_names.setdefault(chain.id, author_id)
+    ends = ", ".join(
+        f"chain {chain_names.get(chain_id, chain_id)} ends in {name}{number}"
+        for chain_id, name, number in open_ends
+    )
+    raise ValueError(
+        f"{ends} without its terminal oxygen (OXT): the structure is not prepared, and the "
+        "force field has no template for the residue. Prepare it first (binding-metrics-prep, "
+        "or binding-metrics-run without --skip-prep), or give a structure whose chains end in "
+        "OXT or a cap (ACE, NME, NH2)."
+    )
 
 
 def _add_hydrogens_cyclic(
@@ -339,9 +417,9 @@ def _add_hydrogens_cyclic(
     )
     from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
     from binding_metrics.core.nonstandard import (
-        detect_nonstandard,
+        _detect_nonstandard,
+        _patch_nonstandard,
         load_nonstandard_xmls,
-        patch_nonstandard,
         restore_nonstandard_names,
     )
 
@@ -358,9 +436,9 @@ def _add_hydrogens_cyclic(
 
     # D-amino-acid / N-methyl rename first (e.g. DAL→ALA, SAR→NMG) so their
     # standard/curated templates match; must precede patch_cyclic_topology.
-    ns_info = detect_nonstandard(topology, cyclic_chain)
+    ns_info = _detect_nonstandard(topology, cyclic_chain)
     if not ns_info.is_empty:
-        topology, positions = patch_nonstandard(topology, positions, cyclic_chain, ns_info)
+        topology, positions = _patch_nonstandard(topology, positions, cyclic_chain, ns_info)
         load_nonstandard_xmls(ff, ns_info)
 
     # patch_cyclic_topology detects the cyclic bond by distance (works even
@@ -542,7 +620,12 @@ def prep_structure(
             Keys:
 
             * ``removed_heterogens`` (list[str]): ``"NAME (chain X)"`` for each
-              removed non-water heterogen (free ligands, additives, glycans).
+              removed non-water heterogen (free ligands, additives, glycans). Here
+              and in ``kept_nonstandard`` and ``chain_breaks``, X is the author chain
+              ID of a topology read from an mmCIF (``load_structure`` records it; see
+              ``io.structures.author_chain_ids``), where OpenMM's own ID is the label
+              ID for a file with more label IDs than author IDs: the peptide of 1CWA
+              is chain C, not B.
             * ``n_removed_waters`` (int): water molecules removed (0 when
               ``keep_water`` is True).
             * ``kept_nonstandard`` (list[str]): non-standard residues and metal
@@ -569,8 +652,9 @@ def prep_structure(
         Tuple of (topology, positions) with repaired and protonated structure. The
         chains keep the IDs they have in ``topology``, so a chain ID the caller
         passes to a later step still names the same chain (PDBFixer would
-        otherwise relabel them A, B, C, ...). Residue numbers of a PDB input
-        restart at 1 in each chain; a CIF input gets its own back in ``save_cif``.
+        otherwise relabel them A, B, C, ...), and carry its author IDs. Residue
+        numbers of a PDB input restart at 1 in each chain; a CIF input gets its own
+        back in ``save_cif``.
     """
     # Capture non-sequential intra-chain bonds (e.g. head-to-tail N→C) before
     # the PDBFixer round-trip drops them (PDBxFile.writeFile only writes SS bonds).
@@ -581,6 +665,7 @@ def prep_structure(
     # Residue numbers and chain IDs do not survive the PDBFixer round trip, so
     # read the numbering gaps and the caller's chain IDs off the input topology.
     input_chain_ids = [chain.id for chain in topology.chains()]
+    input_author_ids = author_chain_ids(topology)  # the names a user knows the chains by
     n_residue_gaps = _count_residue_gaps(topology, positions)
     chain_breaks = find_chain_breaks(topology, positions)
     for gap in chain_breaks:
@@ -655,7 +740,7 @@ def prep_structure(
     keep_input_ids = fixer.topology.getNumChains() == len(input_chain_ids)
 
     for chain in fixer.topology.chains():
-        chain_label = input_chain_ids[chain.index] if keep_input_ids else chain.id
+        chain_label = input_author_ids[chain.index] if keep_input_ids else chain.id
         for res in chain.residues():
             if res.name in AMBER_STANDARD_RESIDUES:
                 continue
@@ -745,6 +830,7 @@ def prep_structure(
     # place it inverts the stereocenter during minimization.
     result_pos = repair_ca_hydrogen_chirality(result_topo, result_pos)
 
+    copy_author_chain_ids(topology, result_topo)
     return result_topo, result_pos
 
 

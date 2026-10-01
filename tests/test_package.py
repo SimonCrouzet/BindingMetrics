@@ -104,6 +104,7 @@ class TestPackageImports:
             "compute_delta_sasa_static",
             "compute_openfold_metrics",
             "run_openfold",
+            "compute_prediction_metrics",
             # Metrics (new)
             "compute_coulomb_cross_chain",
             "compute_ramachandran",

@@ -121,6 +121,7 @@ _EXPORTS = {
     "compute_interface_metrics": "binding_metrics.metrics.interface",
     "compute_openfold_metrics": "binding_metrics.metrics.openfold",
     "run_openfold": "binding_metrics.metrics.openfold",
+    "compute_prediction_metrics": "binding_metrics.metrics.prediction",
     "compute_hbonds": "binding_metrics.metrics.polar_contacts",
     "compute_saltbridges": "binding_metrics.metrics.polar_contacts",
     "compute_receptor_drift": "binding_metrics.metrics.rmsd",
@@ -163,6 +164,7 @@ if TYPE_CHECKING:
     from binding_metrics.metrics.interface import compute_interface_metrics
     from binding_metrics.metrics.openfold import compute_openfold_metrics, run_openfold
     from binding_metrics.metrics.polar_contacts import compute_hbonds, compute_saltbridges
+    from binding_metrics.metrics.prediction import compute_prediction_metrics
     from binding_metrics.metrics.rmsd import compute_receptor_drift
     from binding_metrics.metrics.sasa import compute_delta_sasa_static
     from binding_metrics.protocols.base import ProtocolResults
@@ -212,6 +214,7 @@ __all__ = [
     "compute_interface_metrics",
     "compute_openfold_metrics",
     "run_openfold",
+    "compute_prediction_metrics",
     "compute_delta_sasa_static",
     # EvoBind metrics
     "compute_evobind_score",

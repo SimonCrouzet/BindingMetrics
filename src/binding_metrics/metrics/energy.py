@@ -354,10 +354,12 @@ def _create_implicit_system(
     )
     from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
     from binding_metrics.core.nonstandard import (
-        detect_nonstandard,
+        _detect_nonstandard,
+        _patch_nonstandard,
         load_nonstandard_xmls,
-        patch_nonstandard,
     )
+    from binding_metrics.core.system import require_closed_c_termini
+    from binding_metrics.io.structures import author_chain_ids
 
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
@@ -377,14 +379,21 @@ def _create_implicit_system(
     # D-amino-acid / N-methyl residues are renamed to their L / parent template
     # names (no-op when prep or relaxation already did it).
     if peptide_chain is not None:
-        ns_info = detect_nonstandard(topology, peptide_chain)
+        ns_info = _detect_nonstandard(topology, peptide_chain)
         if not ns_info.is_empty:
-            topology, positions = patch_nonstandard(topology, positions, peptide_chain, ns_info)
+            topology, positions = _patch_nonstandard(topology, positions, peptide_chain, ns_info)
             load_nonstandard_xmls(ff, ns_info)
             extra_xmls.extend(ns_info.extra_ff_xmls)
 
+    chain_names: dict = {}  # topology chain ID -> author ID, for the message below
+    for chain, author_id in zip(topology.chains(), author_chain_ids(topology)):
+        chain_names.setdefault(chain.id, author_id)
+
     topology, positions, bond_info = patch_cyclic_topology(topology, positions, peptide_chain)
     topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
+    # Before the force field: a chain that ends in a standard residue without OXT fails
+    # there with a message that does not say what to do.
+    require_closed_c_termini(topology, chain_names)
     if bond_info:
         load_extra_xmls(ff, bond_info)
 
@@ -782,8 +791,12 @@ def compute_interaction_energy(
 
     Args:
         input_path: Path to CIF or PDB structure file
-        peptide_chain: Peptide chain ID. Auto-detected if None (smallest chain).
-        receptor_chain: Receptor chain ID. Auto-detected if None (largest chain).
+        peptide_chain: Peptide chain ID. Auto-detected if None (smallest chain). For an
+            mmCIF it is the author chain ID (``auth_asym_id``), the one every other option
+            takes; the ID that OpenMM gives the chain, which is the label ID when the file
+            has more label IDs than author IDs, is accepted as well. 1CWA: ``"C"`` or ``"B"``.
+        receptor_chain: Receptor chain ID. Auto-detected if None (largest chain). Read
+            the same way.
         solvent_model: Implicit solvent model ('obc2' or 'gbn2')
         device: Compute device ('cuda' or 'cpu')
         sample_id: Identifier for this computation (defaults to file stem)
@@ -839,7 +852,12 @@ def compute_interaction_energy(
     import openmm
     import openmm.unit as unit
 
-    from binding_metrics.io.structures import detect_chains, load_structure
+    from binding_metrics.io.structures import (
+        author_chain_ids,
+        detect_chains,
+        load_structure,
+        topology_chain_id,
+    )
 
     input_path = Path(input_path)
     if sample_id is None:
@@ -866,6 +884,13 @@ def compute_interaction_energy(
         # peptides by adding spurious terminus atoms (OXT, H2/H3) after losing
         # the closure bond in the PDB round-trip.
 
+        # A chain ID the caller gave is an author ID (the one every option and result of the
+        # package uses), or the ID of a chain of the topology: OpenMM names the chains of an
+        # mmCIF by their label IDs when the file has more label IDs than author IDs, so author
+        # ID C of 1CWA is chain B of the topology and chain C holds waters. The IDs that
+        # ``detect_chains`` finds are IDs of the topology and are not resolved again.
+        peptide_chain = topology_chain_id(topology, peptide_chain)
+        receptor_chain = topology_chain_id(topology, receptor_chain)
         if peptide_chain is None or receptor_chain is None:
             auto_pep, auto_rec = detect_chains(topology)
             peptide_chain = peptide_chain or auto_pep
@@ -883,7 +908,13 @@ def compute_interaction_energy(
         if peptide_chain is None or receptor_chain is None:
             raise ValueError("Could not identify two protein chains in structure")
 
-        logger.info(f"[{sample_id}] Chains: peptide={peptide_chain}, receptor={receptor_chain}")
+        author_of = {}
+        for chain, author_id in zip(topology.chains(), author_chain_ids(topology)):
+            author_of.setdefault(chain.id, author_id)
+        logger.info(
+            f"[{sample_id}] Chains: peptide={author_of.get(peptide_chain, peptide_chain)}, "
+            f"receptor={author_of.get(receptor_chain, receptor_chain)}"
+        )
 
         # Contact counts describe the input geometry (before hydrogens are added),
         # so they are the same for every mode.

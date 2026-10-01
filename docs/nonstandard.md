@@ -8,7 +8,7 @@ This document describes how BindingMetrics handles residues outside the 20 canon
 
 The relaxation step (`ImplicitRelaxation._setup_system`) reads the prepped structure and handles non-standard residues in four steps, all **before `addHydrogens`**:
 
-1. **`detect_nonstandard(topology, chain_id)`** scans the peptide chain for D-amino-acid and N-methylated residue names. Detection is name-based; no coordinates are analysed.
+1. **`detect_nonstandard(topology, chain_id)`** scans the peptide chain for D-amino-acid and N-methylated residue names. Detection is name-based; no coordinates are analysed. `chain_id` is the author ID for a topology read by `load_structure` from an mmCIF, or the ID of the chain in the topology: the peptide of 1CWA is author chain C and chain B of the topology, whose chain C holds waters, and `"C"` and `"B"` find the same chain. `NonstandardInfo.chain_id` is the ID in the topology. `patch_nonstandard` and the `chain_id` argument of `restore_nonstandard_names` read the ID the same way. The relaxation, the energy and prep call internal versions that take the ID in the topology, since they hold such IDs already.
 2. **`patch_nonstandard(topology, positions, chain_id, info)`** renames those residues to the names a force-field template exists for and removes spurious atoms, so `addHydrogens` sees the correct topology.
 3. **`patch_cyclic_topology`** adds the closure bonds of a cyclic peptide (`core/cyclic.py`).
 4. With `--small-molecules auto` (the default of `binding-metrics-relax` and `binding-metrics-run`), **`parameterize_ncaa_residues`** builds a GAFF2 template for every remaining non-canonical residue ([GAFF2 route](#gaff2-route-for-other-non-canonical-residues)).
@@ -35,7 +35,7 @@ A residue of the receptor that the force fields do not cover goes through the [G
 
 ## Other Protein Chains
 
-The relaxation and the interaction energy describe the peptide-receptor pair. A third protein chain, such as the second copy of the complex in the asymmetric unit (5WGD holds two: with peptide E and receptor A, chains B and F are the second copy), would enter the energy of the complex but not that of the isolated peptide and receptor, and its caps and patches are not handled. `drop_other_protein_chains` removes every protein chain other than the peptide and the receptor, after `strip_heterogens`, and a warning names each removed chain. `RelaxationResult.dropped_protein_chains` (`results["relax"]["dropped_protein_chains"]` in the pipeline) lists them. Nothing is removed unless both chains are named and present. There is no option to keep the chains: a receptor made of several chains, a Fab for example, has to be reduced to the chain that carries the interface before it goes in.
+The relaxation and the interaction energy describe the peptide-receptor pair. A third protein chain, such as the second copy of the complex in the asymmetric unit (5WGD holds two: with peptide E and receptor A, chains B and F are the second copy), would enter the energy of the complex but not that of the isolated peptide and receptor, and its caps and patches are not handled. `drop_other_protein_chains` removes every protein chain other than the peptide and the receptor, after `strip_heterogens`, and a warning names each removed chain by its author ID. `RelaxationResult.dropped_protein_chains` (`results["relax"]["dropped_protein_chains"]` in the pipeline) lists them. Nothing is removed unless both chains are named and present. There is no option to keep the chains: a receptor made of several chains, a Fab for example, has to be reduced to the chain that carries the interface before it goes in.
 
 ---
 
@@ -148,7 +148,7 @@ These are created dynamically by `patch_cyclic_topology` (see `core/cyclic.py`) 
 | `lactam_sc_lys_asp`, `lactam_sc_lys_glu` | LYS NZ to ASP CG or GLU CD, both residues internal (a side-chain staple) |
 | `hydrocarbon_staple` | all-carbon side-chain cross-link between two residues, for example MK8 and 0EH (3V3B) |
 
-A peptide can have several closures (SFTI-1 in 3P8F has `head_to_tail` and `disulfide`). Detection reads the bonds recorded in the file (`_struct_conn` records of a CIF, CONECT records of a PDB) and, for the amide, disulfide and lactam types, also atom distances. The staple residues are parameterised by the GAFF2 route, and their cross-link is covered by the GAFF2 terms, so it needs no template of its own.
+`detect_cyclization(topology, positions, chain_id)` takes the author chain ID of the peptide (the one `--peptide-chain` takes) for a topology read by `load_structure`, and the ID of the chain in the topology as well. The two differ for an mmCIF with more label IDs than author IDs: the peptide of 1CWA is author chain C and chain B of the topology, whose chain C holds waters, and the head-to-tail amide is found for either ID. The entries name the chain as the topology does. A peptide can have several closures (SFTI-1 in 3P8F has `head_to_tail` and `disulfide`). Detection reads the bonds recorded in the file (`_struct_conn` records of a CIF, CONECT records of a PDB) and, for the amide, disulfide and lactam types, also atom distances. The staple residues are parameterised by the GAFF2 route, and their cross-link is covered by the GAFF2 terms, so it needs no template of its own.
 
 ---
 

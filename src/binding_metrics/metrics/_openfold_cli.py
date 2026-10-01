@@ -12,7 +12,14 @@ from pathlib import Path
 import numpy as np
 
 from binding_metrics.metrics._common import ChainAliasAction
+from binding_metrics.metrics._openfold_run import (
+    _DEFAULT_MODEL_PRESETS,
+    DEFAULT_TEMPLATE_MODE,
+    TEMPLATE_MODES,
+)
 from binding_metrics.utils import configure_logging
+
+_PRESETS_TEXT = " ".join(_DEFAULT_MODEL_PRESETS)
 
 
 def _add_parse_args(p, include_chain_args: bool = False) -> None:
@@ -56,7 +63,13 @@ def _add_parse_args(p, include_chain_args: bool = False) -> None:
 
 
 def _add_query_seeds_arg(p) -> None:
-    """Add ``--seeds`` (seed values for the query JSON) to a subparser."""
+    """Add ``--seeds`` to a subparser that only writes a query file.
+
+    The option is kept so that existing command lines work, but OpenFold3 does not read seeds
+    from a query JSON, so it has no effect there (a value other than the default raises a
+    ``DeprecationWarning``). The commands that run OpenFold3 take the seeds through
+    :func:`_add_run_seeds_args`.
+    """
     from binding_metrics.metrics import openfold as of
 
     p.add_argument(
@@ -65,8 +78,177 @@ def _add_query_seeds_arg(p) -> None:
         nargs="+",
         default=list(of._DEFAULT_QUERY_SEEDS),
         metavar="SEED",
-        help="Seed values written to the query JSON (default: %(default)s).",
+        help=(
+            "Ignored: OpenFold3 does not read seeds from a query JSON. Give --seeds to the "
+            "command that runs OpenFold3 (run, score, refold)."
+        ),
     )
+
+
+def _add_run_seeds_args(p) -> None:
+    """Add ``--seeds`` and ``--num-seeds`` to a subparser that runs OpenFold3."""
+    from binding_metrics.metrics import openfold as of
+
+    p.add_argument(
+        "--seeds",
+        "--openfold-seeds",
+        dest="seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="SEED",
+        help=(
+            "Seed values OpenFold3 samples with, written to experiment_settings.seeds of the "
+            f"runner YAML (default: {' '.join(map(str, of._DEFAULT_QUERY_SEEDS))}, or the "
+            "seeds of --runner-yaml). One set of samples is made per seed, in a seed_<value> "
+            "directory; --seed selects the directory by position. Cannot be combined with "
+            "--num-seeds."
+        ),
+    )
+    p.add_argument(
+        "--num-seeds",
+        type=int,
+        default=None,
+        help=(
+            "Ask OpenFold3 to generate this many seeds (--num_model_seeds N; the seeds come "
+            "from random.seed(42)). OpenFold3 then ignores any seeds of the runner YAML, so "
+            "this cannot be combined with --seeds (default: not passed)."
+        ),
+    )
+
+
+def _check_run_seeds(parser, args) -> None:
+    """Stop with the usage message when ``--seeds`` and ``--num-seeds`` are both given."""
+    from binding_metrics.metrics import openfold as of
+
+    try:
+        of._resolve_run_seeds(args.seeds, args.num_seeds)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
+def _add_unmappable_residue_arg(p) -> None:
+    """Add ``--on-unmappable-residue`` (what to do with residues OpenFold3 cannot take)."""
+    p.add_argument(
+        "--on-unmappable-residue",
+        choices=("error", "x"),
+        default="error",
+        help=(
+            "A residue that OpenFold3 cannot take (not a standard, D-, modified or "
+            "protonation-variant amino acid) stops the run before it starts (default: "
+            "%(default)s). 'x' sends an X in its place and logs a warning."
+        ),
+    )
+
+
+def _unmappable_residue_kwargs(args) -> dict:
+    """Keyword argument for the API, only when the flag differs from the default.
+
+    The default is left out so that a function that predates the option keeps working.
+    """
+    if args.on_unmappable_residue == "error":
+        return {}
+    return {"on_unmappable_residue": args.on_unmappable_residue}
+
+
+_CYCLIC_CHOICES = {"auto": "auto", "on": True, "off": False}
+
+
+def _add_binder_cyclic_arg(p) -> None:
+    """Add ``--openfold-cyclic`` (the ``cyclic`` flag of the binder chain) to a subparser."""
+    p.add_argument(
+        "--openfold-cyclic",
+        dest="binder_cyclic",
+        choices=tuple(_CYCLIC_CHOICES),
+        default="auto",
+        help=(
+            "Whether the binder chain of the OpenFold3 query gets 'cyclic: true' "
+            "(OpenFold3 >= 0.4.5). auto (default): when the binder has a head-to-tail bond, "
+            "consists of standard residues only and the installed OpenFold3 is new enough; on: "
+            "always; off: never. OpenFold3 uses the flag only to wrap the relative positions of "
+            "the chain: it does not enforce the closure bond, documents the flag only in an "
+            "example query, and has published no accuracy benchmark for cyclic peptides. It "
+            "builds the wrap from the token count of the chain and gives every atom of a "
+            "modified residue its own token: for 1CWA (D-amino acid, N-methylated residues; one "
+            "complex, three seeds) the flag lowered ipTM from 0.91-0.92 to 0.78-0.81 and raised "
+            "the binder C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A, so auto leaves such a binder "
+            "linear (on forces the flag); for SFTI-1 (standard residues; one seed) the flag "
+            "closed the ring (C-N 7.40 A without it, 1.38 A with it). Disulfide, lactam and "
+            "staple closures cannot be given to OpenFold3 and are not written."
+        ),
+    )
+
+
+def _binder_cyclic_kwargs(args) -> dict:
+    """Keyword argument for the API, only when the flag differs from the default."""
+    if args.binder_cyclic == "auto":
+        return {}
+    return {"binder_cyclic": _CYCLIC_CHOICES[args.binder_cyclic]}
+
+
+def _add_template_mode_arg(p) -> None:
+    """Add ``--openfold-templates`` (how the templates reach OpenFold3) to a subparser."""
+    p.add_argument(
+        "--openfold-templates",
+        dest="template_mode",
+        choices=TEMPLATE_MODES,
+        default=DEFAULT_TEMPLATE_MODE,
+        help=(
+            "How the template of each chain reaches OpenFold3. structure (default): the template "
+            "CIF itself in template_cif_paths (OpenFold3's CIF Direct Template Mode, OpenFold3 "
+            "0.4.2 or later: protein chains only, the best-matching chain of each file, "
+            "alignment made by OpenFold3), which the ColabFold MSA server does not overwrite. "
+            "alignment: an A3M self-alignment that points to the template CIF, the way earlier "
+            "versions of this package did it; the server overwrites it, so with the server on "
+            "(the default of the run commands) the run has no template (use --no-msa-server to "
+            "keep it)."
+        ),
+    )
+
+
+def _add_dummy_msa_arg(p) -> None:
+    """Add ``--dummy-msa`` to a query-only subparser; the run ones follow ``--no-msa-server``."""
+    p.add_argument(
+        "--dummy-msa",
+        action="store_true",
+        help=(
+            "Give every chain a dummy MSA that holds only its sequence (main_msa_file_paths), "
+            "for a run without the ColabFold MSA server. The run subcommands do this when "
+            "--no-msa-server is given."
+        ),
+    )
+
+
+def _dummy_msa_kwargs(args) -> dict:
+    """Keyword argument for the query builders, only when ``--dummy-msa`` was given."""
+    return {"dummy_msa": True} if getattr(args, "dummy_msa", False) else {}
+
+
+def _template_mode_kwargs(args) -> dict:
+    """Keyword argument for the API, only when the mode differs from the default."""
+    if args.template_mode == DEFAULT_TEMPLATE_MODE:
+        return {}
+    return {"template_mode": args.template_mode}
+
+
+def _add_prepare_conda_env_arg(p) -> None:
+    """Add ``--conda-env`` to a query-only subparser: the environment asked for its version."""
+    p.add_argument(
+        "--conda-env",
+        type=str,
+        default=None,
+        metavar="ENV",
+        help=(
+            "Conda env where OpenFold3 is installed; asked for its version to decide "
+            "--openfold-cyclic auto (default: the current interpreter)."
+        ),
+    )
+
+
+def _conda_env_kwargs(args) -> dict:
+    """Keyword argument for the API, only when ``--conda-env`` was given."""
+    conda_env = getattr(args, "conda_env", None)
+    return {} if conda_env is None else {"conda_env": conda_env}
 
 
 def _print_metrics(metrics: dict, seed: int, sample: int) -> None:
@@ -143,7 +325,7 @@ def main():
             "  parse         Parse metrics from existing OF3 output.\n"
             "  run           Run OF3 inference, then parse metrics.\n"
             "  prepare-query Prepare a query JSON for binder refolding.\n"
-            "  refold        Run OF3 binder refolding (receptor fixed as template)."
+            "  refold        Run OF3 binder refolding (receptor given as template)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -201,12 +383,7 @@ def main():
     p_run.add_argument(
         "--num-samples", type=int, default=5, help="Number of diffusion samples (default: 5)."
     )
-    p_run.add_argument(
-        "--num-seeds",
-        type=int,
-        default=1,
-        help="Passed to OpenFold3 as --num_model_seeds (default: 1).",
-    )
+    _add_run_seeds_args(p_run)
     p_run.add_argument(
         "--no-msa-server",
         action="store_true",
@@ -215,9 +392,9 @@ def main():
     p_run.add_argument(
         "--presets",
         nargs="+",
-        default=["predict", "pae_enabled", "low_mem"],
+        default=list(_DEFAULT_MODEL_PRESETS),
         metavar="PRESET",
-        help="Model configuration presets (default: predict pae_enabled low_mem).",
+        help=f"Model configuration presets (default: {_PRESETS_TEXT}).",
     )
     p_run.add_argument(
         "--runner-yaml",
@@ -253,7 +430,7 @@ def main():
         type=str,
         required=True,
         metavar="CHAIN",
-        help="Chain ID of the receptor/target (fixed as template).",
+        help="Chain ID of the receptor/target (given as template).",
     )
     p_prep.add_argument(
         "--binder-chain",
@@ -285,11 +462,16 @@ def main():
         "If omitted, receptor chain is extracted from --complex.",
     )
     _add_query_seeds_arg(p_prep)
+    _add_unmappable_residue_arg(p_prep)
+    _add_binder_cyclic_arg(p_prep)
+    _add_template_mode_arg(p_prep)
+    _add_dummy_msa_arg(p_prep)
+    _add_prepare_conda_env_arg(p_prep)
 
     # --- refold subcommand ---
     p_refold = sub.add_parser(
         "refold",
-        help="Run OF3 binder refolding: receptor fixed as template, binder predicted freely.",
+        help="Run OF3 binder refolding: receptor given as template, binder from sequence.",
     )
     p_refold.add_argument(
         "--complex",
@@ -305,7 +487,7 @@ def main():
         type=str,
         required=True,
         metavar="CHAIN",
-        help="Chain ID of the receptor/target (fixed as template).",
+        help="Chain ID of the receptor/target (given as template).",
     )
     p_refold.add_argument(
         "--binder-chain",
@@ -340,20 +522,14 @@ def main():
         "--num-samples", type=int, default=5, help="Number of diffusion samples (default: 5)."
     )
     p_refold.add_argument(
-        "--num-seeds",
-        type=int,
-        default=1,
-        help="Passed to OpenFold3 as --num_model_seeds (default: 1).",
-    )
-    p_refold.add_argument(
         "--no-msa-server", action="store_true", help="Disable ColabFold MSA server."
     )
     p_refold.add_argument(
         "--presets",
         nargs="+",
-        default=["predict", "pae_enabled", "low_mem"],
+        default=list(_DEFAULT_MODEL_PRESETS),
         metavar="PRESET",
-        help="Model configuration presets.",
+        help=f"Model configuration presets (default: {_PRESETS_TEXT}).",
     )
     p_refold.add_argument(
         "--runner-yaml", type=Path, default=None, help="Explicit YAML config; overrides --presets."
@@ -365,13 +541,16 @@ def main():
         metavar="ENV",
         help="Conda env where OpenFold3 is installed (e.g. 'openfold3').",
     )
-    _add_query_seeds_arg(p_refold)
+    _add_run_seeds_args(p_refold)
+    _add_unmappable_residue_arg(p_refold)
+    _add_binder_cyclic_arg(p_refold)
+    _add_template_mode_arg(p_refold)
     _add_parse_args(p_refold, include_chain_args=False)
 
     # --- prepare-scoring-query subcommand ---
     p_prep_score = sub.add_parser(
         "prepare-scoring-query",
-        help="Prepare OF3 query JSON to score an existing complex (both chains as templates).",
+        help="Prepare OF3 query JSON to score a complex (each chain templated on its own).",
     )
     p_prep_score.add_argument(
         "--complex",
@@ -410,11 +589,16 @@ def main():
         help="Pre-prepared complex CIF (e.g., MD-relaxed). Both chains extracted from it.",
     )
     _add_query_seeds_arg(p_prep_score)
+    _add_unmappable_residue_arg(p_prep_score)
+    _add_binder_cyclic_arg(p_prep_score)
+    _add_template_mode_arg(p_prep_score)
+    _add_dummy_msa_arg(p_prep_score)
+    _add_prepare_conda_env_arg(p_prep_score)
 
     # --- score subcommand ---
     p_score = sub.add_parser(
         "score",
-        help="Run OF3 scoring of an existing complex (both chains as templates).",
+        help="Run OF3 scoring of a complex (each chain templated on its own; OF3 re-docks).",
     )
     p_score.add_argument(
         "--complex",
@@ -453,20 +637,14 @@ def main():
         "--num-samples", type=int, default=5, help="Number of diffusion samples (default: 5)."
     )
     p_score.add_argument(
-        "--num-seeds",
-        type=int,
-        default=1,
-        help="Passed to OpenFold3 as --num_model_seeds (default: 1).",
-    )
-    p_score.add_argument(
         "--no-msa-server", action="store_true", help="Disable ColabFold MSA server."
     )
     p_score.add_argument(
         "--presets",
         nargs="+",
-        default=["predict", "pae_enabled", "low_mem"],
+        default=list(_DEFAULT_MODEL_PRESETS),
         metavar="PRESET",
-        help="Model configuration presets.",
+        help=f"Model configuration presets (default: {_PRESETS_TEXT}).",
     )
     p_score.add_argument(
         "--runner-yaml", type=Path, default=None, help="Explicit YAML config; overrides --presets."
@@ -478,13 +656,18 @@ def main():
         metavar="ENV",
         help="Conda env where OpenFold3 is installed (e.g. 'openfold3').",
     )
-    _add_query_seeds_arg(p_score)
+    _add_run_seeds_args(p_score)
+    _add_unmappable_residue_arg(p_score)
+    _add_binder_cyclic_arg(p_score)
+    _add_template_mode_arg(p_score)
     _add_parse_args(p_score, include_chain_args=False)
 
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(parser)
     args = parser.parse_args()
+    if args.command in ("run", "score", "refold"):
+        _check_run_seeds(parser, args)
 
     from binding_metrics.cli import _apply_log_redirect
 
@@ -500,6 +683,11 @@ def main():
             output_dir=args.output_dir,
             template_cif_path=args.template_cif,
             seeds=args.seeds,
+            **_unmappable_residue_kwargs(args),
+            **_binder_cyclic_kwargs(args),
+            **_template_mode_kwargs(args),
+            **_dummy_msa_kwargs(args),
+            **_conda_env_kwargs(args),
         )
         print(f"Scoring query JSON written to: {path}")
         return
@@ -524,6 +712,9 @@ def main():
             runner_yaml=args.runner_yaml,
             conda_env=args.conda_env,
             seeds=args.seeds,
+            **_unmappable_residue_kwargs(args),
+            **_binder_cyclic_kwargs(args),
+            **_template_mode_kwargs(args),
         )
         print(f"\nParsing scoring metrics from: {predictions_dir}")
         metrics = of.compute_openfold_metrics(
@@ -549,6 +740,11 @@ def main():
             output_dir=args.output_dir,
             template_cif_path=args.template_cif,
             seeds=args.seeds,
+            **_unmappable_residue_kwargs(args),
+            **_binder_cyclic_kwargs(args),
+            **_template_mode_kwargs(args),
+            **_dummy_msa_kwargs(args),
+            **_conda_env_kwargs(args),
         )
         print(f"Query JSON written to: {path}")
         return
@@ -573,6 +769,9 @@ def main():
             runner_yaml=args.runner_yaml,
             conda_env=args.conda_env,
             seeds=args.seeds,
+            **_unmappable_residue_kwargs(args),
+            **_binder_cyclic_kwargs(args),
+            **_template_mode_kwargs(args),
         )
         print(f"\nParsing refolding metrics from: {predictions_dir}")
         metrics = of.compute_openfold_metrics(
@@ -602,6 +801,7 @@ def main():
             model_presets=args.presets,
             runner_yaml=args.runner_yaml,
             conda_env=args.conda_env,
+            seeds=args.seeds,
         )
 
     # --- parse (and fallthrough from run) ---

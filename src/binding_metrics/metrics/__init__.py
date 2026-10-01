@@ -26,6 +26,7 @@ _EXPORTS = {
     "run_openfold": "binding_metrics.metrics.openfold",
     "run_openfold_refolding": "binding_metrics.metrics.openfold",
     "run_openfold_scoring": "binding_metrics.metrics.openfold",
+    "compute_prediction_metrics": "binding_metrics.metrics.prediction",
     "compute_receptor_quality": "binding_metrics.metrics.receptor_quality",
     "calculate_rmsd": "binding_metrics.metrics.rmsd",
     "compute_receptor_drift": "binding_metrics.metrics.rmsd",
@@ -57,6 +58,7 @@ if TYPE_CHECKING:
         run_openfold_refolding,
         run_openfold_scoring,
     )
+    from binding_metrics.metrics.prediction import compute_prediction_metrics
     from binding_metrics.metrics.receptor_quality import compute_receptor_quality
     from binding_metrics.metrics.rmsd import calculate_rmsd, compute_receptor_drift
     from binding_metrics.metrics.sasa import calculate_buried_sasa
@@ -73,6 +75,7 @@ __all__ = [
     "compute_omega_planarity",
     "compute_interface_pae",
     "compute_openfold_metrics",
+    "compute_prediction_metrics",
     "compute_ramachandran",
     "compute_receptor_drift",
     "compute_receptor_quality",

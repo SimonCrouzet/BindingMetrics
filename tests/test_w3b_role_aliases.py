@@ -248,6 +248,8 @@ class TestMetricsThatCannotRunHere:
 
     def test_interaction_energy_passes_the_resolved_chains_on(self, monkeypatch):
         pytest.importorskip("openmm")
+        import openmm.app
+
         import binding_metrics.io.structures as structures
         from binding_metrics.metrics.energy import compute_interaction_energy
 
@@ -257,7 +259,8 @@ class TestMetricsThatCannotRunHere:
             seen.append((peptide_chain, receptor_chain))
             raise RuntimeError("stop after chain resolution")
 
-        monkeypatch.setattr(structures, "load_structure", lambda path: (object(), []))
+        # an empty topology: the chain IDs are looked up as author IDs first, then taken as given
+        monkeypatch.setattr(structures, "load_structure", lambda path: (openmm.app.Topology(), []))
         monkeypatch.setattr(structures, "strip_heterogens", fake_strip)
         compute_interaction_energy(P53, binder_chain="B", target_chain="A", modes=("raw",))
         compute_interaction_energy(P53, peptide_chain="B", receptor_chain="A", modes=("raw",))
@@ -309,7 +312,7 @@ class TestMetricsThatCannotRunHere:
         monkeypatch.setattr(
             openfold,
             "_interface_pae_stats",
-            lambda pae, atoms, binder, receptor: (binder, receptor),
+            lambda pae, atoms, binder, receptor, token_ranges=None: (binder, receptor),
         )
         assert openfold.compute_interface_pae("c.json", "s.cif", "B", target_chain="A") == (
             "B",

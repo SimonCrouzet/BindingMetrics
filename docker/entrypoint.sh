@@ -1,18 +1,34 @@
 #!/bin/bash
 # Entrypoint for binding-metrics :full image.
-# Ensures OpenFold3 weights are present before running the user command.
+# Ensures the OpenFold3 default checkpoint is present before running the user command.
+#
+# openfold3 >= 0.5.0 loads the OpenBind-0 checkpoint (of3-ob-2025-06-30-174k.pt) by default and
+# stops with "cowardly refusing to perform inference" when that file is missing; it no longer
+# downloads it at first use. Preview2 weights (of3-p2-*.pt) of an older volume do not load into it.
 set -e
 
 WEIGHTS_DIR="${HOME:-/root}/.openfold3"
+DEFAULT_CHECKPOINT_NAME="openbind-2025-06-30-174k"
+DEFAULT_CHECKPOINT_FILE="of3-ob-2025-06-30-174k.pt"
 BANNER="============================================================"
 
-weights_missing() {
-    [ ! -f "$WEIGHTS_DIR/ckpt_root" ] && return 0
-    ls "$WEIGHTS_DIR"/*.pt >/dev/null 2>&1 || return 0
-    return 1
+# openfold3 reads the folder that holds the checkpoints from <cache>/ckpt_root, and uses the
+# cache folder itself when that file is missing.
+checkpoint_dir() {
+    if [ -s "$WEIGHTS_DIR/ckpt_root" ]; then
+        head -n 1 "$WEIGHTS_DIR/ckpt_root"
+    else
+        echo "$WEIGHTS_DIR"
+    fi
 }
 
-fail_prompt_drift() {
+# Only the current default file counts: any other *.pt (a Preview2 checkpoint from an older
+# volume) would not let openfold3 >= 0.5 run.
+weights_missing() {
+    [ ! -f "$(checkpoint_dir)/$DEFAULT_CHECKPOINT_FILE" ]
+}
+
+fail_setup() {
     local reason="$1"
     echo ""
     echo "$BANNER"
@@ -20,11 +36,11 @@ fail_prompt_drift() {
     echo ""
     echo "  Reason: $reason"
     echo ""
-    echo "  Most likely cause: upstream OpenFold3 changed the prompts in"
-    echo "  'setup_openfold', so the canned answer sequence '\\n\\n1\\nno\\n'"
-    echo "  in docker/entrypoint.sh no longer matches the expected inputs."
+    echo "  Likely causes: no network access to s3://openfold3-data, no disk space in"
+    echo "  $WEIGHTS_DIR, or a setup_openfold that no longer has the --non-interactive option"
+    echo "  (it exists from openfold3 0.4.2)."
     echo ""
-    echo "  To diagnose, run setup_openfold interactively once:"
+    echo "  To see the reason, run setup_openfold once by hand:"
     echo ""
     echo "      docker run -it --rm --gpus all \\"
     echo "          -e BINDING_METRICS_SKIP_WEIGHTS_CHECK=1 \\"
@@ -32,9 +48,7 @@ fail_prompt_drift() {
     echo "          -v ~/.openfold-weights:/root/.openfold3 \\"
     echo "          simoncrouzet/binding-metrics:full bash"
     echo "      # inside the container:"
-    echo "      conda run -n openfold3 --no-capture-output setup_openfold"
-    echo ""
-    echo "  Then update docker/entrypoint.sh to match the new prompt sequence."
+    echo "      conda run -n openfold3 --no-capture-output setup_openfold --non-interactive"
     echo "$BANNER"
     exit 1
 }
@@ -45,35 +59,37 @@ fi
 
 if weights_missing; then
     echo "$BANNER"
-    echo "  OpenFold3 weights not found at $WEIGHTS_DIR"
+    echo "  OpenFold3 default checkpoint not found in $(checkpoint_dir)"
     echo ""
     echo "  One-time setup — downloading the default checkpoint (~2.3 GB)."
     echo "  This will only happen the first time the volume is used."
     echo ""
     echo "    cache dir:   $WEIGHTS_DIR"
-    echo "    checkpoint:  openfold3-p2-155k (default only)"
+    echo "    checkpoint:  $DEFAULT_CHECKPOINT_NAME (OpenBind-0, default only)"
     echo "    integration tests: skipped"
+
+    old_weights=$(ls "$(checkpoint_dir)"/of3-p2-*.pt "$(checkpoint_dir)"/of3_ft3_v1.pt 2>/dev/null || true)
+    if [ -n "$old_weights" ]; then
+        echo ""
+        echo "  Older Preview weights are in that folder. They do not load into"
+        echo "  openfold3 >= 0.5, so the OpenBind-0 checkpoint is downloaded next to them."
+    fi
+
     echo ""
     echo "  To skip this check, set BINDING_METRICS_SKIP_WEIGHTS_CHECK=1."
     echo "$BANNER"
 
     mkdir -p "$WEIGHTS_DIR"
 
-    # Feed setup_openfold's interactive prompts non-interactively. The
-    # sequence below must match the prompt order in upstream OpenFold3:
-    #   <enter>  accept default cache dir
-    #   <enter>  accept default download dir
-    #   1        download only the default checkpoint (openfold3-p2-155k)
-    #   no       skip integration tests
-    # If upstream changes this sequence, setup will either fail non-zero
-    # or exit "successfully" without downloading weights. Both cases are
-    # caught below and surfaced with a clear drift error.
-    if ! printf '\n\n1\nno\n' | conda run -n openfold3 --no-capture-output setup_openfold; then
-        fail_prompt_drift "setup_openfold exited non-zero"
+    # --non-interactive takes every default of setup_openfold (cache and download dir
+    # ~/.openfold3, the default checkpoint, no integration tests) and asks nothing, whether or
+    # not pytest is installed. It exists from openfold3 0.4.2. Files already on disk are kept.
+    if ! conda run -n openfold3 --no-capture-output setup_openfold --non-interactive; then
+        fail_setup "setup_openfold exited non-zero"
     fi
 
     if weights_missing; then
-        fail_prompt_drift "setup_openfold succeeded but $WEIGHTS_DIR/ckpt_root and/or the .pt weights are still missing"
+        fail_setup "setup_openfold succeeded but $(checkpoint_dir)/$DEFAULT_CHECKPOINT_FILE is still missing"
     fi
 
     echo "$BANNER"
