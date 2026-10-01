@@ -22,8 +22,10 @@ from binding_metrics.io.structures import (  # noqa: E402
     attach_author_chain_ids,
     author_chain_ids,
     copy_author_chain_ids,
+    drop_other_protein_chains,
     load_structure,
     openmm_chain_id,
+    strip_heterogens,
 )
 
 DATA = Path(__file__).parent.parent / "data"
@@ -228,3 +230,58 @@ class TestAttachment:
         topology, _ = load_structure(_example(CWA))
         assert author_chain_ids(topology) == ["A", "B", "C", "D"]
         assert openmm_chain_id(topology, "B") == "B"
+
+
+class TestRemovalMessages:
+    """What strip_heterogens and drop_other_protein_chains say names author chains.
+
+    Both still select by the IDs of the topology: their chain arguments are OpenMM IDs.
+    """
+
+    def test_strip_heterogens_names_the_ligand_chain_by_author_id(self, caplog):
+        topology, positions = load_structure(_example(SFTI))
+        report: dict = {}
+        with caplog.at_level(logging.INFO, logger="binding_metrics.io.structures"):
+            stripped, _ = strip_heterogens(topology, positions, "B", "A", report=report)
+        # GSH is chain C of the topology (label ID) and chain A of the file (author ID)
+        assert report["removed_heterogens"] == ["GSH (chain A)"]
+        assert report["n_removed_waters"] == 101
+        assert "GSH1001 (chain A)" in caplog.text
+        assert "chain C" not in caplog.text
+        assert [chain.id for chain in stripped.chains()] == ["A", "B"]
+
+    def test_the_relaxation_wrapper_reports_the_same_names(self):
+        from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
+
+        topology, positions = load_structure(_example(SFTI))
+        report: dict = {}
+        ImplicitRelaxation(RelaxationConfig())._strip_heterogens(
+            topology, positions, "B", "A", report=report
+        )
+        assert report["removed_heterogens"] == ["GSH (chain A)"]
+
+    def test_dropped_protein_chains_are_author_ids(self, tmp_path, caplog):
+        path = _write_cif(
+            tmp_path / "three.cif",
+            [("GLY", "A", "A")] * 4
+            + [("GLY", "B", "C")] * 3
+            + [("GLY", "C", "E")] * 2
+            + [("HOH", "D", "A")] * 2,
+        )
+        topology, positions = load_structure(path)
+        assert [chain.id for chain in topology.chains()] == ["A", "B", "C", "D"]
+        report: dict = {}
+        with caplog.at_level(logging.WARNING, logger="binding_metrics.io.structures"):
+            kept, _ = drop_other_protein_chains(topology, positions, "B", "A", report=report)
+        assert report["dropped_protein_chains"] == ["E"]
+        assert "Removing protein chain(s) E: neither the peptide (C) nor the receptor (A)" in (
+            caplog.text
+        )
+        assert [chain.id for chain in kept.chains()] == ["A", "B", "D"]
+
+    def test_a_pdb_input_names_its_own_chains(self, caplog):
+        topology, positions = load_structure(_example(P53))
+        report: dict = {}
+        with caplog.at_level(logging.WARNING, logger="binding_metrics.io.structures"):
+            drop_other_protein_chains(topology, positions, "B", "A", report=report)
+        assert report["dropped_protein_chains"] == []

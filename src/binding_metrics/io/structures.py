@@ -682,7 +682,8 @@ def strip_heterogens(
             counts accumulate when one dict is passed to several calls. Keys:
 
             * ``removed_heterogens`` (list[str]): ``"NAME (chain X)"`` for each
-              removed non-water heterogen (ligands, ions, glycans).
+              removed non-water heterogen (ligands, ions, glycans). X is the author
+              chain ID (:func:`author_chain_ids`), also in the log lines.
             * ``n_removed_waters`` (int): water molecules removed.
 
             Behaviour is identical when ``report`` is None.
@@ -693,6 +694,7 @@ def strip_heterogens(
     import numpy as np
 
     protein_chain_ids = {c for c in (peptide_chain, receptor_chain) if c}
+    author_ids = author_chain_ids(topology)  # for the messages; the selection uses chain.id
     protein_pos = (
         np.array(
             [
@@ -717,7 +719,8 @@ def strip_heterogens(
             atoms_to_remove.extend(res.atoms())
             n_removed_waters += 1
             continue
-        removed_heterogens.append(f"{res.name} (chain {res.chain.id})")
+        author_id = author_ids[res.chain.index]
+        removed_heterogens.append(f"{res.name} (chain {author_id})")
         # Other heterogens: warn if close to protein (may be a cofactor/ion)
         res_pos = (
             np.array(
@@ -739,7 +742,7 @@ def strip_heterogens(
                     "Parametrize it via custom_bond_handler to keep it.",
                     res.name,
                     res.id,
-                    res.chain.id,
+                    author_id,
                     min_dist,
                 )
             else:
@@ -747,11 +750,11 @@ def strip_heterogens(
                     "  Removing distant heterogen %s%s (chain %s, %.1f Å from protein)",
                     res.name,
                     res.id,
-                    res.chain.id,
+                    author_id,
                     min_dist,
                 )
         else:
-            logger.info("  Removing heterogen %s%s (chain %s)", res.name, res.id, res.chain.id)
+            logger.info("  Removing heterogen %s%s (chain %s)", res.name, res.id, author_id)
         atoms_to_remove.extend(res.atoms())
 
     if report is not None:
@@ -815,7 +818,8 @@ def drop_other_protein_chains(
         peptide_chain: Peptide chain ID to keep.
         receptor_chain: Receptor chain ID to keep.
         report: Optional dict; ``dropped_protein_chains`` (list[str]) receives the
-            IDs of the removed chains, an empty list when none was removed. Lists
+            IDs of the removed chains, an empty list when none was removed. They are
+            author chain IDs (:func:`author_chain_ids`), as in the warning. Lists
             accumulate when one dict is passed to several calls.
 
     Returns:
@@ -829,12 +833,13 @@ def drop_other_protein_chains(
         return topology, positions
 
     amino_acids = _amino_acid_names()
+    author_ids = author_chain_ids(topology)  # for the messages; the selection uses chain.id
     atoms_to_remove = []
     dropped: list[str] = []
     for chain in topology.chains():
         if chain.id in kept or not any(res.name in amino_acids for res in chain.residues()):
             continue
-        dropped.append(chain.id)
+        dropped.append(author_ids[chain.index])
         atoms_to_remove.extend(atom for res in chain.residues() for atom in res.atoms())
 
     if report is not None:
@@ -842,12 +847,15 @@ def drop_other_protein_chains(
     if not dropped:
         return topology, positions
 
+    author_of = {}
+    for chain, author_id in zip(topology.chains(), author_ids):
+        author_of.setdefault(chain.id, author_id)
     logger.warning(
         "  Removing protein chain(s) %s: neither the peptide (%s) nor the receptor (%s). "
         "The energy and the relaxation describe the peptide-receptor pair only.",
         ", ".join(dropped),
-        peptide_chain,
-        receptor_chain,
+        author_of[peptide_chain],
+        author_of[receptor_chain],
     )
     from openmm import app
 
