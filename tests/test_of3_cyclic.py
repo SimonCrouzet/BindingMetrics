@@ -199,6 +199,16 @@ class TestOn:
         assert chains["C"]["cyclic"] is True
         assert "Could not read the installed OpenFold3 version" in caplog.text
 
+    def test_true_with_an_unreadable_version_is_decided_quietly_when_log_is_off(
+        self, set_version, caplog
+    ):
+        """The pipeline repeats the decision with ``log=False`` to record it in its result."""
+        set_version(None)
+        with caplog.at_level(logging.WARNING, logger=LOGGER):
+            decision = _openfold_run.decide_binder_cyclic(CYCLOSPORIN, "C", True, log=False)
+        assert decision.cyclic is True and not decision.reason
+        assert caplog.text == ""
+
 
 class TestVersionBelowTheField:
     """OpenFold3 older than 0.4.5 rejects the field, so "auto" leaves the binder linear."""

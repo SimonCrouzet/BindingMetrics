@@ -281,12 +281,14 @@ def decide_binder_cyclic(
 
     if binder_cyclic is True:
         installed = _installed_version_once(conda_env)
-        if installed is None and log:
-            logger.warning(
-                "Could not read the installed OpenFold3 version. binder_cyclic=True writes "
-                "'cyclic: true' on chain %s anyway; OpenFold3 older than 0.4.5 rejects that field.",
-                binder_chain,
-            )
+        if installed is None:
+            if log:
+                logger.warning(
+                    "Could not read the installed OpenFold3 version. binder_cyclic=True writes "
+                    "'cyclic: true' on chain %s anyway; OpenFold3 older than 0.4.5 rejects that "
+                    "field.",
+                    binder_chain,
+                )
         elif _version_tuple(installed) < _CYCLIC_FIELD_SINCE:
             raise ValueError(
                 f"binder_cyclic=True needs OpenFold3 0.4.5 or later, which added the 'cyclic' "
