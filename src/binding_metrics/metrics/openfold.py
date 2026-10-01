@@ -94,7 +94,7 @@ from binding_metrics.metrics._openfold_templates import (  # noqa: F401  (re-exp
     TEMPLATE_ACCOUNTING_FILE,
     read_template_accounting,
 )
-from binding_metrics.metrics.prediction import summarize_prediction
+from binding_metrics.metrics.prediction import _token_ranges, summarize_prediction
 from binding_metrics.predictors._confidence import (  # noqa: F401  (re-exported)
     _binder_ca_rmsd,
     _binder_plddt_per_residue,
@@ -115,6 +115,7 @@ from binding_metrics.predictors.of3 import parse_full_confidences as _parse_conf
 from binding_metrics.predictors.of3 import (  # noqa: F401  (re-exported)
     parse_timing as _parse_timing,
 )
+from binding_metrics.predictors.record import PredictionRecord
 from binding_metrics.predictors.registry import get_parser
 
 # ---------------------------------------------------------------------------
@@ -178,6 +179,15 @@ def compute_interface_pae(
     loads that matrix and the predicted structure and returns the interface
     (binder×receptor) PAE statistics.
 
+    OpenFold3 makes one token of each residue of the standard set and one of each heavy
+    atom of any other residue (a modified residue, a ligand), so the matrix can have more
+    rows than the structure has residues (1CWA: 240 for 176). The token layout is built from
+    the structure the way ``OpenFold3Parser.complete`` does it, which cuts the binder block at
+    the chain boundaries of the tokens; the matrix of 1CWA gives its interface PAE. A layout
+    that cannot be shown to fit the matrix (another token count, chains that are not one run
+    of tokens) is not guessed: the matrix is then read as one token per residue and a size
+    that does not fit raises.
+
     Args:
         confidences_path: Path to ``*_confidences.json`` or ``.npz``.
         structure_path: Path to the predicted model (.cif/.pdb) — used to map
@@ -195,9 +205,8 @@ def compute_interface_pae(
     Raises:
         ValueError: If the confidences file has no PAE matrix (it comes from a
             run with ``write_full_confidence_scores`` false, or from a version
-            before 0.4), or if the matrix size does not equal the structure's
-            residue count (a ligand or modified residue makes the token count
-            differ).
+            before 0.4), or if the matrix size fits neither the token layout of the
+            structure nor its residue count.
     """
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
@@ -211,7 +220,20 @@ def compute_interface_pae(
             "false, so this file comes from such a run or from an older version."
         )
     atoms = _load_atoms(Path(structure_path))
-    return _interface_pae_stats(pae, atoms, binder_chain, receptor_chain)
+    # The token layout of the structure, when it can be shown to fit the matrices; a record
+    # without one (``tokens`` None) is read as one token per residue, which keeps the error of
+    # a matrix that fits neither.
+    record = PredictionRecord(
+        "of3",
+        Path(structure_path).stem,
+        structure_path=Path(structure_path),
+        pae=pae,
+        pde=conf.get("pde"),
+    )
+    OpenFold3Parser().complete(record)
+    return _interface_pae_stats(
+        pae, atoms, binder_chain, receptor_chain, token_ranges=_token_ranges(record)
+    )
 
 
 # ---------------------------------------------------------------------------

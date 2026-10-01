@@ -497,18 +497,93 @@ class TestTokenOffsetCheck:
             )
         assert "pae_enabled" not in str(info.value)
 
-    def test_compute_interface_pae_raises_for_a_ligand_complex(self, tmp_path):
+    def test_compute_interface_pae_cuts_the_blocks_with_the_token_layout_of_a_ligand_complex(
+        self, tmp_path
+    ):
+        """A ligand is one token per atom (4 + 3 + 5 = 12): the layout of the structure, built as
+        ``OpenFold3Parser.complete`` builds it, gives the binder and receptor blocks."""
         from binding_metrics.metrics.openfold import compute_interface_pae
 
         root = self._write_run(tmp_path, n_tokens=12)
         seed_dir = root / "lig" / "seed_1"
-        with pytest.raises(ValueError, match="PAE matrix has 12 tokens"):
+        stats = compute_interface_pae(
+            seed_dir / "lig_seed_1_sample_1_confidences.json",
+            seed_dir / "lig_seed_1_sample_1_model.cif",
+            binder_chain="B",
+            receptor_chain="A",
+        )
+        assert stats["mean_interface_pae"] == pytest.approx(3.0)
+        assert stats["pae_interface"].shape == (3, 4)  # binder tokens by receptor tokens
+
+    def test_compute_interface_pae_still_refuses_a_matrix_that_the_layout_cannot_explain(
+        self, tmp_path
+    ):
+        """13 rows fit neither the 12 tokens of the layout nor the 8 residues: no layout is
+        guessed and the size error of the one-token-per-residue reading stays."""
+        from binding_metrics.metrics.openfold import compute_interface_pae
+
+        root = self._write_run(tmp_path, n_tokens=13)
+        seed_dir = root / "lig" / "seed_1"
+        with pytest.raises(ValueError, match="PAE matrix has 13 tokens"):
             compute_interface_pae(
                 seed_dir / "lig_seed_1_sample_1_confidences.json",
                 seed_dir / "lig_seed_1_sample_1_model.cif",
                 binder_chain="B",
                 receptor_chain="A",
             )
+
+    def test_compute_interface_pae_reads_a_matrix_with_one_row_per_residue_as_before(
+        self, tmp_path
+    ):
+        from binding_metrics.metrics.openfold import compute_interface_pae
+
+        root = self._write_run(tmp_path, n_tokens=8)
+        seed_dir = root / "lig" / "seed_1"
+        stats = compute_interface_pae(
+            seed_dir / "lig_seed_1_sample_1_confidences.json",
+            seed_dir / "lig_seed_1_sample_1_model.cif",
+            binder_chain="B",
+            receptor_chain="A",
+        )
+        assert stats["mean_interface_pae"] == pytest.approx(3.0)
+        assert stats["pae_interface"].shape == (3, 4)
+
+    def test_compute_interface_pae_of_a_binder_with_a_modified_residue(self, tmp_path):
+        """The shape of 1CWA: a 10 x 10 matrix for 6 residues, the binder's MLE one token per
+        atom. The interface PAE is the mean of the two blocks (4.25 and 3.0), 3.625; before the
+        layout the call raised "PAE matrix has 10 tokens but the structure has 6 residues"."""
+        from binding_metrics.metrics.openfold import compute_interface_pae
+        from tests.predictors import synth_of3
+
+        synth_of3.write_prediction(tmp_path, "mod", synth_of3.complex_with_a_modified_residue())
+        seed_dir = next((tmp_path / "mod").glob("seed_*"))
+        prefix = f"{seed_dir.name.replace('seed_', 'mod_seed_')}_sample_1"
+        stats = compute_interface_pae(
+            seed_dir / f"{prefix}_confidences.json",
+            seed_dir / f"{prefix}_model.cif",
+            binder_chain="B",
+            receptor_chain="A",
+        )
+        assert stats["mean_interface_pae"] == pytest.approx(3.625)
+        assert stats["pae_interface"].shape == (7, 3)  # 7 binder tokens by 3 receptor tokens
+
+    def test_compute_interface_pae_agrees_with_compute_openfold_metrics(self, tmp_path):
+        """One layout rule for every entry point: the same value for the same files."""
+        from binding_metrics.metrics.openfold import compute_interface_pae, compute_openfold_metrics
+        from tests.predictors import synth_of3
+
+        synth_of3.write_prediction(tmp_path, "mod", synth_of3.complex_with_a_modified_residue())
+        seed_dir = next((tmp_path / "mod").glob("seed_*"))
+        prefix = f"{seed_dir.name.replace('seed_', 'mod_seed_')}_sample_1"
+        direct = compute_interface_pae(
+            seed_dir / f"{prefix}_confidences.json",
+            seed_dir / f"{prefix}_model.cif",
+            binder_chain="B",
+            receptor_chain="A",
+        )
+        full = compute_openfold_metrics(tmp_path, "mod", binder_chain="B", receptor_chain="A")
+        assert direct["mean_interface_pae"] == pytest.approx(full["mean_interface_pae"])
+        assert direct["max_interface_pae"] == pytest.approx(full["max_interface_pae"])
 
 
 # ---------------------------------------------------------------------------
