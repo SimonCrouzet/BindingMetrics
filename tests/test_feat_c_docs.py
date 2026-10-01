@@ -73,6 +73,8 @@ def test_every_documented_option_is_an_option_of_both_commands(module, monkeypat
 
 
 CONDITIONAL_KEYS = {"evobind_error", "adversarial_error", "reason"}
+# read from the files that OpenFold3 writes next to its output, which the stand-in does not write
+FILE_DEPENDENT_KEYS = {"templates"}
 
 
 def _documented_keys() -> list[str]:
@@ -107,7 +109,8 @@ def test_every_documented_key_is_in_a_real_block(tmp_path, monkeypatch):
     unmatched = [
         name
         for name in documented
-        if name not in CONDITIONAL_KEYS and not fnmatch.filter(list(block), name)
+        if name not in CONDITIONAL_KEYS | FILE_DEPENDENT_KEYS
+        and not fnmatch.filter(list(block), name)
     ]
     assert not unmatched, f"documented but not in results['prediction']: {unmatched}"
     assert {
@@ -143,3 +146,25 @@ def test_the_keys_that_appear_only_on_failure_are_documented_and_real(tmp_path, 
     )  # the chains are not renamed back
     assert CONDITIONAL_KEYS <= set(block)
     assert CONDITIONAL_KEYS <= set(_documented_keys())
+
+
+def test_the_templates_key_is_documented_and_real_for_an_output_that_has_the_files(
+    tmp_path, monkeypatch
+):
+    import json
+
+    from tests.predictors import synth_of3
+    from tests.test_feat_c_support import complex_from
+
+    StubOpenFold(monkeypatch)
+    out = tmp_path / "out"
+    synth_of3.write_prediction(out, EXAMPLE_1YCR.stem, complex_from(EXAMPLE_1YCR))
+    chains = [
+        {"chain_ids": ["A"], "template_entry_chain_ids": ["receptor_A"]},
+        {"chain_ids": ["B"], "template_entry_chain_ids": []},
+    ]
+    query_set = {"queries": {EXAMPLE_1YCR.stem: {"chains": chains}}}
+    (out / "inference_query_set.json").write_text(json.dumps(query_set), encoding="utf-8")
+    block = _prediction_block(tmp_path / "run", prediction_dir=out)
+    assert FILE_DEPENDENT_KEYS <= set(block) and FILE_DEPENDENT_KEYS <= set(_documented_keys())
+    assert block["templates"]["A"]["used"] is True and block["templates"]["B"]["used"] is False
