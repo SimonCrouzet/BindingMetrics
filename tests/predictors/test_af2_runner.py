@@ -74,7 +74,9 @@ def pdb_text(chains):
 
 
 def write_pdb(path, chains, extra_lines=()):
-    path.write_text(pdb_text(chains).replace("END\n", "") + "\n".join(extra_lines) + "\nEND\n")
+    path.write_text(
+        pdb_text(chains).replace("END\n", "") + "\n".join(extra_lines) + "\nEND\n", encoding="utf-8"
+    )
     return path
 
 
