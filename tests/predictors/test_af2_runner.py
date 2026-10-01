@@ -792,7 +792,8 @@ class TestWithAStubExecutable:
             store.get_or_run(p53_request(runner), runner)
         reason = info.value.reason
         assert "ColabFold wrote 0 of 5 structures for job 'p53'" in reason
-        assert "Could not get MSA/templates for p53: ConnectionError" in reason
+        assert "It logged: Could not get MSA/templates for p53: ConnectionError" in reason
+        assert "predictions/log.txt" in reason and "/tmp" not in reason
         assert "2026-10-01" not in reason.split("\n")[0]  # the timestamp is dropped
         assert "use_msa_server=False" in reason  # the hint
 

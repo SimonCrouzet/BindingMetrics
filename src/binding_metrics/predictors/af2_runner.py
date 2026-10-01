@@ -787,11 +787,14 @@ class ColabFoldRunner(PredictionRunner):
         found = len(AlphaFold2Parser().list_samples(results, request.name))
         if found >= expected:
             return
-        message = f"ColabFold wrote {found} of {expected} structures for job '{request.name}'"
-        message += f" in {results}"
+        # The work directory is renamed when the store keeps the run, so a path would go stale.
+        message = (
+            f"ColabFold wrote {found} of {expected} structures for job '{request.name}'; its log "
+            f"is {_RESULT_DIRNAME}/log.txt below the work directory (outputs/ of a stored entry)"
+        )
         reason = _logged_failure(results)
         if reason:
-            message += f": {reason}"
+            message += f". It logged: {reason}"
             advice = _hint(reason)
             if advice:
                 message += f"\nHint: {advice}"
