@@ -2,7 +2,10 @@
 
 A predictor adapter (``binding_metrics.predictors.base.PredictionParser``) turns the files
 one model wrote for one sample into a ``PredictedPose``; the confidence metrics and the
-EvoBind check read only the record. The rules that every adapter converts to:
+EvoBind check read only the record. ``PredictedPose`` is the ``"predicted"`` kind of
+``binding_metrics.poses.Pose``: it has an ``id``, a ``content_hash()``, ``provenance`` and
+``native_scores()`` like the docked and experimental kinds. The rules that every adapter
+converts to:
 
 * pLDDT is per atom, in the atom order of ``structure_path``, on a 0-100 scale. A model that
   writes 0-1 values, or one value per residue or token, is rescaled and expanded by its
@@ -42,9 +45,12 @@ Extension points, for a model whose output has something the record has no field
   missing goes in ``reasons``.
 * ``structure_path`` may point to a gzip-compressed file (``.cif.gz``, ``.pdb.gz``);
   ``atoms()`` reads it.
+* facts that the caller knows and the model does not write (the run mode, whether the
+  receptor was forced as a template) go in ``provenance``, JSON scalars only; the ``id`` can be
+  given (``given_id``) when the caller has its own key.
 
-Importing this module imports numpy and the (lazy) structure loader only; biotite is
-imported when ``atoms()`` reads a structure.
+Importing this module imports numpy and ``binding_metrics.poses.pose`` (numpy and the
+standard library) only; biotite is imported when ``atoms()`` reads a structure.
 """
 
 from __future__ import annotations
@@ -55,11 +61,11 @@ from typing import Any, Mapping, Optional
 
 import numpy as np
 
-from binding_metrics.poses.pose import (  # noqa: F401 - re-exported: they lived here first
+from binding_metrics.poses.pose import (  # noqa: F401 - check_chain_map lived here first
+    Pose,
     _chain_map_problems,
     _is_number,
-    _read_structure,
-    _rename_chains,
+    _provenance_problems,
     check_chain_map,
 )
 
@@ -205,7 +211,7 @@ class TokenLayout:
 
 
 @dataclass(eq=False)
-class PredictedPose:
+class PredictedPose(Pose):
     """The parsed confidence outputs and the structure path of one prediction sample.
 
     ``model`` and ``name`` are the only positional arguments; every other field is
@@ -244,7 +250,15 @@ class PredictedPose:
             ``pde``); ``PredictionParser.load`` copies them from the adapter. A field named
             here is expected to stay NaN, None or empty, and ``summarize_prediction`` gives
             no reason for it: a reason means a value that the model writes was missing.
+        provenance: Free facts about the pose that the model does not write (the request
+            ``mode``, ``receptor_forced``), a dictionary of JSON scalars.
+        given_id: The ``id`` the caller chose; None means ``<model>:<name>:s<seed_index>:<sample>``.
+
+    ``kind`` is ``"predicted"``. ``id``, ``atoms()`` and ``content_hash()`` come from ``Pose``;
+    ``native_scores()`` is defined below.
     """
+
+    kind = "predicted"
 
     model: str
     name: str
@@ -272,6 +286,8 @@ class PredictedPose:
     reasons: list[str] = field(default_factory=list)
     files: Optional[PredictionFiles] = None
     not_provided: frozenset[str] = frozenset()
+    provenance: dict[str, Any] = field(default_factory=dict)
+    given_id: Optional[str] = None
     _atoms_cache: Optional[tuple[Any, Any]] = field(default=None, init=False, repr=False)
 
     def __post_init__(self):
@@ -283,28 +299,30 @@ class PredictedPose:
         """Number of atoms with a pLDDT value; 0 when there is no per-atom pLDDT."""
         return 0 if self.plddt_per_atom is None else int(len(self.plddt_per_atom))
 
-    def atoms(self):
-        """The predicted structure as a biotite ``AtomArray``, chain IDs renamed by ``chain_map``.
+    def native_scores(self) -> dict[str, Optional[float]]:
+        """What the model reported, flat: the scalars, then the per-chain values.
 
-        Read once and cached (until ``structure_path`` or ``chain_map`` changes); treat the
-        result as read-only and copy it before modifying. Model 1 is read, with the author
-        chain and residue IDs. A gzip-compressed file is decompressed first.
-
-        Raises:
-            ValueError: If there is no structure file, or ``chain_map`` names a chain the
-                structure does not have or would merge two chains into one.
-            ImportError: If biotite is not installed.
+        Keys are ``avg_plddt``, ``ptm``, ``iptm``, ``gpde``, ``ranking_score``, ``has_clash``
+        and ``disorder``, then ``chain_ptm.<chain>`` and ``chain_pair_iptm.<pair key>`` in the
+        order of the dictionaries (chain IDs and pair keys as the adapter wrote them, before
+        ``chain_map``). NaN, the record's "not provided", is None here. The arrays
+        (``plddt_per_atom``, ``pae``, ``pde``) are not scalars and are not included; the model's
+        own ranking score is, and its name is ``ranking_score_name``. A new dictionary.
         """
-        if self.structure_path is None:
-            raise ValueError(
-                f"{self.model} prediction '{self.name}' has no structure file; "
-                + ("; ".join(self.reasons) or "the adapter found none")
-            )
-        key = (str(self.structure_path), tuple(sorted(self.chain_map.items())))
-        if self._atoms_cache is None or self._atoms_cache[0] != key:
-            atoms = _read_structure(self.structure_path)
-            self._atoms_cache = (key, _rename_chains(atoms, self.chain_map))
-        return self._atoms_cache[1]
+        scores = {name: _none_for_nan(getattr(self, name)) for name in _NATIVE_SCALARS}
+        for chain, value in self.chain_ptm.items():
+            scores[f"chain_ptm.{chain}"] = _none_for_nan(value)
+        for pair, value in self.chain_pair_iptm.items():
+            scores[f"chain_pair_iptm.{pair}"] = _none_for_nan(value)
+        return scores
+
+    def _default_id(self) -> str:
+        return f"{self.model}:{self.name}:s{self.seed_index}:{self.sample}"
+
+    def _no_structure_message(self) -> str:
+        return f"{self.model} prediction '{self.name}' has no structure file; " + (
+            "; ".join(self.reasons) or "the adapter found none"
+        )
 
     def validate(self, *, check_structure: bool = False) -> None:
         """Raise ``ValueError`` listing every violation of the record rules.
@@ -360,6 +378,9 @@ class PredictedPose:
 
         problems += self._array_problems()
         problems += _chain_map_problems(self.chain_map)
+        problems += _provenance_problems(self.provenance)
+        if self.given_id is not None and not (isinstance(self.given_id, str) and self.given_id):
+            problems.append("given_id must be a non-empty string or None")
         problems += _not_provided_problems(self.not_provided)
         for label in sorted(self.not_provided & set(_PROVIDABLE)):
             if not _is_empty(getattr(self, label)):
@@ -458,6 +479,25 @@ def _not_provided_problems(names) -> list[str]:
     if unknown:
         return [f"not_provided names {unknown}, which are not fields a model may leave out"]
     return []
+
+
+#: The scalar fields that ``native_scores`` reports, in this order.
+_NATIVE_SCALARS = (
+    "avg_plddt",
+    "ptm",
+    "iptm",
+    "gpde",
+    "ranking_score",
+    "has_clash",
+    "disorder",
+)
+
+
+def _none_for_nan(value: Any) -> Optional[float]:
+    """A float, or None for the record's "not provided" (NaN or None)."""
+    if value is None or (_is_number(value) and np.isnan(value)):
+        return None
+    return float(value)
 
 
 def _is_empty(value: Any) -> bool:
