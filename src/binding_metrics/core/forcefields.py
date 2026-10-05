@@ -1,9 +1,15 @@
-"""Force field configurations for MD simulations."""
+"""Force field configurations for MD simulations.
+
+The configuration dataclasses and ``get_forcefield_config`` need nothing beyond
+the standard library. OpenMM is imported when ``get_forcefield`` builds a
+``ForceField``, so this module imports on installs without OpenMM.
+"""
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from openmm.app import ForceField
+if TYPE_CHECKING:
+    from openmm.app import ForceField
 
 
 @dataclass(frozen=True)
@@ -43,7 +49,16 @@ FORCEFIELD_CONFIGS: dict[str, ForceFieldConfig] = {
 }
 
 
-def get_forcefield(name: Literal["amber", "charmm"] = "amber") -> ForceField:
+def __getattr__(name: str):
+    """Resolve ``ForceField``, which this module used to import at load time (PEP 562)."""
+    if name == "ForceField":
+        from openmm.app import ForceField
+
+        return ForceField
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def get_forcefield(name: Literal["amber", "charmm"] = "amber") -> "ForceField":
     """Get an OpenMM ForceField object for the specified force field.
 
     Args:
@@ -54,10 +69,22 @@ def get_forcefield(name: Literal["amber", "charmm"] = "amber") -> ForceField:
 
     Raises:
         ValueError: If force field name is not recognized
+        ModuleNotFoundError: If OpenMM cannot be imported (an ImportError subclass);
+            the message names the extra to install
     """
     if name not in FORCEFIELD_CONFIGS:
         valid = ", ".join(FORCEFIELD_CONFIGS.keys())
         raise ValueError(f"Unknown force field '{name}'. Valid options: {valid}")
+
+    try:
+        from openmm.app import ForceField
+    except ImportError as exc:
+        raise ModuleNotFoundError(
+            "get_forcefield needs OpenMM, which could not be imported. "
+            "Install it with `pip install binding-metrics[simulation]`, "
+            "or use environment.yml for a GPU build.",
+            name="openmm",
+        ) from exc
 
     config = FORCEFIELD_CONFIGS[name]
     return ForceField(config.protein_ff, config.water_model)

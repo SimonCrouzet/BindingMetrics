@@ -1,16 +1,43 @@
 """Structure loading and manipulation utilities."""
 
+import functools
+import logging
+import re
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from openmm import app
-from openmm.app import PDBFile
+from binding_metrics.core.residues import (
+    PHOSPHO_RESIDUES,
+    PROTEIN_RESIDUES,
+    WATER_NAMES_STRIP_HETEROGENS,
+)
+from binding_metrics.utils import add_to_report, backfill_auth_columns, extend_report
 
-from binding_metrics.utils import backfill_auth_columns
+if TYPE_CHECKING:
+    from openmm.app import PDBFile
+
+logger = logging.getLogger(__name__)
 
 
-def load_complex(pdb_path: str | Path) -> PDBFile:
+def __getattr__(name: str):
+    """Resolve ``app`` and ``PDBFile``, which this module imported at load time (PEP 562).
+
+    OpenMM is imported inside the functions that need it, so that chain detection
+    and CIF writing work on an install without the ``simulation`` extra.
+    """
+    if name == "app":
+        from openmm import app
+
+        return app
+    if name == "PDBFile":
+        from openmm.app import PDBFile
+
+        return PDBFile
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def load_complex(pdb_path: str | Path) -> "PDBFile":
     """Load a PDB file containing a molecular complex.
 
     Args:
@@ -23,6 +50,8 @@ def load_complex(pdb_path: str | Path) -> PDBFile:
         FileNotFoundError: If the PDB file doesn't exist
         ValueError: If the file cannot be parsed
     """
+    from openmm.app import PDBFile
+
     pdb_path = Path(pdb_path)
     if not pdb_path.exists():
         raise FileNotFoundError(f"PDB file not found: {pdb_path}")
@@ -46,6 +75,8 @@ def get_chain_atom_indices(
     Returns:
         List of atom indices (0-based) belonging to the specified chains
     """
+    from openmm.app import PDBFile
+
     pdb = PDBFile(str(pdb_path))
     topology = pdb.topology
 
@@ -57,10 +88,137 @@ def get_chain_atom_indices(
     return indices
 
 
+#: ``_struct_conn.conn_type_id`` values that OpenMM's PDBxFile turns into bonds.
+_STRUCT_CONN_BOND_TYPES = ("covale", "disulf", "modres")
+
+
+def _restore_struct_conn_bonds(path: Path, topology) -> int:
+    """Add the ``_struct_conn`` bonds that ``PDBxFile`` failed to resolve.
+
+    ``PDBxFile`` keys every atom by ``auth_seq_id`` (and, in most files, by
+    ``auth_asym_id``) but looks the two partners of a ``_struct_conn`` row up by
+    ``ptnr*_label_seq_id`` and ``ptnr*_label_asym_id``. The numberings differ
+    whenever a chain does not start at residue 1 (the 1QJB peptide has label
+    numbers 4 and 5 for author numbers 6 and 7), so the row matches nothing and
+    the bond is dropped without a message. That is fatal for a link into a
+    non-standard residue such as phosphoserine: ``createStandardBonds`` only
+    knows the standard residue types, so the HIS-SEP peptide bond exists nowhere
+    else and the force field later reports "bonds are different".
+
+    Partners are matched through ``_atom_site.id``, which OpenMM keeps as
+    ``Atom.id``. The author columns of ``_struct_conn`` are used when present
+    (wwPDB files always have them) and the label columns otherwise. A partner
+    that matches no atom, or more than one, is skipped.
+
+    Returns the number of bonds added.
+    """
+    try:
+        import gemmi
+    except ImportError:
+        logger.info(
+            "gemmi is not installed: covalent links of %s whose label and author residue "
+            "numbers differ are not restored. Install with: pip install binding-metrics[structure]",
+            path.name,
+        )
+        return 0
+    try:
+        block = gemmi.cif.read(str(path))[0]
+    except (RuntimeError, ValueError, IndexError):
+        return 0  # PDBxFile has already parsed the file; nothing more to add here
+
+    for scheme in ("auth", "label"):
+        # Only the author numbering can carry an insertion code.
+        conn_ins_cols = ["?pdbx_ptnr1_PDB_ins_code", "?pdbx_ptnr2_PDB_ins_code"]
+        site_ins_cols = ["?pdbx_PDB_ins_code"]
+        if scheme == "label":
+            conn_ins_cols = site_ins_cols = []
+        partner_cols = [f"ptnr{n}_{scheme}_{col}" for n in "12" for col in ("asym_id", "seq_id")]
+        conn = block.find(
+            "_struct_conn.",
+            ["conn_type_id", *partner_cols, "ptnr1_label_atom_id", "ptnr2_label_atom_id"]
+            + conn_ins_cols,
+        )
+        site = block.find(
+            "_atom_site.",
+            ["id", f"{scheme}_asym_id", f"{scheme}_seq_id", "label_atom_id"] + site_ins_cols,
+        )
+        if conn and site:
+            break
+    else:
+        return 0
+
+    def _ins_code(table, row, col: int) -> str:
+        """Insertion code, or "" when the column is absent or null."""
+        if col >= len(row) or not table.has_column(col) or row.str(col) in ("?", "."):
+            return ""
+        return row.str(col)
+
+    atom_by_id = {str(atom.id): atom for atom in topology.atoms()}
+    atoms_by_key: dict[tuple, list] = {}
+    for row in site:
+        atom = atom_by_id.get(row.str(0))
+        if atom is not None:  # alternate locations and later models have no Atom
+            key = (row.str(1), row.str(2), _ins_code(site, row, 4), row.str(3))
+            atoms_by_key.setdefault(key, []).append(atom)
+
+    existing = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
+    added = 0
+    for row in conn:
+        if row.str(0)[:6] not in _STRUCT_CONN_BOND_TYPES:
+            continue
+        partners = []
+        for n, ins_col in ((0, 7), (1, 8)):
+            key = (
+                row.str(1 + 2 * n),
+                row.str(2 + 2 * n),
+                _ins_code(conn, row, ins_col),
+                row.str(5 + n),
+            )
+            partners.append(atoms_by_key.get(key, []))
+        if len(partners[0]) != 1 or len(partners[1]) != 1:
+            continue  # absent, or ambiguous (label numbering of a branched entity)
+        atom1, atom2 = partners[0][0], partners[1][0]
+        pair = frozenset((atom1.index, atom2.index))
+        if atom1.index != atom2.index and pair not in existing:
+            topology.addBond(atom1, atom2)
+            existing.add(pair)
+            added += 1
+    return added
+
+
+def _bond_bare_residues(topology, positions) -> int:
+    """Bond, by covalent radii, every multi-atom residue that has no bond at all.
+
+    A raw mmCIF lists no bond inside a non-standard residue (the wwPDB leaves them
+    to the Chemical Component Dictionary), and ``createStandardBonds`` knows only
+    the standard residue types, so phosphoserine and the like load as a cloud of
+    unbonded atoms. A PDB file carries them as CONECT records. Without the bonds
+    the force field cannot match the residue ("bonds are different"). The peptide
+    chain gets this repair again in ``patch_cyclic_topology``; no other chain does.
+
+    Returns the number of bonds added.
+    """
+    from binding_metrics.core.cyclic import reconstruct_intraresidue_bonds
+
+    bonded = {b.atom1.residue.index for b in topology.bonds() if b.atom1.residue is b.atom2.residue}
+    added = 0
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        if any(res.index not in bonded and sum(1 for _ in res.atoms()) > 1 for res in residues):
+            added += reconstruct_intraresidue_bonds(
+                topology, positions, chain.id, residues=residues
+            )
+    return added
+
+
 def load_structure(path: str | Path) -> tuple:
     """Load a structure file (PDB or CIF) and return (topology, positions).
 
-    Supports .pdb, .cif, and .mmcif formats.
+    Supports .pdb, .cif, and .mmcif formats. For a CIF, the ``covale``, ``disulf``
+    and ``modres`` rows of ``_struct_conn`` are bonded even when the label and
+    author numbering of the file differ (with gemmi installed), and a residue
+    that the file gives no bond at all (phosphoserine, an NCAA) is bonded by
+    covalent radii, as a PDB file's CONECT records would do.
 
     Args:
         path: Path to the structure file
@@ -72,6 +230,8 @@ def load_structure(path: str | Path) -> tuple:
         FileNotFoundError: If the file doesn't exist
         ValueError: If the format is unsupported or parsing fails
     """
+    from openmm.app import PDBFile, PDBxFile
+
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Structure file not found: {path}")
@@ -79,9 +239,11 @@ def load_structure(path: str | Path) -> tuple:
     suffix = path.suffix.lower()
     try:
         if suffix in (".cif", ".mmcif"):
-            from openmm.app import PDBxFile
-
             struct = PDBxFile(str(path))
+            n_restored = _restore_struct_conn_bonds(path, struct.topology)
+            if n_restored:
+                logger.debug("%s: restored %d _struct_conn bond(s)", path.name, n_restored)
+            _bond_bare_residues(struct.topology, struct.positions)
         elif suffix == ".pdb":
             struct = PDBFile(str(path))
         else:
@@ -97,7 +259,11 @@ def load_structure(path: str | Path) -> tuple:
 def detect_chains(topology) -> tuple[Optional[str], Optional[str]]:
     """Auto-detect ligand (peptide) and receptor chain IDs from topology.
 
-    Identifies protein chains by counting standard amino acid residues.
+    Identifies protein chains by counting amino-acid residues: the standard ones and
+    their AMBER variants, D-amino acids, phosphorylated residues and, with biotite
+    installed, every peptide-linking component of the Chemical Component Dictionary
+    (the definition of ``biotite.structure.filter_amino_acids``, which the interface
+    metrics use). A chain of D-residues is a protein chain.
     Returns the smallest chain as ligand and largest as receptor.
     If only one chain exists, returns it as ligand and None as receptor.
 
@@ -110,40 +276,7 @@ def detect_chains(topology) -> tuple[Optional[str], Optional[str]]:
     """
     # Amino acids only — exclude water (HOH) and nucleic acids which are also
     # in app.PDBFile._standardResidues and would cause water chains to be ranked.
-    amino_acids = {
-        "ALA",
-        "ARG",
-        "ASN",
-        "ASP",
-        "CYS",
-        "GLN",
-        "GLU",
-        "GLY",
-        "HIS",
-        "ILE",
-        "LEU",
-        "LYS",
-        "MET",
-        "PHE",
-        "PRO",
-        "SER",
-        "THR",
-        "TRP",
-        "TYR",
-        "VAL",
-        "CYX",
-        "HID",
-        "HIE",
-        "HIP",
-        "ASPL",
-        "GLUL",
-        "LYSL",
-        "NMG",
-        "NMA",
-        "MVA",
-        "MLE",
-    }
-
+    amino_acids = _amino_acid_names()
     chain_sizes = []
     for chain in topology.chains():
         n_protein = sum(1 for r in chain.residues() if r.name in amino_acids)
@@ -177,15 +310,29 @@ def detect_chains_from_file(
         path: Path to CIF or PDB file.
         peptide_chain: Explicit peptide chain ID, or None to auto-detect.
         receptor_chain: Explicit receptor chain ID, or None to auto-detect.
-        verbose: If True, print detected chain info to stdout.
+        verbose: If True, log the detected chains at INFO level.
 
     Returns:
         Dict with keys:
-            peptide_chain (str): resolved peptide chain ID
-            receptor_chain (str): resolved receptor chain ID
+            peptide_chain (str): resolved peptide chain ID (author ID,
+                ``auth_asym_id`` in a CIF)
+            receptor_chain (str): resolved receptor chain ID (author ID); None
+                when the file has a single protein chain
+            peptide_chain_label (str): the peptide chain ID as OpenMM sees it, which
+                OpenMM-based steps need. OpenMM's PDBxFile names the chains by
+                ``label_asym_id`` when the file has more distinct label IDs than
+                author IDs (waters and ligands each get their own label ID), and
+                by the author ID otherwise. It equals ``peptide_chain`` for PDB
+                files, for CIFs whose author and label IDs agree, for CIFs with
+                as many author IDs as label IDs, and when the mapping cannot be
+                built (a warning is logged then).
+            receptor_chain_label (str): same for the receptor chain
             peptide_n_residues (int): number of residues in peptide chain
             receptor_n_residues (int): number of residues in receptor chain
             all_chains (list[dict]): all protein chains with id and n_residues
+
+        A chain ID passed in ``peptide_chain`` or ``receptor_chain`` is returned
+        as given, even when it is not in the file; its residue count is then None.
     """
     import biotite.structure as struc
     import biotite.structure.io.pdb as pdb_io
@@ -195,8 +342,9 @@ def detect_chains_from_file(
     suffix = path.suffix.lower()
 
     # Build auth→label chain ID mapping for CIF files.
-    # biotite uses auth_asym_id by default; OpenMM uses label_asym_id.
-    # When they differ, OpenMM-based steps need the label ID.
+    # biotite uses auth_asym_id by default; OpenMM uses label_asym_id when the file
+    # has more label IDs than author IDs, and auth_asym_id otherwise. OpenMM-based
+    # steps need the ID OpenMM used.
     # We restrict the mapping to CA atoms so that ligand/water label chains
     # (which share the same auth chain as the protein) don't overwrite the
     # protein label.
@@ -215,8 +363,20 @@ def detect_chains_from_file(
                     a_str, l_str = str(auth), str(label)
                     if a_str not in auth_to_label:  # first occurrence wins
                         auth_to_label[a_str] = l_str
-        except Exception:
-            pass  # not all CIF files have both columns; mapping stays empty
+            if len(set(label_ids)) <= len(set(auth_ids)):
+                # OpenMM's PDBxFile keeps the author IDs unless there are strictly
+                # more label IDs; a label ID would then name another chain.
+                auth_to_label = {}
+        except (KeyError, ValueError) as exc:
+            # Without the label/auth pair the mapping stays empty, and the label
+            # chain IDs handed to OpenMM-based steps fall back to the author IDs.
+            logger.warning(
+                "%s: cannot map author chain IDs to label chain IDs (%s: %s); "
+                "assuming they are identical",
+                path.name,
+                type(exc).__name__,
+                exc,
+            )
     else:
         f = pdb_io.PDBFile.read(str(path))
         atoms = pdb_io.get_structure(f, model=1)
@@ -288,14 +448,14 @@ def detect_chains_from_file(
     )
 
     if verbose:
-        print(f"  Chain detection ({path.name}):")
+        logger.info("  Chain detection (%s):", path.name)
         for c in chain_info:
             tag = ""
             if c["id"] == peptide_chain:
                 tag = "  ← peptide" + (" [auto]" if pep_auto else "")
             elif c["id"] == receptor_chain:
                 tag = "  ← receptor" + (" [auto]" if rec_auto else "")
-            print(f"    chain {c['id']}: {c['n_residues']} residues{tag}")
+            logger.info("    chain %s: %s residues%s", c["id"], c["n_residues"], tag)
 
     pep_str = str(peptide_chain) if peptide_chain else None
     rec_str = str(receptor_chain) if receptor_chain else None
@@ -318,8 +478,13 @@ def strip_heterogens(
     peptide_chain: Optional[str],
     receptor_chain: Optional[str],
     warn_cutoff_ang: float = 8.0,
+    report: Optional[dict] = None,
 ):
     """Remove non-protein residues from topology, warning if close to the interface.
+
+    Amino-acid residues and the phosphorylated residues SEP, TPO and PTR count as
+    protein and are kept in every chain, so an unselected chain is not cut where it
+    carries a phosphoserine.
 
     Args:
         topology: OpenMM Topology (post-PDBFixer).
@@ -328,45 +493,19 @@ def strip_heterogens(
         receptor_chain: Receptor chain ID to preserve.
         warn_cutoff_ang: Distance threshold in Å; heterogens within this distance
             trigger a warning before removal.
+        report: Optional dict filled in place with what was removed. Lists and
+            counts accumulate when one dict is passed to several calls. Keys:
+
+            * ``removed_heterogens`` (list[str]): ``"NAME (chain X)"`` for each
+              removed non-water heterogen (ligands, ions, glycans).
+            * ``n_removed_waters`` (int): water molecules removed.
+
+            Behaviour is identical when ``report`` is None.
 
     Returns:
         Tuple (topology, positions) with heterogens removed.
     """
     import numpy as np
-
-    amino_acids = {
-        "ALA",
-        "ARG",
-        "ASN",
-        "ASP",
-        "CYS",
-        "GLN",
-        "GLU",
-        "GLY",
-        "HIS",
-        "ILE",
-        "LEU",
-        "LYS",
-        "MET",
-        "PHE",
-        "PRO",
-        "SER",
-        "THR",
-        "TRP",
-        "TYR",
-        "VAL",
-        "CYX",
-        "HID",
-        "HIE",
-        "HIP",
-        "ASPL",
-        "GLUL",
-        "LYSL",
-        "NMG",
-        "NMA",
-        "MVA",
-        "MLE",
-    }
 
     protein_chain_ids = {c for c in (peptide_chain, receptor_chain) if c}
     protein_pos = (
@@ -380,18 +519,20 @@ def strip_heterogens(
         * 10
     )  # nm → Å
 
-    _water_names = {"HOH", "WAT", "TIP", "TIP3", "SOL"}
-
     atoms_to_remove = []
+    removed_heterogens: list[str] = []
+    n_removed_waters = 0
     for res in topology.residues():
         if res.chain.id in protein_chain_ids:
             continue
-        if res.name in amino_acids:
-            continue
+        if res.name in PROTEIN_RESIDUES or res.name in PHOSPHO_RESIDUES:
+            continue  # peptide-linked: deleting it would cut the chain in two
         # Water: always remove silently
-        if res.name in _water_names:
+        if res.name in WATER_NAMES_STRIP_HETEROGENS:
             atoms_to_remove.extend(res.atoms())
+            n_removed_waters += 1
             continue
+        removed_heterogens.append(f"{res.name} (chain {res.chain.id})")
         # Other heterogens: warn if close to protein (may be a cofactor/ion)
         res_pos = (
             np.array(
@@ -406,27 +547,128 @@ def strip_heterogens(
             dists = np.linalg.norm(res_pos[:, None, :] - protein_pos[None, :, :], axis=-1)
             min_dist = float(dists.min())
             if min_dist < warn_cutoff_ang:
-                print(
-                    f"  Warning: removing heterogen {res.name}{res.id} "
-                    f"(chain {res.chain.id}) which is {min_dist:.1f} Å from "
-                    f"the protein — it may be a functional cofactor or ion. "
-                    f"Parametrize it via custom_bond_handler to keep it."
+                logger.warning(
+                    "  Warning: removing heterogen %s%s "
+                    "(chain %s) which is %.1f Å from "
+                    "the protein — it may be a functional cofactor or ion. "
+                    "Parametrize it via custom_bond_handler to keep it.",
+                    res.name,
+                    res.id,
+                    res.chain.id,
+                    min_dist,
                 )
             else:
-                print(
-                    f"  Removing distant heterogen {res.name}{res.id} "
-                    f"(chain {res.chain.id}, {min_dist:.1f} Å from protein)"
+                logger.info(
+                    "  Removing distant heterogen %s%s (chain %s, %.1f Å from protein)",
+                    res.name,
+                    res.id,
+                    res.chain.id,
+                    min_dist,
                 )
         else:
-            print(f"  Removing heterogen {res.name}{res.id} (chain {res.chain.id})")
+            logger.info("  Removing heterogen %s%s (chain %s)", res.name, res.id, res.chain.id)
         atoms_to_remove.extend(res.atoms())
 
+    if report is not None:
+        extend_report(report, "removed_heterogens", removed_heterogens)
+        add_to_report(report, "n_removed_waters", n_removed_waters)
+
     if atoms_to_remove:
+        from openmm import app
+
         modeller = app.Modeller(topology, positions)
         modeller.delete(atoms_to_remove)
         topology, positions = modeller.topology, modeller.positions
 
     return topology, positions
+
+
+@functools.lru_cache(maxsize=1)
+def _amino_acid_names() -> frozenset:
+    """Residue names that count as amino acids when a chain is called a protein chain.
+
+    The package's own protein set (standard residues, AMBER variants, the lactam and
+    N-methyl templates), the phosphorylated residues, the D-amino acids of
+    ``core.nonstandard.D_AA_MAP`` and, with biotite installed, every peptide-linking
+    component of the Chemical Component Dictionary (the set behind
+    ``biotite.structure.filter_amino_acids``, which the interface metrics use).
+    """
+    from binding_metrics.core.nonstandard import D_AA_MAP
+
+    names = set(PROTEIN_RESIDUES) | set(PHOSPHO_RESIDUES) | set(D_AA_MAP)
+    try:
+        from biotite.structure.info import amino_acid_names
+    except ImportError:
+        pass  # the sets above still cover the residues the package parameterises
+    else:
+        names |= set(amino_acid_names())
+    return frozenset(names)
+
+
+def drop_other_protein_chains(
+    topology,
+    positions,
+    peptide_chain: Optional[str],
+    receptor_chain: Optional[str],
+    report: Optional[dict] = None,
+):
+    """Delete every protein chain that is neither the peptide nor the receptor.
+
+    The relaxation and the interaction energy describe the peptide-receptor pair. A
+    third protein chain (a second copy of the complex in the asymmetric unit, a
+    crystallisation partner) adds its own energy to the complex but not to the
+    isolated components, so E_int would mix the pair with the bystander, and its caps,
+    phosphorylated residues and lactam bridges are not patched, so the force field
+    often cannot build it. Call after :func:`strip_heterogens`. Nothing is removed
+    unless both chain IDs are given and both are in the topology. A logged warning
+    names each removed chain: a receptor made of several chains (a Fab) has to be
+    reduced to the chain that carries the interface before it goes in.
+
+    Args:
+        topology: OpenMM Topology.
+        positions: Atom positions (OpenMM Quantity, nm).
+        peptide_chain: Peptide chain ID to keep.
+        receptor_chain: Receptor chain ID to keep.
+        report: Optional dict; ``dropped_protein_chains`` (list[str]) receives the
+            IDs of the removed chains, an empty list when none was removed. Lists
+            accumulate when one dict is passed to several calls.
+
+    Returns:
+        Tuple (topology, positions) without the other protein chains.
+    """
+    kept = {peptide_chain, receptor_chain}
+    present = {chain.id for chain in topology.chains()}
+    if not (peptide_chain and receptor_chain) or not kept <= present:
+        if report is not None:
+            extend_report(report, "dropped_protein_chains", [])
+        return topology, positions
+
+    amino_acids = _amino_acid_names()
+    atoms_to_remove = []
+    dropped: list[str] = []
+    for chain in topology.chains():
+        if chain.id in kept or not any(res.name in amino_acids for res in chain.residues()):
+            continue
+        dropped.append(chain.id)
+        atoms_to_remove.extend(atom for res in chain.residues() for atom in res.atoms())
+
+    if report is not None:
+        extend_report(report, "dropped_protein_chains", dropped)
+    if not dropped:
+        return topology, positions
+
+    logger.warning(
+        "  Removing protein chain(s) %s: neither the peptide (%s) nor the receptor (%s). "
+        "The energy and the relaxation describe the peptide-receptor pair only.",
+        ", ".join(dropped),
+        peptide_chain,
+        receptor_chain,
+    )
+    from openmm import app
+
+    modeller = app.Modeller(topology, positions)
+    modeller.delete(atoms_to_remove)
+    return modeller.topology, modeller.positions
 
 
 def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
@@ -436,12 +678,10 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
     (head-to-tail amide, lactam, etc.) are silently omitted, so PDBxFile
     cannot round-trip them.  This function reads the written CIF back with
     gemmi and appends the missing covale rows.
-    """
-    try:
-        import gemmi
-    except ImportError:
-        return
 
+    Without gemmi the bonds cannot be written, so a saved cyclic peptide comes
+    back linear on reload; that is logged as a warning when such bonds exist.
+    """
     custom_bonds = []
     for bond in topology.bonds():
         a1, a2 = bond.atom1, bond.atom2
@@ -455,6 +695,19 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
         custom_bonds.append((a1, a2))
 
     if not custom_bonds:
+        return
+
+    try:
+        import gemmi
+    except ImportError:
+        logger.warning(
+            "gemmi is not installed: the %d ring-closure or other non-sequential "
+            "bond(s) of %s cannot be written to _struct_conn, so the file reloads "
+            "without them (a cyclic peptide comes back linear). Install with: "
+            "pip install binding-metrics[structure]",
+            len(custom_bonds),
+            cif_path,
+        )
         return
 
     doc = gemmi.cif.read(str(cif_path))
@@ -559,13 +812,30 @@ def _rename_internal_residues_to_standard(cif_path: Path) -> None:
     """
     import re
 
-    content = cif_path.read_text()
+    content = cif_path.read_text(encoding="utf-8")
     new_content = content
     for internal, standard in _FF_INTERNAL_RESIDUE_RENAMES:
         if internal in new_content:
             new_content = re.sub(rf"\b{internal}\b", standard, new_content)
     if new_content != content:
-        cif_path.write_text(new_content)
+        cif_path.write_text(new_content, encoding="utf-8")
+
+
+def _ids_fit_cif(topology) -> bool:
+    """True when every chain ID and residue number can be written to mmCIF as they are.
+
+    ``PDBxFile.writeFile(keepIds=True)`` prints them unquoted, so a blank or
+    spaced chain ID (a PDB file without chain IDs) or a non-numeric residue
+    number would corrupt the columns. Chain IDs must also be unique: a PDB file
+    puts the waters of chain A in a second chain called A, and once the two share
+    an ID the metric code cannot tell them apart.
+    """
+    chain_ids = [chain.id for chain in topology.chains()]
+    return (
+        len(set(chain_ids)) == len(chain_ids)
+        and all(re.fullmatch(r"[A-Za-z0-9]+", cid) for cid in chain_ids)
+        and all(re.fullmatch(r"-?[0-9]+", str(res.id)) for res in topology.residues())
+    )
 
 
 def save_cif(
@@ -587,7 +857,8 @@ def save_cif(
     a label→auth mapping and a positional (auth_chain, res_idx) → auth_seq_id
     table from the source CIF.
 
-    Falls back to raw OpenMM output if gemmi is not available or source is None.
+    Falls back to raw OpenMM output if gemmi is not available (logged as a
+    warning) or source is None.
 
     Args:
         topology: OpenMM Topology object
@@ -601,8 +872,11 @@ def save_cif(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if source_cif_path is None:
-        with open(output_path, "w") as f:
-            PDBxFile.writeFile(topology, positions, f)
+        # Without a source CIF to read the caller's IDs from, the topology's own
+        # chain IDs and residue numbers are the only ones there are. PDBxFile
+        # would replace them with A, B, C... and 1, 2, 3...
+        with open(output_path, "w", encoding="utf-8") as f:
+            PDBxFile.writeFile(topology, positions, f, keepIds=_ids_fit_cif(topology))
         # PDBxFile only writes disulfide bonds to _struct_conn; patch in any
         # other non-sequential intra-chain covalent bonds (e.g. head-to-tail).
         _patch_nonstd_bonds_in_cif(output_path, topology)
@@ -612,14 +886,23 @@ def save_cif(
     try:
         import gemmi
     except ImportError:
-        with open(output_path, "w") as f:
+        logger.warning(
+            "gemmi is not installed: %s keeps OpenMM's sequential chain IDs and "
+            "1-based residue numbers instead of those of %s, and non-sequential "
+            "bonds are not recorded. Install with: pip install binding-metrics[structure]",
+            output_path,
+            source_cif_path,
+        )
+        with open(output_path, "w", encoding="utf-8") as f:
             PDBxFile.writeFile(topology, positions, f)
         _rename_internal_residues_to_standard(output_path)
         return
 
     # Write fresh OpenMM CIF — correct atoms and H, but with label chain IDs
     # and 1-based sequential auth_seq_id.
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".cif", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".cif", delete=False, encoding="utf-8"
+    ) as tmp:
         tmp_path = Path(tmp.name)
         PDBxFile.writeFile(topology, positions, tmp)
 
@@ -642,21 +925,35 @@ def save_cif(
         #   original chain = label_to_auth[ topology.chains()[i].id ]
         #
         # And residue numbers are restored by positional index within that auth chain.
+        #
+        # PDBxFile names the chains by label_asym_id only when the file has more
+        # label IDs than author IDs (waters and ligands each get a label ID);
+        # otherwise the topology already carries the author IDs and the map stays
+        # empty: a label ID could name another chain's author ID.
 
         # source label → auth
         label_to_auth: dict[str, str] = {}
+        source_auth_ids: set[str] = set()
         # (source_auth_chain, heavy-atom res_idx) → original auth_seq_id
         seq_map: dict[tuple, str] = {}
-        try:
-            src_table = source_block.find(
-                "_atom_site.",
-                ["label_asym_id", "auth_asym_id", "auth_seq_id", "auth_atom_id"],
+        source_columns = ["label_asym_id", "auth_asym_id", "auth_seq_id", "auth_atom_id"]
+        absent = [c for c in source_columns if not source_block.find_loop(f"_atom_site.{c}")]
+        if absent:
+            logger.warning(
+                "%s lacks _atom_site column(s) %s: chain IDs and residue numbers of %s "
+                "cannot be restored from it",
+                Path(source_cif_path).name,
+                ", ".join(absent),
+                output_path.name,
             )
+        try:
+            src_table = source_block.find("_atom_site.", source_columns)
             s_prev_auth = ""
             s_prev_seq = ""
             s_res_idx = -1
             for row in src_table:
                 label, auth, seq, atom = row[0], row[1], row[2], row[3]
+                source_auth_ids.add(auth)
                 if label not in label_to_auth:
                     label_to_auth[label] = auth
                 if not str(atom).startswith("H"):
@@ -668,8 +965,18 @@ def save_cif(
                     key = (auth, s_res_idx)
                     if key not in seq_map:
                         seq_map[key] = seq
-        except Exception:
-            pass
+        except (RuntimeError, IndexError, ValueError) as exc:
+            logger.warning(
+                "cannot read the source residue numbering of %s (%s: %s); residue numbers "
+                "of %s are not restored",
+                Path(source_cif_path).name,
+                type(exc).__name__,
+                exc,
+                output_path.name,
+            )
+
+        if len(label_to_auth) <= len(source_auth_ids):
+            label_to_auth = {}
 
         # output sequential letter → original auth chain ID
         topo_chain_ids = [c.id for c in topology.chains()]
@@ -679,8 +986,14 @@ def save_cif(
                 ch = row[0]
                 if ch not in seen_out_chains:
                     seen_out_chains.append(ch)
-        except Exception:
-            pass
+        except (RuntimeError, IndexError, ValueError) as exc:
+            logger.warning(
+                "cannot read the chain IDs OpenMM wrote to %s (%s: %s); original chain "
+                "IDs are not restored",
+                output_path.name,
+                type(exc).__name__,
+                exc,
+            )
         out_to_auth: dict[str, str] = {
             out_ch: label_to_auth.get(topo_ch, topo_ch)
             for out_ch, topo_ch in zip(seen_out_chains, topo_chain_ids)
@@ -689,8 +1002,14 @@ def save_cif(
         # ── Patch the output CIF ──────────────────────────────────────────────────
         out_table = output_block.find(
             "_atom_site.",
-            ["auth_asym_id", "auth_seq_id", "auth_atom_id", "label_asym_id"],
+            ["auth_asym_id", "auth_seq_id", "auth_atom_id", "label_asym_id", "label_seq_id"],
         )
+        # (chain, residue number) as OpenMM wrote them -> the residue number written
+        # below. PDBxFile.writeFile puts the same 1-based number in label_seq_id and
+        # in the _struct_conn partners; both must follow the auth_seq_id rewrite, or
+        # OpenMM (which keys atoms by auth_seq_id and _struct_conn partners by
+        # label_seq_id) cannot match a bond of a non-standard residue on reload.
+        renumbered: dict[tuple, str] = {}
         if out_table and out_to_auth:
             o_res_idx: dict[str, int] = {}
             o_prev_key: dict[str, tuple] = {}
@@ -728,6 +1047,26 @@ def save_cif(
                     taken.add(candidate)
                     assigned[res_id] = candidate
                 row[1] = assigned[res_id]  # auth_seq_id → original, or unique
+                row[4] = assigned[res_id]  # label_seq_id → same, see `renumbered`
+                renumbered[(out_ch, seq)] = assigned[res_id]
+
+        # Patch the _struct_conn residue numbers first: the chain patch below
+        # replaces the OpenMM chain letters this lookup is keyed on.
+        for chain_col, seq_col in (
+            ("ptnr1_label_asym_id", "ptnr1_label_seq_id"),
+            ("ptnr2_label_asym_id", "ptnr2_label_seq_id"),
+        ):
+            try:
+                for row in output_block.find("_struct_conn.", [chain_col, seq_col]):
+                    row[1] = renumbered.get((row[0], row[1]), row[1])
+            except (RuntimeError, IndexError, ValueError) as exc:
+                logger.warning(
+                    "cannot restore residue numbers in _struct_conn.%s of %s (%s: %s)",
+                    seq_col,
+                    output_path.name,
+                    type(exc).__name__,
+                    exc,
+                )
 
         # Patch _struct_conn chain IDs (PDBxFile writes label_asym_id with
         # sequential letters; auth_asym_id variants may also appear).
@@ -742,8 +1081,14 @@ def save_cif(
                     sc_table = output_block.find("_struct_conn.", [col])
                     for row in sc_table:
                         row[0] = out_to_auth.get(row[0], row[0])
-                except Exception:
-                    pass
+                except (RuntimeError, IndexError, ValueError) as exc:
+                    logger.warning(
+                        "cannot restore original chain IDs in _struct_conn.%s of %s (%s: %s)",
+                        col,
+                        output_path.name,
+                        type(exc).__name__,
+                        exc,
+                    )
 
         output_doc.write_file(str(output_path))
         _patch_nonstd_bonds_in_cif(output_path, topology)
@@ -766,6 +1111,8 @@ def _append_missing_conect(topology, output_path: Path) -> None:
     Only bonds OpenMM did not already write are appended, so no bond is
     declared twice.
     """
+    from openmm.app import PDBFile
+
     written = set()
     for atom1, atom2 in topology.bonds():
         standard = PDBFile._standardResidues
@@ -794,7 +1141,7 @@ def _append_missing_conect(topology, output_path: Path) -> None:
     if not missing:
         return
 
-    lines = output_path.read_text().splitlines(keepends=True)
+    lines = output_path.read_text(encoding="utf-8").splitlines(keepends=True)
 
     # Map topology atom order onto the serial numbers OpenMM actually wrote,
     # by reading them back rather than re-deriving its numbering (which skips
@@ -823,7 +1170,9 @@ def _append_missing_conect(topology, output_path: Path) -> None:
             insert_at = idx
         elif lines[idx].strip():
             break
-    output_path.write_text("".join(lines[:insert_at] + conect + lines[insert_at:]))
+    output_path.write_text(
+        "".join(lines[:insert_at] + conect + lines[insert_at:]), encoding="utf-8"
+    )
 
 
 def save_structure(
@@ -852,7 +1201,9 @@ def save_structure(
         )
         save_cif(topology, positions, output_path, source_cif_path=src)
     elif suffix == ".pdb":
-        with open(output_path, "w") as f:
+        from openmm.app import PDBFile
+
+        with open(output_path, "w", encoding="utf-8") as f:
             PDBFile.writeFile(topology, positions, f)
         _append_missing_conect(topology, output_path)
     else:
@@ -862,8 +1213,9 @@ def save_structure(
 def detect_models(path: str | Path) -> list[int]:
     """Read pdbx_PDB_model_num from a CIF and return sorted model numbers.
 
-    Returns ``[1]`` for single-model CIFs (no ``pdbx_PDB_model_num`` column),
-    PDB files, or on any read error.
+    Returns ``[1]`` for single-model CIFs (no ``pdbx_PDB_model_num`` column) and
+    for PDB files. It also returns ``[1]``, with a logged warning, when the file
+    cannot be read or biotite is not installed.
 
     Args:
         path: Path to the structure file.
@@ -875,15 +1227,32 @@ def detect_models(path: str | Path) -> list[int]:
     if path.suffix.lower() not in (".cif", ".mmcif"):
         return [1]
     try:
+        import biotite
         import biotite.structure.io.pdbx as pdbx
+    except ImportError:
+        logger.warning(
+            "biotite is not installed: %s is treated as a single-model file. Install "
+            "with: pip install binding-metrics[biotite]",
+            path.name,
+        )
+        return [1]
 
+    try:
         f = pdbx.CIFFile.read(str(path))
         atom_site = f.block["atom_site"]
         col = atom_site["pdbx_PDB_model_num"].as_array()
         unique = sorted({int(v) for v in col})
-        return unique if unique else [1]
-    except (KeyError, Exception):
+    except KeyError:
+        return [1]  # no atom_site category or model column: a single-model file
+    except (ValueError, OSError, biotite.InvalidFileError) as exc:
+        logger.warning(
+            "cannot read model numbers from %s (%s: %s); assuming a single model",
+            path.name,
+            type(exc).__name__,
+            exc,
+        )
         return [1]
+    return unique if unique else [1]
 
 
 def extract_model_to_tempfile(path: Path, model_num: int) -> Path:
@@ -896,7 +1265,6 @@ def extract_model_to_tempfile(path: Path, model_num: int) -> Path:
     Returns the original *path* unchanged when:
     - The file is not a CIF.
     - The ``pdbx_PDB_model_num`` column is absent (already single-model).
-    - gemmi is not installed.
 
     The caller is responsible for unlinking the returned temp file when it
     differs from the input path.
@@ -911,6 +1279,8 @@ def extract_model_to_tempfile(path: Path, model_num: int) -> Path:
 
     Raises:
         ValueError: If *model_num* is not found in the file.
+        ImportError: If *path* is a CIF and gemmi is not installed. Returning
+            the input would silently score whichever model the file lists first.
     """
     path = Path(path)
     if path.suffix.lower() not in (".cif", ".mmcif"):
@@ -918,8 +1288,11 @@ def extract_model_to_tempfile(path: Path, model_num: int) -> Path:
 
     try:
         import gemmi
-    except ImportError:
-        return path
+    except ImportError as exc:
+        raise ImportError(
+            f"gemmi is required to extract model {model_num} from {path.name}. "
+            "Install with: pip install binding-metrics[structure]"
+        ) from exc
 
     doc = gemmi.cif.read(str(path))
     block = doc.sole_block()
@@ -1050,6 +1423,8 @@ def get_residue_info(pdb_path: str | Path) -> list[dict]:
     Returns:
         List of dictionaries with residue information
     """
+    from openmm.app import PDBFile
+
     pdb = PDBFile(str(pdb_path))
     topology = pdb.topology
 

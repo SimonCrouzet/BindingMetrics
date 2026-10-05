@@ -3,37 +3,47 @@
 Both metrics return a small dict containing an energy estimate (kcal/mol,
 primary signal) plus interpretable count(s) (supplementary). See
 ``docs/metrics.md`` for the full description and rationale.
+
+The energies are heuristic scores built for ranking designs: their functional
+forms and constants are not fitted to measured energies, so they should not be
+compared with force-field or experimental free energies.
+
+References:
+    Baker & Hubbard, Prog. Biophys. Mol. Biol. 44:97-179 (1984): geometric
+        hydrogen-bond criterion.
+    Barlow & Thornton, J. Mol. Biol. 168:867-885 (1983): ion pairs in proteins,
+        with a 4 Å heavy-atom criterion.
+    Krissinel & Henrick, J. Mol. Biol. 372:774-797 (2007): interior dielectric
+        constant of about 4 for macromolecular electrostatics.
 """
 
 import warnings
+from functools import lru_cache
+from typing import Literal, Optional
 
 import numpy as np
 
-# Coulomb constant in kcal/mol when distance is in Å and charges in e
+from binding_metrics.metrics._common import import_biotite, resolve_chain_role
+
+# e²/(4π ε0) in kcal·Å/(mol·e²)
 _COULOMB_K = 332.0637133
 
-# Effective interior dielectric used by the salt-bridge energy.
-# Matches ``compute_coulomb_cross_chain`` so the two metrics are comparable.
+# Effective interior dielectric (Krissinel & Henrick 2007). Matches
+# ``compute_coulomb_cross_chain`` so the two metrics are comparable.
 _DIELECTRIC = 4.0
 
-# H-bond energy scale: chosen so an ideal H-bond (d_HA = 2.0 Å, θ_DHA = 180°)
-# evaluates to ~ -2.5 kcal/mol — the conventional protein H-bond strength.
+# Package-chosen scale, not a fitted constant: an ideal H-bond (d_HA = 2.0 Å,
+# θ_DHA = 180°) evaluates to -2.5 kcal/mol, in the range usually quoted for a
+# protein H-bond.
 _HBOND_K = 5.0
 
 
 def _import_biotite():
-    try:
-        import biotite.structure as structure
-        import biotite.structure.io.pdbx as pdbx
-        from biotite.structure.info import vdw_radius_single
-        from biotite.structure.sasa import sasa
+    structure, pdbx, _ = import_biotite("H-bond/salt bridge metrics")
+    from biotite.structure.info import vdw_radius_single
+    from biotite.structure.sasa import sasa
 
-        return structure, pdbx, sasa, vdw_radius_single
-    except ImportError:
-        raise ImportError(
-            "biotite is required for H-bond/salt bridge metrics. "
-            "Install with: pip install binding-metrics[biotite]"
-        )
+    return structure, pdbx, sasa, vdw_radius_single
 
 
 def _import_hydride():
@@ -61,10 +71,15 @@ def _prepare_for_hydride(atoms, structure_mod):
 
 
 def _add_hydrogens_if_needed(atoms, structure_mod):
-    """Add explicit hydrogens via hydride iff the structure has none yet."""
+    """Add explicit hydrogens via hydride iff the structure has none yet.
+
+    Returns ``(atoms, reason)``. ``reason`` is None unless hydride failed on a
+    structure that needed hydrogens; the H-bond count is then 0 for want of
+    hydrogens, not because no bond exists.
+    """
     n_h = int(np.sum(atoms.element == "H"))
     if n_h > 0:
-        return atoms
+        return atoms, None
 
     hydride = _import_hydride()
     if hydride is None:
@@ -73,20 +88,20 @@ def _add_hydrogens_if_needed(atoms, structure_mod):
             "H-bonds will be undercounted. Install with: pip install binding-metrics[biotite]",
             stacklevel=2,
         )
-        return atoms
+        return atoms, None
 
     atoms = _prepare_for_hydride(atoms, structure_mod)
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             atoms_h, _ = hydride.add_hydrogen(atoms)
-        return atoms_h
-    except Exception as e:
-        warnings.warn(
-            f"hydride.add_hydrogen failed ({type(e).__name__}: {e}); H-bonds may be undercounted",
-            stacklevel=2,
-        )
-        return atoms
+        return atoms_h, None
+    except (ValueError, KeyError, structure_mod.BadStructureError) as e:
+        # ValueError: non-finite coordinates; BadStructureError: residues hydride cannot
+        # complete. Either way the structure has no hydrogens to build H-bonds from.
+        message = f"hydride.add_hydrogen failed ({type(e).__name__}: {e})"
+        warnings.warn(f"{message}; H-bonds may be undercounted", stacklevel=2)
+        return atoms, message
 
 
 def _angle_deg(a, b, c):
@@ -100,12 +115,28 @@ def _angle_deg(a, b, c):
     return np.degrees(np.arccos(cos_t))
 
 
-def compute_hbonds(atoms, peptide_chain: str, receptor_chain: str) -> dict:
+def _no_hbonds(reason: Optional[str]) -> dict:
+    result = {"hbond_energy": 0.0, "hbonds": 0}
+    if reason is not None:
+        result["reason"] = reason
+    return result
+
+
+def compute_hbonds(
+    atoms,
+    peptide_chain: Optional[str] = None,
+    receptor_chain: Optional[str] = None,
+    *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
+    hetero: Literal["ignore", "keep"] = "ignore",
+) -> dict:
     """Detect cross-chain hydrogen bonds and score them.
 
-    Uses biotite's Baker-Hubbard detector (default: H-acceptor distance ≤ 2.5 Å,
-    D-H···A angle ≥ 120°). If the input has no explicit hydrogens, hydride is
-    used to add them after building a BondList.
+    Uses biotite's Baker-Hubbard detector (Baker & Hubbard 1984; biotite
+    defaults: H-acceptor distance ≤ 2.5 Å, D-H···A angle ≥ 120°). If the input
+    has no explicit hydrogens, hydride is used to add them after building a
+    BondList.
 
     Triplets returned by biotite are deduplicated to unique cross-chain
     ``(donor_heavy, acceptor_heavy)`` pairs so that e.g. ARG NH1's two
@@ -117,25 +148,58 @@ def compute_hbonds(atoms, peptide_chain: str, receptor_chain: str) -> dict:
         E = -k_hb * cos²(180° - θ_DHA) / d_HA
         k_hb = 5.0 kcal·Å/mol  (ideal d=2.0, θ=180° → -2.5 kcal/mol)
 
+    This form is a heuristic score (bent contacts are down-weighted smoothly
+    and short contacts count more), not a published H-bond potential.
+
+    If ``atoms`` has no BondList or charge annotation and ``hetero="keep"``,
+    both are added to the caller's array in place; ``hetero="ignore"`` works
+    on a filtered copy and leaves it untouched.
+
+    Parameters
+    ----------
+    peptide_chain, receptor_chain : str
+        Chain IDs of the two partners. Each is required, through this
+        parameter or its alias.
+    binder_chain, target_chain : str, optional
+        Aliases of ``peptide_chain`` and ``receptor_chain``. Different IDs in
+        an alias and its parameter raise ``ValueError``.
+    hetero : {"ignore", "keep"}
+        "ignore" (default) drops waters, ions, ligands and glycans before the
+        chain selection, so a water that carries a receptor chain ID is not
+        counted as a receptor atom. "keep" uses every atom as before.
+
     Returns
     -------
     dict with keys:
         hbond_energy : float  — sum of pair energies, kcal/mol (≤ 0)
         hbonds       : int    — number of unique cross-chain heavy-atom pairs
+        reason       : str    — only when hydrogens could not be built or the
+                                detector failed; the count is then 0 for that
+                                reason rather than a measured absence of H-bonds
     """
+    from binding_metrics.metrics.interface import filter_hetero_atoms
+
+    peptide_chain = resolve_chain_role(
+        "peptide_chain", peptide_chain, "binder_chain", binder_chain, required=True
+    )
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
     structure, _, _, _ = _import_biotite()
-    atoms = _add_hydrogens_if_needed(atoms, structure)
+    atoms = filter_hetero_atoms(atoms, hetero)
+    atoms, hydrogen_reason = _add_hydrogens_if_needed(atoms, structure)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         try:
             triplets = structure.hbond(atoms)
-        except Exception as e:
-            warnings.warn(f"biotite.hbond failed ({type(e).__name__}: {e})", stacklevel=2)
-            return {"hbond_energy": 0.0, "hbonds": 0}
+        except (ValueError, IndexError, structure.BadStructureError) as e:
+            message = f"biotite.hbond failed ({type(e).__name__}: {e})"
+            warnings.warn(message, stacklevel=2)
+            return {"hbond_energy": 0.0, "hbonds": 0, "reason": message}
 
     if len(triplets) == 0:
-        return {"hbond_energy": 0.0, "hbonds": 0}
+        return _no_hbonds(hydrogen_reason)
 
     chain_id = atoms.chain_id
     coords = atoms.coord
@@ -147,7 +211,7 @@ def compute_hbonds(atoms, peptide_chain: str, receptor_chain: str) -> dict:
     )
     triplets = triplets[cross]
     if len(triplets) == 0:
-        return {"hbond_energy": 0.0, "hbonds": 0}
+        return _no_hbonds(hydrogen_reason)
 
     d_idx = triplets[:, 0]
     h_idx = triplets[:, 1]
@@ -155,7 +219,6 @@ def compute_hbonds(atoms, peptide_chain: str, receptor_chain: str) -> dict:
 
     d_HA = np.linalg.norm(coords[h_idx] - coords[a_idx], axis=-1)
 
-    # Dedupe: keep the shortest-distance triplet per unique (donor_heavy, acceptor_heavy) pair.
     best: dict[tuple[int, int], int] = {}
     for k, (di, ai) in enumerate(zip(d_idx, a_idx)):
         key = (int(di), int(ai))
@@ -178,8 +241,12 @@ def compute_hbonds(atoms, peptide_chain: str, receptor_chain: str) -> dict:
     }
 
 
-# Side-chain charged-atom allowlists.
+# Side-chain charged-atom allowlists (L-residue names; D-residues are mapped to their
+# L counterpart first, see ``l_equivalent_residue_names``).
 # HIS / HID / HIE are intentionally excluded — see docs/metrics.md.
+# SEP/TPO/PTR are the phosphorylated residues of the AMBER phosaa set used by the
+# relaxation step (core/phosaa.py): a phosphate monoester carrying net -2 at pH 7,
+# shared by the three non-bridging oxygens.
 _POSITIVE_ATOMS: set[tuple[str, str]] = {
     ("LYS", "NZ"),
     ("ARG", "NH1"),
@@ -193,25 +260,68 @@ _NEGATIVE_ATOMS: set[tuple[str, str]] = {
     ("ASP", "OD2"),
     ("GLU", "OE1"),
     ("GLU", "OE2"),
+    ("SEP", "O1P"),
+    ("SEP", "O2P"),
+    ("SEP", "O3P"),
+    ("TPO", "O1P"),
+    ("TPO", "O2P"),
+    ("TPO", "O3P"),
+    ("PTR", "O1P"),
+    ("PTR", "O2P"),
+    ("PTR", "O3P"),
 }
+
+
+@lru_cache(maxsize=1)
+def _d_to_l_residue_names() -> dict[str, str]:
+    # Imported on first use so that importing this module does not pull in the
+    # simulation stack that ``binding_metrics.core`` may load.
+    from binding_metrics.core.nonstandard import D_AA_MAP
+
+    return dict(D_AA_MAP)
+
+
+def l_equivalent_residue_names(res_names) -> np.ndarray:
+    """Upper-case, stripped residue names with D-amino-acid codes mapped to L.
+
+    D-amino acids keep the side-chain atom names of their L counterpart (DLY has
+    NZ, DAR has NH1/NH2, DAS has OD1/OD2), so charge tables written for L names
+    apply after this mapping. The D-code registry is
+    ``binding_metrics.core.nonstandard.D_AA_MAP``.
+    """
+    names = np.char.upper(np.char.strip(np.asarray(res_names).astype(str)))
+    if names.size == 0:
+        return names
+    mapping = _d_to_l_residue_names()
+    unique, inverse = np.unique(names, return_inverse=True)
+    mapped = np.array([mapping.get(name, name) for name in unique])
+    return mapped[inverse]
 
 
 def compute_saltbridges(
     atoms,
-    peptide_chain: str,
-    receptor_chain: str,
+    peptide_chain: Optional[str] = None,
+    receptor_chain: Optional[str] = None,
     distance_min: float = 0.5,
     distance_max: float = 5.5,
+    *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
+    hetero: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Detect cross-chain salt bridges and score them.
 
     A cross-chain residue pair (one positive side chain, one negative side
     chain) is considered a salt bridge if at least one positive-atom /
-    negative-atom contact falls in ``(distance_min, distance_max)`` Å.
+    negative-atom contact falls in ``(distance_min, distance_max)`` Å. The
+    upper bound of 5.5 Å is a permissive choice of this package; the usual
+    heavy-atom criterion for an ion pair is 4 Å (Barlow & Thornton 1983).
 
-    Charged-atom allowlist:
+    Charged-atom allowlist (D-amino acids are matched through their L
+    counterpart, e.g. DLY as LYS):
         positive: LYS NZ, ARG NH1/NH2/NE, HIP ND1/NE2
-        negative: ASP OD1/OD2, GLU OE1/OE2
+        negative: ASP OD1/OD2, GLU OE1/OE2, and the non-bridging phosphate
+                  oxygens O1P/O2P/O3P of SEP, TPO and PTR
 
     Plain HIS, HID and HIE are treated as neutral (no pKa lookup performed).
     HIP is the AMBER name for the doubly-protonated, +1 form. After
@@ -225,7 +335,21 @@ def compute_saltbridges(
                = -83.02 / r_min  kcal/mol  (unit charges)
 
     A bidentate bridge naturally scores stronger because r_min is the
-    shorter of the two contacts.
+    shorter of the two contacts. Like the H-bond energy, this is a
+    heuristic ranking score: unit charges, one uniform dielectric, no
+    screening by solvent or ions.
+
+    Parameters
+    ----------
+    peptide_chain, receptor_chain : str
+        Chain IDs of the two partners. Each is required, through this
+        parameter or its alias.
+    binder_chain, target_chain : str, optional
+        Aliases of ``peptide_chain`` and ``receptor_chain``. Different IDs in
+        an alias and its parameter raise ``ValueError``.
+    hetero : {"ignore", "keep"}
+        "ignore" (default) drops waters, ions, ligands and glycans before the
+        chain selection; "keep" uses every atom as before.
 
     Returns
     -------
@@ -234,10 +358,19 @@ def compute_saltbridges(
         saltbridges           : int   — residue-pair count
         saltbridges_bidentate : int   — pairs with ≥ 2 atom-pair contacts
     """
+    from binding_metrics.metrics.interface import filter_hetero_atoms
+
+    peptide_chain = resolve_chain_role(
+        "peptide_chain", peptide_chain, "binder_chain", binder_chain, required=True
+    )
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
+    atoms = filter_hetero_atoms(atoms, hetero)
     pos_mask = np.zeros(len(atoms), dtype=bool)
     neg_mask = np.zeros(len(atoms), dtype=bool)
 
-    res_names = np.char.upper(np.char.strip(atoms.res_name.astype(str)))
+    res_names = l_equivalent_residue_names(atoms.res_name)
     atom_names = np.char.strip(atoms.atom_name.astype(str))
 
     for i in range(len(atoms)):
@@ -269,7 +402,6 @@ def compute_saltbridges(
     if not np.any(valid):
         return empty
 
-    # Aggregate atom-pair contacts to residue-pair level.
     pos_res_keys = list(
         zip(
             pos_atoms.chain_id.tolist(),
@@ -285,9 +417,7 @@ def compute_saltbridges(
         )
     )
 
-    # For each (pos_res, neg_res) that has any qualifying contact:
-    #   r_min = closest qualifying atom-pair distance
-    #   n_contacts = number of qualifying atom-pair contacts
+    # r_min feeds the energy; the contact count decides bidentate.
     pair_rmin: dict[tuple, float] = {}
     pair_count: dict[tuple, int] = {}
 
@@ -303,7 +433,6 @@ def compute_saltbridges(
     n_pairs = len(pair_rmin)
     n_bidentate = sum(1 for c in pair_count.values() if c >= 2)
 
-    # E_pair = q_pos * q_neg * COULOMB_K / (eps * r_min); unit charges of opposite sign.
     energy = -_COULOMB_K / _DIELECTRIC * sum(1.0 / r for r in pair_rmin.values())
 
     return {

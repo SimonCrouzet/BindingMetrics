@@ -178,7 +178,8 @@ class TestTleapReference:
             "source leaprc.protein.ff14SB\n"
             "source leaprc.phosaa14SB\n"
             f"pep = sequence {{ ACE {res_name} NME }}\n"
-            f"saveamberparm pep {prm} {rst}\nquit\n"
+            f"saveamberparm pep {prm} {rst}\nquit\n",
+            encoding="utf-8",
         )
         subprocess.run(["tleap", "-f", str(leap)], cwd=tmp_path, capture_output=True, check=True)
         if not prm.exists():

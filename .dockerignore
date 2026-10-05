@@ -1,16 +1,61 @@
+# The Dockerfile does `COPY .`, so everything not listed here is baked into an
+# image layer. Keep the private and untracked paths of .gitignore listed here
+# too: a local build that is pushed by hand would otherwise publish them.
+# Patterns starting with ** match at any depth, like the slash-less patterns
+# of .gitignore; a bare `*.zip` here would only match the context root.
 .git
 .claude/
 .github/
 .vscode/
-*.zip
-structures/
 tests/
 build/
+dist/
+# `data/*/` would also drop data/*.pdb and data/*.cif (Docker ignores the trailing
+# slash), which the image keeps; `data/*/**` excludes only the subfolders' contents.
+data/*/**
+CLAUDE.md
+.env
+.pypirc
+
+# Private working material and client data (IP hygiene, see .gitignore).
+manuscripts/
+notes/
+structures/
 archive/
 results/
-data/*/
 compiled_cache.db
-*.egg-info/
-__pycache__/
+**/MC1R*
+**/*_inverse_folded
+**/*design_spec*
+
+# Large archives, logs and tool caches.
+**/*.zip
+**/*.log
+.ruff_cache/
 .pytest_cache/
-*.pyc
+**/*.egg-info/
+**/__pycache__/
+**/*.pyc
+
+# Internal notes, scratch and temporary files (mirrors .gitignore).
+tmp/
+temp/
+scratch/
+runs/
+outputs/
+**/results/
+**/*.tmp
+**/*.bak
+**/*.orig
+**/*.rej
+**/*.swp
+**/*~
+**/nohup.out
+**/*.tgz
+**/*.tar.gz
+**/.DS_Store
+.idea/
+/TODO*.md
+/NOTES*.md
+test.sh
+docker/test.sh

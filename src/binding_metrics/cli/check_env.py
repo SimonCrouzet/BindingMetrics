@@ -10,6 +10,8 @@ Exit code is 0 if all checks pass, 1 otherwise.
 import subprocess
 import sys
 
+from binding_metrics.utils import configure_logging
+
 # ---------------------------------------------------------------------------
 # Terminal colours
 # ---------------------------------------------------------------------------
@@ -91,6 +93,7 @@ def _check_openfold() -> bool:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if result.returncode == 0:
         _ok(
@@ -108,6 +111,7 @@ def _check_openfold() -> bool:
         [conda, "env", "list"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     env_exists = _OPENFOLD_CONDA_ENV in (env_check.stdout + env_check.stderr)
 
@@ -168,6 +172,7 @@ def _check_mdtraj() -> bool:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if result.returncode == 0:
         version = result.stdout.strip()
@@ -212,6 +217,7 @@ def _check_openmm() -> bool:
         [sys.executable, "-m", "openmm.testInstallation"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     output = result.stdout + result.stderr
 
@@ -313,6 +319,7 @@ CHECKS: list[tuple[str, object]] = [
 
 
 def main() -> None:
+    configure_logging()
     print(f"\n{BOLD}{'=' * 56}{RESET}")
     print(f"{BOLD}  BindingMetrics — environment check{RESET}")
     print(f"{BOLD}{'=' * 56}{RESET}")

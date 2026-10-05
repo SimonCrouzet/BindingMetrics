@@ -4,8 +4,9 @@
 Runs each metric N times on every input in a dataset directory, collects
 wall-clock timing statistics, and saves results as JSON + Markdown.
 
-All metrics are discovered from ``binding_metrics.metrics.registry.METRICS``
-— adding a metric to the registry automatically makes it appear here.
+The metric specs come from ``binding_metrics.metrics.registry.METRICS``; the
+metrics timed are the explicit list ``_BENCHMARKED_METRICS``, so a metric added to
+the registry does not change what is timed until it is listed there.
 
 Usage:
     python benchmarks/run.py --dataset /path/to/benchmark/data
@@ -46,6 +47,7 @@ Results are written to benchmarks/results/<timestamp>.{json,md}.
 
 import argparse
 import json
+import logging
 import statistics
 import sys
 import time
@@ -53,6 +55,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from binding_metrics._constants import DEFAULT_DEVICE, DEFAULT_MD_DURATION_PS
 from binding_metrics.metrics.registry import (
     METRICS,
     ChainMode,
@@ -60,6 +63,8 @@ from binding_metrics.metrics.registry import (
     MetricSpec,
     metrics_by_input_type,
 )
+
+logger = logging.getLogger(__name__)
 
 # MD parameters that can be overridden per-entry in the manifest "md" dict.
 # Maps manifest key → RelaxationConfig attribute name (they're the same here).
@@ -140,8 +145,8 @@ def compute_structure_properties(path: Path, design_chain: Optional[str] = None)
             props["n_residues_peptide"] = int(len(np.unique(atoms[atoms.chain_id == pep].res_id)))
         if rec is not None:
             props["n_residues_receptor"] = int(len(np.unique(atoms[atoms.chain_id == rec].res_id)))
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - properties are informational; the timing still runs
+        logger.warning("Could not detect the interface chains of %s: %s", path, exc)
 
     return props
 
@@ -176,8 +181,8 @@ def compute_trajectory_properties(traj_path: Path, top_path: Path, entry: dict) 
             )
             props["receptor_indices"] = sel.tolist()
 
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - properties are informational; the timing still runs
+        logger.warning("Could not read the trajectory properties of %s: %s", traj_path, exc)
     return props
 
 
@@ -281,7 +286,9 @@ def _fn_argnames(spec: MetricSpec) -> set[str]:
     try:
         fn = spec.load()
         return set(inspect.signature(fn).parameters)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - importing a metric can fail in many ways
+        # The benchmark of this metric calls spec.load() again and records the error.
+        logger.debug("Could not inspect the arguments of %s: %s", spec.name, exc)
         return set()
 
 
@@ -293,7 +300,7 @@ def bench_static_metric(spec: MetricSpec, path: Path, props: dict, n_runs: int) 
         fn = spec.load()
         times = _time_calls(fn, n_runs=n_runs, **kwargs)
         return _stats(times)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - one failing metric must not stop the benchmark
         return {"error": str(exc)}
 
 
@@ -307,7 +314,7 @@ def bench_trajectory_metric(
         fn = spec.load()
         times = _time_calls(fn, n_runs=n_runs, **kwargs)
         return _stats(times)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - one failing metric must not stop the benchmark
         return {"error": str(exc)}
 
 
@@ -336,7 +343,7 @@ def bench_md_simulation(path: Path, md_params: dict, output_dir: Path) -> dict:
             "total_time_s": (result.minimization_time_s or 0) + (result.md_time_s or 0),
             "md_params": md_params,
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - one failing MD run must not stop the benchmark
         return {"error": str(exc)}
 
 
@@ -354,7 +361,7 @@ def load_manifest(dataset_dir: Path) -> dict:
             "Create one listing your structures and/or trajectories. "
             "See benchmarks/manifest_example.json for the format."
         )
-    with open(manifest_path) as f:
+    with open(manifest_path, encoding="utf-8") as f:
         data = json.load(f)
 
     # Resolve all paths relative to the manifest directory
@@ -462,8 +469,8 @@ def run_md_benchmarks(entries: list[dict], output_dir: Path) -> list[dict]:
         props = compute_structure_properties(path, entry.get("design_chain"))
         print(
             f"  atoms={props['n_atoms']}  res_total={props['n_residues_total']}  "
-            f"md_duration_ps={md_params.get('md_duration_ps', 200)}  "
-            f"device={md_params.get('device', 'cuda')}"
+            f"md_duration_ps={md_params.get('md_duration_ps', DEFAULT_MD_DURATION_PS):g}  "
+            f"device={md_params.get('device', DEFAULT_DEVICE)}"
         )
 
         record: dict = {
@@ -589,12 +596,13 @@ def save_results(
         "md_results": md_results,
     }
     json_path = output_dir / f"{timestamp}.json"
-    with open(json_path, "w") as f:
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, default=_json_default)
 
     report_path = output_dir / f"{timestamp}.md"
     report_path.write_text(
-        format_report(static_results, traj_results, md_results, static_specs, traj_specs) + "\n"
+        format_report(static_results, traj_results, md_results, static_specs, traj_specs) + "\n",
+        encoding="utf-8",
     )
 
     return json_path
@@ -604,7 +612,49 @@ def save_results(
 # Entry point
 # ---------------------------------------------------------------------------
 
-_ALL_METRIC_NAMES = [m.name for m in METRICS]
+#: The metrics this script times: the 18 specs the registry held before it grew to 28
+#: (issue #30), so result files stay comparable with earlier ones. An explicit list,
+#: because the registry metadata cannot separate them from the newer specs:
+#: ``delta_sasa_static`` has the same ``input_type``, ``cost_class`` ("static") and
+#: ``requires_gpu`` as the static metrics listed here.
+_BENCHMARKED_METRICS = frozenset(
+    {
+        # static_structure
+        "interface",
+        "coulomb",
+        "ramachandran",
+        "omega",
+        "shape_complementarity",
+        "void_volume",
+        "structure_rmsd",
+        "dockq",
+        # trajectory
+        "interaction_energy",
+        "component_energies",
+        "rmsd",
+        "rmsf",
+        "ligand_rmsd",
+        "receptor_drift",
+        "buried_sasa",
+        "contacts",
+        # md_simulation, and the OpenFold reader (not timed by the loops below)
+        "md_implicit",
+        "openfold",
+    }
+)
+
+_ALL_METRIC_NAMES = [m.name for m in METRICS if m.name in _BENCHMARKED_METRICS]
+
+
+def select_specs(input_type: InputType, requested: Optional[list[str]] = None) -> list[MetricSpec]:
+    """Specs of one input type that this script times, in registry order.
+
+    ``requested`` optionally restricts them to the names given with ``--metrics``.
+    """
+    specs = [s for s in metrics_by_input_type(input_type) if s.name in _BENCHMARKED_METRICS]
+    if requested:
+        specs = [s for s in specs if s.name in requested]
+    return specs
 
 
 def main():
@@ -652,14 +702,14 @@ def main():
     manifest = load_manifest(args.dataset)
 
     # Select specs matching requested input types and optional metric filter
-    def _select(input_type: InputType) -> list[MetricSpec]:
-        specs = metrics_by_input_type(input_type)
-        if args.metrics:
-            specs = [s for s in specs if s.name in args.metrics]
-        return specs
-
-    static_specs = _select("static_structure") if "static_structure" in args.input_types else []
-    traj_specs = _select("trajectory") if "trajectory" in args.input_types else []
+    static_specs = (
+        select_specs("static_structure", args.metrics)
+        if "static_structure" in args.input_types
+        else []
+    )
+    traj_specs = (
+        select_specs("trajectory", args.metrics) if "trajectory" in args.input_types else []
+    )
     run_md = "md_simulation" in args.input_types
 
     static_entries = manifest.get("structures", [])

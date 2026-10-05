@@ -109,10 +109,9 @@ def check_environment() -> bool:
             print(ok(f"GPU {DIM}{gpu_platform}{RESET}"))
         else:
             print(warn(f"GPU {DIM}not available, using CPU{RESET}"))
-    except Exception:
-        # Probing for a GPU is best-effort: any OpenMM import or platform
-        # error just means we report CPU.
-        pass
+    except Exception as exc:  # noqa: BLE001 - the GPU probe is best-effort; any failure means CPU
+        # OpenMM can fail to import or to list its platforms in many ways.
+        print(warn(f"GPU {DIM}probe failed ({type(exc).__name__}), using CPU{RESET}"))
 
     return all_ok
 
@@ -150,7 +149,9 @@ def run_tests(test_type: str = "unit", verbose: bool = False) -> int:
         return subprocess.call(cmd, cwd=project_root)
     else:
         # Capture and parse
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", cwd=project_root
+        )
         output = result.stdout + result.stderr
 
         # Parse counts

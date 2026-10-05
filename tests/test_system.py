@@ -319,3 +319,161 @@ class TestPrepDeterminism:
             if (v_cb > 0) == (v_ha > 0):
                 bad.append(f"{res.name}{res.id}/{res.chain.id}")
         assert not bad, f"prep emitted wrong-side Cα hydrogens: {bad}"
+
+
+def _ion_positions_nm(modeller):
+    """Sorted (residue name, x, y, z) of every Na+/Cl- in a solvated Modeller."""
+    pos = np.array(modeller.positions.value_in_unit(unit.nanometer))
+    rows = [
+        (a.residue.name, *map(float, pos[a.index]))
+        for a in modeller.topology.atoms()
+        if a.residue.name in ("NA", "CL")
+    ]
+    return sorted(rows)
+
+
+@pytest.fixture(scope="module")
+def p53_peptide_no_h():
+    """Chain B of 1YCR (13-residue p53 peptide) without hydrogens.
+
+    Small enough that solvation takes about a second, large enough to carry
+    charged side chains so that ion placement is not trivial.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from openmm.app import Modeller, PDBFile
+
+    path = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+    if not path.exists():
+        pytest.skip(f"bundled example not found: {path}")
+    pdb = PDBFile(str(path))
+    modeller = Modeller(pdb.topology, pdb.positions)
+    modeller.delete([r for r in modeller.topology.residues() if r.chain.id != "B"])
+    return SimpleNamespace(topology=modeller.topology, positions=modeller.positions)
+
+
+@pytest.fixture(scope="module")
+def protonated(p53_peptide_no_h):
+    """The peptide with hydrogens placed under a fixed seed, as (topology, positions)."""
+    from openmm.app import Modeller
+
+    from binding_metrics.core.forcefields import get_forcefield
+    from binding_metrics.core.system import (
+        _hydrogen_placement_platform,
+        deterministic_hydrogen_placement,
+    )
+
+    modeller = Modeller(p53_peptide_no_h.topology, p53_peptide_no_h.positions)
+    with deterministic_hydrogen_placement(1):
+        modeller.addHydrogens(get_forcefield("amber"), platform=_hydrogen_placement_platform())
+    return modeller.topology, modeller.positions
+
+
+@pytest.mark.integration
+class TestSolvateSeed:
+    """Ion placement in ``Modeller.addSolvent`` draws from the global RNG."""
+
+    def _solvate(self, protonated, **kwargs):
+        from binding_metrics.core.system import solvate
+
+        topology, positions = protonated
+        return solvate(topology, positions, padding=0.6, ionic_strength=0.3, **kwargs)
+
+    def test_same_seed_gives_identical_ions(self, protonated):
+        first = _ion_positions_nm(self._solvate(protonated, random_seed=7))
+        second = _ion_positions_nm(self._solvate(protonated, random_seed=7))
+        assert len(first) > 0, "0.3 M salt in this box must place ions"
+        assert first == second
+
+    def test_different_seed_moves_ions(self, protonated):
+        first = _ion_positions_nm(self._solvate(protonated, random_seed=7))
+        other = _ion_positions_nm(self._solvate(protonated, random_seed=8))
+        assert len(first) == len(other), "the ion count depends on the box, not the seed"
+        assert first != other
+
+    def test_default_is_deterministic(self, protonated):
+        """No seed argument: the module default seed applies, not fresh randomness."""
+        first = _ion_positions_nm(self._solvate(protonated))
+        second = _ion_positions_nm(self._solvate(protonated))
+        assert first == second
+
+    def test_caller_rng_state_is_untouched(self, protonated):
+        import random
+
+        random.seed(123)
+        expected = random.random()
+        random.seed(123)
+        self._solvate(protonated, random_seed=7)
+        assert random.random() == expected
+
+
+@pytest.mark.integration
+class TestPrepareSystemSeed:
+    """The ``fix=False`` fallback places hydrogens with ``Modeller.addHydrogens``."""
+
+    def _prepare(self, pdb, seed):
+        from binding_metrics.core.system import prepare_system
+
+        return prepare_system(pdb, fix=False, padding=0.6, ionic_strength=0.3, random_seed=seed)
+
+    def test_same_seed_gives_identical_system(self, p53_peptide_no_h):
+        first = self._prepare(p53_peptide_no_h, 3)
+        second = self._prepare(p53_peptide_no_h, 3)
+        pos_a = np.array(first.positions.value_in_unit(unit.nanometer))
+        pos_b = np.array(second.positions.value_in_unit(unit.nanometer))
+        assert pos_a.shape == pos_b.shape
+        assert np.abs(pos_a - pos_b).max() < 1e-6
+        assert _ion_positions_nm(first) == _ion_positions_nm(second)
+
+    def test_seed_reaches_the_fallback_hydrogens(self, p53_peptide_no_h):
+        """Hydrogens (not just ions) depend on the seed: 0.05 nm jitter per atom."""
+        first = self._prepare(p53_peptide_no_h, 3)
+        other = self._prepare(p53_peptide_no_h, 4)
+
+        def solute_h(modeller):
+            pos = np.array(modeller.positions.value_in_unit(unit.nanometer))
+            return np.array(
+                [
+                    pos[a.index]
+                    for a in modeller.topology.atoms()
+                    if a.element.symbol == "H" and a.residue.name not in ("HOH", "NA", "CL")
+                ]
+            )
+
+        h_first, h_other = solute_h(first), solute_h(other)
+        assert h_first.shape == h_other.shape
+        assert np.abs(h_first - h_other).max() > 1e-3
+
+
+class TestRunSimulationSeedThreading:
+    """``run_simulation`` hands the config's seed to system preparation."""
+
+    @pytest.mark.parametrize(
+        "config_seed, expected",
+        [(42, 42), (None, None), ("default", "default")],
+    )
+    def test_seed_reaches_prepare_system(self, monkeypatch, config_seed, expected):
+        from binding_metrics.core import simulation as sim_mod
+        from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+
+        seen = {}
+
+        class _StopError(Exception):
+            pass
+
+        def fake_prepare(pdb, forcefield=None, **kwargs):
+            seen.update(kwargs)
+            raise _StopError
+
+        monkeypatch.setattr(sim_mod, "PDBFile", lambda path: object())
+        monkeypatch.setattr(sim_mod, "get_forcefield", lambda name: object())
+        monkeypatch.setattr(sim_mod, "prepare_system", fake_prepare)
+
+        if config_seed == "default":
+            config, expected = None, DEFAULT_RANDOM_SEED
+        else:
+            config = sim_mod.SimulationConfig(random_seed=config_seed)
+        with pytest.raises(_StopError):
+            sim_mod.run_simulation("unused.pdb", "unused_out", config=config)
+        assert seen["random_seed"] == expected

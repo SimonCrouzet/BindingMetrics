@@ -1,0 +1,16 @@
+# Local hooks that run the same lint as CI (.github/workflows/ci.yml).
+#
+# rev is the ruff version CI installs ("ruff==0.15.21") and the `dev` extra in
+# pyproject.toml pins. `ruff format` output is not stable across minor
+# versions, so a hook on a different release would reformat files that CI then
+# rejects. Bump all three together.
+#
+# Enable with `pre-commit install`; run once over the tree with
+# `pre-commit run --all-files`.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      # Lint first, so import sorting fixes are formatted afterwards.
+      - id: ruff-check
+      - id: ruff-format

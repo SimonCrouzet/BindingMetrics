@@ -1,10 +1,25 @@
-"""Solvent accessible surface area calculations."""
+"""Solvent accessible surface area calculations.
 
+The trajectory functions use mdtraj's ``shrake_rupley`` (radii in nm); the
+static function uses biotite. Both implement the Shrake-Rupley algorithm
+(J. Mol. Biol. 79:351-371, 1973).
+
+The static function reports the buried area of heavy atoms by default
+(``hydrogens="ignore"``), the convention of PISA and of the atomic solvation
+parameters used for ΔG_int in ``interface``. The trajectory functions do not
+filter hydrogens: they use the atoms of the trajectory and of the index lists as
+given.
+"""
+
+import logging
 from pathlib import Path
+from typing import Literal, Optional
 
 import numpy as np
 
-from binding_metrics.utils import backfill_auth_columns
+from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
+
+logger = logging.getLogger(__name__)
 
 try:
     import mdtraj as md
@@ -23,6 +38,8 @@ def calculate_buried_sasa(
 
     The buried SASA is computed as:
         SASA_buried = SASA_ligand_alone + SASA_receptor_alone - SASA_complex
+
+    Hydrogens are not filtered here, unlike in ``compute_delta_sasa_static``.
 
     Args:
         trajectory_path: Path to trajectory file (DCD, XTC, etc.)
@@ -45,21 +62,17 @@ def calculate_buried_sasa(
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
 
-    # Calculate SASA for the complex
     sasa_complex = md.shrake_rupley(traj, probe_radius=probe_radius)
     sasa_complex_total = sasa_complex.sum(axis=1)
 
-    # Calculate SASA for ligand alone
     ligand_traj = traj.atom_slice(ligand_indices)
     sasa_ligand = md.shrake_rupley(ligand_traj, probe_radius=probe_radius)
     sasa_ligand_total = sasa_ligand.sum(axis=1)
 
-    # Calculate SASA for receptor alone
     receptor_traj = traj.atom_slice(receptor_indices)
     sasa_receptor = md.shrake_rupley(receptor_traj, probe_radius=probe_radius)
     sasa_receptor_total = sasa_receptor.sum(axis=1)
 
-    # Buried SASA = isolated components - complex
     buried_sasa = sasa_ligand_total + sasa_receptor_total - sasa_complex_total
 
     return buried_sasa
@@ -82,7 +95,9 @@ def calculate_interface_sasa(
         probe_radius: Probe radius in nm
 
     Returns:
-        Dictionary with SASA arrays for ligand, receptor, complex, and buried
+        Dictionary with per-frame SASA arrays of shape (n_frames,) in nm^2:
+        "ligand" and "receptor" (each alone), "complex", and "buried"
+        (ligand + receptor - complex)
     """
     if md is None:
         raise ImportError(
@@ -92,16 +107,13 @@ def calculate_interface_sasa(
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
 
-    # Complex SASA
     sasa_complex = md.shrake_rupley(traj, probe_radius=probe_radius)
     sasa_complex_total = sasa_complex.sum(axis=1)
 
-    # Ligand SASA
     ligand_traj = traj.atom_slice(ligand_indices)
     sasa_ligand = md.shrake_rupley(ligand_traj, probe_radius=probe_radius)
     sasa_ligand_total = sasa_ligand.sum(axis=1)
 
-    # Receptor SASA
     receptor_traj = traj.atom_slice(receptor_indices)
     sasa_receptor = md.shrake_rupley(receptor_traj, probe_radius=probe_radius)
     sasa_receptor_total = sasa_receptor.sum(axis=1)
@@ -123,9 +135,14 @@ def calculate_interface_sasa(
 
 def compute_delta_sasa_static(
     cif_path: str | Path,
-    peptide_chain: str,
-    receptor_chain: str,
+    peptide_chain: Optional[str] = None,
+    receptor_chain: Optional[str] = None,
     probe_radius: float = 1.4,
+    *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
+    hetero: Literal["ignore", "keep"] = "ignore",
+    hydrogens: Literal["ignore", "keep"] = "ignore",
 ) -> dict:
     """Compute delta SASA (buried surface area on binding) for a static structure.
 
@@ -135,13 +152,32 @@ def compute_delta_sasa_static(
     The buried area is defined as:
         delta_SASA = SASA(peptide alone) + SASA(receptor alone) - SASA(complex)
 
-    Positive values indicate surface buried upon binding.
+    Positive values indicate surface buried upon binding. The areas are
+    heavy-atom areas unless ``hydrogens="keep"``, so ``delta_sasa`` is the same
+    number as in ``interface.compute_interface_metrics`` and does not depend on
+    the protonation of the input.
 
     Args:
         cif_path: Path to CIF structure file
-        peptide_chain: Chain ID of the peptide
-        receptor_chain: Chain ID of the receptor
+        peptide_chain: Chain ID of the peptide. Required, through this
+            parameter or ``binder_chain``.
+        receptor_chain: Chain ID of the receptor. Required, through this
+            parameter or ``target_chain``.
         probe_radius: Solvent probe radius in Ångström (default 1.4 = water)
+        binder_chain: Alias of ``peptide_chain``; different IDs in both raise
+            ``ValueError``.
+        target_chain: Alias of ``receptor_chain``, same rule.
+        hetero: "ignore" (default) keeps only the polymer before the chain
+            selection (see ``interface.filter_hetero_atoms``), so waters,
+            ions, ligands and glycans that carry a protein chain ID are
+            dropped. "keep" uses every atom with the chain ID; atoms without
+            a defined SASA (water, ions) then count as zero area instead of
+            turning the sums into NaN.
+        hydrogens: "ignore" (default) drops hydrogen and deuterium atoms
+            before the areas are computed, so the buried area refers to heavy
+            atoms whatever the protonation of the input (see
+            ``interface.filter_hydrogens``). "keep" includes them in the
+            surface.
 
     Returns:
         Dictionary with keys:
@@ -149,27 +185,28 @@ def compute_delta_sasa_static(
             - sasa_peptide (float, Å²)
             - sasa_receptor (float, Å²)
             - sasa_complex (float, Å²)
+            - reason (str): only when a value could not be computed (empty
+              chain, failed SASA); the areas are then 0.0 for an empty chain
+              and NaN for a failed calculation.
     """
-    try:
-        import biotite.structure.io.pdbx as pdbx
-        from biotite.structure.info import vdw_radius_single
-        from biotite.structure.sasa import sasa as biotite_sasa
-    except ImportError:
-        raise ImportError(
-            "biotite is required for static SASA. "
-            "Install with: pip install binding-metrics[biotite]"
-        )
+    from binding_metrics.metrics.interface import (
+        SASA_POINT_NUMBER,
+        filter_hetero_atoms,
+        filter_hydrogens,
+    )
 
-    path = Path(cif_path)
-    if path.suffix.lower() in (".cif", ".mmcif"):
-        pdbx_file = pdbx.CIFFile.read(str(path))
-        backfill_auth_columns(pdbx_file)
-        atoms = pdbx.get_structure(pdbx_file, model=1)
-    else:
-        import biotite.structure.io.pdb as pdb_io
+    peptide_chain = resolve_chain_role(
+        "peptide_chain", peptide_chain, "binder_chain", binder_chain, required=True
+    )
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
+    )
+    import_biotite("static SASA")
+    from biotite.structure.info import vdw_radius_single
+    from biotite.structure.sasa import sasa as biotite_sasa
 
-        pdb_file = pdb_io.PDBFile.read(str(path))
-        atoms = pdb_io.get_structure(pdb_file, model=1)
+    atoms = load_structure(cif_path, purpose="static SASA")
+    atoms = filter_hydrogens(filter_hetero_atoms(atoms, hetero), hydrogens)
 
     peptide_mask = atoms.chain_id == peptide_chain
     receptor_mask = atoms.chain_id == receptor_chain
@@ -185,6 +222,10 @@ def compute_delta_sasa_static(
             "sasa_peptide": 0.0,
             "sasa_receptor": 0.0,
             "sasa_complex": 0.0,
+            "reason": (
+                f"peptide chain {peptide_chain!r} or receptor chain {receptor_chain!r} "
+                f"has no atoms (hetero={hetero!r})"
+            ),
         }
 
     def _get_radii(atom_array):
@@ -195,39 +236,34 @@ def compute_delta_sasa_static(
             radii.append(r if r is not None else 1.8)
         return np.array(radii, dtype=float)
 
-    try:
-        sasa_peptide = float(
-            biotite_sasa(
-                peptide_atoms,
-                probe_radius=probe_radius,
-                point_number=960,
-                vdw_radii=_get_radii(peptide_atoms),
-            ).sum()
+    def _total_sasa(atom_array) -> float:
+        # biotite marks atoms it does not sample (water, monoatomic ions) with NaN;
+        # they carry no area, so nansum keeps them from poisoning the total.
+        per_atom = biotite_sasa(
+            atom_array,
+            probe_radius=probe_radius,
+            point_number=SASA_POINT_NUMBER,
+            vdw_radii=_get_radii(atom_array),
         )
-        sasa_receptor = float(
-            biotite_sasa(
-                receptor_atoms,
-                probe_radius=probe_radius,
-                point_number=960,
-                vdw_radii=_get_radii(receptor_atoms),
-            ).sum()
-        )
-        sasa_complex = float(
-            biotite_sasa(
-                complex_atoms,
-                probe_radius=probe_radius,
-                point_number=960,
-                vdw_radii=_get_radii(complex_atoms),
-            ).sum()
-        )
-        delta_sasa = sasa_peptide + sasa_receptor - sasa_complex
-    except Exception as e:
-        print(f"  Warning: biotite SASA computation failed: {e}")
-        delta_sasa = sasa_peptide = sasa_receptor = sasa_complex = np.nan
+        return float(np.nansum(per_atom))
 
-    return {
+    reason = None
+    try:
+        sasa_peptide = _total_sasa(peptide_atoms)
+        sasa_receptor = _total_sasa(receptor_atoms)
+        sasa_complex = _total_sasa(complex_atoms)
+        delta_sasa = sasa_peptide + sasa_receptor - sasa_complex
+    except Exception as e:  # noqa: BLE001 - one bad structure must not abort a batch; see reason
+        logger.warning(f"  Warning: biotite SASA computation failed: {e}")
+        delta_sasa = sasa_peptide = sasa_receptor = sasa_complex = np.nan
+        reason = f"SASA computation failed: {type(e).__name__}: {e}"
+
+    result = {
         "delta_sasa": delta_sasa,
         "sasa_peptide": sasa_peptide,
         "sasa_receptor": sasa_receptor,
         "sasa_complex": sasa_complex,
     }
+    if reason is not None:
+        result["reason"] = reason
+    return result

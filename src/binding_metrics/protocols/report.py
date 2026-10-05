@@ -13,9 +13,16 @@ import argparse
 import csv
 import datetime
 import json
+import logging
+import math
+import numbers
 import sys
 from pathlib import Path
 from typing import Any
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Scorecard thresholds used by the Markdown summary.
@@ -178,16 +185,24 @@ def _best_e_int(energy: dict | None) -> Any:
     return None
 
 
+def _is_nonfinite(v: Any) -> bool:
+    """True for NaN and +-inf, whether a Python float or a numpy scalar."""
+    return isinstance(v, numbers.Real) and not math.isfinite(v)
+
+
 def _fmt(v: Any, decimals: int = 3) -> str:
-    if v is None:
+    # Non-finite values mean "could not be computed"; show them as N/A, as None.
+    if v is None or _is_nonfinite(v):
         return "—"
-    if isinstance(v, float):
+    if isinstance(v, (float, np.floating)):
         return f"{v:.{decimals}f}"
     return str(v)
 
 
 def _rag(value: Any, spec: dict) -> str:
-    if value is None:
+    # NaN fails every comparison and would fall through to red ("poor"); a value
+    # that could not be computed is N/A instead.
+    if value is None or _is_nonfinite(value):
         return "⬜"
     try:
         if spec["green"](value):
@@ -195,7 +210,7 @@ def _rag(value: Any, spec: dict) -> str:
         if spec["amber"](value):
             return "🟡"
         return "🔴"
-    except Exception:
+    except (TypeError, ValueError):  # a value the thresholds cannot compare (text, an array)
         return "⬜"
 
 
@@ -332,8 +347,14 @@ def _is_skipped(section: dict | None) -> bool:
 
 
 def _md_cyclic(relax: dict | None) -> str | None:
-    """Return a cyclic topology section, or None if linear."""
-    bonds = (relax or {}).get("cyclic_bonds")
+    """Return a cyclic topology section, or None if linear.
+
+    The closure bonds are read from ``peptide_cyclic_bonds``, the key
+    ``RelaxationResult.to_dict`` writes, or from ``cyclic_bonds`` in a result
+    assembled by hand. Each entry is ``{"type", "atom1", "atom2"}``.
+    """
+    relax = relax or {}
+    bonds = relax.get("peptide_cyclic_bonds") or relax.get("cyclic_bonds")
     if not bonds:
         return None
     lines = ["## Cyclic topology\n"]
@@ -378,8 +399,8 @@ def _md_relax(relax: dict | None) -> str:
             flagged = [f"res{i + 1}={v:.2f}" for i, v in enumerate(vals) if v > 1.5]
             if flagged:
                 lines.append(f"\n⚠️ **High RMSF (> 1.5 Å):** {', '.join(flagged)}")
-        except Exception:
-            pass
+        except (TypeError, ValueError) as exc:  # not JSON, or values that are not numbers
+            logger.debug("Per-residue RMSF left out of the report: %s", exc)
     return "\n".join(lines) + "\n"
 
 
@@ -581,8 +602,8 @@ def _md_openfold(of: dict | None) -> str:
             if low_idx:
                 low_strs = [f"res{i + 1} ({plddt_per_res[i]:.1f})" for i in low_idx]
                 lines.append(f"\n⚠️ **Low binder pLDDT (< 70):** {', '.join(low_strs)}")
-        except Exception:
-            pass
+        except (TypeError, ValueError, IndexError) as exc:  # values that are not numbers
+            logger.debug("Per-residue pLDDT left out of the report: %s", exc)
     return "\n".join(lines) + "\n"
 
 
@@ -722,6 +743,41 @@ def _build_summary(results: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _json_default(obj: Any) -> Any:
+    """``json`` fallback for values the encoder does not know.
+
+    numpy scalars and arrays become Python numbers and lists, so a float32 leaf
+    is written as a number and not as the string ``"1.5"``. A ``Path`` becomes
+    its string. Anything else keeps the previous behaviour of ``str(obj)``.
+    """
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return str(obj)
+
+
+def _nonfinite_paths(obj: Any, prefix: str = "") -> list[str]:
+    """Dotted paths of every NaN or infinite leaf in a nested results dict.
+
+    List items are addressed as ``name[3]``. Both Python floats and numpy
+    scalars count.
+    """
+    if isinstance(obj, dict):
+        out: list[str] = []
+        for key, value in obj.items():
+            out += _nonfinite_paths(value, f"{prefix}.{key}" if prefix else str(key))
+        return out
+    if isinstance(obj, (list, tuple)):
+        out = []
+        for i, value in enumerate(obj):
+            out += _nonfinite_paths(value, f"{prefix}[{i}]")
+        return out
+    if isinstance(obj, np.ndarray):
+        return _nonfinite_paths(obj.tolist(), prefix)
+    return [prefix] if _is_nonfinite(obj) else []
+
+
 def write_report(
     results: dict,
     output_dir: Path,
@@ -742,9 +798,18 @@ def write_report(
 
     Returns:
         Path to the primary output file (JSON or CSV).
+
+    ``results["nonfinite_fields"]`` is set to the dotted paths of every NaN or
+    infinite value (``["relax.rmsd_md_final", ...]``) before writing. The JSON
+    keeps the ``NaN`` / ``Infinity`` tokens for those values, which Python's
+    ``json`` reads back but strict JSON parsers reject; the list tells a reader
+    which fields to treat as "not computed".
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    results.pop("nonfinite_fields", None)  # recomputed, so a re-written report stays exact
+    results["nonfinite_fields"] = _nonfinite_paths(results)
 
     if fmt == "csv":
         out_path = output_dir / f"{sample_id}_results.csv"
@@ -756,7 +821,7 @@ def write_report(
     else:  # json (default)
         out_path = output_dir / f"{sample_id}_results.json"
         with open(out_path, "w", encoding="utf-8") as fh:
-            json.dump(results, fh, indent=2, default=str)
+            json.dump(results, fh, indent=2, default=_json_default)
 
     if summary:
         if summary_format == "html":
@@ -765,7 +830,7 @@ def write_report(
         else:
             report_path = output_dir / f"{sample_id}_report.md"
             report_path.write_text(_build_summary(results), encoding="utf-8")
-        print(f"  summary   → {report_path}")
+        logger.info("  summary   → %s", report_path)
 
     return out_path
 
@@ -776,6 +841,10 @@ def write_report(
 
 
 def main() -> None:
+    from binding_metrics.utils import configure_logging
+
+    configure_logging()
+
     parser = argparse.ArgumentParser(
         description=(
             "Export binding-metrics results to JSON or CSV, with optional Markdown summary."

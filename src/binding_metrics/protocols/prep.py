@@ -3,15 +3,27 @@
 Usage:
     binding-metrics-prep --input complex.cif --output cleaned.cif
     binding-metrics-prep --input complex.pdb --output cleaned.pdb --ph 6.0 --keep-water
+    binding-metrics-prep --input complex.cif --output cleaned.cif --random-seed 7
+
+Prep is seeded by default, so the same input and seed give the same output;
+``--random-seed none`` draws fresh randomness. The summary JSON echoes the seed used.
 """
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
+from binding_metrics._constants import DEFAULT_PH
+
 
 def main() -> None:
+    from binding_metrics.utils import configure_logging
+
+    # stdout carries the JSON summary that scripts parse, so INFO records stay off it.
+    configure_logging(logging.WARNING, warnings_to_stderr=True)
+
     parser = argparse.ArgumentParser(
         description="Fix and protonate a structure using PDBFixer.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -22,7 +34,7 @@ def main() -> None:
     parser.add_argument(
         "--output", "-o", type=Path, required=True, help="Output structure (.pdb, .cif, .mmcif)"
     )
-    parser.add_argument("--ph", type=float, default=7.4, help="pH for hydrogen placement")
+    parser.add_argument("--ph", type=float, default=DEFAULT_PH, help="pH for hydrogen placement")
     parser.add_argument(
         "--keep-water", action="store_true", help="Retain crystallographic water molecules"
     )
@@ -44,8 +56,9 @@ def main() -> None:
             "(needed for pipelines that output placeholders instead of modelled atoms)."
         ),
     )
-    from binding_metrics.cli import add_log_file_arg
+    from binding_metrics.cli import add_log_file_arg, add_random_seed_arg
 
+    add_random_seed_arg(parser, "hydrogen placement and PDBFixer's atom rebuilding")
     add_log_file_arg(parser)
     args = parser.parse_args()
 
@@ -81,6 +94,7 @@ def main() -> None:
             keep_water=args.keep_water,
             canonicalize=args.canonicalize,
             rebuild_zero_coord_atoms=not args.no_rebuild_zero_coord_atoms,
+            random_seed=args.random_seed,
         )
 
         save_structure(topology, positions, args.output, source_path=args.input)
@@ -90,6 +104,7 @@ def main() -> None:
             "output": str(args.output),
             "ph": args.ph,
             "keep_water": args.keep_water,
+            "random_seed": args.random_seed,
             "n_atoms_before": n_atoms_before,
             "n_atoms_after": topology.getNumAtoms(),
             "n_residues_before": n_residues_before,

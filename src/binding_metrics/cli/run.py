@@ -10,40 +10,151 @@ Usage:
         [--ph 7.4] \\
         [--metrics energy,interface,geometry,electrostatics,openfold] \\
         [--md-duration-ps 200] \\
+        [--random-seed 1] \\
         [--device cuda]
+
+The results JSON carries a ``provenance`` block (package version, git sha, seed,
+platform) so a result can be tied to the code and settings that produced it.
+
+Configuration file:
+    --config run.toml supplies option defaults; flags on the command line override
+    the file. Keys are the long option names (md-duration-ps or md_duration_ps):
+
+        # run.toml
+        md-duration-ps = 100
+        ph = 7.0
+        metrics = "interface,geometry"
+        energy-modes = ["relaxed", "raw"]
+        skip-prep = true
+
+    A flag takes true or false, an option with several values takes a list, and
+    an unknown key is an error.
 """
 
 import argparse
+import logging
 import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
-from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+from binding_metrics._constants import (
+    DEFAULT_DEVICE,
+    DEFAULT_MD_DURATION_PS,
+    DEFAULT_PH,
+    DEFAULT_RANDOM_SEED,
+)
+from binding_metrics.cli import (
+    add_config_arg,
+    add_openfold_seeds_arg,
+    md_save_interval_for,
+    parse_args_with_config,
+)
+from binding_metrics.cli import seed_arg as _seed_arg
+from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
+from binding_metrics.metrics.registry import get_metric
+from binding_metrics.protocols.relaxer import Relaxer
+from binding_metrics.provenance import collect_provenance
+from binding_metrics.utils import configure_logging
 
-ALL_METRICS = frozenset({"energy", "interface", "geometry", "electrostatics", "openfold"})
+# Named explicitly: ``python -m binding_metrics.cli.run`` executes this file as
+# ``__main__``, and a logger called ``__main__`` would sit outside the package
+# logger that ``configure_logging`` sets up, so its INFO lines would be lost.
+logger = logging.getLogger("binding_metrics.cli.run")
+
+#: Registry input types whose functions take an in-memory object (a loaded
+#: ``AtomArray``, or a model's confidence arrays) and not a structure path, so a
+#: pipeline step cannot call them.
+_NON_PATH_INPUT_TYPES = frozenset({"atom_array", "predicted_structure"})
+
+#: Pipeline step (the name ``--metrics`` takes) -> registry metrics the step runs.
+#: The names differ from the registry's where one step calls several functions
+#: (``geometry``) or the registry name says more (``structure_interaction_energy``
+#: is the per-structure energy, ``interaction_energy`` the per-frame one).
+_STEP_METRICS = {
+    "energy": ("structure_interaction_energy",),
+    "interface": ("interface",),
+    "geometry": ("ramachandran", "omega", "shape_complementarity"),
+    "electrostatics": ("coulomb",),
+    "openfold": ("openfold",),
+}
+
+
+def _steps_taking_a_path(step_metrics: dict) -> frozenset:
+    """Steps of ``step_metrics`` whose registry metrics all read a structure path.
+
+    ``get_metric`` raises ``KeyError`` for a name the registry lacks, so a step
+    cannot silently outlive the metric it runs.
+    """
+    return frozenset(
+        step
+        for step, names in step_metrics.items()
+        if all(get_metric(name).input_type not in _NON_PATH_INPUT_TYPES for name in names)
+    )
+
+
+ALL_METRICS = _steps_taking_a_path(_STEP_METRICS)
 # Reference-based metrics require a native structure (--reference) and are not
 # part of the default set; they are auto-enabled when a reference is supplied.
-REFERENCE_METRICS = frozenset({"dockq"})
+REFERENCE_METRICS = _steps_taking_a_path({"dockq": ("dockq",)})
 KNOWN_METRICS = ALL_METRICS | REFERENCE_METRICS
 
 
-def _seed_arg(value: str) -> Optional[int]:
-    """Parse --random-seed: an integer, or 'none'/'random' for fresh randomness."""
-    if value.strip().lower() in ("none", "random", "off"):
-        return None
-    return int(value)
+class ChainNotFoundError(ValueError):
+    """A chain ID requested by the caller does not exist in the structure."""
+
+
+def _require_chains_present(
+    chain_info: dict, peptide_chain: Optional[str], receptor_chain: Optional[str]
+) -> None:
+    """Raise if an explicitly requested chain ID is absent from the structure.
+
+    ``detect_chains_from_file`` echoes explicit IDs back without checking them,
+    so a typo (``--peptide-chain Z``) would otherwise surface much later as an
+    empty selection or NaN in every step. Only IDs the caller passed are
+    checked; auto-detected ones come from ``all_chains`` by construction.
+    ``all_chains`` lists amino-acid chains, so a ligand-only chain counts as
+    absent.
+
+    Raises:
+        ChainNotFoundError: (a ``ValueError``) naming the missing chain(s) and
+            listing the available ones as ``"B (13), A (85)"`` (id and residue
+            count, smallest chain first).
+    """
+    available = chain_info["all_chains"]
+    known = {c["id"] for c in available}
+    missing = [c for c in (peptide_chain, receptor_chain) if c is not None and c not in known]
+    if not missing:
+        return
+    listing = ", ".join(f"{c['id']} ({c['n_residues']})" for c in available)
+    if len(missing) == 1:
+        named = f"chain {missing[0]!r}"
+    else:
+        named = "chains " + ", ".join(repr(c) for c in missing)
+    raise ChainNotFoundError(f"{named} not found; available: {listing}")
+
+
+def _merge_reason(target: dict, extra: dict, label: str) -> None:
+    """Move ``extra["reason"]`` into ``target["reason"]`` as ``"<label>: <reason>"``.
+
+    Metric dicts merged into one flat namespace (OpenFold, then the EvoBind
+    metrics that reuse its output) each carry an optional ``reason``; a plain
+    ``dict.update`` would let the last one erase the diagnosis of the first.
+    Reasons are joined with ``"; "``, and nothing is added when ``extra`` has none.
+    """
+    reason = extra.pop("reason", None)
+    if reason:
+        target["reason"] = "; ".join(filter(None, [target.get("reason"), f"{label}: {reason}"]))
 
 
 def _warn(msg: str) -> None:
-    print(f"  [warning] {msg}", flush=True)
+    logger.warning("  [warning] %s", msg)
 
 
 def _step(name: str) -> None:
-    print(f"\n{'=' * 60}", flush=True)
-    print(f"  Step: {name}", flush=True)
-    print(f"{'=' * 60}", flush=True)
+    bar = "=" * 60
+    logger.info("\n%s\n  Step: %s\n%s", bar, name, bar)
 
 
 def run_pipeline(
@@ -52,13 +163,13 @@ def run_pipeline(
     sample_id: Optional[str] = None,
     # prep
     skip_prep: bool = False,
-    ph: float = 7.4,
+    ph: float = DEFAULT_PH,
     keep_water: bool = False,
     canonicalize: bool = False,
     # relax
     skip_relax: bool = False,
-    md_duration_ps: float = 200.0,
-    device: str = "cuda",
+    md_duration_ps: float = DEFAULT_MD_DURATION_PS,
+    device: str = DEFAULT_DEVICE,
     peptide_chain: Optional[str] = None,
     receptor_chain: Optional[str] = None,
     # metrics
@@ -71,13 +182,67 @@ def run_pipeline(
     openfold_conda_env: Optional[str] = None,
     # reproducibility
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+    openfold_seeds: Optional[Sequence[int]] = None,
+    *,
+    binder_chain: Optional[str] = None,
+    target_chain: Optional[str] = None,
+    relaxer: Optional[Relaxer] = None,
 ) -> dict:
-    """Run the full pipeline and return a results dict."""
+    """Run the full pipeline and return a results dict.
+
+    Args:
+        input_path: Complex structure (CIF or PDB).
+        output_dir: Directory for intermediate files; created when missing.
+        peptide_chain, receptor_chain: Explicit chain IDs (auth IDs). Auto-detected
+            when None; an ID that is not in the structure raises ``ChainNotFoundError``.
+        binder_chain, target_chain: Aliases of ``peptide_chain`` and ``receptor_chain``
+            (keyword-only). Both spellings with different IDs raise ``ValueError``.
+        relaxer: A ``Relaxer`` to run in place of the default ``ImplicitRelaxation``
+            (keyword-only). It carries its own configuration, so ``md_duration_ps``,
+            ``device`` and the chain IDs are not passed to it; ``random_seed`` still
+            seeds prep and the energy step. Ignored when ``skip_relax`` is true.
+        random_seed: Seed for hydrogen placement and MD; ``None`` for fresh randomness.
+        openfold_seeds: Seed values written to the OpenFold3 query JSON; ``None``
+            keeps the OpenFold default. Separate from ``random_seed``.
+        The remaining arguments mirror the ``binding-metrics-run`` flags.
+
+    Returns:
+        Dict with ``sample_id``, ``input``, ``provenance`` (see
+        ``binding_metrics.provenance.collect_provenance``), ``chains``, ``prep``,
+        ``relax``, and one entry per metric (``energy``, ``interface``,
+        ``geometry``, ``electrostatics``, ``dockq``, ``openfold``). A metric that
+        did not run is ``{"skipped": True}``; one that failed is
+        ``{"error": message}``.
+
+        ``prep`` records what preparation changed: ``removed_heterogens``,
+        ``n_removed_waters``, ``kept_nonstandard``, ``n_missing_atoms_rebuilt``,
+        ``n_missing_residue_gaps`` and ``chain_breaks`` (see
+        ``core.system.prep_structure``). ``relax`` lists under
+        ``dropped_protein_chains`` the protein chains, other than the peptide and
+        the receptor, that the relaxation removed.
+
+        ``prep`` and ``relax`` carry ``ncaa_bond_order_source`` when non-canonical
+        residues were parameterised: ``{residue name: "ccd" or "single_bonds"}``,
+        where ``"single_bonds"`` marks a residue whose double bonds, aromatic
+        rings and hydrogen count are unreliable.
+
+    Raises:
+        ChainNotFoundError: a requested chain ID does not exist in the structure.
+        ValueError: a chain is given through both spellings with different IDs.
+    """
+    peptide_chain = resolve_chain_role("peptide_chain", peptide_chain, "binder_chain", binder_chain)
+    receptor_chain = resolve_chain_role(
+        "receptor_chain", receptor_chain, "target_chain", target_chain
+    )
     if sample_id is None:
         sample_id = input_path.stem
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    results: dict = {"sample_id": sample_id, "input": str(input_path)}
+    results: dict = {
+        "sample_id": sample_id,
+        "input": str(input_path),
+        "provenance": collect_provenance(seed=random_seed),
+    }
 
     # ---------------------------------------------------------- Chain detection
     from binding_metrics.io.structures import detect_chains_from_file
@@ -88,10 +253,15 @@ def run_pipeline(
         receptor_chain=receptor_chain,
         verbose=True,
     )
+    _require_chains_present(chain_info, peptide_chain, receptor_chain)
     peptide_chain = chain_info["peptide_chain"]  # auth_asym_id (biotite)
     receptor_chain = chain_info["receptor_chain"]
-    peptide_chain_label = chain_info["peptide_chain_label"]  # label_asym_id (OpenMM)
+    peptide_chain_label = chain_info["peptide_chain_label"]  # as OpenMM names it
     receptor_chain_label = chain_info["receptor_chain_label"]
+    # The chain IDs OpenMM gives the input file. The two labels above become those of
+    # the prepped file below, which is another file with other names.
+    input_peptide_chain_label = peptide_chain_label
+    input_receptor_chain_label = receptor_chain_label
     results["chains"] = chain_info
 
     # ------------------------------------------------------------------- Prep
@@ -109,6 +279,7 @@ def run_pipeline(
                 )
             else:
                 topology, positions = load_structure(input_path)
+                prep_report: dict = {}
                 topology, positions = prep_structure(
                     topology,
                     positions,
@@ -116,11 +287,17 @@ def run_pipeline(
                     keep_water=keep_water,
                     canonicalize=canonicalize,
                     random_seed=random_seed,
+                    report=prep_report,
                 )
                 prepped_path = output_dir / f"{sample_id}_cleaned.cif"
                 save_structure(topology, positions, prepped_path, source_path=input_path)
-                print(f"  Prepped structure: {prepped_path}")
-                results["prep"] = {"output": str(prepped_path), "ph": ph, "keep_water": keep_water}
+                logger.info("  Prepped structure: %s", prepped_path)
+                results["prep"] = {
+                    "output": str(prepped_path),
+                    "ph": ph,
+                    "keep_water": keep_water,
+                    **prep_report,
+                }
                 # save_cif preserves original auth IDs and aligns label IDs to match,
                 # so downstream OpenMM steps will see the original chain IDs.
                 # Re-detect from the cleaned file so peptide_chain_label is up-to-date.
@@ -131,13 +308,13 @@ def run_pipeline(
                 )
                 peptide_chain_label = prepped_chain_info["peptide_chain_label"]
                 receptor_chain_label = prepped_chain_info["receptor_chain_label"]
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-step isolation; recorded in results["prep"]
             _warn(f"Prep failed: {e} — continuing with raw input")
             traceback.print_exc()
             prepped_path = input_path
             results["prep"] = {"error": str(e)}
     else:
-        print("\n  [skip] Prep skipped — using raw input.")
+        logger.info("\n  [skip] Prep skipped — using raw input.")
         results["prep"] = {"skipped": True}
 
     # ------------------------------------------------------------------ Relax
@@ -149,75 +326,83 @@ def run_pipeline(
         from binding_metrics.io.structures import load_structure
 
         _orig_topo, _orig_pos = load_structure(input_path)
-        cyclic_bond_hints = detect_cyclization(_orig_topo, _orig_pos, peptide_chain_label)
+        cyclic_bond_hints = detect_cyclization(_orig_topo, _orig_pos, input_peptide_chain_label)
         if cyclic_bond_hints:
-            print(
-                f"  Cyclic bond hints from original file: "
-                f"{[b.cyclic_type for b in cyclic_bond_hints]}"
+            logger.info(
+                "  Cyclic bond hints from original file: %s",
+                [b.cyclic_type for b in cyclic_bond_hints],
             )
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001 - the hints are best effort; the failure is logged
+        # Without them relaxation detects cyclisation from the prepped file, which may
+        # have lost the STRUCT_CONN records. Debug level keeps the CLI output unchanged.
+        logger.debug("Cyclic bond hints unavailable from %s: %s", input_path, e)
 
     relaxed_path: Optional[Path] = None
     if not skip_relax:
         _step("Relaxation (implicit MD)")
-        if device == "cpu" and md_duration_ps > 0:
-            print(
-                "\n  *** WARNING: running MD on CPU is extremely slow and not recommended. ***\n"
-                "  *** For production use, run on a CUDA-capable GPU (--device cuda).   ***\n"
-                "  *** Use --md-duration-ps 0 to minimize only if GPU is unavailable.   ***\n",
-                flush=True,
-            )
-        from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
+        if relaxer is None:
+            if device == "cpu" and md_duration_ps > 0:
+                logger.warning(
+                    "\n  *** WARNING: running MD on CPU is extremely slow "
+                    "and not recommended. ***\n"
+                    "  *** For production use, run on a CUDA-capable GPU (--device cuda).   ***\n"
+                    "  *** Use --md-duration-ps 0 to minimize only if GPU is unavailable.   ***\n"
+                )
+            from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
 
-        config = RelaxationConfig(
-            md_duration_ps=md_duration_ps,
-            device=device,
-            peptide_chain_id=peptide_chain_label,
-            receptor_chain_id=receptor_chain_label,
-            cyclic_bond_hints=cyclic_bond_hints or None,
-            # Auto-parameterise any non-canonical residue (e.g. cyclosporin's
-            # BMT/ABA) with GAFF2 ExternalBond templates so relaxation builds.
-            small_molecules="auto",
-            random_seed=random_seed,
-        )
-        relaxer = ImplicitRelaxation(config)
+            config = RelaxationConfig(
+                md_duration_ps=md_duration_ps,
+                md_save_interval_ps=md_save_interval_for(md_duration_ps),
+                device=device,
+                peptide_chain_id=peptide_chain_label,
+                receptor_chain_id=receptor_chain_label,
+                cyclic_bond_hints=cyclic_bond_hints or None,
+                # Auto-parameterise any non-canonical residue (e.g. cyclosporin's
+                # BMT/ABA) with GAFF2 ExternalBond templates so relaxation builds.
+                small_molecules="auto",
+                random_seed=random_seed,
+            )
+            relaxer = ImplicitRelaxation(config)
         t0 = time.time()
         relax_result = relaxer.run(prepped_path, output_dir, sample_id=sample_id)
         elapsed = time.time() - t0
 
         results["relax"] = relax_result.to_dict()
         results["relax"]["elapsed_s"] = round(elapsed, 1)
+        if results["relax"].get("qc_passed") is False:
+            # Advisory only: the QC verdict never makes the run exit non-zero.
+            logger.warning(
+                "\n[WARNING] Structural QC failed: %s", results["relax"]["qc_failed_checks"]
+            )
+        # The platform OpenMM actually ran on, when the relaxation reports it.
+        results["provenance"]["platform"] = results["relax"].get("platform")
 
         if not relax_result.success:
-            print(f"\n[FAILED] Relaxation failed: {relax_result.error_message}")
-            print("  Continuing with prepped input for downstream steps...")
+            logger.warning("\n[FAILED] Relaxation failed: %s", relax_result.error_message)
+            logger.info("  Continuing with prepped input for downstream steps...")
             relaxed_path = prepped_path
-            working_peptide = peptide_chain_label
-            working_receptor = receptor_chain_label
         else:
             # Prefer MD-final structure; fall back to minimized
             if relax_result.md_final_structure_path:
                 relaxed_path = Path(relax_result.md_final_structure_path)
             else:
                 relaxed_path = Path(relax_result.minimized_structure_path)
-            print(f"\n  Relaxed structure: {relaxed_path}")
-            # OpenMM writes the relaxed CIF using label IDs as both auth and label,
-            # so all downstream steps should use the label IDs.
-            working_peptide = peptide_chain_label
-            working_receptor = receptor_chain_label
+            logger.info("\n  Relaxed structure: %s", relaxed_path)
     else:
         # Prefer PDBFixer-prepped structure (proper termini, removed heterogens)
         # over raw input; fall back to raw only if prep was skipped or failed.
         relaxed_path = prepped_path if prepped_path != input_path else input_path
-        working_peptide = peptide_chain_label
-        working_receptor = receptor_chain_label
-        print(
-            f"\n  [skip] Relaxation skipped — using "
-            f"{'prepped' if relaxed_path != input_path else 'raw'} input "
-            "for downstream steps."
+        logger.info(
+            "\n  [skip] Relaxation skipped — using %s input for downstream steps.",
+            "prepped" if relaxed_path != input_path else "raw",
         )
         results["relax"] = {"skipped": True}
+
+    # The metrics below read ``relaxed_path``. Those that use biotite name the chains
+    # by author ID. The input has its own author IDs; a prepped or relaxed file is
+    # written from the input CIF with those author IDs restored and repeated as its
+    # label IDs. So the author IDs of the input name the chains in every case.
+    working_peptide, working_receptor = peptide_chain, receptor_chain
 
     # ------------------------------------------------------------------ Energy
     if "energy" in metrics:
@@ -225,10 +410,25 @@ def run_pipeline(
         try:
             from binding_metrics.metrics.energy import compute_interaction_energy
 
+            # The energy reads the file through OpenMM, which names the chains as
+            # detect_chains_from_file reports for that file.
+            if relaxed_path == input_path:
+                openmm_peptide = input_peptide_chain_label
+                openmm_receptor = input_receptor_chain_label
+            else:
+                openmm_ids = detect_chains_from_file(
+                    relaxed_path,
+                    peptide_chain=peptide_chain,
+                    receptor_chain=receptor_chain,
+                    verbose=False,
+                )
+                openmm_peptide = openmm_ids["peptide_chain_label"]
+                openmm_receptor = openmm_ids["receptor_chain_label"]
+
             energy = compute_interaction_energy(
                 relaxed_path,
-                peptide_chain=peptide_chain_label,
-                receptor_chain=receptor_chain_label,
+                peptide_chain=openmm_peptide,
+                receptor_chain=openmm_receptor,
                 device=device,
                 sample_id=sample_id,
                 modes=energy_modes,
@@ -236,7 +436,7 @@ def run_pipeline(
                 random_seed=random_seed,
             )
             results["energy"] = energy
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["energy"]
             _warn(f"Energy computation failed: {e}")
             traceback.print_exc()
             results["energy"] = {"error": str(e)}
@@ -255,7 +455,7 @@ def run_pipeline(
                 receptor_chain=working_receptor,
             )
             results["interface"] = interface
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results
             _warn(f"Interface metrics failed: {e}")
             traceback.print_exc()
             results["interface"] = {"error": str(e)}
@@ -284,7 +484,7 @@ def run_pipeline(
                 "omega": omega,
                 "shape_complementarity": sc,
             }
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results
             _warn(f"Geometry metrics failed: {e}")
             traceback.print_exc()
             results["geometry"] = {"error": str(e)}
@@ -303,7 +503,7 @@ def run_pipeline(
                 receptor_chain=working_receptor,
             )
             results["electrostatics"] = elec
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results
             _warn(f"Electrostatics failed: {e}")
             traceback.print_exc()
             results["electrostatics"] = {"error": str(e)}
@@ -328,8 +528,8 @@ def run_pipeline(
                 results["dockq"] = dockq
                 score = dockq.get("dockq")
                 if score is not None:
-                    print(f"  DockQ: {score:.3f} ({dockq.get('capri_class')})")
-            except Exception as e:
+                    logger.info(f"  DockQ: {score:.3f} ({dockq.get('capri_class')})")
+            except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results
                 _warn(f"DockQ failed: {e}")
                 traceback.print_exc()
                 results["dockq"] = {"error": str(e)}
@@ -354,6 +554,7 @@ def run_pipeline(
                 results["openfold"] = {"skipped": True}
             else:
                 of_dir = output_dir / "openfold"
+                seed_kwargs = {"seeds": tuple(openfold_seeds)} if openfold_seeds else {}
                 if openfold_mode == "refold":
                     predictions_dir = run_openfold_refolding(
                         complex_structure_path=input_path,
@@ -362,6 +563,7 @@ def run_pipeline(
                         query_name=sample_id,
                         output_dir=of_dir,
                         conda_env=openfold_conda_env,
+                        **seed_kwargs,
                     )
                     of_metrics = compute_openfold_metrics(
                         output_dir=predictions_dir,
@@ -378,6 +580,7 @@ def run_pipeline(
                         query_name=sample_id,
                         output_dir=of_dir,
                         conda_env=openfold_conda_env,
+                        **seed_kwargs,
                     )
                     of_metrics = compute_openfold_metrics(
                         output_dir=predictions_dir,
@@ -396,15 +599,15 @@ def run_pipeline(
 
                     # Primary score on the OF3 prediction
                     try:
-                        of_metrics.update(
-                            compute_evobind_score(
-                                of_structure,
-                                plddt_per_atom=plddt,
-                                binder_chain=peptide_chain,
-                                receptor_chain=receptor_chain,
-                            )
+                        evobind = compute_evobind_score(
+                            of_structure,
+                            plddt_per_atom=plddt,
+                            binder_chain=peptide_chain,
+                            receptor_chain=receptor_chain,
                         )
-                    except Exception as e:
+                        _merge_reason(of_metrics, evobind, "evobind")
+                        of_metrics.update(evobind)
+                    except Exception as e:  # noqa: BLE001 - per-score isolation; see evobind_error
                         _warn(f"EvoBind score failed: {e}")
                         of_metrics["evobind_error"] = str(e)
 
@@ -412,22 +615,22 @@ def run_pipeline(
                     # input design pose? Large ΔCOM = OF3 places the binder
                     # elsewhere → design pose not supported by the prediction.
                     try:
-                        of_metrics.update(
-                            compute_evobind_adversarial_check(
-                                design_structure_path=input_path,
-                                afm_structure_path=of_structure,
-                                binder_chain=peptide_chain,
-                                receptor_chain=receptor_chain,
-                                afm_plddt_per_atom=plddt,
-                            )
+                        adversarial = compute_evobind_adversarial_check(
+                            design_structure_path=input_path,
+                            afm_structure_path=of_structure,
+                            binder_chain=peptide_chain,
+                            receptor_chain=receptor_chain,
+                            afm_plddt_per_atom=plddt,
                         )
-                    except Exception as e:
+                        _merge_reason(of_metrics, adversarial, "evobind adversarial")
+                        of_metrics.update(adversarial)
+                    except Exception as e:  # noqa: BLE001 - per-check isolation; see adversarial_error
                         _warn(f"EvoBind adversarial check failed: {e}")
                         of_metrics["adversarial_error"] = str(e)
 
                 results["openfold"] = of_metrics
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results
             _warn(f"OpenFold failed: {e}")
             traceback.print_exc()
             results["openfold"] = {"error": str(e)}
@@ -459,6 +662,7 @@ def _collect_failures(results: dict) -> list:
 
 
 def _parse_metrics(value: str) -> frozenset:
+    """Parse ``--metrics``: a comma-separated list of names from ``KNOWN_METRICS``."""
     names = {v.strip() for v in value.split(",")}
     unknown = names - KNOWN_METRICS
     if unknown:
@@ -470,6 +674,7 @@ def _parse_metrics(value: str) -> frozenset:
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser(
         description="Run the full binding-metrics pipeline on a single structure.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -486,13 +691,23 @@ def main():
         help="Sample identifier (defaults to input file stem)",
     )
     parser.add_argument(
-        "--device", choices=["cuda", "cpu"], default="cuda", help="Compute device (default: cuda)"
+        "--device",
+        choices=["cuda", "cpu"],
+        default=DEFAULT_DEVICE,
+        help=f"Compute device (default: {DEFAULT_DEVICE})",
     )
     parser.add_argument(
-        "--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)"
+        "--peptide-chain",
+        "--binder-chain",
+        action=ChainAliasAction,
+        type=str,
+        default=None,
+        help="Peptide chain ID (auto-detect if omitted)",
     )
     parser.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         default=None,
         help="Receptor chain ID (auto-detect if omitted)",
@@ -514,7 +729,10 @@ def main():
         "--skip-prep", action="store_true", help="Skip PDBFixer prep; run relax on raw input"
     )
     prep_group.add_argument(
-        "--ph", type=float, default=7.4, help="pH for hydrogen placement during prep (default: 7.4)"
+        "--ph",
+        type=float,
+        default=DEFAULT_PH,
+        help=f"pH for hydrogen placement during prep (default: {DEFAULT_PH})",
     )
     prep_group.add_argument(
         "--keep-water",
@@ -539,8 +757,8 @@ def main():
     relax_group.add_argument(
         "--md-duration-ps",
         type=float,
-        default=200.0,
-        help="MD duration in ps (0 = minimize only, default: 200)",
+        default=DEFAULT_MD_DURATION_PS,
+        help=f"MD duration in ps (0 = minimize only, default: {DEFAULT_MD_DURATION_PS:g})",
     )
     relax_group.add_argument(
         "--random-seed",
@@ -594,6 +812,7 @@ def main():
         "(default: openfold3). Set to empty string to use "
         "the current environment if openfold3 is installed there.",
     )
+    add_openfold_seeds_arg(openfold_group)
 
     # Report
     report_group = parser.add_argument_group("Report")
@@ -619,8 +838,9 @@ def main():
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(report_group)
+    add_config_arg(parser)
 
-    args = parser.parse_args()
+    args = parse_args_with_config(parser)
 
     if not args.input.exists():
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)
@@ -647,26 +867,31 @@ def main():
         print(f"{'#' * 60}")
 
         t_total = time.time()
-        results = run_pipeline(
-            input_path=args.input,
-            output_dir=args.output_dir,
-            sample_id=sample_id,
-            skip_prep=args.skip_prep,
-            ph=args.ph,
-            keep_water=args.keep_water,
-            canonicalize=args.canonicalize,
-            skip_relax=args.skip_relax,
-            md_duration_ps=args.md_duration_ps,
-            device=args.device,
-            peptide_chain=args.peptide_chain,
-            receptor_chain=args.receptor_chain,
-            metrics=metrics,
-            energy_modes=tuple(args.energy_modes),
-            reference_path=args.reference,
-            openfold_mode=args.openfold_mode,
-            openfold_conda_env=args.openfold_conda_env,
-            random_seed=args.random_seed,
-        )
+        try:
+            results = run_pipeline(
+                input_path=args.input,
+                output_dir=args.output_dir,
+                sample_id=sample_id,
+                skip_prep=args.skip_prep,
+                ph=args.ph,
+                keep_water=args.keep_water,
+                canonicalize=args.canonicalize,
+                skip_relax=args.skip_relax,
+                md_duration_ps=args.md_duration_ps,
+                device=args.device,
+                peptide_chain=args.peptide_chain,
+                receptor_chain=args.receptor_chain,
+                metrics=metrics,
+                energy_modes=tuple(args.energy_modes),
+                reference_path=args.reference,
+                openfold_mode=args.openfold_mode,
+                openfold_conda_env=args.openfold_conda_env,
+                random_seed=args.random_seed,
+                openfold_seeds=args.openfold_seeds,
+            )
+        except ChainNotFoundError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
         results["total_elapsed_s"] = round(time.time() - t_total, 1)
 
         from binding_metrics.protocols.report import write_report

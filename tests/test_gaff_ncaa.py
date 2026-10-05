@@ -179,6 +179,139 @@ class TestGaffTemplateGeneration:
             name = ET.fromstring(xml).find(".//Residue").get("name")
             assert abs(net) < 1e-3, f"{name} template net charge {net} is not integer-neutral"
 
+    def test_net_charge_is_recorded_per_residue(self, cyclosporin_ncaa_result):
+        """BMT and ABA carry no acid or base, so they are neutral and raise no warning."""
+        _, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        assert set(ncaa_xmls.net_charge_by_residue) == {"BMT", "ABA"}
+        assert all(abs(q) < 1e-3 for q in ncaa_xmls.net_charge_by_residue.values())
+        assert ncaa_xmls.neutral_ionizable_groups == {}
+
+    def test_bond_orders_come_from_the_component_dictionary(self, cyclosporin_ncaa_result):
+        _, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        assert ncaa_xmls.bond_order_source_by_residue == {"BMT": "ccd", "ABA": "ccd"}
+
+    @staticmethod
+    def _build_again(cyclosporin_ncaa_result, residue_name):
+        """Template XML of ``residue_name`` built a second time from the fixture's topology."""
+        from binding_metrics.core.gaff_ncaa import (
+            _amber_backbone_types,
+            _generate_residue_template,
+            _pos_to_angstrom,
+        )
+
+        topology, positions, ff, _, _, _ = cyclosporin_ncaa_result
+        residue = next(r for r in topology.residues() if r.name == residue_name)
+        return _generate_residue_template(
+            residue,
+            topology,
+            _pos_to_angstrom(positions),
+            "gaff-2.2.20",
+            _amber_backbone_types(ff),
+        )[0]
+
+    @classmethod
+    def _rebuilt_xml(cls, cyclosporin_ncaa_result, residue_name):
+        """``(first, rebuilt)``: the template the fixture made and a second build of it."""
+        ncaa_xmls = cyclosporin_ncaa_result[3]
+        first = next(
+            x for x in ncaa_xmls if ET.fromstring(x).find(".//Residue").get("name") == residue_name
+        )
+        return first, cls._build_again(cyclosporin_ncaa_result, residue_name)
+
+    @pytest.mark.slow
+    def test_a_second_pass_keeps_the_hydrogens_of_the_first(self, cyclosporin_ncaa_result):
+        """The first pass returns each template's hydrogens, so a second pass rebuilds nothing."""
+        import openmm.app as app
+
+        topology, positions, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        fresh = app.ForceField("amber14-all.xml", "amber14/tip3pfb.xml", "implicit/obc2.xml")
+        new_topology, new_positions, xmls = parameterize_ncaa_residues(topology, positions, fresh)
+        assert new_topology is topology and new_positions is positions
+        assert list(xmls) == list(ncaa_xmls)
+
+    def test_a_second_build_of_abu_is_identical(self, cyclosporin_ncaa_result):
+        """Same residue, same seed: same charges and atom types, byte for byte."""
+        first, rebuilt = self._rebuilt_xml(cyclosporin_ncaa_result, "ABA")
+        assert rebuilt == first
+
+    @pytest.mark.slow
+    def test_a_second_build_of_mebmt_is_identical(self, cyclosporin_ncaa_result):
+        """MeBmt is the residue whose charges used to change between builds (sqm timing)."""
+        first, rebuilt = self._rebuilt_xml(cyclosporin_ncaa_result, "BMT")
+        assert rebuilt == first
+
+    def test_mebmt_stereochemistry_reaches_the_charge_calculation(
+        self, cyclosporin_ncaa_result, monkeypatch
+    ):
+        """MeBmt is (2S,3R,4R) with an E double bond in the structure; AM1-BCC must see that.
+
+        Without it the conformer that sqm minimises is a random stereoisomer: seed 1 gave a
+        diastereomer with a Z double bond.
+        """
+        from binding_metrics.core import gaff_ncaa
+
+        seen: dict = {}
+
+        def charges(molecule, random_seed=None):
+            seen["molecule"] = molecule
+            return np.linspace(-0.01, 0.01, molecule.n_atoms)
+
+        monkeypatch.setattr(gaff_ncaa, "_am1bcc_charges", charges)
+        self._build_again(cyclosporin_ncaa_result, "BMT")
+        molecule = seen["molecule"]
+        assert [a.stereochemistry for a in molecule.atoms if a.stereochemistry] == ["S", "R", "R"]
+        assert [b.stereochemistry for b in molecule.bonds if b.stereochemistry] == ["E"]
+
+    @staticmethod
+    def _template(ncaa_xmls, residue_name):
+        for xml in ncaa_xmls:
+            root = ET.fromstring(xml)
+            resel = root.find(".//Residue")
+            if resel.get("name") == residue_name:
+                return root, resel
+        raise AssertionError(f"no template for {residue_name}")
+
+    def test_bmt_template_carries_the_alkene(self, cyclosporin_ncaa_result):
+        """MeBmt (C10H19NO3 as a free acid) has 17 H in the chain and a CE=CZ double bond.
+
+        With every bond perceived single the template had 19 H and typed the alkene
+        carbons as sp3 (c3).
+        """
+        _, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        _, resel = self._template(ncaa_xmls, "BMT")
+        types = {a.get("name"): a.get("type") for a in resel.findall("Atom")}
+        hydrogens = [name for name in types if name.startswith("H")]
+
+        assert len(hydrogens) == 17
+        sp2_carbon_types = {"c2", "ce", "cf"}
+        assert types["CE"] in sp2_carbon_types and types["CZ"] in sp2_carbon_types
+        for name in ("CB", "CG2", "CD1", "CD2", "CH", "CN"):
+            assert types[name] == "c3", f"{name} is sp3 in MeBmt"
+
+    def test_aba_template_is_saturated(self, cyclosporin_ncaa_result):
+        _, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        _, resel = self._template(ncaa_xmls, "ABA")
+        types = {a.get("name"): a.get("type") for a in resel.findall("Atom")}
+
+        assert sum(name.startswith("H") for name in types) == 7
+        assert types["CB"] == "c3" and types["CG"] == "c3"
+
+    def test_backbone_carbonyl_is_a_carbonyl_without_extra_hydrogens(self, cyclosporin_ncaa_result):
+        """No hydrogen on the backbone C or O, and a carbonyl-sized charge on C and O."""
+        _, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
+        for name in ("BMT", "ABA"):
+            _, resel = self._template(ncaa_xmls, name)
+            bonded_to_backbone_co = {
+                (b.get("atomName1"), b.get("atomName2")) for b in resel.findall("Bond")
+            }
+            for atom1, atom2 in bonded_to_backbone_co:
+                for backbone, other in ((atom1, atom2), (atom2, atom1)):
+                    if backbone in ("C", "O"):
+                        assert not other.startswith("H"), f"{name}: H on backbone {backbone}"
+            charges = {a.get("name"): float(a.get("charge")) for a in resel.findall("Atom")}
+            assert charges["C"] > 0.4, f"{name} carbonyl carbon charge {charges['C']:.2f}"
+            assert charges["O"] < -0.4, f"{name} carbonyl oxygen charge {charges['O']:.2f}"
+
     def test_template_atom_names_match_topology_residue(self, cyclosporin_ncaa_result):
         topology, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
         # Every heavy-atom name in the topology NCAA residue must appear in its
@@ -324,3 +457,110 @@ class TestCyclosporinRelaxSanity:
                 d = float(np.linalg.norm(p[i] - p[j]))
                 min_d = min(min_d, d)
         assert min_d > 0.8, f"egregious clash: closest non-bonded heavy pair {min_d:.2f} Å"
+
+
+# ---------------------------------------------------------------------------
+# Log output of the template step (no antechamber: the template builders are stubbed)
+# ---------------------------------------------------------------------------
+
+_STUB_TEMPLATE = (
+    '<ForceField><Residues><Residue name="X">'
+    '<Atom name="C1" type="c3" charge="0.06"/><Atom name="C2" type="c3" charge="0.04"/>'
+    "</Residue></Residues></ForceField>"
+)
+
+# What the step used to print, one line per event, in order.
+_EXPECTED_LINES = [
+    "  [warning] could not read ff14SB backbone types; "
+    "NCAA backbones stay on GAFF (junctions may be under-parameterised).",
+    "  Auto-GAFF2: 'BMT' template generated (2 H, net charge +0.1000)",
+    "  [warning] 'BMT' instance differs from first template; reusing first (H 1 vs 2).",
+    "  [warning] GAFF NCAA template failed for 'ABA': antechamber not found",
+]
+
+
+class _FakeResidue:
+    def __init__(self, name, index):
+        self.name = name
+        self.index = index
+
+
+class _FakeTopology:
+    def __init__(self, residues):
+        self._residues = residues
+
+    def residues(self):
+        return iter(self._residues)
+
+
+@pytest.fixture
+def stubbed_template_step(monkeypatch):
+    """Run ``parameterize_ncaa_residues`` on three fake residues: BMT twice and ABA."""
+    from binding_metrics.core import gaff_ncaa
+
+    seeds: list = []
+
+    def generate(res, topology, pos_A, gaff_version, backbone_amber, random_seed=None):
+        seeds.append(random_seed)
+        if res.name == "ABA":
+            raise RuntimeError("antechamber not found")
+        hydrogens = [("H1", "C1", (0, 0, 0)), ("H2", "C2", (0, 0, 0))]
+        if res.index == 1:  # the second BMT is perceived with one hydrogen fewer
+            hydrogens = hydrogens[:1]
+        return _STUB_TEMPLATE, hydrogens, [], None
+
+    monkeypatch.setattr(gaff_ncaa, "_is_ncaa", lambda res: True)
+    monkeypatch.setattr(gaff_ncaa, "_pos_to_angstrom", lambda positions: np.zeros((3, 3)))
+    monkeypatch.setattr(gaff_ncaa, "_amber_backbone_types", lambda ff: None)
+    monkeypatch.setattr(gaff_ncaa, "_generate_residue_template", generate)
+    monkeypatch.setattr(gaff_ncaa, "_load_ffxml", lambda ff, ffxml: None)
+    monkeypatch.setattr(gaff_ncaa, "_hydrogen_parents", lambda topology: {})
+    monkeypatch.setattr(gaff_ncaa, "_has_template_hydrogens", lambda res, parents, h: False)
+    monkeypatch.setattr(
+        gaff_ncaa, "_rebuild_topology_with_injected_h", lambda top, pos, h: (top, pos)
+    )
+    topology = _FakeTopology(
+        [_FakeResidue("BMT", 0), _FakeResidue("BMT", 1), _FakeResidue("ABA", 2)]
+    )
+
+    def run(**kwargs):
+        return parameterize_ncaa_residues(topology, [None] * 3, ff=None, **kwargs)
+
+    run.seeds = seeds
+    return run
+
+
+@requires_ommff
+class TestTemplateStepLogging:
+    def test_events_reach_the_module_logger_at_their_level(self, stubbed_template_step, caplog):
+        with caplog.at_level("INFO", logger="binding_metrics"):
+            stubbed_template_step()
+        records = [r for r in caplog.records if r.name == "binding_metrics.core.gaff_ncaa"]
+        assert [r.getMessage() for r in records] == _EXPECTED_LINES
+        assert [r.levelname for r in records] == ["WARNING", "INFO", "WARNING", "WARNING"]
+
+    def test_random_seed_reaches_every_template_build(self, stubbed_template_step):
+        from binding_metrics._constants import DEFAULT_RANDOM_SEED
+
+        stubbed_template_step()
+        assert stubbed_template_step.seeds == [DEFAULT_RANDOM_SEED] * 3
+        stubbed_template_step.seeds.clear()
+        stubbed_template_step(random_seed=7)
+        assert stubbed_template_step.seeds == [7] * 3
+        stubbed_template_step.seeds.clear()
+        stubbed_template_step(random_seed=None)
+        assert stubbed_template_step.seeds == [None] * 3
+
+    def test_verbose_false_stays_silent(self, stubbed_template_step, caplog):
+        with caplog.at_level("INFO", logger="binding_metrics"):
+            stubbed_template_step(verbose=False)
+        assert not [r for r in caplog.records if r.name == "binding_metrics.core.gaff_ncaa"]
+
+    def test_console_text_matches_the_former_prints(self, stubbed_template_step, capsys):
+        from binding_metrics.utils import configure_logging
+
+        configure_logging()
+        stubbed_template_step()
+        captured = capsys.readouterr()
+        assert captured.out == "\n".join(_EXPECTED_LINES) + "\n"
+        assert captured.err == ""

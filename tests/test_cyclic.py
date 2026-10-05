@@ -461,7 +461,7 @@ class TestGetAddhVariants:
         modeller = app.Modeller(topology, pos_vec)
         try:
             modeller.addHydrogens(pH=7.0, variants=variants)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any failure is fine except 'Illegal variant'
             # Acceptable to fail for geometry/template reasons on a fake topology,
             # but must NOT be an "Illegal variant" error for GLY.
             assert "Illegal variant" not in str(exc), (
@@ -603,7 +603,7 @@ class TestSidechainLactamEndToEnd:
         mol = chem.RemoveHs(mol)  # heavy-atom-only input
         fd, path = tempfile.mkstemp(suffix=".pdb")
         try:
-            with os.fdopen(fd, "w") as fh:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(chem.MolToPDBBlock(mol))
             pdb = PDBFile(path)
         finally:

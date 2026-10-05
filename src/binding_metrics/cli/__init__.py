@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import argparse
+import difflib
 import sys
+import tomllib
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Optional, Sequence
+
+from binding_metrics._constants import DEFAULT_MD_SAVE_INTERVAL_PS
 
 
 @contextmanager
-def log_to_file(log_file):
+def log_to_file(log_file, mode: str = "w"):
     """Context manager: redirect stdout+stderr to *log_file* when provided.
 
     Usage::
@@ -16,6 +22,10 @@ def log_to_file(log_file):
         with log_to_file(args.log_file):
             # all print() calls go to the file (or stdout if log_file is None)
             ...
+
+    ``mode`` is the ``open`` mode: ``"w"`` (default) starts the file afresh,
+    ``"a"`` appends, for callers that enter the context several times on the
+    same file (one batch run logging every sample to a shared ``--log-file``).
     """
     if log_file is None:
         yield
@@ -23,7 +33,7 @@ def log_to_file(log_file):
 
     log_file = Path(log_file)
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(log_file, "w", encoding="utf-8", buffering=1)
+    fh = open(log_file, mode, encoding="utf-8", buffering=1)
     old_out, old_err = sys.stdout, sys.stderr
     sys.stdout = sys.stderr = fh
     try:
@@ -71,3 +81,234 @@ def add_log_file_arg(parser) -> None:
         metavar="PATH",
         help="Redirect all output (stdout + stderr) to this file",
     )
+
+
+def seed_arg(value: str) -> Optional[int]:
+    """Parse ``--random-seed``: an integer, or ``none``/``random``/``off`` for fresh randomness."""
+    if value.strip().lower() in ("none", "random", "off"):
+        return None
+    return int(value)
+
+
+def add_random_seed_arg(parser, what: str) -> None:
+    """Add ``--random-seed INT|none`` to an argparse parser.
+
+    The default is the library-wide ``DEFAULT_RANDOM_SEED``, so a CLI run is
+    reproducible unless the user asks for fresh randomness with ``none``.
+
+    Args:
+        parser: Parser or argument group to add the flag to.
+        what: Which stochastic steps the seed drives, worded for the help text
+            (for example ``"ion placement"``).
+    """
+    from binding_metrics._constants import DEFAULT_RANDOM_SEED
+
+    parser.add_argument(
+        "--random-seed",
+        type=seed_arg,
+        default=DEFAULT_RANDOM_SEED,
+        metavar="INT|none",
+        help=(
+            f"Seed for {what}. A fixed integer makes the run reproducible "
+            "(default: %(default)s); pass 'none' for fresh randomness each run."
+        ),
+    )
+
+
+def md_save_interval_for(md_duration_ps: float) -> float:
+    """Frame interval in ps for a pipeline relaxation whose MD lasts ``md_duration_ps``.
+
+    ``RelaxationConfig`` refuses an MD run shorter than one save interval. The
+    pipeline CLIs have no interval flag, so a short ``--md-duration-ps`` (below
+    the default interval) saves one frame at the end of the run instead of
+    failing. ``0`` (minimise only) and longer runs keep the default interval.
+    """
+    if md_duration_ps > 0:
+        return min(DEFAULT_MD_SAVE_INTERVAL_PS, md_duration_ps)
+    return DEFAULT_MD_SAVE_INTERVAL_PS
+
+
+def add_openfold_seeds_arg(parser) -> None:
+    """Add ``--openfold-seeds SEED [SEED ...]`` to an argparse parser or group.
+
+    The default is ``None``: the OpenFold functions then keep their own default
+    seed, so a run without the flag writes the same query JSON as before.
+    """
+    parser.add_argument(
+        "--openfold-seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="SEED",
+        help=(
+            "Seed values written to the OpenFold3 query JSON (default: the "
+            "OpenFold module default, 42). The first seed's first sample is scored."
+        ),
+    )
+
+
+_SMALL_MOLECULES_CHOICES = ("auto", "none")
+
+
+def small_molecules_arg(value: str):
+    """Parse ``--small-molecules``: ``"auto"``, or ``"none"`` (returned as ``None``).
+
+    Any other string is rejected. ``RelaxationConfig.small_molecules`` iterates
+    a string it does not recognise character by character and treats each
+    character as a SMILES, so a typo such as ``aut`` would register methane
+    and other fragments as "small molecules" instead of failing. Explicit
+    SMILES lists are a Python-API feature (``RelaxationConfig(small_molecules=[...])``)
+    and are not accepted on the command line.
+
+    Use as ``type=small_molecules_arg`` in an argparse argument; the value is
+    matched case-insensitively.
+
+    Raises:
+        argparse.ArgumentTypeError: for anything but ``auto`` / ``none``.
+    """
+    choice = str(value).strip().lower()
+    if choice not in _SMALL_MOLECULES_CHOICES:
+        raise argparse.ArgumentTypeError(
+            f"invalid value {value!r}: expected one of {', '.join(_SMALL_MOLECULES_CHOICES)}"
+        )
+    return None if choice == "none" else choice
+
+
+# ---------------------------------------------------------------------------
+# --config: option defaults from a TOML file
+# ---------------------------------------------------------------------------
+
+_CONFIG_HELP = (
+    "TOML file that supplies option defaults. Keys are long option names "
+    "without the leading dashes (md-duration-ps or md_duration_ps). Flags given "
+    "on the command line override the file."
+)
+
+# argparse action classes that cannot take a value from a file.
+_UNSETTABLE_ACTIONS = (
+    argparse._HelpAction,
+    argparse._VersionAction,
+    argparse._CountAction,
+    argparse._AppendAction,
+    argparse._AppendConstAction,
+)
+
+
+def add_config_arg(parser) -> None:
+    """Add ``--config PATH`` to an argparse parser; use ``parse_args_with_config`` to read it."""
+    parser.add_argument("--config", type=Path, default=None, metavar="PATH", help=_CONFIG_HELP)
+
+
+def parse_args_with_config(parser: argparse.ArgumentParser, argv: Optional[Sequence[str]] = None):
+    """Parse ``argv`` (default ``sys.argv[1:]``); a ``--config`` TOML file supplies defaults.
+
+    The file is flat: each key is the long name of an option of ``parser``,
+    with dashes or underscores (``md-duration-ps`` or ``md_duration_ps``). An
+    option's alias spelling works too (``binder-chain``). Values are
+    converted exactly as the same text on the command line would be, so ``ph = 7``,
+    ``ph = "7.0"`` and ``--ph 7`` agree, and a ``choices`` list is enforced:
+
+    * a flag such as ``skip-prep`` takes ``true`` or ``false``;
+    * an option that takes several values (``energy-modes``) takes a list;
+    * a comma-separated option (``metrics``) takes its string (``"interface,geometry"``);
+    * paths are used as written, relative to the working directory.
+
+    Precedence is built-in default, then the file, then the command line. A
+    file value also satisfies a ``required`` option. Where the file sets one
+    member of a mutually exclusive group and the command line names another,
+    the command line wins.
+
+    Ends the program through ``parser.error`` (exit code 2) for an unreadable
+    or invalid file, an unknown key (the message names it and suggests the
+    closest option), a value of the wrong type or outside the choices, and
+    two keys that set the same option.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    finder = argparse.ArgumentParser(prog=parser.prog, add_help=False)
+    finder.add_argument("--config", type=Path, default=None)
+    config_path = finder.parse_known_args(argv)[0].config
+    if config_path is not None:
+        _apply_config_file(parser, Path(config_path), argv)
+    return parser.parse_args(argv)
+
+
+def _config_options(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
+    """Map each long option name (underscored, without dashes) to its action."""
+    options: dict[str, argparse.Action] = {}
+    for action in parser._actions:
+        if isinstance(action, _UNSETTABLE_ACTIONS) or action.dest == "config":
+            continue
+        for spelling in action.option_strings:
+            if spelling.startswith("--"):
+                options[spelling[2:].replace("-", "_")] = action
+    return options
+
+
+def _config_value(parser, path: Path, key: str, action: argparse.Action, raw):
+    """Convert one TOML value the way argparse would convert the same text."""
+
+    def fail(message: str):
+        parser.error(f"--config {path}: key {key!r}: {message}")
+
+    if isinstance(raw, dict):
+        fail("expected a value, not a table")
+    if action.nargs == 0:
+        if not isinstance(raw, bool):
+            fail(f"expected true or false, got {raw!r}")
+        return raw
+    takes_many = action.nargs in ("+", "*") or (isinstance(action.nargs, int) and action.nargs > 1)
+    if isinstance(raw, list) and not takes_many:
+        fail("expected a single value, not a list")
+    converted = []
+    for item in raw if isinstance(raw, list) else [raw]:
+        if isinstance(item, (bool, dict, list)):
+            fail(f"invalid value {item!r}")
+        try:
+            value = action.type(str(item)) if action.type is not None else str(item)
+        except (ValueError, TypeError, argparse.ArgumentTypeError) as error:
+            fail(f"invalid value {item!r}: {error}")
+        if action.choices is not None and value not in action.choices:
+            fail(f"{value!r} is not one of {', '.join(str(c) for c in action.choices)}")
+        converted.append(value)
+    return converted if takes_many else converted[0]
+
+
+def _apply_config_file(parser: argparse.ArgumentParser, path: Path, argv: list[str]) -> None:
+    """Load ``path`` and install its values as the parser's defaults."""
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        parser.error(f"--config: cannot read {path}: {error.strerror or error}")
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+        parser.error(f"--config {path}: not valid TOML: {error}")
+
+    options = _config_options(parser)
+    values: dict[str, tuple[str, object]] = {}
+    for key, raw in data.items():
+        action = options.get(key.replace("-", "_"))
+        if action is None:
+            close = difflib.get_close_matches(key.replace("-", "_"), options, n=1)
+            hint = f"; did you mean {close[0].replace('_', '-')!r}?" if close else ""
+            parser.error(f"--config {path}: unknown key {key!r}{hint}")
+        if action.dest in values:
+            parser.error(
+                f"--config {path}: keys {values[action.dest][0]!r} and {key!r} set the same option"
+            )
+        values[action.dest] = (key, _config_value(parser, path, key, action, raw))
+
+    # A command-line flag beats a file value in the same mutually exclusive group.
+    for group in parser._mutually_exclusive_groups:
+        named_on_command_line = [
+            action
+            for action in group._group_actions
+            if any(token.split("=", 1)[0] in action.option_strings for token in argv)
+        ]
+        if named_on_command_line:
+            for action in group._group_actions:
+                if action not in named_on_command_line:
+                    values.pop(action.dest, None)
+
+    for action in parser._actions:
+        if action.dest in values:
+            action.required = False  # the file provides it
+    parser.set_defaults(**{dest: value for dest, (_, value) in values.items()})

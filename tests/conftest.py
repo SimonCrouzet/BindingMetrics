@@ -3,7 +3,6 @@
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 # Allow `from conftest import ...` in test files
@@ -18,7 +17,7 @@ try:
 
     _openmm.Platform.getPlatformByName("CUDA")
     HAS_CUDA = True
-except Exception:
+except Exception:  # noqa: BLE001 - probe: whatever the failure, there is no usable CUDA here
     HAS_CUDA = False
 
 
@@ -44,6 +43,25 @@ def requires_cuda(item):
 
 # Best available OpenMM platform: CUDA if available, otherwise CPU
 BEST_PLATFORM = "CUDA" if HAS_CUDA else "CPU"
+
+
+@pytest.fixture(autouse=True)
+def _restore_package_logging():
+    """Undo what a CLI ``main()`` run inside a test leaves on the package loggers.
+
+    ``configure_logging`` attaches console handlers and sets a level; without this
+    they would survive into later tests and add lines to their captured output.
+    """
+    import logging
+
+    tracked = [logging.getLogger(name) for name in ("binding_metrics", "__main__")]
+    saved = [(lg, lg.level, list(lg.handlers)) for lg in tracked]
+    yield
+    for lg, level, handlers in saved:
+        lg.setLevel(level)
+        for handler in list(lg.handlers):
+            if handler not in handlers:
+                lg.removeHandler(handler)
 
 
 # Path to real example PDB for integration tests
@@ -104,31 +122,8 @@ END
 def sample_pdb_path(sample_pdb_content: str, tmp_path: Path) -> Path:
     """Create a temporary PDB file for testing."""
     pdb_path = tmp_path / "test_complex.pdb"
-    pdb_path.write_text(sample_pdb_content)
+    pdb_path.write_text(sample_pdb_content, encoding="utf-8")
     return pdb_path
-
-
-@pytest.fixture
-def minimal_trajectory_data() -> dict:
-    """Minimal mock trajectory data for metric testing."""
-    n_frames = 10
-    n_atoms = 33  # Updated for PDB with hydrogens
-
-    # Random positions with small fluctuations
-    np.random.seed(42)
-    base_positions = np.random.rand(n_atoms, 3) * 5  # 5 nm box
-
-    positions = np.zeros((n_frames, n_atoms, 3))
-    for i in range(n_frames):
-        positions[i] = base_positions + np.random.randn(n_atoms, 3) * 0.01
-
-    return {
-        "positions": positions,  # nm
-        "n_frames": n_frames,
-        "n_atoms": n_atoms,
-        "ligand_indices": list(range(23, 33)),  # Chain B (atoms 24-33, 0-indexed)
-        "receptor_indices": list(range(23)),  # Chain A (atoms 1-23, 0-indexed)
-    }
 
 
 @pytest.fixture

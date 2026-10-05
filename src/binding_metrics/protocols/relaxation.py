@@ -9,25 +9,131 @@ Minimization stages:
     Stage 2: Backbone-restrained optimization (side chains optimize)
     Stage 3: Final unrestrained refinement
 
+Model and method references:
+    Force field     AMBER ff14SB (Maier et al., J. Chem. Theory Comput. 11, 3696, 2015),
+                    loaded through OpenMM's ``amber14-all.xml``.
+    Implicit water  OBC2 (Onufriev, Bashford and Case, Proteins 55, 383, 2004) or
+                    GBn2 (Nguyen, Roe and Simmerling, J. Chem. Theory Comput. 9,
+                    2020, 2013) generalized Born, no cutoff.
+    Constraints     Bonds to hydrogen are constrained, which is what allows the
+                    default 2 fs time step.
+    MD integrator   Langevin "middle" scheme (Zhang, Liu, Yan, Tuckerman and Liu,
+                    J. Phys. Chem. A 123, 6056, 2019), as implemented by OpenMM's
+                    ``LangevinMiddleIntegrator``.
+    RMSD            Optimal superposition by the Kabsch algorithm (Acta Cryst. A32,
+                    922, 1976).
+
 Usage:
     python -m binding_metrics.protocols.relaxation \\
         --input complex.cif \\
         --output-dir results/ \\
         --md-duration-ps 200
+
+Configuration file:
+    --config relax.toml supplies option defaults; flags on the command line
+    override the file. Keys are the long option names (md-duration-ps or
+    md_duration_ps):
+
+        # relax.toml
+        md-duration-ps = 100
+        solvent-model = "gbn2"
+        temperature = 310
+        small-molecules = "none"
+
+    A flag takes true or false, and an unknown key is an error.
 """
 
 import argparse
 import json
+import logging
 import sys
 import time
 import traceback
-from dataclasses import dataclass
+import warnings
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
 
-from binding_metrics.core.system import DEFAULT_RANDOM_SEED
+from binding_metrics._constants import (
+    DEFAULT_DEVICE,
+    DEFAULT_MD_DURATION_PS,
+    DEFAULT_MD_SAVE_INTERVAL_PS,
+    DEFAULT_PH,
+    DEFAULT_RANDOM_SEED,
+)
+from binding_metrics.core.residues import (
+    AMBER_STANDARD_VARIANTS,
+    BACKBONE_HEAVY_ATOM_NAMES,
+    FORCE_FIELD_CAP_NAMES,
+    ION_NAMES_COMMON,
+    LACTAM_TEMPLATE_RESIDUES,
+    PROTEIN_RESIDUES,
+    STANDARD_AMINO_ACIDS,
+    WATER_NAMES_WITH_H2O,
+)
+from binding_metrics.protocols.relaxer import Relaxer
+
+logger = logging.getLogger(__name__)
+
+# --- Minimization schedule -------------------------------------------------
+#
+# The three stages use a tolerance that tightens from coarse to fine: the first
+# stages only need to remove clashes and relieve strain, so stopping early saves
+# time, while the last stage converges to ``RelaxationConfig.min_tolerance``.
+# OpenMM measures the tolerance as the RMS force in kJ/mol/nm.
+
+#: Stage 1 (global relaxation) tolerance, as a multiple of ``min_tolerance``.
+STAGE1_TOLERANCE_FACTOR = 10
+#: Stage 2 (backbone-restrained) tolerance, as a multiple of ``min_tolerance``.
+STAGE2_TOLERANCE_FACTOR = 5
+
+# --- Cyclic closure (Stage 0) ----------------------------------------------
+#
+# A closure bond taken from a predicted or crystal structure can start far from
+# its equilibrium length. Stage 0 first pulls each closure bond to a peptide-bond
+# length with a strong harmonic restraint, then switches the restraint off so the
+# force field alone decides the final geometry in Stages 1-3.
+
+#: Restraint force constant of the closure bond in kJ/mol/nm^2.
+CLOSURE_RESTRAINT_K_KJ_MOL_NM2 = 1000.0
+#: Target length of the closure bond in nm: a peptide C-N bond is about 0.133 nm
+#: (Engh and Huber, Acta Cryst. A47, 392, 1991). A disulfide S-S bond is longer
+#: (0.205 nm), but the restraint is switched off before Stage 1 and the force
+#: field then relaxes the bond to its own length.
+CLOSURE_BOND_TARGET_NM = 0.1325
+#: Iteration cap of the Stage 0 minimization.
+CLOSURE_MINIMIZATION_MAX_ITERATIONS = 200
+
+# --- Cyclic warm-up MD -----------------------------------------------------
+#
+# Assigning Maxwell-Boltzmann velocities to a minimized macrocycle can kick it
+# out of the ring conformation the minimization found. The warm-up runs the
+# first picoseconds of MD with cosine restraints on the backbone phi/psi
+# dihedrals (and on the closure omega), centred on the minimized angles, and
+# releases them in three steps: 100 %, 20 % and 2 % of the initial force
+# constant over the first half, next quarter and last quarter of the warm-up.
+# The energy is k * (1 - cos(theta - theta0)), which is harmonic with force
+# constant k near theta0.
+
+#: Length of the restrained warm-up in ps.
+CYCLIC_WARMUP_PS = 10.0
+#: Force constant k of the phi/psi restraints in kJ/mol for the three phases.
+WARMUP_PHI_PSI_K_KJ_MOL = (50.0, 10.0, 1.0)
+#: Force constant k of the closure omega restraint in kJ/mol for the three
+#: phases. It is twice the phi/psi value: the single closure omega is held more
+#: tightly than the phi/psi torsions.
+WARMUP_OMEGA_K_KJ_MOL = (100.0, 20.0, 2.0)
+
+#: Slack when deciding whether ``md_duration_ps`` is a whole number of save
+#: intervals; absorbs floating-point error such as 0.3 / 0.1 = 2.9999999999999996.
+_FRAME_COUNT_TOLERANCE = 1e-9
+
+
+def _md_frame_count(duration_ps: float, save_interval_ps: float) -> int:
+    """Number of trajectory frames an MD run of ``duration_ps`` produces."""
+    return int(duration_ps / save_interval_ps + _FRAME_COUNT_TOLERANCE)
 
 
 @dataclass
@@ -38,13 +144,19 @@ class RelaxationConfig:
         min_steps_initial: Steps for initial global minimization (stage 1)
         min_steps_restrained: Steps for backbone-restrained minimization (stage 2)
         min_steps_final: Steps for final unrestrained minimization (stage 3)
-        min_tolerance: Energy tolerance in kJ/mol/nm for final stage
-        restraint_strength: Backbone restraint force constant in kJ/mol/nm²
+        min_tolerance: Energy tolerance in kJ/mol/nm for the final stage; Stages
+            1 and 2 use ``STAGE1_TOLERANCE_FACTOR`` and ``STAGE2_TOLERANCE_FACTOR``
+            times this value
+        restraint_strength: Backbone restraint force constant in kJ/mol/nm² for
+            Stage 2 (100 kJ/mol/nm² is 1 kJ/mol/Å²), centred on the input backbone
         md_duration_ps: MD simulation duration in picoseconds (0 to skip)
         md_timestep_fs: MD integration timestep in femtoseconds
         md_temperature_k: Simulation temperature in Kelvin
         md_friction: Langevin friction coefficient in 1/ps
-        md_save_interval_ps: Interval between saved trajectory frames in ps
+        md_save_interval_ps: Interval between saved trajectory frames in ps.
+            Must not exceed ``md_duration_ps`` when MD runs; a duration that is
+            not a whole number of intervals is cut to the last full one, with a
+            warning.
         ph: pH for hydrogen addition (default 7.4)
         solvent_model: Implicit solvent model ('obc2', 'gbn2')
         device: Compute device ('cuda', 'cpu')
@@ -66,16 +178,16 @@ class RelaxationConfig:
     min_tolerance: float = 1.0
     restraint_strength: float = 100.0
 
-    md_duration_ps: float = 200.0
+    md_duration_ps: float = DEFAULT_MD_DURATION_PS
     md_timestep_fs: float = 2.0
     md_temperature_k: float = 300.0
     md_friction: float = 1.0
-    md_save_interval_ps: float = 10.0
+    md_save_interval_ps: float = DEFAULT_MD_SAVE_INTERVAL_PS
 
-    ph: float = 7.4
+    ph: float = DEFAULT_PH
 
     solvent_model: str = "obc2"
-    device: str = "cuda"
+    device: str = DEFAULT_DEVICE
 
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED
     """Seed for every stochastic step (hydrogen placement, MD initial velocities
@@ -149,6 +261,39 @@ class RelaxationConfig:
     #   Stage 0 — closure bond distance restraint (strong, before Stage 1)
     #   Warmup MD — backbone φ/ψ dihedral restraints (10 ps, before production)
 
+    def __post_init__(self) -> None:
+        """Reject MD settings that would produce no frames or a shorter run.
+
+        Raises:
+            ValueError: ``md_duration_ps`` is positive but ``md_save_interval_ps``
+                is not, or the duration is shorter than one save interval (the
+                run would save 0 frames and fail after the MD finished).
+        """
+        if self.md_duration_ps <= 0:
+            return
+        if self.md_save_interval_ps <= 0:
+            raise ValueError(
+                f"md_save_interval_ps must be positive when MD runs, got {self.md_save_interval_ps}"
+            )
+        n_frames = _md_frame_count(self.md_duration_ps, self.md_save_interval_ps)
+        if n_frames < 1:
+            raise ValueError(
+                f"md_duration_ps={self.md_duration_ps} is shorter than "
+                f"md_save_interval_ps={self.md_save_interval_ps}: the run would save no "
+                "frames. Lower md_save_interval_ps or lengthen md_duration_ps."
+            )
+        simulated_ps = n_frames * self.md_save_interval_ps
+        if abs(simulated_ps - self.md_duration_ps) > _FRAME_COUNT_TOLERANCE * max(
+            1.0, self.md_duration_ps
+        ):
+            warnings.warn(
+                f"md_duration_ps={self.md_duration_ps} is not a multiple of "
+                f"md_save_interval_ps={self.md_save_interval_ps}: MD stops after "
+                f"{simulated_ps:g} ps ({n_frames} frames).",
+                UserWarning,
+                stacklevel=3,
+            )
+
 
 @dataclass
 class RelaxationResult:
@@ -173,6 +318,26 @@ class RelaxationResult:
         md_time_s: Wall time for MD simulation in seconds
         minimized_structure_path: Path to saved minimized structure CIF
         md_final_structure_path: Path to saved final MD frame CIF
+        peptide_cyclic_bonds: Detected closure bonds of a cyclic peptide
+        platform: OpenMM platform the run used ("CUDA" or "CPU")
+        precision: Numeric precision on that platform ("mixed" on CUDA, None
+            where OpenMM reports none)
+        platform_fallback_reason: Why CUDA was not used, when CUDA was requested
+            and the run fell back to CPU
+        qc: Structural QC of the relaxed structure (``{"passed", "failed",
+            "checks"}`` from ``protocols.qc.check_relaxed_structure``), with the
+            same schema under ``"md_final"`` when MD ran. Advisory.
+        qc_passed: True when every QC check passed, False when one failed, None
+            when QC did not run
+        ncaa_bond_order_source: Where the bond orders of each auto-parameterised
+            non-canonical residue came from, ``{residue name: "ccd" or
+            "single_bonds"}``. ``"single_bonds"`` marks a residue that is not in
+            the Chemical Component Dictionary (or disagrees with its entry); its
+            double bonds, aromatic rings and hydrogen count are unreliable.
+            Empty when no residue was parameterised this way.
+        dropped_protein_chains: IDs of the protein chains that are neither the peptide
+            nor the receptor and were removed before the system was built (see
+            ``io.structures.drop_other_protein_chains``). Empty when there were none.
     """
 
     sample_id: str
@@ -201,8 +366,53 @@ class RelaxationResult:
     # Each entry: {"type": str, "atom1": "chain:res_idx:atom", "atom2": ...}
     peptide_cyclic_bonds: Optional[list] = None
 
+    # OpenMM platform the run actually used ("CUDA" or "CPU") and its numeric
+    # precision ("mixed" on CUDA; None where OpenMM reports no precision, as on
+    # the CPU platform). ``platform_fallback_reason`` is set only when CUDA was
+    # requested and the run fell back to CPU.
+    platform: Optional[str] = None
+    precision: Optional[str] = None
+    platform_fallback_reason: Optional[str] = None
+
+    # Structural QC (see protocols/qc.py). ``qc`` is the dict returned by
+    # ``check_relaxed_structure`` for the minimized structure, with the same
+    # schema under ``qc["md_final"]`` when MD ran. It is advisory: a failed
+    # check never flips ``success``. ``qc_passed`` is None when QC did not run.
+    qc: Optional[dict] = None
+    qc_passed: Optional[bool] = None
+
+    ncaa_bond_order_source: dict = field(default_factory=dict)
+    dropped_protein_chains: list = field(default_factory=list)
+
+    def _qc_failed_checks(self) -> list:
+        """Names of failed QC checks, ``md_final:`` prefixed for the MD frame."""
+        if not self.qc:
+            return []
+        failed = list(self.qc.get("failed", []))
+        failed += [f"md_final:{name}" for name in (self.qc.get("md_final") or {}).get("failed", [])]
+        return failed
+
+    def _qc_check_rows(self) -> list:
+        """One row per QC check (a list, so the CSV flattening leaves it out).
+
+        Empty, not None, when QC did not run: the flattening turns a None into a
+        column of its own, which would then exist only for failed runs.
+        """
+        if not self.qc:
+            return []
+        rows = []
+        for stage, block in (("minimized", self.qc), ("md_final", self.qc.get("md_final"))):
+            for name, check in ((block or {}).get("checks") or {}).items():
+                rows.append({"stage": stage, "check": name, **check})
+        return rows
+
     def to_dict(self) -> dict:
-        """Convert result to a flat dictionary for CSV export."""
+        """Convert result to a flat dictionary for CSV export.
+
+        ``qc_passed`` and ``qc_failed_checks`` (comma-separated names) are scalar
+        columns; ``qc_checks`` lists every check with its value and is kept for
+        the JSON output.
+        """
         d = {
             "sample_id": self.sample_id,
             "success": self.success,
@@ -221,13 +431,21 @@ class RelaxationResult:
             "minimized_structure_path": self.minimized_structure_path,
             "md_final_structure_path": self.md_final_structure_path,
             "peptide_cyclic_bonds": self.peptide_cyclic_bonds,
+            "platform": self.platform,
+            "precision": self.precision,
+            "platform_fallback_reason": self.platform_fallback_reason,
+            "qc_passed": self.qc_passed,
+            "qc_failed_checks": ",".join(self._qc_failed_checks()),
+            "qc_checks": self._qc_check_rows(),
+            "ncaa_bond_order_source": dict(self.ncaa_bond_order_source),
+            "dropped_protein_chains": list(self.dropped_protein_chains),
         }
         if self.peptide_rmsf_per_residue is not None:
             d["peptide_rmsf_per_residue"] = json.dumps(self.peptide_rmsf_per_residue)
         return d
 
 
-class ImplicitRelaxation:
+class ImplicitRelaxation(Relaxer):
     """Implicit solvent MD relaxation for protein complexes.
 
     Runs multi-stage energy minimization followed by an optional short MD
@@ -253,6 +471,15 @@ class ImplicitRelaxation:
     def __init__(self, config: RelaxationConfig):
         self.config = config
         self._openmm_imported = False
+        # Set by _setup_system: detection result for D-amino acids and N-methyl
+        # residues, so run() can restore their names before saving.
+        self._ns_info = None
+        # Set by _get_platform, copied into the result by run().
+        self._platform_used: Optional[str] = None
+        self._precision_used: Optional[str] = None
+        self._platform_fallback_reason: Optional[str] = None
+        # Set by _setup_system from the GAFF template step, copied into the result.
+        self._ncaa_bond_order_source: dict = {}
 
     @staticmethod
     def _coerce_molecules(molecules: list) -> list:
@@ -277,58 +504,20 @@ class ImplicitRelaxation:
                 result.append(Molecule.from_rdkit(m, allow_undefined_stereo=True))
         return result
 
-    # Standard AMBER ff14SB residue names — these are handled by the base FF.
+    # Residue names the base force field or a curated template already covers, so
+    # none needs GAFF2. Residues, waters and ions share this set on purpose.
     _AMBER_STANDARD = frozenset(
-        {
-            # Canonical amino acids + protonation variants
-            "ALA",
-            "ARG",
-            "ASN",
-            "ASP",
-            "CYS",
-            "GLN",
-            "GLU",
-            "GLY",
-            "HIS",
-            "ILE",
-            "LEU",
-            "LYS",
-            "MET",
-            "PHE",
-            "PRO",
-            "SER",
-            "THR",
-            "TRP",
-            "TYR",
-            "VAL",
-            "CYX",
-            "HID",
-            "HIE",
-            "HIP",
-            "HIN",
-            "LYN",
-            "ASH",
-            "GLH",
-            # Our custom lactam residues
-            "ASPL",
-            "GLUL",
-            "LYSL",
-            # Common capping groups and ions
-            "ACE",
-            "NME",
-            "NMA",
-            "FOR",
-            # Water / ions
-            "HOH",
-            "WAT",
-            "H2O",
-            "NA",
-            "CL",
-            "K",
-            "MG",
-            "CA",
-            "ZN",
-        }
+        # Canonical amino acids + protonation variants (CYM included)
+        STANDARD_AMINO_ACIDS
+        | AMBER_STANDARD_VARIANTS
+        # Our custom lactam residues
+        | LACTAM_TEMPLATE_RESIDUES
+        # Common capping groups and ions; NMA is the only N-methylated
+        # residue listed
+        | FORCE_FIELD_CAP_NAMES
+        | {"NMA"}
+        | WATER_NAMES_WITH_H2O
+        | ION_NAMES_COMMON
     )
 
     @classmethod
@@ -385,11 +574,13 @@ class ImplicitRelaxation:
                     hydrogens_are_explicit=True,
                 )
                 result.append(mol)
-                print(f"  Auto-GAFF2: '{res.name}' ({mol.n_atoms} heavy atoms)")
-            except Exception as exc:
-                print(
-                    f"  Warning: could not build GAFF2 molecule for '{res.name}': "
-                    f"{exc}. Skipping (residue will be excluded from the system)."
+                logger.info("  Auto-GAFF2: '%s' (%s heavy atoms)", res.name, mol.n_atoms)
+            except Exception as exc:  # noqa: BLE001 - one residue; RDKit and openff raise many types
+                logger.warning(
+                    "  Warning: could not build GAFF2 molecule for '%s': "
+                    "%s. Skipping (residue will be excluded from the system).",
+                    res.name,
+                    exc,
                 )
 
         return result
@@ -418,44 +609,9 @@ class ImplicitRelaxation:
         """Identify peptide (smallest) and receptor (largest) protein chains."""
         self._import_openmm()
         # Amino acids only — exclude water (HOH), nucleic acids (A/C/G/T/U/I/DA/…)
-        amino_acids = {
-            "ALA",
-            "ARG",
-            "ASN",
-            "ASP",
-            "CYS",
-            "GLN",
-            "GLU",
-            "GLY",
-            "HIS",
-            "ILE",
-            "LEU",
-            "LYS",
-            "MET",
-            "PHE",
-            "PRO",
-            "SER",
-            "THR",
-            "TRP",
-            "TYR",
-            "VAL",
-            # common non-standard variants also treated as protein
-            "CYX",
-            "HID",
-            "HIE",
-            "HIP",
-            "ASPL",
-            "GLUL",
-            "LYSL",
-            "NMG",
-            "NMA",
-            "MVA",
-            "MLE",
-        }
-
         chain_sizes = []
         for chain in topology.chains():
-            n_protein = sum(1 for r in chain.residues() if r.name in amino_acids)
+            n_protein = sum(1 for r in chain.residues() if r.name in PROTEIN_RESIDUES)
             if n_protein > 0:
                 chain_sizes.append((chain.id, n_protein))
 
@@ -477,10 +633,21 @@ class ImplicitRelaxation:
         peptide_chain: str,
         receptor_chain: Optional[str],
         warn_cutoff_ang: float = 8.0,
+        report: Optional[dict] = None,
     ):
-        from binding_metrics.io.structures import strip_heterogens
+        """Strip heterogens and the protein chains outside the pair; fill ``report``.
 
-        return strip_heterogens(topology, positions, peptide_chain, receptor_chain, warn_cutoff_ang)
+        ``report`` is filled as in ``io.structures.strip_heterogens`` and
+        ``io.structures.drop_other_protein_chains`` (``dropped_protein_chains``).
+        """
+        from binding_metrics.io.structures import drop_other_protein_chains, strip_heterogens
+
+        topology, positions = strip_heterogens(
+            topology, positions, peptide_chain, receptor_chain, warn_cutoff_ang, report=report
+        )
+        return drop_other_protein_chains(
+            topology, positions, peptide_chain, receptor_chain, report=report
+        )
 
     def _setup_system(self, input_path: Path):
         """Load structure, prepare topology, and create OpenMM system.
@@ -497,6 +664,9 @@ class ImplicitRelaxation:
         """
 
         self._import_openmm()
+        self._ns_info = None
+        self._ncaa_bond_order_source = {}
+        self._dropped_protein_chains = []
 
         # --- Structure loading ---
         # The input is expected to already be prepared (via binding-metrics-prep).
@@ -514,17 +684,35 @@ class ImplicitRelaxation:
             if abs(pos.x) < 1e-6 and abs(pos.y) < 1e-6 and abs(pos.z) < 1e-6
         ]
         if origin_atoms:
-            print(f"  Removing {len(origin_atoms)} origin-placeholder atoms...")
+            logger.info("  Removing %d origin-placeholder atoms...", len(origin_atoms))
             modeller.delete(origin_atoms)
             topology, positions = modeller.topology, modeller.positions
+
+        # OpenMM bonds each residue to the next by name, whatever the distance, so a
+        # chain break is closed by the minimisation. Say so; the run is unchanged.
+        from binding_metrics.core.system import find_chain_breaks
+
+        for gap in find_chain_breaks(topology, positions):
+            logger.warning(
+                "  Chain break in chain %s: residues %s and %s are %.2f A apart (C to N); "
+                "the two are bonded and the minimisation pulls them together.",
+                gap["chain"],
+                gap["residue_before"],
+                gap["residue_after"],
+                gap["c_n_distance_angstrom"],
+            )
 
         # --- Identify chains ---
         peptide_chain, receptor_chain = self._identify_chains(topology)
 
-        # --- Strip heterogens (non-protein residues outside the two chains) ---
+        # --- Strip heterogens (non-protein residues outside the two chains) and
+        # any third protein chain: E_complex would include it, the isolated
+        # components would not, and its termini and patches are not handled ---
+        strip_report: dict = {}
         topology, positions = self._strip_heterogens(
-            topology, positions, peptide_chain, receptor_chain
+            topology, positions, peptide_chain, receptor_chain, report=strip_report
         )
+        self._dropped_protein_chains = list(strip_report.get("dropped_protein_chains", []))
 
         # --- Force field setup ---
         gb_file = (
@@ -548,13 +736,14 @@ class ImplicitRelaxation:
         )
 
         ns_info = detect_nonstandard(topology, peptide_chain)
+        self._ns_info = ns_info
         if not ns_info.is_empty:
             if ns_info.has_d_residues:
                 names = [e["original_name"] for e in ns_info.d_residues]
-                print(f"  D-amino acids: {names} → renamed to L counterparts for FF")
+                logger.info("  D-amino acids: %s → renamed to L counterparts for FF", names)
             if ns_info.has_nmethyl:
                 names = [e["original_name"] for e in ns_info.nmethyl_residues]
-                print(f"  N-methylated residues: {names}")
+                logger.info("  N-methylated residues: %s", names)
             topology, positions = patch_nonstandard(topology, positions, peptide_chain, ns_info)
             load_nonstandard_xmls(ff, ns_info)
 
@@ -576,7 +765,7 @@ class ImplicitRelaxation:
         )
         topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
         if bond_info:
-            print(f"  Cyclic peptide detected — {len(bond_info)} bond(s):")
+            logger.info("  Cyclic peptide detected — %d bond(s):", len(bond_info))
             # Build a residue-name lookup: (chain_id, res_idx_in_chain) → res_name
             res_name_map: dict = {}
             for chain in topology.chains():
@@ -587,10 +776,19 @@ class ImplicitRelaxation:
                 c2, r2, a2 = b.atom2_id
                 rname1 = res_name_map.get((c1, r1), "???")
                 rname2 = res_name_map.get((c2, r2), "???")
-                print(f"    {b.cyclic_type:<14}: {rname1}[{r1}].{a1} → {rname2}[{r2}].{a2}")
+                logger.info(
+                    "    %-14s: %s[%s].%s → %s[%s].%s",
+                    b.cyclic_type,
+                    rname1,
+                    r1,
+                    a1,
+                    rname2,
+                    r2,
+                    a2,
+                )
             load_extra_xmls(ff, bond_info)
         else:
-            print("  Linear peptide (no cyclization detected)")
+            logger.info("  Linear peptide (no cyclization detected)")
 
         # --- GAFF2 for non-standard residues / small-molecule co-factors ---
         # Must run BEFORE addHydrogens so the generated residue templates (with
@@ -613,11 +811,16 @@ class ImplicitRelaxation:
                 positions,
                 ff,
                 gaff_version=self.config.small_molecule_ff,
+                random_seed=self.config.random_seed,
+            )
+            self._ncaa_bond_order_source = dict(
+                getattr(ncaa_xmls, "bond_order_source_by_residue", {})
             )
             if ncaa_xmls:
-                print(
-                    f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
-                    f"ExternalBond templates for {len(ncaa_xmls)} NCAA residue(s)."
+                logger.info(
+                    "  Registered GAFF2 (%s) ExternalBond templates for %d NCAA residue(s).",
+                    self.config.small_molecule_ff,
+                    len(ncaa_xmls),
                 )
         elif self.config.small_molecules:
             # Explicit list: free small-molecule co-factors (no backbone bonds) via
@@ -631,13 +834,19 @@ class ImplicitRelaxation:
                 ) from exc
             mols = self._coerce_molecules(self.config.small_molecules)
             if mols:
+                # The generator's own AM1-BCC call lets sqm pick its diagonaliser by timing,
+                # so the charges would change from run to run; set them here instead.
+                from binding_metrics.core.gaff_ncaa import _assign_am1bcc_charges
+
+                _assign_am1bcc_charges(mols, self.config.random_seed)
                 gaff = GAFFTemplateGenerator(
                     molecules=mols, forcefield=self.config.small_molecule_ff
                 )
                 ff.registerTemplateGenerator(gaff.generator)
-                print(
-                    f"  Registered GAFF2 ({self.config.small_molecule_ff}) "
-                    f"for {len(mols)} small-molecule(s)."
+                logger.info(
+                    "  Registered GAFF2 (%s) for %d small-molecule(s).",
+                    self.config.small_molecule_ff,
+                    len(mols),
                 )
         else:
             nonstandard_names = [
@@ -645,13 +854,15 @@ class ImplicitRelaxation:
             ]
             if nonstandard_names:
                 unique = sorted(set(nonstandard_names))
-                print(f"  [warning] Non-standard residues found: {', '.join(unique)}")
-                print("  These will likely cause 'No template found' errors.")
-                print("  → Run with --small-molecules auto to parameterise via GAFF2.")
-                print("  → Or run binding-metrics-prep --canonicalize to replace them first.")
+                logger.warning("  [warning] Non-standard residues found: %s", ", ".join(unique))
+                logger.warning("  These will likely cause 'No template found' errors.")
+                logger.warning("  → Run with --small-molecules auto to parameterise via GAFF2.")
+                logger.warning(
+                    "  → Or run binding-metrics-prep --canonicalize to replace them first."
+                )
 
         # --- Add hydrogens ---
-        print("  Adding hydrogens...")
+        logger.info("  Adding hydrogens...")
         modeller = app.Modeller(topology, positions)
 
         # For cyclic peptides, pass explicit variants so addHydrogens uses
@@ -668,16 +879,23 @@ class ImplicitRelaxation:
         try:
             with deterministic_hydrogen_placement(seed):
                 modeller.addHydrogens(ff, pH=self.config.ph, variants=addh_variants)
-        except Exception as e:
-            print(
-                f"  Warning: addHydrogens(ff, pH={self.config.ph}) failed ({e}), "
-                "retrying without ForceField (approximate H positions)..."
+        except Exception as e:  # noqa: BLE001 - OpenMM raises many types; the retry below is logged
+            logger.warning(
+                "  Warning: addHydrogens(ff, pH=%s) failed (%s), "
+                "retrying without ForceField (approximate H positions)...",
+                self.config.ph,
+                e,
             )
             try:
                 with deterministic_hydrogen_placement(seed):
                     modeller.addHydrogens(pH=self.config.ph, variants=addh_variants)
             except Exception as e2:
-                print(f"  Warning: addHydrogens failed: {e2}")
+                logger.error("addHydrogens failed with and without the force field (%s; %s)", e, e2)
+                # Continuing would hand createSystem an un-protonated topology
+                # and surface as an unrelated template error.
+                raise RuntimeError(
+                    f"addHydrogens failed with and without the force field: {e2}"
+                ) from e2
         topology, positions = modeller.topology, modeller.positions
 
         # addHydrogens can strand a Cα H on the wrong face (random jitter +
@@ -711,6 +929,11 @@ class ImplicitRelaxation:
     def _add_restraints(self, system, topology, positions, backbone_only: bool = True) -> int:
         """Add harmonic position restraints to the system.
 
+        Each restrained atom feels ``0.5 * k * |x - x0|^2`` with ``k`` from
+        ``config.restraint_strength``. ``k`` is a global parameter named ``"k"``,
+        so setting it to 0 in the context switches the restraint off without
+        removing the force (Stage 3 does this).
+
         Args:
             system: OpenMM System
             topology: OpenMM Topology
@@ -720,7 +943,6 @@ class ImplicitRelaxation:
         Returns:
             Force index in the system
         """
-        backbone_names = {"N", "CA", "C", "O"}
         restraint = openmm.CustomExternalForce("0.5 * k * ((x-x0)^2 + (y-y0)^2 + (z-z0)^2)")
         restraint.addGlobalParameter(
             "k",
@@ -731,7 +953,7 @@ class ImplicitRelaxation:
         restraint.addPerParticleParameter("z0")
 
         for atom in topology.atoms():
-            if backbone_only and atom.name not in backbone_names:
+            if backbone_only and atom.name not in BACKBONE_HEAVY_ATOM_NAMES:
                 continue
             pos = positions[atom.index]
             restraint.addParticle(atom.index, [pos.x, pos.y, pos.z])
@@ -759,6 +981,10 @@ class ImplicitRelaxation:
         pos1 -= pos1.mean(axis=0)
         pos2 -= pos2.mean(axis=0)
 
+        # Kabsch (1976): H = P^T Q = U S V^T gives R = V U^T, the rotation for
+        # COLUMN vectors (R p_i ~ q_i). The coordinates here are rows, so the
+        # rotated set is pos1 @ R.T; applying pos1 @ R rotates by the inverse
+        # and inflates the RMSD of any pair that is not already superposed.
         H = pos1.T @ pos2
         U, S, Vt = np.linalg.svd(H)
         R = Vt.T @ U.T
@@ -766,10 +992,14 @@ class ImplicitRelaxation:
             Vt[-1, :] *= -1
             R = Vt.T @ U.T
 
-        return float(np.sqrt(np.mean(np.sum((pos1 @ R - pos2) ** 2, axis=1))) * 10)
+        return float(np.sqrt(np.mean(np.sum((pos1 @ R.T - pos2) ** 2, axis=1))) * 10)
 
     def _compute_rmsf(self, trajectory_positions, atom_indices) -> np.ndarray:
         """Compute per-atom RMSF from a list of trajectory frame positions.
+
+        RMSF_i = sqrt(mean over frames of |x_i(t) - <x_i>|^2), where <x_i> is the
+        mean position over the saved frames. Frames are not superposed first, so
+        the value includes any overall drift of the complex.
 
         Args:
             trajectory_positions: List of OpenMM position sets (one per frame)
@@ -819,13 +1049,15 @@ class ImplicitRelaxation:
         ref_positions,
         peptide_chain: str,
         omega_indices,
-        warmup_ps: float = 10.0,
+        warmup_ps: float = CYCLIC_WARMUP_PS,
     ) -> None:
         """Run short restrained MD to preserve ring conformation on velocity init.
 
         Adds backbone φ/ψ dihedral restraints (cosine form) centred on the
         minimised structure, runs ``warmup_ps`` picoseconds with a progressive
         three-phase release, then removes all restraint forces before returning.
+        The force constants and the reason for the release schedule are with
+        ``WARMUP_PHI_PSI_K_KJ_MOL`` and ``WARMUP_OMEGA_K_KJ_MOL``.
 
         Args:
             system: OpenMM System (modified in-place; forces are removed after warmup).
@@ -835,7 +1067,8 @@ class ImplicitRelaxation:
             peptide_chain: Peptide chain ID.
             omega_indices: 4-tuple of atom indices for the closure ω dihedral,
                 or None (ω restraint is skipped when None).
-            warmup_ps: Total warmup MD duration in picoseconds (default 10).
+            warmup_ps: Total warmup MD duration in picoseconds
+                (default ``CYCLIC_WARMUP_PS``).
         """
         import math
 
@@ -891,10 +1124,12 @@ class ImplicitRelaxation:
             return math.atan2(y, x)
 
         # Build torsion force: V = k * (1 - cos(θ - θ0))  →  harmonic near θ0
+        phi_psi_k_kj_mol = WARMUP_PHI_PSI_K_KJ_MOL
+        omega_k_kj_mol = WARMUP_OMEGA_K_KJ_MOL
         torsion_force = openmm.CustomTorsionForce("k_phi * (1 - cos(theta - theta0))")
         torsion_force.addGlobalParameter(
             "k_phi",
-            50.0 * unit.kilojoules_per_mole,
+            phi_psi_k_kj_mol[0] * unit.kilojoules_per_mole,
         )
         torsion_force.addPerTorsionParameter("theta0")
 
@@ -909,7 +1144,7 @@ class ImplicitRelaxation:
             omega_force = openmm.CustomTorsionForce("k_omega * (1 - cos(theta - theta0_omega))")
             omega_force.addGlobalParameter(
                 "k_omega",
-                100.0 * unit.kilojoules_per_mole,
+                omega_k_kj_mol[0] * unit.kilojoules_per_mole,
             )
             omega_force.addPerTorsionParameter("theta0_omega")
             theta0_omega = _dihedral_rad(ref_pos, *omega_indices)
@@ -925,16 +1160,16 @@ class ImplicitRelaxation:
         # Phase 1: full restraint (first half)
         simulation.step(warmup_steps // 2)
 
-        # Phase 2: reduce to 20 % (second quarter)
-        simulation.context.setParameter("k_phi", 10.0 * unit.kilojoules_per_mole)
+        # Phase 2: 20 % of the initial force constant (second quarter)
+        simulation.context.setParameter("k_phi", phi_psi_k_kj_mol[1] * unit.kilojoules_per_mole)
         if omega_force is not None:
-            simulation.context.setParameter("k_omega", 20.0 * unit.kilojoules_per_mole)
+            simulation.context.setParameter("k_omega", omega_k_kj_mol[1] * unit.kilojoules_per_mole)
         simulation.step(warmup_steps // 4)
 
-        # Phase 3: near-zero (last quarter)
-        simulation.context.setParameter("k_phi", 1.0 * unit.kilojoules_per_mole)
+        # Phase 3: 2 % of the initial force constant (last quarter)
+        simulation.context.setParameter("k_phi", phi_psi_k_kj_mol[2] * unit.kilojoules_per_mole)
         if omega_force is not None:
-            simulation.context.setParameter("k_omega", 2.0 * unit.kilojoules_per_mole)
+            simulation.context.setParameter("k_omega", omega_k_kj_mol[2] * unit.kilojoules_per_mole)
         simulation.step(warmup_steps - warmup_steps // 2 - warmup_steps // 4)
 
         # Remove restraint forces so production MD is unrestrained.
@@ -946,9 +1181,56 @@ class ImplicitRelaxation:
             system.removeForce(i)
         simulation.context.reinitialize(preserveState=True)
 
+    @staticmethod
+    def _qc_snapshot(sample_id: str, topology, positions):
+        """Snapshot for the structural QC, or None if it cannot be built."""
+        from binding_metrics.protocols.qc import AtomSnapshot
+
+        try:
+            return AtomSnapshot.from_topology(topology, positions)
+        except (ValueError, ImportError) as exc:
+            logger.warning("[%s] structural QC snapshot failed: %s", sample_id, exc)
+            return None
+
+    def _structural_qc(self, sample_id: str, reference, topology, positions, **kwargs) -> dict:
+        """Run the structural QC of ``positions`` against ``reference``.
+
+        The QC only annotates the result, so a failure to run it is recorded as
+        ``{"passed": None, "reason": ...}`` and never fails the relaxation.
+        """
+        from binding_metrics.protocols.qc import AtomSnapshot, check_relaxed_structure
+
+        if reference is None:
+            return {"passed": None, "failed": [], "checks": {}, "reason": "no reference snapshot"}
+        try:
+            return check_relaxed_structure(
+                reference, AtomSnapshot.from_topology(topology, positions), **kwargs
+            )
+        except Exception as exc:  # noqa: BLE001 - advisory: a QC bug must not fail a relaxation
+            logger.warning("[%s] structural QC could not run: %s", sample_id, exc, exc_info=True)
+            return {
+                "passed": None,
+                "failed": [],
+                "checks": {},
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+
     def _get_platform(self):
-        """Get the OpenMM compute platform, falling back to CPU if CUDA fails."""
+        """Get the OpenMM compute platform, falling back to CPU if CUDA fails.
+
+        CUDA runs in "mixed" precision: forces are computed in single precision
+        and the integration is done in double precision, the usual OpenMM
+        setting for MD on GPUs (Eastman et al., PLoS Comput. Biol. 13,
+        e1005659, 2017). A context is created once as a probe, because a driver or
+        PTX mismatch only shows up at context creation, not at platform lookup.
+
+        Besides returning ``(platform, properties)``, records what was chosen in
+        ``self._platform_used``, ``self._precision_used`` and
+        ``self._platform_fallback_reason`` so :meth:`run` can put them in the
+        result.
+        """
         self._import_openmm()
+        self._platform_fallback_reason = None
         if self.config.device == "cuda":
             try:
                 platform = openmm.Platform.getPlatformByName("CUDA")
@@ -959,11 +1241,17 @@ class ImplicitRelaxation:
                 _sys.addParticle(1.0)
                 _ctx = openmm.Context(_sys, openmm.VerletIntegrator(0.001), platform)
                 del _ctx, _sys
-                print("  Platform: CUDA (mixed precision)")
+                logger.info("  Platform: CUDA (mixed precision)")
+                self._platform_used = "CUDA"
+                self._precision_used = properties["CudaPrecision"]
                 return platform, properties
-            except Exception as e:
-                print(f"  Warning: CUDA unavailable ({e}), falling back to CPU.")
-        print("  Platform: CPU")
+            except Exception as e:  # noqa: BLE001 - any CUDA failure falls back to CPU, recorded
+                logger.warning("CUDA requested but unavailable, falling back to CPU: %s", e)
+                self._platform_fallback_reason = f"{type(e).__name__}: {e}"
+                logger.warning("  Warning: CUDA unavailable (%s), falling back to CPU.", e)
+        logger.info("  Platform: CPU")
+        self._platform_used = "CPU"
+        self._precision_used = None
         return openmm.Platform.getPlatformByName("CPU"), {}
 
     def run(
@@ -982,6 +1270,7 @@ class ImplicitRelaxation:
         Returns:
             RelaxationResult with energies, RMSD/RMSF, and output paths
         """
+        from binding_metrics.core.nonstandard import restore_nonstandard_names
         from binding_metrics.io.structures import save_cif
 
         self._import_openmm()
@@ -994,8 +1283,10 @@ class ImplicitRelaxation:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            print(f"[{sample_id}] Preparing system...")
+            logger.info("[%s] Preparing system...", sample_id)
             system, topology, positions, bond_info = self._setup_system(input_path)
+            result.ncaa_bond_order_source = dict(self._ncaa_bond_order_source)
+            result.dropped_protein_chains = list(self._dropped_protein_chains)
 
             if bond_info:
                 # atom1_id / atom2_id store (chain_id, res_idx_in_chain, atom_name)
@@ -1037,8 +1328,20 @@ class ImplicitRelaxation:
                 integrator.setRandomNumberSeed(self.config.random_seed)
 
             platform, properties = self._get_platform()
+            result.platform = self._platform_used
+            result.precision = self._precision_used
+            result.platform_fallback_reason = self._platform_fallback_reason
             simulation = app.Simulation(topology, system, integrator, platform, properties)
             simulation.context.setPositions(positions)
+
+            # Reference for the structural QC: geometry and energy of the system
+            # exactly as it enters minimization.
+            qc_reference = self._qc_snapshot(sample_id, topology, positions)
+            energy_reference_kj_mol = (
+                simulation.context.getState(getEnergy=True)
+                .getPotentialEnergy()
+                .value_in_unit(unit.kilojoules_per_mole)
+            )
 
             # --- Resolve cyclic closure atom indices (post-addHydrogens) ---
             # closure_indices_list: list of (idx1, idx2) tuples, one per bond
@@ -1057,55 +1360,62 @@ class ImplicitRelaxation:
                         closure_indices_list.append(ci)
                         if omega_indices is None:
                             omega_indices = resolve_omega_atoms(topology, bi, peptide_chain)
-                    except Exception as e:
-                        print(f"[{sample_id}]   Warning: could not resolve closure atoms: {e}")
+                    except Exception as e:  # noqa: BLE001 - per-bond isolation, logged
+                        logger.warning(
+                            "[%s]   Warning: could not resolve closure atoms: %s", sample_id, e
+                        )
 
             # --- Multi-stage minimization ---
             n_stages = "4" if closure_indices_list else "3"
-            print(f"[{sample_id}] Minimizing ({n_stages} stages)...")
+            logger.info("[%s] Minimizing (%s stages)...", sample_id, n_stages)
             min_start = time.time()
 
             # Stage 0 (cyclic only): relax all closure bond geometries before Stage 1.
             # One CustomBondForce covers all closure bonds (monocyclic or bicyclic+).
             if closure_indices_list:
-                print(
-                    f"[{sample_id}]   Stage 0: Closure bond geometry relaxation "
-                    f"({len(closure_indices_list)} bond(s))"
+                logger.info(
+                    "[%s]   Stage 0: Closure bond geometry relaxation (%d bond(s))",
+                    sample_id,
+                    len(closure_indices_list),
                 )
                 closure_force = openmm.CustomBondForce("0.5 * k_closure * (r - r0_closure)^2")
                 closure_force.addGlobalParameter(
                     "k_closure",
-                    1000.0 * unit.kilojoules_per_mole / unit.nanometer**2,
+                    CLOSURE_RESTRAINT_K_KJ_MOL_NM2 * unit.kilojoules_per_mole / unit.nanometer**2,
                 )
                 closure_force.addGlobalParameter(
-                    "r0_closure",
-                    0.1325 * unit.nanometers,  # ideal amide bond; S-S is 0.205 nm but
-                )  # the force field enforces the correct length
+                    "r0_closure", CLOSURE_BOND_TARGET_NM * unit.nanometers
+                )
                 for ci in closure_indices_list:
                     closure_force.addBond(ci[0], ci[1], [])
                 system.addForce(closure_force)
                 simulation.context.reinitialize(preserveState=True)
-                simulation.minimizeEnergy(maxIterations=200)
+                simulation.minimizeEnergy(maxIterations=CLOSURE_MINIMIZATION_MAX_ITERATIONS)
                 simulation.context.setParameter("k_closure", 0.0)
 
-            print(f"[{sample_id}]   Stage 1: Global relaxation")
+            logger.info("[%s]   Stage 1: Global relaxation", sample_id)
             simulation.minimizeEnergy(
                 maxIterations=self.config.min_steps_initial,
                 tolerance=self.config.min_tolerance
-                * 10
+                * STAGE1_TOLERANCE_FACTOR
                 * unit.kilojoules_per_mole
                 / unit.nanometer,
             )
 
-            print(f"[{sample_id}]   Stage 2: Backbone-restrained optimization")
+            logger.info("[%s]   Stage 2: Backbone-restrained optimization", sample_id)
+            # The restraints are centred on the input backbone (``positions``),
+            # so side chains settle while the backbone stays near the input.
             self._add_restraints(system, topology, positions, backbone_only=True)
             simulation.context.reinitialize(preserveState=True)
             simulation.minimizeEnergy(
                 maxIterations=self.config.min_steps_restrained,
-                tolerance=self.config.min_tolerance * 5 * unit.kilojoules_per_mole / unit.nanometer,
+                tolerance=self.config.min_tolerance
+                * STAGE2_TOLERANCE_FACTOR
+                * unit.kilojoules_per_mole
+                / unit.nanometer,
             )
 
-            print(f"[{sample_id}]   Stage 3: Final unrestrained refinement")
+            logger.info("[%s]   Stage 3: Final unrestrained refinement", sample_id)
             simulation.context.setParameter("k", 0.0)
             simulation.minimizeEnergy(
                 maxIterations=self.config.min_steps_final,
@@ -1119,17 +1429,35 @@ class ImplicitRelaxation:
             minimized_positions = state.getPositions()
             result.minimization_time_s = time.time() - min_start
 
+            result.qc = self._structural_qc(
+                sample_id,
+                qc_reference,
+                topology,
+                minimized_positions,
+                energy_kj_mol=result.potential_energy_minimized,
+                energy_before_kj_mol=energy_reference_kj_mol,
+            )
+
+            # The force field needed L / template names for D-amino acids and
+            # N-methyl residues (DAL -> ALA, SAR -> NMG). Put the input names
+            # back before anything is written, or downstream Ramachandran
+            # scoring treats every D-residue as L. Residue names are not used by
+            # the MD code below, so the topology stays restored for the rest of
+            # the run.
+            if self._ns_info is not None:
+                restore_nonstandard_names(topology, self._ns_info)
+
             # Save minimized structure — pass input as source so auth chain IDs
             # and residue numbers from the (already-prepped) input are preserved.
             min_path = output_dir / f"{sample_id}_minimized.cif"
             src = input_path if input_path.suffix.lower() in (".cif", ".mmcif") else None
             save_cif(topology, minimized_positions, min_path, source_cif_path=src)
             result.minimized_structure_path = str(min_path)
-            print(f"[{sample_id}] Minimized: {result.potential_energy_minimized:.1f} kJ/mol")
+            logger.info("[%s] Minimized: %.1f kJ/mol", sample_id, result.potential_energy_minimized)
 
             # --- MD simulation ---
             if self.config.md_duration_ps > 0:
-                print(f"[{sample_id}] Running MD ({self.config.md_duration_ps} ps)...")
+                logger.info("[%s] Running MD (%s ps)...", sample_id, self.config.md_duration_ps)
                 md_start = time.time()
                 # Seed the initial Maxwell-Boltzmann velocities too, else MD is
                 # nondeterministic even with a seeded integrator.
@@ -1146,9 +1474,9 @@ class ImplicitRelaxation:
                 # Cyclic warmup: 10 ps backbone φ/ψ dihedral restraints to
                 # preserve ring conformation during velocity initialisation.
                 if closure_indices_list:
-                    print(
-                        f"[{sample_id}]   Cyclic warmup: 10 ps restrained MD "
-                        "(backbone φ/ψ restraints)..."
+                    logger.info(
+                        "[%s]   Cyclic warmup: 10 ps restrained MD (backbone φ/ψ restraints)...",
+                        sample_id,
                     )
                     self._run_cyclic_warmup(
                         system,
@@ -1162,11 +1490,13 @@ class ImplicitRelaxation:
                 steps_per_save = int(
                     self.config.md_save_interval_ps * 1000 / self.config.md_timestep_fs
                 )
-                total_saves = int(self.config.md_duration_ps / self.config.md_save_interval_ps)
+                total_saves = _md_frame_count(
+                    self.config.md_duration_ps, self.config.md_save_interval_ps
+                )
 
                 trajectory_positions = []
                 md_energies = []
-                for i in range(total_saves):
+                for _ in range(total_saves):
                     simulation.step(steps_per_save)
                     frame_state = simulation.context.getState(getPositions=True, getEnergy=True)
                     trajectory_positions.append(frame_state.getPositions())
@@ -1223,11 +1553,24 @@ class ImplicitRelaxation:
                 save_cif(topology, final_positions, final_path, source_cif_path=src)
                 result.md_final_structure_path = str(final_path)
 
+                # MD legitimately moves away from the minimum, so the frame is
+                # compared with the minimized structure and has no RMSD bound.
+                result.qc["md_final"] = self._structural_qc(
+                    sample_id,
+                    self._qc_snapshot(sample_id, topology, minimized_positions),
+                    topology,
+                    final_positions,
+                    energy_kj_mol=result.potential_energy_md_avg,
+                    max_rmsd_angstrom=None,
+                )
+
+            outcomes = [result.qc["passed"], (result.qc.get("md_final") or {}).get("passed", True)]
+            result.qc_passed = None if None in outcomes else all(outcomes)
             result.success = True
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - one failed sample is a result, see error_message
             result.error_message = f"{type(e).__name__}: {e}"
-            print(f"[{sample_id}] ERROR: {result.error_message}")
+            logger.warning("[%s] ERROR: %s", sample_id, result.error_message)
             traceback.print_exc()
 
         return result
@@ -1289,6 +1632,7 @@ def _run_one(
 ) -> "RelaxationResult":
     """Extract one model (if needed), run relaxation, write JSON, return result."""
     from binding_metrics.io.structures import extract_model_to_tempfile
+    from binding_metrics.protocols.report import _json_default
 
     tmp_path: Optional[Path] = None
     if model_num is not None:
@@ -1309,7 +1653,7 @@ def _run_one(
         rp = Path(results_json)
         rp.parent.mkdir(parents=True, exist_ok=True)
         with open(rp, "w", encoding="utf-8") as _fh:
-            json.dump(result.to_dict(), _fh, indent=2, default=str)
+            json.dump(result.to_dict(), _fh, indent=2, default=_json_default)
         print(f"  Results:   {rp}")
 
     if result.success:
@@ -1325,6 +1669,13 @@ def _run_one(
 
 
 def main():
+    from binding_metrics.utils import configure_logging
+
+    configure_logging()
+
+    from binding_metrics.cli import add_config_arg, parse_args_with_config, small_molecules_arg
+    from binding_metrics.metrics._common import ChainAliasAction
+
     parser = argparse.ArgumentParser(
         description="Implicit solvent MD relaxation for protein complexes",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1333,26 +1684,44 @@ def main():
     parser.add_argument("--input", "-i", type=Path, required=True, help="Input CIF or PDB file")
     parser.add_argument("--output-dir", "-o", type=Path, required=True, help="Output directory")
     parser.add_argument(
-        "--md-duration-ps", type=float, default=200.0, help="MD duration in ps (0 to minimize only)"
+        "--md-duration-ps",
+        type=float,
+        default=DEFAULT_MD_DURATION_PS,
+        help="MD duration in ps (0 to minimize only)",
     )
     parser.add_argument(
-        "--md-save-interval-ps", type=float, default=10.0, help="Frame save interval in ps"
+        "--md-save-interval-ps",
+        type=float,
+        default=DEFAULT_MD_SAVE_INTERVAL_PS,
+        help="Frame save interval in ps",
     )
     parser.add_argument(
         "--temperature", type=float, default=300.0, help="Simulation temperature in K"
     )
-    parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda", help="Compute device")
     parser.add_argument(
-        "--ph", type=float, default=7.4, help="pH for hydrogen addition (default 7.4)"
+        "--device", choices=["cuda", "cpu"], default=DEFAULT_DEVICE, help="Compute device"
+    )
+    parser.add_argument(
+        "--ph",
+        type=float,
+        default=DEFAULT_PH,
+        help=f"pH for hydrogen addition (default {DEFAULT_PH})",
     )
     parser.add_argument(
         "--solvent-model", choices=["obc2", "gbn2"], default="obc2", help="Implicit solvent model"
     )
     parser.add_argument(
-        "--peptide-chain", type=str, default=None, help="Peptide chain ID (auto-detect if omitted)"
+        "--peptide-chain",
+        "--binder-chain",
+        action=ChainAliasAction,
+        type=str,
+        default=None,
+        help="Peptide chain ID (auto-detect if omitted)",
     )
     parser.add_argument(
         "--receptor-chain",
+        "--target-chain",
+        action=ChainAliasAction,
         type=str,
         default=None,
         help="Receptor chain ID (auto-detect if omitted)",
@@ -1365,7 +1734,7 @@ def main():
     )
     parser.add_argument(
         "--small-molecules",
-        type=str,
+        type=small_molecules_arg,
         default="auto",
         help="Non-standard residue parameterisation. 'auto' (default) "
         "builds GAFF2 ExternalBond templates for every exotic NCAA; "
@@ -1406,13 +1775,11 @@ def main():
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(parser)
-    args = parser.parse_args()
+    add_config_arg(parser)
+    args = parse_args_with_config(parser)
 
     if args.all_models and args.sample_id is not None:
         parser.error("--sample-id cannot be used with --all-models (IDs are auto-generated)")
-
-    if args.small_molecules is not None and args.small_molecules.lower() == "none":
-        args.small_molecules = None
 
     if args.random_seed.strip().lower() in ("none", "random", "off"):
         seed = None

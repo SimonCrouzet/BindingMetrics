@@ -32,18 +32,22 @@ def _make_seed_dir(
     seed_dir.mkdir(parents=True, exist_ok=True)
 
     if agg is not None:
-        (seed_dir / f"{prefix}_confidences_aggregated.json").write_text(json.dumps(agg))
+        (seed_dir / f"{prefix}_confidences_aggregated.json").write_text(
+            json.dumps(agg), encoding="utf-8"
+        )
 
     if conf is not None:
         # Serialise numpy arrays as lists for JSON
         serialisable = {k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()}
-        (seed_dir / f"{prefix}_confidences.json").write_text(json.dumps(serialisable))
+        (seed_dir / f"{prefix}_confidences.json").write_text(
+            json.dumps(serialisable), encoding="utf-8"
+        )
 
     # Minimal stub structure file
-    (seed_dir / f"{prefix}_model.cif").write_text("# stub CIF\n")
+    (seed_dir / f"{prefix}_model.cif").write_text("# stub CIF\n", encoding="utf-8")
 
     if timing is not None:
-        (seed_dir / "timing.json").write_text(json.dumps(timing))
+        (seed_dir / "timing.json").write_text(json.dumps(timing), encoding="utf-8")
 
     return tmp_path
 
@@ -137,7 +141,7 @@ class TestParseConfidencesAggregated:
 
         agg = _default_agg(n_chains=2)
         path = tmp_path / "agg.json"
-        path.write_text(json.dumps(agg))
+        path.write_text(json.dumps(agg), encoding="utf-8")
         result = _parse_confidences_aggregated(path)
 
         assert result["avg_plddt"] == pytest.approx(87.5)
@@ -153,7 +157,7 @@ class TestParseConfidencesAggregated:
         from binding_metrics.metrics.openfold import _parse_confidences_aggregated
 
         path = tmp_path / "agg_nopae.json"
-        path.write_text(json.dumps({"avg_plddt": 72.0, "gpde": 2.1}))
+        path.write_text(json.dumps({"avg_plddt": 72.0, "gpde": 2.1}), encoding="utf-8")
         result = _parse_confidences_aggregated(path)
 
         assert result["avg_plddt"] == pytest.approx(72.0)
@@ -174,7 +178,10 @@ class TestParseConfidences:
         conf = _default_conf(n_atoms=15, n_tokens=5, with_pde=True)
         path = tmp_path / "conf.json"
         path.write_text(
-            json.dumps({k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()})
+            json.dumps(
+                {k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()}
+            ),
+            encoding="utf-8",
         )
         result = _parse_confidences(path)
 
@@ -191,7 +198,10 @@ class TestParseConfidences:
         conf = _default_conf(with_pde=False)
         path = tmp_path / "conf_nopde.json"
         path.write_text(
-            json.dumps({k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()})
+            json.dumps(
+                {k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in conf.items()}
+            ),
+            encoding="utf-8",
         )
         result = _parse_confidences(path)
 
@@ -365,6 +375,437 @@ class TestInterfacePaeStats:
 
 
 # ---------------------------------------------------------------------------
+# Tests: token offsets against the PDE/PAE matrix size
+# ---------------------------------------------------------------------------
+
+
+def _protein_ligand_atoms():
+    """Chains A (4 residues), B (3 residues) and a 5-atom ligand chain L (one residue)."""
+    struc = pytest.importorskip("biotite.structure")
+    atoms = []
+
+    def add(chain, res_id, res_name, atom_name, xyz, hetero=False):
+        atoms.append(
+            struc.Atom(
+                xyz,
+                chain_id=chain,
+                res_id=res_id,
+                res_name=res_name,
+                atom_name=atom_name,
+                element="C",
+                hetero=hetero,
+            )
+        )
+
+    for i in range(4):
+        add("A", i + 1, "ALA", "CA", [3.8 * i, 0.0, 0.0])
+    for i in range(3):
+        add("B", i + 1, "ALA", "CA", [3.8 * i, 5.0, 0.0])
+    for k in range(5):
+        add("L", 1, "LIG", f"C{k + 1}", [3.8 * k, 10.0, 0.0], hetero=True)
+    return struc.array(atoms)
+
+
+class TestTokenOffsetCheck:
+    """AF3-style models tokenise a ligand per atom: 4 + 3 residue tokens + 5 ligand tokens."""
+
+    @pytest.mark.parametrize(
+        "name, func", [("PAE", "_interface_pae_stats"), ("PDE", "_interface_pde_stats")]
+    )
+    def test_ligand_chain_shifts_the_token_count_and_is_rejected(self, name, func):
+        from binding_metrics.metrics import openfold
+
+        atoms = _protein_ligand_atoms()
+        matrix = np.zeros((12, 12))  # 4 + 3 + 5 tokens
+        with pytest.raises(ValueError, match=rf"{name} matrix has 12 tokens .* 8 residues"):
+            getattr(openfold, func)(matrix, atoms, binder_chain="B", receptor_chain="A")
+
+    def test_message_names_the_residue_count_of_every_chain(self):
+        from binding_metrics.metrics.openfold import _interface_pae_stats
+
+        with pytest.raises(ValueError, match=r"A: 4, B: 3, L: 1"):
+            _interface_pae_stats(np.zeros((12, 12)), _protein_ligand_atoms(), "B", "A")
+
+    def test_matrix_matching_the_residue_count_is_sliced_as_before(self):
+        from binding_metrics.metrics.openfold import _interface_pae_stats, _interface_pde_stats
+
+        atoms = _protein_ligand_atoms()
+        matrix = np.zeros((8, 8))  # one token per residue, ligand as one residue
+        matrix[4:7, 0:4] = 6.0
+        pae = _interface_pae_stats(matrix, atoms, "B", "A")
+        pde = _interface_pde_stats(matrix, atoms, "B", "A")
+        assert pae["pae_interface"].shape == (3, 4)
+        assert pde["mean_interface_pde"] == pytest.approx(6.0)
+
+    def test_matrix_smaller_than_the_residue_count_is_rejected(self):
+        from binding_metrics.metrics.openfold import _interface_pde_stats
+
+        with pytest.raises(ValueError, match="PDE matrix has 6 tokens"):
+            _interface_pde_stats(np.zeros((6, 6)), _protein_ligand_atoms(), "B", "A")
+
+    def test_non_square_matrix_is_rejected(self):
+        from binding_metrics.metrics.openfold import _interface_pae_stats
+
+        with pytest.raises(ValueError, match="must be square"):
+            _interface_pae_stats(np.zeros((8, 5)), _protein_ligand_atoms(), "B", "A")
+
+    def _write_run(self, tmp_path, n_tokens):
+        pdbx = pytest.importorskip("biotite.structure.io.pdbx")
+        atoms = _protein_ligand_atoms()
+        conf = {
+            "plddt": np.full(atoms.array_length(), 90.0),
+            "gpde": 1.0,
+            "pde": np.full((n_tokens, n_tokens), 2.0),
+            "pae": np.full((n_tokens, n_tokens), 3.0),
+        }
+        root = _make_seed_dir(tmp_path, "lig", agg=_default_agg(n_chains=2), conf=conf)
+        cif = pdbx.CIFFile()
+        pdbx.set_structure(cif, atoms)
+        cif.write(str(root / "lig" / "seed_1" / "lig_seed_1_sample_1_model.cif"))
+        return root
+
+    def test_compute_openfold_metrics_leaves_interface_values_nan_with_a_reason(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = self._write_run(tmp_path, n_tokens=12)
+        with pytest.warns(UserWarning, match="interface PDE skipped"):
+            metrics = compute_openfold_metrics(root, "lig", binder_chain="B", receptor_chain="A")
+        assert np.isnan(metrics["mean_interface_pde"])
+        assert np.isnan(metrics["mean_interface_pae"])
+        assert "PDE matrix has 12 tokens" in metrics["reason"]
+        assert "PAE matrix has 12 tokens" in metrics["reason"]
+        # values that do not depend on the token layout are still reported
+        assert metrics["binder_avg_plddt"] == pytest.approx(90.0)
+
+    def test_no_reason_key_when_offsets_fit(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = self._write_run(tmp_path, n_tokens=8)
+        metrics = compute_openfold_metrics(root, "lig", binder_chain="B", receptor_chain="A")
+        assert metrics["mean_interface_pde"] == pytest.approx(2.0)
+        assert metrics["mean_interface_pae"] == pytest.approx(3.0)
+        assert "reason" not in metrics
+
+    def test_compute_interface_pae_raises_for_a_ligand_complex(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_interface_pae
+
+        root = self._write_run(tmp_path, n_tokens=12)
+        seed_dir = root / "lig" / "seed_1"
+        with pytest.raises(ValueError, match="PAE matrix has 12 tokens"):
+            compute_interface_pae(
+                seed_dir / "lig_seed_1_sample_1_confidences.json",
+                seed_dir / "lig_seed_1_sample_1_model.cif",
+                binder_chain="B",
+                receptor_chain="A",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Tests: reason strings for values that could not be computed
+# ---------------------------------------------------------------------------
+
+
+def _write_dimer_run(tmp_path, n_plddt=7, pde_tokens=7, pae_tokens=7, structure=True):
+    """Run directory for chains A (4 residues) and B (3 residues), one atom per residue.
+
+    ``pde_tokens`` / ``pae_tokens`` of None leave the matrix out of the confidences file.
+    """
+    pdbx = pytest.importorskip("biotite.structure.io.pdbx")
+    atoms = _protein_ligand_atoms()
+    atoms = atoms[atoms.chain_id != "L"]
+    conf = {"plddt": np.full(n_plddt, 90.0), "gpde": 1.0}
+    if pde_tokens is not None:
+        conf["pde"] = np.full((pde_tokens, pde_tokens), 2.0)
+    if pae_tokens is not None:
+        conf["pae"] = np.full((pae_tokens, pae_tokens), 3.0)
+    root = _make_seed_dir(tmp_path, "dim", agg=_default_agg(n_chains=2), conf=conf)
+    model = root / "dim" / "seed_1" / "dim_seed_1_sample_1_model.cif"
+    if structure:
+        cif = pdbx.CIFFile()
+        pdbx.set_structure(cif, atoms)
+        cif.write(str(model))
+    else:
+        model.unlink()
+    return root
+
+
+class TestFailureReasons:
+    def test_complete_run_has_no_reason(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = _write_dimer_run(tmp_path)
+        metrics = compute_openfold_metrics(root, "dim", binder_chain="B", receptor_chain="A")
+        assert "reason" not in metrics
+        assert metrics["mean_interface_pde"] == pytest.approx(2.0)
+
+    def test_missing_output_directory(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        metrics = compute_openfold_metrics(tmp_path / "nowhere", "q")
+        assert "no confidence files found for query 'q'" in metrics["reason"]
+
+    def test_missing_aggregated_file(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        _make_seed_dir(tmp_path, "q", agg=None, conf=_default_conf())
+        assert compute_openfold_metrics(tmp_path, "q")["reason"] == (
+            "aggregated confidences file not found"
+        )
+
+    def test_missing_per_atom_file(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        _make_seed_dir(tmp_path, "q", agg=_default_agg(), conf=None)
+        assert compute_openfold_metrics(tmp_path, "q")["reason"] == (
+            "per-atom confidences file not found"
+        )
+
+    def test_missing_structure_when_a_binder_chain_is_requested(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = _write_dimer_run(tmp_path, structure=False)
+        metrics = compute_openfold_metrics(root, "dim", binder_chain="B", receptor_chain="A")
+        assert "structure file not found" in metrics["reason"]
+        assert np.isnan(metrics["binder_avg_plddt"])
+
+    def test_missing_matrices(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = _write_dimer_run(tmp_path, pde_tokens=None, pae_tokens=None)
+        metrics = compute_openfold_metrics(root, "dim", binder_chain="B", receptor_chain="A")
+        assert "interface PDE: no PDE matrix" in metrics["reason"]
+        assert "interface PAE: no PAE matrix" in metrics["reason"]
+        assert metrics["binder_avg_plddt"] == pytest.approx(90.0)
+
+    def test_plddt_that_does_not_match_the_atom_count(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = _write_dimer_run(tmp_path, n_plddt=10)
+        with pytest.warns(UserWarning, match="binder pLDDT skipped"):
+            metrics = compute_openfold_metrics(root, "dim", binder_chain="B", receptor_chain="A")
+        assert "binder pLDDT: plddt_per_atom length (10)" in metrics["reason"]
+        assert np.isnan(metrics["binder_avg_plddt"])
+        # the interface blocks do not depend on the pLDDT array
+        assert metrics["mean_interface_pde"] == pytest.approx(2.0)
+
+    def test_reference_with_a_different_binder_length(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        pdbx = pytest.importorskip("biotite.structure.io.pdbx")
+        atoms = _protein_ligand_atoms()
+        reference = atoms[(atoms.chain_id == "A") | ((atoms.chain_id == "B") & (atoms.res_id < 3))]
+        ref_cif = pdbx.CIFFile()
+        pdbx.set_structure(ref_cif, reference)
+        ref_path = tmp_path / "ref.cif"
+        ref_cif.write(str(ref_path))
+
+        root = _write_dimer_run(tmp_path / "run")
+        with pytest.warns(UserWarning, match="binder RMSD skipped"):
+            metrics = compute_openfold_metrics(
+                root,
+                "dim",
+                binder_chain="B",
+                receptor_chain="A",
+                reference_structure_path=ref_path,
+            )
+        assert "binder RMSD: Binder Cα count mismatch" in metrics["reason"]
+        assert np.isnan(metrics["binder_ca_rmsd"])
+
+    def test_missing_reference_file(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = _write_dimer_run(tmp_path)
+        with pytest.warns(UserWarning, match="binder RMSD skipped"):
+            metrics = compute_openfold_metrics(
+                root,
+                "dim",
+                binder_chain="B",
+                reference_structure_path=tmp_path / "absent.cif",
+            )
+        assert metrics["reason"].startswith("binder RMSD:")
+
+    def test_unparseable_structure_is_recorded(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        root = _make_seed_dir(tmp_path, "bad", agg=_default_agg(), conf=_default_conf())
+        # the stub written by _make_seed_dir is not a CIF a parser can read
+        with pytest.warns(UserWarning, match="structural analysis failed"):
+            metrics = compute_openfold_metrics(root, "bad", binder_chain="B", receptor_chain="A")
+        assert metrics["reason"].startswith("structural analysis failed:")
+        assert metrics["avg_plddt"] == pytest.approx(87.5)  # scalar metrics survive
+
+    def test_unexpected_errors_are_reported_by_the_outer_guard_not_swallowed_silently(
+        self, tmp_path, monkeypatch
+    ):
+        from binding_metrics.metrics import openfold
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(openfold, "_binder_plddt_per_residue", _boom)
+        root = _write_dimer_run(tmp_path)
+        with pytest.warns(UserWarning, match="structural analysis failed"):
+            metrics = openfold.compute_openfold_metrics(
+                root, "dim", binder_chain="B", receptor_chain="A"
+            )
+        assert "RuntimeError: boom" in metrics["reason"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: seeds in the query JSON and the seed index
+# ---------------------------------------------------------------------------
+
+_P53_MDM2 = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+
+
+@pytest.fixture
+def batch_sample():
+    from binding_metrics.metrics.openfold import _BatchSample
+
+    return _BatchSample(
+        query_name="p53", complex_structure_path=_P53_MDM2, receptor_chain="A", binder_chain="B"
+    )
+
+
+class TestQuerySeeds:
+    """The query JSON pins the seeds OpenFold3 samples with; 42 is only the default."""
+
+    @pytest.fixture(autouse=True)
+    def _require_gemmi(self):
+        pytest.importorskip("gemmi")
+
+    def _seeds(self, query_json: Path):
+        return json.loads(query_json.read_text(encoding="utf-8"))["seeds"]
+
+    def test_scoring_query_defaults_to_42(self, tmp_path):
+        from binding_metrics.metrics.openfold import prepare_scoring_query
+
+        path = prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path)
+        assert self._seeds(path) == [42]
+
+    def test_refolding_query_defaults_to_42(self, tmp_path):
+        from binding_metrics.metrics.openfold import prepare_refolding_query
+
+        path = prepare_refolding_query(_P53_MDM2, "A", "B", "q", tmp_path)
+        assert self._seeds(path) == [42]
+
+    def test_seeds_argument_reaches_the_json(self, tmp_path):
+        from binding_metrics.metrics.openfold import (
+            prepare_refolding_query,
+            prepare_scoring_query,
+        )
+
+        scoring = prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path / "s", seeds=(7, 8, 9))
+        refolding = prepare_refolding_query(_P53_MDM2, "A", "B", "q", tmp_path / "r", seeds=[3])
+        assert self._seeds(scoring) == [7, 8, 9]
+        assert self._seeds(refolding) == [3]
+
+    def test_batched_queries_take_seeds(self, tmp_path, batch_sample):
+        from binding_metrics.metrics.openfold import (
+            prepare_batched_refolding_queries,
+            prepare_batched_scoring_queries,
+        )
+
+        default = prepare_batched_scoring_queries([batch_sample], tmp_path / "d")
+        scoring = prepare_batched_scoring_queries([batch_sample], tmp_path / "s", seeds=(1, 2))
+        refolding = prepare_batched_refolding_queries([batch_sample], tmp_path / "r", seeds=(5,))
+        assert self._seeds(default) == [42]
+        assert self._seeds(scoring) == [1, 2]
+        assert self._seeds(refolding) == [5]
+
+    @pytest.mark.parametrize("bad", [(), []])
+    def test_empty_seeds_are_rejected_before_anything_is_written(self, tmp_path, bad):
+        from binding_metrics.metrics.openfold import prepare_scoring_query
+
+        with pytest.raises(ValueError, match="at least one"):
+            prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path / "out", seeds=bad)
+        assert not (tmp_path / "out").exists()
+
+    def test_a_string_is_not_a_seed_list(self, tmp_path):
+        from binding_metrics.metrics.openfold import prepare_scoring_query
+
+        with pytest.raises(TypeError, match="sequence of integers"):
+            prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path, seeds="42")
+
+    @pytest.mark.parametrize("runner", ["run_openfold_scoring", "run_openfold_refolding"])
+    def test_run_wrappers_forward_seeds(self, tmp_path, monkeypatch, runner):
+        from binding_metrics.metrics import openfold
+
+        captured = {}
+
+        def _fake_run(query_json, **kwargs):
+            captured["seeds"] = self._seeds(Path(query_json))
+            captured["num_model_seeds"] = kwargs["num_model_seeds"]
+            return Path(kwargs["output_dir"])
+
+        monkeypatch.setattr(openfold, "run_openfold", _fake_run)
+        getattr(openfold, runner)(
+            _P53_MDM2, "A", "B", "q", tmp_path, seeds=(11, 12), num_model_seeds=2
+        )
+        assert captured == {"seeds": [11, 12], "num_model_seeds": 2}
+
+        getattr(openfold, runner)(_P53_MDM2, "A", "B", "q", tmp_path / "again")
+        assert captured["seeds"] == [42]
+
+    def test_batched_wrapper_forwards_seeds(self, tmp_path, monkeypatch, batch_sample):
+        from binding_metrics.metrics import openfold
+
+        captured = {}
+
+        def _fake_run(query_json, **kwargs):
+            captured["seeds"] = self._seeds(Path(query_json))
+            return Path(kwargs["output_dir"])
+
+        monkeypatch.setattr(openfold, "run_openfold", _fake_run)
+        openfold.run_openfold_batched([batch_sample], tmp_path, mode="refold", seeds=(4, 5))
+        assert captured["seeds"] == [4, 5]
+
+    @pytest.mark.parametrize(
+        "argv, expected",
+        [([], [42]), (["--seeds", "5", "6"], [5, 6])],
+    )
+    def test_cli_seeds_flag(self, tmp_path, monkeypatch, argv, expected):
+        from binding_metrics.metrics import openfold
+
+        out = tmp_path / "out"
+        monkeypatch.setattr(
+            "sys.argv",
+            ["prog", "prepare-scoring-query", "--complex", str(_P53_MDM2), "--receptor-chain",
+             "A", "--binder-chain", "B", "--query-name", "q", "--output-dir", str(out), *argv],
+        )  # fmt: skip
+        openfold.main()
+        assert self._seeds(out / "q_query.json") == expected
+
+
+class TestSeedIndex:
+    def test_seed_index_selects_the_seed_directory_by_position(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        _make_seed_dir(tmp_path, "q", seed=1, agg={"avg_plddt": 70.0})
+        _make_seed_dir(tmp_path, "q", seed=2, agg={"avg_plddt": 90.0})
+
+        by_position = compute_openfold_metrics(tmp_path, "q", seed_index=2)
+        assert by_position["avg_plddt"] == pytest.approx(90.0)
+        assert by_position["seed"] == 2
+        assert compute_openfold_metrics(tmp_path, "q", seed=1)["avg_plddt"] == pytest.approx(70.0)
+
+    def test_seed_directory_names_are_not_seed_values(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        # OpenFold3 names directories after its own transformed seeds, e.g. seed_1234567
+        _make_seed_dir(tmp_path, "q", seed=1234567, agg={"avg_plddt": 66.0})
+        assert compute_openfold_metrics(tmp_path, "q", seed=1)["avg_plddt"] == pytest.approx(66.0)
+
+    def test_seed_index_takes_precedence_over_seed(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_openfold_metrics
+
+        _make_seed_dir(tmp_path, "q", seed=1, agg={"avg_plddt": 70.0})
+        _make_seed_dir(tmp_path, "q", seed=2, agg={"avg_plddt": 90.0})
+        res = compute_openfold_metrics(tmp_path, "q", seed=1, seed_index=2)
+        assert res["avg_plddt"] == pytest.approx(90.0)
+
+
+# ---------------------------------------------------------------------------
 # Tests: _write_runner_yaml
 # ---------------------------------------------------------------------------
 
@@ -376,7 +817,7 @@ class TestWriteRunnerYaml:
         yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled", "low_mem"])
 
         assert yaml_path.exists()
-        content = yaml_path.read_text()
+        content = yaml_path.read_text(encoding="utf-8")
         assert "predict" in content
         assert "pae_enabled" in content
         assert "low_mem" in content
@@ -386,7 +827,7 @@ class TestWriteRunnerYaml:
         from binding_metrics.metrics.openfold import _write_runner_yaml
 
         yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled"])
-        content = yaml_path.read_text()
+        content = yaml_path.read_text(encoding="utf-8")
 
         assert "pae_enabled" in content
         assert "low_mem" not in content
@@ -396,7 +837,7 @@ class TestWriteRunnerYaml:
         from binding_metrics.metrics.openfold import _write_runner_yaml
 
         yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled", "low_mem"])
-        content = yaml_path.read_text()
+        content = yaml_path.read_text(encoding="utf-8")
         for p in ("predict", "pae_enabled", "low_mem"):
             assert p in content
 
@@ -424,13 +865,15 @@ requires_example_pdb = pytest.mark.skipif(
 
 def _count_pdb_atoms(pdb_path: Path) -> int:
     return sum(
-        1 for line in pdb_path.read_text().splitlines() if line.startswith(("ATOM  ", "HETATM"))
+        1
+        for line in pdb_path.read_text(encoding="utf-8").splitlines()
+        if line.startswith(("ATOM  ", "HETATM"))
     )
 
 
 def _count_pdb_residues(pdb_path: Path) -> int:
     residues = set()
-    for line in pdb_path.read_text().splitlines():
+    for line in pdb_path.read_text(encoding="utf-8").splitlines():
         if line.startswith(("ATOM  ", "HETATM")):
             try:
                 residues.add((line[21], int(line[22:26])))
@@ -442,7 +885,7 @@ def _count_pdb_residues(pdb_path: Path) -> int:
 def _pdb_chains(pdb_path: Path) -> set:
     return {
         line[21]
-        for line in pdb_path.read_text().splitlines()
+        for line in pdb_path.read_text(encoding="utf-8").splitlines()
         if line.startswith(("ATOM  ", "HETATM"))
     }
 
@@ -482,7 +925,9 @@ def _make_openfold3_dir_from_pdb(
             "chain_pair_iptm": {f"({chains[0]}, {chains[1]})": 0.73} if len(chains) >= 2 else {},
             "bespoke_iptm": {},
         }
-    (seed_dir / f"{prefix}_confidences_aggregated.json").write_text(json.dumps(agg))
+    (seed_dir / f"{prefix}_confidences_aggregated.json").write_text(
+        json.dumps(agg), encoding="utf-8"
+    )
 
     if with_conf_json:
         rng = np.random.default_rng(42)
@@ -491,9 +936,9 @@ def _make_openfold3_dir_from_pdb(
             "pde": rng.uniform(0, 8, (n_residues, n_residues)).tolist(),
             "gpde": 1.45,
         }
-        (seed_dir / f"{prefix}_confidences.json").write_text(json.dumps(conf))
+        (seed_dir / f"{prefix}_confidences.json").write_text(json.dumps(conf), encoding="utf-8")
 
-    (seed_dir / "timing.json").write_text(json.dumps({"inference": 38.4}))
+    (seed_dir / "timing.json").write_text(json.dumps({"inference": 38.4}), encoding="utf-8")
     return tmp_path
 
 
@@ -514,7 +959,7 @@ class TestRealWorldIntegration:
             "gpde": 1.2,
         }
         path = tmp_path / "conf.json"
-        path.write_text(json.dumps(conf))
+        path.write_text(json.dumps(conf), encoding="utf-8")
 
         result = _parse_confidences(path)
 
@@ -595,3 +1040,81 @@ class TestRealWorldIntegration:
             assert c in metrics["chain_ptm"]
         pair_key = f"({chains[0]}, {chains[1]})"
         assert pair_key in metrics["chain_pair_iptm"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: names that moved out of openfold.py stay importable from it
+# ---------------------------------------------------------------------------
+
+
+class TestModuleLayout:
+    def test_console_script_target_is_the_cli_entry_point(self):
+        from binding_metrics.metrics import _openfold_cli, openfold
+
+        assert openfold.main is _openfold_cli.main
+
+    @pytest.mark.parametrize("name", ["_add_parse_args", "_add_query_seeds_arg", "_print_metrics"])
+    def test_cli_helpers_remain_importable_from_openfold(self, name):
+        from binding_metrics.metrics import _openfold_cli, openfold
+
+        assert getattr(openfold, name) is getattr(_openfold_cli, name)
+
+    def test_cli_resolves_functions_on_the_openfold_module(self, tmp_path, monkeypatch):
+        """Patching ``openfold.<name>`` redirects the command line, as before the move."""
+        from binding_metrics.metrics import openfold
+
+        called = {}
+
+        def _fake_prepare(**kwargs):
+            called.update(kwargs)
+            return tmp_path / "q.json"
+
+        monkeypatch.setattr(openfold, "prepare_scoring_query", _fake_prepare)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["prog", "prepare-scoring-query", "--complex", "c.cif", "--receptor-chain", "A"]
+            + ["--binder-chain", "B", "--query-name", "q", "--output-dir", str(tmp_path)]
+            + ["--seeds", "3"],
+        )
+        openfold.main()
+        assert called["seeds"] == [3]
+        assert called["query_name"] == "q"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "_DEFAULT_QUERY_SEEDS",
+            "_BatchSample",
+            "_extract_chain_to_cif",
+            "_extract_sequence_from_structure",
+            "_query_seeds",
+            "_safe_entry_id",
+            "_write_a3m_self_alignment",
+            "_write_runner_yaml",
+            "prepare_batched_refolding_queries",
+            "prepare_batched_scoring_queries",
+            "prepare_refolding_query",
+            "prepare_scoring_query",
+        ],
+    )
+    def test_runner_and_query_names_remain_importable_from_openfold(self, name):
+        from binding_metrics.metrics import _openfold_run, openfold
+
+        assert getattr(openfold, name) is getattr(_openfold_run, name)
+
+    def test_wrappers_call_the_names_patched_on_the_openfold_module(self, tmp_path, monkeypatch):
+        """run_openfold_* stay in openfold.py, so patching run_openfold and prepare_* works."""
+        from binding_metrics.metrics import openfold
+
+        calls = []
+        monkeypatch.setattr(
+            openfold,
+            "prepare_scoring_query",
+            lambda **kw: calls.append(("prepare", kw["seeds"])) or tmp_path / "q.json",
+        )
+        monkeypatch.setattr(
+            openfold, "run_openfold", lambda **kw: calls.append(("run", kw["output_dir"]))
+        )
+        out = openfold.run_openfold_scoring("c.cif", "A", "B", "q", tmp_path, seeds=(9,))
+        assert out == tmp_path / "predictions"
+        assert calls == [("prepare", (9,)), ("run", tmp_path / "predictions")]

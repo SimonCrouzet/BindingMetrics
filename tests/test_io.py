@@ -53,10 +53,11 @@ class TestInternalResidueRenameBack:
             "_struct_conn.ptnr2_label_comp_id LYSL\n"
             "ATOM 1 N N . CYX A 1 ?\n"
             "ATOM 2 N N . ASPL A 2 ?\n"
-            "ATOM 3 N N . GLU A 3 ?\n"
+            "ATOM 3 N N . GLU A 3 ?\n",
+            encoding="utf-8",
         )
         _rename_internal_residues_to_standard(cif)
-        out = cif.read_text()
+        out = cif.read_text(encoding="utf-8")
 
         for internal in ("CYX", "GLUL", "LYSL", "ASPL"):
             assert internal not in out, f"{internal} leaked into output"
@@ -154,7 +155,7 @@ class TestLoadComplex:
     def test_load_invalid_pdb_raises(self, tmp_path: Path):
         """Should raise ValueError for invalid PDB content."""
         bad_pdb = tmp_path / "bad.pdb"
-        bad_pdb.write_text("This is not valid PDB content\nJust random text")
+        bad_pdb.write_text("This is not valid PDB content\nJust random text", encoding="utf-8")
 
         with pytest.raises(ValueError, match="Failed to parse"):
             load_complex(bad_pdb)
@@ -285,7 +286,7 @@ class TestLoadStructure:
     def test_unsupported_format_raises(self, tmp_path: Path):
         """Should raise ValueError for unsupported format."""
         f = tmp_path / "structure.xyz"
-        f.write_text("dummy")
+        f.write_text("dummy", encoding="utf-8")
         with pytest.raises(ValueError, match="Unsupported"):
             load_structure(f)
 
@@ -622,7 +623,7 @@ class TestMergeCifModels:
         lines = ["data_test", "loop_"]
         lines += [f"_atom_site.{t}" for t in tags]
         lines += [" ".join(r) for r in rows]
-        path.write_text("\n".join(lines) + "\n")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     @staticmethod
     def _read_atom_site(path: Path) -> tuple[list[str], list[list[str]]]:

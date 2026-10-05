@@ -17,6 +17,12 @@ from binding_metrics.metrics.sasa import calculate_buried_sasa
 from binding_metrics.protocols.base import BaseProtocol, ProtocolResults
 
 
+def _require_frames(series) -> None:
+    """Raise if a per-frame series is empty: ``np.mean`` of it would be NaN."""
+    if len(series) == 0:
+        raise RuntimeError("trajectory has 0 frames")
+
+
 class PeptideBindingProtocol(BaseProtocol):
     """Protocol for evaluating peptide binding to a receptor.
 
@@ -90,7 +96,7 @@ class PeptideBindingProtocol(BaseProtocol):
         PDBFile.writeFile(
             modeller.topology,
             modeller.positions,
-            open(self._topology_path, "w"),
+            open(self._topology_path, "w", encoding="utf-8"),
         )
 
         # Set up simulation
@@ -119,7 +125,8 @@ class PeptideBindingProtocol(BaseProtocol):
             ProtocolResults with computed metrics
 
         Raises:
-            RuntimeError: If no trajectory is available
+            RuntimeError: If no trajectory is available, or if it has no frames
+                (the means would otherwise be NaN and look like a result).
         """
         traj_path = trajectory_path or self._trajectory_path
         if traj_path is None:
@@ -143,6 +150,7 @@ class PeptideBindingProtocol(BaseProtocol):
             ligand_indices,
             receptor_indices,
         )
+        _require_frames(buried_sasa)
 
         contacts = calculate_contacts(
             traj_path,
@@ -150,6 +158,7 @@ class PeptideBindingProtocol(BaseProtocol):
             ligand_indices,
             receptor_indices,
         )
+        _require_frames(contacts)
 
         interaction_energy = calculate_interaction_energy(
             traj_path,
@@ -158,12 +167,14 @@ class PeptideBindingProtocol(BaseProtocol):
             receptor_indices,
             forcefield_name=self.forcefield_name,
         )
+        _require_frames(interaction_energy)
 
         rmsd = calculate_rmsd(
             traj_path,
             topology_path,
             atom_indices=ligand_indices + receptor_indices,
         )
+        _require_frames(rmsd)
 
         # Compile results
         self._results = ProtocolResults(
