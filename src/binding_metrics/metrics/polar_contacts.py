@@ -402,10 +402,12 @@ def compute_saltbridges(
     if not np.any(valid):
         return empty
 
+    # A residue is told apart by number and insertion code: 52 and 52A are two residues.
     pos_res_keys = list(
         zip(
             pos_atoms.chain_id.tolist(),
             pos_atoms.res_id.tolist(),
+            pos_atoms.ins_code.tolist(),
             pos_atoms.res_name.tolist(),
         )
     )
@@ -413,6 +415,7 @@ def compute_saltbridges(
         zip(
             neg_atoms.chain_id.tolist(),
             neg_atoms.res_id.tolist(),
+            neg_atoms.ins_code.tolist(),
             neg_atoms.res_name.tolist(),
         )
     )
