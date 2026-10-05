@@ -137,7 +137,7 @@ Both take a loaded `biotite.structure.AtomArray` and require both chains; `compu
 - biotite returns `(donor, H, acceptor)` triplets; they are reduced to unique cross-chain `(donor_heavy, acceptor_heavy)` pairs, keeping the triplet with the shortest H···A distance, so an ARG NH1 with two equivalent hydrogens on one acceptor counts once
 - score per pair: `E = −5.0 · cos²(180° − θ) / d_HA` with d_HA in Å, so an ideal geometry (2.0 Å, 180°) gives −2.5 kcal/mol and bent contacts are down-weighted smoothly
 
-**salt bridges** — returns `saltbridges` (residue pairs), `saltbridges_bidentate` (pairs with at least two atom-pair contacts) and `saltbridge_energy` (kcal/mol, ≤ 0).
+**salt bridges** — returns `saltbridges` (residue pairs), `saltbridges_bidentate` (pairs with at least two atom-pair contacts) and `saltbridge_energy` (kcal/mol, ≤ 0). A residue is told apart by chain, number, insertion code and name.
 
 | residue | positive atoms | residue | negative atoms |
 |---------|----------------|---------|----------------|
@@ -283,8 +283,10 @@ Without `chain`, the smallest protein chain is evaluated. A chain ID that is not
 | `n_d_residues` | int | — | evaluated residues that are D-amino acids |
 | `cyclic_closure_detected` | bool | — | last C is bonded to first N (C–N distance below 2 Å) |
 | `cyclic_closure_evaluated` | bool | — | the ring-closing φ and ψ were computed and are included |
-| `per_residue` | list[dict] | — | `res_id`, `res_name`, `chain`, `phi` (°), `psi` (°), `is_d_aa`, `region` |
+| `per_residue` | list[dict] | — | `res_id`, `ins_code`, `res_name`, `chain`, `phi` (°), `psi` (°), `is_d_aa`, `region` |
 | `reason` | str | — | only when no residue could be evaluated |
+
+`ins_code` is the insertion code, an empty string when the residue has none.
 
 The regions are hand-drawn rectangles in the (φ, ψ) plane, not the density contours of MolProbity (Lovell et al. 2003; Williams et al. 2018). They approximate the general L-residue case: glycine, proline and pre-proline residues have no classes of their own, so glycine at φ > 0 is judged against the general regions. The percentages are a screen and do not match MolProbity's.
 
@@ -315,8 +317,10 @@ Terminal residues of a linear chain have no complete φ/ψ pair and are skipped.
 | `omega_cis_count` | int | — | evaluated bonds with \|ω\| < 30° |
 | `cyclic_closure_detected` | bool | — | as above |
 | `cyclic_closure_evaluated` | bool | — | the closing peptide bond was evaluated; it is listed under the last residue |
-| `per_residue` | list[dict] | — | `res_id`, `res_name`, `chain`, `omega` (°), `deviation` (°), `is_outlier` |
+| `per_residue` | list[dict] | — | `res_id`, `ins_code`, `res_name`, `chain`, `omega` (°), `deviation` (°), `is_outlier` |
 | `reason` | str | — | only when no bond could be evaluated |
+
+`ins_code` is the insertion code, an empty string when the residue has none.
 
 deviation = min(\|ω − 180°\|, \|ω + 180°\|). The 15° cut-off is a package heuristic. A cis bond has a deviation near 180° and counts as an outlier, cis-proline and N-methylated amides included; `omega_cis_count` tells cis bonds from twisted trans bonds.
 
@@ -1008,7 +1012,7 @@ MolProbity-style quality of one receptor chain, independent of a binder. It acce
 | rotamers | χ1 only: an outlier deviates more than 40° from the nearest of g−, g+, trans |
 | Cβ deviation | count of residues whose Cβ is more than 0.25 Å from its ideal position |
 | backbone geometry | bonds and angles more than 4σ from the Engh & Huber (1991) values; inter-residue C–N bonds longer than 2.5 Å are skipped |
-| clashscore | heavy-atom overlaps per 1000 heavy atoms: two atoms clash when their van der Waals radii overlap by at least `clash_cutoff` (0.4 Å; Word et al. 1999). Hydrogens are ignored, so it is usually higher than MolProbity's value. With `exclude_bonded=True` pairs within three covalent bonds (peptide bonds, disulfides, ring closures, lactams, staples) and N/O pairs at 2.5 Å or more (hydrogen bonds) are not scored |
+| clashscore | heavy-atom overlaps per 1000 heavy atoms: two atoms clash when their van der Waals radii overlap by at least `clash_cutoff` (0.4 Å; Word et al. 1999). Hydrogens are ignored, so it is usually higher than MolProbity's value. With `exclude_bonded=True` pairs within three covalent bonds (peptide bonds, disulfides, ring closures, lactams, staples) and N/O pairs at 2.5 Å or more (hydrogen bonds) are not scored. Two atoms are not scored against each other when they lie in one residue or in neighbouring residues of a chain; neighbours follow each other in the sequence of (number, insertion code) pairs and differ by at most one in number, so 52 and 53 are not neighbours when 52A lies between them |
 | MolProbity score | `0.426·ln(1 + clashscore) + 0.33·ln(1 + max(0, Rama outlier % − 0.2)/0.2) + 0.25·ln(1 + max(0, rotamer outlier % − 2)/2) + 0.5`; lower is better; NaN when a term is undefined |
 | B-factors | mean, max, min, std, and the number of residues above 60 Å² |
 | energy | absolute ff14SB + implicit-solvent potential energy at the input geometry with hydrogens added; hydrogen placement and PDBFixer's rebuild are seeded, so the value is reproducible for one seed |
