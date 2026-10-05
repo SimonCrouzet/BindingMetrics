@@ -288,26 +288,36 @@ def _apolar_mask(atoms) -> np.ndarray:
 def _collect_per_residue(chain_atoms, buried_sasa: np.ndarray, threshold: float) -> list[dict]:
     """Aggregate per-atom buried SASA into per-residue metrics.
 
+    A residue is the triple (chain, residue number, insertion code), so 52 and
+    52A are two residues. Its ``residue`` label is "NAME:CHAIN:NUM" with the
+    insertion code appended to the number when there is one ("ALA:A:52A").
+
     Args:
         chain_atoms: biotite AtomArray for one chain
         buried_sasa: per-atom buried SASA array (Å²)
         threshold: minimum residue total buried SASA (Å²) to include
 
     Returns:
-        List of dicts with buried_sasa, delta_g_res, polar_area, apolar_area
-        for each residue whose buried SASA meets the threshold.
+        List of dicts with residue, chain, res_name, res_id, ins_code (empty
+        string when the residue has none), buried_sasa, delta_g_res,
+        polar_area and apolar_area for each residue whose buried SASA meets
+        the threshold.
     """
     res_data: dict[tuple, dict] = {}
     gamma_per_atom = _gamma_array(chain_atoms)
 
     for atom, bsasa, gamma in zip(chain_atoms, buried_sasa, gamma_per_atom):
-        key = (str(atom.chain_id), int(atom.res_id), str(atom.ins_code).strip())
+        chain_id = str(atom.chain_id)
+        res_name = str(atom.res_name).strip()
+        ins_code = str(atom.ins_code).strip()
+        key = (chain_id, int(atom.res_id), ins_code)
         if key not in res_data:
             res_data[key] = {
-                "residue": f"{str(atom.res_name).strip()}:{str(atom.chain_id)}:{atom.res_id}",
-                "chain": str(atom.chain_id),
-                "res_name": str(atom.res_name).strip(),
+                "residue": f"{res_name}:{chain_id}:{atom.res_id}{ins_code}",
+                "chain": chain_id,
+                "res_name": res_name,
                 "res_id": int(atom.res_id),
+                "ins_code": ins_code,
                 "buried_sasa": 0.0,
                 "delta_g_res": 0.0,
                 "polar_area": 0.0,
@@ -410,11 +420,14 @@ def compute_interface_metrics(
         Interface residues:
             n_interface_residues_peptide (int)
             n_interface_residues_receptor (int)
-            interface_residues_peptide (list[str]): "RES:CHAIN:NUM" labels
+            interface_residues_peptide (list[str]): "RES:CHAIN:NUM" labels,
+                with the insertion code appended to NUM when the residue has
+                one ("ALA:A:52A")
             interface_residues_receptor (list[str])
             per_residue (list[dict]): per interface residue —
-                residue, chain, res_name, res_id, buried_sasa,
-                delta_g_res, polar_area, apolar_area
+                residue, chain, res_name, res_id, ins_code (empty string when
+                there is none), buried_sasa, delta_g_res, polar_area,
+                apolar_area
 
         Interactions (heuristic ranking scores, see ``polar_contacts``):
             hbonds (int): cross-chain hydrogen bonds

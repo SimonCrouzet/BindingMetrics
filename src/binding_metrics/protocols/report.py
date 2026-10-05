@@ -511,7 +511,7 @@ def _md_interface(iface: dict | None) -> str:
             for r in (iface.get("per_residue") or [])
             if peptide_chain is not None and r.get("chain") == peptide_chain
         ],
-        key=lambda r: r.get("res_id", 0),
+        key=lambda r: (r.get("res_id", 0), r.get("ins_code") or ""),
     )
     if pep_res:
         lines.append("\n**Per-residue buried SASA — peptide**\n")
@@ -520,7 +520,7 @@ def _md_interface(iface: dict | None) -> str:
                 ["Residue", "Buried SASA (Å²)", "Polar (Å²)", "Apolar (Å²)", "ΔG_res (kcal/mol)"],
                 [
                     [
-                        f"{r['res_name']}:{r['res_id']}",
+                        f"{r['res_name']}:{r['res_id']}{r.get('ins_code') or ''}",
                         _fmt(r.get("buried_sasa"), 2),
                         _fmt(r.get("polar_area"), 2),
                         _fmt(r.get("apolar_area"), 2),
