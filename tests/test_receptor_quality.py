@@ -389,8 +389,10 @@ class TestClashscoreBundledStructures:
             # SFTI-1: head-to-tail closure (GLY1 N - ASP14 C 1.44 A) and CYS3-CYS11 disulfide
             ("example_bicyclic_sfti1_3P8F.cif", "I", 7, 0),
             # trypsin: 3 disulfides, 2 numbering gaps (149, 218), 19 N/O hydrogen bonds;
-            # THR62 O - ARG84 NH2 at 2.28 A remains
-            ("example_bicyclic_sfti1_3P8F.cif", "A", 34, 1),
+            # THR62 O - ARG84 NH2 at 2.28 A remains, and so does ASP60B C - GLY60D N at
+            # 2.78 A: residues 60B and 60D are two apart (60C lies between), not neighbours
+            # of one number (both counts were 34 and 1 when the numbers decided adjacency)
+            ("example_bicyclic_sfti1_3P8F.cif", "A", 37, 2),
             # somatostatin lactam GLU4 CD - LYS10 NZ (1.89 A) and CYS2-CYS12 disulfide
             ("example_lactam_somatostatin_1XY4.cif", "A", 6, 0),
             # cyclosporin head-to-tail closure and a BMT OG1...O hydrogen bond

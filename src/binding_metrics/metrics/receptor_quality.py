@@ -363,6 +363,27 @@ def _covalent_reach(
     return reach.tocsr()
 
 
+def _neighbouring_residues(atoms, i: np.ndarray, j: np.ndarray) -> np.ndarray:
+    """True for the atom pairs (i, j) in one residue or in neighbouring residues of a chain.
+
+    A residue is a (chain, number, insertion code) triple. Two residues are
+    neighbours when they are consecutive among the residues of the array,
+    sorted by chain, number and insertion code, and their numbers differ by at
+    most one. For numbers without insertion codes this is the difference of
+    numbers; with them, 52 and 53 are not neighbours when 52A lies between.
+    """
+    chain_ids = atoms.chain_id
+    res_ids = atoms.res_id.astype(np.int64)
+    triples = list(zip(chain_ids.tolist(), res_ids.tolist(), atoms.ins_code.tolist()))
+    rank_of = {triple: rank for rank, triple in enumerate(sorted(set(triples)))}
+    ranks = np.array([rank_of[triple] for triple in triples], dtype=np.int64)
+
+    rank_step = np.abs(ranks[i] - ranks[j])
+    number_step = np.abs(res_ids[i] - res_ids[j])
+    same_chain = chain_ids[i] == chain_ids[j]
+    return same_chain & ((rank_step == 0) | ((rank_step == 1) & (number_step <= 1)))
+
+
 def _clashscore(
     chain_atoms,
     clash_cutoff: float = 0.4,
@@ -381,8 +402,11 @@ def _clashscore(
 
     A pair is not scored when
 
-    - both atoms lie in the same residue or in residues whose numbers differ by
-      at most one (same chain), as before;
+    - both atoms lie in the same residue or in neighbouring residues of one
+      chain; neighbours follow each other in the sequence of (number,
+      insertion code) pairs and have numbers that differ by at most one, so
+      52 and 52A are neighbours, and so are 52A and 53, but 52 and 53 are not
+      when 52A lies between them;
     - ``exclude_bonded`` is true and the atoms are separated by at most three
       covalent bonds, following the peptide bond by coordinates, and disulfide,
       head-to-tail, lactam, staple and similar links by distance (see
@@ -426,13 +450,11 @@ def _clashscore(
     n_clashes = 0
     if len(pairs) > 0:
         i, j = pairs[:, 0], pairs[:, 1]
-        chain_ids = heavy.chain_id
-        res_ids = heavy.res_id.astype(np.int64)
         coords64 = coords.astype(np.float64)
         distances = np.linalg.norm(coords64[i] - coords64[j], axis=1)
         radii = np.array([_vdw(e) for e in heavy_elements])
 
-        neighbours = (chain_ids[i] == chain_ids[j]) & (np.abs(res_ids[i] - res_ids[j]) <= 1)
+        neighbours = _neighbouring_residues(heavy, i, j)
         is_clash = ~neighbours & (radii[i] + radii[j] - distances >= clash_cutoff)
 
         if exempt_hbond_pairs:
