@@ -100,7 +100,10 @@ def _matched_rmsd(
 ) -> Optional[float]:
     """Compute RMSD after matching atoms by (chain, res_num, atom_name).
 
-    If atom counts differ, only the common atoms are used.
+    Only the atoms whose key occurs in both structures are used, whatever
+    the atom counts. The key lists are compared first: identical lists
+    already pair the atoms one-to-one in order, so the coordinates go to
+    Kabsch unchanged.
 
     Args:
         coords1, keys1: Coordinates and keys for structure 1
@@ -112,7 +115,9 @@ def _matched_rmsd(
     if len(coords1) == 0 or len(coords2) == 0:
         return None
 
-    if len(coords1) == len(coords2):
+    # Equal counts are not enough to pair by position: the same atoms in
+    # another order, or renumbered residues, have equal counts too.
+    if keys1 == keys2:
         return _kabsch_rmsd(coords1, coords2)
 
     common = set(keys1) & set(keys2)

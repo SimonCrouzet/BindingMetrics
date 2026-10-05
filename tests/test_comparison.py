@@ -184,6 +184,102 @@ class TestMatchedRmsd:
         assert np.isfinite(result)
         assert isinstance(result, float)
 
+    @staticmethod
+    def _six_atoms():
+        """Six backbone-like atoms spread in space, with their (chain, residue, atom) keys."""
+        coords = np.random.default_rng(0).normal(size=(6, 3)) * 4.0
+        keys = [("A", 1, "N"), ("A", 1, "CA"), ("A", 1, "C"), ("A", 2, "N"), ("A", 2, "CA")]
+        keys.append(("A", 2, "C"))
+        return coords, keys
+
+    def test_reordered_atoms_with_equal_counts_give_zero(self):
+        """The same six atoms in another order superpose exactly, counts being equal.
+
+        Regression: equal counts skipped the key matching and paired atoms by
+        position, so this permuted copy came back at 6.19 A instead of 0.
+        """
+        coords, keys = self._six_atoms()
+        order = [3, 0, 5, 1, 4, 2]
+        shuffled = coords[order]
+        shuffled_keys = [keys[i] for i in order]
+        assert _kabsch_rmsd(coords, shuffled) > 1.0  # what pairing by position gave
+        result = _matched_rmsd(coords, keys, shuffled, shuffled_keys)
+        assert result is not None
+        assert result == pytest.approx(0.0, abs=1e-9)
+        # symmetric in its arguments
+        assert _matched_rmsd(shuffled, shuffled_keys, coords, keys) == pytest.approx(0.0, abs=1e-9)
+
+    def test_reordered_and_rigidly_moved_copy_gives_zero(self):
+        """Key matching and superposition combine: a permuted, rotated, shifted copy gives 0."""
+        coords, keys = self._six_atoms()
+        order = [5, 2, 0, 4, 1, 3]
+        rotation = _rotation_matrix([1.0, -2.0, 0.5], 0.9)
+        moved = coords[order] @ rotation.T + np.array([3.0, -8.0, 5.0])
+        result = _matched_rmsd(coords, keys, moved, [keys[i] for i in order])
+        assert result == pytest.approx(0.0, abs=1e-9)
+
+    def test_equal_counts_with_different_numbering_use_the_keys(self):
+        """Same atom count, but only residue 2 is in both structures.
+
+        The three shared atoms agree; the atoms that exist in one structure
+        only are far away and must be ignored. Pairing by position would
+        compare residue 1 of the first structure with residue 2 of the second.
+        """
+        coords, keys = self._six_atoms()
+        keys2 = [("A", 2, "N"), ("A", 2, "CA"), ("A", 2, "C"), ("A", 3, "N"), ("A", 3, "CA")]
+        keys2.append(("A", 3, "C"))
+        far_atoms = np.random.default_rng(1).normal(size=(3, 3)) * 50.0
+        coords2 = np.vstack([coords[3:], far_atoms])
+        assert _kabsch_rmsd(coords, coords2) > 1.0  # what pairing by position gave
+        result = _matched_rmsd(coords, keys, coords2, keys2)
+        assert result == pytest.approx(0.0, abs=1e-9)
+
+    def test_equal_counts_without_a_shared_key_return_none(self):
+        """Equal counts with disjoint keys are not comparable; positions must not stand in."""
+        coords, keys = self._six_atoms()
+        other_keys = [("B", n, name) for _, n, name in keys]
+        assert _matched_rmsd(coords, keys, coords, other_keys) is None
+
+    def test_identical_key_lists_are_the_direct_kabsch_value(self):
+        """With identical key lists the coordinates go to Kabsch untouched (bit-identical)."""
+        rng = np.random.default_rng(4)
+        coords1 = rng.normal(size=(40, 3)) * 5.0
+        coords2 = coords1 + rng.normal(size=(40, 3)) * 0.4
+        keys = [("A", i // 4 + 1, name) for i, name in zip(range(40), ["N", "CA", "C", "O"] * 10)]
+        result = _matched_rmsd(coords1, keys, coords2, list(keys))
+        assert result == _kabsch_rmsd(coords1, coords2)
+        assert result > 0.0
+
+    def test_duplicate_keys_pair_in_order_with_equal_counts(self):
+        """Altloc atoms share a key; the k-th occurrence pairs with the k-th occurrence."""
+        rng = np.random.default_rng(5)
+        coords = rng.normal(size=(5, 3)) * 4.0
+        keys = [("A", 1, "CA"), ("A", 1, "CA"), ("A", 2, "CA"), ("A", 3, "CA"), ("A", 3, "CA")]
+        order = [3, 4, 0, 1, 2]
+        shuffled_keys = [keys[i] for i in order]
+        assert shuffled_keys != keys
+        result = _matched_rmsd(coords, keys, coords[order], shuffled_keys)
+        assert result == pytest.approx(0.0, abs=1e-9)
+
+    def test_duplicate_keys_with_different_multiplicity_and_equal_counts(self):
+        """Equal counts but different multiplicities: pairs up to the smaller count, no error."""
+        rng = np.random.default_rng(6)
+        coords1 = rng.normal(size=(4, 3)) * 4.0
+        coords2 = rng.normal(size=(4, 3)) * 4.0
+        keys1 = [("A", 1, "CA"), ("A", 1, "CA"), ("A", 2, "CA"), ("A", 3, "CA")]
+        keys2 = [("A", 1, "CA"), ("A", 2, "CA"), ("A", 2, "CA"), ("A", 3, "CA")]
+        result = _matched_rmsd(coords1, keys1, coords2, keys2)
+        # pairs: residue 1 first with first, residue 2 first (3rd) with first (2nd), residue 3
+        expected = _kabsch_rmsd(coords1[[0, 2, 3]], coords2[[0, 1, 3]])
+        assert result == pytest.approx(expected, abs=1e-9)
+
+    def test_one_fewer_atom_keeps_matching_by_key(self):
+        """The unequal-count path is unchanged: shared keys only, in any order."""
+        coords, keys = self._six_atoms()
+        order = [4, 1, 3, 0, 2]  # drops atom 5, scrambles the rest
+        result = _matched_rmsd(coords, keys, coords[order], [keys[i] for i in order])
+        assert result == pytest.approx(0.0, abs=1e-9)
+
 
 class TestMultiModelInput:
     """Only the first model of an ensemble file enters the comparison."""
@@ -330,6 +426,23 @@ class TestComputeStructureRmsd:
         assert result["bb_rmsd"] is not None
         assert np.isfinite(result["bb_rmsd"])
         assert result["bb_rmsd"] >= 0.0
+
+    @requires_gemmi
+    def test_same_atoms_with_the_chains_in_another_file_order_give_zero(self, tmp_path):
+        """A file that lists the chains in another order holds the same atoms.
+
+        Regression: the atom counts agree, so the atoms used to be paired by
+        position and the RMSD of such a pair was several Angstrom, not 0.
+        """
+        rng = np.random.default_rng(21)
+        chains = {"A": rng.normal(size=(5, 4, 3)) * 4.0, "B": rng.normal(size=(3, 4, 3)) * 4.0}
+        first = _write_pdb(tmp_path / "first.pdb", [chains])
+        swapped = _write_pdb(tmp_path / "swapped.pdb", [{"B": chains["B"], "A": chains["A"]}])
+        result = compute_structure_rmsd(first, swapped, design_chain="B")
+        for key in ("rmsd", "bb_rmsd", "rmsd_design", "bb_rmsd_design"):
+            assert result[key] is not None
+            assert result[key] < 1e-2, key  # PDB coordinates have 3 decimals
+        assert "reason" not in result
 
     def test_missing_gemmi_raises(self, tmp_path: Path):
         """Should raise ImportError if gemmi is not installed."""
