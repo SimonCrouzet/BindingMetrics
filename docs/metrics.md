@@ -40,7 +40,7 @@ binding-metrics-run --input complex.cif --output-dir results/
 
 **binder and target.** Every structure metric works on two single chains. The binder is the peptide or design chain, the target is the receptor. Functions name the binder `peptide_chain`, `design_chain` or `chain` and the target `receptor_chain`; each also takes the keyword-only aliases `binder_chain` and `target_chain`. Giving both spellings with different chain IDs raises `ValueError`. The command-line tools accept `--binder-chain` and `--target-chain` next to the older flags (`--peptide-chain`, `--design-chain`, `--chain`, `--receptor-chain`). `binding-metrics-geometry` reads `--binder-chain` as `--chain` for Ramachandran and omega, and as `--peptide-chain` for shape complementarity and void volume.
 
-**chain auto-detection.** Where a chain is optional, the metric functions take the smallest protein chain as binder and the largest as target. A protein chain is a chain with amino-acid atoms; D-amino acids and other non-canonical peptide-linking residues count, and waters or ligands that share the chain ID do not. `binding-metrics-run` and `-batch` resolve the chains once with `detect_chains_from_file` ([§19](#19-io-utilities)), which picks the target by Cα contacts when a file has more than two protein chains, and pass them to every step. `compute_interaction_energy` detects chains from the OpenMM topology with `io.structures.detect_chains`, which counts every amino-acid residue: the standard residues and the AMBER variants, the D-amino acids, the phospho residues and, with biotite installed, the peptide-linking components of the Chemical Component Dictionary. An all-D peptide is found as well.
+**chain auto-detection.** Where a chain is optional, the metric functions take the smallest protein chain as binder and the largest as target. A protein chain is a chain with amino-acid atoms; D-amino acids and other non-canonical peptide-linking residues count, and waters or ligands that share the chain ID do not. Chains are compared by the number of residues, a residue being a number and an insertion code (52 and 52A count twice). `binding-metrics-run` and `-batch` resolve the chains once with `detect_chains_from_file` ([§19](#19-io-utilities)), which picks the target by Cα contacts when a file has more than two protein chains, and pass them to every step. `compute_interaction_energy` detects chains from the OpenMM topology with `io.structures.detect_chains`, which counts every amino-acid residue: the standard residues and the AMBER variants, the D-amino acids, the phospho residues and, with biotite installed, the peptide-linking components of the Chemical Component Dictionary. An all-D peptide is found as well.
 
 **heteroatoms.** Waters, ions, ligands and glycans often carry the chain ID of a neighbouring protein chain. The keyword `hetero` (default `"ignore"`) decides what a chain ID selects. `"ignore"` keeps polymer atoms only: amino-acid residues as biotite's `filter_amino_acids` defines them (D-amino acids and other peptide-linking residues included), the AMBER variants `HID`, `HIE`, `HIN`, `CYX` and `ASH`, and the caps `ACE`, `NME` and `NH2`. `"keep"` uses every atom of the chain; atoms without a defined SASA (water, ions) then count as zero area. `hetero` exists on `compute_interface_metrics`, `compute_delta_sasa_static`, `compute_hbonds`, `compute_saltbridges`, `compute_shape_complementarity` and `compute_buried_void_volume`, and as `--hetero {ignore,keep}` on `binding-metrics-interface` and `binding-metrics-geometry`. The other metrics do not take it.
 
@@ -86,9 +86,9 @@ Hydrogen and deuterium atoms are dropped before the areas are computed (`hydroge
 | `fraction_polar` | float | — | `polar_area / delta_sasa`; NaN when nothing is buried |
 | `n_interface_residues_peptide` | int | — | binder residues with at least `interface_threshold` Å² buried |
 | `n_interface_residues_receptor` | int | — | same for the target |
-| `interface_residues_peptide` | list[str] | — | `"RES:CHAIN:NUM"` labels |
-| `interface_residues_receptor` | list[str] | — | `"RES:CHAIN:NUM"` labels |
-| `per_residue` | list[dict] | — | per interface residue: `residue`, `chain`, `res_name`, `res_id`, `buried_sasa` (Å²), `delta_g_res` (kcal/mol), `polar_area` (Å²), `apolar_area` (Å²) |
+| `interface_residues_peptide` | list[str] | — | `"RES:CHAIN:NUM"` labels, the insertion code appended to `NUM` when there is one (`"ALA:A:52A"`) |
+| `interface_residues_receptor` | list[str] | — | `"RES:CHAIN:NUM"` labels, the insertion code appended to `NUM` when there is one (`"ALA:A:52A"`) |
+| `per_residue` | list[dict] | — | per interface residue: `residue`, `chain`, `res_name`, `res_id`, `ins_code` (insertion code, empty string when none), `buried_sasa` (Å²), `delta_g_res` (kcal/mol), `polar_area` (Å²), `apolar_area` (Å²) |
 | `hbonds` | int | — | cross-chain heavy-atom H-bond pairs (§3) |
 | `hbond_energy` | float | kcal/mol | H-bond score, ≤ 0 |
 | `saltbridges` | int | — | cross-chain salt-bridge residue pairs (§3) |
@@ -168,7 +168,7 @@ Neither score includes solvent screening, cooperativity or burial. For an electr
 | `n_repulsive` | int | — | same-sign pairs within the cutoff |
 | `n_ionisable_residues_seen` | int | — | residues, on both chains, with at least one charged atom in the table |
 | `n_residues_unrecognised` | int | — | amino-acid residues whose charge state the table does not model |
-| `charged_atoms_peptide` | list[dict] | — | per charged atom: `residue`, `atom`, `charge`, `coords` |
+| `charged_atoms_peptide` | list[dict] | — | per charged atom: `residue` (`NAME:CHAIN:NUM`, with the insertion code appended when there is one), `ins_code`, `atom`, `charge`, `coords` |
 | `charged_atoms_receptor` | list[dict] | — | same for the target |
 | `reason` | str | — | only when a chain was not found; the scores are then 0 |
 
@@ -416,7 +416,7 @@ Needs gemmi (`pip install "binding-metrics[structure]"` or `[static]`). Optimal 
 
 - only the first model of each file is read
 - `HOH` and `WAT` residues are skipped; ions and ligands are included
-- when the two selections hold the same number of atoms, atoms are paired in file order; otherwise atoms are matched by (chain, residue number, atom name) and only the shared ones are used
+- atoms are matched by (chain, residue number, atom name, insertion code) and only the shared ones are used, whatever the atom counts, so 52 and 52A are two residues; keys that occur several times (alternate locations) are paired in order of occurrence, up to the smaller count; when the two key lists are identical the atoms are used as they stand
 - without `design_chain`, the smallest chain with a non-water residue is the design chain; a one-residue ligand chain would win, so pass the chain then
 
 ### CLI: `binding-metrics-compare`
@@ -610,7 +610,7 @@ Further subcommands: `prepare-query` and `refold` (binder refolding), `prepare-s
 
 ### Prediction records (`binding_metrics.predictors`)
 
-`PredictionRecord` is the form of one prediction sample that every predictor adapter converts a model's files to, and the only thing the confidence metrics read. `PredictionFiles` says where an adapter found the files of a sample, `TokenLayout` says what each PAE and PDE token is, and `SampleRef` names one sample of a directory. The rules are the same for every model:
+`PredictedPose` is the form of one prediction sample that every predictor adapter converts a model's files to, and the only thing the confidence metrics read. It is the `predicted` kind of `Pose` (`binding_metrics.poses`); the docked and experimental kinds and what every pose has (`id`, `content_hash()`, `native_scores()`) are in [`poses.md`](poses.md). `PredictionRecord` is its former name and still imports, with a `DeprecationWarning`. `PredictionFiles` says where an adapter found the files of a sample, `TokenLayout` says what each PAE and PDE token is, and `SampleRef` names one sample of a directory. The rules are the same for every model:
 
 | field | type | unit | meaning |
 |-------|------|------|---------|
@@ -630,12 +630,16 @@ Further subcommands: `prepare-query` and `refold` (binder refolding), `prepare-s
 | `extras`, `timing`, `reasons` | dict, dict, list | — | model-specific values, reported run times, one sentence per value that could not be provided |
 | `files` | PredictionFiles \| None | — | the files the record was parsed from; `load` fills it |
 | `not_provided` | frozenset[str] | — | the fields the model never writes; `load` copies them from the adapter, `validate` expects them to stay empty, and `summarize_prediction` gives no reason for them |
+| `provenance` | dict | — | free facts about the pose that the model does not write (the request `mode`, `receptor_forced`); JSON scalars only, which `validate` checks |
+| `given_id` | str \| None | — | the `id` the caller chose; None means `<model>:<name>:s<seed_index>:<sample>` |
 
 A scalar the model does not provide is NaN, never None. A file that is absent leaves the fields it feeds at NaN (None for an array) and adds a sentence to `reasons`; a file that is present but corrupt raises. A field that the model never writes at all is named in `not_provided` (AlphaFold2 writes no PDE) and gets no reason: a `reason` means that a value the model writes was missing. An adapter converts a 0–1 pLDDT to 0–100 and expands a per-residue or per-token pLDDT to atoms. `record.validate()` raises `ValueError` listing every violation of these rules (a scale, a shape, a `chain_map` that renames two chains to one ID), and reports a pLDDT array whose largest value is at most 1 as a probable unconverted 0–1 scale; `validate(check_structure=True)` also reads the structure and checks that the pLDDT array has one value per atom and that the `chain_map` fits the file.
 
 A model-specific scalar or dictionary goes in `extras` under the key the model uses (`bespoke_iptm` for OpenFold3), a per-token array in `TokenLayout.extras`, and an extra file of a sample in `PredictionFiles.extra`. Generic code never reads `extras`.
 
-**Adapters.** An adapter subclasses `PredictionParser` (`binding_metrics.predictors.base`) and reads the output of one model without running it. It implements `find_files(prediction_dir, name, *, seed_index=1, sample=1) -> PredictionFiles` and `parse(files, *, name, seed_index=1, sample=1) -> PredictionRecord`; the base class supplies `load(prediction_dir, name, *, seed_index=1, sample=1, chain_map=None)`, which chains the two and applies the chain map, and `list_samples(prediction_dir, name)`, which returns `SampleRef(seed_index, sample, ranking_score)` for each sample in the model's natural order. `complete(record)` finishes what needs the structure file, which `load` does not open (the default returns the record unchanged; it never raises for a problem of the data, it adds a `reason`): `compute_prediction_metrics`, `compute_openfold_metrics` and `PredictionSession.record` call it, and the last is the one place the pipeline and `binding-metrics-prediction` read records from. The class attributes are `name`, `display_name`, `family` (`"af2"`: one token per residue; `"af3"`: one token per standard residue and one per heavy atom of a ligand or modified residue), `capabilities` (a `Capabilities` that declares which inputs the model cannot take, or None for no declared limit; see [`preflight.md`](preflight.md)) and `not_provided` (the record fields the model never writes). `sample=1` is the first output in the model's own order; whether that is also the best-ranked one depends on the adapter (it is for Boltz-2, Protenix and ColabFold, and it is not for OpenFold3 and AlphaFold2). Parsing the scalars imports no biotite and does not open the structure file. An adapter whose confidence arrays are per residue or per token (AlphaFold2 and ColabFold, Boltz-2) opens the structure to expand them to atoms: a PDB, and for Boltz-2 a CIF, is read as text, an AlphaFold2 or ColabFold mmCIF through biotite. When the structure cannot be read, `plddt_per_atom` stays empty and `reasons` says why.
+**As a `Pose`.** `kind` is `"predicted"`. `id` is `given_id` or `<model>:<name>:s<seed_index>:<sample>` (`of3:1ycr:s1:2`). `content_hash()` is the SHA-256 of the bytes of `structure_path` (ValueError when there is none). `native_scores()` is the flat dictionary of what the model reported: `avg_plddt`, `ptm`, `iptm`, `gpde`, `ranking_score`, `has_clash` and `disorder`, then `chain_ptm.<chain>` and `chain_pair_iptm.<pair key>` with the keys as the adapter wrote them; NaN becomes None, and the arrays (`plddt_per_atom`, `pae`, `pde`) are not in it. No computed metric is stored on the record.
+
+**Adapters.** An adapter subclasses `PredictionParser` (`binding_metrics.predictors.base`) and reads the output of one model without running it. It implements `find_files(prediction_dir, name, *, seed_index=1, sample=1) -> PredictionFiles` and `parse(files, *, name, seed_index=1, sample=1) -> PredictedPose`; the base class supplies `load(prediction_dir, name, *, seed_index=1, sample=1, chain_map=None)`, which chains the two and applies the chain map, and `list_samples(prediction_dir, name)`, which returns `SampleRef(seed_index, sample, ranking_score)` for each sample in the model's natural order. `complete(record)` finishes what needs the structure file, which `load` does not open (the default returns the record unchanged; it never raises for a problem of the data, it adds a `reason`): `compute_prediction_metrics`, `compute_openfold_metrics` and `PredictionSession.record` call it, and the last is the one place the pipeline and `binding-metrics-prediction` read records from. The class attributes are `name`, `display_name`, `family` (`"af2"`: one token per residue; `"af3"`: one token per standard residue and one per heavy atom of a ligand or modified residue), `capabilities` (a `Capabilities` that declares which inputs the model cannot take, or None for no declared limit; see [`preflight.md`](preflight.md)) and `not_provided` (the record fields the model never writes). `sample=1` is the first output in the model's own order; whether that is also the best-ranked one depends on the adapter (it is for Boltz-2, Protenix and ColabFold, and it is not for OpenFold3 and AlphaFold2). Parsing the scalars imports no biotite and does not open the structure file. An adapter whose confidence arrays are per residue or per token (AlphaFold2 and ColabFold, Boltz-2) opens the structure to expand them to atoms: a PDB, and for Boltz-2 a CIF, is read as text, an AlphaFold2 or ColabFold mmCIF through biotite. When the structure cannot be read, `plddt_per_atom` stays empty and `reasons` says why.
 
 `binding_metrics.predictors.PARSERS` maps a model name to a `ParserSpec` that names the adapter class and imports it only when it is needed; `get_parser(name)` returns an adapter instance (`KeyError` listing the known names for an unknown model) and `register_parser(spec)` adds one. A contract test in `tests/predictors` runs every registered adapter against a synthetic complex; an adapter brings `tests/predictors/synth_<name>.py` with a `write_prediction` function that writes that complex in the model's layout, and needs no other test edit to be covered.
 
@@ -768,7 +772,7 @@ A run is written to a temporary directory and renamed into place, so a killed ru
 
 | method | effect |
 |--------|--------|
-| `record(request, *, seed_index=1, sample=1, chain_map=None)` | the parsed `PredictionRecord`; the model runs on the first miss only and the files are parsed once |
+| `record(request, *, seed_index=1, sample=1, chain_map=None)` | the parsed `PredictedPose`; the model runs on the first miss only and the files are parsed once |
 | `prefetch(requests)` | runs all missing requests of a batch of samples in one model process |
 | `adopt(request, directory, *, copy_outputs=False, check=True)` | registers a directory for parse-only use; with `check`, a directory in which the adapter finds no file of the sample raises `ValueError` |
 | `stats()` | the counters below |
@@ -917,7 +921,7 @@ A batch row carries `preflight_status` and `preflight_reason`. A refused sample 
 
 `compute_evobind_score(structure_path, plddt_per_atom, binder_chain, receptor_chain=None, receptor_interface_residues=None, interface_cutoff_angstrom=8.0, *, target_chain=None)`, `compute_evobind_adversarial_check(design_structure_path, afm_structure_path, binder_chain, receptor_chain=None, afm_plddt_per_atom=None, interface_cutoff_angstrom=8.0, max_resname_mismatch_fraction=0.5, *, target_chain=None)` — `binding_metrics.metrics.evobind`
 
-`compute_evobind_score_from_record(record, binder_chain, receptor_chain=None, *, receptor_interface_residues=None, interface_cutoff_angstrom=8.0, target_chain=None)`, `compute_evobind_adversarial_from_records(design, adversary, binder_chain, receptor_chain=None, *, interface_cutoff_angstrom=8.0, max_resname_mismatch_fraction=0.5, target_chain=None)` — same module; they take `PredictionRecord` objects (§12) and are not registry entries.
+`compute_evobind_score_from_record(record, binder_chain, receptor_chain=None, *, receptor_interface_residues=None, interface_cutoff_angstrom=8.0, target_chain=None)`, `compute_evobind_adversarial_from_records(design, adversary, binder_chain, receptor_chain=None, *, interface_cutoff_angstrom=8.0, max_resname_mismatch_fraction=0.5, target_chain=None)` — same module; they take `PredictedPose` objects (§12) and are not registry entries.
 
 The interface-distance and confidence losses of Bryant et al. (2025). Gly and residues without Cβ use Cα. When `binding-metrics-run` runs the `openfold` metric, both functions run on the OpenFold3 output and their keys are merged into the OpenFold3 result; no extra model call is needed. With `--predictor` the same two computations run on the record of that model and their keys are merged into `results["prediction"]` (see the end of section 12). Registered as `evobind_score` and `evobind_adversarial`.
 
@@ -959,7 +963,7 @@ A high pLDDT and a small interface distance with a large ΔCOM mean that the sec
 
 ### scores from prediction records
 
-The same computations with the structures read by a predictor adapter (§12), so the second prediction can come from any model that has one and its per-atom pLDDT travels in the record. `design` is a `PredictionRecord` or the path of the input pose; `adversary` is a `PredictionRecord`.
+The same computations with the structures read by a predictor adapter (§12), so the second prediction can come from any model that has one and its per-atom pLDDT travels in the record. `design` is a `PredictedPose` or the path of the input pose; `adversary` is a `PredictedPose`.
 
 ```python
 from binding_metrics.metrics.evobind import (
@@ -996,7 +1000,7 @@ Two cautions apply to the second prediction:
 
 `compute_receptor_quality(path, receptor_chain=None, clash_cutoff=0.4, solvent_model="obc2", device="cuda", *, exclude_bonded=True, random_seed=1, target_chain=None)` — `binding_metrics.metrics.receptor_quality` (also importable from `binding_metrics.metrics`)
 
-MolProbity-style quality of one receptor chain, independent of a binder. It accepts receptor-only files and complexes (other chains are ignored) and scores every model of a multi-model file. Without `receptor_chain` it takes the largest protein chain. The terms follow MolProbity (Chen et al. 2010; Williams et al. 2018) but are lighter approximations, so the composite score is indicative and does not compare with published MolProbity values. The energy term needs OpenMM.
+MolProbity-style quality of one receptor chain, independent of a binder. It accepts receptor-only files and complexes (other chains are ignored) and scores every model of a multi-model file. Without `receptor_chain` it takes the largest protein chain (by residues, counted as above); `n_residues` of a receptor model counts the same way. The terms follow MolProbity (Chen et al. 2010; Williams et al. 2018) but are lighter approximations, so the composite score is indicative and does not compare with published MolProbity values. The energy term needs OpenMM.
 
 | term | definition |
 |------|------------|
