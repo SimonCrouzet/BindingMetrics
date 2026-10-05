@@ -350,7 +350,8 @@ def compute_ramachandran(
 
         Features:
             per_residue (list[dict]): Per-residue data with keys:
-                res_id, res_name, chain, phi, psi, is_d_aa, region
+                res_id, ins_code (insertion code, empty string when there is
+                none), res_name, chain, phi, psi, is_d_aa, region
 
         Diagnostics:
             reason (str): Only present when no residue could be evaluated
@@ -410,6 +411,7 @@ def compute_ramachandran(
         per_residue.append(
             {
                 "res_id": int(ca.res_id),
+                "ins_code": str(ca.ins_code).strip(),
                 "res_name": res_name,
                 "chain": str(ca.chain_id),
                 "phi": phi,
@@ -500,7 +502,8 @@ def compute_omega_planarity(
 
         Features:
             per_residue (list[dict]): Per-residue data with keys:
-                res_id, res_name, chain, omega, deviation, is_outlier
+                res_id, ins_code (insertion code, empty string when there is
+                none), res_name, chain, omega, deviation, is_outlier
 
         Diagnostics:
             reason (str): Only present when no peptide bond could be
@@ -552,6 +555,7 @@ def compute_omega_planarity(
         per_residue.append(
             {
                 "res_id": int(ca.res_id),
+                "ins_code": str(ca.ins_code).strip(),
                 "res_name": str(ca.res_name).strip(),
                 "chain": str(ca.chain_id),
                 "omega": omega,

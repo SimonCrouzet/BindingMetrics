@@ -559,7 +559,7 @@ def _md_geometry(geo: dict | None) -> str:
     )
     for r in [r for r in (rama.get("per_residue") or []) if r.get("region") == "outlier"]:
         lines.append(
-            f"\n⚠️ **Rama outlier:** {r['res_name']}{r['res_id']} "
+            f"\n⚠️ **Rama outlier:** {r['res_name']}{r['res_id']}{r.get('ins_code') or ''} "
             f"(φ={r['phi']:.1f}°, ψ={r['psi']:.1f}°)"
         )
     lines.append("\n**Peptide-bond planarity (ω)**\n")
@@ -576,7 +576,7 @@ def _md_geometry(geo: dict | None) -> str:
     )
     for r in [r for r in (omega.get("per_residue") or []) if r.get("is_outlier")]:
         lines.append(
-            f"\n⚠️ **ω outlier:** {r['res_name']}{r['res_id']} "
+            f"\n⚠️ **ω outlier:** {r['res_name']}{r['res_id']}{r.get('ins_code') or ''} "
             f"(ω={r['omega']:.1f}°, dev={r['deviation']:.1f}°)"
         )
     sc = geo.get("shape_complementarity") or {}
