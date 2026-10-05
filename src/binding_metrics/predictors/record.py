@@ -49,15 +49,19 @@ imported when ``atoms()`` reads a structure.
 
 from __future__ import annotations
 
-import gzip
-import tempfile
 from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
 import numpy as np
 
-from binding_metrics.metrics._common import load_structure
+from binding_metrics.poses.pose import (  # noqa: F401 - re-exported: they lived here first
+    _chain_map_problems,
+    _is_number,
+    _read_structure,
+    _rename_chains,
+    check_chain_map,
+)
 
 _NAN = float("nan")
 
@@ -429,18 +433,6 @@ class PredictionRecord:
 # ---------------------------------------------------------------------- helpers
 
 
-def check_chain_map(chain_map: Mapping[str, str]) -> dict[str, str]:
-    """Return ``chain_map`` as a plain dict, or raise ``ValueError`` if it cannot be one.
-
-    Every key and value must be a non-empty string, and no two chains may be renamed to the
-    same ID (that would merge them).
-    """
-    problems = _chain_map_problems(chain_map)
-    if problems:
-        raise ValueError("invalid chain_map: " + "; ".join(problems))
-    return dict(chain_map)
-
-
 #: Fields of ``PredictionRecord`` that a model may leave out, so an adapter can name them in
 #: ``not_provided``. The identity, the paths and the free-form containers are not among them.
 _PROVIDABLE = (
@@ -477,24 +469,6 @@ def _is_empty(value: Any) -> bool:
     return _is_number(value) and bool(np.isnan(value))
 
 
-def _chain_map_problems(chain_map: Mapping[str, str]) -> list[str]:
-    if not isinstance(chain_map, Mapping):
-        return ["chain_map must be a mapping of model chain ID to user chain ID"]
-    problems: list[str] = []
-    for old, new in chain_map.items():
-        if not (isinstance(old, str) and isinstance(new, str) and old and new):
-            problems.append(f"chain IDs must be non-empty strings, got {old!r} -> {new!r}")
-    targets = [new for new in chain_map.values() if isinstance(new, str)]
-    duplicated = sorted({t for t in targets if targets.count(t) > 1})
-    if duplicated:
-        problems.append(f"several chains are renamed to the same ID {duplicated}")
-    return problems
-
-
-def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, bool)
-
-
 def _scalar_problems(
     label: str, value: Any, low: Optional[float], high: Optional[float]
 ) -> list[str]:
@@ -513,34 +487,3 @@ def _scalar_problems(
         )
         return [f"{label} {value:g} is outside {bounds}"]
     return []
-
-
-def _read_structure(path: Path):
-    """Read model 1 of a structure file; a ``.gz`` file is decompressed to a temporary copy."""
-    if path.suffix.lower() != ".gz":
-        return load_structure(path, purpose="per-chain structural analysis")
-    with tempfile.TemporaryDirectory(prefix="bm_prediction_") as scratch:
-        plain = Path(scratch) / path.stem  # keeps the inner suffix (.cif or .pdb)
-        with gzip.open(path, "rb") as source, open(plain, "wb") as target:
-            target.write(source.read())
-        return load_structure(plain, purpose="per-chain structural analysis")
-
-
-def _rename_chains(atoms, chain_map: Mapping[str, str]):
-    """Rename chains all at once, so a swap ``{"A": "B", "B": "A"}`` works."""
-    if not chain_map:
-        return atoms
-    unique, inverse = np.unique(atoms.chain_id, return_inverse=True)
-    present = [str(chain) for chain in unique]
-    unknown = sorted(set(chain_map) - set(present))
-    if unknown:
-        raise ValueError(
-            f"chain_map names chains {unknown} that the structure does not have (it has {present})"
-        )
-    renamed = [chain_map.get(chain, chain) for chain in present]
-    if len(set(renamed)) != len(renamed):
-        raise ValueError(
-            f"chain_map would merge chains: {dict(zip(present, renamed))} has a repeated ID"
-        )
-    atoms.chain_id = np.array(renamed)[inverse]
-    return atoms
