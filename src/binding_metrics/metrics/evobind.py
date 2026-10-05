@@ -59,6 +59,8 @@ Usage:
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NamedTuple, Optional, Union
 
@@ -322,12 +324,57 @@ def _pair_residues(
 # ---------------------------------------------------------------------------
 
 
+#: One entry of ``receptor_interface_residues``: a residue number (every residue with that
+#: number, whatever its insertion code), a label such as "52A" (that residue only; "52" is the
+#: residue 52 without a code), or a ``(number, insertion code)`` pair.
+InterfaceResidue = Union[int, str, tuple[int, str]]
+
+
+def _interface_residue_mask(rec_cb, selection: Sequence[InterfaceResidue]) -> np.ndarray:
+    """Boolean mask over the receptor residues (one atom each) named by ``selection``.
+
+    Raises:
+        ValueError: If an entry is none of an int, a label such as "52A" or a
+            ``(number, insertion code)`` pair.
+    """
+    numbers: set[int] = set()
+    labelled: set[tuple[int, str]] = set()
+    for entry in selection:
+        if isinstance(entry, (int, np.integer)) and not isinstance(entry, bool):
+            numbers.add(int(entry))
+            continue
+        if isinstance(entry, str):
+            match = re.fullmatch(r"\s*(-?\d+)\s*(\S?)\s*", entry)
+            pair = (int(match.group(1)), match.group(2)) if match else None
+        elif isinstance(entry, (tuple, list)) and len(entry) == 2:
+            number, ins_code = entry
+            valid = isinstance(number, (int, np.integer)) and not isinstance(number, bool)
+            pair = (int(number), str(ins_code or "").strip()) if valid else None
+        else:
+            pair = None
+        if pair is None or len(pair[1]) > 1:
+            raise ValueError(
+                f"receptor_interface_residues entry {entry!r} is not a residue number, a label "
+                "such as '52A' or a (number, insertion code) pair"
+            )
+        labelled.add(pair)
+
+    ins_codes = [str(code).strip() for code in rec_cb.ins_code]
+    return np.array(
+        [
+            int(number) in numbers or (int(number), code) in labelled
+            for number, code in zip(rec_cb.res_id, ins_codes)
+        ],
+        dtype=bool,
+    )
+
+
 def _score_from_atoms(
     atoms,
     plddt_per_atom: Optional[np.ndarray],
     binder_chain: str,
     receptor_chain: str,
-    receptor_interface_residues: Optional[list[int]],
+    receptor_interface_residues: Optional[Sequence[InterfaceResidue]],
     interface_cutoff_angstrom: float,
 ) -> dict:
     """Primary EvoBind score of a structure that is already loaded.
@@ -352,11 +399,11 @@ def _score_from_atoms(
     # Determine receptor interface residues
     interface_fallback_used = False
     if receptor_interface_residues is not None:
-        if_mask = np.isin(rec_res_ids, receptor_interface_residues)
+        if_mask = _interface_residue_mask(rec_cb, receptor_interface_residues)
         if not if_mask.any():
             raise ValueError(
                 f"None of receptor_interface_residues {list(receptor_interface_residues)} "
-                f"is a residue number of receptor chain '{receptor_chain}'."
+                f"is a residue of receptor chain '{receptor_chain}'."
             )
     else:
         if_mask = _auto_interface_mask(rec_cb_coords, pep_cb_coords, interface_cutoff_angstrom)
@@ -593,7 +640,7 @@ def compute_evobind_score(
     plddt_per_atom: Optional[np.ndarray],
     binder_chain: str,
     receptor_chain: Optional[str] = None,
-    receptor_interface_residues: Optional[list[int]] = None,
+    receptor_interface_residues: Optional[Sequence[InterfaceResidue]] = None,
     interface_cutoff_angstrom: float = 8.0,
     *,
     target_chain: Optional[str] = None,
@@ -617,10 +664,13 @@ def compute_evobind_score(
         binder_chain: Chain ID of the designed binder/peptide.
         receptor_chain: Chain ID of the receptor/target. Required, through
             this parameter or ``target_chain``.
-        receptor_interface_residues: Explicit list of receptor residue numbers
-            that define the binding interface. If None the interface is
-            auto-detected as receptor residues whose Cβ lies within
-            ``interface_cutoff_angstrom`` Å of any binder Cβ.
+        receptor_interface_residues: Explicit list of receptor residues that
+            define the binding interface. An int is a residue number and selects
+            every residue with it, so 52 selects 52 and 52A; a string such as
+            "52A" selects that residue only, and "52" the residue 52 without an
+            insertion code; a ``(52, "A")`` pair means the same as "52A". If None
+            the interface is auto-detected as receptor residues whose Cβ lies
+            within ``interface_cutoff_angstrom`` Å of any binder Cβ.
         interface_cutoff_angstrom: Distance cutoff (Å) for auto-detection
             (default 8.0, matching the EvoBind CB-contact threshold).
         target_chain: Alias of ``receptor_chain``; different IDs in both raise
@@ -926,7 +976,7 @@ def compute_evobind_score_from_record(
     binder_chain: str,
     receptor_chain: Optional[str] = None,
     *,
-    receptor_interface_residues: Optional[list[int]] = None,
+    receptor_interface_residues: Optional[Sequence[InterfaceResidue]] = None,
     interface_cutoff_angstrom: float = 8.0,
     target_chain: Optional[str] = None,
 ) -> dict:
@@ -947,8 +997,9 @@ def compute_evobind_score_from_record(
         binder_chain: Chain ID of the binder, after ``chain_map``.
         receptor_chain: Chain ID of the receptor, after ``chain_map``. Required, through
             this parameter or ``target_chain``.
-        receptor_interface_residues: Receptor residue numbers that define the interface;
-            see :func:`compute_evobind_score`.
+        receptor_interface_residues: Receptor residues that define the interface (numbers,
+            labels such as "52A" or ``(number, insertion code)`` pairs); see
+            :func:`compute_evobind_score`.
         interface_cutoff_angstrom: Distance cutoff (Å) for the automatic interface
             (default 8.0).
         target_chain: Alias of ``receptor_chain``; different IDs in both raise
