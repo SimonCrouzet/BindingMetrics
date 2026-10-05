@@ -505,6 +505,7 @@ def detect_chains_from_file(
 
     Uses biotite for fast chain analysis. When chain IDs are not provided,
     the smallest protein chain is assigned as peptide and the largest as receptor.
+    A chain is measured in residues, a residue being a (number, insertion code) pair.
     When they are provided, the function just confirms and reports their properties.
 
     Args:
@@ -589,13 +590,10 @@ def detect_chains_from_file(
 
     chain_info = []
     for cid in chain_ids:
+        in_chain = aa_atoms.chain_id == cid
+        # 52 and 52A are two residues: count (number, insertion code) pairs.
         n_res = len(
-            set(
-                zip(
-                    aa_atoms.chain_id[aa_atoms.chain_id == cid],
-                    aa_atoms.res_id[aa_atoms.chain_id == cid],
-                )
-            )
+            set(zip(aa_atoms.res_id[in_chain].tolist(), aa_atoms.ins_code[in_chain].tolist()))
         )
         chain_info.append({"id": str(cid), "n_residues": int(n_res)})
 
