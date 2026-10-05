@@ -179,8 +179,9 @@ def detect_interface_chains(
     A chain is a protein chain if it has amino-acid atoms: standard, D- and
     other non-canonical peptide-linking residues (biotite's
     ``filter_amino_acids``) and the AMBER protonation variants. Waters, ions and
-    ligands that share a chain ID are not counted towards its size. The smallest
-    protein chain is taken as the peptide, the largest as receptor.
+    ligands that share a chain ID are not counted towards its size. A chain is
+    measured in residues, a residue being a (number, insertion code) pair. The
+    smallest protein chain is taken as the peptide, the largest as receptor.
 
     Args:
         atoms: biotite AtomArray
@@ -193,7 +194,9 @@ def detect_interface_chains(
     protein_chains = []
     for chain_id in np.unique(amino_acid_atoms.chain_id):
         chain_atoms = amino_acid_atoms[amino_acid_atoms.chain_id == chain_id]
-        protein_chains.append((chain_id, len(np.unique(chain_atoms.res_id))))
+        # 52 and 52A are two residues: count (number, insertion code) pairs.
+        n_residues = len(set(zip(chain_atoms.res_id.tolist(), chain_atoms.ins_code.tolist())))
+        protein_chains.append((chain_id, n_residues))
 
     if not protein_chains:
         return None, None

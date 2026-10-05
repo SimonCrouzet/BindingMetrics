@@ -96,7 +96,10 @@ def _load_all_models(path: Path) -> list:
 
 
 def _detect_receptor_chain(atoms) -> Optional[str]:
-    """Return chain ID of the largest protein chain (by residue count)."""
+    """Return chain ID of the largest protein chain (by residue count).
+
+    A residue is a (number, insertion code) pair, so 52 and 52A count twice.
+    """
     struc, _, _ = _import_biotite()
     aa_mask = struc.filter_amino_acids(atoms)
     aa_atoms = atoms[aa_mask]
@@ -108,13 +111,9 @@ def _detect_receptor_chain(atoms) -> Optional[str]:
     best_chain, best_count = None, 0
     for cid in chain_ids:
         cid_mask = aa_atoms.chain_id == cid
+        # 52 and 52A are two residues: count (number, insertion code) pairs.
         n_res = len(
-            set(
-                zip(
-                    aa_atoms.chain_id[cid_mask],
-                    aa_atoms.res_id[cid_mask],
-                )
-            )
+            set(zip(aa_atoms.res_id[cid_mask].tolist(), aa_atoms.ins_code[cid_mask].tolist()))
         )
         if n_res > best_count:
             best_count, best_chain = n_res, cid
@@ -990,7 +989,7 @@ def _score_model(
             "molprobity_score": np.nan,
         }
 
-    n_res = len(set(zip(rec_atoms.chain_id, rec_atoms.res_id)))
+    n_res = len(set(zip(rec_atoms.chain_id, rec_atoms.res_id, rec_atoms.ins_code)))
     elements = np.array([str(a.element).strip().upper() for a in rec_atoms])
     n_heavy = int(np.sum(~np.isin(elements, ["H", "D", ""])))
 
