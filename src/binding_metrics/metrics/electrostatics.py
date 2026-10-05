@@ -91,7 +91,11 @@ def _collect_charged_atoms(chain_atoms) -> tuple[np.ndarray, np.ndarray, list[di
     charged_atoms = chain_atoms[charged]
     info = [
         {
-            "residue": f"{str(atom.res_name).strip()}:{str(atom.chain_id)}:{atom.res_id}",
+            "residue": (
+                f"{str(atom.res_name).strip()}:{str(atom.chain_id)}:{atom.res_id}"
+                f"{str(atom.ins_code).strip()}"
+            ),
+            "ins_code": str(atom.ins_code).strip(),
             "atom": str(atom.atom_name).strip(),
             "charge": float(q),
             "coords": atom.coord.tolist(),
@@ -176,7 +180,9 @@ def compute_coulomb_cross_chain(
 
         Features:
             charged_atoms_peptide (list[dict]): Per charged atom info for peptide;
-                each dict has residue, atom, charge, coords
+                each dict has residue ("NAME:CHAIN:NUM", the insertion code
+                appended to NUM when there is one: "ARG:B:52A"), ins_code
+                (empty string when there is none), atom, charge, coords
             charged_atoms_receptor (list[dict]): Per charged atom info for receptor
     """
     from binding_metrics.metrics.interface import detect_interface_chains
