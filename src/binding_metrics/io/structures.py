@@ -1130,12 +1130,14 @@ def save_cif(
         # PDBxFile sets when it reads a CIF).  So we need two things from the source:
         #
         #   label_to_auth : source label_asym_id → source auth_asym_id
-        #   seq_map       : (source_auth_chain, res_idx) → original auth_seq_id
+        #   seq_map       : (source_auth_chain, res_idx) → (auth_seq_id, insertion code)
         #
         # Then for each output chain (sequential letter[i]):
         #   original chain = label_to_auth[ topology.chains()[i].id ]
         #
         # And residue numbers are restored by positional index within that auth chain.
+        # A residue is a run of rows with one (number, insertion code), which is where
+        # OpenMM's PDBxFile starts a new residue: 60 and 60A are two residues.
         #
         # PDBxFile names the chains by label_asym_id only when the file has more
         # label IDs than author IDs (waters and ligands each get a label ID);
@@ -1145,8 +1147,8 @@ def save_cif(
         # source label → auth
         label_to_auth: dict[str, str] = {}
         source_auth_ids: set[str] = set()
-        # (source_auth_chain, heavy-atom res_idx) → original auth_seq_id
-        seq_map: dict[tuple, str] = {}
+        # (source_auth_chain, heavy-atom res_idx) → (original auth_seq_id, insertion code)
+        seq_map: dict[tuple, tuple[str, str]] = {}
         source_columns = ["label_asym_id", "auth_asym_id", "auth_seq_id", "auth_atom_id"]
         absent = [c for c in source_columns if not source_block.find_loop(f"_atom_site.{c}")]
         if absent:
@@ -1158,24 +1160,27 @@ def save_cif(
                 output_path.name,
             )
         try:
-            src_table = source_block.find("_atom_site.", source_columns)
+            src_table = source_block.find("_atom_site.", [*source_columns, "?pdbx_PDB_ins_code"])
+            has_ins_code = src_table.has_column(len(source_columns))
             s_prev_auth = ""
-            s_prev_seq = ""
+            s_prev_residue = ("", "")
             s_res_idx = -1
             for row in src_table:
                 label, auth, seq, atom = row[0], row[1], row[2], row[3]
+                ins_code = row[4] if has_ins_code else ""
+                residue = (seq, "" if ins_code in ("?", ".") else ins_code)
                 source_auth_ids.add(auth)
                 if label not in label_to_auth:
                     label_to_auth[label] = auth
                 if not str(atom).startswith("H"):
                     if auth != s_prev_auth:
-                        s_prev_auth, s_prev_seq, s_res_idx = auth, seq, 0
-                    elif seq != s_prev_seq:
-                        s_prev_seq = seq
+                        s_prev_auth, s_prev_residue, s_res_idx = auth, residue, 0
+                    elif residue != s_prev_residue:
+                        s_prev_residue = residue
                         s_res_idx += 1
                     key = (auth, s_res_idx)
                     if key not in seq_map:
-                        seq_map[key] = seq
+                        seq_map[key] = residue
         except (RuntimeError, IndexError, ValueError) as exc:
             logger.warning(
                 "cannot read the source residue numbering of %s (%s: %s); residue numbers "
@@ -1213,7 +1218,14 @@ def save_cif(
         # ── Patch the output CIF ──────────────────────────────────────────────────
         out_table = output_block.find(
             "_atom_site.",
-            ["auth_asym_id", "auth_seq_id", "auth_atom_id", "label_asym_id", "label_seq_id"],
+            [
+                "auth_asym_id",
+                "auth_seq_id",
+                "auth_atom_id",
+                "label_asym_id",
+                "label_seq_id",
+                "pdbx_PDB_ins_code",
+            ],
         )
         # (chain, residue number) as OpenMM wrote them -> the residue number written
         # below. PDBxFile.writeFile puts the same 1-based number in label_seq_id and
@@ -1231,8 +1243,9 @@ def save_cif(
             # share a number, and the reader folds them into one. That is a
             # silent structural mutation, so uniqueness wins over fidelity to
             # the source numbering where the two conflict.
-            assigned: dict[tuple, str] = {}  # (auth_ch, res_idx) → seq to write
-            used: dict[str, set] = {}  # auth_ch → seq values already taken
+            # A residue is a (number, insertion code) pair: 60 and 60A may share a number.
+            assigned: dict[tuple, tuple[str, str]] = {}  # (auth_ch, res_idx) → (seq, code)
+            used: dict[str, set] = {}  # auth_ch → (seq, code) pairs already taken
             for row in out_table:
                 out_ch, seq, atom = row[0], row[1], row[2]
                 auth_ch = out_to_auth.get(out_ch, out_ch)
@@ -1249,17 +1262,19 @@ def save_cif(
                 res_id = (auth_ch, o_res_idx[auth_ch])
                 if res_id not in assigned:
                     taken = used.setdefault(auth_ch, set())
-                    candidate = seq_map.get(res_id, seq)
+                    candidate = seq_map.get(res_id, (seq, ""))
                     if candidate in taken:
-                        # Number already belongs to a different residue: take
-                        # the next free one above everything used so far.
-                        numeric = [int(s) for s in taken if str(s).lstrip("-").isdigit()]
-                        candidate = str(max(numeric) + 1 if numeric else 1)
+                        # Number and code already belong to a different residue: take
+                        # the next free number above everything used so far.
+                        numeric = [int(s) for s, _ in taken if str(s).lstrip("-").isdigit()]
+                        candidate = (str(max(numeric) + 1 if numeric else 1), "")
                     taken.add(candidate)
                     assigned[res_id] = candidate
-                row[1] = assigned[res_id]  # auth_seq_id → original, or unique
-                row[4] = assigned[res_id]  # label_seq_id → same, see `renumbered`
-                renumbered[(out_ch, seq)] = assigned[res_id]
+                new_seq, new_ins_code = assigned[res_id]
+                row[1] = new_seq  # auth_seq_id → original, or unique
+                row[4] = new_seq  # label_seq_id → same, see `renumbered`
+                row[5] = new_ins_code or "."  # pdbx_PDB_ins_code → original
+                renumbered[(out_ch, seq)] = new_seq
 
         # Patch the _struct_conn residue numbers first: the chain patch below
         # replaces the OpenMM chain letters this lookup is keyed on.
