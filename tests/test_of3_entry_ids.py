@@ -1,0 +1,206 @@
+"""Template entry IDs of batched OpenFold3 queries (issue #86).
+
+OpenFold3 finds a template as ``<structure_directory>/<entry>.cif`` from the entry name in
+the A3M header. Two samples that map to one entry name overwrite each other's CIF, and one
+query is then predicted from the other sample's template.
+"""
+
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+gemmi = pytest.importorskip("gemmi")
+
+from binding_metrics.metrics import _openfold_run, openfold  # noqa: E402
+from binding_metrics.metrics._openfold_run import (  # noqa: E402
+    _BatchSample,
+    _safe_entry_id,
+    _unique_entry_ids,
+)
+from tests.test_of3_synth import _write  # noqa: E402
+
+
+class TestUniqueEntryIds:
+    def test_ids_that_do_not_collide_are_the_old_ids(self):
+        ids = ["s1", "s_2", "sample-3", "x_y_z"]
+        assert _unique_entry_ids(ids, "rec") == {sid: _safe_entry_id(sid, "rec") for sid in ids}
+        assert _unique_entry_ids(["s_2"], "bnd") == {"s_2": "s-2bnd"}
+
+    def test_underscore_and_hyphen_no_longer_collide(self):
+        entries = _unique_entry_ids(["a_b", "a-b", "other"], "rec")
+        assert len(set(entries.values())) == 3
+        assert entries["other"] == "otherrec"
+        assert entries["a_b"] != entries["a-b"]
+
+    def test_the_colliding_ids_keep_their_readable_stem_and_role_suffix(self):
+        entries = _unique_entry_ids(["a_b", "a-b"], "bnd")
+        for entry in entries.values():
+            assert re.fullmatch(r"a-b-[0-9a-f]{8}bnd", entry)
+
+    def test_every_entry_is_valid_for_openfold3(self):
+        """OpenFold3 splits ``<entry>_<chain>`` on the underscore, so entries have none."""
+        entries = _unique_entry_ids(["a_b", "a-b", "a_b_c", "a-b-c", "a_b-c", "a-b_c"], "rec")
+        assert all("_" not in entry and "/" not in entry for entry in entries.values())
+        assert len(set(entries.values())) == 6
+
+    def test_case_differences_collide_on_case_insensitive_file_systems(self):
+        entries = _unique_entry_ids(["Sample", "sample", "third"], "rec")
+        assert len({entry.casefold() for entry in entries.values()}) == 3
+        assert entries["third"] == "thirdrec"
+
+    def test_an_id_does_not_depend_on_the_order_of_the_batch(self):
+        forward = _unique_entry_ids(["a_b", "a-b"], "rec")
+        backward = _unique_entry_ids(["a-b", "a_b"], "rec")
+        assert forward == backward
+
+    def test_a_repeated_sample_id_is_one_sample(self):
+        assert _unique_entry_ids(["a_b", "a_b"], "rec") == {"a_b": "a-brec"}
+
+    def test_an_unresolvable_clash_is_reported(self, monkeypatch):
+        """If even the widest hash clashed, the run must stop rather than overwrite a CIF."""
+
+        class _Constant:
+            def __init__(self, data):
+                pass
+
+            def hexdigest(self):
+                return "0" * 64
+
+        monkeypatch.setattr(_openfold_run.hashlib, "sha256", _Constant)
+        with pytest.raises(ValueError, match="distinct template entry IDs"):
+            _unique_entry_ids(["a_b", "a-b"], "rec")
+
+    def test_safe_entry_id_is_unchanged(self):
+        assert _safe_entry_id("a_b", "rec") == "a-brec"
+
+
+def _receptor_sequence(cif_path) -> str:
+    block = gemmi.cif.read(str(cif_path)).sole_block()
+    return block.find_value("_entity_poly.pdbx_seq_one_letter_code_can").strip("'\"")
+
+
+def _template_entry(a3m_path) -> str:
+    """Entry name of the template line of a self-alignment, as OpenFold3 reads it."""
+    header = a3m_path.read_text(encoding="utf-8").splitlines()[2]
+    return header.lstrip(">").split("/")[0].rsplit("_", 1)[0]
+
+
+#: The two ways a template reaches OpenFold3; the entry name is found in the A3M file or in the
+#: ``template_cif_paths`` of the chain, and is the name of the CIF in ``templates/`` either way.
+TEMPLATE_MODES = ["alignment", "structure"]
+
+
+def _entry_of(query_path, out, query_name, role, mode) -> str:
+    """The template entry of the ``receptor`` or ``binder`` chain of a query, in either mode."""
+    if mode == "alignment":
+        return _template_entry(out / f"{query_name}_{role}.a3m")
+    chains = json.loads(Path(query_path).read_text(encoding="utf-8"))["queries"][query_name][
+        "chains"
+    ]
+    chain = next(c for c in chains if c["chain_ids"] == ["A" if role == "receptor" else "B"])
+    return Path(chain["template_cif_paths"][0]).stem
+
+
+class TestBatchedQueries:
+    @pytest.fixture
+    def colliding_samples(self, tmp_path):
+        first = _write(tmp_path, {"A": ["ALA", "GLY", "SER"], "B": ["LYS", "ARG"]}, "first.pdb")
+        second = _write(tmp_path, {"A": ["TRP", "TYR", "PHE", "VAL"], "B": ["ASP"]}, "second.pdb")
+        return [
+            _BatchSample("a_b", first, "A", "B"),
+            _BatchSample("a-b", second, "A", "B"),
+            _BatchSample("plain", first, "A", "B"),
+        ]
+
+    @pytest.mark.parametrize(
+        "function, roles",
+        [
+            (openfold.prepare_batched_scoring_queries, ("receptor", "binder")),
+            (openfold.prepare_batched_refolding_queries, ("receptor",)),
+        ],
+    )
+    @pytest.mark.parametrize("mode", TEMPLATE_MODES)
+    def test_each_sample_keeps_its_own_template(
+        self, tmp_path, colliding_samples, function, roles, mode
+    ):
+        out = tmp_path / "out"
+        query = function(colliding_samples, out, template_mode=mode)
+        expected_sequences = {"a_b": "AGS", "a-b": "WYFV", "plain": "AGS"}
+        for sample in colliding_samples:
+            entry = _entry_of(query, out, sample.query_name, "receptor", mode)
+            cif = out / "templates" / f"{entry}.cif"
+            assert cif.exists(), f"{sample.query_name}: no {cif.name}"
+            assert _receptor_sequence(cif) == expected_sequences[sample.query_name]
+        files = sorted(p.name for p in (out / "templates").glob("*.cif"))
+        assert len(files) == len(set(files)) == len(colliding_samples) * len(roles)
+
+    @pytest.mark.parametrize("mode", TEMPLATE_MODES)
+    def test_the_binder_templates_of_colliding_samples_differ_too(
+        self, tmp_path, colliding_samples, mode
+    ):
+        out = tmp_path / "out"
+        query = openfold.prepare_batched_scoring_queries(colliding_samples, out, template_mode=mode)
+        sequences = {}
+        for name in ("a_b", "a-b"):
+            entry = _entry_of(query, out, name, "binder", mode)
+            sequences[name] = _receptor_sequence(out / "templates" / f"{entry}.cif")
+        assert sequences == {"a_b": "KR", "a-b": "D"}
+
+    @pytest.mark.parametrize("mode", TEMPLATE_MODES)
+    def test_a_batch_without_collisions_writes_the_same_file_names_as_before(self, tmp_path, mode):
+        complex_path = _write(tmp_path, {"A": ["ALA", "GLY"], "B": ["SER", "LYS"]})
+        samples = [
+            _BatchSample("s_1", complex_path, "A", "B"),
+            _BatchSample("s2", complex_path, "A", "B"),
+        ]
+        out = tmp_path / "out"
+        query = openfold.prepare_batched_scoring_queries(samples, out, template_mode=mode)
+        assert sorted(p.name for p in (out / "templates").glob("*.cif")) == [
+            "s-1bnd.cif", "s-1rec.cif", "s2bnd.cif", "s2rec.cif",
+        ]  # fmt: skip
+        assert _entry_of(query, out, "s_1", "receptor", mode) == "s-1rec"
+
+
+class TestRepeatedQueryNames:
+    """Two samples with one query name used to become one query, silently (#105)."""
+
+    @pytest.fixture
+    def samples(self, tmp_path):
+        first = _write(tmp_path, {"A": ["ALA", "GLY"], "B": ["SER", "LYS"]}, "first.pdb")
+        second = _write(tmp_path, {"A": ["TRP", "TYR"], "B": ["ASP", "GLU"]}, "second.pdb")
+        return [
+            _BatchSample("same", first, "A", "B"),
+            _BatchSample("other", first, "A", "B"),
+            _BatchSample("same", second, "A", "B"),
+            _BatchSample("dup2", first, "A", "B"),
+            _BatchSample("dup2", first, "A", "B"),
+        ]
+
+    @pytest.mark.parametrize(
+        "function",
+        [openfold.prepare_batched_scoring_queries, openfold.prepare_batched_refolding_queries],
+    )
+    def test_the_repeated_names_are_named_and_nothing_is_written(self, tmp_path, samples, function):
+        out = tmp_path / "out"
+        with pytest.raises(ValueError, match="repeated: dup2, same") as info:
+            function(samples, out)
+        assert "other" not in str(info.value)
+        assert not out.exists()
+
+    def test_the_check_comes_before_the_structures_are_read(self, tmp_path):
+        samples = [_BatchSample("x", tmp_path / "missing.pdb", "A", "B")] * 2
+        with pytest.raises(ValueError, match="repeated: x"):
+            openfold.prepare_batched_scoring_queries(samples, tmp_path / "out")
+
+    def test_distinct_names_still_work(self, tmp_path):
+        complex_path = _write(tmp_path, {"A": ["ALA", "GLY"], "B": ["SER", "LYS"]})
+        samples = [
+            _BatchSample("a", complex_path, "A", "B"),
+            _BatchSample("b", complex_path, "A", "B"),
+        ]
+        path = openfold.prepare_batched_scoring_queries(samples, tmp_path / "out")
+        import json
+
+        assert sorted(json.loads(path.read_text(encoding="utf-8"))["queries"]) == ["a", "b"]

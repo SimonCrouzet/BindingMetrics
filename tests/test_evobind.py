@@ -17,10 +17,13 @@ import biotite.structure.io.pdb as pdb_io  # noqa: E402
 from scipy.spatial.distance import cdist  # noqa: E402
 
 from binding_metrics.metrics.evobind import (  # noqa: E402
+    _adversarial_from_atoms,
     _auto_interface_mask,
     _cb_atoms,
+    _load_atoms,
     _pairwise_min_dists,
     _per_residue_plddt,
+    _score_from_atoms,
     compute_evobind_adversarial_check,
     compute_evobind_score,
 )
@@ -473,3 +476,362 @@ class TestAdversarialCheck:
         b = _helix_complex(tmp_path, "afm.pdb", pep_names=["TRP", "PRO", "HIS", "GLN"])
         with pytest.raises(ValueError, match="binder residues"):
             compute_evobind_adversarial_check(a, b, "B", "A")
+
+
+# ---------------------------------------------------------------------------
+# The split at the load step: the path functions only load, then call these
+# ---------------------------------------------------------------------------
+
+
+class TestSplitAtTheLoadStep:
+    def test_score_from_atoms_equals_the_path_function(self, tmp_path):
+        path = _line_complex(tmp_path)
+        plddt = np.concatenate([np.full(10, 50.0), np.full(6, 80.0)])
+        from_path = compute_evobind_score(path, plddt, "B", "A", interface_cutoff_angstrom=6.5)
+        from_atoms = _score_from_atoms(_load_atoms(path), plddt, "B", "A", None, 6.5)
+        assert from_atoms == from_path
+
+    def test_adversarial_from_atoms_equals_the_path_function(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb")
+        b = _helix_complex(tmp_path, "afm_shift.pdb", pep_shift=(0.0, 3.0, 4.0))
+        plddt = np.concatenate([np.full(24, 40.0), np.full(8, 80.0)])
+        from_path = compute_evobind_adversarial_check(a, b, "B", "A", afm_plddt_per_atom=plddt)
+        from_atoms = _adversarial_from_atoms(
+            _load_atoms(a), _load_atoms(b), plddt, "B", "A", 8.0, 0.5
+        )
+        assert from_atoms == from_path
+        assert from_atoms["delta_com_angstrom"] == pytest.approx(5.0, abs=1e-2)
+
+    def test_the_adversary_label_names_the_second_structure_in_messages(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb")
+        b = _helix_complex(tmp_path, "afm.pdb", n_rec=2)
+        design, second = _load_atoms(a), _load_atoms(b)
+        with pytest.raises(ValueError, match=r"design 12, AFM 2"):
+            _adversarial_from_atoms(design, second, None, "B", "A", 8.0, 0.5)
+        with pytest.raises(ValueError, match=r"design 12, adversary 2"):
+            _adversarial_from_atoms(
+                design, second, None, "B", "A", 8.0, 0.5, adversary_label="adversary"
+            )
+
+
+# ---------------------------------------------------------------------------
+# The per-residue pLDDT helper is the shared one (issue #92)
+# ---------------------------------------------------------------------------
+
+
+class TestSharedPlddtHelper:
+    def test_wrong_length_array_is_a_value_error_naming_both_lengths(self):
+        atoms = _chain("A", np.array([[0.0, 0, 0], [3.8, 0, 0]]))
+        with pytest.raises(ValueError, match=r"plddt_per_atom length \(3\) != atom count .* \(2\)"):
+            _per_residue_plddt(np.array([50.0, 60.0, 70.0]), atoms, "A")
+
+    def test_score_with_a_wrong_length_array_raises_value_error(self, tmp_path):
+        path = _line_complex(tmp_path)  # 16 atoms
+        with pytest.raises(ValueError, match="plddt_per_atom length"):
+            compute_evobind_score(path, np.full(6, 80.0), "B", "A")
+        with pytest.raises(ValueError, match="plddt_per_atom length"):
+            compute_evobind_score(path, np.full(20, 80.0), "B", "A")
+
+    def test_adversarial_check_with_a_wrong_length_array_raises_value_error(self, tmp_path):
+        a = _helix_complex(tmp_path, "design.pdb")
+        b = _helix_complex(tmp_path, "afm.pdb")  # 32 atoms
+        with pytest.raises(ValueError, match="plddt_per_atom length"):
+            compute_evobind_adversarial_check(a, b, "B", "A", afm_plddt_per_atom=np.full(8, 80.0))
+
+    def test_insertion_codes_make_separate_residues(self):
+        # residue 1 and residue 1A are two residues: their pLDDT are not averaged together
+        atoms = struc.array(
+            [
+                struc.Atom(
+                    [0.0, 0, 0],
+                    chain_id="B",
+                    res_id=1,
+                    ins_code="",
+                    res_name="ALA",
+                    atom_name="CA",
+                    element="C",
+                ),
+                struc.Atom(
+                    [3.8, 0, 0],
+                    chain_id="B",
+                    res_id=1,
+                    ins_code="A",
+                    res_name="ALA",
+                    atom_name="CA",
+                    element="C",
+                ),
+                struc.Atom(
+                    [7.6, 0, 0],
+                    chain_id="B",
+                    res_id=2,
+                    ins_code="",
+                    res_name="ALA",
+                    atom_name="CA",
+                    element="C",
+                ),
+            ]
+        )
+        plddt = np.array([10.0, 30.0, 50.0])
+        np.testing.assert_allclose(_per_residue_plddt(plddt, atoms, "B"), [10.0, 30.0, 50.0])
+
+    def test_a_list_of_plddt_values_is_accepted(self, tmp_path):
+        # a list used to fail with "only integer scalar arrays can be converted to a scalar index"
+        path = _line_complex(tmp_path)
+        as_array = np.concatenate([np.full(10, 50.0), np.full(6, 80.0)])
+        from_list = compute_evobind_score(path, as_array.tolist(), "B", "A")
+        assert from_list["mean_plddt_binder"] == pytest.approx(80.0)
+        assert (
+            from_list["evobind_score"]
+            == compute_evobind_score(path, as_array, "B", "A")["evobind_score"]
+        )
+        a = _helix_complex(tmp_path, "design.pdb")
+        b = _helix_complex(tmp_path, "afm.pdb")
+        plddt = np.concatenate([np.full(24, 40.0), np.full(8, 80.0)])
+        res = compute_evobind_adversarial_check(a, b, "B", "A", afm_plddt_per_atom=list(plddt))
+        assert res["afm_mean_plddt_binder"] == pytest.approx(80.0)
+
+    def test_a_list_of_the_wrong_length_is_still_a_value_error(self):
+        atoms = _chain("A", np.array([[0.0, 0, 0], [3.8, 0, 0]]))
+        with pytest.raises(ValueError, match="plddt_per_atom length"):
+            _per_residue_plddt([50.0, 60.0, 70.0], atoms, "A")
+
+
+# ---------------------------------------------------------------------------
+# Residues that differ only by insertion code are two residues (issue #102)
+# ---------------------------------------------------------------------------
+
+
+def _insertion_atom(x, y, chain_id, res_id, ins_code, atom_name):
+    return struc.Atom(
+        [x, y, 0.0],
+        chain_id=chain_id,
+        res_id=res_id,
+        ins_code=ins_code,
+        res_name="ALA",
+        atom_name=atom_name,
+        element="C",
+    )
+
+
+def _insertion_code_complex(tmp_path):
+    """Receptor A of two residues; binder B of residues 1, 1A and 2, the 1A one far away.
+
+    Binder Cβ at (0, 7.5), (3.8, 13.5) [residue 1A] and (7.6, 7.5); receptor Cβ at (0, 1.5)
+    and (3.8, 1.5). The nearest receptor Cβ is 6.0, 12.0 and hypot(3.8, 6.0) angstrom away.
+    """
+    atoms = struc.array(
+        [
+            _insertion_atom(0.0, 0.0, "A", 1, "", "CA"),
+            _insertion_atom(0.0, 1.5, "A", 1, "", "CB"),
+            _insertion_atom(3.8, 0.0, "A", 2, "", "CA"),
+            _insertion_atom(3.8, 1.5, "A", 2, "", "CB"),
+            _insertion_atom(0.0, 6.0, "B", 1, "", "CA"),
+            _insertion_atom(0.0, 7.5, "B", 1, "", "CB"),
+            _insertion_atom(3.8, 12.0, "B", 1, "A", "CA"),
+            _insertion_atom(3.8, 13.5, "B", 1, "A", "CB"),
+            _insertion_atom(7.6, 6.0, "B", 2, "", "CA"),
+            _insertion_atom(7.6, 7.5, "B", 2, "", "CB"),
+        ]
+    )
+    return _write(tmp_path / "insertion.pdb", atoms), atoms
+
+
+class TestInsertionCodes:
+    def test_cb_atoms_keeps_a_residue_that_differs_only_by_insertion_code(self, tmp_path):
+        _, atoms = _insertion_code_complex(tmp_path)
+        picked = _cb_atoms(atoms, "B")
+        assert picked.array_length() == 3
+        assert picked.res_id.tolist() == [1, 1, 2]
+        assert picked.ins_code.tolist() == ["", "A", ""]
+        assert picked.atom_name.tolist() == ["CB", "CB", "CB"]
+        np.testing.assert_allclose(picked.coord[:, 0], [0.0, 3.8, 7.6])
+
+    def test_cb_atoms_lists_the_residues_in_residue_number_then_insertion_code_order(self):
+        # written out of order: 2, 1A, 1
+        atoms = struc.array(
+            [
+                _insertion_atom(7.6, 0.0, "B", 2, "", "CA"),
+                _insertion_atom(3.8, 0.0, "B", 1, "A", "CA"),
+                _insertion_atom(0.0, 0.0, "B", 1, "", "CA"),
+            ]
+        )
+        picked = _cb_atoms(atoms, "B")
+        assert list(zip(picked.res_id.tolist(), picked.ins_code.tolist())) == [
+            (1, ""),
+            (1, "A"),
+            (2, ""),
+        ]
+
+    def test_the_score_counts_the_insertion_code_residue(self, tmp_path):
+        path, _ = _insertion_code_complex(tmp_path)
+        res = compute_evobind_score(path, None, "B", "A")
+        assert res["n_interface_receptor_residues"] == 2
+        expected = (6.0 + 12.0 + np.hypot(3.8, 6.0)) / 3.0  # was (6.0 + hypot) / 2 without 1A
+        assert res["if_dist_pep_to_rec"] == pytest.approx(expected, abs=1e-2)
+
+
+class TestAdversarialPairingWithInsertionCodes:
+    """Issue #103: residues are paired by residue number AND insertion code."""
+
+    @staticmethod
+    def _renumbered(tmp_path, name, chain, from_res, to_res, to_ins, n_rec=12):
+        """The helix complex with one residue given another number and insertion code."""
+        atoms = _load_atoms(_helix_complex(tmp_path, name, n_rec=n_rec))
+        moved = (atoms.chain_id == chain) & (atoms.res_id == from_res)
+        atoms.res_id[moved] = to_res
+        atoms.ins_code[moved] = to_ins
+        return _write(tmp_path / name, atoms)
+
+    def test_a_receptor_residue_with_an_insertion_code_is_not_matched_by_its_number(self, tmp_path):
+        # residue 5 of the prediction is called 4A: the design has residues 4 and 5, the
+        # prediction 4 and 4A, so the two share 11 residues and 4A is not paired with 4
+        design = _helix_complex(tmp_path, "design.pdb")
+        second = self._renumbered(tmp_path, "afm.pdb", "A", 5, 4, "A")
+        res = compute_evobind_adversarial_check(design, second, "B", "A")
+        assert res["receptor_pairing"] == "residue_number"
+        assert res["n_superposition_residues"] == 11
+        assert res["n_superposition_atoms"] == 11
+        assert res["delta_com_angstrom"] == pytest.approx(0.0, abs=1e-2)
+
+    def test_a_binder_residue_with_an_insertion_code_is_not_matched_by_its_number(self, tmp_path):
+        design = _helix_complex(tmp_path, "design.pdb")
+        second = self._renumbered(tmp_path, "afm.pdb", "B", 3, 2, "A")
+        res = compute_evobind_adversarial_check(design, second, "B", "A")
+        assert res["binder_pairing"] == "residue_number"
+        assert res["delta_com_angstrom"] == pytest.approx(0.0, abs=1e-2)
+
+    def test_the_interface_is_mapped_by_number_and_insertion_code(self, tmp_path):
+        # the prediction has a residue 5A where the design has residue 5: the design interface
+        # residue 5 has no partner, so the prediction interface holds fewer residues
+        design = _helix_complex(tmp_path, "design.pdb")
+        second = self._renumbered(tmp_path, "afm.pdb", "A", 5, 5, "A")
+        with_code = compute_evobind_adversarial_check(design, second, "B", "A")
+        plain = compute_evobind_adversarial_check(
+            design, _helix_complex(tmp_path, "plain.pdb"), "B", "A"
+        )
+        assert with_code["interface_fallback_used"] is False
+        assert with_code["afm_if_dist_rec_to_pep"] != pytest.approx(plain["afm_if_dist_rec_to_pep"])
+
+    @pytest.mark.parametrize(
+        "chain, pairing_key", [("A", "receptor_pairing"), ("B", "binder_pairing")]
+    )
+    def test_a_repeated_residue_number_is_paired_by_position_when_the_lengths_agree(
+        self, tmp_path, chain, pairing_key
+    ):
+        # two residues of one chain with the same number and no insertion code cannot be paired
+        # by number; the chains have the same length, so they are paired by position
+        design = _helix_complex(tmp_path, "design.pdb")
+        second = self._renumbered(
+            tmp_path, "afm.pdb", chain, 5 if chain == "A" else 3, 4 if chain == "A" else 2, ""
+        )
+        res = compute_evobind_adversarial_check(design, second, "B", "A")
+        assert res[pairing_key] == "position"
+        assert res["delta_com_angstrom"] == pytest.approx(0.0, abs=1e-2)
+
+    def test_a_repeated_residue_number_raises_when_the_lengths_differ(self, tmp_path):
+        design = _helix_complex(tmp_path, "design.pdb", n_rec=10)
+        second = self._renumbered(tmp_path, "afm.pdb", "A", 5, 4, "", n_rec=12)
+        with pytest.raises(
+            ValueError, match=r"receptor residues cannot be paired.*Cα atoms.*by position needs"
+        ):
+            compute_evobind_adversarial_check(design, second, "B", "A")
+
+
+# ---------------------------------------------------------------------------
+# A second model that numbers every chain from 1 (issue #108)
+# ---------------------------------------------------------------------------
+
+
+def renumber_from_one(atoms):
+    """Copy of ``atoms`` with the residues of each chain numbered 1, 2, ... in file order.
+
+    Boltz-2 numbers the chains of its output like this, whatever the input numbering.
+    """
+    out = atoms.copy()
+    for chain in np.unique(out.chain_id):
+        index = np.where(out.chain_id == chain)[0]
+        keys = list(zip(out.res_id[index].tolist(), out.ins_code[index].tolist()))
+        number: dict = {}
+        for key in keys:
+            number.setdefault(key, len(number) + 1)
+        out.res_id[index] = [number[key] for key in keys]
+        out.ins_code[index] = ""
+    return out
+
+
+class TestRenumberedFromOneSecondModel:
+    """1YCR: receptor A is numbered 25-109 and binder B 17-29; the second model numbers both from 1.
+
+    The receptor numbers overlap (25-85) but name other residues, so a pairing by number is
+    name-inconsistent for 93% of the pairs and must give way to a pairing by position.
+    """
+
+    @pytest.fixture
+    def design_atoms(self, example_pdb_path):
+        return _load_atoms(example_pdb_path)
+
+    def test_the_second_model_is_paired_by_position(self, tmp_path, example_pdb_path, design_atoms):
+        second = _write(tmp_path / "boltz_like.pdb", renumber_from_one(design_atoms))
+        res = compute_evobind_adversarial_check(example_pdb_path, second, "B", "A")
+        assert res["receptor_pairing"] == "position"
+        assert res["binder_pairing"] == "position"
+        assert res["n_superposition_atoms"] == 85
+        assert res["n_superposition_residues"] == 0  # none is paired by number
+        assert res["receptor_resname_mismatch_fraction"] == 0.0
+        assert res["binder_resname_mismatch_fraction"] == 0.0
+        assert res["delta_com_angstrom"] == pytest.approx(0.0, abs=1e-2)
+
+    def test_the_interface_follows_the_positional_pairing(
+        self, tmp_path, example_pdb_path, design_atoms
+    ):
+        # same coordinates and residues, so the interface distances are those of the design
+        # against itself; mapping the interface residues by number would pick other residues
+        second = _write(tmp_path / "boltz_like.pdb", renumber_from_one(design_atoms))
+        renumbered = compute_evobind_adversarial_check(example_pdb_path, second, "B", "A")
+        same_numbers = compute_evobind_adversarial_check(
+            example_pdb_path, example_pdb_path, "B", "A"
+        )
+        assert renumbered["interface_fallback_used"] is False
+        for key in ("afm_if_dist_pep_to_rec", "afm_if_dist_rec_to_pep", "afm_mean_if_dist"):
+            assert renumbered[key] == pytest.approx(same_numbers[key], abs=1e-3)
+
+    def test_a_displaced_binder_gives_the_known_delta_com(
+        self, tmp_path, example_pdb_path, design_atoms
+    ):
+        moved = renumber_from_one(design_atoms)
+        moved.coord[moved.chain_id == "B"] += [0.0, 3.0, 4.0]
+        second = _write(tmp_path / "boltz_like_moved.pdb", moved)
+        res = compute_evobind_adversarial_check(example_pdb_path, second, "B", "A")
+        assert res["delta_com_angstrom"] == pytest.approx(5.0, abs=1e-2)
+
+    def test_matching_numbers_are_still_paired_by_number(self, example_pdb_path):
+        res = compute_evobind_adversarial_check(example_pdb_path, example_pdb_path, "B", "A")
+        assert res["receptor_pairing"] == "residue_number"
+        assert res["binder_pairing"] == "residue_number"
+        assert res["n_superposition_residues"] == 85
+
+    def test_residues_that_name_other_residues_in_both_pairings_still_raise(
+        self, tmp_path, example_pdb_path, design_atoms
+    ):
+        scrambled = renumber_from_one(design_atoms)
+        receptor = scrambled.chain_id == "A"
+        names = scrambled.res_name[receptor]
+        # give every residue the name of the residue seven places on: no pairing agrees
+        _, first, inverse = np.unique(
+            scrambled.res_id[receptor], return_index=True, return_inverse=True
+        )
+        per_residue = names[first]
+        scrambled.res_name[receptor] = np.roll(per_residue, 7)[inverse]
+        second = _write(tmp_path / "scrambled.pdb", scrambled)
+        with pytest.raises(
+            ValueError, match=r"receptor residues cannot be paired.*by position have different"
+        ):
+            compute_evobind_adversarial_check(example_pdb_path, second, "B", "A")
+
+    def test_chains_of_different_length_are_not_paired_by_position(
+        self, tmp_path, example_pdb_path, design_atoms
+    ):
+        shorter = design_atoms[~((design_atoms.chain_id == "A") & (design_atoms.res_id == 60))]
+        second = _write(tmp_path / "shorter.pdb", renumber_from_one(shorter))
+        with pytest.raises(ValueError, match=r"receptor residues cannot be paired.*84"):
+            compute_evobind_adversarial_check(example_pdb_path, second, "B", "A")

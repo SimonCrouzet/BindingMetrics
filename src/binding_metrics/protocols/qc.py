@@ -77,6 +77,7 @@ from typing import Optional, Union
 import numpy as np
 
 from binding_metrics.core.residues import WATER_NAMES_WITH_H2O
+from binding_metrics.io.structures import author_chain_ids
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,11 @@ class AtomSnapshot:
 
     @classmethod
     def from_topology(cls, topology, positions) -> "AtomSnapshot":
-        """Snapshot an OpenMM topology with its positions (nm Quantity or array)."""
+        """Snapshot an OpenMM topology with its positions (nm Quantity or array).
+
+        Residues are keyed by the author chain ID of their chain (``author_chain_ids``) when
+        the topology carries it, so that a failed check names the chain as the file does.
+        """
         if hasattr(positions, "value_in_unit"):
             from openmm import unit
 
@@ -175,8 +180,9 @@ class AtomSnapshot:
         hydrogen = np.zeros(n_atoms, dtype=bool)
         water = np.zeros(n_atoms, dtype=bool)
         seen: dict = {}
+        chain_names = author_chain_ids(topology)
         for residue in topology.residues():
-            base = (residue.chain.id, str(residue.id))
+            base = (chain_names[residue.chain.index], str(residue.id))
             occurrence = seen.get(base, 0)
             seen[base] = occurrence + 1
             key = base + (occurrence,)

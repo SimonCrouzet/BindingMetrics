@@ -486,18 +486,104 @@ class TestTokenOffsetCheck:
         assert metrics["mean_interface_pae"] == pytest.approx(3.0)
         assert "reason" not in metrics
 
-    def test_compute_interface_pae_raises_for_a_ligand_complex(self, tmp_path):
+    def test_compute_interface_pae_names_the_option_that_controls_the_file(self, tmp_path):
+        from binding_metrics.metrics.openfold import compute_interface_pae
+
+        conf = tmp_path / "conf.json"
+        conf.write_text(json.dumps({"plddt": [90.0, 80.0]}), encoding="utf-8")
+        with pytest.raises(ValueError, match="write_full_confidence_scores") as info:
+            compute_interface_pae(
+                conf, tmp_path / "model.cif", binder_chain="B", receptor_chain="A"
+            )
+        assert "pae_enabled" not in str(info.value)
+
+    def test_compute_interface_pae_cuts_the_blocks_with_the_token_layout_of_a_ligand_complex(
+        self, tmp_path
+    ):
+        """A ligand is one token per atom (4 + 3 + 5 = 12): the layout of the structure, built as
+        ``OpenFold3Parser.complete`` builds it, gives the binder and receptor blocks."""
         from binding_metrics.metrics.openfold import compute_interface_pae
 
         root = self._write_run(tmp_path, n_tokens=12)
         seed_dir = root / "lig" / "seed_1"
-        with pytest.raises(ValueError, match="PAE matrix has 12 tokens"):
+        stats = compute_interface_pae(
+            seed_dir / "lig_seed_1_sample_1_confidences.json",
+            seed_dir / "lig_seed_1_sample_1_model.cif",
+            binder_chain="B",
+            receptor_chain="A",
+        )
+        assert stats["mean_interface_pae"] == pytest.approx(3.0)
+        assert stats["pae_interface"].shape == (3, 4)  # binder tokens by receptor tokens
+
+    def test_compute_interface_pae_still_refuses_a_matrix_that_the_layout_cannot_explain(
+        self, tmp_path
+    ):
+        """13 rows fit neither the 12 tokens of the layout nor the 8 residues: no layout is
+        guessed and the size error of the one-token-per-residue reading stays."""
+        from binding_metrics.metrics.openfold import compute_interface_pae
+
+        root = self._write_run(tmp_path, n_tokens=13)
+        seed_dir = root / "lig" / "seed_1"
+        with pytest.raises(ValueError, match="PAE matrix has 13 tokens"):
             compute_interface_pae(
                 seed_dir / "lig_seed_1_sample_1_confidences.json",
                 seed_dir / "lig_seed_1_sample_1_model.cif",
                 binder_chain="B",
                 receptor_chain="A",
             )
+
+    def test_compute_interface_pae_reads_a_matrix_with_one_row_per_residue_as_before(
+        self, tmp_path
+    ):
+        from binding_metrics.metrics.openfold import compute_interface_pae
+
+        root = self._write_run(tmp_path, n_tokens=8)
+        seed_dir = root / "lig" / "seed_1"
+        stats = compute_interface_pae(
+            seed_dir / "lig_seed_1_sample_1_confidences.json",
+            seed_dir / "lig_seed_1_sample_1_model.cif",
+            binder_chain="B",
+            receptor_chain="A",
+        )
+        assert stats["mean_interface_pae"] == pytest.approx(3.0)
+        assert stats["pae_interface"].shape == (3, 4)
+
+    def test_compute_interface_pae_of_a_binder_with_a_modified_residue(self, tmp_path):
+        """The shape of 1CWA: a 10 x 10 matrix for 6 residues, the binder's MLE one token per
+        atom. The interface PAE is the mean of the two blocks (4.25 and 3.0), 3.625; before the
+        layout the call raised "PAE matrix has 10 tokens but the structure has 6 residues"."""
+        from binding_metrics.metrics.openfold import compute_interface_pae
+        from tests.predictors import synth_of3
+
+        synth_of3.write_prediction(tmp_path, "mod", synth_of3.complex_with_a_modified_residue())
+        seed_dir = next((tmp_path / "mod").glob("seed_*"))
+        prefix = f"{seed_dir.name.replace('seed_', 'mod_seed_')}_sample_1"
+        stats = compute_interface_pae(
+            seed_dir / f"{prefix}_confidences.json",
+            seed_dir / f"{prefix}_model.cif",
+            binder_chain="B",
+            receptor_chain="A",
+        )
+        assert stats["mean_interface_pae"] == pytest.approx(3.625)
+        assert stats["pae_interface"].shape == (7, 3)  # 7 binder tokens by 3 receptor tokens
+
+    def test_compute_interface_pae_agrees_with_compute_openfold_metrics(self, tmp_path):
+        """One layout rule for every entry point: the same value for the same files."""
+        from binding_metrics.metrics.openfold import compute_interface_pae, compute_openfold_metrics
+        from tests.predictors import synth_of3
+
+        synth_of3.write_prediction(tmp_path, "mod", synth_of3.complex_with_a_modified_residue())
+        seed_dir = next((tmp_path / "mod").glob("seed_*"))
+        prefix = f"{seed_dir.name.replace('seed_', 'mod_seed_')}_sample_1"
+        direct = compute_interface_pae(
+            seed_dir / f"{prefix}_confidences.json",
+            seed_dir / f"{prefix}_model.cif",
+            binder_chain="B",
+            receptor_chain="A",
+        )
+        full = compute_openfold_metrics(tmp_path, "mod", binder_chain="B", receptor_chain="A")
+        assert direct["mean_interface_pae"] == pytest.approx(full["mean_interface_pae"])
+        assert direct["max_interface_pae"] == pytest.approx(full["max_interface_pae"])
 
 
 # ---------------------------------------------------------------------------
@@ -557,7 +643,8 @@ class TestFailureReasons:
 
         _make_seed_dir(tmp_path, "q", agg=_default_agg(), conf=None)
         assert compute_openfold_metrics(tmp_path, "q")["reason"] == (
-            "per-atom confidences file not found"
+            "per-atom confidences file not found; OpenFold3 writes it only when "
+            "write_full_confidence_scores is true"
         )
 
     def test_missing_structure_when_a_binder_chain_is_requested(self, tmp_path):
@@ -637,12 +724,14 @@ class TestFailureReasons:
     def test_unexpected_errors_are_reported_by_the_outer_guard_not_swallowed_silently(
         self, tmp_path, monkeypatch
     ):
-        from binding_metrics.metrics import openfold
+        from binding_metrics.metrics import openfold, prediction
 
         def _boom(*args, **kwargs):
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(openfold, "_binder_plddt_per_residue", _boom)
+        # the analysis runs in metrics/prediction.py since compute_openfold_metrics went
+        # through the adapter, so that is the module whose helper name is patched
+        monkeypatch.setattr(prediction, "_binder_plddt_per_residue", _boom)
         root = _write_dimer_run(tmp_path)
         with pytest.warns(UserWarning, match="structural analysis failed"):
             metrics = openfold.compute_openfold_metrics(
@@ -668,50 +757,73 @@ def batch_sample():
 
 
 class TestQuerySeeds:
-    """The query JSON pins the seeds OpenFold3 samples with; 42 is only the default."""
+    """OpenFold3 0.5.0 ignores a ``seeds`` field in the query JSON (#67).
+
+    The seeds go to the runner YAML through ``run_openfold``; the ``seeds`` argument of the
+    ``prepare_*`` functions is kept but has no effect. What OpenFold3 then does with the YAML is
+    not run here; ``tests/test_of3_seeds.py`` checks the YAML and the command line.
+    """
 
     @pytest.fixture(autouse=True)
     def _require_gemmi(self):
         pytest.importorskip("gemmi")
 
-    def _seeds(self, query_json: Path):
-        return json.loads(query_json.read_text(encoding="utf-8"))["seeds"]
+    @staticmethod
+    def _query(query_json: Path) -> dict:
+        return json.loads(query_json.read_text(encoding="utf-8"))
 
-    def test_scoring_query_defaults_to_42(self, tmp_path):
+    def test_scoring_query_has_no_seeds(self, tmp_path):
         from binding_metrics.metrics.openfold import prepare_scoring_query
 
         path = prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path)
-        assert self._seeds(path) == [42]
+        assert "seeds" not in self._query(path)
 
-    def test_refolding_query_defaults_to_42(self, tmp_path):
+    def test_refolding_query_has_no_seeds(self, tmp_path):
         from binding_metrics.metrics.openfold import prepare_refolding_query
 
         path = prepare_refolding_query(_P53_MDM2, "A", "B", "q", tmp_path)
-        assert self._seeds(path) == [42]
+        assert "seeds" not in self._query(path)
 
-    def test_seeds_argument_reaches_the_json(self, tmp_path):
+    def test_a_seeds_argument_is_accepted_but_not_written(self, tmp_path):
         from binding_metrics.metrics.openfold import (
             prepare_refolding_query,
             prepare_scoring_query,
         )
 
-        scoring = prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path / "s", seeds=(7, 8, 9))
-        refolding = prepare_refolding_query(_P53_MDM2, "A", "B", "q", tmp_path / "r", seeds=[3])
-        assert self._seeds(scoring) == [7, 8, 9]
-        assert self._seeds(refolding) == [3]
+        with pytest.warns(DeprecationWarning, match="no effect"):
+            scoring = prepare_scoring_query(
+                _P53_MDM2, "A", "B", "q", tmp_path / "s", seeds=(7, 8, 9)
+            )
+        with pytest.warns(DeprecationWarning, match="run_openfold"):
+            refolding = prepare_refolding_query(_P53_MDM2, "A", "B", "q", tmp_path / "r", seeds=[3])
+        assert "seeds" not in self._query(scoring)
+        assert "seeds" not in self._query(refolding)
 
-    def test_batched_queries_take_seeds(self, tmp_path, batch_sample):
+    def test_the_default_seeds_argument_does_not_warn(self, tmp_path):
+        import warnings
+
+        from binding_metrics.metrics.openfold import prepare_scoring_query
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path / "a")
+            prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path / "b", seeds=(42,))
+
+    def test_batched_queries_have_no_seeds(self, tmp_path, batch_sample):
         from binding_metrics.metrics.openfold import (
             prepare_batched_refolding_queries,
             prepare_batched_scoring_queries,
         )
 
         default = prepare_batched_scoring_queries([batch_sample], tmp_path / "d")
-        scoring = prepare_batched_scoring_queries([batch_sample], tmp_path / "s", seeds=(1, 2))
-        refolding = prepare_batched_refolding_queries([batch_sample], tmp_path / "r", seeds=(5,))
-        assert self._seeds(default) == [42]
-        assert self._seeds(scoring) == [1, 2]
-        assert self._seeds(refolding) == [5]
+        with pytest.warns(DeprecationWarning):
+            scoring = prepare_batched_scoring_queries([batch_sample], tmp_path / "s", seeds=(1, 2))
+        with pytest.warns(DeprecationWarning):
+            refolding = prepare_batched_refolding_queries(
+                [batch_sample], tmp_path / "r", seeds=(5,)
+            )
+        for path in (default, scoring, refolding):
+            assert set(self._query(path)) == {"queries"}
 
     @pytest.mark.parametrize("bad", [(), []])
     def test_empty_seeds_are_rejected_before_anything_is_written(self, tmp_path, bad):
@@ -728,24 +840,39 @@ class TestQuerySeeds:
             prepare_scoring_query(_P53_MDM2, "A", "B", "q", tmp_path, seeds="42")
 
     @pytest.mark.parametrize("runner", ["run_openfold_scoring", "run_openfold_refolding"])
-    def test_run_wrappers_forward_seeds(self, tmp_path, monkeypatch, runner):
+    def test_run_wrappers_forward_seeds_to_run_openfold(self, tmp_path, monkeypatch, runner):
         from binding_metrics.metrics import openfold
 
         captured = {}
 
         def _fake_run(query_json, **kwargs):
-            captured["seeds"] = self._seeds(Path(query_json))
-            captured["num_model_seeds"] = kwargs["num_model_seeds"]
+            captured.update(kwargs)
+            captured["query"] = self._query(Path(query_json))
             return Path(kwargs["output_dir"])
 
         monkeypatch.setattr(openfold, "run_openfold", _fake_run)
-        getattr(openfold, runner)(
-            _P53_MDM2, "A", "B", "q", tmp_path, seeds=(11, 12), num_model_seeds=2
-        )
-        assert captured == {"seeds": [11, 12], "num_model_seeds": 2}
+        getattr(openfold, runner)(_P53_MDM2, "A", "B", "q", tmp_path, seeds=(11, 12))
+        assert captured["seeds"] == (11, 12)
+        assert captured["num_model_seeds"] is None
+        assert "seeds" not in captured["query"]
 
         getattr(openfold, runner)(_P53_MDM2, "A", "B", "q", tmp_path / "again")
-        assert captured["seeds"] == [42]
+        assert captured["seeds"] is None  # run_openfold then writes the default [42]
+
+    @pytest.mark.parametrize("runner", ["run_openfold_scoring", "run_openfold_refolding"])
+    def test_run_wrappers_refuse_both_seed_options_before_writing_anything(
+        self, tmp_path, monkeypatch, runner
+    ):
+        from binding_metrics.metrics import openfold
+
+        monkeypatch.setattr(
+            openfold, "run_openfold", lambda **kw: pytest.fail("OpenFold3 must not start")
+        )
+        with pytest.raises(ValueError, match="cannot be combined"):
+            getattr(openfold, runner)(
+                _P53_MDM2, "A", "B", "q", tmp_path / "out", seeds=(1,), num_model_seeds=2
+            )
+        assert not (tmp_path / "out").exists()
 
     def test_batched_wrapper_forwards_seeds(self, tmp_path, monkeypatch, batch_sample):
         from binding_metrics.metrics import openfold
@@ -753,28 +880,80 @@ class TestQuerySeeds:
         captured = {}
 
         def _fake_run(query_json, **kwargs):
-            captured["seeds"] = self._seeds(Path(query_json))
+            captured.update(kwargs)
+            captured["query"] = self._query(Path(query_json))
             return Path(kwargs["output_dir"])
 
         monkeypatch.setattr(openfold, "run_openfold", _fake_run)
         openfold.run_openfold_batched([batch_sample], tmp_path, mode="refold", seeds=(4, 5))
-        assert captured["seeds"] == [4, 5]
+        assert captured["seeds"] == (4, 5)
+        assert "seeds" not in captured["query"]
 
-    @pytest.mark.parametrize(
-        "argv, expected",
-        [([], [42]), (["--seeds", "5", "6"], [5, 6])],
-    )
-    def test_cli_seeds_flag(self, tmp_path, monkeypatch, argv, expected):
+    def test_the_prepare_commands_still_take_seeds_but_ignore_them(self, tmp_path, monkeypatch):
         from binding_metrics.metrics import openfold
 
         out = tmp_path / "out"
         monkeypatch.setattr(
             "sys.argv",
             ["prog", "prepare-scoring-query", "--complex", str(_P53_MDM2), "--receptor-chain",
-             "A", "--binder-chain", "B", "--query-name", "q", "--output-dir", str(out), *argv],
+             "A", "--binder-chain", "B", "--query-name", "q", "--output-dir", str(out),
+             "--seeds", "5", "6"],
         )  # fmt: skip
+        with pytest.warns(DeprecationWarning, match="no effect"):
+            openfold.main()
+        assert "seeds" not in self._query(out / "q_query.json")
+
+    @pytest.mark.parametrize("command", ["score", "refold"])
+    @pytest.mark.parametrize("flag", ["--seeds", "--openfold-seeds"])
+    def test_the_run_commands_pass_seeds_to_the_wrapper(self, tmp_path, monkeypatch, command, flag):
+        from binding_metrics.metrics import _openfold_cli, openfold
+
+        seen = {}
+        target = {"score": "run_openfold_scoring", "refold": "run_openfold_refolding"}[command]
+        monkeypatch.setattr(openfold, target, lambda **kw: seen.update(kw) or tmp_path)
+        monkeypatch.setattr(openfold, "compute_openfold_metrics", lambda **kw: {})
+        monkeypatch.setattr(_openfold_cli, "_print_metrics", lambda *a, **kw: None)
+        argv = ["prog", command, "--complex", "c.cif", "--receptor-chain", "A", "--binder-chain",
+                "B", "--query-name", "q", "--output-dir", str(tmp_path)]  # fmt: skip
+        monkeypatch.setattr("sys.argv", argv + [flag, "5", "6"])
         openfold.main()
-        assert self._seeds(out / "q_query.json") == expected
+        assert seen["seeds"] == [5, 6] and seen["num_model_seeds"] is None
+
+        seen.clear()
+        monkeypatch.setattr("sys.argv", argv)
+        openfold.main()
+        assert seen["seeds"] is None and seen["num_model_seeds"] is None
+
+    def test_the_run_command_takes_seeds_and_num_seeds(self, tmp_path, monkeypatch):
+        from binding_metrics.metrics import _openfold_cli, openfold
+
+        seen = {}
+        monkeypatch.setattr(openfold, "run_openfold", lambda **kw: seen.update(kw) or tmp_path)
+        monkeypatch.setattr(openfold, "compute_openfold_metrics", lambda **kw: {})
+        monkeypatch.setattr(_openfold_cli, "_print_metrics", lambda *a, **kw: None)
+        argv = ["prog", "run", "--query-json", "q.json", "--output-dir", str(tmp_path),
+                "--query-name", "q"]  # fmt: skip
+        monkeypatch.setattr("sys.argv", argv + ["--seeds", "3"])
+        openfold.main()
+        assert seen["seeds"] == [3] and seen["num_model_seeds"] is None
+        monkeypatch.setattr("sys.argv", argv + ["--num-seeds", "4"])
+        openfold.main()
+        assert seen["seeds"] is None and seen["num_model_seeds"] == 4
+
+    @pytest.mark.parametrize("command", ["run", "score", "refold"])
+    def test_the_commands_refuse_seeds_with_num_seeds(self, tmp_path, monkeypatch, capsys, command):
+        from binding_metrics.metrics import openfold
+
+        argv = ["prog", command, "--output-dir", str(tmp_path), "--query-name", "q"]
+        if command == "run":
+            argv += ["--query-json", "q.json"]
+        else:
+            argv += ["--complex", "c.cif", "--receptor-chain", "A", "--binder-chain", "B"]
+        monkeypatch.setattr("sys.argv", argv + ["--seeds", "1", "--num-seeds", "2"])
+        with pytest.raises(SystemExit) as info:
+            openfold.main()
+        assert info.value.code == 2
+        assert "cannot be combined" in capsys.readouterr().err
 
 
 class TestSeedIndex:
@@ -806,6 +985,173 @@ class TestSeedIndex:
 
 
 # ---------------------------------------------------------------------------
+# Tests: run_openfold hands the command to the failure-reporting runner
+# ---------------------------------------------------------------------------
+
+
+class TestRunOpenfoldCommand:
+    @pytest.fixture
+    def recorded(self, monkeypatch):
+        from binding_metrics.metrics import openfold
+
+        calls = []
+
+        def _fake(cmd, output_dir):
+            calls.append((list(cmd), output_dir))
+
+        monkeypatch.setattr(openfold, "_run_openfold_command", _fake)
+        return calls
+
+    def test_the_command_and_the_output_directory_reach_the_runner(self, tmp_path, recorded):
+        from binding_metrics.metrics.openfold import run_openfold
+
+        out = tmp_path / "predictions"
+        result = run_openfold(tmp_path / "q.json", out, conda_env="of3", num_diffusion_samples=2)
+        assert result == out and out.is_dir()
+        ((cmd, output_dir),) = recorded
+        assert cmd[:6] == ["conda", "run", "-n", "of3", "--no-capture-output", "run_openfold"]
+        assert f"--output_dir={out}" in cmd and "--num_diffusion_samples=2" in cmd
+        assert output_dir == out
+
+    def _runner_yaml_of(self, recorded):
+        ((cmd, _),) = recorded
+        (option,) = [a for a in cmd if a.startswith("--runner_yaml=")]
+        return Path(option.split("=", 1)[1]).read_text(encoding="utf-8")
+
+    def test_the_default_presets_are_predict_and_low_mem(self, tmp_path, recorded):
+        import warnings
+
+        from binding_metrics.metrics.openfold import run_openfold
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # no DeprecationWarning for the defaults
+            run_openfold(tmp_path / "q.json", tmp_path / "o", conda_env="of3")
+        content = self._runner_yaml_of(recorded)
+        assert "predict" in content and "low_mem" in content
+        assert "pae_enabled" not in content
+
+    def test_an_explicit_pae_enabled_still_works_with_a_deprecation_warning(
+        self, tmp_path, recorded
+    ):
+        from binding_metrics.metrics.openfold import run_openfold
+
+        with pytest.warns(DeprecationWarning, match="pae_enabled"):
+            run_openfold(
+                tmp_path / "q.json",
+                tmp_path / "o",
+                conda_env="of3",
+                model_presets=["predict", "pae_enabled", "low_mem"],
+            )
+        assert "pae_enabled" not in self._runner_yaml_of(recorded)
+
+    def test_predict_is_prepended_when_the_presets_lack_it(self, tmp_path, recorded):
+        from binding_metrics.metrics.openfold import run_openfold
+
+        run_openfold(tmp_path / "q.json", tmp_path / "o", conda_env="of3", model_presets=["mps"])
+        content = self._runner_yaml_of(recorded)
+        assert content.index("predict") < content.index("mps")
+
+    def test_a_failed_run_raises_what_the_runner_raises(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from binding_metrics.metrics import openfold
+
+        def _fail(cmd, output_dir):
+            raise openfold.OpenFoldRunError(
+                3, list(cmd), "torch.cuda.OutOfMemoryError: CUDA out of memory"
+            )
+
+        monkeypatch.setattr(openfold, "_run_openfold_command", _fail)
+        with pytest.raises(subprocess.CalledProcessError, match="out of memory") as info:
+            openfold.run_openfold(tmp_path / "q.json", tmp_path / "o", conda_env="of3")
+        assert isinstance(info.value, openfold.OpenFoldRunError)
+        assert info.value.returncode == 3
+
+    def test_the_new_exceptions_are_importable_from_openfold(self):
+        from binding_metrics.metrics import _openfold_run, openfold
+
+        assert openfold.OpenFoldRunError is _openfold_run.OpenFoldRunError
+        assert openfold.OpenFoldQueryError is _openfold_run.OpenFoldQueryError
+        assert issubclass(openfold.OpenFoldQueryError, RuntimeError)
+
+
+# ---------------------------------------------------------------------------
+# Tests: the wrappers forward on_unmappable_residue to the query preparation
+# ---------------------------------------------------------------------------
+
+
+class TestOnUnmappableResidueForwarding:
+    @pytest.fixture
+    def seen(self, monkeypatch):
+        from binding_metrics.metrics import openfold
+
+        calls = {}
+
+        def _prepare(name):
+            def _fake(*args, **kwargs):
+                calls[name] = kwargs
+                return Path("query.json")
+
+            return _fake
+
+        for name in (
+            "prepare_scoring_query",
+            "prepare_refolding_query",
+            "prepare_batched_scoring_queries",
+            "prepare_batched_refolding_queries",
+        ):
+            monkeypatch.setattr(openfold, name, _prepare(name))
+        monkeypatch.setattr(openfold, "run_openfold", lambda **kwargs: None)
+        return calls
+
+    @pytest.mark.parametrize(
+        "wrapper, prepare",
+        [
+            ("run_openfold_scoring", "prepare_scoring_query"),
+            ("run_openfold_refolding", "prepare_refolding_query"),
+        ],
+    )
+    def test_the_single_sample_wrappers(self, tmp_path, seen, wrapper, prepare):
+        from binding_metrics.metrics import openfold
+
+        function = getattr(openfold, wrapper)
+        function("c.pdb", "A", "B", "q", tmp_path)
+        assert seen[prepare]["on_unmappable_residue"] == "error"
+        function("c.pdb", "A", "B", "q", tmp_path, on_unmappable_residue="x")
+        assert seen[prepare]["on_unmappable_residue"] == "x"
+
+    @pytest.mark.parametrize(
+        "mode, prepare",
+        [
+            ("score", "prepare_batched_scoring_queries"),
+            ("refold", "prepare_batched_refolding_queries"),
+        ],
+    )
+    def test_the_batched_wrapper(self, tmp_path, seen, mode, prepare):
+        from binding_metrics.metrics import openfold
+
+        openfold.run_openfold_batched([], tmp_path, mode=mode)
+        assert seen[prepare]["on_unmappable_residue"] == "error"
+        openfold.run_openfold_batched([], tmp_path, mode=mode, on_unmappable_residue="x")
+        assert seen[prepare]["on_unmappable_residue"] == "x"
+
+    def test_the_option_is_keyword_only(self, tmp_path, seen):
+        from binding_metrics.metrics import openfold
+
+        with pytest.raises(TypeError):
+            openfold.run_openfold_scoring(
+                "c.pdb", "A", "B", "q", tmp_path, None, None, 5, 1, True, None, None, None, None,
+                (42,), "x",
+            )  # fmt: skip
+
+    def test_the_exception_is_importable_from_openfold(self):
+        from binding_metrics.metrics import _openfold_run, openfold
+
+        assert openfold.UnmappableResidueError is _openfold_run.UnmappableResidueError
+        assert issubclass(openfold.UnmappableResidueError, ValueError)
+
+
+# ---------------------------------------------------------------------------
 # Tests: _write_runner_yaml
 # ---------------------------------------------------------------------------
 
@@ -814,31 +1160,31 @@ class TestWriteRunnerYaml:
     def test_default_presets(self, tmp_path):
         from binding_metrics.metrics.openfold import _write_runner_yaml
 
-        yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled", "low_mem"])
+        yaml_path = _write_runner_yaml(tmp_path, ["predict", "low_mem"])
 
         assert yaml_path.exists()
         content = yaml_path.read_text(encoding="utf-8")
         assert "predict" in content
-        assert "pae_enabled" in content
+        assert "pae_enabled" not in content
         assert "low_mem" in content
         assert "model_update" in content
 
     def test_custom_presets(self, tmp_path):
         from binding_metrics.metrics.openfold import _write_runner_yaml
 
-        yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled"])
+        yaml_path = _write_runner_yaml(tmp_path, ["predict", "mps"])
         content = yaml_path.read_text(encoding="utf-8")
 
-        assert "pae_enabled" in content
+        assert "mps" in content
         assert "low_mem" not in content
 
     def test_predict_prepended_by_run_openfold(self, tmp_path):
         """run_openfold() must prepend 'predict' if absent from presets."""
         from binding_metrics.metrics.openfold import _write_runner_yaml
 
-        yaml_path = _write_runner_yaml(tmp_path, ["predict", "pae_enabled", "low_mem"])
+        yaml_path = _write_runner_yaml(tmp_path, ["predict", "low_mem"])
         content = yaml_path.read_text(encoding="utf-8")
-        for p in ("predict", "pae_enabled", "low_mem"):
+        for p in ("predict", "low_mem"):
             assert p in content
 
     def test_chain_metrics(self, tmp_path):
@@ -1110,11 +1456,37 @@ class TestModuleLayout:
         monkeypatch.setattr(
             openfold,
             "prepare_scoring_query",
-            lambda **kw: calls.append(("prepare", kw["seeds"])) or tmp_path / "q.json",
+            lambda **kw: calls.append(("prepare", kw["query_name"])) or tmp_path / "q.json",
         )
         monkeypatch.setattr(
-            openfold, "run_openfold", lambda **kw: calls.append(("run", kw["output_dir"]))
+            openfold,
+            "run_openfold",
+            lambda **kw: calls.append(("run", kw["output_dir"], kw["seeds"])),
         )
         out = openfold.run_openfold_scoring("c.cif", "A", "B", "q", tmp_path, seeds=(9,))
         assert out == tmp_path / "predictions"
-        assert calls == [("prepare", (9,)), ("run", tmp_path / "predictions")]
+        assert calls == [("prepare", "q"), ("run", tmp_path / "predictions", (9,))]
+
+
+def test_the_command_line_has_one_branch_per_subcommand():
+    """A copy of a branch is dead code, and every new option would have to be added to both."""
+    import ast
+    import inspect
+    import textwrap
+    from collections import Counter
+
+    from binding_metrics.metrics import _openfold_cli
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_openfold_cli.main)))
+    branches = Counter(
+        node.comparators[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Attribute)
+        and node.left.attr == "command"
+        and len(node.comparators) == 1
+        and isinstance(node.comparators[0], ast.Constant)
+        and isinstance(node.comparators[0].value, str)
+    )
+    assert {"prepare-query", "prepare-scoring-query", "score", "refold", "run"} <= set(branches)
+    assert {name: n for name, n in branches.items() if n > 1} == {}

@@ -1,6 +1,6 @@
 # BindingMetrics
 
-**BindingMetrics** is a Python toolkit for evaluating designed peptide–protein complexes with physics-based metrics. It sits downstream of a design or prediction run and upstream of experimental validation. A confident model is not the same as a physically reasonable interface, so the package reports interface geometry and energetics, backbone quality and force-field interaction energies next to the confidence scores it parses from OpenFold3 (pLDDT, pTM, ipTM, PAE).
+**BindingMetrics** is a Python toolkit for evaluating designed peptide–protein complexes with physics-based metrics. It sits downstream of a design or prediction run and upstream of experimental validation. A confident model is not the same as a physically reasonable interface, so the package reports interface geometry and energetics, backbone quality and force-field interaction energies next to the confidence scores it parses from the output of OpenFold3, AlphaFold2 and ColabFold, Boltz-2 and Protenix (pLDDT, pTM, ipTM, PAE).
 
 The metrics range from static single-structure analysis (buried SASA, hydrogen bonds, salt bridges, Ramachandran and ω validation, shape complementarity, void volume) to force-field interaction energies after minimization and an optional short MD run. The relaxed output goes through a structural QC of seven checks: finite energy that did not rise, heavy-atom RMSD to the input, finite coordinates, no fused atoms, no stretched or broken bonds, no inverted Cα stereocentre, and an unchanged heavy-atom composition. It flags an exploded or corrupted structure; it is not a clash score. The package also reports receptor drift over an MD trajectory and, when a native structure is available, **reference-based CAPRI accuracy** (DockQ, fnat, i-RMSD, L-RMSD), for instance to benchmark predictions of antibody–antigen complexes. The OpenMM-based steps are seeded, so results are reproducible by default (`--random-seed none` opts into fresh randomness); see [Reproducibility](#reproducibility).
 
@@ -15,7 +15,7 @@ Limits:
 - **No antibody-specific analysis.** There is no CDR numbering (no ANARCI), and an antibody is scored like any other chain.
 - **No calibration for non-peptides.** No calibration against binder and non-binder data ships with the package, for peptides or for other binders. The scorecard bands, the shape-complementarity ranges and `delta_g_int` are heuristics.
 - **Chemistry handling is for the binder chain.** Cyclic closures and non-canonical residues are looked for in the binder chain.
-- **OpenFold3 interface PDE and PAE** need one token per residue. A prediction with ligands or modified residues gives NaN for them, with a `reason`.
+- **Interface PDE and PAE** are cut by chain from one token per residue, or from the token layout of the record when the parser builds one (Boltz-2). A prediction with ligands or modified residues from OpenFold3, or from Protenix in the pipeline, gives NaN for them, with a `reason`.
 
 ---
 
@@ -119,9 +119,9 @@ binding-metrics-receptor-quality --input ensemble.cif --receptor-chain A --outpu
 | Reference accuracy | DockQ, fnat, fnonnat, i-RMSD, L-RMSD + CAPRI class — requires a native reference | Score | DockQ |
 | MD trajectory | Receptor backbone drift — aligned (conformational) and raw; ligand RMSD, RMSF, contacts | Score | MDTraj |
 | Receptor quality | MolProbity-style terms for a receptor chain (approximate) | Score | biotite + OpenMM |
-| Structure prediction | avg_pLDDT, pTM, ipTM, gPDE, interface PDE and PAE — OpenFold3 confidence | Score | OpenFold3 output |
+| Structure prediction | avg_pLDDT, pTM, ipTM, gPDE, interface PDE and PAE — confidence of OpenFold3, AlphaFold2 (ColabFold), Boltz-2 or Protenix output | Score | model output |
 | EvoBind scoring | Interface distance / pLDDT — confidence-weighted binding score (Å) | Score | biotite |
-| EvoBind adversarial check | Δ COM between design pose and OF3 prediction after receptor superposition — a large value means the prediction places the binder elsewhere | Score | biotite |
+| EvoBind adversarial check | Δ COM between design pose and the prediction after receptor superposition — a large value means the prediction places the binder elsewhere | Score | biotite |
 | All of the above | Per-residue breakdowns, per-atom arrays, per-frame series | Feature | — |
 
 Every result value is a score or a feature; the metric registry (`binding_metrics.metrics.registry`) declares the direction, unit and cost class of each metric's headline value. The full list of keys, units and algorithms is in [`docs/metrics.md`](docs/metrics.md).
@@ -159,7 +159,7 @@ pip install ".[static,simulation]"  # plus force-field energies and relaxation
 
 | Extra | Installs | For |
 |---|---|---|
-| `static` | biotite, hydride, gemmi, scipy | interface, H-bonds, salt bridges, Coulomb, Ramachandran, ω, shape complementarity, void volume, structure comparison, EvoBind, parsing of OpenFold3 output |
+| `static` | biotite, hydride, gemmi, scipy | interface, H-bonds, salt bridges, Coulomb, Ramachandran, ω, shape complementarity, void volume, structure comparison, EvoBind, parsing of prediction output (OpenFold3, AlphaFold2 and ColabFold, Boltz-2, Protenix) |
 | `simulation` | openmm | force-field energies and relaxation; the plain package, a CPU build (use `environment.yml` for a GPU) |
 | `structure` | pdbfixer, gemmi | structure preparation (`binding-metrics-prep`, the pipeline's prep step) |
 | `analysis` | mdtraj | trajectory metrics |
@@ -190,19 +190,19 @@ docker pull simoncrouzet/binding-metrics:latest
 docker pull simoncrouzet/binding-metrics:full
 ```
 
-**OpenFold3 weights and JIT cache** — model weights (~2.3 GB) are not included in the image, and DeepSpeed's `evoformer_attn` kernel JIT-compiles on first use (~1–3 min via nvcc). Bind-mount both to host directories so they persist across container runs and host reboots:
+**OpenFold3 weights and kernel cache** — model weights (~2.3 GB) are not included in the image, and Triton compiles OpenFold3's kernels on first use. Bind-mount both to host directories so they persist across container runs and host reboots:
 
 ```bash
-mkdir -p ~/.openfold-weights ~/.of3-jit-cache
+mkdir -p ~/.openfold-weights ~/.of3-triton-cache
 
 docker run -it --gpus all --shm-size=8g \
     -v ~/.openfold-weights:/root/.openfold3 \
-    -v ~/.of3-jit-cache:/tmp/.cache/torch_extensions \
+    -v ~/.of3-triton-cache:/tmp/triton_cache \
     -v /path/to/your/structures:/data \
     simoncrouzet/binding-metrics:full bash
 ```
 
-First run downloads the default checkpoint (`openfold3-p2-155k`) and JIT-builds the kernel. Subsequent runs skip the download and load the cached `.so` in milliseconds. The `binding-metrics` conda env is activated automatically on shell start.
+First run downloads the default checkpoint (`openbind-2025-06-30-174k`, the OpenBind-0 weights of openfold3 0.5) and compiles the kernels; later runs skip both. The second mount is the `TRITON_CACHE_DIR` that the image sets. A volume that holds Preview2 weights (`of3-p2-*.pt`) from an earlier image keeps them, but they do not load into openfold3 0.5: the entrypoint downloads the OpenBind-0 file next to them. The `binding-metrics` conda env is activated automatically on shell start.
 
 > **Bind mount vs. named volume.** Docker named volumes (`-v openfold3-weights:/root/.openfold3`) work too, but they live under `/var/lib/docker/volumes/` which is often on ephemeral storage in cloud / studio environments (RunPod, Lambda, etc.). Bind-mounting to `~/...` keeps the data in your persistent user home.
 
@@ -210,8 +210,8 @@ First run downloads the default checkpoint (`openfold3-p2-155k`) and JIT-builds 
 
 **Advanced:**
 
-- `-e BINDING_METRICS_SKIP_WEIGHTS_CHECK=1` — skip the weights check and auto-download. Useful when you know the weights aren't needed (e.g. `binding-metrics-check-env` only verifies that the `openfold3` package is importable, not that weights are present).
-- To download a non-default checkpoint or run OpenFold3's integration tests, bypass the entrypoint and run `setup_openfold` interactively:
+- `-e BINDING_METRICS_SKIP_WEIGHTS_CHECK=1` — skip the weights check and auto-download. Useful when you know the weights aren't needed. `binding-metrics-check-env` reports the `openfold3` version and whether the default checkpoint is on disk.
+- To run OpenFold3's integration tests or download to another folder, bypass the entrypoint and run `setup_openfold` interactively (`setup_openfold --non-interactive` is what the entrypoint runs):
   ```bash
   docker run -it --rm --gpus all --entrypoint bash \
       -v ~/.openfold-weights:/root/.openfold3 \
@@ -239,14 +239,16 @@ Images are rebuilt and pushed to Docker Hub automatically on every push to `main
 
 ### OpenFold3 (optional)
 
-OpenFold3 confidence scoring is optional; every other metric works without it. It requires a GPU, model weights and a compatible Python version, so it belongs in a **dedicated conda environment** named `openfold3`. The `openfold` extra (alias `openfold3`) lists the `openfold3` distribution, for an environment that can hold it next to BindingMetrics. That environment runs Python 3.10 and BindingMetrics needs 3.11 or later, so install OpenFold3 on its own, as below:
+OpenFold3 confidence scoring is optional; every other metric works without it. It requires a GPU, model weights and a compatible Python version, so it belongs in a **dedicated conda environment** named `openfold3`. The `openfold` extra (alias `openfold3`) lists the `openfold3` distribution, for an environment that can hold it next to BindingMetrics. openfold3 0.5 supports Python 3.10 to 3.13 and BindingMetrics needs 3.11 or later, so the two can share an interpreter version. Whether they install into one environment has not been tested (openfold3 0.5.0 requires `rdkit<2026` and brings torch, PyTorch Lightning and wandb), so a separate environment stays the route below:
 
 ```bash
-conda create -n openfold3 python=3.10
+conda create -n openfold3 python=3.10   # 3.10 to 3.13 work
 conda activate openfold3
-pip install openfold3
-setup_openfold   # downloads model weights
+pip install "openfold3>=0.5.0,<0.6"
+setup_openfold --non-interactive   # downloads the OpenBind-0 weights (about 2.3 GB)
 ```
+
+`environment_openfold3.yml` does the same in one step. openfold3 0.5 stops without its default checkpoint (`of3-ob-2025-06-30-174k.pt`) instead of downloading it at first use, and Preview2 weights from an older install do not load into it, so run `setup_openfold --non-interactive` once.
 
 `binding-metrics-run` will automatically use the `openfold3` env via
 `--openfold-conda-env openfold3` (the default). You can point it at a
@@ -265,7 +267,7 @@ binding-metrics-run --input complex.cif --output-dir results/ \
     --metrics energy,interface,geometry,electrostatics
 ```
 
-The default `--metrics` includes `openfold`, so pass a list without it when OpenFold3 is not installed. The pipeline's OpenFold3 queries use the ColabFold MSA server: the sequences leave the machine, and the alignments, and so the predictions, can change over time. The query JSON carries the seed 42 unless `--openfold-seeds` is given. Run `binding-metrics-check-env` to verify whether OpenFold3 is correctly installed.
+The default `--metrics` includes `openfold`, so pass a list without it when OpenFold3 is not installed. The pipeline's OpenFold3 queries use the ColabFold MSA server unless `--openfold-no-msa-server` is given: the sequences leave the machine, and the alignments, and so the predictions, can change over time. OpenFold3 samples with seed 42, written to its runner YAML, unless `--openfold-seeds` is given; the first seed given, first sample, is the one scored. A binder with a head-to-tail bond and standard residues only is sent as a cyclic chain (`--openfold-cyclic auto`, the default, when the installed OpenFold3 is 0.4.5 or later): the flag only wraps the relative positions of the chain, OpenFold3 does not enforce the closure bond, and it has published no accuracy benchmark for cyclic peptides. A binder with modified residues (D-amino acids, N-methylated residues) is left linear by `auto`: on one complex, 1CWA, three seeds, the flag lowered ipTM from 0.91-0.92 to 0.78-0.81 and raised the binder Cα RMSD from 0.5-0.7 A to 3.0-4.8 A, while it closed the ring of SFTI-1 (standard residues, one seed; C-N 7.40 A without it, 1.38 A with it). `--openfold-cyclic on` forces the flag and `off` never sends it. The template of each chain is given to OpenFold3 as a structure (`--openfold-templates structure`, the default; OpenFold3 0.4.2 or later), which the MSA server does not overwrite, so the template is kept with the server on. `--openfold-templates alignment` reproduces the earlier default, where the server replaces the template alignment of both chains and the run has no template (1YCR, one seed: binder Cα RMSD against the input 1.62 A, ipTM 0.847, against 1.57 A and 0.865 with the structure); the result says what became of each template (`results["openfold"]["templates"]`, or `results["prediction"]["templates"]` with `--predictor of3`, and a warning). The request keys of OpenFold3 `score` and `refold` changed once with this default: the prediction store does not reuse entries made before (details in [`docs/metrics.md`](docs/metrics.md)). Run `binding-metrics-check-env` to verify whether OpenFold3 is correctly installed.
 
 ---
 
@@ -337,14 +339,23 @@ result = compute_receptor_drift("traj.dcd", "complex.pdb", receptor_chain="A")
 print(f"Aligned drift — mean: {result['drift_aligned_mean']:.3f} Å  max: {result['drift_aligned_max']:.3f} Å")
 ```
 
-### OpenFold3 confidence scores
+### Structure-prediction confidence scores
+
+**Supported prediction models.** Parsers read the output of OpenFold3, AlphaFold2 and ColabFold, Boltz-2 and Protenix into one record (`of3`, `af2`, `boltz2`, `protenix`). Each of the four models can also be run from here, in its own conda environment or from `PATH` (`--predictor MODEL` without `--prediction-dir`; [OpenFold3](#openfold3-optional) has its own setup), or you run the model yourself and pass its output directory. The parsers and the runners were written from the source and documentation of OpenFold3 0.5.0, ColabFold 1.6.3 and AlphaFold2 2.3.2, Boltz 2.2.1 and Protenix 2.0.0. What has been run for real: the OpenFold3 runner and adapter, on OpenFold3 0.5.0 with the OpenBind-0 weights (three complexes, 1YCR, 1CWA and 3P8F, one to three seeds; no held-out complex, so the accuracy of the model is not measured; this run found and fixed the template CIF that OpenFold3 rejected, the silent loss of a template, and the cyclic flag that lowered the prediction of a binder with modified residues, see `CHANGELOG.md`); and the Boltz-2 runner, once, on Boltz-2 2.2.1 through the store and the parser (single-sequence mode, `--no_kernels`, all four modes on 1YCR and `score-lock` on 1CWA; the exit-0-without-output paths, the MSA server and a conda environment were not exercised, and the effect of `score-lock` was measured on one complex only, see `docs/metrics.md`). The runners of Protenix and ColabFold have been tested with a stand-in process only: their flags, input files and output layouts rest on reading the source of the model, not on a run, and no parser has been validated on a real run of any other release. [`docs/metrics.md`](docs/metrics.md#model-adapters) lists what each one still has to verify.
 
 ```python
-from binding_metrics import compute_openfold_metrics
+from binding_metrics import compute_openfold_metrics, compute_prediction_metrics
 
 metrics = compute_openfold_metrics("./openfold_out", query_name="my_complex", seed=1, sample=1)
 print(f"pLDDT: {metrics['avg_plddt']:.1f}  ipTM: {metrics['iptm']:.3f}  gPDE: {metrics['gpde']:.3f} Å")
+
+# The same summary for the output of any model with an adapter (af2, boltz2, of3, protenix)
+metrics = compute_prediction_metrics(
+    "./boltz_out", model="boltz2", name="my_complex", binder_chain="B", receptor_chain="A"
+)
 ```
+
+`compute_openfold_metrics` keeps its dictionary and gains `seed_value`, the seed in the name of the seed directory that was parsed; `compute_prediction_metrics` returns it with a `model` key for whichever model wrote the output. pLDDT and ipTM are calibrated per model, so compare them within one model.
 
 ### DockQ — reference-based CAPRI accuracy
 
@@ -372,7 +383,7 @@ binding-metrics-run --input predicted.cif --output-dir results/ --reference nati
 binding-metrics-batch --input-dir preds/ --output-csv metrics.csv --reference-dir natives/
 ```
 
-When the `openfold` metric is enabled in `binding-metrics-run`, EvoBind scores are automatically computed and merged into the OpenFold3 result dict — no additional model calls required.
+When the `openfold` metric is enabled in `binding-metrics-run`, EvoBind scores are automatically computed and merged into the OpenFold3 result dict — no additional model calls required. With `--predictor` they are merged into `results["prediction"]`, computed on the prediction of that model.
 
 ### EvoBind scoring
 
@@ -406,6 +417,17 @@ print(f"Δ COM: {check['delta_com_angstrom']:.2f} Å  adversarial score: {check[
 ```
 
 Both functions implement the losses from [Bryant et al. (2025) *EvoBind*, Communications Chemistry](https://doi.org/10.1038/s42004-025-01601-3). The primary score is `if_dist / (pLDDT/100)`; the adversarial score is `mean_if_dist × (100/pLDDT) × ΔCOM`.
+
+Both scores also take the records that the parsers read, so the second prediction can come from any model with a parser (`compute_evobind_score_from_record` and `compute_evobind_adversarial_from_records`). Chain IDs are yours, after the `chain_map` of each record, and a design given as a file works too. Each model calibrates pLDDT differently, so compare a score between designs only when one model made the predictions it divides by.
+
+```python
+from binding_metrics.metrics.evobind import compute_evobind_adversarial_from_records
+from binding_metrics.predictors import get_parser
+
+design = get_parser("of3").load("./openfold_out", "my_complex")
+adversary = get_parser("boltz2").load("./boltz_out", "my_complex")
+check = compute_evobind_adversarial_from_records(design, adversary, binder_chain="B", receptor_chain="A")
+```
 
 ### Batch scoring
 
@@ -452,7 +474,7 @@ rows = run_batch(
 )
 ```
 
-`run_pipeline` takes the options of the `binding-metrics-run` flags as keyword arguments and returns the results dict described under [Results](#results-and-provenance). `binder_chain`, `target_chain` and `openfold_seeds` are keyword arguments too. `run_batch` returns one flat row per path in the order of the paths, whatever the number of workers, and writes the per-sample JSON and log; `on_result` is called with each row as it finishes (in completion order when `n_workers > 1`), and `on_error="raise"` re-raises an exception instead of recording an error row. The CSV of `binding-metrics-batch` is these rows.
+`run_pipeline` takes the options of the `binding-metrics-run` flags as keyword arguments and returns the results dict described under [Results](#results-and-provenance). `binder_chain`, `target_chain`, `openfold_seeds`, `openfold_cyclic` and `openfold_use_msa_server` are keyword arguments too, and so are `on_unmappable_residue`, `binder_type`, `on_incompatible`, `preflight_only`, `predictor`, `prediction_dir`, `prediction_binder_chain`, `prediction_target_chain`, `prediction_cache` and `rerun_predictions` (on `run_batch` as well). `run_batch` returns one flat row per path in the order of the paths, whatever the number of workers, and writes the per-sample JSON and log; `on_result` is called with each row as it finishes (in completion order when `n_workers > 1`), and `on_error="raise"` re-raises an exception instead of recording an error row. The CSV of `binding-metrics-batch` is these rows.
 
 The relaxation step is a `Relaxer`. `ImplicitRelaxation` is the one the package ships; pass another implementation, for a different force field or a stub in a test, with `run_pipeline(..., relaxer=...)`. The pipeline reads `success`, `error_message` and the structure path from the returned `RelaxationResult` and records its `to_dict()` under `results["relax"]`:
 
@@ -528,7 +550,19 @@ Unless `--skip-prep` is given, the pipeline starts with a **prep step** (equival
 | `--energy-modes` | `relaxed` | any of `raw`, `relaxed`, `after_md` (the `after_md` run lasts 10 ps, independent of `--md-duration-ps`) |
 | `--random-seed INT\|none` | 1 | seed of the stochastic steps; `none` for fresh randomness |
 | `--reference PATH` | none | native structure; enables DockQ |
-| `--openfold-mode`, `--openfold-conda-env`, `--openfold-seeds` | `score`, `openfold3`, seed 42 | OpenFold3 step |
+| `--openfold-mode`, `--openfold-conda-env`, `--openfold-seeds`, `--openfold-cyclic`, `--openfold-no-msa-server`, `--openfold-templates` | `score`, `openfold3`, seed 42, `auto`, server on, `structure` | OpenFold3 step; `--openfold-cyclic {auto,on,off}` decides whether the binder chain gets `cyclic: true` (`auto`: a head-to-tail binder of standard residues); `--openfold-no-msa-server` runs it without the ColabFold MSA server (a dummy MSA of the query sequence); `--openfold-templates {structure,alignment}` gives the template as the CIF itself (the default, which the server does not overwrite) or as an A3M alignment, which the server overwrites and so leaves a run with the server on without a template (OpenFold3 only) |
+| `--on-unmappable-residue {error,x}` | `error` | a residue OpenFold3 cannot take stops the run before the model starts; `x` sends an `X` in its place |
+| `--binder-type {auto,peptide,miniprotein,nanobody,antibody}` | `auto` | what the binder is, for the pre-flight checks that depend on it ([Pre-flight check](#pre-flight-check)) |
+| `--on-incompatible {error,skip,warn}` | `error` | an input that a requested step or model cannot take is refused before anything runs (`error`), left out with its reason (`skip`) or logged (`warn`) |
+| `--preflight-only` | off | print the pre-flight plan and stop; exit status 1 when something is refused |
+| `--predictor {af2,boltz2,of3,protenix}` | none | the `openfold` step reads the prediction of this model into `results["prediction"]` and runs the model at most once; see [Other prediction models](#other-prediction-models-and-the-run-once-store) |
+| `--prediction-weights PATH` | the model's own weights | custom weights, such as a fine-tuned checkpoint: a file (OpenFold3: `--inference-ckpt-path`) or a directory, as the model's runner takes it; for `--predictor` run from here and for the `openfold` step. Identified by content (SHA-256) in the key of the prediction store and recorded in `results["prediction"]["weights"]` and the provenance. A usage error with `--prediction-dir`; a model whose runner cannot take custom weights is refused by the pre-flight check |
+| `--prediction-mode {predict,refold,score,score-lock}` | the mode of the runner: `--openfold-mode` (`score`) for `of3`, `score` for `boltz2`, `predict` for `af2` and `protenix`; not stated for `--prediction-dir` | how the model is used: sequences only, receptor templated, every chain templated (re-docking), or `score` with the pose pinned to the input; checked against what the model supports and what its runner runs (`of3`: `refold`, `score`; `boltz2`: all four; `af2`, `protenix`: `predict`) before anything runs, and recorded as `mode` (below) |
+| `--prediction-cyclic {auto,on,off}`, `--prediction-no-msa-server`, `--prediction-conda-env NAME` | `auto`, server on, the executable on `PATH` | for `--predictor` run from here, for every model: whether the binder is given as cyclic (`cyclic: true` for OpenFold3 and Boltz-2, `covalent_bonds` for Protenix; ColabFold has no such setting and refuses a value), whether an MSA server is used, and the conda environment that has the model. For `of3` they are `--openfold-cyclic`, `--openfold-no-msa-server` and `--openfold-conda-env`; for another model the `--openfold-*` spelling is refused |
+| `--prediction-lock-threshold ANGSTROM` | 2.0 (Boltz-2's runner) | the threshold of the forced template of `--prediction-mode score-lock`; only for a runner and a mode that use it (Boltz-2) |
+| `--prediction-dir DIR` | none | read the output you made with the model (never run); in `-batch` the root with one output per sample ID |
+| `--prediction-binder-chain`, `--prediction-target-chain` | the input's IDs | chain IDs inside the prediction when they differ |
+| `--prediction-cache DIR`, `--rerun-predictions` | `<output-dir>/predictions` (`-batch`: `_predictions`), off | the store of finished predictions; run again although it has one |
 | `--config PATH` | none | TOML file with option defaults (below) |
 | `--summary`, `--summary-format`, `--format` | off, `md`, `json` | write a summary with the scorecard; results as JSON or CSV (`binding-metrics-run` only) |
 | `--log-file PATH` | none | send all output to a file |
@@ -541,7 +575,50 @@ binding-metrics-run --input complex.cif --output-dir results/ \
     --metrics energy,interface,geometry,electrostatics
 ```
 
-OpenFold3 runs in the `openfold3` conda env by default (see [OpenFold3 install](#openfold3-optional) above). Use `--openfold-mode refold` to measure refolding RMSD (binder predicted freely, receptor fixed as template).
+OpenFold3 runs in the `openfold3` conda env by default (see [OpenFold3 install](#openfold3-optional) above). `--openfold-mode score` (the default) gives each chain its own structure from the input as a template, and OpenFold3 places the binder itself: its confidences (pLDDT, pTM, ipTM) refer to its own pose, and `binder_ca_rmsd` (binder Cα RMSD against the input, in the receptor frame) and `delta_com_angstrom` of the EvoBind adversarial check show how far it is from the input pose. `--openfold-mode refold` templates only the receptor and predicts the binder from its sequence; `binder_ca_rmsd` is then the refolding RMSD. The template of each chain reaches OpenFold3 as the CIF itself (`--openfold-templates structure`, the default: OpenFold3's CIF Direct Template Mode, OpenFold3 0.4.2 or later), which the ColabFold MSA server does not overwrite, so the template is kept with the server on (1YCR, one seed: both templates used, binder Cα RMSD against the input 1.57 A, ipTM 0.865). `--openfold-templates alignment` gives it as an A3M alignment, the earlier default, which the server replaces (issue #68): since the toolkit does not let OpenFold3 fetch the structures of the hits, that run has no template (1YCR: 1.62 A, ipTM 0.847). The result block records what became of each template (`templates`: whether the query asked for one, whether OpenFold3 used one, and why not) and a warning names a chain that lost it. `--openfold-no-msa-server` of `binding-metrics-run` and `-batch` (`use_msa_server=False` in the Python functions, `--no-msa-server` of `binding-metrics-openfold`) switches the server off; OpenFold3 then runs with a dummy MSA that holds only the query sequence, which lowers accuracy for a natural receptor (one complex, one seed, binder Cα RMSD against the crystal pose: 1.57 A with the server and the structure template, 21.6 A with no MSA and no template, 1.12 A with a template and no MSA). With the server off the two template routes gave the same prediction (1CWA, `score`: ipTM 0.970 and binder 0.40 A both). The request keys of OpenFold3 `score` and `refold` changed once when `structure` became the default, so entries stored before are not reused.
+
+#### Pre-flight check
+
+Some inputs cannot go through some steps: a binder with a disulfide sent to OpenFold3, which reads only a head-to-tail closure; a binder residue that its query builder cannot express; `interface` on a structure with no receptor chain. Before anything runs (before preparation, relaxation, any model run and the prediction store), the pipeline compares the input with the declared limits of every requested step and model and refuses it with all the problems at once, each with the fact found, the requirement, the reason and a fix:
+
+```
+Pre-flight check failed: 1 incompatibility between the input and what was requested (policy: error).
+Input: binder chain I: 14 residues; type peptide (estimated from size); closures head_to_tail, disulfide; ...
+
+predictor OpenFold3 0.5.0: closures
+    found:    the binder has a disulfide bond (CYS 3.SG - CYS 11.SG)
+    requires: closures limited to: none, head_to_tail
+    why:      OpenFold3 0.5.0 takes one kind of ring closure: ...
+    fix:      use a predictor whose declared limits accept this input: ...; or use policy='skip' ...
+```
+
+`--on-incompatible skip` computes the steps that apply and records why the others were left out, `--on-incompatible warn` runs everything, and `--preflight-only` prints the plan without running anything (`binding-metrics-batch` prints one per sample, writes no CSV and exits 1 when a sample is refused). In a batch a refused sample is an error row with `preflight_status` and `preflight_reason` and the others go on. A prediction read with `--prediction-dir` was made elsewhere, so the limits of its model only warn. `docs/preflight.md` lists what is declared and why.
+
+The check also knows how each model can be used (`--prediction-mode`): OpenFold3 0.5.0 supports `predict`, `refold` and `score` but not `score-lock`, because its templates carry the fold of each chain and never the pose between chains; Boltz-2 supports `score-lock` through a forced template, with a warning (a guidance term; measured once, on one complex, it kept the prediction within about the threshold of the supplied pose and not on it); Protenix and AlphaFold2 declare no mode. A request for a mode the model does not list is refused with the models that declare it, which can all be run from here. The runners limit the modes further: ColabFold and Protenix run `predict` only, OpenFold3 `refold` and `score`, Boltz-2 all four, and a mode a runner does not run is a usage error that names the ones it does. The mode is recorded in `results["prediction"]["mode"]` and `results["preflight"]["mode"]`; for an output read with `--prediction-dir` it is not known unless you state it.
+
+#### Other prediction models and the run-once store
+
+`--predictor MODEL` makes the `openfold` step model-agnostic. The prediction of AlphaFold2 (ColabFold), Boltz-2, Protenix or OpenFold3 is read through the adapter of that model, and every metric that needs it (the confidence scalars, the interface PAE and PDE, the EvoBind score and the adversarial check) reads one record, so a model runs at most once. The results go to `results["prediction"]` (`prediction_*` CSV columns) and `results["openfold"]` is skipped; without `--predictor` nothing changes.
+
+```bash
+# Read a Boltz-2 output you made yourself (the model never runs); the chains are named P and R in it
+binding-metrics-run --input design.cif --output-dir results/ --metrics interface,openfold \
+    --predictor boltz2 --prediction-dir boltz_out/ \
+    --prediction-binder-chain P --prediction-target-chain R
+
+# Run a model through the store: a second run of this input starts no model
+binding-metrics-run --input design.cif --output-dir results/ --predictor of3
+binding-metrics-run --input design.cif --output-dir results/ --predictor boltz2 --prediction-conda-env boltz
+binding-metrics-run --input design.cif --output-dir results/ --predictor af2 --prediction-no-msa-server
+binding-metrics-run --input design.cif --output-dir results/ --predictor boltz2 \
+    --prediction-mode score-lock --prediction-lock-threshold 3.0
+binding-metrics-run --input design.cif --output-dir results/ --predictor of3 --rerun-predictions  # runs again
+
+# A batch: one model start for the samples the store lacks, one shared store
+binding-metrics-batch --input-dir designs/ --output-csv metrics.csv --predictor of3
+```
+
+Every model can be run from here: `--predictor af2` starts ColabFold (`colabfold_batch`), `boltz2` starts `boltz predict`, `protenix` starts `protenix pred` and `of3` starts OpenFold3, each from `PATH` or from the conda environment of `--prediction-conda-env` (OpenFold3: `--openfold-conda-env`, default `openfold3`). A run that only passed `--predictor af2`, `boltz2` or `protenix` without `--prediction-dir` used to stop while the arguments were checked; it now runs the model. The runners differ, and the command line asks them: ColabFold and Protenix run the mode `predict` (the default), Boltz-2 all four modes (default `score`) and OpenFold3 `refold` and `score`; the settings that a model has no keyword for (`--prediction-cyclic` for ColabFold, `--prediction-lock-threshold` outside Boltz-2's `score-lock`) are a usage error; ColabFold names the chains of its prediction `A` (receptor) and `B` (binder), and the pipeline maps them back to the IDs of the input. `binder_ca_rmsd` against the input pose is measured for every model. The Boltz-2 runner is the only one that has been run on a real model so far (see above). The store (`--prediction-cache`, default `<output-dir>/predictions`) keeps one directory per request, named by a hash of the input file's content, the model version, the seeds and the options, so the same request finds its prediction on any machine and a changed option gets a new one; a failed run is recorded and not retried until `--rerun-predictions`. `results["prediction"]["cache"]` holds the counters (`runs`, `hits`, `adopted`, ...) that show whether the model ran for the sample. The keys, the store layout and the batch behaviour are in [`docs/metrics.md`](docs/metrics.md#pipeline---predictor-the-prediction-store-and-resultsprediction).
 
 **Configuration files.** `--config` (on `binding-metrics-run`, `-batch` and `-relax`) reads option defaults from a flat TOML file. Keys are long option names with dashes or underscores, a flag takes `true` or `false`, an option with several values takes a list, and an unknown key is an error. Precedence is the built-in default, then the file, then the command line.
 
@@ -642,11 +719,13 @@ The individual scoring tools take the binder chain as `--binder-chain` and the t
 | Key | Content |
 |---|---|
 | `sample_id`, `input`, `total_elapsed_s` | identifiers and wall time |
-| `provenance` | package version, git sha (when the package runs from its own checkout), Python, OS, OpenMM version, platform, seed |
+| `provenance` | package version, git sha (when the package runs from its own checkout), Python, OS, OpenMM version, platform, seed; the installed OpenFold3 version, the checkpoint name and whether the MSA server was used when OpenFold3 ran |
 | `chains` | resolved chain IDs and residue counts |
 | `prep` | what preparation changed: `removed_heterogens`, `n_removed_waters`, `kept_nonstandard`, `n_missing_atoms_rebuilt`, `n_missing_residue_gaps`, `chain_breaks` (consecutive residues whose C and N atoms are more than 2 Å apart) and `ncaa_bond_order_source` for GAFF2 residues |
 | `relax` | energies, RMSD and RMSF, the OpenMM `platform`, `dropped_protein_chains` (protein chains other than the peptide and the receptor, which the relaxation removes) and the structural QC: `qc_passed`, `qc_failed_checks` and (in the JSON) `qc_checks` |
 | `energy`, `interface`, `geometry`, `electrostatics`, `dockq`, `openfold` | one dict per metric: `{"skipped": True}` when it did not run, `{"error": message}` when it failed |
+| `prediction` | with `--predictor`: the confidence scores of the model's prediction, its EvoBind keys and `cache` (how the store served it) |
+| `preflight` | the decision of the [pre-flight check](#pre-flight-check): `status`, `reason`, `policy`, the steps left out and the full report |
 | `nonfinite_fields` | the JSON paths of every NaN or infinite value |
 
 A value that could not be computed keeps its NaN, 0 or None, and its dict gains a string under `reason` that says why; a dict without `reason` was computed in full. The QC of the relaxed structure is advisory: a failed check logs a warning and changes neither the results nor the exit code. `binding-metrics-run` exits with 1 when a step failed, after writing the partial results. The schemas are in [`docs/metrics.md`](docs/metrics.md#15-pipeline-results-and-provenance).
@@ -671,7 +750,7 @@ configure_logging(logging.INFO)
 ## Reproducibility
 
 - **Seeds.** Hydrogen placement, PDBFixer's rebuilding of missing atoms, the conformer behind the AM1-BCC charges of non-canonical residues, the MD initial velocities and Langevin noise, the ion placement of `binding-metrics-solvate` and the hydrogen placement in the receptor energy term of `binding-metrics-receptor-quality` are seeded. The default seed is 1. Set it with `--random-seed INT` on `binding-metrics-run`, `-batch`, `-relax`, `-energy`, `-prep`, `-solvate` and `-receptor-quality`, or with `random_seed=` in the API; `--random-seed none` draws fresh randomness, for instance to generate independent MD replicas. The static metrics have no random step.
-- **OpenFold3.** The seed above does not drive it. The query JSON carries the seed 42 unless `--openfold-seeds` is given, and the MSA server can return different alignments over time.
+- **OpenFold3.** The seed above does not drive it. OpenFold3 samples with seed 42, written to its runner YAML, unless `--openfold-seeds` is given, and the MSA server can return different alignments over time. With `--predictor` a finished prediction is stored under a key of the input's content, the model version, the seeds and the options, and a repeated run reuses it instead of predicting again; `--rerun-predictions` forces a new one. The alignments a remote MSA server returns are not part of the key.
 - **GPU precision.** CUDA runs in mixed precision and its force reduction order is not deterministic, so energies and MD from one seed can differ in the last digits between GPU runs.
 - **Provenance.** Every results file carries the `provenance` block (package version, git sha, Python, OS, OpenMM version, platform, seed), and batch CSV rows carry it as `provenance_*` columns, so a result can be tied to the code and settings that produced it.
 - **Environments.** `environment.yml` is the specification that CI and the Dockerfile build from. `environment.lock.yml` is a snapshot of the exact versions of the development environment (`conda env create -n binding-metrics -f environment.lock.yml`, then `pip install --no-deps -e .`); neither CI nor the Dockerfile reads it, and its header says how to regenerate it. The Docker images are built from `environment.yml` (see [Docker](#docker-gpu-recommended-for-production)).
@@ -682,6 +761,7 @@ configure_logging(logging.INFO)
 ## Documentation
 
 - [`docs/metrics.md`](docs/metrics.md): every metric with its signature, result keys, units and algorithm notes; the pipeline results; the metric registry
+- [`docs/preflight.md`](docs/preflight.md): the inputs that a step or a prediction model cannot take, how they are declared, and the pre-flight check
 - [`docs/nonstandard.md`](docs/nonstandard.md): D-amino acids, N-methylated and phosphorylated residues, the GAFF2 route, cyclic closures and their limits
 - [`docs/report_thresholds.md`](docs/report_thresholds.md): the scorecard thresholds
 - [`CHANGELOG.md`](CHANGELOG.md): what changed, with the results that differ from earlier versions
@@ -731,5 +811,6 @@ If you use BindingMetrics in your work, please acknowledge it and feel free to g
 - Eastman, P. et al. (2017). OpenMM 7. *PLOS Comput. Biol.* 13, e1005659.
 - Chen, V.B. et al. (2010). MolProbity: all-atom structure validation for macromolecular crystallography. *Acta Cryst.* D66, 12–21.
 - Engh, R.A. & Huber, R. (1991). Accurate bond and angle parameters for X-ray protein structure refinement. *Acta Cryst.* A47, 392–400.
-- The OpenFold3 Team (2025). OpenFold3-preview. https://github.com/aqlaboratory/openfold-3, doi:10.5281/zenodo.19001000
+- The OpenFold3 Team (2026). OpenFold3, v0.5.0 (OpenBind-0 weights). https://github.com/aqlaboratory/openfold-3, doi:10.5281/zenodo.22042719 (doi:10.5281/zenodo.17485509 stands for all versions; cite the release that produced the results).
+- OpenBind Consortium (2026). OpenBind-0 announcement, 21 August 2026. https://openbind.uk/news/blog-openbind-0-advancing-open-molecular-structure-prediction/
 - Abramson, J. et al. (2024). Accurate structure prediction of biomolecular interactions with AlphaFold 3. *Nature* 630, 493–500.

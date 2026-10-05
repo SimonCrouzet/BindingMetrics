@@ -6,6 +6,7 @@ force-field build.
 """
 
 import openmm
+import openmm.app
 import pytest
 from conftest import EXAMPLE_PDB_PATH
 

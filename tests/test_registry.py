@@ -22,6 +22,7 @@ _VALID_INPUT_TYPES = {
     "openfold_json",
     "atom_array",
     "predicted_structure",
+    "prediction_dir",
 }
 _VALID_CHAIN_MODES = {"none", "single", "interface", "interface_2paths"}
 
@@ -98,6 +99,10 @@ class TestMetricsByInputType:
     def test_predicted_structure_nonempty(self):
         specs = metrics_by_input_type("predicted_structure")
         assert {s.name for s in specs} == {"evobind_score"}
+
+    def test_prediction_dir_holds_the_model_neutral_prediction_metric(self):
+        specs = metrics_by_input_type("prediction_dir")
+        assert {s.name for s in specs} == {"prediction"}
 
     def test_all_types_partition_metrics(self):
         """Every metric appears in exactly one input_type bucket."""
@@ -327,9 +332,20 @@ class TestTrajectorySpecs:
 _METRIC_FUNCTION_PATTERN = re.compile(r"^(compute|calculate)_")
 
 # Public ``compute_*`` / ``calculate_*`` functions that are deliberately not metrics.
-# Map "module:function" to the reason. Keep this empty unless a function really is
-# a helper: a new metric belongs in the registry.
-_NOT_METRICS: dict[str, str] = {}
+# Map "module:function" to the reason. Add an entry only for a helper or for an
+# interface that raises NotImplementedError until a backend lands (the MLFF
+# interaction energy): a working metric belongs in the registry.
+_NOT_METRICS: dict[str, str] = {
+    "binding_metrics.metrics.mlff_energy:compute_mlff_interaction_energy": (
+        "interface only; registered when a backend lands"
+    ),
+    "binding_metrics.metrics.evobind:compute_evobind_adversarial_from_records": (
+        "takes PredictionRecord objects, not paths; called by code, not by the registry consumers"
+    ),
+    "binding_metrics.metrics.evobind:compute_evobind_score_from_record": (
+        "takes a PredictionRecord object, not a path; called by code, not by the registry consumers"
+    ),
+}
 
 
 def _metric_modules() -> list[str]:

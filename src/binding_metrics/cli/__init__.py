@@ -131,8 +131,7 @@ def md_save_interval_for(md_duration_ps: float) -> float:
 def add_openfold_seeds_arg(parser) -> None:
     """Add ``--openfold-seeds SEED [SEED ...]`` to an argparse parser or group.
 
-    The default is ``None``: the OpenFold functions then keep their own default
-    seed, so a run without the flag writes the same query JSON as before.
+    The default is ``None``: the OpenFold functions then keep their own default seed, 42.
     """
     parser.add_argument(
         "--openfold-seeds",
@@ -141,10 +140,239 @@ def add_openfold_seeds_arg(parser) -> None:
         default=None,
         metavar="SEED",
         help=(
-            "Seed values written to the OpenFold3 query JSON (default: the "
-            "OpenFold module default, 42). The first seed's first sample is scored."
+            "Seed values OpenFold3 samples with, written to its runner YAML (default: 42). "
+            "It makes one seed_<value> directory per seed; the first seed given, first sample, "
+            "is scored. With --predictor MODEL the seeds go to that model's runner (ColabFold: "
+            "consecutive integers from 0, default 0; Boltz-2: exactly one, default 42; Protenix: "
+            "default 101)."
         ),
     )
+
+
+#: Help of ``--openfold-mode`` in ``binding-metrics-run`` and ``-batch``. A template carries the
+#: fold of one chain and no cross-chain geometry, so ``score`` does not hand OpenFold3 the pose.
+OPENFOLD_MODE_HELP = (
+    "score: each chain is given its own structure from the input as a template and OpenFold3 "
+    "places the binder itself, so its confidences refer to its own pose (binder_ca_rmsd and "
+    "delta_com_angstrom show how far it is from the input pose); refold: only the receptor "
+    "is templated and the binder is predicted from its sequence (binder_ca_rmsd is the "
+    "refolding RMSD). Default: score"
+)
+
+
+def add_openfold_no_msa_server_arg(parser) -> None:
+    """Add ``--openfold-no-msa-server`` to an argparse parser or group.
+
+    The OpenFold3 step uses the ColabFold MSA server unless this is given. Without it OpenFold3
+    has no computed MSA (a dummy MSA that holds only the query sequence is written for each chain,
+    as OpenFold3's input reference suggests). The template is kept either way with the default
+    ``--openfold-templates structure``; with ``alignment`` only the run without the server keeps
+    it, because the server replaces the template alignments that the toolkit writes (issue #68).
+    """
+    parser.add_argument(
+        "--openfold-no-msa-server",
+        action="store_true",
+        help=(
+            "Do not use the ColabFold MSA server for OpenFold3: it then runs with a dummy MSA "
+            "that holds only the query sequence of each chain (OpenFold3's input reference "
+            "suggests this for MSA-free runs), which lowers accuracy for a natural receptor. "
+            "With --openfold-templates alignment the template alignments written by the toolkit "
+            "are no longer replaced by the server (issue #68); the default, structure, keeps the "
+            "template with the server on too. One complex (1YCR, OpenFold3 0.5.0, one seed), "
+            "binder C-alpha RMSD against the crystal pose: 1.57 A with the server and the "
+            "template as a structure (the default), 1.62 A with the server and the template as "
+            "an alignment (the server replaces it: no template), 21.6 A with no MSA and no "
+            "template, 1.12 A with a working template and no MSA."
+        ),
+    )
+
+
+def openfold_msa_server_kwargs(use_msa_server: bool) -> dict:
+    """The keyword argument for an OpenFold3 run function, only when the server is off.
+
+    The default (server on) is left out so that a function that predates the option, or a test
+    double that replaces it, is called exactly as before.
+    """
+    return {} if use_msa_server else {"use_msa_server": False}
+
+
+#: Values of ``--openfold-templates``, and its default (the ``template_mode`` of the run
+#: functions: ``binding_metrics.metrics._openfold_run.TEMPLATE_MODES`` and
+#: ``DEFAULT_TEMPLATE_MODE``, which a test keeps equal; this module does not import the metrics).
+OPENFOLD_TEMPLATE_CHOICES = ("structure", "alignment")
+DEFAULT_OPENFOLD_TEMPLATES = "structure"
+
+
+def add_openfold_templates_arg(parser) -> None:
+    """Add ``--openfold-templates {structure,alignment}`` to an argparse parser or group.
+
+    How the template of each chain reaches OpenFold3 in ``score`` and ``refold`` mode. The
+    default, ``structure``, gives the template CIF itself (OpenFold3's CIF Direct Template Mode,
+    OpenFold3 0.4.2 or later), which the ColabFold MSA server does not overwrite. ``alignment``
+    writes an A3M self-alignment per chain, the way earlier versions did it; the server
+    overwrites it, so with the server on (also the default) the run has no template. The setting
+    is OpenFold3's: there is no ``--prediction-templates``.
+    """
+    parser.add_argument(
+        "--openfold-templates",
+        choices=OPENFOLD_TEMPLATE_CHOICES,
+        default=DEFAULT_OPENFOLD_TEMPLATES,
+        help=(
+            "How the template of each chain reaches OpenFold3 (modes score and refold; OpenFold3 "
+            "only, also for --predictor of3). structure (default): the template CIF itself "
+            "(OpenFold3's CIF Direct Template Mode, OpenFold3 0.4.2 or later: protein chains "
+            "only, the best-matching chain of each file, the alignment made by OpenFold3), which "
+            "the ColabFold MSA server does not overwrite. alignment: an A3M self-alignment that "
+            "points to the template CIF, the way earlier versions did it; the server overwrites "
+            "it, so with the server on (the default) the run has no template, which "
+            "results['openfold'] or results['prediction'] reports under 'templates' (use "
+            "--openfold-no-msa-server to keep it)."
+        ),
+    )
+
+
+def check_openfold_templates(value) -> str:
+    """The ``template_mode`` argument for ``value``: ``"structure"`` or ``"alignment"``.
+
+    Raises:
+        ValueError: ``value`` is neither.
+    """
+    if value in OPENFOLD_TEMPLATE_CHOICES:
+        return value
+    raise ValueError(
+        f"openfold_templates must be one of {OPENFOLD_TEMPLATE_CHOICES}, got {value!r}"
+    )
+
+
+def openfold_template_kwargs(value) -> dict:
+    """The keyword argument for an OpenFold3 run function, only when it is not the default.
+
+    The default is left out so that a function that predates the option, or a test double that
+    replaces it, is called exactly as before.
+    """
+    resolved = check_openfold_templates(value)
+    return {} if resolved == DEFAULT_OPENFOLD_TEMPLATES else {"template_mode": resolved}
+
+
+#: Values of ``--openfold-cyclic``; the first is the default.
+OPENFOLD_CYCLIC_CHOICES = ("auto", "on", "off")
+
+
+def add_openfold_cyclic_arg(parser) -> None:
+    """Add ``--openfold-cyclic {auto,on,off}`` to an argparse parser or group.
+
+    Whether the binder chain of the OpenFold3 query gets ``"cyclic": true``. The default,
+    ``auto``, writes it for a binder with a head-to-tail bond and standard residues only when the
+    installed OpenFold3 can read it (0.4.5 or later); with modified residues it leaves the binder
+    linear (see ``decide_binder_cyclic``).
+    """
+    parser.add_argument(
+        "--openfold-cyclic",
+        choices=OPENFOLD_CYCLIC_CHOICES,
+        default="auto",
+        help=(
+            "Whether the binder chain of the OpenFold3 query gets 'cyclic: true' "
+            "(OpenFold3 >= 0.4.5). auto (default): when the binder has a head-to-tail bond, "
+            "consists of standard residues only and the installed OpenFold3 is new enough; on: "
+            "always; off: never. OpenFold3 uses the flag only to wrap the relative positions of "
+            "the chain: it does not enforce the closure bond, documents the flag only in an "
+            "example query, and has published no accuracy benchmark for cyclic peptides. It "
+            "builds the wrap from the token count of the chain and gives every atom of a "
+            "modified residue its own token: for 1CWA (D-amino acid, N-methylated residues; one "
+            "complex, three seeds) the flag lowered ipTM from 0.91-0.92 to 0.78-0.81 and raised "
+            "the binder C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A, so auto leaves such a binder "
+            "linear (on forces the flag); for SFTI-1 (standard residues; one seed) the flag "
+            "closed the ring (C-N 7.40 A without it, 1.38 A with it). Disulfide, lactam and "
+            "staple closures cannot be given to OpenFold3 and are not written."
+        ),
+    )
+
+
+def check_openfold_cyclic(value) -> bool | str:
+    """The ``binder_cyclic`` argument for ``value``: ``"auto"``, ``True`` or ``False``.
+
+    Takes the command-line choices (``"auto"``, ``"on"``, ``"off"``) and the API values
+    (``True``, ``False``, ``"auto"``).
+
+    Raises:
+        ValueError: ``value`` is none of these.
+    """
+    if value is True or value == "on":
+        return True
+    if value is False or value == "off":
+        return False
+    if value == "auto":
+        return "auto"
+    raise ValueError(
+        f"openfold_cyclic must be one of {OPENFOLD_CYCLIC_CHOICES}, True or False, got {value!r}"
+    )
+
+
+def openfold_cyclic_kwargs(value) -> dict:
+    """The keyword argument for an OpenFold3 run function, only when it is not ``"auto"``.
+
+    The default is left out so that a function that predates the option, or a test double
+    that replaces it, is called exactly as before.
+    """
+    resolved = check_openfold_cyclic(value)
+    return {} if resolved == "auto" else {"binder_cyclic": resolved}
+
+
+def merge_reason(target: dict, extra: dict, label: str) -> None:
+    """Move ``extra["reason"]`` into ``target["reason"]`` as ``"<label>: <reason>"``.
+
+    Metric dicts merged into one flat namespace (OpenFold, then the EvoBind
+    metrics that reuse its output) each carry an optional ``reason``; a plain
+    ``dict.update`` would let the last one erase the diagnosis of the first.
+    Reasons are joined with ``"; "``, and nothing is added when ``extra`` has none.
+    """
+    reason = extra.pop("reason", None)
+    if reason:
+        target["reason"] = "; ".join(filter(None, [target.get("reason"), f"{label}: {reason}"]))
+
+
+#: Values of ``--on-unmappable-residue``; the first is the default.
+ON_UNMAPPABLE_RESIDUE_CHOICES = ("error", "x")
+
+
+def add_on_unmappable_residue_arg(parser) -> None:
+    """Add ``--on-unmappable-residue {error,x}`` to an argparse parser or group.
+
+    What OpenFold3 does with a residue it cannot take. The default stops the run before
+    anything is written or started, so no model time is spent on a query that would fail.
+    """
+    parser.add_argument(
+        "--on-unmappable-residue",
+        choices=ON_UNMAPPABLE_RESIDUE_CHOICES,
+        default="error",
+        help=(
+            "A residue that OpenFold3 cannot take (not a standard, D-, modified or "
+            "protonation-variant amino acid) stops the run before the model starts "
+            "(default: %(default)s). 'x' sends an X in its place and logs a warning."
+        ),
+    )
+
+
+def on_unmappable_residue_kwargs(value: str) -> dict:
+    """The keyword argument for an OpenFold3 run function, only when it is not the default.
+
+    The default is left out so that a function that predates the option, or a test double
+    that replaces it, is called exactly as before.
+    """
+    return {} if value == "error" else {"on_unmappable_residue": value}
+
+
+def check_on_unmappable_residue(value: str) -> str:
+    """Return ``value`` when it is one of ``ON_UNMAPPABLE_RESIDUE_CHOICES``, else raise.
+
+    Raises:
+        ValueError: naming the accepted values.
+    """
+    if value not in ON_UNMAPPABLE_RESIDUE_CHOICES:
+        raise ValueError(
+            f"on_unmappable_residue must be one of {ON_UNMAPPABLE_RESIDUE_CHOICES}, got {value!r}"
+        )
+    return value
 
 
 _SMALL_MOLECULES_CHOICES = ("auto", "none")

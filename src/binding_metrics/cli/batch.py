@@ -38,6 +38,21 @@ failed; see ``batch_failed_steps`` and ``batch_failed_reasons``) or ``error``
 (the worker raised; see ``batch_error``). The exit code is non-zero only when
 no sample has status ``ok``.
 
+Structure prediction (--predictor MODEL)
+----------------------------------------
+Like the batched OpenFold3 call, the prediction step runs once for all samples after the
+workers, in the main process. The samples share one prediction store (``--prediction-cache``,
+default ``<output-dir>/_predictions``): the model starts once for the predictions the store
+lacks, each sample then reads its prediction from the store, and a second run over the same
+samples starts no model. ``--prediction-dir ROOT`` reads existing outputs instead, one per
+sample ID, and never runs the model. The columns are ``prediction_*`` (the only ``openfold_*``
+column is ``openfold_skipped``). A sample whose prediction failed is ``partial`` with
+``prediction`` in ``batch_failed_steps``; the others are not affected.
+
+The legacy batched OpenFold3 call (``--openfold-*`` without ``--predictor``) marks a sample it
+failed for ``partial`` with ``openfold`` in ``batch_failed_steps`` and the reason in
+``batch_failed_reasons``; a failure of the whole call marks every sample it covered.
+
 Concurrency model (--workers > 1)
 ----------------------------------
 Workers are OS processes (ProcessPoolExecutor), not threads. This means:
@@ -76,11 +91,49 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
+from binding_metrics.capabilities import POLICIES, IncompatibleInputError
 from binding_metrics.cli import (
+    DEFAULT_OPENFOLD_TEMPLATES,
+    OPENFOLD_MODE_HELP,
     add_config_arg,
+    add_on_unmappable_residue_arg,
+    add_openfold_cyclic_arg,
+    add_openfold_no_msa_server_arg,
     add_openfold_seeds_arg,
+    add_openfold_templates_arg,
     add_random_seed_arg,
+    check_on_unmappable_residue,
+    check_openfold_cyclic,
+    check_openfold_templates,
+    on_unmappable_residue_kwargs,
+    openfold_cyclic_kwargs,
+    openfold_msa_server_kwargs,
+    openfold_template_kwargs,
     parse_args_with_config,
+)
+from binding_metrics.cli.prediction import (
+    BATCH_CACHE_DIRNAME,
+    add_prediction_args,
+    check_prediction_args,
+    check_predictor,
+    check_weights_arg,
+    display_name,
+    effective_prediction_mode,
+    error_text,
+    make_request,
+    make_runner,
+    make_session,
+    make_store,
+    output_weights,
+    record_binder_cyclic,
+    record_templates,
+    reference_for,
+    run_prediction_step,
+    runner_chain_map,
+    runner_weights_kinds,
+    scored_seed_index,
+    scored_seed_kwargs,
+    weights_description,
 )
 from binding_metrics.cli.run import (
     ALL_METRICS,
@@ -91,7 +144,14 @@ from binding_metrics.cli.run import (
     run_pipeline,
 )
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
-from binding_metrics.provenance import collect_provenance
+from binding_metrics.preflight_cli import (
+    BINDER_TYPE_CHOICES,
+    add_preflight_args,
+    check_input,
+    model_step_of,
+    refusal_block,
+)
+from binding_metrics.provenance import collect_provenance, conda_python_command, openfold3_version
 from binding_metrics.utils import configure_logging
 
 # Named explicitly: ``python -m binding_metrics.cli.batch`` executes this file as
@@ -172,6 +232,11 @@ def _run_one(
     binder_chain: Optional[str] = None,
     target_chain: Optional[str] = None,
     raise_errors: bool = False,
+    binder_type: str = "auto",
+    on_incompatible: str = "error",
+    preflight_model: Optional[tuple] = None,
+    on_unmappable_residue: str = "error",
+    prediction_weights: Optional[Path] = None,
 ) -> dict:
     """Run the pipeline for a single structure and return a flat results dict.
 
@@ -179,7 +244,11 @@ def _run_one(
     ``peptide_chain`` and ``receptor_chain``; both spellings with different IDs
     make the sample an ``"error"`` row, like any other pipeline failure. With
     ``raise_errors`` an exception from the pipeline is re-raised instead of
-    becoming an ``"error"`` row.
+    becoming an ``"error"`` row. An input that the pre-flight check refuses
+    (``on_incompatible="error"``) is such an error row: ``batch_error`` and
+    ``preflight_reason`` carry the reason and nothing was prepared or run.
+    ``preflight_model`` is the whole-batch model step of this sample, as ``(model, metric,
+    adopted)``, so that its limits are checked here, before this worker does anything.
 
     The row carries ``batch_status``:
 
@@ -235,6 +304,11 @@ def _run_one(
                 random_seed=random_seed,
                 binder_chain=binder_chain,
                 target_chain=target_chain,
+                binder_type=binder_type,
+                on_incompatible=on_incompatible,
+                preflight_model=preflight_model,
+                on_unmappable_residue=on_unmappable_residue,
+                prediction_weights=prediction_weights,
             )
             results["total_elapsed_s"] = round(time.time() - t0, 1)
 
@@ -244,7 +318,12 @@ def _run_one(
         if raise_errors:
             raise
         error_msg = f"{type(e).__name__}: {e}"
-        traceback.print_exc()
+        if isinstance(e, IncompatibleInputError):
+            # a decision, not a crash: the message says what to change
+            logger.warning("  %s: refused by the pre-flight check\n%s", sid, e)
+            results["preflight"] = refusal_block(e)
+        else:
+            traceback.print_exc()
         results["total_elapsed_s"] = round(time.time() - t0, 1)
         results["batch_error"] = error_msg
 
@@ -267,42 +346,29 @@ def _run_one(
 
 
 # ---------------------------------------------------------------------------
-# Batched OpenFold (single subprocess for all samples)
+# Steps that run once for all samples, after the workers
 # ---------------------------------------------------------------------------
 
 
-def _run_batched_openfold(
+def _detect_sample_chains(
     rows: list[dict],
     sid_to_input: dict[str, Path],
-    output_dir: Path,
-    openfold_mode: str,
-    openfold_conda_env: Optional[str],
     peptide_chain: Optional[str],
     receptor_chain: Optional[str],
-    openfold_seeds: Optional[Sequence[int]] = None,
-) -> None:
-    """Run OpenFold3 on all successful samples in a single subprocess.
+    step: str,
+) -> list[tuple[int, str, Path, str, str]]:
+    """The samples a whole-batch step can process, with their chains.
 
-    Modifies *rows* in-place, merging OF3 and EvoBind metrics into each
-    sample's flat dict.  Also updates each sample's JSON report on disk.
-    ``openfold_seeds`` are the seed values written to the query JSON; ``None``
-    keeps the OpenFold default.
+    A sample qualifies when its worker did not fail, its input file is known and both chains
+    are given or detected (the logic of ``run_pipeline``). ``step`` names the step in the
+    warning for an input whose chains cannot be detected.
+
+    Returns:
+        ``(row index, sample ID, input path, binder chain, receptor chain)`` per sample.
     """
     from binding_metrics.io.structures import detect_chains_from_file
-    from binding_metrics.metrics.openfold import (
-        _BatchSample,
-        compute_openfold_metrics,
-        run_openfold_batched,
-    )
-    from binding_metrics.protocols.report import _flatten
 
-    # Build list of eligible samples (succeeded, have chain info)
-    samples: list[_BatchSample] = []
-    # Map query_name → row index for merging results back
-    sid_to_row_idx: dict[str, int] = {}
-    # Map query_name → chain info for metrics extraction
-    sid_to_chains: dict[str, dict] = {}
-
+    eligible = []
     for i, row in enumerate(rows):
         sid = row.get("sample_id")
         if not sid or row.get("batch_status") == "error":
@@ -319,14 +385,143 @@ def _run_batched_openfold(
                 receptor_chain=receptor_chain,
             )
         except Exception as e:  # noqa: BLE001 - one unreadable input must not stop the batch
-            logger.warning("  %s: skipped for OpenFold, chain detection failed: %s", sid, e)
+            logger.warning("  %s: skipped for %s, chain detection failed: %s", sid, step, e)
             continue
 
         pchain = chain_info.get("peptide_chain")
         rchain = chain_info.get("receptor_chain")
         if not pchain or not rchain:
             continue
+        eligible.append((i, sid, input_path, pchain, rchain))
+    return eligible
 
+
+def _model_step_allowed(
+    sid: str,
+    input_path: Path,
+    pchain: str,
+    rchain: str,
+    model: tuple,
+    binder_type: str,
+    on_incompatible: str,
+    on_unmappable_residue: str = "error",
+    prediction_weights: Optional[Path] = None,
+) -> tuple[bool, str]:
+    """Whether the whole-batch model step may run for one sample, and why not.
+
+    The worker of the sample has already checked the model (``preflight_model``): under ``error``
+    it refused the sample, so it is not here, and under ``warn`` it logged the problems. What
+    is left is ``skip``, where the sample's model step is dropped and the reason recorded. The
+    check runs again here, before any request is built or the store touched, so that the
+    whole-batch step never depends on what the worker did.
+    """
+    if on_incompatible == "warn":
+        return True, ""
+    outcome = check_input(
+        input_path,
+        pchain,
+        rchain,
+        binder_type=binder_type,
+        on_incompatible=on_incompatible,
+        steps=frozenset(),
+        model=model,
+        on_unmappable_residue=on_unmappable_residue,
+        prediction_weights=prediction_weights,
+    )
+    if outcome.refused or not outcome.model_usable:
+        reason = outcome.block["reason"] or outcome.block["status"]
+        logger.warning("  %s: left out of the model step by the pre-flight check: %s", sid, reason)
+        return False, reason
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
+# Batched OpenFold (single subprocess for all samples)
+# ---------------------------------------------------------------------------
+
+
+def _add_provenance(row: dict, key: str, value) -> None:
+    """Write a provenance value into a row as ``provenance_<key>``.
+
+    A dict (the weights of a prediction) becomes one column per entry, ``provenance_<key>_<name>``,
+    so that the CSV has ``provenance_prediction_weights_sha256`` and ``..._path`` and no cell holds
+    a dictionary.
+    """
+    if isinstance(value, dict):
+        for name, item in value.items():
+            row[f"provenance_{key}_{name}"] = item
+    else:
+        row[f"provenance_{key}"] = value
+
+
+def _run_batched_openfold(
+    rows: list[dict],
+    sid_to_input: dict[str, Path],
+    output_dir: Path,
+    openfold_mode: str,
+    openfold_conda_env: Optional[str],
+    peptide_chain: Optional[str],
+    receptor_chain: Optional[str],
+    openfold_seeds: Optional[Sequence[int]] = None,
+    on_unmappable_residue: str = "error",
+    binder_type: str = "auto",
+    on_incompatible: str = "error",
+    openfold_cyclic: bool | str = "auto",
+    openfold_use_msa_server: bool = True,
+    prediction_weights: Optional[Path] = None,
+    prediction_cache: Optional[Path] = None,
+    openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+) -> None:
+    """Run OpenFold3 on all successful samples in a single subprocess.
+
+    Modifies *rows* in-place, merging OF3 and EvoBind metrics into each
+    sample's flat dict.  Also updates each sample's JSON report on disk.
+    ``openfold_seeds`` are the seeds OpenFold3 samples with (written to its runner YAML); ``None``
+    keeps the default, 42. ``openfold_cyclic`` decides, sample by sample, whether the binder gets
+    ``"cyclic": true``; each sample's block records ``binder_cyclic``. ``openfold_use_msa_server``
+    False runs OpenFold3 without the ColabFold MSA server; each row records it as
+    ``provenance_openfold3_use_msa_server``. ``prediction_weights`` (a checkpoint file) is passed
+    to OpenFold3 as ``inference_ckpt_path`` for the whole batch, hashed once with the cache in
+    ``prediction_cache`` (default ``<output_dir>/_predictions``) and recorded in each block as
+    ``weights`` and in the row as ``provenance_prediction_weights_*``. ``on_unmappable_residue``
+    is passed to the query preparation of every sample; a residue OpenFold3 cannot take then
+    stops the whole
+    batch call (the error names each such residue) before the model starts. A sample that the
+    pre-flight check leaves out (``on_incompatible="skip"``) gets ``openfold_skipped`` and the
+    reason in ``openfold_reason`` and is not part of the call.
+    """
+    from binding_metrics.metrics.openfold import (
+        _BatchSample,
+        compute_openfold_metrics,
+        run_openfold_batched,
+    )
+    from binding_metrics.protocols.report import _flatten
+
+    # Build list of eligible samples (succeeded, have chain info)
+    samples: list[_BatchSample] = []
+    # Map query_name → row index for merging results back
+    sid_to_row_idx: dict[str, int] = {}
+    # Map query_name → chain info for metrics extraction
+    sid_to_chains: dict[str, dict] = {}
+
+    for i, sid, input_path, pchain, rchain in _detect_sample_chains(
+        rows, sid_to_input, peptide_chain, receptor_chain, "OpenFold"
+    ):
+        allowed, why_not = _model_step_allowed(
+            sid,
+            input_path,
+            pchain,
+            rchain,
+            ("of3", "openfold", False, openfold_mode),
+            binder_type,
+            on_incompatible,
+            on_unmappable_residue,
+            prediction_weights,
+        )
+        if not allowed:
+            rows[i]["openfold_skipped"] = True
+            rows[i]["openfold_reason"] = why_not
+            continue
         samples.append(
             _BatchSample(
                 query_name=sid,
@@ -347,14 +542,31 @@ def _run_batched_openfold(
         "\n%s\n  Step: Batched OpenFold3 (%d samples in one call)\n%s", bar, len(samples), bar
     )
 
+    installed = openfold3_version(conda_python_command(openfold_conda_env))
+    for idx in sid_to_row_idx.values():
+        rows[idx]["provenance_openfold3_version"] = installed
+        rows[idx]["provenance_openfold3_use_msa_server"] = bool(openfold_use_msa_server)
+
     of_dir = output_dir / "_openfold_batch"
+    weights_ref = None
     try:
+        extra_run_arguments = {}
+        if prediction_weights is not None:
+            weights_ref = make_store(
+                prediction_cache or Path(output_dir) / BATCH_CACHE_DIRNAME
+            ).weights_reference(prediction_weights, expect="file")
+            extra_run_arguments["inference_ckpt_path"] = str(weights_ref.path)
         predictions_dir = run_openfold_batched(
             samples=samples,
             output_dir=of_dir,
             mode=openfold_mode,
             conda_env=openfold_conda_env,
+            **extra_run_arguments,
             **({"seeds": tuple(openfold_seeds)} if openfold_seeds else {}),
+            **on_unmappable_residue_kwargs(on_unmappable_residue),
+            **openfold_cyclic_kwargs(openfold_cyclic),
+            **openfold_msa_server_kwargs(openfold_use_msa_server),
+            **openfold_template_kwargs(openfold_templates),
         )
     except Exception as e:  # noqa: BLE001 - the batch call spawns a subprocess; see openfold_error
         # Warning level keeps the line on stdout, where it was printed before.
@@ -364,6 +576,7 @@ def _run_batched_openfold(
         traceback.print_exc()
         for idx in sid_to_row_idx.values():
             rows[idx]["openfold_error"] = str(e)
+            _mark_step_failed(rows[idx], "openfold", str(e))
         return
 
     # Extract per-sample metrics and merge into rows
@@ -375,21 +588,27 @@ def _run_batched_openfold(
         rchain = chains["receptor"]
 
         try:
-            if openfold_mode == "refold":
-                of_metrics = compute_openfold_metrics(
-                    output_dir=predictions_dir,
-                    query_name=sid,
-                    binder_chain=pchain,
-                    receptor_chain=rchain,
-                    reference_structure_path=sid_to_input[sid],
-                )
-            else:
-                of_metrics = compute_openfold_metrics(
-                    output_dir=predictions_dir,
-                    query_name=sid,
-                    binder_chain=pchain,
-                    receptor_chain=rchain,
-                )
+            # the input pose is the reference in both modes: OpenFold3 places the binder itself
+            of_metrics = compute_openfold_metrics(
+                output_dir=predictions_dir,
+                query_name=sid,
+                binder_chain=pchain,
+                receptor_chain=rchain,
+                reference_structure_path=sid_to_input[sid],
+                **scored_seed_kwargs(openfold_seeds, predictions_dir, sid),
+            )
+
+            record_binder_cyclic(
+                of_metrics, sid_to_input[sid], pchain, openfold_cyclic, openfold_conda_env
+            )
+            record_templates(of_metrics, predictions_dir, sid)
+            recorded = output_weights(predictions_dir)
+            if weights_ref is not None:
+                recorded["weights"] = weights_ref.to_dict()
+            weights = weights_description(recorded)
+            if weights is not None:
+                of_metrics["weights"] = weights
+                _add_provenance(rows[idx], "prediction_weights", weights)
 
             # EvoBind metrics — reuse OF3 outputs
             of_structure = of_metrics.get("structure_path")
@@ -439,10 +658,21 @@ def _run_batched_openfold(
         except Exception as e:  # noqa: BLE001 - per-sample isolation; see openfold_error
             logger.warning("  %s: OpenFold metrics failed: %s", sid, e)
             rows[idx]["openfold_error"] = str(e)
+            _mark_step_failed(rows[idx], "openfold", str(e))
 
 
-def _update_sample_json(sample_dir: Path, sid: str, of_metrics: dict) -> None:
-    """Merge OpenFold results into an existing per-sample JSON report."""
+def _update_sample_json(
+    sample_dir: Path,
+    sid: str,
+    of_metrics: dict,
+    section: str = "openfold",
+    provenance: Optional[dict] = None,
+) -> None:
+    """Merge one step's results into an existing per-sample JSON report.
+
+    ``section`` is the key the block is written to (``"openfold"`` or ``"prediction"``);
+    ``provenance`` adds keys to the report's provenance block.
+    """
     import json
 
     from binding_metrics.protocols.report import _json_default
@@ -452,10 +682,217 @@ def _update_sample_json(sample_dir: Path, sid: str, of_metrics: dict) -> None:
         return
     try:
         data = json.loads(json_path.read_text(encoding="utf-8"))
-        data["openfold"] = of_metrics
+        data[section] = of_metrics
+        if provenance:
+            data.setdefault("provenance", {}).update(provenance)
         json_path.write_text(json.dumps(data, indent=2, default=_json_default), encoding="utf-8")
     except Exception as e:  # noqa: BLE001 - non-critical, the CSV row has the data anyway
         logger.warning("  %s: could not update %s: %s", sid, json_path.name, e)
+
+
+def _mark_step_failed(row: dict, step: str, reason: str) -> None:
+    """Record a failed step on a finished row, as ``_run_one`` records the steps it ran.
+
+    An ``ok`` row becomes ``partial``; the step joins ``batch_failed_steps`` and
+    ``step: reason`` joins ``batch_failed_reasons``.
+    """
+    if row.get("batch_status") == "ok":
+        row["batch_status"] = "partial"
+    steps = [name for name in str(row.get("batch_failed_steps") or "").split(";") if name]
+    row["batch_failed_steps"] = ";".join([*steps, step])
+    entry = f"{step}: {str(reason)[:200]}"
+    previous = row.get("batch_failed_reasons")
+    row["batch_failed_reasons"] = f"{previous} | {entry}" if previous else entry
+
+
+# ---------------------------------------------------------------------------
+# Batched prediction (one shared store, one model start for the missing samples)
+# ---------------------------------------------------------------------------
+
+
+def _run_batched_prediction(
+    rows: list[dict],
+    sid_to_input: dict[str, Path],
+    output_dir: Path,
+    *,
+    predictor: str,
+    peptide_chain: Optional[str],
+    receptor_chain: Optional[str],
+    prediction_dir: Optional[Path] = None,
+    prediction_binder_chain: Optional[str] = None,
+    prediction_target_chain: Optional[str] = None,
+    prediction_cache: Optional[Path] = None,
+    rerun_predictions: bool = False,
+    openfold_mode: str = "score",
+    openfold_conda_env: Optional[str] = None,
+    openfold_seeds: Optional[Sequence[int]] = None,
+    on_unmappable_residue: str = "error",
+    binder_type: str = "auto",
+    on_incompatible: str = "error",
+    openfold_cyclic: bool | str = "auto",
+    openfold_use_msa_server: bool = True,
+    prediction_mode: Optional[str] = None,
+    prediction_weights: Optional[Path] = None,
+    prediction_lock_threshold: Optional[float] = None,
+    openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+) -> None:
+    """The ``--predictor`` step of a batch: every sample through one shared prediction store.
+
+    Runs after the workers, in this process. All samples share the store in
+    ``prediction_cache`` (default ``<output_dir>/_predictions``). Without ``prediction_dir``
+    the requests of all samples go to ``PredictionSession.prefetch``, which starts the model
+    once for those the store lacks (OpenFold3 predicts them in one call); with it each
+    sample's output is adopted from ``<prediction_dir>`` and the model never runs. Every
+    sample then gets its own session, reads its record from the store, and computes the
+    metrics of ``run_prediction_step``.
+
+    Modifies *rows* in place: the ``prediction_*`` columns, ``provenance_openfold3_*`` when
+    OpenFold3 was run, and, for a sample whose prediction failed, ``batch_status`` "partial"
+    with the step named in ``batch_failed_steps``. Also writes ``prediction`` into each
+    sample's JSON report. A failed prediction of one sample, or of the whole batch call,
+    never stops the others. A sample that the pre-flight check leaves out
+    (``on_incompatible="skip"``, the limits of the model) is dropped before its request is built,
+    with ``prediction_skipped`` and the reason in the row, and does not fail the batch.
+    """
+    from binding_metrics.protocols.report import _flatten
+
+    candidates = _detect_sample_chains(
+        rows, sid_to_input, peptide_chain, receptor_chain, "prediction"
+    )
+    adopted = prediction_dir is not None
+    mode = effective_prediction_mode(predictor, prediction_dir, prediction_mode, openfold_mode)
+    eligible = []
+    for entry in candidates:
+        idx, sid, input_path, pchain, rchain = entry
+        allowed, why_not = _model_step_allowed(
+            sid,
+            input_path,
+            pchain,
+            rchain,
+            (predictor, "prediction", adopted, mode),
+            binder_type,
+            on_incompatible,
+            on_unmappable_residue,
+            prediction_weights,
+        )
+        if allowed:
+            eligible.append(entry)
+            continue
+        block = {"model": predictor, "mode": mode, "skipped": True, "reason": why_not}
+        for key, value in _flatten({"prediction": block}).items():
+            if key.startswith("prediction_"):
+                rows[idx][key] = value
+        _update_sample_json(output_dir / sid, sid, block, section="prediction")
+    if not eligible:
+        logger.info("  [skip] No eligible samples for the batched prediction.")
+        return
+
+    bar = "=" * 60
+    logger.info(
+        "\n%s\n  Step: Structure prediction (%s), %d samples\n%s",
+        bar,
+        display_name(predictor),
+        len(eligible),
+        bar,
+    )
+
+    adopt = prediction_dir is not None
+    outcomes: dict[str, tuple[dict, dict]] = {}
+    requests = {}
+    runner = None
+    store = make_store(prediction_cache or Path(output_dir) / BATCH_CACHE_DIRNAME)
+    try:
+        runner = None if adopt else make_runner(predictor, openfold_conda_env)
+        weights_ref = None
+        if prediction_weights is not None and not adopt:
+            # one reference for the whole batch: the weights are hashed (or looked up) once
+            weights_ref = store.weights_reference(
+                prediction_weights, expect=runner_weights_kinds().get(predictor)
+            )
+        for _, sid, input_path, pchain, rchain in eligible:
+            try:
+                requests[sid] = make_request(
+                    predictor,
+                    sid,
+                    input_path,
+                    binder_chain=pchain,
+                    receptor_chain=rchain,
+                    runner=runner,
+                    adopt=adopt,
+                    openfold_mode=openfold_mode,
+                    openfold_seeds=openfold_seeds,
+                    on_unmappable_residue=on_unmappable_residue,
+                    openfold_cyclic=openfold_cyclic,
+                    openfold_use_msa_server=openfold_use_msa_server,
+                    prediction_mode=prediction_mode,
+                    prediction_weights=weights_ref,
+                    prediction_lock_threshold=prediction_lock_threshold,
+                    openfold_templates=openfold_templates,
+                )
+            except Exception as e:  # noqa: BLE001 - one unreadable input must not stop the batch
+                logger.warning(
+                    "  %s: no %s prediction request: %s", sid, display_name(predictor), e
+                )
+                outcomes[sid] = ({"model": predictor, "mode": mode, "error": str(e)}, {})
+        if requests and not adopt:
+            make_session(store, runner, rerun=rerun_predictions).prefetch(requests.values())
+    except Exception as e:  # noqa: BLE001 - the batch call starts a model; see prediction_error
+        # Warning level keeps the line on stdout, where the OpenFold step printed its own.
+        logger.warning("  [ERROR] Batched %s prediction failed: %s", display_name(predictor), e)
+        traceback.print_exc()
+        for sid in requests:
+            outcomes[sid] = (
+                {"model": predictor, "mode": mode, "error": error_text(e, predictor, runner)},
+                {},
+            )
+        requests = {}
+
+    if predictor == "of3" and not adopt:
+        installed = openfold3_version(conda_python_command(openfold_conda_env))
+        for idx, *_ in eligible:
+            rows[idx]["provenance_openfold3_version"] = installed
+            rows[idx]["provenance_openfold3_use_msa_server"] = bool(openfold_use_msa_server)
+
+    for idx, sid, input_path, pchain, rchain in eligible:
+        if sid in requests:
+            outcomes[sid] = run_prediction_step(
+                # a session of its own: it finds what the prefetch or an earlier run stored,
+                # and a forced rerun has already happened for the whole batch
+                make_session(store, runner),
+                requests[sid],
+                input_path=input_path,
+                binder_chain=pchain,
+                receptor_chain=rchain,
+                prediction_dir=prediction_dir,
+                prediction_binder_chain=prediction_binder_chain,
+                prediction_target_chain=prediction_target_chain,
+                reference_path=reference_for(predictor, input_path),
+                # an adopted output is the user's own: its seeds are not the ones given here
+                seed_index=1 if adopt else scored_seed_index(openfold_seeds),
+                mode=mode,
+                default_chain_map=None if adopt else runner_chain_map(runner, requests[sid]),
+                runner=runner,
+            )
+            block = outcomes[sid][0]
+            if predictor == "of3" and not adopt and not block.get("error"):
+                record_binder_cyclic(block, input_path, pchain, openfold_cyclic, openfold_conda_env)
+        block, provenance = outcomes[sid]
+        for key, value in _flatten({"prediction": block}).items():
+            if key.startswith("prediction_"):
+                rows[idx][key] = value
+        for key, value in provenance.items():
+            _add_provenance(rows[idx], key, value)
+        _update_sample_json(
+            output_dir / sid, sid, block, section="prediction", provenance=provenance or None
+        )
+        if block.get("error"):
+            _mark_step_failed(rows[idx], "prediction", block["error"])
+        logger.info(
+            "  %s: ipTM=%s, pLDDT=%s",
+            sid,
+            block.get("iptm", "?"),
+            block.get("avg_plddt", "?"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +944,25 @@ def run_batch(
     on_result: Optional[Callable[[dict], None]] = None,
     on_error: str = "record",
     on_start: Optional[Callable[[Path], None]] = None,
+    on_unmappable_residue: str = "error",
+    predictor: Optional[str] = None,
+    prediction_dir: Optional[Path] = None,
+    prediction_binder_chain: Optional[str] = None,
+    prediction_target_chain: Optional[str] = None,
+    prediction_cache: Optional[Path] = None,
+    rerun_predictions: bool = False,
+    binder_type: str = "auto",
+    on_incompatible: str = "error",
+    preflight_only: bool = False,
+    openfold_cyclic: bool | str = "auto",
+    openfold_use_msa_server: bool = True,
+    prediction_mode: Optional[str] = None,
+    prediction_weights: Optional[Path] = None,
+    prediction_cyclic: Optional[bool | str] = None,
+    prediction_use_msa_server: bool = True,
+    prediction_conda_env: Optional[str] = None,
+    prediction_lock_threshold: Optional[float] = None,
+    openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -541,6 +997,76 @@ def run_batch(
             gives a ``"partial"`` row in both modes.
         on_start: Called with the path of each item just before it starts (in
             the sequential case), or as it is submitted (with workers).
+        on_unmappable_residue: ``"error"`` (default) or ``"x"``: what the OpenFold3 call does
+            with a residue it cannot take (see ``--on-unmappable-residue``).
+        openfold_seeds: Seed values OpenFold3 samples with, written to its runner YAML; ``None``
+            keeps the default, 42. The sample scored is the first sample of the first seed
+            given (see ``--openfold-seeds``).
+        openfold_use_msa_server: Whether OpenFold3 uses the ColabFold MSA server (default True;
+            ``--openfold-no-msa-server`` is False). With the server off OpenFold3 runs with a dummy
+            MSA that holds only the query sequence of each chain, which lowers accuracy for a
+            natural receptor; with ``openfold_templates="alignment"`` it also keeps the template
+            alignments that the server would replace (issue #68). Each row that OpenFold3 was run
+            for records it as ``provenance_openfold3_use_msa_server``.
+        openfold_cyclic: ``"auto"`` (default), ``True`` (``"on"``) or ``False`` (``"off"``):
+            whether the binder chain of each OpenFold3 query gets ``"cyclic": true`` (see
+            ``--openfold-cyclic``). The ``openfold_*`` (or ``prediction_*``) columns then
+            include ``binder_cyclic`` and, when a head-to-tail binder was left linear, the
+            reason.
+        openfold_templates: How the template of each chain reaches OpenFold3 (keyword-only):
+            ``"structure"`` (default; the template CIFs themselves, OpenFold3's CIF Direct
+            Template Mode, which the ColabFold MSA server does not overwrite) or ``"alignment"``
+            (an A3M self-alignment per chain, which the server overwrites); OpenFold3 only. The
+            ``openfold_*`` (or ``prediction_*``) columns include ``templates_<chain>_*`` that say
+            whether OpenFold3 used each template.
+        predictor: A key of ``binding_metrics.predictors.PARSERS`` (keyword-only). The
+            ``openfold`` step then runs as the prediction step of every sample through one
+            shared prediction store and fills the ``prediction_*`` columns instead of the
+            ``openfold_*`` ones; ``None`` (default) keeps the batched OpenFold3 call. Like
+            ``openfold`` it runs once for all samples after the others. Every registered model
+            has a runner and can be run from here (``cli.prediction.RUNNERS``); ``prediction_dir``
+            reads outputs you made instead.
+        prediction_dir: With ``predictor``, the root that holds one output per sample ID (the
+            file stem); the outputs are adopted into the store and the model never runs.
+        prediction_binder_chain, prediction_target_chain: With ``predictor``, the chain IDs
+            inside the predictions when they differ from the inputs'.
+        prediction_cache: The prediction store shared by all samples; default
+            ``<output_dir>/_predictions``. A second run over the same samples, options and
+            model version finds every prediction there and starts no model.
+        rerun_predictions: Run every prediction again although the store has it (once).
+            Outputs given as ``prediction_dir`` are never replaced.
+        binder_type, on_incompatible: The pre-flight check of every sample (see
+            ``--binder-type`` and ``--on-incompatible``). It runs first in each worker, before
+            preparation, relaxation and the model step, which it checks as well. A refused
+            sample is an ``"error"`` row with ``preflight_status`` ``refused`` and the reason;
+            it does not stop the batch. Under ``"skip"`` the incompatible steps of a sample are
+            recorded as skipped with their reason and the rest runs.
+        prediction_mode: How the model is used for the complex (``--prediction-mode``): ``predict``,
+            ``refold``, ``score`` or ``score-lock``. It is checked against what the model supports
+            in the pre-flight check of every sample, for a run from here against what the runner
+            of the model runs (``ValueError`` for another mode), and recorded as
+            ``prediction_mode``. None takes ``openfold_mode`` for OpenFold3 run from here, the
+            ``default_mode`` of the runner for another model (boltz2 ``score``, af2 and protenix
+            ``predict``) and is "not known, not checked" for outputs read from
+            ``prediction_dir``. Needs ``predictor``.
+        prediction_cyclic, prediction_use_msa_server, prediction_conda_env,
+        prediction_lock_threshold: The settings of ``predictor`` run from here, for every model
+            (``--prediction-cyclic``, ``--prediction-no-msa-server``, ``--prediction-conda-env``,
+            ``--prediction-lock-threshold``), with the meaning and the checks they have in
+            ``run_pipeline``: for ``predictor="of3"`` they are the settings of ``openfold_cyclic``,
+            ``openfold_use_msa_server`` and ``openfold_conda_env``, and a setting that the model's
+            runner has no keyword for raises ``ValueError``.
+        prediction_weights: Custom weights for the model, such as a fine-tuned checkpoint
+            (``--prediction-weights``): a file or a directory, as the model's runner takes it. They
+            apply to ``predictor`` run from here and to the batched OpenFold3 step
+            (``--inference-ckpt-path``), are hashed once for the whole batch, and are part of the
+            key of the prediction store. Each row gets ``prediction_weights_*`` (or
+            ``openfold_weights_*``) and ``provenance_prediction_weights_sha256`` and
+            ``..._path``. The path is checked before any sample runs; with ``prediction_dir`` it
+            raises ``ValueError``.
+        preflight_only: Check every sample and return one row each (``preflight_status``,
+            ``preflight_reason``, ``preflight_plan``) without preparing, relaxing or predicting
+            anything and without creating ``output_dir``.
 
     Returns:
         One flat row per path, in the order of ``paths`` whatever the number of
@@ -560,7 +1086,10 @@ def run_batch(
 
     Raises:
         ValueError: ``n_workers`` below 1, an unknown ``on_error``, an unknown
-            metric name, or a chain given through both spellings with different IDs.
+            metric name, an ``on_unmappable_residue`` other than ``"error"`` or ``"x"``, a
+            ``predictor`` that is not registered or has no runner and no ``prediction_dir``, or
+            a chain given through both spellings with different IDs, or an ``openfold_cyclic``
+            that is not ``"auto"``, ``"on"``, ``"off"``, ``True`` or ``False``.
         Exception: whatever an item raised, when ``on_error="raise"``.
     """
     if n_workers < 1:
@@ -578,16 +1107,76 @@ def run_batch(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
+    check_on_unmappable_residue(on_unmappable_residue)
+    check_openfold_cyclic(openfold_cyclic)
+    check_openfold_templates(openfold_templates)
+    route = check_predictor(
+        predictor,
+        prediction_dir,
+        prediction_mode,
+        prediction_weights,
+        openfold_mode=openfold_mode,
+        openfold_cyclic=openfold_cyclic,
+        prediction_cyclic=prediction_cyclic,
+        openfold_use_msa_server=openfold_use_msa_server,
+        prediction_use_msa_server=prediction_use_msa_server,
+        openfold_conda_env=openfold_conda_env,
+        prediction_conda_env=prediction_conda_env,
+        prediction_lock_threshold=prediction_lock_threshold,
+        openfold_templates=openfold_templates,
+    )
+    if predictor is not None and prediction_dir is None:
+        # the --prediction-* spellings are merged into the settings of the run
+        openfold_cyclic, openfold_use_msa_server, openfold_conda_env = (
+            route.cyclic,
+            route.use_msa_server,
+            route.conda_env,
+        )
+    prediction_weights = check_weights_arg(prediction_weights, predictor)
+    if binder_type not in BINDER_TYPE_CHOICES:
+        raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")
+    if on_incompatible not in POLICIES:
+        raise ValueError(f"on_incompatible must be one of {POLICIES}, got {on_incompatible!r}")
 
     input_paths = [Path(p) for p in paths]
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     references = references or {}
     if references:
         selected = selected | {"dockq"}
+    if preflight_only:
+        return _preflight_only_rows(
+            input_paths,
+            output_dir,
+            metrics=selected,
+            skip_relax=skip_relax,
+            peptide_chain=peptide_chain,
+            receptor_chain=receptor_chain,
+            references=references,
+            predictor=predictor,
+            prediction_dir=prediction_dir,
+            prediction_mode=prediction_mode,
+            openfold_mode=openfold_mode,
+            on_unmappable_residue=on_unmappable_residue,
+            prediction_weights=prediction_weights,
+            binder_type=binder_type,
+            on_incompatible=on_incompatible,
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
     # Strip openfold from per-worker metrics: it runs as a single batched
     # subprocess after all other metrics finish.
     want_openfold = "openfold" in selected
+    # The model step runs after the workers, but each worker checks its limits first.
+    preflight_model = (
+        model_step_of(
+            predictor,
+            prediction_dir,
+            selected,
+            prediction_mode=prediction_mode,
+            openfold_mode=openfold_mode,
+        )
+        if want_openfold
+        else None
+    )
 
     common_kwargs = dict(
         output_dir=output_dir,
@@ -607,6 +1196,11 @@ def run_batch(
         openfold_conda_env=openfold_conda_env,
         log_file=log_file,  # None: per-sample log inside the sample dir
         random_seed=random_seed,
+        binder_type=binder_type,
+        on_incompatible=on_incompatible,
+        preflight_model=preflight_model,
+        on_unmappable_residue=on_unmappable_residue,
+        prediction_weights=prediction_weights,
     )
     if on_error == "raise":
         common_kwargs["raise_errors"] = True
@@ -675,7 +1269,33 @@ def run_batch(
                 finish(index, row)
 
     finished = [row for row in rows if row is not None]
-    if want_openfold:
+    if want_openfold and predictor is not None:
+        _run_batched_prediction(
+            rows=finished,
+            sid_to_input=sid_to_input,
+            output_dir=output_dir,
+            predictor=predictor,
+            peptide_chain=peptide_chain,
+            receptor_chain=receptor_chain,
+            prediction_dir=prediction_dir,
+            prediction_binder_chain=prediction_binder_chain,
+            prediction_target_chain=prediction_target_chain,
+            prediction_cache=prediction_cache,
+            rerun_predictions=rerun_predictions,
+            openfold_mode=openfold_mode,
+            openfold_conda_env=openfold_conda_env,
+            openfold_seeds=openfold_seeds,
+            on_unmappable_residue=on_unmappable_residue,
+            binder_type=binder_type,
+            on_incompatible=on_incompatible,
+            openfold_cyclic=openfold_cyclic,
+            openfold_use_msa_server=openfold_use_msa_server,
+            prediction_mode=prediction_mode,
+            prediction_weights=prediction_weights,
+            prediction_lock_threshold=route.lock_threshold,
+            openfold_templates=openfold_templates,
+        )
+    elif want_openfold:
         _run_batched_openfold(
             rows=finished,
             sid_to_input=sid_to_input,
@@ -685,8 +1305,78 @@ def run_batch(
             peptide_chain=peptide_chain,
             receptor_chain=receptor_chain,
             openfold_seeds=openfold_seeds,
+            on_unmappable_residue=on_unmappable_residue,
+            binder_type=binder_type,
+            on_incompatible=on_incompatible,
+            openfold_cyclic=openfold_cyclic,
+            openfold_use_msa_server=openfold_use_msa_server,
+            prediction_weights=prediction_weights,
+            prediction_cache=prediction_cache,
+            openfold_templates=openfold_templates,
         )
     return finished
+
+
+def _preflight_only_rows(
+    input_paths: list[Path],
+    output_dir: Path,
+    *,
+    metrics: frozenset,
+    skip_relax: bool,
+    peptide_chain: Optional[str],
+    receptor_chain: Optional[str],
+    references: Mapping[str, Path],
+    predictor: Optional[str],
+    prediction_dir: Optional[Path],
+    prediction_mode: Optional[str],
+    openfold_mode: str,
+    on_unmappable_residue: str,
+    binder_type: str,
+    on_incompatible: str,
+    prediction_weights: Optional[Path] = None,
+) -> list[dict]:
+    """One row per sample with the pre-flight decision and nothing else (``--preflight-only``).
+
+    Nothing is prepared, relaxed or predicted and no directory is created. A refused sample
+    (policy ``error``) is an ``"error"`` row; a sample that only warns or leaves steps out is
+    ``"ok"``.
+    """
+    rows = []
+    for input_path in input_paths:
+        sid = input_path.stem
+        row: dict = {"sample_id": sid, "input": str(input_path)}
+        try:
+            results = run_pipeline(
+                input_path=input_path,
+                output_dir=output_dir / sid,
+                sample_id=sid,
+                skip_relax=skip_relax,
+                peptide_chain=peptide_chain,
+                receptor_chain=receptor_chain,
+                metrics=metrics,
+                reference_path=references.get(sid),
+                predictor=predictor,
+                prediction_dir=prediction_dir,
+                prediction_mode=prediction_mode,
+                openfold_mode=openfold_mode,
+                on_unmappable_residue=on_unmappable_residue,
+                prediction_weights=prediction_weights,
+                binder_type=binder_type,
+                on_incompatible=on_incompatible,
+                preflight_only=True,
+            )
+            block = results["preflight"]
+            row["preflight_status"] = block["status"]
+            row["preflight_reason"] = block["reason"]
+            row["preflight_plan"] = block.get("plan", "")
+            row["batch_status"] = "error" if block["status"] == "refused" else "ok"
+            if block["status"] == "refused":
+                row["batch_error"] = block["reason"]
+        except Exception as error:  # noqa: BLE001 - one unreadable input must not stop the plan
+            row["batch_status"] = "error"
+            row["batch_error"] = f"{type(error).__name__}: {error}"
+        rows.append(row)
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -827,7 +1517,7 @@ def main():
         "--openfold-mode",
         choices=["score", "refold"],
         default="score",
-        help="score: both chains as templates; refold: binder predicted freely. Default: score",
+        help=OPENFOLD_MODE_HELP,
     )
     openfold_group.add_argument(
         "--openfold-conda-env",
@@ -836,6 +1526,13 @@ def main():
         help="Conda env where OpenFold3 is installed (default: openfold3)",
     )
     add_openfold_seeds_arg(openfold_group)
+    add_openfold_cyclic_arg(openfold_group)
+    add_openfold_no_msa_server_arg(openfold_group)
+    add_openfold_templates_arg(openfold_group)
+    add_on_unmappable_residue_arg(openfold_group)
+
+    add_prediction_args(parser, batch=True)
+    add_preflight_args(parser)
 
     from binding_metrics.cli import add_log_file_arg
 
@@ -852,6 +1549,7 @@ def main():
     add_config_arg(parser)
 
     args = parse_args_with_config(parser)
+    check_prediction_args(parser, args)
 
     if args.per_sample_log and args.log_file is not None:
         print(
@@ -866,8 +1564,9 @@ def main():
         sys.exit(1)
 
     output_dir: Path = args.output_dir or args.output_csv.parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-    args.output_csv.parent.mkdir(parents=True, exist_ok=True)
+    if not args.preflight_only:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ Collect inputs
     if args.glob:
@@ -909,6 +1608,32 @@ def main():
             f"  References: {args.reference_dir}  "
             f"({matched}/{len(input_files)} samples matched by stem)\n"
         )
+
+    if args.preflight_only:
+        rows = run_batch(
+            input_files,
+            output_dir,
+            skip_relax=args.skip_relax,
+            peptide_chain=args.peptide_chain,
+            receptor_chain=args.receptor_chain,
+            metrics=selected_metrics,
+            references=reference_map,
+            predictor=args.predictor,
+            prediction_dir=args.prediction_dir,
+            prediction_mode=args.prediction_mode,
+            prediction_weights=args.prediction_weights,
+            openfold_mode=args.openfold_mode,
+            on_unmappable_residue=args.on_unmappable_residue,
+            binder_type=args.binder_type,
+            on_incompatible=args.on_incompatible,
+            preflight_only=True,
+        )
+        for row in rows:
+            print(f"--- {row['sample_id']}: {row.get('preflight_status', 'error')}")
+            print(row.get("preflight_plan") or row.get("batch_error", ""))
+        n_refused = sum(1 for row in rows if row["batch_status"] == "error")
+        print(f"\nPre-flight: {len(rows) - n_refused} of {len(rows)} samples can run")
+        sys.exit(1 if n_refused else 0)
 
     # ------------------------------------------------------------------ Run
     # run_batch does the work; the callbacks print the progress lines. Started
@@ -963,6 +1688,24 @@ def main():
         openfold_mode=args.openfold_mode,
         openfold_conda_env=args.openfold_conda_env,
         openfold_seeds=args.openfold_seeds,
+        openfold_cyclic=args.openfold_cyclic,
+        openfold_use_msa_server=not args.openfold_no_msa_server,
+        on_unmappable_residue=args.on_unmappable_residue,
+        predictor=args.predictor,
+        prediction_dir=args.prediction_dir,
+        prediction_binder_chain=args.prediction_binder_chain,
+        prediction_target_chain=args.prediction_target_chain,
+        prediction_cache=args.prediction_cache,
+        rerun_predictions=args.rerun_predictions,
+        prediction_mode=args.prediction_mode,
+        prediction_weights=args.prediction_weights,
+        prediction_cyclic=args.prediction_cyclic,
+        prediction_use_msa_server=not args.prediction_no_msa_server,
+        prediction_conda_env=args.prediction_conda_env,
+        prediction_lock_threshold=args.prediction_lock_threshold,
+        openfold_templates=args.openfold_templates,
+        binder_type=args.binder_type,
+        on_incompatible=args.on_incompatible,
         random_seed=args.random_seed,
         log_file=args.log_file,
         n_workers=args.workers,
