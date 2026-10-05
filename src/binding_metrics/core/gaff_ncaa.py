@@ -1026,7 +1026,9 @@ def _rebuild_topology_with_injected_h(topology, pos_nm, h_by_res: dict):
     for chain in topology.chains():
         new_chain = new_top.addChain(chain.id)
         for res in chain.residues():
-            new_res = new_top.addResidue(res.name, new_chain, id=res.id)
+            new_res = new_top.addResidue(
+                res.name, new_chain, id=res.id, insertionCode=res.insertionCode
+            )
             drop_h = res.index in h_by_res
             for atom in res.atoms():
                 if drop_h and atom.element is not None and atom.element.atomic_number == 1:
