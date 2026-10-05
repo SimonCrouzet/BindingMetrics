@@ -37,6 +37,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, ClassVar, Mapping, Optional
 
+from binding_metrics.predictors._renamed import deprecated_name_getattr
 from binding_metrics.predictors.record import (
     PredictedPose,
     PredictionFiles,
@@ -44,6 +45,9 @@ from binding_metrics.predictors.record import (
     _not_provided_problems,
     check_chain_map,
 )
+
+#: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
+__getattr__ = deprecated_name_getattr(__name__)
 
 #: The two families of confidence outputs. ``af2``: one token per residue (AlphaFold2,
 #: ColabFold, AlphaFold-Multimer). ``af3``: one token per standard residue and one per heavy

@@ -11,7 +11,8 @@ is what a pipeline asks for a parsed record (running the model on the first miss
 ``Boltz2Runner`` and ``ProtenixRunner``.
 
 Names load on first access (PEP 562); importing this package imports nothing heavy, and
-biotite is imported only when a structure is read.
+biotite is imported only when a structure is read. ``PredictionRecord``, the former name of
+``PredictedPose``, still imports and emits a ``DeprecationWarning``.
 """
 
 from typing import TYPE_CHECKING
@@ -42,7 +43,20 @@ _EXPORTS = {
     "register_parser": "binding_metrics.predictors.registry",
 }
 
-__getattr__, __dir__ = _lazy_exports(__name__, _EXPORTS, globals())
+_lazy_getattr, __dir__ = _lazy_exports(__name__, _EXPORTS, globals())
+
+
+def __getattr__(name: str):
+    """The lazy exports, and ``PredictionRecord``, the deprecated name of ``PredictedPose``.
+
+    The old name warns on every use, is not cached here and is not in ``__all__``.
+    """
+    if name == "PredictionRecord":
+        from binding_metrics.predictors._renamed import old_name_class
+
+        return old_name_class()
+    return _lazy_getattr(name)
+
 
 if TYPE_CHECKING:
     from binding_metrics.predictors.af2_runner import ColabFoldRunner

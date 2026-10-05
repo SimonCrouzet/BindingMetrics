@@ -95,6 +95,7 @@ from typing import Any, Optional
 import numpy as np
 
 from binding_metrics.capabilities import Capabilities
+from binding_metrics.predictors._renamed import deprecated_name_getattr
 from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.record import (
     PredictedPose,
@@ -102,6 +103,9 @@ from binding_metrics.predictors.record import (
     SampleRef,
     TokenLayout,
 )
+
+#: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
+__getattr__ = deprecated_name_getattr(__name__)
 
 logger = logging.getLogger(__name__)
 

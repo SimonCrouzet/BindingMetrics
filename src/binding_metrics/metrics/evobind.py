@@ -67,7 +67,11 @@ import numpy as np
 from binding_metrics.core.residues import VARIANT_TO_PARENT_RESIDUE
 from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
 from binding_metrics.predictors._confidence import _binder_plddt_per_residue, _residue_index
+from binding_metrics.predictors._renamed import deprecated_name_getattr
 from binding_metrics.predictors.record import PredictedPose
+
+#: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
+__getattr__ = deprecated_name_getattr(__name__)
 
 # ---------------------------------------------------------------------------
 # Internal helpers: coordinate extraction

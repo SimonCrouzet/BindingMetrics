@@ -68,6 +68,10 @@ from binding_metrics.poses.pose import (  # noqa: F401 - check_chain_map lived h
     _provenance_problems,
     check_chain_map,
 )
+from binding_metrics.predictors._renamed import deprecated_name_getattr
+
+#: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
+__getattr__ = deprecated_name_getattr(__name__)
 
 _NAN = float("nan")
 

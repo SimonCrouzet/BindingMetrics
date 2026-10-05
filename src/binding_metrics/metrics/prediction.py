@@ -29,8 +29,12 @@ from binding_metrics.predictors._confidence import (
     _interface_pde_stats,
     _load_atoms,
 )
+from binding_metrics.predictors._renamed import deprecated_name_getattr
 from binding_metrics.predictors.record import PredictedPose
 from binding_metrics.predictors.registry import get_parser
+
+#: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
+__getattr__ = deprecated_name_getattr(__name__)
 
 _NAN = float("nan")
 

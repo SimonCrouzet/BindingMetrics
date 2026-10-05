@@ -108,6 +108,7 @@ from binding_metrics.predictors._confidence import (  # noqa: F401  (re-exported
     _interface_pde_stats,
     _load_atoms,
 )
+from binding_metrics.predictors._renamed import deprecated_name_getattr
 from binding_metrics.predictors.of3 import (  # noqa: F401  (re-exported)
     OpenFold3Parser,
 )
@@ -120,6 +121,9 @@ from binding_metrics.predictors.of3 import (  # noqa: F401  (re-exported)
 )
 from binding_metrics.predictors.record import PredictedPose
 from binding_metrics.predictors.registry import get_parser
+
+#: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
+__getattr__ = deprecated_name_getattr(__name__)
 
 # ---------------------------------------------------------------------------
 # Output file discovery and parsers (the OpenFold3 adapter of binding_metrics.predictors)
