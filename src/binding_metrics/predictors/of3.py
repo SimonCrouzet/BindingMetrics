@@ -99,7 +99,7 @@ import numpy as np
 
 from binding_metrics.capabilities import Capabilities, check_openfold3_residues
 from binding_metrics.predictors.base import PredictionParser
-from binding_metrics.predictors.record import PredictionFiles, PredictionRecord, TokenLayout
+from binding_metrics.predictors.record import PredictedPose, PredictionFiles, TokenLayout
 
 logger = logging.getLogger(__name__)
 
@@ -426,14 +426,14 @@ class OpenFold3Parser(PredictionParser):
         name: str,
         seed_index: int = 1,
         sample: int = 1,
-    ) -> PredictionRecord:
+    ) -> PredictedPose:
         """Read the aggregated and full confidence files into a record.
 
         A missing file leaves its values at NaN (None for an array) and adds a reason; a
         corrupt file raises. ``avg_plddt`` falls back to the mean of the per-atom pLDDT when
         the aggregated file does not give it. ``gpde`` comes from the aggregated file only.
         """
-        record = PredictionRecord(
+        record = PredictedPose(
             self.name,
             name,
             seed_index=seed_index,
@@ -492,7 +492,7 @@ class OpenFold3Parser(PredictionParser):
             record.extras["seed_value"] = located.parent.name[len("seed_") :]
         return record
 
-    def complete(self, record: PredictionRecord) -> PredictionRecord:
+    def complete(self, record: PredictedPose) -> PredictedPose:
         """Attach the token layout, which needs the structure file.
 
         ``record.tokens`` becomes :func:`token_layout` of the record, so that the interface PAE
@@ -545,12 +545,12 @@ class _PerResidueMatrixError(ValueError):
     """The matrices have one row per residue, which is not the tokenisation of OpenFold3 0.5.0."""
 
 
-def _say(record: PredictionRecord, reason: str) -> None:
+def _say(record: PredictedPose, reason: str) -> None:
     if reason not in record.reasons:  # keeps ``complete`` idempotent
         record.reasons.append(reason)
 
 
-def token_layout(record: PredictionRecord) -> TokenLayout:
+def token_layout(record: PredictedPose) -> TokenLayout:
     """The token layout of an OpenFold3 record, from its structure and the rule of the tokenizer.
 
     ``pae`` and ``pde`` have one row per token. A residue named in ``STANDARD_RESIDUE_NAMES`` is
@@ -605,7 +605,7 @@ def _residue_runs(atoms) -> tuple[np.ndarray, np.ndarray]:
     return starts, np.append(starts[1:], n_atoms)
 
 
-def _layout_of(record: PredictionRecord, atoms) -> TokenLayout:
+def _layout_of(record: PredictedPose, atoms) -> TokenLayout:
     """:func:`token_layout` for the atoms of ``record`` that the caller has already read."""
     if record.pae is None and record.pde is None:
         raise ValueError("the record has neither a PAE nor a PDE matrix to lay tokens over")
@@ -671,7 +671,7 @@ def _layout_of(record: PredictionRecord, atoms) -> TokenLayout:
     return layout
 
 
-def _check_chain_names(record: PredictionRecord, token_chain_ids: np.ndarray) -> None:
+def _check_chain_names(record: PredictedPose, token_chain_ids: np.ndarray) -> None:
     """Refuse a structure whose chains are not those that the confidences name.
 
     The model numbers the chains 1, 2, ... in the sorted order of their chain IDs (``asym_id``)

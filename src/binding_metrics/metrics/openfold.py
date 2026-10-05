@@ -118,7 +118,7 @@ from binding_metrics.predictors.of3 import parse_full_confidences as _parse_conf
 from binding_metrics.predictors.of3 import (  # noqa: F401  (re-exported)
     parse_timing as _parse_timing,
 )
-from binding_metrics.predictors.record import PredictionRecord
+from binding_metrics.predictors.record import PredictedPose
 from binding_metrics.predictors.registry import get_parser
 
 # ---------------------------------------------------------------------------
@@ -247,7 +247,7 @@ def compute_interface_pae(
     # The token layout of the structure, when it can be shown to fit the matrices; a record
     # without one (``tokens`` None) is read as one token per residue, which keeps the error of
     # a matrix that fits neither.
-    record = PredictionRecord(
+    record = PredictedPose(
         "of3",
         Path(structure_path).stem,
         structure_path=Path(structure_path),

@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from binding_metrics.predictors.base import PredictionParser
-from binding_metrics.predictors.record import PredictionFiles, PredictionRecord
+from binding_metrics.predictors.record import PredictedPose, PredictionFiles
 
 if TYPE_CHECKING:
     from tests.predictors.synth import SyntheticComplex
@@ -63,8 +63,8 @@ class StubParser(PredictionParser):
 
     def parse(
         self, files: PredictionFiles, *, name: str, seed_index: int = 1, sample: int = 1
-    ) -> PredictionRecord:
-        record = PredictionRecord(
+    ) -> PredictedPose:
+        record = PredictedPose(
             self.name,
             name,
             seed_index=seed_index,

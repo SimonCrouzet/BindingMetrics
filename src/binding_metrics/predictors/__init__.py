@@ -1,7 +1,7 @@
 """Readers for the output of structure-prediction models, and the store that runs each once.
 
 Each supported model gets an adapter (``PredictionParser``) that turns its files into one
-neutral ``PredictionRecord``, so the confidence metrics and the EvoBind check need no
+neutral ``PredictedPose``, so the confidence metrics and the EvoBind check need no
 per-model code. Adapters read output only and never run a model.
 
 A run-once store sits beside them: ``PredictionRequest`` describes a prediction,
@@ -21,7 +21,7 @@ from binding_metrics import _lazy_exports
 # Public name -> defining module; see ``binding_metrics._lazy_exports``.
 _EXPORTS = {
     "PredictionFiles": "binding_metrics.predictors.record",
-    "PredictionRecord": "binding_metrics.predictors.record",
+    "PredictedPose": "binding_metrics.predictors.record",
     "SampleRef": "binding_metrics.predictors.record",
     "TokenLayout": "binding_metrics.predictors.record",
     "PredictionParser": "binding_metrics.predictors.base",
@@ -51,8 +51,8 @@ if TYPE_CHECKING:
     from binding_metrics.predictors.of3_runner import OpenFold3Runner
     from binding_metrics.predictors.protenix_runner import ProtenixRunner
     from binding_metrics.predictors.record import (
+        PredictedPose,
         PredictionFiles,
-        PredictionRecord,
         SampleRef,
         TokenLayout,
     )
@@ -78,10 +78,10 @@ __all__ = [
     "OpenFold3Runner",
     "PARSERS",
     "ParserSpec",
+    "PredictedPose",
     "PredictionFailedError",
     "PredictionFiles",
     "PredictionParser",
-    "PredictionRecord",
     "PredictionRequest",
     "PredictionRunner",
     "PredictionSession",

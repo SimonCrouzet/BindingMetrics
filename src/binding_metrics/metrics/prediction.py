@@ -3,7 +3,7 @@
 ``compute_prediction_metrics`` reads the output directory of a registered model
 (``binding_metrics.predictors.PARSERS``) and returns the summary; it is the registered
 metric ``prediction``. ``summarize_prediction`` turns a
-``binding_metrics.predictors.PredictionRecord`` into the result dictionary that
+``binding_metrics.predictors.PredictedPose`` into the result dictionary that
 ``compute_openfold_metrics`` has always returned, plus a ``model`` key: the scalar scores,
 per-residue pLDDT of the binder, interface PDE and PAE statistics and the binder C-alpha
 RMSD against a reference. It reads only the record, so the analysis is the same for every
@@ -29,7 +29,7 @@ from binding_metrics.predictors._confidence import (
     _interface_pde_stats,
     _load_atoms,
 )
-from binding_metrics.predictors.record import PredictionRecord
+from binding_metrics.predictors.record import PredictedPose
 from binding_metrics.predictors.registry import get_parser
 
 _NAN = float("nan")
@@ -96,7 +96,7 @@ def compute_prediction_metrics(
     )
 
 
-def _token_ranges(record: PredictionRecord) -> Optional[dict[str, tuple[int, int]]]:
+def _token_ranges(record: PredictedPose) -> Optional[dict[str, tuple[int, int]]]:
     """Token ranges by the user's chain IDs, or None for one token per residue.
 
     A record with a ``TokenLayout`` says which tokens belong to which chain, so the
@@ -114,7 +114,7 @@ def _token_ranges(record: PredictionRecord) -> Optional[dict[str, tuple[int, int
     }
 
 
-def _seed_value_of(record: PredictionRecord) -> Optional[int]:
+def _seed_value_of(record: PredictedPose) -> Optional[int]:
     """The seed value of the record's seed directory (``record.extras["seed_value"]``), or None.
 
     OpenFold3 and Protenix name a seed directory after the seed that produced it, and their
@@ -125,7 +125,7 @@ def _seed_value_of(record: PredictionRecord) -> Optional[int]:
 
 
 def summarize_prediction(
-    record: PredictionRecord,
+    record: PredictedPose,
     *,
     include_matrices: bool = False,
     reference_structure_path: Optional[str | Path] = None,

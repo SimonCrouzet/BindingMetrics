@@ -128,15 +128,15 @@ import numpy as np
 from binding_metrics.capabilities import Capabilities
 from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.record import (
+    PredictedPose,
     PredictionFiles,
-    PredictionRecord,
     SampleRef,
     check_chain_map,
 )
 
 _NAN = float("nan")
 
-#: Registry key of the adapter and ``PredictionRecord.model`` of its records.
+#: Registry key of the adapter and ``PredictedPose.model`` of its records.
 _MODEL = "af2"
 
 #: Values of the ``scale`` argument of the B-factor reader.
@@ -768,7 +768,7 @@ def _prediction_id(files: PredictionFiles) -> Optional[str]:
     return None
 
 
-def _read_confidences(files: PredictionFiles, record: PredictionRecord) -> Optional[dict]:
+def _read_confidences(files: PredictionFiles, record: PredictedPose) -> Optional[dict]:
     """Read the file that holds the per-residue pLDDT; None (and a reason) when there is none."""
     arrays = files.arrays
     if arrays is not None and arrays.suffix.lower() == ".json":
@@ -806,7 +806,7 @@ def _read_confidences(files: PredictionFiles, record: PredictionRecord) -> Optio
     return None
 
 
-def _note_missing(record: PredictionRecord, confidences: dict, source_name: str) -> None:
+def _note_missing(record: PredictedPose, confidences: dict, source_name: str) -> None:
     """One sentence for each value the confidence file does not hold."""
     if confidences["source"] == "confidence_json":
         record.reasons.append(
@@ -833,7 +833,7 @@ def _note_missing(record: PredictionRecord, confidences: dict, source_name: str)
         record.reasons.append(f"ipTM not in {source_name}: only the multimer models compute it")
 
 
-def _apply_confidences(record: PredictionRecord, confidences: dict, source_name: str) -> None:
+def _apply_confidences(record: PredictedPose, confidences: dict, source_name: str) -> None:
     plddt = confidences["plddt_per_residue"]
     record.avg_plddt = float(plddt.mean())
     record.ptm = confidences["ptm"]
@@ -859,7 +859,7 @@ def _expand_per_residue(plddt: np.ndarray, scan: _StructureScan, structure: Path
 
 
 def _apply_bfactor(
-    record: PredictionRecord, scan: _StructureScan, structure: Path, scale: str
+    record: PredictedPose, scan: _StructureScan, structure: Path, scale: str
 ) -> None:
     """Fill the pLDDT of ``record`` from the B-factor column; every other value stays unset."""
     plddt, rescaled, problem = _plddt_from_bfactor(scan.b_factor, scale)
@@ -879,8 +879,8 @@ def _apply_bfactor(
 
 def _parse_files(
     files: PredictionFiles, name: str, seed_index: int, sample: int, scale: str = "auto"
-) -> PredictionRecord:
-    record = PredictionRecord(
+) -> PredictedPose:
+    record = PredictedPose(
         _MODEL,
         name,
         seed_index=seed_index,
@@ -925,7 +925,7 @@ def _parse_files(
 
 
 def _apply_layout_details(
-    record: PredictionRecord, files: PredictionFiles, confidences: Optional[dict]
+    record: PredictedPose, files: PredictionFiles, confidences: Optional[dict]
 ) -> None:
     """Ranking score, timing and file names that belong to one layout."""
     layout = record.extras["layout"]
@@ -1026,7 +1026,7 @@ class AlphaFold2Parser(PredictionParser):
         name: str,
         seed_index: int = 1,
         sample: int = 1,
-    ) -> PredictionRecord:
+    ) -> PredictedPose:
         """Read the located files into a record.
 
         A missing confidence file leaves its values at NaN (None for an array), adds a reason
@@ -1067,7 +1067,7 @@ def load_bfactor_record(
     name: Optional[str] = None,
     chain_map: Optional[Mapping[str, str]] = None,
     scale: str = "auto",
-) -> PredictionRecord:
+) -> PredictedPose:
     """A record with the pLDDT of one predicted structure, read from its B-factor column.
 
     For a bare AlphaFold2 or BindCraft complex (PDB or mmCIF) that has no confidence file.
@@ -1099,14 +1099,14 @@ def load_bfactor_record(
         files = PredictionFiles(directory=path.parent, structure=path)
         record = _parse_bare(files, name, scale)
     else:
-        record = PredictionRecord(_MODEL, name, files=PredictionFiles(directory=path.parent))
+        record = PredictedPose(_MODEL, name, files=PredictionFiles(directory=path.parent))
         record.reasons.append(f"structure file {path} not found")
     record.chain_map = checked_map
     return record
 
 
-def _parse_bare(files: PredictionFiles, name: str, scale: str) -> PredictionRecord:
-    record = PredictionRecord(_MODEL, name, structure_path=files.structure, files=files)
+def _parse_bare(files: PredictionFiles, name: str, scale: str) -> PredictedPose:
+    record = PredictedPose(_MODEL, name, structure_path=files.structure, files=files)
     record.extras["layout"] = "bare"
     _apply_bfactor(record, _scan_structure(files.structure), files.structure, scale)
     return record

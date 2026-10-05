@@ -7,7 +7,7 @@ import pytest
 
 from binding_metrics.predictors import base
 from binding_metrics.predictors.base import FAMILIES, PredictionParser
-from binding_metrics.predictors.record import PredictionFiles, PredictionRecord
+from binding_metrics.predictors.record import PredictedPose, PredictionFiles
 from tests.predictors import synth
 from tests.predictors.synth_stub import StubParser, write_prediction
 
@@ -241,7 +241,7 @@ class TestListSamples:
                 return PredictionFiles(directory=Path(prediction_dir), scores=Path("x"))
 
             def parse(self, files, *, name, seed_index=1, sample=1):
-                return PredictionRecord(self.name, name, seed_index=seed_index, sample=sample)
+                return PredictedPose(self.name, name, seed_index=seed_index, sample=sample)
 
         monkeypatch.setattr(base, "_PROBE_LIMIT", 4)
         refs = Endless().list_samples(Path("."), "q")

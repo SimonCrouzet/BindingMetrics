@@ -15,7 +15,7 @@ numpy when they are used)::
         .store, .rerun
         .entry(request) -> StoredPrediction
         .record(request, *, seed_index: int = 1, sample: int = 1,
-                chain_map: Optional[Mapping[str, str]] = None) -> PredictionRecord
+                chain_map: Optional[Mapping[str, str]] = None) -> PredictedPose
         .prefetch(requests: Iterable[PredictionRequest]) -> None
         .adopt(request, directory, *, copy_outputs: bool = False, check: bool = True)
                 -> StoredPrediction
@@ -79,7 +79,7 @@ from binding_metrics.predictors.store import (
 
 if TYPE_CHECKING:
     from binding_metrics.predictors.base import PredictionParser
-    from binding_metrics.predictors.record import PredictionRecord
+    from binding_metrics.predictors.record import PredictedPose
     from binding_metrics.predictors.runners import PredictionRunner
 
 _COUNTERS = (
@@ -125,7 +125,7 @@ class PredictionSession:
             self._runners = {runner.name: runner for runner in runners}
         self._parsers: dict[str, PredictionParser] = dict(parsers or {})
         self._entries: dict[_Ident, StoredPrediction] = {}
-        self._records: dict[tuple, PredictionRecord] = {}
+        self._records: dict[tuple, PredictedPose] = {}
         self._counts = dict.fromkeys(_COUNTERS, 0)
         self._guard = threading.Lock()  # counters, memos and the table of key locks
         self._key_locks: dict[_Ident, threading.Lock] = {}
@@ -173,7 +173,7 @@ class PredictionSession:
         seed_index: int = 1,
         sample: int = 1,
         chain_map: Optional[Mapping[str, str]] = None,
-    ) -> PredictionRecord:
+    ) -> PredictedPose:
         """The parsed, completed record of one sample of ``request``; runs and parses at most once.
 
         The record has been through ``PredictionParser.complete`` of its model, so a consumer

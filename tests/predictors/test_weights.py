@@ -484,13 +484,13 @@ class TestTheRunnerContract:
 
 class TestTheRecord:
     def test_extras_hold_the_request_weights(self, tmp_path, monkeypatch):
-        from binding_metrics.predictors.record import PredictionRecord
+        from binding_metrics.predictors.record import PredictedPose
 
         class Parser:
             name = "stub"
 
             def load(self, directory, name, **kwargs):
-                return PredictionRecord("stub", name)
+                return PredictedPose("stub", name)
 
             def complete(self, record):
                 return record
@@ -505,13 +505,13 @@ class TestTheRecord:
         assert record.extras["weights"]["path"] == str(weights)
 
     def test_a_record_without_weights_has_no_key(self, tmp_path):
-        from binding_metrics.predictors.record import PredictionRecord
+        from binding_metrics.predictors.record import PredictedPose
 
         class Parser:
             name = "stub"
 
             def load(self, directory, name, **kwargs):
-                return PredictionRecord("stub", name)
+                return PredictedPose("stub", name)
 
             def complete(self, record):
                 return record

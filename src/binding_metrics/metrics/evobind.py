@@ -67,7 +67,7 @@ import numpy as np
 from binding_metrics.core.residues import VARIANT_TO_PARENT_RESIDUE
 from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
 from binding_metrics.predictors._confidence import _binder_plddt_per_residue, _residue_index
-from binding_metrics.predictors.record import PredictionRecord
+from binding_metrics.predictors.record import PredictedPose
 
 # ---------------------------------------------------------------------------
 # Internal helpers: coordinate extraction
@@ -798,8 +798,8 @@ def compute_evobind_adversarial_check(
 
 
 def compute_evobind_adversarial_from_records(
-    design: Union[PredictionRecord, str, Path],
-    adversary: PredictionRecord,
+    design: Union[PredictedPose, str, Path],
+    adversary: PredictedPose,
     binder_chain: str,
     receptor_chain: Optional[str] = None,
     *,
@@ -810,7 +810,7 @@ def compute_evobind_adversarial_from_records(
     """EvoBind adversarial check between two predictions read by the predictor adapters.
 
     Same computation as :func:`compute_evobind_adversarial_check`, but the two structures
-    come from ``PredictionRecord`` objects, so the second prediction can be made by any
+    come from ``PredictedPose`` objects, so the second prediction can be made by any
     model with an adapter and its per-atom pLDDT travels with it. Chain IDs are the
     USER's IDs: each record renames the chains of its file through its ``chain_map``
     (``get_parser(model).load(directory, name, chain_map={"B": "P"})``), so a receptor
@@ -825,10 +825,10 @@ def compute_evobind_adversarial_from_records(
     tests the pose. An adversary that is independent of the design is a sequence-only prediction.
 
     Args:
-        design: The first prediction, or the input pose. A ``PredictionRecord`` (its
+        design: The first prediction, or the input pose. A ``PredictedPose`` (its
             ``chain_map`` applies) or the path of a structure file (chain IDs as in
             the file).
-        adversary: The second prediction, a ``PredictionRecord``. Its
+        adversary: The second prediction, a ``PredictedPose``. Its
             ``plddt_per_atom`` (0 to 100, in the atom order of its structure file)
             gives the pLDDT-weighted score.
         binder_chain: Chain ID of the binder in both structures, after ``chain_map``.
@@ -857,7 +857,7 @@ def compute_evobind_adversarial_from_records(
             appended), or its mean binder pLDDT is zero or not finite.
 
     Raises:
-        TypeError: If ``adversary`` is not a ``PredictionRecord``, or ``design`` is neither
+        TypeError: If ``adversary`` is not a ``PredictedPose``, or ``design`` is neither
             a record nor a path.
         ValueError: If a record has no structure file, a chain is not in a structure, the
             pLDDT array does not have one value per atom of the adversary structure, or
@@ -869,13 +869,13 @@ def compute_evobind_adversarial_from_records(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
     )
-    if not isinstance(adversary, PredictionRecord):
+    if not isinstance(adversary, PredictedPose):
         raise TypeError(
-            "adversary must be a PredictionRecord (get_parser(model).load(...)); "
+            "adversary must be a PredictedPose (get_parser(model).load(...)); "
             f"got {type(adversary).__name__}. For two structure files use "
             "compute_evobind_adversarial_check."
         )
-    if isinstance(design, PredictionRecord):
+    if isinstance(design, PredictedPose):
         design_atoms = design.atoms()
         design_model: Optional[str] = design.model
         design_note = f"chains after the chain_map of the {design.model} record"
@@ -885,7 +885,7 @@ def compute_evobind_adversarial_from_records(
         design_note = "chain IDs as in the file"
     else:
         raise TypeError(
-            f"design must be a PredictionRecord or a structure path, got {type(design).__name__}"
+            f"design must be a PredictedPose or a structure path, got {type(design).__name__}"
         )
     adversary_atoms = adversary.atoms()
 
@@ -918,7 +918,7 @@ def compute_evobind_adversarial_from_records(
 
 
 def compute_evobind_score_from_record(
-    record: PredictionRecord,
+    record: PredictedPose,
     binder_chain: str,
     receptor_chain: Optional[str] = None,
     *,
@@ -929,7 +929,7 @@ def compute_evobind_score_from_record(
     """Primary EvoBind score of a prediction read by a predictor adapter.
 
     Same computation as :func:`compute_evobind_score`, with the structure and the per-atom
-    pLDDT taken from a ``PredictionRecord``, so the prediction can come from any model with
+    pLDDT taken from a ``PredictedPose``, so the prediction can come from any model with
     an adapter. Chain IDs are the USER's IDs: the record renames the chains of its file
     through its ``chain_map`` (``get_parser(model).load(directory, name, chain_map=...)``).
 
@@ -957,7 +957,7 @@ def compute_evobind_score_from_record(
         adapter's own reasons appended).
 
     Raises:
-        TypeError: If ``record`` is not a ``PredictionRecord``.
+        TypeError: If ``record`` is not a ``PredictedPose``.
         ValueError: If the record has no structure file, a chain is not in the structure,
             the pLDDT array does not have one value per atom, or for any of the reasons
             listed for :func:`compute_evobind_score`.
@@ -968,9 +968,9 @@ def compute_evobind_score_from_record(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
     )
-    if not isinstance(record, PredictionRecord):
+    if not isinstance(record, PredictedPose):
         raise TypeError(
-            "record must be a PredictionRecord (get_parser(model).load(...)); "
+            "record must be a PredictedPose (get_parser(model).load(...)); "
             f"got {type(record).__name__}. For a structure file use compute_evobind_score."
         )
     atoms = record.atoms()

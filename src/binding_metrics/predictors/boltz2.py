@@ -123,8 +123,8 @@ import numpy as np
 from binding_metrics.capabilities import Capabilities
 from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.record import (
+    PredictedPose,
     PredictionFiles,
-    PredictionRecord,
     SampleRef,
     TokenLayout,
 )
@@ -709,7 +709,7 @@ class Boltz2Parser(PredictionParser):
         name: str,
         seed_index: int = 1,
         sample: int = 1,
-    ) -> PredictionRecord:
+    ) -> PredictedPose:
         """Read the confidence files and the structure of one sample into a record.
 
         A missing file leaves its values at NaN (None for an array) and adds a reason; a
@@ -718,7 +718,7 @@ class Boltz2Parser(PredictionParser):
         atom-bound values (``plddt_per_atom``, the chain-keyed dictionaries, the token layout)
         are left empty and a reason says so, while ``avg_plddt`` still comes from the tokens.
         """
-        record = PredictionRecord(
+        record = PredictedPose(
             self.name,
             name,
             seed_index=seed_index,

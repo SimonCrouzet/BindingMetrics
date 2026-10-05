@@ -97,8 +97,8 @@ import numpy as np
 from binding_metrics.capabilities import Capabilities
 from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.record import (
+    PredictedPose,
     PredictionFiles,
-    PredictionRecord,
     SampleRef,
     TokenLayout,
 )
@@ -469,7 +469,7 @@ class ProtenixParser(PredictionParser):
         name: str,
         seed_index: int = 1,
         sample: int = 1,
-    ) -> PredictionRecord:
+    ) -> PredictedPose:
         """Read the summary and full-data files into a record.
 
         A missing file leaves its values at NaN (None for an array) and adds a reason; the
@@ -477,7 +477,7 @@ class ProtenixParser(PredictionParser):
         another shape and a pLDDT that is not on 0-1 raise ``ValueError``. ``avg_plddt`` falls
         back to the mean of the per-atom pLDDT when the summary lacks it.
         """
-        record = PredictionRecord(
+        record = PredictedPose(
             self.name,
             name,
             seed_index=seed_index,
@@ -543,7 +543,7 @@ class ProtenixParser(PredictionParser):
             record.extras["seed_value"] = located.parent.parent.name[len("seed_") :]
         return record
 
-    def complete(self, record: PredictionRecord) -> PredictionRecord:
+    def complete(self, record: PredictedPose) -> PredictedPose:
         """Attach the token layout and name the chains, both of which need the structure file.
 
         * ``record.tokens`` becomes :func:`token_layout` of the record. Without it the interface
@@ -599,11 +599,11 @@ class ProtenixParser(PredictionParser):
         return record
 
     @staticmethod
-    def _say(record: PredictionRecord, reason: str) -> None:
+    def _say(record: PredictedPose, reason: str) -> None:
         if reason not in record.reasons:  # idempotent
             record.reasons.append(reason)
 
-    def _name_chains(self, record: PredictionRecord, atoms) -> None:
+    def _name_chains(self, record: PredictedPose, atoms) -> None:
         """Key ``chain_ptm`` and ``chain_pair_iptm`` by the chain IDs of the structure file."""
         if not (record.chain_ptm or record.chain_pair_iptm):
             return
@@ -662,7 +662,7 @@ class ProtenixParser(PredictionParser):
 # ---------------------------------------------------------------------- token layout
 
 
-def token_layout(record: PredictionRecord) -> TokenLayout:
+def token_layout(record: PredictedPose) -> TokenLayout:
     """The token layout of a Protenix record, from its full data and its structure.
 
     ``pae`` and ``pde`` have one row per token, and a modified residue or ligand is one token
@@ -770,7 +770,7 @@ def token_layout(record: PredictionRecord) -> TokenLayout:
     )
 
 
-def _check_chain_order(record: PredictionRecord, token_chain_ids: np.ndarray) -> None:
+def _check_chain_order(record: PredictedPose, token_chain_ids: np.ndarray) -> None:
     """Refuse a structure whose chain order is not the one ``token_asym_id`` numbers.
 
     ``token_asym_id`` is the position of the chain in order of first appearance in the atoms

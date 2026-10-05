@@ -1,7 +1,7 @@
 """The neutral record of one structure-prediction sample, and the objects that locate it.
 
 A predictor adapter (``binding_metrics.predictors.base.PredictionParser``) turns the files
-one model wrote for one sample into a ``PredictionRecord``; the confidence metrics and the
+one model wrote for one sample into a ``PredictedPose``; the confidence metrics and the
 EvoBind check read only the record. The rules that every adapter converts to:
 
 * pLDDT is per atom, in the atom order of ``structure_path``, on a 0-100 scale. A model that
@@ -25,12 +25,12 @@ EvoBind check read only the record. The rules that every adapter converts to:
 
 Extension points, for a model whose output has something the record has no field for:
 
-* a scalar or dictionary of that model goes in ``PredictionRecord.extras`` under the key the
+* a scalar or dictionary of that model goes in ``PredictedPose.extras`` under the key the
   model itself uses (``bespoke_iptm`` for OpenFold3, ``ligand_iptm`` for Boltz-2). Generic
   code never reads ``extras``; a metric that needs a value from it names the model.
 * a per-token array of that model goes in ``TokenLayout.extras`` (same length as the token
   list), and an additional file of a sample in ``PredictionFiles.extra``.
-* a field that every model could fill is added to ``PredictionRecord`` as the last keyword
+* a field that every model could fill is added to ``PredictedPose`` as the last keyword
   argument (``not_provided`` is the latest), with NaN, None or an empty container as the default, so
   no adapter has to change.
 * the weights of a run started with custom weights are in ``extras["weights"]`` (a dict with
@@ -205,7 +205,7 @@ class TokenLayout:
 
 
 @dataclass(eq=False)
-class PredictionRecord:
+class PredictedPose:
     """The parsed confidence outputs and the structure path of one prediction sample.
 
     ``model`` and ``name`` are the only positional arguments; every other field is
@@ -433,7 +433,7 @@ class PredictionRecord:
 # ---------------------------------------------------------------------- helpers
 
 
-#: Fields of ``PredictionRecord`` that a model may leave out, so an adapter can name them in
+#: Fields of ``PredictedPose`` that a model may leave out, so an adapter can name them in
 #: ``not_provided``. The identity, the paths and the free-form containers are not among them.
 _PROVIDABLE = (
     "avg_plddt",

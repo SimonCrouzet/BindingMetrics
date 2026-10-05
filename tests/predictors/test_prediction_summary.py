@@ -10,7 +10,7 @@ import pytest
 
 from binding_metrics.metrics import openfold
 from binding_metrics.metrics.prediction import summarize_prediction
-from binding_metrics.predictors.record import PredictionFiles, PredictionRecord, TokenLayout
+from binding_metrics.predictors.record import PredictedPose, PredictionFiles, TokenLayout
 from tests.predictors import contract, synth, synth_of3
 from tests.predictors.test_openfold_golden import _KEYS, _write_reference, _write_run
 
@@ -47,12 +47,12 @@ class TestSeedValue:
         + [({"seed_value": "abc"}, None), ({}, None)],
     )
     def test_it_is_an_int_when_the_directory_name_is_a_number(self, extras, expected):
-        record = PredictionRecord("of3", "q")
+        record = PredictedPose("of3", "q")
         record.extras.update(extras)
         assert summarize_prediction(record)["seed_value"] == expected
 
     def test_it_comes_after_timing_so_that_no_older_key_moves(self):
-        keys = list(summarize_prediction(PredictionRecord("of3", "q")))
+        keys = list(summarize_prediction(PredictedPose("of3", "q")))
         assert keys[-2:] == ["timing", "seed_value"]
 
 
@@ -72,7 +72,7 @@ class TestOptions:
         assert summary["mean_interface_pae"] == pytest.approx(3.4375)
 
     def test_a_record_built_by_hand_gives_nan_and_none_for_what_it_lacks(self):
-        summary = summarize_prediction(PredictionRecord("boltz2", "q", avg_plddt=81.5))
+        summary = summarize_prediction(PredictedPose("boltz2", "q", avg_plddt=81.5))
         assert summary["model"] == "boltz2" and summary["query_name"] == "q"
         assert summary["avg_plddt"] == 81.5
         assert np.isnan(summary["ptm"]) and np.isnan(summary["max_pae"])
@@ -80,7 +80,7 @@ class TestOptions:
         assert "reason" not in summary
 
     def test_the_parsers_reasons_come_first_and_stay(self):
-        record = PredictionRecord("boltz2", "q", reasons=["pae file not found"])
+        record = PredictedPose("boltz2", "q", reasons=["pae file not found"])
         assert summarize_prediction(record)["reason"] == "pae file not found"
 
 
@@ -289,7 +289,7 @@ class TestTokenLayout:
             atom_index=np.array(atom_index),
             is_atom_token=np.array([False] * 7 + [True] * 5),
         )
-        return PredictionRecord(
+        return PredictedPose(
             "fake",
             "q",
             structure_path=path,

@@ -340,10 +340,10 @@ _NOT_METRICS: dict[str, str] = {
         "interface only; registered when a backend lands"
     ),
     "binding_metrics.metrics.evobind:compute_evobind_adversarial_from_records": (
-        "takes PredictionRecord objects, not paths; called by code, not by the registry consumers"
+        "takes PredictedPose objects, not paths; called by code, not by the registry consumers"
     ),
     "binding_metrics.metrics.evobind:compute_evobind_score_from_record": (
-        "takes a PredictionRecord object, not a path; called by code, not by the registry consumers"
+        "takes a PredictedPose object, not a path; called by code, not by the registry consumers"
     ),
 }
 
