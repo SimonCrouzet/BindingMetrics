@@ -32,6 +32,6 @@ def test_backbone_only_coordinates_keep_exactly_the_four_backbone_atoms():
 
     structure = gemmi.read_structure(str(P53_MDM2))
     coords, keys = _get_coords(structure, chain_filter="B", backbone_only=True)
-    assert {atom_name for _, _, atom_name in keys} == OLD_BACKBONE_ATOM_NAMES
+    assert {key[2] for key in keys} == OLD_BACKBONE_ATOM_NAMES  # key: chain, number, atom, ins code
     assert len(keys) == 4 * 13  # p53 peptide: 13 residues
     assert coords.shape == (52, 3)

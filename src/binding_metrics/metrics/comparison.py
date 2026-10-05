@@ -36,7 +36,10 @@ def _get_coords(
         backbone_only: If True, only include backbone atoms (N, CA, C, O)
 
     Returns:
-        Tuple of (coords array shape (N, 3), list of (chain, res_num, atom_name) keys)
+        Tuple of (coords array shape (N, 3), list of
+        (chain, res_num, atom_name, ins_code) keys; ``ins_code`` is the
+        insertion code, an empty string when the residue has none, so 52 and
+        52A are different residues)
     """
     coords = []
     keys = []
@@ -56,7 +59,9 @@ def _get_coords(
                         continue
                     pos = atom.pos
                     coords.append([pos.x, pos.y, pos.z])
-                    keys.append((chain.name, residue.seqid.num, atom.name))
+                    keys.append(
+                        (chain.name, residue.seqid.num, atom.name, residue.seqid.icode.strip())
+                    )
 
     arr = np.array(coords) if coords else np.zeros((0, 3))
     return arr, keys
@@ -98,7 +103,7 @@ def _matched_rmsd(
     coords2: np.ndarray,
     keys2: list,
 ) -> Optional[float]:
-    """Compute RMSD after matching atoms by (chain, res_num, atom_name).
+    """Compute RMSD after matching atoms by (chain, res_num, atom_name, ins_code).
 
     Only the atoms whose key occurs in both structures are used, whatever
     the atom counts. The key lists are compared first: identical lists
@@ -172,8 +177,8 @@ def compute_structure_rmsd(
 ) -> dict[str, Optional[float] | str]:
     """Compute RMSD between two structures (e.g. initial vs. relaxed).
 
-    Atoms are matched by (chain, residue number, atom name) to handle
-    structures that differ in hydrogen atoms or side-chain atoms. Computes
+    Atoms are matched by (chain, residue number, atom name, insertion code) to
+    handle structures that differ in hydrogen atoms or side-chain atoms. Computes
     RMSD variants for the full complex and for the designed chain only,
     both all-atom and backbone-only.
 
