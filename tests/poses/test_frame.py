@@ -1,7 +1,9 @@
 """Common-frame alignment: pairing, superposition, region RMSD and applying the transform."""
 
+import copy
 import dataclasses
 import json
+import pickle
 import re
 import subprocess
 import sys
@@ -1118,6 +1120,65 @@ class TestResultSchema:
         assert isinstance(result, FrameResult)
         with pytest.raises(dataclasses.FrozenInstanceError):
             result.status = "failed"
+
+
+class TestPickling:
+    @pytest.mark.parametrize(
+        "clone", [lambda o: pickle.loads(pickle.dumps(o)), copy.deepcopy, copy.copy]
+    )
+    def test_a_frame_result_survives_with_every_value(self, ycr, ycr_reference, clone):
+        reference = Reference(YCR, "A", "B", residue_sets={"core": [("A", n) for n in YCR_SITE]})
+        result = superpose_receptor(moved(ycr, *random_rigid(91)), reference)
+        again = clone(result)
+        assert again is not result and again.ok
+        assert again.to_dict(include_pairs=True) == result.to_dict(include_pairs=True)
+        assert again.transform.allclose(result.transform, atol=0.0)
+        assert again.pairs == result.pairs and again.warnings == result.warnings
+        assert set(again.region_rmsd_angstrom) == {"all", "site", "core"}
+
+    def test_the_mapping_views_stay_read_only(self, ycr, ycr_reference):
+        again = pickle.loads(pickle.dumps(superpose_receptor(ycr, ycr_reference)))
+        for name in (
+            "region_rmsd_angstrom",
+            "region_n_residues",
+            "region_n_paired",
+            "region_reasons",
+        ):
+            with pytest.raises(TypeError):
+                getattr(again, name)["x"] = 1
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            again.status = "failed"
+
+    def test_a_failed_result_survives(self, ycr, ycr_reference):
+        failed = superpose_receptor(ycr[ycr.chain_id == "B"], ycr_reference)
+        again = pickle.loads(pickle.dumps(failed))
+        assert again.status == "failed" and again.reason == failed.reason
+        assert again.transform is None and again.to_dict() == failed.to_dict()
+
+    def test_a_transform_stays_read_only_and_equal_in_value(self):
+        transform = Transform(*random_rigid(92))
+        again = pickle.loads(pickle.dumps(transform))
+        assert again.allclose(transform, atol=0.0)
+        assert not again.rotation.flags.writeable and not again.translation.flags.writeable
+        with pytest.raises(ValueError):
+            again.rotation[0, 0] = 2.0
+
+    def test_options_and_pairings_survive(self, ycr, ycr_reference):
+        options = FrameOptions(
+            frame_atoms="backbone", outliers="iqr", alignment_gap_penalty=(-12, -2)
+        )
+        assert pickle.loads(pickle.dumps(options)) == options
+        pairing = pair_residues(ycr, ycr_reference)
+        again = pickle.loads(pickle.dumps(pairing))
+        assert again.pose_keys == pairing.pose_keys and again.method == pairing.method
+
+    def test_a_copied_reference_gives_the_same_frame(self, ycr, ycr_reference):
+        pose = moved(ycr, *random_rigid(93))
+        again = pickle.loads(pickle.dumps(ycr_reference))
+        assert (
+            superpose_receptor(pose, again).to_dict()
+            == superpose_receptor(pose, ycr_reference).to_dict()
+        )
 
 
 class TestPlaceInReferenceFrame:

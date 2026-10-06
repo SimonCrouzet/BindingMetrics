@@ -390,6 +390,10 @@ def _frozen_map(mapping: dict) -> Mapping:
     return MappingProxyType(mapping)
 
 
+#: The fields of ``Reference`` that hold read-only mapping views.
+_MAPPING_FIELDS = ("residue_map", "residue_sets", "partners")
+
+
 @dataclass(frozen=True, eq=False, repr=False)
 class Reference:
     """The structure that poses are placed on and measured against (see the module docstring).
@@ -734,6 +738,25 @@ class Reference:
             },
             name=data["name"],
         )
+
+    # ------------------------------------------------------------------ pickling
+
+    def __getstate__(self) -> dict:
+        """The state for pickle and deepcopy: the read-only mapping views as plain dicts.
+
+        ``MappingProxyType`` cannot be pickled, and a worker process needs the reference. The
+        cache that ``prepare_reference`` keeps is left out: it is rebuilt from the structure.
+        """
+        state = {key: value for key, value in self.__dict__.items() if key != "_prepared_cache"}
+        for name in _MAPPING_FIELDS:
+            state[name] = dict(state[name])
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        state = dict(state)
+        for name in _MAPPING_FIELDS:
+            state[name] = _frozen_map(state[name])
+        self.__dict__.update(state)
 
     def __repr__(self) -> str:
         sets = {name: len(members) for name, members in self.residue_sets.items()}

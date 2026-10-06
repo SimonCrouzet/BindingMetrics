@@ -333,6 +333,10 @@ class Transform:
             raise ValueError(f"unknown keys {unknown} in a transform dictionary")
         return cls(data["rotation"], data["translation"])
 
+    def __reduce__(self):
+        # rebuilt through the constructor so that the arrays are read-only again
+        return (Transform, (self.rotation, self.translation))
+
     def __repr__(self) -> str:
         return (
             f"Transform(rotation={self.rotation.tolist()}, translation={self.translation.tolist()})"
@@ -939,6 +943,19 @@ class FrameResult:
     def ok(self) -> bool:
         return self.status == "ok"
 
+    def __getstate__(self) -> dict:
+        """The state for pickle and deepcopy: the read-only mapping views as plain dicts."""
+        state = dict(self.__dict__)
+        for name in _RESULT_MAPPING_FIELDS:
+            state[name] = dict(state[name])
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        state = dict(state)
+        for name in _RESULT_MAPPING_FIELDS:
+            state[name] = MappingProxyType(state[name])
+        self.__dict__.update(state)
+
     def to_dict(self, *, include_transform: bool = True, include_pairs: bool = False) -> dict:
         """The ``frame`` block of a row: JSON-ready, with the keys of design section 3.4.
 
@@ -972,6 +989,15 @@ class FrameResult:
         if include_pairs:
             data["pairs"] = [[p.to_list(), r.to_list()] for p, r in self.pairs]
         return data
+
+
+#: The fields of ``FrameResult`` that hold read-only mapping views.
+_RESULT_MAPPING_FIELDS = (
+    "region_rmsd_angstrom",
+    "region_n_residues",
+    "region_n_paired",
+    "region_reasons",
+)
 
 
 def _failed(

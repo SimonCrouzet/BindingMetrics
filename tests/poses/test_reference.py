@@ -1,7 +1,10 @@
 """Reference, Partner and ResidueKey: construction, validation, identity and serialisation."""
 
+import copy
 import dataclasses
 import json
+import multiprocessing
+import pickle
 import subprocess
 import sys
 import textwrap
@@ -638,3 +641,104 @@ class TestVariants:
             ("other_receptor",),
             ("other_map",),
         ]
+
+
+# ---------------------------------------------------------------------------
+# pickle, copy and worker processes
+# ---------------------------------------------------------------------------
+
+
+def _worker_summary(reference):
+    """Runs in a spawned process: what the process sees of a reference, and the reference."""
+    reference.validate()
+    return reference.content_hash(), reference.frame_key("epitope"), reference.to_dict(), reference
+
+
+def _rich_reference():
+    return Reference(
+        YCR,
+        "A",
+        "B",
+        residue_map={("A", 1): ("A", 25), ("A", 2): ("A", 26)},
+        residue_sets={"epitope": [("A", n) for n in YCR_EPITOPE], "tip": ["A:25"]},
+        partners={"peptide": Partner(YCR, "B"), "whole": YCR},
+        name="strict",
+    )
+
+
+class TestPickling:
+    @pytest.mark.parametrize(
+        "clone", [lambda o: pickle.loads(pickle.dumps(o)), copy.deepcopy, copy.copy]
+    )
+    def test_a_reference_survives_with_its_content(self, clone):
+        reference = _rich_reference()
+        again = clone(reference)
+        assert again is not reference
+        assert again.content_hash() == reference.content_hash()
+        assert again.frame_key("epitope") == reference.frame_key("epitope")
+        assert again.to_dict() == reference.to_dict()
+        assert dict(again.residue_map) == dict(reference.residue_map)
+        assert dict(again.residue_sets) == dict(reference.residue_sets)
+        assert list(again.partners) == ["peptide", "whole"]
+        assert again.name == "strict" and again.binder_chain == "B"
+        again.validate()
+
+    def test_the_views_are_still_read_only_after_pickling(self):
+        again = pickle.loads(pickle.dumps(_rich_reference()))
+        with pytest.raises(TypeError):
+            again.residue_sets["x"] = frozenset()
+        with pytest.raises(TypeError):
+            again.residue_map[ResidueKey("A", 3)] = ResidueKey("A", 27)
+        with pytest.raises(TypeError):
+            again.partners["x"] = Partner(YCR)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            again.name = "other"
+
+    def test_equality_and_hash_are_unchanged(self):
+        reference = _rich_reference()
+        again = pickle.loads(pickle.dumps(reference))
+        assert again != reference and hash(reference) == hash(reference)  # identity, as before
+        assert len({reference, again}) == 2
+        assert reference.content_hash() == again.content_hash()
+
+    def test_a_prepared_reference_is_rebuilt_not_shipped(self):
+        from binding_metrics.poses.frame import prepare_reference
+
+        reference = _rich_reference()
+        prepare_reference(reference)
+        assert "_prepared_cache" in reference.__dict__
+        again = pickle.loads(pickle.dumps(reference))
+        assert "_prepared_cache" not in again.__dict__
+        assert [k.number for k in prepare_reference(again).site] == YCR_EPITOPE
+
+    def test_an_in_memory_reference_survives(self, ycr_atoms):
+        reference = Reference(ycr_atoms, "A", "B", residue_sets={"s": ["A:25"]})
+        again = pickle.loads(pickle.dumps(reference))
+        assert again.content_hash() == reference.content_hash()
+        assert again.atoms().array_length() == ycr_atoms.array_length()
+
+    def test_a_pose_wrapped_reference_survives(self):
+        reference = Reference(DockedPose.from_file(YCR, chain_map={"A": "R"}), "R")
+        again = pickle.loads(pickle.dumps(reference))
+        assert isinstance(again.pose, DockedPose) and again.pose.chain_map == {"A": "R"}
+        assert again.content_hash() == reference.content_hash()
+
+    @pytest.mark.parametrize("clone", [lambda o: pickle.loads(pickle.dumps(o)), copy.deepcopy])
+    def test_partners_and_keys(self, clone):
+        partner = Partner(YCR, ("A", "B"))
+        again = clone(partner)
+        assert again.content_hash() == partner.content_hash() and again.chains == ("A", "B")
+        assert again.atoms().array_length() == partner.atoms().array_length()
+        key = ResidueKey("A", 60, "C")
+        assert clone(key) == key and hash(clone(key)) == hash(key)
+
+    def test_a_spawned_worker_gets_and_returns_a_reference(self):
+        reference = _rich_reference()
+        context = multiprocessing.get_context("spawn")
+        with context.Pool(1) as pool:
+            content_hash, frame_key, data, returned = pool.apply(_worker_summary, (reference,))
+        assert content_hash == reference.content_hash()
+        assert frame_key == reference.frame_key("epitope")
+        assert data == reference.to_dict()
+        assert returned.content_hash() == reference.content_hash()
+        assert dict(returned.residue_sets) == dict(reference.residue_sets)
