@@ -18,8 +18,9 @@ Atom sets (``kind``).
 * ``"ca"``: the alpha carbon of each residue.
 * ``"backbone"``: N, CA, C and O of each residue; OXT is not part of it.
 * ``"heavy"``: every non-hydrogen atom of the binder residues. Atoms are matched by residue and
-  atom name; with ``symmetry="standard"`` the interchangeable side-chain atoms of
-  ``binding_metrics.poses.symmetry`` are matched in the labelling with the smallest RMSD.
+  atom name; with ``symmetry="standard"`` the interchangeable atoms of
+  ``binding_metrics.poses.symmetry`` (side-chain pairs and the free C-terminal carboxylate)
+  are matched in the labelling with the smallest RMSD.
 
 Water residues and hydrogens are never part of the binder, even when they carry the binder's
 chain ID (an author-numbered file lists the waters of a chain under its ID). Atoms with the same
@@ -61,8 +62,13 @@ What "cyclic-aware" means here, and what it does not mean.
 The code does these things.
 
 1. No terminus is assumed. Every binder residue takes part; none is trimmed by position, and
-   the first and the last residue of the file are treated like any other. A free C-terminal
-   OXT is compared in the ``"heavy"`` set only when both poses have it and is never required.
+   the residue pairing treats the first and the last residue of the file like any other. A free
+   C-terminal OXT is compared in the ``"heavy"`` set only when both poses have it and is never
+   required. The one place where the end of the chain matters is the free carboxylate: with
+   ``symmetry="standard"`` and ``kind="heavy"``, O and OXT of the last residue of the binder are
+   a swappable pair when both binders are linear (neither is closed head to tail) and both
+   poses carry O and OXT on it; a pose without OXT, or a ring, leaves O as named. The
+   ``"backbone"`` set has O and not OXT, so there O is compared as named.
 2. Closure atoms are ordinary atoms. The atoms that close a ring (C of the last residue and N
    of the first for a head-to-tail amide, SG of a disulfide, the side-chain atoms of a lactam or
    a staple) belong to the sets like every other atom: C and N are in ``"backbone"``, the
@@ -149,6 +155,7 @@ from binding_metrics.core.residues import (
     WATER_NAMES_ALL,
 )
 from binding_metrics.poses.symmetry import (
+    C_TERMINAL_CARBOXYLATE,
     best_labelling,
     count_swapped,
     resolve_group,
@@ -531,7 +538,7 @@ def _measure(
                 rows_by_name[name] = len(rows_a)
                 rows_a.append(residue_a.atom_rows[name])
                 rows_b.append(residue_b.atom_rows[name])
-        residues.append((residue_a, residue_b, rows_by_name))
+        residues.append((index_a, index_b, residue_a, residue_b, rows_by_name))
     n_shared = len(rows_a)
     fraction = n_shared / expected
     common = dict(pairing=method, shift=shift, n_atoms=n_shared, shared_atom_fraction=fraction)
@@ -551,11 +558,17 @@ def _measure(
     groups = []
     unknown: set[str] = set()
     if options.kind == "heavy" and options.symmetry == "standard":
-        for residue_a, residue_b, rows_by_name in residues:
+        linear = not (a.closed_head_to_tail or b.closed_head_to_tail)
+        for index_a, index_b, residue_a, residue_b, rows_by_name in residues:
             for residue in (residue_a, residue_b):
                 if symmetry_status(residue.name) == "unknown":
                     unknown.add(residue.name)
-            for group in symmetry_groups(residue_a.name):
+            swap_groups = list(symmetry_groups(residue_a.name))
+            # a free carboxylate is the end of a linear chain, in both poses; O and OXT are in
+            # ``rows_by_name`` only when both poses have them
+            if linear and index_a == len(a.residues) - 1 and index_b == len(b.residues) - 1:
+                swap_groups.append(C_TERMINAL_CARBOXYLATE)
+            for group in swap_groups:
                 resolved = resolve_group(group, rows_by_name)
                 if resolved is not None:
                     groups.append(resolved)
@@ -566,7 +579,7 @@ def _measure(
         pose_a=a.pose_id,
         pose_b=b.pose_id,
         rmsd_angstrom=rmsd,
-        n_residues=sum(1 for _, _, rows in residues if rows),
+        n_residues=sum(1 for *_, rows in residues if rows),
         n_swapped_groups=n_swapped,
         unknown_residues=tuple(sorted(unknown)),
         **common,

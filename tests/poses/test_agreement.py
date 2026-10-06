@@ -486,6 +486,137 @@ class TestSymmetricAtoms:
         assert "BMT" in pair.unknown_residues
 
 
+def with_oxt(atoms, number, chain="B"):
+    """The structure with an OXT atom inserted after the last atom of one residue."""
+    in_residue = np.flatnonzero((atoms.chain_id == chain) & (atoms.res_id == number))
+    carbon = atoms.coord[in_residue[atoms.atom_name[in_residue] == "C"][0]]
+    name = atoms.res_name[in_residue[0]]
+    oxt = build_atoms([(chain, number, "", name, "OXT", carbon + np.array([0.3, -1.0, -1.0]))])
+    stop = int(in_residue[-1]) + 1
+    return atoms[:stop] + oxt + atoms[stop:]
+
+
+def open_chain_of_alanines(oxt_on=4):
+    """The ring of four alanines opened (the N of the first residue moved away), with an OXT."""
+    atoms = ring_of_alanines(4)
+    atoms.coord[(atoms.atom_name == "N") & (atoms.res_id == 1)] += np.array(
+        [5.0, 0.0, 0.0], dtype=np.float32
+    )
+    return with_oxt(atoms, oxt_on)
+
+
+def closed_ring_with_oxt():
+    return with_oxt(ring_of_alanines(4), 4)
+
+
+class TestFreeCarboxylate:
+    """O and OXT of the last residue of a linear binder are one symmetric pair (heavy atoms)."""
+
+    def test_the_p53_peptide_has_a_free_carboxylate(self, p53):
+        last = _numbers(p53, "B")[-1]
+        names = set(p53.atom_name[(p53.chain_id == "B") & (p53.res_id == last)])
+        assert {"O", "OXT"} <= names
+        assert not BinderView.from_atoms(p53, "B").closed_head_to_tail
+
+    def test_a_relabelled_carboxylate_is_the_same_pose_with_the_table_and_not_without(self, p53):
+        last = _numbers(p53, "B")[-1]
+        pose = swapped_names(p53, "B", last, ("O", "OXT"))
+        standard = peptide_rmsd(p53, pose, "B", kind="heavy")
+        assert standard.rmsd_angstrom == pytest.approx(0.0, abs=1e-6)
+        assert standard.n_swapped_groups == 1
+        residue = p53[(p53.chain_id == "B") & (p53.res_id == last)]
+        gap = np.linalg.norm(
+            residue.coord[residue.atom_name == "O"][0]
+            - residue.coord[residue.atom_name == "OXT"][0]
+        )
+        off = peptide_rmsd(p53, pose, "B", kind="heavy", symmetry="off")
+        assert off.rmsd_angstrom == pytest.approx(gap * np.sqrt(2 / 113), abs=1e-4)
+        assert off.n_swapped_groups == 0
+
+    def test_only_the_heavy_set_uses_it(self, p53):
+        last = _numbers(p53, "B")[-1]
+        pose = swapped_names(p53, "B", last, ("O", "OXT"))
+        assert peptide_rmsd(p53, pose, "B", kind="ca").rmsd_angstrom == pytest.approx(0.0, abs=TOL)
+        # the backbone set holds O and not OXT, so O is compared as named
+        assert peptide_rmsd(p53, pose, "B", kind="backbone").rmsd_angstrom > 0.1
+
+    def test_the_shape_rmsd_uses_it_too(self, p53):
+        last = _numbers(p53, "B")[-1]
+        pose = swapped_names(rotated(p53, "B", 30.0, (1.0, 2.0, -1.0)), "B", last, ("O", "OXT"))
+        assert peptide_rmsd(
+            p53, pose, "B", kind="heavy", refit=True
+        ).rmsd_angstrom == pytest.approx(0.0, abs=2e-4)
+
+    def test_it_is_combined_with_the_side_chain_groups(self, p53):
+        numbers = _numbers(p53, "B")
+        names = dict(zip(p53.res_id[p53.chain_id == "B"], p53.res_name[p53.chain_id == "B"]))
+        aspartate = next(n for n in numbers if names[n] == "ASP")
+        pose = swapped_names(p53, "B", aspartate, ("OD1", "OD2"))
+        pose = swapped_names(pose, "B", numbers[-1], ("O", "OXT"))
+        pair = peptide_rmsd(p53, pose, "B", kind="heavy")
+        assert pair.rmsd_angstrom == pytest.approx(0.0, abs=1e-6)
+        assert pair.n_swapped_groups == 2
+
+    def test_a_pose_without_oxt_leaves_o_as_named(self, p53):
+        last = _numbers(p53, "B")[-1]
+        swapped = swapped_names(p53, "B", last, ("O", "OXT"))
+        without = without_atoms(swapped, "B", [last], names=["OXT"])
+        pair = peptide_rmsd(p53, without, "B", kind="heavy")
+        # the only O of the second pose sits at the OXT position of the first
+        residue = p53[(p53.chain_id == "B") & (p53.res_id == last)]
+        gap = np.linalg.norm(
+            residue.coord[residue.atom_name == "O"][0]
+            - residue.coord[residue.atom_name == "OXT"][0]
+        )
+        assert pair.n_swapped_groups == 0
+        assert pair.n_atoms == 112
+        assert pair.rmsd_angstrom == pytest.approx(gap * np.sqrt(1 / 112), abs=1e-4)
+        # the other way round: OXT is only in the first pose
+        reverse = peptide_rmsd(without, p53, "B", kind="heavy")
+        assert reverse.n_swapped_groups == 0
+
+    def test_a_ring_has_no_free_carboxylate(self):
+        ring = closed_ring_with_oxt()
+        assert BinderView.from_atoms(ring, "B").closed_head_to_tail
+        relabelled = swapped_names(ring, "B", 4, ("O", "OXT"))
+        pair = peptide_rmsd(ring, relabelled, "B", kind="heavy")
+        assert pair.n_swapped_groups == 0
+        assert pair.rmsd_angstrom > 0.1
+
+    def test_the_same_atoms_in_an_open_chain_are_swapped(self):
+        chain = open_chain_of_alanines()
+        assert not BinderView.from_atoms(chain, "B").closed_head_to_tail
+        relabelled = swapped_names(chain, "B", 4, ("O", "OXT"))
+        pair = peptide_rmsd(chain, relabelled, "B", kind="heavy")
+        assert pair.n_swapped_groups == 1
+        assert pair.rmsd_angstrom == pytest.approx(0.0, abs=1e-6)
+
+    def test_it_needs_one_closed_binder_to_be_absent_not_present(self):
+        # one pose closed and one open: the pair is not a free carboxylate in both poses
+        closed, opened = closed_ring_with_oxt(), open_chain_of_alanines()
+        relabelled = swapped_names(opened, "B", 4, ("O", "OXT"))
+        pair = peptide_rmsd(closed, relabelled, "B", kind="heavy")
+        assert pair.n_swapped_groups == 0
+
+    def test_an_oxt_that_is_not_on_the_last_residue_is_not_swapped(self):
+        chain = open_chain_of_alanines(oxt_on=2)
+        relabelled = swapped_names(chain, "B", 2, ("O", "OXT"))
+        pair = peptide_rmsd(chain, relabelled, "B", kind="heavy")
+        assert pair.n_swapped_groups == 0
+        assert pair.rmsd_angstrom > 0.1
+
+    def test_the_last_residue_of_each_binder_is_the_one_that_counts(self, p53):
+        # residue 28 carries an OXT in both poses, but it is the last residue of only one of them
+        numbers = _numbers(p53, "B")
+        first = with_oxt(p53, numbers[-2])
+        second = with_oxt(without_residue(p53, "B", numbers[-1]), numbers[-2])
+        second = swapped_names(second, "B", numbers[-2], ("O", "OXT"))
+        pair = peptide_rmsd(first, second, "B", kind="heavy")
+        assert pair.pairing == "key"
+        assert pair.n_swapped_groups == 0
+        assert pair.rmsd_angstrom > 0.1
+
+
 # ---------------------------------------------------------------------------
 # residue correspondence and missing residues
 # ---------------------------------------------------------------------------

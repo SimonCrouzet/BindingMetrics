@@ -9,6 +9,7 @@ from binding_metrics.core.nonstandard import D_AA_MAP, NME_AA_MAP
 from binding_metrics.core.residues import STANDARD_AMINO_ACIDS
 from binding_metrics.poses import symmetry
 from binding_metrics.poses.symmetry import (
+    C_TERMINAL_CARBOXYLATE,
     N_METHYL_PARENT,
     SYMMETRIC_ATOM_GROUPS,
     SwapGroup,
@@ -83,6 +84,14 @@ class TestTable:
         with pytest.raises(TypeError):
             SYMMETRIC_ATOM_GROUPS["ALA"] = ()
 
+    def test_the_carboxylate_group_is_not_a_residue_entry(self):
+        # it depends on the position in the chain, so no residue has it in the table
+        assert C_TERMINAL_CARBOXYLATE.atoms == ("O", "OXT")
+        assert C_TERMINAL_CARBOXYLATE.alternatives == (("OXT", "O"),)
+        for groups in SYMMETRIC_ATOM_GROUPS.values():
+            assert C_TERMINAL_CARBOXYLATE not in groups
+        assert symmetry_groups("ALA") == ()
+
     def test_every_alternative_is_a_reordering_of_the_group_atoms(self):
         for groups in SYMMETRIC_ATOM_GROUPS.values():
             for group in groups:
@@ -122,6 +131,15 @@ class TestTableAgainstTheChemicalComponentDictionary:
                 for bond in bonds:
                     mapped = frozenset(image.get(name, name) for name in bond)
                     assert mapped in bonds, f"{residue}: {sorted(bond)} is not kept by {image}"
+
+    @pytest.mark.parametrize("residue", ["ALA", "ASN", "LEU", "PRO", "GLY", "SEP", "MLE"])
+    def test_the_c_terminal_carboxylate_exchange_keeps_every_bond_and_element(self, info, residue):
+        elements, bonds = self._graph(info, residue)
+        image = dict(zip(C_TERMINAL_CARBOXYLATE.atoms, C_TERMINAL_CARBOXYLATE.alternatives[0]))
+        assert set(image) == {"O", "OXT"} and set(image) <= set(elements)
+        assert elements["O"] == elements["OXT"]
+        for bond in bonds:
+            assert frozenset(image.get(name, name) for name in bond) in bonds
 
     @pytest.mark.parametrize("residue", CODES_WITH_A_PARENT_ENTRY)
     def test_d_forms_and_n_methyl_codes_have_the_atoms_of_their_parents_entry(self, info, residue):

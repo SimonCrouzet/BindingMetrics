@@ -24,10 +24,17 @@ Dictionary of biotite. The chemistry behind each entry:
 * Sep, Tpo and Ptr: the three non-bridging phosphate oxygens O1P, O2P and O3P are equivalent
   (all six permutations).
 
+* The free C-terminal carboxylate: O and OXT of the last residue of a linear chain are
+  equivalent by resonance, whatever the residue. The rule depends on the position in the chain
+  and not on the residue type, so it is not in ``SYMMETRIC_ATOM_GROUPS``: the group is
+  ``C_TERMINAL_CARBOXYLATE`` and ``binding_metrics.poses.agreement`` applies it per pair of
+  poses, for the last residue of both binders, when both binders are linear (not closed head to
+  tail) and both poses carry O and OXT on it. Only the ``"heavy"`` set can use it: the
+  ``"backbone"`` set holds O and not OXT, so there O is compared as named.
+
 Not in the table: Asn, Gln and His (the two end atoms are different elements or
-differently bonded, so a swap is not a relabelling), and the O/OXT pair of a free C-terminal
-carboxylate, which depends on the position of the residue in the chain and not on its type; an
-atom of either kind is compared as named.
+differently bonded, so a swap is not a relabelling); an atom of such a residue is compared as
+named.
 
 Which residues are covered. D-amino acids (``D_AA_MAP``), the AMBER and CHARMM protonation
 variants (``VARIANT_TO_PARENT_RESIDUE``) and the N-methylated residues (``N_METHYL_PARENT``)
@@ -99,6 +106,9 @@ SYMMETRIC_ATOM_GROUPS: Mapping[str, tuple[SwapGroup, ...]] = MappingProxyType(
         ),
     }
 )
+
+#: O and OXT of a free C-terminal carboxylate (see the module docstring for when it applies).
+C_TERMINAL_CARBOXYLATE: SwapGroup = _exchange(("O", "OXT"))
 
 # The template each N-methylated code of ``NME_AA_MAP`` stands for, as its L parent.
 _N_METHYL_TEMPLATE_PARENT = {"NMG": "GLY", "NMA": "ALA", "MVA": "VAL", "MLE": "LEU"}
