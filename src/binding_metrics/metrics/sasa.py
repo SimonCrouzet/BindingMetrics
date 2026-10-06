@@ -21,10 +21,21 @@ from binding_metrics.metrics._common import import_biotite, load_structure, reso
 
 logger = logging.getLogger(__name__)
 
-try:
-    import mdtraj as md
-except ImportError:
-    md = None
+
+def _import_mdtraj():
+    """Import mdtraj for the trajectory functions; the static function never needs it.
+
+    Importing it at module scope would load MDTraj (and its compiled extensions) for every
+    caller of ``compute_delta_sasa_static``, including a pose-set call on the ``static`` extra.
+    """
+    try:
+        import mdtraj
+    except ImportError as exc:
+        raise ImportError(
+            "mdtraj is required for SASA calculations. "
+            "Install with: pip install binding-metrics[analysis]"
+        ) from exc
+    return mdtraj
 
 
 def calculate_buried_sasa(
@@ -54,11 +65,7 @@ def calculate_buried_sasa(
     Raises:
         ImportError: If mdtraj is not installed
     """
-    if md is None:
-        raise ImportError(
-            "mdtraj is required for SASA calculations. "
-            "Install with: pip install binding-metrics[analysis]"
-        )
+    md = _import_mdtraj()
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
 
@@ -99,11 +106,7 @@ def calculate_interface_sasa(
         "ligand" and "receptor" (each alone), "complex", and "buried"
         (ligand + receptor - complex)
     """
-    if md is None:
-        raise ImportError(
-            "mdtraj is required for SASA calculations. "
-            "Install with: pip install binding-metrics[analysis]"
-        )
+    md = _import_mdtraj()
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
 

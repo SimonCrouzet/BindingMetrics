@@ -12,7 +12,7 @@ Schema (``schema_version`` 1)::
         "git_sha": "eff961f...",        # HEAD of the source checkout, else None
         "python": "3.12.3",
         "os": "Linux-6.18-x86_64-...",  # platform.platform()
-        "openmm_version": "8.2",        # None when OpenMM is not importable
+        "openmm_version": "8.2.0",      # installed distribution (not imported); None if absent
         "platform": "CUDA",             # compute platform reported by the caller, else None
         "seed": 1,                      # random seed of the run; None = fresh randomness
     }
@@ -101,11 +101,21 @@ def _git_sha() -> Optional[str]:
 
 
 def _openmm_version() -> Optional[str]:
-    try:
-        import openmm
+    """Version of the installed OpenMM distribution, read from its metadata; None if absent.
 
-        return str(openmm.__version__)
-    except Exception:  # noqa: BLE001 - OpenMM missing or broken; None is the record
+    OpenMM is not imported: loading it takes about a second and registers its plugins, and the
+    static metrics (and so every pose-set call) work without it. The metadata gives the release
+    number, ``8.2.0`` for the conda build whose library reports ``8.2`` as ``__version__``.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return str(version("openmm"))
+        except PackageNotFoundError:
+            logger.debug("OpenMM version unavailable: no 'openmm' distribution is installed")
+            return None
+    except Exception:  # noqa: BLE001 - unreadable metadata; None is the record
         logger.debug("OpenMM version unavailable", exc_info=True)
         return None
 

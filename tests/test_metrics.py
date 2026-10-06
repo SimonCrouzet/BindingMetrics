@@ -20,21 +20,33 @@ class TestSASA:
         assert callable(calculate_buried_sasa)
         assert callable(calculate_interface_sasa)
 
-    def test_calculate_buried_sasa_requires_mdtraj(self):
-        """Should raise ImportError if mdtraj not available."""
-        with patch.dict("sys.modules", {"mdtraj": None}):
-            # Force reimport to trigger the ImportError path
+    @pytest.mark.parametrize("name", ["calculate_buried_sasa", "calculate_interface_sasa"])
+    def test_the_trajectory_functions_require_mdtraj(self, name):
+        """Should raise ImportError, naming the extra, if mdtraj is not available."""
+        with patch.dict("sys.modules", {"mdtraj": None}):  # makes `import mdtraj` raise
             from binding_metrics.metrics import sasa
 
-            # Manually set md to None to simulate missing mdtraj
-            original_md = sasa.md
-            sasa.md = None
+            with pytest.raises(ImportError, match=r"mdtraj.*binding-metrics\[analysis\]"):
+                getattr(sasa, name)("fake.dcd", "fake.pdb", [0, 1], [2, 3])
 
-            try:
-                with pytest.raises(ImportError, match="mdtraj"):
-                    sasa.calculate_buried_sasa("fake.dcd", "fake.pdb", [0, 1], [2, 3])
-            finally:
-                sasa.md = original_md
+    def test_importing_the_module_does_not_import_mdtraj(self):
+        import subprocess
+        import sys
+
+        done = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.modules['mdtraj'] = None; "
+                "import binding_metrics.metrics.sasa as s; "
+                "print(hasattr(s, 'md'), sys.modules['mdtraj'] is None)",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.split() == ["False", "True"]
 
     @pytest.mark.integration
     def test_buried_sasa_returns_array(self, sample_pdb_path: Path, tmp_path: Path):

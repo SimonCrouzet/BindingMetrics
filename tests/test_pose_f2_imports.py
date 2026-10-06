@@ -8,11 +8,14 @@ by an import blocker (design 9.1): a wrapper around every finder on ``sys.meta_p
 ``importlib.util.find_spec("openmm")`` is ``None``, exactly as when the package is not installed.
 The blocker records every attempt.
 
-A guarded probe such as ``try: import openmm`` is not a failure, so the tests assert that the
-blocked modules are never *imported* (``sys.modules``) and that nothing raises, and they record
-the attempts without asserting on them, except at import time, where there must be none.
+On the static path (importing the layer, scoring with the static metrics, a reference, the
+descriptors and the writers) the tests assert that nothing raises, that no blocked module is
+imported (``sys.modules``) and that none is even looked for: ``attempts`` is empty. A guarded
+``try: import openmm`` would load OpenMM, about a second and its plugins, when it is installed.
+A metric that needs OpenMM is the one place where an attempt is expected.
 """
 
+import importlib.metadata as metadata
 import json
 import subprocess
 import sys
@@ -173,6 +176,7 @@ def test_a_pose_set_call_with_every_static_metric_a_reference_and_the_writers_wo
     assert out["n_flat_rows"] == 2 and out["summary_lines"] > 10
     assert out["written"] == ["report.json", "report.csv", "report.md"]
     assert out["imported"] == []
+    assert out["attempts"] == []
     assert (tmp_path / "report.json").stat().st_size > 0
 
 
@@ -183,10 +187,13 @@ def test_a_metric_that_needs_openmm_says_so_and_leaves_the_rest_of_the_result_in
         from binding_metrics.testing import make_synthetic_poses
 
         synthetic = make_synthetic_poses(backends=("a", "b"), seeds=(1,))
+        score_pose_set(synthetic.poses, "B", "A", metrics=["delta_sasa_static"])
+        attempts_static = sorted(set(attempts))
         result = score_pose_set(
             synthetic.poses, "B", "A", metrics=["delta_sasa_static", "structure_interaction_energy"]
         )
         report(
+            attempts_static=attempts_static,
             statuses=[row["status"] for row in result["poses"]],
             reasons=[row["reasons"].get("structure_interaction_energy") for row in result["poses"]],
             has_area=[
@@ -196,9 +203,27 @@ def test_a_metric_that_needs_openmm_says_so_and_leaves_the_rest_of_the_result_in
         )
         """
     )
+    assert out["attempts_static"] == []
     asked = [reason for reason in out["reasons"] if reason is not None]
     assert asked, "the energy metric should have run on a representative and said why it failed"
     assert all("OpenMM" in reason for reason in asked)
     assert out["has_area"] == [True, True] and out["n_ok"] == 1
     assert "partial" in out["statuses"]
     assert out["imported"] == []
+    assert "openmm" in out["attempts"]  # the metric that needs it is where it is looked for
+
+
+def test_the_provenance_of_a_result_reads_the_openmm_version_without_importing_it():
+    out = run_blocked(
+        """
+        from binding_metrics.provenance import collect_provenance
+
+        report(openmm_version=collect_provenance()["openmm_version"])
+        """
+    )
+    try:
+        installed = metadata.version("openmm")  # the blocker hides imports, not the metadata
+    except metadata.PackageNotFoundError:
+        installed = None
+    assert out["openmm_version"] == installed
+    assert out["imported"] == [] and out["attempts"] == []
