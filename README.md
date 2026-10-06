@@ -429,6 +429,34 @@ adversary = get_parser("boltz2").load("./boltz_out", "my_complex")
 check = compute_evobind_adversarial_from_records(design, adversary, binder_chain="B", receptor_chain="A")
 ```
 
+### Pose sets: several seeds and models of one construct
+
+A model run with five seeds returns five structures, and two models return ten. `score_pose_set` takes the poses of one construct, places each on the receptor of a reference structure, measures each with the registry metrics you ask for, and compares the poses with one another: pairwise peptide RMSD with symmetric-atom handling, complete-linkage clusters, medoids and interface overlap. It summarises the poses per back-end with the number of poses behind every value (`n_ok` next to `n_total`, so a failed pose is counted and never averaged away), and names a representative pose. The result is one JSON-ready dictionary, which `write_pose_report` writes as JSON, CSV, Markdown or HTML.
+
+```python
+from binding_metrics.poses import Reference, score_pose_set, write_pose_report
+from binding_metrics.predictors import get_parser
+
+poses = []
+for model, out_dir in (("boltz2", "./boltz_out"), ("of3", "./openfold_out")):
+    parser = get_parser(model)
+    poses += [
+        parser.load(out_dir, "my_complex", seed_index=s.seed_index, sample=s.sample)
+        for s in parser.list_samples(out_dir, "my_complex")
+    ]
+
+result = score_pose_set(
+    poses, binder_chain="B", target_chain="A", metrics=["interface", "hbonds"],
+    reference=Reference("crystal.cif", receptor_chain="A", binder_chain="B"),
+)
+entry = result["aggregates"]["boltz2"]["interface.delta_sasa"]
+print(f"{entry['n_ok']} of {entry['n_total']} poses, mean {entry['mean']:.0f} Å²")
+print(result["representatives"])
+write_pose_report(result, "md", "my_complex_poses.md")
+```
+
+The layer reports numbers and applies no threshold. It has been tested on synthetic pose sets (`binding_metrics.testing.make_synthetic_poses`), the bundled complexes and the fixtures of the adapters; no output of a real co-folding run is in the repository, so its first use on real output is untested. [`docs/pose_sets.md`](docs/pose_sets.md) describes the frame, the agreement statistics, the aggregation, the residue-set and partner descriptors, the reconciliation of two back-ends, the result schema and what is not covered.
+
 ### Batch scoring
 
 ```python
@@ -763,6 +791,7 @@ configure_logging(logging.INFO)
 - [`docs/metrics.md`](docs/metrics.md): every metric with its signature, result keys, units and algorithm notes; the pipeline results; the metric registry
 - [`docs/preflight.md`](docs/preflight.md): the inputs that a step or a prediction model cannot take, how they are declared, and the pre-flight check
 - [`docs/poses.md`](docs/poses.md): the pose kinds (`PredictedPose`, `DockedPose`, `ExperimentalPose`), what every pose has (`id`, `atoms()`, `content_hash()`, `native_scores()`), and the deprecated name `PredictionRecord`
+- [`docs/pose_sets.md`](docs/pose_sets.md): scoring the poses of one construct together (`score_pose_set`): the common frame, agreement between poses, aggregation that counts the failed poses, representative poses, reference-site descriptors, reconciliation of two back-ends, the result schema and the writers
 - [`docs/nonstandard.md`](docs/nonstandard.md): D-amino acids, N-methylated and phosphorylated residues, the GAFF2 route, cyclic closures and their limits
 - [`docs/report_thresholds.md`](docs/report_thresholds.md): the scorecard thresholds
 - [`CHANGELOG.md`](CHANGELOG.md): what changed, with the results that differ from earlier versions

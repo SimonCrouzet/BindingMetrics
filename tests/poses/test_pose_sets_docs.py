@@ -8,6 +8,7 @@ fails here.
 
 import ast
 import contextlib
+import importlib
 import inspect
 import io
 import re
@@ -19,7 +20,9 @@ from binding_metrics.poses import (
     DockedPose,
     FrameOptions,
     PoseSetResult,
+    Reference,
     score_pose_set,
+    write_pose_report,
 )
 from binding_metrics.poses.aggregate import (
     DEFAULT_EXCLUDED_BLOCKS,
@@ -43,6 +46,10 @@ from binding_metrics.poses.score import (
 ROOT = Path(__file__).resolve().parents[2]
 DOC = ROOT / "docs" / "pose_sets.md"
 TEXT = DOC.read_text(encoding="utf-8")
+README = (ROOT / "README.md").read_text(encoding="utf-8")
+METRICS = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
+POSES = (ROOT / "docs" / "poses.md").read_text(encoding="utf-8")
+README_HEADING = "### Pose sets: several seeds and models of one construct"
 
 
 def _section(heading: str) -> str:
@@ -279,3 +286,65 @@ def test_the_links_and_anchors_of_the_page_resolve():
                 other = (DOC.parent / path).read_text(encoding="utf-8")
                 slugs = {_slug(line) for line in other.splitlines() if re.match(r"#{1,6} ", line)}
                 assert fragment in slugs, target
+
+
+# ---------------------------------------------------------------------------- the other pages
+
+
+def _headings_of(text: str) -> set[str]:
+    return {_slug(line) for line in text.splitlines() if re.match(r"#{1,6} ", line)}
+
+
+def test_the_other_pages_point_at_the_pose_set_page():
+    assert "[`docs/pose_sets.md`](docs/pose_sets.md)" in README
+    assert "(pose_sets.md)" in METRICS
+    assert "(pose_sets.md)" in POSES
+    assert "pose_sets.md" in README.split("## Documentation", 1)[1]
+
+
+def test_every_link_to_the_pose_set_page_resolves():
+    slugs = _headings_of(TEXT)
+    for label, text in (("README.md", README), ("metrics.md", METRICS), ("poses.md", POSES)):
+        for target in re.findall(r"\]\(([^)]*pose_sets\.md[^)]*)\)", text):
+            _, _, fragment = target.partition("#")
+            assert not fragment or fragment in slugs, (label, target)
+
+
+def test_the_readme_section_sits_between_the_evobind_and_the_batch_sections():
+    headings = [line for line in README.splitlines() if line.startswith("### ")]
+    position = headings.index(README_HEADING)
+    assert headings[position - 1] == "### EvoBind scoring"
+    assert headings[position + 1] == "### Batch scoring"
+
+
+def test_the_readme_example_uses_names_and_keywords_that_exist():
+    section = README.split(README_HEADING, 1)[1].split("\n### ", 1)[0]
+    code = next(code for language, code in _code_blocks(section) if language == "python")
+    calls = {"score_pose_set": score_pose_set, "Reference": Reference}
+    calls["write_pose_report"] = write_pose_report
+    for node in ast.walk(ast.parse(code)):
+        if isinstance(node, ast.ImportFrom):
+            module = importlib.import_module(node.module)
+            for alias in node.names:
+                assert hasattr(module, alias.name), (node.module, alias.name)
+        elif isinstance(node, ast.Call) and getattr(node.func, "id", None) in calls:
+            parameters = inspect.signature(calls[node.func.id]).parameters
+            assert len(node.args) <= len(parameters), node.func.id
+            for keyword in node.keywords:
+                assert keyword.arg in parameters, (node.func.id, keyword.arg)
+    from binding_metrics.predictors.record import SampleRef
+
+    assert {"seed_index", "sample"} <= set(inspect.signature(SampleRef).parameters)
+    assert "list_samples" in dir(
+        importlib.import_module("binding_metrics.predictors.base").PredictionParser
+    )
+
+
+def test_the_page_names_the_cost_classes_the_registry_declares():
+    from binding_metrics.metrics.registry import METRICS_BY_NAME
+
+    classes = {spec.cost_class for spec in METRICS_BY_NAME.values()}
+    section = _section("## The call")
+    for name in ("static", "model", "structural", "md"):
+        assert name in classes
+        assert f"`{name}`" in section

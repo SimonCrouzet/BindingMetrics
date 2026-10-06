@@ -1,6 +1,6 @@
 # Poses
 
-A pose is one structure of a complex, classified by where it came from. A metric measures a structure, and the origin decides what else is known about it: a co-folding model reports confidences, a docking program reports its own scores, a deposition reports a resolution. The three kinds share one interface, so code that needs a structure and a name for it takes any of them.
+A pose is one structure of a complex, classified by where it came from. A metric measures a structure, and the origin decides what else is known about it: a co-folding model reports confidences, a docking program reports its own scores, a deposition reports a resolution. The three kinds share one interface, so code that needs a structure and a name for it takes any of them. The poses of one construct, from several models, seeds or programs, are scored together by `score_pose_set`, which [`pose_sets.md`](pose_sets.md) describes.
 
 ```
 Pose                    abstract base class           binding_metrics.poses
@@ -36,7 +36,7 @@ Pose                    abstract base class           binding_metrics.poses
 
 ## Computed metrics are not stored on a pose
 
-A pose holds what came with the structure and what the producing tool reported. A metric computed from it (buried area, an RMSD, an interface PAE) is a function of the pose, and its value lives in the result dictionary of that function. The same pose can then be measured again with other settings, and a computed value is never mistaken for one that the tool reported.
+A pose holds what came with the structure and what the producing tool reported. A metric computed from it (buried area, an RMSD, an interface PAE) is a function of the pose, and its value lives in the result dictionary of that function. The same pose can then be measured again with other settings, and a computed value is never mistaken for one that the tool reported. In a pose-set result the two sit side by side in the row of a pose, the reported values under `native` and each computed block under the name of its metric ([`pose_sets.md`](pose_sets.md#the-result)).
 
 ```python
 from binding_metrics.poses import DockedPose, ExperimentalPose

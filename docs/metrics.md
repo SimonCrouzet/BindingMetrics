@@ -1,6 +1,6 @@
 # metrics reference
 
-Every metric in BindingMetrics: function signature, result keys, units and algorithm notes. Installation and the command line are described in [`README.md`](../README.md). This file is the only metrics reference; the root-level `METRICS.md` points here.
+Every metric in BindingMetrics: function signature, result keys, units and algorithm notes. Installation and the command line are described in [`README.md`](../README.md). This file is the only metrics reference; the root-level `METRICS.md` points here. The poses of one construct (several seeds, several models) are placed in one frame, measured with these metrics, compared with one another and summarised per back-end by the pose-set layer, which [`pose_sets.md`](pose_sets.md) describes.
 
 Run every metric on one structure:
 
@@ -614,7 +614,7 @@ Further subcommands: `prepare-query` and `refold` (binder refolding), `prepare-s
 
 ### Prediction records (`binding_metrics.predictors`)
 
-`PredictedPose` is the form of one prediction sample that every predictor adapter converts a model's files to, and the only thing the confidence metrics read. It is the `predicted` kind of `Pose` (`binding_metrics.poses`); the docked and experimental kinds and what every pose has (`id`, `content_hash()`, `native_scores()`) are in [`poses.md`](poses.md). `PredictionRecord` is its former name and still imports, with a `DeprecationWarning`. `PredictionFiles` says where an adapter found the files of a sample, `TokenLayout` says what each PAE and PDE token is, and `SampleRef` names one sample of a directory. The rules are the same for every model:
+`PredictedPose` is the form of one prediction sample that every predictor adapter converts a model's files to, and the only thing the confidence metrics read. It is the `predicted` kind of `Pose` (`binding_metrics.poses`); the docked and experimental kinds and what every pose has (`id`, `content_hash()`, `native_scores()`) are in [`poses.md`](poses.md), and the comparison of the poses of one construct (RMSD between seeds and models, clusters, medoids, per-model aggregates that count the failed poses) is in [`pose_sets.md`](pose_sets.md). `PredictionRecord` is its former name and still imports, with a `DeprecationWarning`. `PredictionFiles` says where an adapter found the files of a sample, `TokenLayout` says what each PAE and PDE token is, and `SampleRef` names one sample of a directory. The rules are the same for every model:
 
 | field | type | unit | meaning |
 |-------|------|------|---------|
@@ -1123,7 +1123,7 @@ fields of a `MetricSpec`:
 | `requires_extras` | extras of `pip install binding-metrics[...]` that the default use needs |
 | `requires_gpu` | the heavy computation runs on CUDA by default |
 
-`direction`, `unit`, `headline_key`, `cost_class` and `requires_extras` are optional; None or an empty tuple means "not declared", never a guess. A consumer skips an input type it does not know: the registry grows by adding entries, input types and optional fields. The pipeline's `--metrics` names (`interface`, `geometry`, `electrostatics`, `energy`, `openfold`, `dockq`) are derived from it; the `atom_array` and `predicted_structure` metrics need an in-memory object and are not pipeline steps.
+`direction`, `unit`, `headline_key`, `cost_class` and `requires_extras` are optional; None or an empty tuple means "not declared", never a guess. A consumer skips an input type it does not know: the registry grows by adding entries, input types and optional fields. The pipeline's `--metrics` names (`interface`, `geometry`, `electrostatics`, `energy`, `openfold`, `dockq`) are derived from it; the `atom_array` and `predicted_structure` metrics need an in-memory object and are not pipeline steps. `binding_metrics.poses.score_pose_set` runs registry metrics by name on every pose of a set and reads `cost_class` to decide which of them run on every pose (`static`, `model`) and which on the representative poses only (`structural`, `md`, and a metric that declares no class); see [`pose_sets.md`](pose_sets.md).
 
 | name | function | input type | headline key | direction | unit | cost class | GPU |
 |------|----------|------------|--------------|-----------|------|------------|-----|
