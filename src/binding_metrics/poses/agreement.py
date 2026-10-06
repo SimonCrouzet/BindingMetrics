@@ -110,11 +110,14 @@ Statistics of a set. Every statistic takes a ``PairMatrix`` (or atoms) and says 
   the clusters that mix groups. An undefined distance counts as infinite, so those two poses
   never share a cluster. The linkage is complete and fixed (``CLUSTER_LINKAGE``); the cutoffs
   default to ``DEFAULT_CLUSTER_CUTOFFS_ANGSTROM``. Needs two poses.
-* ``medoid`` and ``medoids``: the pose with the smallest sum of distances to the other poses
-  (the smallest mean, which orders the poses the same way); a tie, within the tolerance of the
-  sums, goes to the lowest pose id. A pose with an undefined distance to another pose is not a
-  candidate. One pose is its own medoid, with no distance. ``medoids`` gives the overall one,
-  one per group and the RMSD between the medoids of two groups.
+* ``medoid`` and ``medoids``: the pose with the smallest mean distance to the other poses
+  (the smallest sum when every pair has a distance, which orders the poses the same way); a
+  tie, within ``TIE_TOLERANCE_ANGSTROM`` of the means, goes to the lowest pose id. A pose is a
+  candidate only when its row has no undefined distance. When no pose has a complete row the
+  medoid is chosen by the mean over each pose's defined distances (a pose with none is left
+  out) and the result carries a ``caveat``. One pose is its own medoid, with no distance.
+  ``medoids`` gives the overall one, one per group and the RMSD between the medoids of two
+  groups. ``select_representatives`` of ``aggregate`` calls ``medoid``, so the two cannot differ.
 * ``jaccard_matrix`` (and ``interface_jaccard``, ``contact_map_jaccard``): the Jaccard index
   ``|A & B| / |A | B|`` of two sets; two empty sets give no value, with a reason. The interface
   and contact sets come from the caller (``heavy_atom_contacts`` and ``interface_residues``
@@ -986,18 +989,31 @@ def _require_distance(matrix: PairMatrix, what: str) -> None:
         raise ValueError(f"{what} needs a distance matrix, got a {matrix.direction} matrix")
 
 
-def medoid(matrix: PairMatrix) -> dict[str, Any]:
-    """The pose with the smallest sum of distances to the other poses of a distance matrix.
+#: Said by ``medoid`` when it had to choose among rows that all have an undefined distance.
+INCOMPLETE_MEDOID_CAVEAT = (
+    "no pose has a complete distance row: medoid chosen by the mean over defined distances"
+)
 
-    A tie, within ``TIE_TOLERANCE_ANGSTROM`` per distance, goes to the lowest pose id. A pose
-    with an undefined distance to another pose of the matrix is not a candidate; take a
-    ``subset`` first to leave a pose out.
+
+def medoid(matrix: PairMatrix) -> dict[str, Any]:
+    """The pose with the smallest mean distance to the other poses of a distance matrix.
+
+    A pose is a candidate only when its row has no undefined distance to another pose of the
+    matrix (take a ``subset`` first to leave a pose out). The medoid is the candidate with the
+    smallest mean distance to the others; this is the smallest sum too, because every
+    candidate has the same number of distances. A tie, within ``TIE_TOLERANCE_ANGSTROM`` of
+    the means, goes to the lowest pose id.
+
+    When no pose has a complete row, the means run over each pose's defined distances, a pose
+    with none is left out, and the result has a ``caveat`` that says so.
 
     Returns:
         ``{"pose_id", "sum_distance_angstrom", "mean_distance_angstrom", "tied_with",
         "n_poses", "excluded"}``; ``tied_with`` lists the other poses that tie, ``excluded`` the
-        poses that were not candidates. One pose is its own medoid with no distance and a
-        ``reason``; with no candidate ``pose_id`` is None with a ``reason``.
+        poses that were not candidates, and the sum and the mean run over the distances that
+        are defined. One pose is its own medoid with no distance and a ``reason``; with no
+        candidate ``pose_id`` is None with a ``reason``; ``caveat`` is present only for the
+        fallback above.
 
     Raises:
         ValueError: If the matrix is not a distance matrix.
@@ -1022,19 +1038,28 @@ def medoid(matrix: PairMatrix) -> dict[str, Any]:
         return out
     off_diagonal = matrix.values.copy()
     np.fill_diagonal(off_diagonal, 0.0)
-    complete = ~np.isnan(off_diagonal).any(axis=1)
-    out["excluded"] = [pose_id for pose_id, ok in zip(ids, complete) if not ok]
-    if not complete.any():
-        out["reason"] = "no pose has a defined distance to every other pose"
-        return out
-    sums = off_diagonal.sum(axis=1)
-    tolerance = TIE_TOLERANCE_ANGSTROM * (n_poses - 1)
-    smallest = sums[complete].min()
-    winners = [i for i in range(n_poses) if complete[i] and sums[i] <= smallest + tolerance]
+    defined = ~np.isnan(off_diagonal)
+    counts = defined.sum(axis=1) - 1  # the diagonal is defined and is not a distance
+    sums = np.where(defined, off_diagonal, 0.0).sum(axis=1)
+    candidates = defined.all(axis=1)
+    if not candidates.any():
+        candidates = counts > 0
+        if not candidates.any():
+            out["excluded"] = list(ids)
+            out["reason"] = "no pose has a defined distance to any other pose"
+            return out
+        out["caveat"] = INCOMPLETE_MEDOID_CAVEAT
+    out["excluded"] = [pose_id for pose_id, ok in zip(ids, candidates) if not ok]
+    means = np.full(n_poses, np.inf)
+    means[candidates] = sums[candidates] / counts[candidates]
+    smallest = means[candidates].min()
+    winners = [
+        i for i in range(n_poses) if candidates[i] and means[i] <= smallest + TIE_TOLERANCE_ANGSTROM
+    ]
     chosen = winners[0]  # the ids are sorted, so the first winner has the lowest id
     out["pose_id"] = ids[chosen]
     out["sum_distance_angstrom"] = float(sums[chosen])
-    out["mean_distance_angstrom"] = float(sums[chosen] / (n_poses - 1))
+    out["mean_distance_angstrom"] = float(means[chosen])
     out["tied_with"] = [ids[i] for i in winners[1:]]
     return out
 

@@ -1188,7 +1188,83 @@ class TestMedoid:
         matrix = PairMatrix("t", "angstrom", "distance", ("a", "b"), values, {("a", "b"): "x"})
         result = medoid(matrix)
         assert result["pose_id"] is None
-        assert "every other pose" in result["reason"]
+        assert "any other pose" in result["reason"]
+        assert "caveat" not in result
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            [[0.0, 1.0, np.nan], [1.0, 0.0, 1.0], [np.nan, 1.0, 0.0]],
+            [[0.0, 1.0, np.nan], [1.0, 0.0, 5.0], [np.nan, 5.0, 0.0]],
+        ],
+    )
+    def test_only_a_pose_with_a_complete_row_is_a_candidate(self, values):
+        # issue 135: b is the only pose with a defined distance to both others
+        matrix = PairMatrix("t", "angstrom", "distance", ("a", "b", "c"), np.array(values), {})
+        result = medoid(matrix)
+        assert result["pose_id"] == "b"
+        assert result["excluded"] == ["a", "c"]
+        assert "caveat" not in result
+
+    def test_the_candidate_with_the_smallest_mean_wins_among_complete_rows(self):
+        values = line_matrix([0.0, 1.0, 2.0, 10.0, 11.0]).values.copy()
+        values[0, 4] = values[4, 0] = np.nan  # a complete row: p1, p2, p3
+        matrix = PairMatrix(
+            "t", "angstrom", "distance", tuple(f"p{i}" for i in range(5)), values, {}
+        )
+        result = medoid(matrix)
+        assert result["pose_id"] == "p2"
+        assert result["mean_distance_angstrom"] == pytest.approx((2.0 + 1.0 + 8.0 + 9.0) / 4)
+        assert result["excluded"] == ["p0", "p4"]
+
+    def test_no_complete_row_uses_the_mean_over_defined_distances_and_says_so(self):
+        nan = np.nan
+        values = np.array(
+            [
+                [0.0, 1.0, nan, 5.0],
+                [1.0, 0.0, 3.0, nan],
+                [nan, 3.0, 0.0, 2.0],
+                [5.0, nan, 2.0, 0.0],
+            ]
+        )
+        matrix = PairMatrix("t", "angstrom", "distance", ("a", "b", "c", "d"), values, {})
+        result = medoid(matrix)
+        # means over the defined distances: a 3.0, b 2.0, c 2.5, d 3.5
+        assert result["pose_id"] == "b"
+        assert result["mean_distance_angstrom"] == pytest.approx(2.0)
+        assert result["sum_distance_angstrom"] == pytest.approx(4.0)
+        assert result["caveat"] == agreement.INCOMPLETE_MEDOID_CAVEAT
+        assert result["caveat"] == (
+            "no pose has a complete distance row: medoid chosen by the mean over defined distances"
+        )
+        assert result["excluded"] == []
+
+    def test_the_fallback_leaves_out_a_pose_with_no_defined_distance_and_ties_go_to_the_lowest_id(
+        self,
+    ):
+        nan = np.nan
+        values = np.array([[0.0, 1.0, nan], [1.0, 0.0, nan], [nan, nan, 0.0]])
+        matrix = PairMatrix("t", "angstrom", "distance", ("a", "b", "c"), values, {})
+        result = medoid(matrix)
+        assert result["pose_id"] == "a" and result["tied_with"] == ["b"]
+        assert result["excluded"] == ["c"]
+        assert result["caveat"] == agreement.INCOMPLETE_MEDOID_CAVEAT
+
+    def test_a_complete_matrix_has_no_caveat_and_the_group_medoids_carry_theirs(self):
+        assert "caveat" not in medoid(OFFSET_MATRIX)
+        values = line_matrix([0.0, 1.0, 2.0, 7.0, 9.0, 12.0]).values.copy()
+        for first, second in ((3, 4), (4, 5)):  # h2 has no distance to h1 or h3
+            values[first, second] = values[second, first] = np.nan
+        ids = ("a1", "a2", "a3", "h1", "h2", "h3")
+        matrix = PairMatrix("t", "angstrom", "distance", ids, values, {})
+        result = medoids(matrix, {pose_id: pose_id[0] for pose_id in ids})
+        assert "caveat" not in result["per_group"]["a"]
+        assert result["per_group"]["a"]["pose_id"] == "a2"
+        assert result["per_group"]["h"]["pose_id"] == "h1"  # h1 and h3 tie at 5.0
+        assert result["per_group"]["h"]["tied_with"] == ["h3"]
+        assert result["per_group"]["h"]["excluded"] == ["h2"]
+        assert result["per_group"]["h"]["caveat"] == agreement.INCOMPLETE_MEDOID_CAVEAT
+        assert "caveat" not in result["overall"]  # the a rows are complete over all six poses
 
     def test_the_medoid_distance_between_groups_can_be_undefined(self):
         values = np.array([[0.0, np.nan], [np.nan, 0.0]])

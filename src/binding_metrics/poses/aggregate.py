@@ -32,7 +32,8 @@ metric that raised). A pose that has none of these was not asked for that metric
 metric run on the representatives only) and is not counted. Values are sorted before any
 statistic is computed, so permuting the rows changes no digit.
 
-Importing this module imports numpy and the standard library only.
+Importing this module imports numpy, the standard library and ``binding_metrics.poses.agreement``
+(numpy, the standard library and the residue tables; no structure library).
 """
 
 from __future__ import annotations
@@ -46,6 +47,9 @@ from types import MappingProxyType
 from typing import Any, Callable, Optional, Protocol, Sequence
 
 import numpy as np
+
+from binding_metrics.poses.agreement import PairMatrix
+from binding_metrics.poses.agreement import medoid as agreement_medoid
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +74,13 @@ DEFAULT_EXCLUDED_BLOCKS = (
 ENTRY_KEYS = ("n_ok", "n_total", "complete", "reasons", "caveats", "statistic_reasons")
 
 #: Group keys that the result uses for other things.
-RESERVED_GROUP_KEYS = ("all", "rule", "reasons")
+RESERVED_GROUP_KEYS = ("all", "rule", "reasons", "caveats")
 
 REASON_POLICIES = ("exclude", "keep")
 
 #: Two scores closer than this (relative, plus a tiny absolute floor) are tied, so that the
-#: float rounding of analytically equal sums does not decide a medoid.
+#: float rounding of analytically equal scores does not decide a choice by native score. The
+#: tie of a medoid is the one of ``agreement.medoid``.
 TIE_REL_TOLERANCE = 1e-9
 TIE_ABS_TOLERANCE = 1e-12
 
@@ -618,21 +623,14 @@ def _first_of_best(scores: Sequence[float], largest: bool) -> int:
 
 def _medoid(
     candidates: Sequence[Mapping[str, Any]], distances: PoseDistances
-) -> tuple[Optional[str], Optional[str]]:
-    ids = [row["id"] for row in candidates]
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """``(pose id, reason, caveat)`` from the one medoid rule, ``agreement.medoid``."""
+    ids = [row["id"] for row in candidates]  # sorted by id, as a PairMatrix wants
+    matrix = distances.submatrix(ids)  # the poses must be in the matrix
     if len(ids) == 1:
-        distances.submatrix(ids)  # the pose must be in the matrix
-        return ids[0], None
-    matrix = distances.submatrix(ids)
-    off_diagonal = ~np.eye(len(ids), dtype=bool)
-    usable = np.isfinite(matrix) & off_diagonal
-    counts = usable.sum(axis=1)
-    comparable = np.flatnonzero(counts > 0)
-    if comparable.size == 0:
-        return None, "no pair of poses in the group has a finite distance"
-    totals = np.where(usable, matrix, 0.0).sum(axis=1)
-    scores = [float(totals[i] / counts[i]) for i in comparable]
-    return ids[comparable[_first_of_best(scores, largest=False)]], None
+        return ids[0], None, None
+    result = agreement_medoid(PairMatrix("distance", None, "distance", tuple(ids), matrix, {}))
+    return result["pose_id"], result.get("reason"), result.get("caveat")
 
 
 def _best_native(
@@ -712,10 +710,13 @@ def select_representatives(
 
     Rules:
 
-    * ``"medoid"`` (default): the pose with the smallest mean distance to the other poses of
-      its group (the smallest sum when every pair has a distance, so the same pose as the
-      sum). Needs ``distances``. A pose with no finite distance to any other member is not a
-      candidate; a group of one pose is represented by it.
+    * ``"medoid"`` (default): ``agreement.medoid`` on the poses of the group, the one rule
+      for both modules. A pose is a candidate only when its row has no undefined distance to
+      another pose of the group; the medoid is the candidate with the smallest mean distance
+      to the others, a tie within ``agreement.TIE_TOLERANCE_ANGSTROM`` going to the lowest id.
+      When no pose has a complete row the mean runs over each pose's defined distances and
+      the group has a ``caveats`` entry that says so. Needs ``distances``; a group of one pose
+      is represented by it.
     * ``"confidence"``: the pose with the best ``native[confidence_key]`` in its group,
       "best" being the largest for ``ranking_score``, ``iptm``, ``ptm`` and ``avg_plddt``
       and the smallest for ``gpde``, ``has_clash`` and ``disorder`` (``native_score_direction``);
@@ -726,8 +727,8 @@ def select_representatives(
       the group that did not fail, sorted by id, and the ``PoseDistances`` (or None). It
       must return the id of one of them; ``rank_by`` makes one from a key function.
 
-    A pose with ``"status": "failed"`` is never a candidate. Ties (scores within
-    ``TIE_REL_TOLERANCE``) go to the lowest id in string order, so the answer does not
+    A pose with ``"status": "failed"`` is never a candidate. Ties go to the lowest id in
+    string order (native scores within ``TIE_REL_TOLERANCE`` tie), so the answer does not
     depend on the order of ``rows``.
 
     Args:
@@ -738,7 +739,9 @@ def select_representatives(
 
     Returns:
         ``{group: id or None, ..., "all": id or None, "rule": "medoid" | "confidence" |
-        "custom", "reasons": {key: sentence}}``; ``reasons`` has an entry for every None.
+        "custom", "reasons": {key: sentence}}``; ``reasons`` has an entry for every None. A
+        key ``"caveats": {group: sentence}`` is added only when a representative was chosen
+        with a caveat (the medoid fallback above).
 
     Raises:
         ValueError: For an unknown rule, a ``medoid`` without distances, a native score with
@@ -754,6 +757,7 @@ def select_representatives(
 
     chosen: dict[str, Any] = {}
     reasons: dict[str, str] = {}
+    caveats: dict[str, str] = {}
     n_groups = len(groups) - 1
     for group, positions in groups.items():
         members = sorted(
@@ -762,6 +766,7 @@ def select_representatives(
         )
         pose_id: Optional[str] = None
         reason: Optional[str] = None
+        caveat: Optional[str] = None
         if not members:
             reason = "no pose has a status other than 'failed'"
         elif rule_name == "confidence" and group == "all" and n_groups > 1:
@@ -770,7 +775,7 @@ def select_representatives(
                 "use rule='medoid' or a callable for the overall pose"
             )
         elif rule_name == "medoid":
-            pose_id, reason = _medoid(members, distances)
+            pose_id, reason, caveat = _medoid(members, distances)
         elif rule_name == "confidence":
             pose_id, reason = _best_native(members, confidence_key, direction)
         else:
@@ -778,7 +783,12 @@ def select_representatives(
         chosen[group] = pose_id
         if pose_id is None:
             reasons[group] = reason
-    return {**chosen, "rule": rule_name, "reasons": reasons}
+        elif caveat is not None:
+            caveats[group] = caveat
+    result = {**chosen, "rule": rule_name, "reasons": reasons}
+    if caveats:
+        result["caveats"] = caveats
+    return result
 
 
 def _call_rule(rule, members, distances) -> tuple[Optional[str], Optional[str]]:

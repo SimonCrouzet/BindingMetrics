@@ -20,6 +20,7 @@ from binding_metrics.poses.aggregate import (
     resolve_statistics,
     select_representatives,
 )
+from binding_metrics.poses.agreement import INCOMPLETE_MEDOID_CAVEAT
 
 SASA = [1266.8, 1280.1, 1324.7, 1209.5, 1264.0, 1378.3]
 
@@ -327,7 +328,7 @@ class TestGroups:
         assert "interface.delta_sasa" in aggregates["a"]
         assert aggregates["b"] == {}
 
-    @pytest.mark.parametrize("name", ["all", "rule", "reasons"])
+    @pytest.mark.parametrize("name", ["all", "rule", "reasons", "caveats"])
     def test_a_reserved_group_key_is_refused(self, name):
         with pytest.raises(ValueError, match="reserved"):
             aggregate_poses(sasa_rows([100.0], name))
@@ -487,13 +488,83 @@ class TestMedoid:
         rows = [row for row in rows if row["id"] in ("a1", "b1", "b2")]
         assert select_representatives(rows, distances)["backend_a"] == "a1"
 
-    def test_a_pose_with_no_comparable_pose_is_not_a_candidate(self):
-        rows = [make_row(pose_id, "m") for pose_id in ("p1", "p2", "p3")]
+    def test_a_pose_with_an_undefined_distance_is_not_a_candidate(self):
+        # issue 135: only b has a defined distance to both other poses
         nan = float("nan")
+        rows = [make_row(pose_id, "m") for pose_id in ("a", "b", "c")]
+        for matrix in (
+            [[0.0, 1.0, nan], [1.0, 0.0, 1.0], [nan, 1.0, 0.0]],
+            [[0.0, 1.0, nan], [1.0, 0.0, 5.0], [nan, 5.0, 0.0]],
+        ):
+            chosen = select_representatives(rows, PoseDistances(("a", "b", "c"), matrix))
+            assert chosen["m"] == "b" and chosen["all"] == "b"
+            assert chosen["reasons"] == {} and "caveats" not in chosen
+
+    def test_no_complete_row_falls_back_to_the_mean_of_the_defined_distances_with_a_caveat(self):
+        nan = float("nan")
+        rows = [make_row(pose_id, "m") for pose_id in ("p1", "p2", "p3")]
         distances = PoseDistances(
             ("p1", "p2", "p3"), [[0.0, 1.0, nan], [1.0, 0.0, nan], [nan, nan, 0.0]]
         )
-        assert select_representatives(rows, distances)["m"] == "p1"
+        chosen = select_representatives(rows, distances)
+        assert chosen["m"] == "p1"  # p3 has no defined distance and is left out; p1 and p2 tie
+        assert chosen["caveats"]["m"] == INCOMPLETE_MEDOID_CAVEAT
+        assert chosen["reasons"] == {}
+        assert "no pose has a complete distance row" in chosen["caveats"]["all"]
+
+    def test_the_fallback_picks_the_smallest_mean_over_the_defined_distances(self):
+        nan = float("nan")
+        rows = [make_row(pose_id, "m") for pose_id in ("a", "b", "c", "d")]
+        # no row is complete: means a 3.0, b 2.0, c 2.5, d 3.0
+        matrix = [
+            [0.0, 1.0, nan, 5.0],
+            [1.0, 0.0, 3.0, nan],
+            [nan, 3.0, 0.0, 2.0],
+            [5.0, nan, 2.0, 0.0],
+        ]
+        chosen = select_representatives(rows, PoseDistances(tuple("abcd"), matrix))
+        assert chosen["m"] == "b"  # b: (1 + 3) / 2 = 2.0 is the smallest mean
+        assert list(chosen["caveats"]) == ["m", "all"]
+
+    def test_poses_with_no_defined_distance_at_all_give_none_and_a_reason(self):
+        nan = float("nan")
+        rows = [make_row("p1", "m"), make_row("p2", "m")]
+        chosen = select_representatives(rows, PoseDistances(("p1", "p2"), [[0, nan], [nan, 0]]))
+        assert chosen["m"] is None and "defined distance" in chosen["reasons"]["m"]
+        assert "caveats" not in chosen
+
+    def test_a_caveat_belongs_to_the_group_whose_rows_are_incomplete(self):
+        nan = float("nan")
+        rows = [make_row(f"{g}{i}", g) for g in "ab" for i in (1, 2, 3)]
+        ids = tuple(row["id"] for row in rows)
+        matrix = np.abs(np.arange(6.0)[:, None] - np.arange(6.0)[None, :])
+        for first, second in (
+            (3, 4),
+            (4, 5),
+        ):  # b2 has no distance to b1 or b3: no b row is complete
+            matrix[first, second] = matrix[second, first] = nan
+        chosen = select_representatives(rows, PoseDistances(ids, matrix))
+        assert chosen["a"] == "a2"
+        assert chosen["b"] == "b1"  # b2 is left out; b1 and b3 tie at 2.0 and the lower id wins
+        assert chosen["all"] == "a3"  # the a rows are complete over all six poses
+        assert chosen["caveats"] == {"b": INCOMPLETE_MEDOID_CAVEAT}
+
+    def test_the_two_modules_choose_the_same_medoid_of_any_matrix(self):
+        from binding_metrics.poses.agreement import PairMatrix, medoid
+
+        generator = np.random.default_rng(7)
+        for _ in range(200):
+            n_poses = int(generator.integers(2, 7))
+            points = generator.integers(0, 6, size=n_poses).astype(float)
+            matrix = np.abs(points[:, None] - points[None, :])
+            gaps = np.triu(generator.random((n_poses, n_poses)) < 0.35, 1)
+            matrix[gaps | gaps.T] = np.nan
+            ids = tuple(f"p{i}" for i in range(n_poses))
+            rows = [make_row(pose_id, "m") for pose_id in ids]
+            chosen = select_representatives(rows, PoseDistances(ids, matrix))
+            expected = medoid(PairMatrix("t", None, "distance", ids, matrix, {}))
+            assert chosen["m"] == expected["pose_id"]
+            assert ("m" in chosen.get("caveats", {})) == ("caveat" in expected)
 
     def test_medoid_needs_the_matrix(self):
         rows, _ = offsets_rows()
