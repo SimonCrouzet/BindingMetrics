@@ -397,9 +397,8 @@ class TestRealComplexes:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def predicted_poses(tmp_path_factory):
-    """Two Boltz-2 samples of the real 1YCR complex, written and parsed like model output.
+def build_predicted_poses(root):
+    """Two Boltz-2 samples of the real 1YCR complex, written under ``root`` and parsed.
 
     The writer numbers every chain from 1, as Boltz does, so the crystal reference needs the
     sequence pairing; the confidences are made-up round numbers.
@@ -410,7 +409,6 @@ def predicted_poses(tmp_path_factory):
     atoms = load_structure(YCR)
     atoms = atoms[(~atoms.hetero) & np.isin(atoms.chain_id, ["A", "B"]) & (atoms.element != "H")]
     n_tokens = int(synth_boltz2.token_index_of_atoms(atoms).max()) + 1
-    root = tmp_path_factory.mktemp("boltz")
     poses = []
     for name, shift in (("sampleone", 0.0), ("sampletwo", 8.0)):
         plddt = np.linspace(60.0, 95.0, atoms.array_length()) - shift
@@ -437,6 +435,11 @@ def predicted_poses(tmp_path_factory):
         synth_boltz2.write_prediction(root, name, truth)
         poses.append(get_parser("boltz2").load(root, name))
     return poses
+
+
+@pytest.fixture(scope="module")
+def predicted_poses(tmp_path_factory):
+    return build_predicted_poses(tmp_path_factory.mktemp("boltz"))
 
 
 @pytest.fixture(scope="module")

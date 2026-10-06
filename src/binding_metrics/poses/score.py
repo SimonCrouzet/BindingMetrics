@@ -78,6 +78,7 @@ imported when a structure is read.
 from __future__ import annotations
 
 import concurrent.futures
+import concurrent.futures.process
 import dataclasses
 import hashlib
 import json
@@ -818,6 +819,15 @@ class _MetricPlan:
     skipped: Optional[str] = None
 
 
+def _picklable_plan(plan: _MetricPlan) -> _MetricPlan:
+    """The plan without the declared ``capabilities`` of its spec, for the worker processes.
+
+    ``Capabilities`` holds read-only mapping views, which do not pickle, and only the pre-flight
+    check in the parent process reads them.
+    """
+    return dataclasses.replace(plan, spec=dataclasses.replace(plan.spec, capabilities=None))
+
+
 def _is_heavy(spec: MetricSpec) -> bool:
     return spec.cost_class not in _LIGHT_COST_CLASSES
 
@@ -1003,7 +1013,12 @@ class _Outcome:
 
 @dataclass(frozen=True)
 class _Context:
-    """What every worker needs, built once in the parent (workers inherit it by fork)."""
+    """What every worker needs, built once in the parent and sent to each worker once.
+
+    Everything in it pickles (a worker may be started by ``spawn``): the metric plans carry
+    their ``MetricSpec`` without its ``capabilities``, which only the pre-flight check in the
+    parent reads.
+    """
 
     binder_chain: str
     target_chain: str
@@ -1504,6 +1519,19 @@ def _pool_task(index: int, pose: Pose) -> _Outcome:
     return outcome
 
 
+def _pool_context():
+    """The multiprocessing context of the worker pool: the start method of the platform.
+
+    ``fork`` on Linux up to Python 3.13, ``spawn`` on macOS and Windows, ``forkserver`` from
+    Python 3.14 on Linux. A test replaces this function to force one start method.
+    """
+    return multiprocessing.get_context()
+
+
+class _PoolUnavailableError(Exception):
+    """The worker processes could not be started; the poses are scored in this process."""
+
+
 def _raise_failure(outcome: _Outcome) -> None:
     stage, text = outcome.failure
     message = f"pose {outcome.pose_id!r} failed at stage {stage!r}: {text}"
@@ -1513,45 +1541,89 @@ def _raise_failure(outcome: _Outcome) -> None:
     raise error
 
 
-def _score_poses(
-    items: Sequence[tuple[int, Pose]], ctx: _Context, n_workers: int
-) -> list[_Outcome]:
-    """Stage 3 over all poses, in id order; a pool of processes when ``n_workers > 1``.
+def _score_serially(
+    items: Sequence[tuple[int, Pose]], ctx: _Context, outcomes: list[_Outcome]
+) -> None:
+    for index, pose in items:
+        outcome = _pose_stage(pose, index, ctx)
+        outcomes.append(outcome)
+        if ctx.raise_mode and outcome.failure is not None:
+            _raise_failure(outcome)
 
-    With ``on_error="raise"`` the first failing pose (in id order) raises and the poses after
-    it are dropped. Workers are forked, so they inherit the context; where ``fork`` does not
-    exist the poses are scored one after the other.
+
+def _score_in_pool(
+    items: Sequence[tuple[int, Pose]], ctx: _Context, n_workers: int, outcomes: list[_Outcome]
+) -> None:
+    """Score ``items`` in worker processes, appending the outcomes to ``outcomes`` in order.
+
+    Raises:
+        _PoolUnavailableError: If the pool or its first worker could not be started: the
+            executor cannot be made, a process cannot be created, or the pool breaks before any
+            pose came back. A pool that breaks after poses came back is a crash of a worker, not
+            a start problem, and its ``BrokenProcessPool`` propagates.
+        PoseScoringError: With ``on_error="raise"``, at the first failing pose.
     """
-    parallel = n_workers > 1 and len(items) > 1
-    if parallel and "fork" not in multiprocessing.get_all_start_methods():
-        logger.warning("n_workers=%d needs the fork start method; scoring serially", n_workers)
-        parallel = False
-    outcomes: list[_Outcome] = []
-    if not parallel:
-        for index, pose in items:
-            outcome = _pose_stage(pose, index, ctx)
-            outcomes.append(outcome)
-            if ctx.raise_mode and outcome.failure is not None:
-                _raise_failure(outcome)
-        return outcomes
-    mp_context = multiprocessing.get_context("fork")
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=min(n_workers, len(items)),
-        mp_context=mp_context,
-        initializer=_init_worker,
-        initargs=(ctx,),
-    ) as pool:
-        futures = [pool.submit(_pool_task, index, pose) for index, pose in items]
+    broken = concurrent.futures.process.BrokenProcessPool
+    try:
+        pool = concurrent.futures.ProcessPoolExecutor(
+            max_workers=min(n_workers, len(items)),
+            mp_context=_pool_context(),
+            initializer=_init_worker,
+            initargs=(ctx,),
+        )
+    except (OSError, ValueError, NotImplementedError) as exc:
+        raise _PoolUnavailableError(_describe(exc)) from exc
+    with pool:
+        futures: list = []
+        try:
+            for index, pose in items:  # a process is created at the first submit
+                futures.append(pool.submit(_pool_task, index, pose))
+        except (OSError, broken) as exc:
+            for future in futures:
+                future.cancel()
+            raise _PoolUnavailableError(_describe(exc)) from exc
         try:
             for future in futures:
                 outcome = future.result()
                 outcomes.append(outcome)
                 if ctx.raise_mode and outcome.failure is not None:
                     _raise_failure(outcome)
+        except broken as exc:
+            for future in futures:
+                future.cancel()
+            if outcomes:
+                raise
+            raise _PoolUnavailableError(_describe(exc)) from exc
         except BaseException:
             for future in futures:
                 future.cancel()
             raise
+
+
+def _score_poses(
+    items: Sequence[tuple[int, Pose]], ctx: _Context, n_workers: int
+) -> list[_Outcome]:
+    """Stage 3 over all poses, in id order; a pool of processes when ``n_workers > 1``.
+
+    The workers are started with the start method of the platform (``fork``, ``spawn`` or
+    ``forkserver``); the context and the poses are pickled to them, and the outcomes (the rows
+    and the placed atoms) are pickled back. With ``on_error="raise"`` the first failing pose (in
+    id order) raises and the poses after it are dropped. When no worker can be started, a
+    warning is logged and the poses that have no outcome yet are scored one after the other.
+    """
+    outcomes: list[_Outcome] = []
+    if n_workers > 1 and len(items) > 1:
+        try:
+            _score_in_pool(items, ctx, n_workers, outcomes)
+            return outcomes
+        except _PoolUnavailableError as error:
+            logger.warning(
+                "n_workers=%d: the worker processes could not be used (%s); scoring the poses "
+                "one after the other",
+                n_workers,
+                error,
+            )
+    _score_serially(items[len(outcomes) :], ctx, outcomes)
     return outcomes
 
 
@@ -1915,8 +1987,10 @@ def score_pose_set(
             (``IncompatibleInputError``) before any pose is scored; ``"skip"`` leaves those
             metrics out and lists them; ``"warn"`` logs and runs; ``"off"`` does not check.
         on_error: ``"record"`` (default) or ``"raise"``, see the module docstring.
-        n_workers: Processes for the per-pose stage; 1 runs in this process. The metrics that
-            need a GPU never run in a worker.
+        n_workers: Processes for the per-pose stage; 1 runs in this process. The workers use the
+            start method of the platform (``fork``, ``spawn`` or ``forkserver``); a pool that
+            cannot start gives a logged warning and the poses are scored in this process. The
+            metrics that need a GPU never run in a worker.
         tmp_dir: An existing directory for the temporary structure files (default the system
             temporary directory); a directory ``bm_poseset_*`` is made in it and removed on exit.
         keep_tmp: Leave that directory in place (its path is in ``provenance["temp_dir"]``).
@@ -2066,7 +2140,7 @@ def score_pose_set(
                 target_chain=scan.target_chain,
                 options=options,
                 variants=variants,
-                plans=tuple(plans),
+                plans=tuple(_picklable_plan(plan) for plan in plans),
                 metric_kwargs=kwargs_by_metric,
                 tmp_root=tmp_root,
                 reference_path=reference_path,
