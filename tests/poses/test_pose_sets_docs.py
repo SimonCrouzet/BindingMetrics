@@ -49,6 +49,7 @@ TEXT = DOC.read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 METRICS = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
 POSES = (ROOT / "docs" / "poses.md").read_text(encoding="utf-8")
+CHANGELOG = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 README_HEADING = "### Pose sets: several seeds and models of one construct"
 
 
@@ -382,3 +383,127 @@ def test_the_objects_the_page_says_pickle_do_pickle():
     for name in ("Reference", "Partner", "ResidueKey", "FrameOptions", "FrameResult", "Transform"):
         assert f"`{name}`" in _section("## Reference")
     assert "`Capabilities`" in _section("## Parallelism")
+
+
+# ---------------------------------------------------------------------------- the changelog
+
+
+def _changelog_section(heading: str) -> str:
+    unreleased = CHANGELOG.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
+    return unreleased.split(f"\n{heading}\n", 1)[1].split("\n### ", 1)[0]
+
+
+#: module -> the names that the Added section of the changelog says it holds.
+POSE_LAYER_NAMES = {
+    "binding_metrics.poses.reference": (
+        "Reference",
+        "Partner",
+        "ResidueKey",
+        "normalize_references",
+    ),
+    "binding_metrics.poses.frame": (
+        "FrameOptions",
+        "FrameResult",
+        "superpose_receptor",
+        "place_in_reference_frame",
+        "renumber_to_reference",
+    ),
+    "binding_metrics.poses.agreement": (
+        "pairwise_peptide_rmsd",
+        "pair_statistics",
+        "complete_linkage_clusters",
+        "medoid",
+        "medoids",
+        "jaccard_matrix",
+        "interface_jaccard",
+        "contact_map_jaccard",
+        "heavy_atom_contacts",
+        "interface_residues",
+        "positional_spread",
+    ),
+    "binding_metrics.poses.aggregate": ("select_representatives", "rank_by"),
+    "binding_metrics.poses.descriptors": (
+        "residue_set_descriptors",
+        "partner_descriptors",
+        "interface_residue_table",
+        "interface_areas",
+        "sphere_overlap_volume",
+    ),
+    "binding_metrics.poses.reconcile": (
+        "gap_between_backends",
+        "consensus_interface",
+        "compare_consensus_interfaces",
+        "rank_agreement",
+        "hotspot_consistency",
+    ),
+    "binding_metrics.poses.score": (
+        "score_pose_set",
+        "PoseSetResult",
+        "PoseSetOptions",
+        "DescriptorOptions",
+        "PoseScoringError",
+    ),
+    "binding_metrics.poses.report": ("write_pose_report",),
+    "binding_metrics.testing.synthetic": ("make_synthetic_poses",),
+    "binding_metrics.core.residues": ("residue_number", "residue_label"),
+}
+
+
+def test_the_unreleased_section_comes_first_and_has_no_new_release_heading():
+    headings = re.findall(r"^## \[.*$", CHANGELOG, re.M)
+    assert headings[0] == "## [Unreleased]"
+    assert "[Unreleased]" not in headings[1:]
+
+
+@pytest.mark.parametrize("module", sorted(POSE_LAYER_NAMES))
+def test_the_changelog_names_what_the_pose_layer_holds(module):
+    added = _changelog_section("### Added")
+    namespace = importlib.import_module(module)
+    for name in POSE_LAYER_NAMES[module]:
+        assert hasattr(namespace, name), (module, name)
+        assert re.search(rf"`[\w.]*\b{name}\b", added), (module, name)
+
+
+def test_the_calls_in_the_changelog_use_the_defaults_of_the_code():
+    added = _changelog_section("### Added")
+    functions = {
+        name: getattr(importlib.import_module(module), name)
+        for module, names in POSE_LAYER_NAMES.items()
+        for name in names
+        if callable(getattr(importlib.import_module(module), name))
+    }
+    checked = 0
+    for name, call in re.findall(r"`(?:binding_metrics\.[a-z_.]+\.)?(\w+)(\([^`]*\))`", added):
+        if name not in functions:
+            continue
+        try:
+            node = ast.parse(name + call, mode="eval").body
+        except SyntaxError:
+            continue  # a call written with empty keywords (binder_chain=, ...) is not Python
+        parameters = inspect.signature(functions[name]).parameters
+        for argument in node.args:
+            if isinstance(argument, ast.Name):
+                assert argument.id in parameters, (name, argument.id)
+        for keyword in node.keywords:
+            assert keyword.arg in parameters, (name, keyword.arg)
+            try:
+                documented = ast.literal_eval(keyword.value)
+            except ValueError:
+                continue
+            if parameters[keyword.arg].default is not inspect.Parameter.empty:
+                assert documented == parameters[keyword.arg].default, (name, keyword.arg)
+        checked += 1
+    assert checked >= 8
+
+
+def test_the_changelog_records_the_issues_of_the_residue_number_and_pose_fixes():
+    unreleased = CHANGELOG.split("## [Unreleased]", 1)[1]
+    for number in (116, 117, 118, 119, 120, 121, 122, 123, 124, 128, 133, 134, 135, 136):
+        assert f"#{number}" in unreleased, number
+    results = _changelog_section("### Results that change")
+    assert "`save_cif` keeps the residue numbers and insertion codes" in results
+    assert "Residue labels in logs and results carry the insertion code" in results
+    assert "`receptor_interface_residues` accepts residue labels" in _changelog_section("### Added")
+    assert "(#123)" in _changelog_section("### Fixed")
+    assert "[`docs/pose_sets.md`](docs/pose_sets.md)" in _changelog_section("### Added")
+    assert (ROOT / "docs" / "pose_sets.md").is_file()
