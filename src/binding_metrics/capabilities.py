@@ -348,6 +348,19 @@ class Capabilities:
         object.__setattr__(self, "reasons", MappingProxyType(reasons))
         object.__setattr__(self, "caveats", MappingProxyType(caveats))
 
+    def __getstate__(self) -> dict:
+        """The state for pickle and deepcopy: the read-only mapping views as plain dicts."""
+        state = dict(self.__dict__)
+        state["reasons"] = dict(state["reasons"])
+        state["caveats"] = dict(state["caveats"])
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        state = dict(state)
+        state["reasons"] = MappingProxyType(state["reasons"])
+        state["caveats"] = MappingProxyType(state["caveats"])
+        self.__dict__.update(state)
+
     def constrained_fields(self) -> tuple[str, ...]:
         """Names of the fields that differ from "no constraint"."""
         names = [
@@ -923,6 +936,10 @@ def estimate_binder_type(n_residues: int) -> str:
     return "unknown"
 
 
+#: The fields of ``InputProfile`` that hold read-only mapping views.
+_PROFILE_MAPPING_FIELDS = ("residue_names", "residue_labels")
+
+
 @dataclass(frozen=True)
 class InputProfile:
     """What a sample looks like, computed once by ``profile_input`` and read by ``preflight``.
@@ -988,6 +1005,19 @@ class InputProfile:
         object.__setattr__(self, "other_protein_chains", tuple(self.other_protein_chains))
         if self.binder_type != "unknown" and self.binder_type not in BINDER_TYPES:
             raise ValueError(f"binder_type {self.binder_type!r} is not one of {BINDER_TYPES}")
+
+    def __getstate__(self) -> dict:
+        """The state for pickle and deepcopy: the read-only mapping views as plain dicts."""
+        state = dict(self.__dict__)
+        for name in _PROFILE_MAPPING_FIELDS:
+            state[name] = dict(state[name])
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        state = dict(state)
+        for name in _PROFILE_MAPPING_FIELDS:
+            state[name] = MappingProxyType(state[name])
+        self.__dict__.update(state)
 
     @property
     def binder_chain(self) -> str:

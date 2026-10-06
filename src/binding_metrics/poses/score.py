@@ -823,15 +823,6 @@ class _MetricPlan:
     skipped: Optional[str] = None
 
 
-def _picklable_plan(plan: _MetricPlan) -> _MetricPlan:
-    """The plan without the declared ``capabilities`` of its spec, for the worker processes.
-
-    ``Capabilities`` holds read-only mapping views, which do not pickle, and only the pre-flight
-    check in the parent process reads them.
-    """
-    return dataclasses.replace(plan, spec=dataclasses.replace(plan.spec, capabilities=None))
-
-
 def _is_heavy(spec: MetricSpec) -> bool:
     return spec.cost_class not in _LIGHT_COST_CLASSES
 
@@ -1019,9 +1010,7 @@ class _Outcome:
 class _Context:
     """What every worker needs, built once in the parent and sent to each worker once.
 
-    Everything in it pickles (a worker may be started by ``spawn``): the metric plans carry
-    their ``MetricSpec`` without its ``capabilities``, which only the pre-flight check in the
-    parent reads.
+    Everything in it pickles, because a worker may be started by ``spawn``.
     """
 
     binder_chain: str
@@ -2144,7 +2133,7 @@ def score_pose_set(
                 target_chain=scan.target_chain,
                 options=options,
                 variants=variants,
-                plans=tuple(_picklable_plan(plan) for plan in plans),
+                plans=tuple(plans),
                 metric_kwargs=kwargs_by_metric,
                 tmp_root=tmp_root,
                 reference_path=reference_path,

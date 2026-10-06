@@ -193,17 +193,18 @@ class TestPickling:
             "receptor_quality",
             "md_implicit",
         ]
-        assert all(plan.spec.capabilities is None for plan in ctx.plans)
+        assert ctx.plans == seen["ctx"].plans
         poses = pickle.loads(pickle.dumps(seen["items"]))
         assert [pose.id for _, pose in poses] == [pose.id for _, pose in seen["items"]]
 
-    def test_the_specs_in_the_context_still_name_the_function_to_call(self, captured):
+    def test_the_specs_in_the_context_keep_their_declared_limits(self, captured):
         seen, _ = captured
-        spec = pickle.loads(pickle.dumps(seen["ctx"])).plans[0].spec
+        plans = pickle.loads(pickle.dumps(seen["ctx"])).plans
+        spec = plans[0].spec
         assert spec.import_path == METRICS_BY_NAME["delta_sasa_static"].import_path
         assert spec.path_arg == "cif_path" and spec.cost_class == "static"
-        # the registry itself is untouched: only the copy sent to a worker lost its limits
-        assert METRICS_BY_NAME["interface"].capabilities is not None
+        assert spec.capabilities == METRICS_BY_NAME["delta_sasa_static"].capabilities
+        assert spec.capabilities is not None and spec.capabilities.needs == {"receptor_chain"}
 
     def test_an_unavailable_pool_falls_back_to_the_serial_result(self, captured, synthetic):
         _, result = captured
