@@ -606,3 +606,13 @@ def test_the_page_describes_the_golden_results_as_the_tests_use_them():
         ordered.index("## Determinism") + 1
     )
 
+
+def test_the_changelog_records_the_golden_results_and_the_layout_tests():
+    added = _changelog_section("### Added")
+    assert "`tests/golden/pose_sets/`" in added
+    assert "`python scripts/regen_pose_golden.py --write`" in added
+    for path in ("tests/poses/test_golden_descriptors.py", "tests/test_pose_f2_imports.py"):
+        assert f"`{path}`" in added
+        assert (ROOT / path).is_file(), path
+    assert "shipped as package data" in added
+    assert (ROOT / "src" / "binding_metrics" / "testing" / "data").is_dir()
