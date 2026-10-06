@@ -416,7 +416,7 @@ When two back-ends predict the same constructs, the next questions are how far t
 | `package_version` | The version of binding-metrics that made the result. |
 | `construct` | The label given to the call, or None. |
 | `binder_chain`, `target_chain` | The chains that were used, given or detected. |
-| `input_key` | The SHA-256 of the pose ids, content hashes and provenance, the chains, the content hash of each reference and the parameters. Equal for equal inputs, whatever the run. A callable is not in it. |
+| `input_key` | The SHA-256 of the pose ids, content hashes and provenance, the chains, the content hash of each reference and the parameters. Equal for equal inputs, whatever the run: it does not depend on the package version, `n_workers` or the temporary directory. A callable is not in it. |
 | `provenance` | `collect_provenance()` (package version, git sha, Python, OS, OpenMM version, platform, seed) plus `pose_set_schema_version`, `n_poses` and `run` (`n_workers`, `on_error`, `tmp_dir`, `keep_tmp`), and `temp_dir` when the directory was kept. |
 | `parameters` | `options` (every option group), `metrics`, `metric_scope` (`all`, `representatives` or `none` for each metric), `metric_kwargs`, `aggregate`, `group_by`, `representative`, `heavy`, `preflight`, `residue_maps`, `residue_table`, `include_transform`. The resolved values, so that a result says what produced it. |
 | `references` | `implicit`, `implicit_pose_id`, `metrics_frame_variant` and `variants`: for each variant the `content_hash` and the `Reference.to_dict()` record. |
@@ -509,7 +509,17 @@ A metric that returns a `reason` is not an exception in either mode. When no pos
 
 ## Determinism
 
-No random numbers are used. The rows are sorted by id, so the order of `poses` changes nothing, and `n_workers` does not change a value. `to_json(include_timing=False)` is byte-identical for the same inputs on one installation; `provenance` records the versions and `timing` the run, and neither is part of `input_key`. The synthetic poses are deterministic as well: the only randomness of `make_synthetic_poses` is the frame noise, seeded by `rng_seed`.
+No random numbers are used. The rows are sorted by id, so the order of `poses` changes nothing, and `n_workers` does not change a value. `to_json(include_timing=False)` is byte-identical for the same inputs on one installation; `provenance` records the versions and `timing` the run, and neither is part of `input_key`. A call changes none of its inputs (the poses, the reference, the options) and writes only the temporary structure files, in `tmp_dir` or the system temporary directory, which it removes at the end unless `keep_tmp` is set. The synthetic poses are deterministic as well: the only randomness of `make_synthetic_poses` is the frame noise, seeded by `rng_seed`.
+
+## Checking a change against the golden results
+
+A source checkout has two golden results in `tests/golden/pose_sets/`: `synthetic_1ycr.json`, the `score_pose_set` result for `make_synthetic_poses()` against the unmoved 1YCR complex, and `descriptors_1ycr.json`, the crystal peptide of 1YCR and the same peptide shifted 6 Å. Both use an epitope of 22 receptor residues (the residues within 4.5 Å of the peptide) and a buried-area interface of 25 residues as residue sets, and the crystal peptide as partner. `tests/poses/test_golden_pose_set.py` rebuilds both results and compares them with the files. The files hold no `timing`, no top-level `provenance`, no `package_version` and no file path. A float agrees when `|live - golden| <= 1e-6 + 1e-6 * |golden|`; integers, booleans, strings, `None`, the keys and the length of every list must be equal, and a count that became a float is a failure. A failure names the path, the two values and the tolerance: `<path>: golden <value>, result <value> (difference <d>, relative <r>; tolerance rtol=1e-06 atol=1e-06)`.
+
+The values come from the code, and `tests/poses/test_golden_descriptors.py` checks the ones that matter most against a calculation from the PDB file that does not use the layer: the set overlap, the buried area shared with the partner, the minimum distance, the clash and shell counts and the overlap volume, for the crystal peptide and for the shifted one. The pairwise RMSD in `synthetic_1ycr.json` is compared with its closed form (`SyntheticTruth.rmsd`) to 1e-4 Å, the accuracy of float32 coordinates.
+
+`python scripts/regen_pose_golden.py --write` rewrites the files and prints what moved. It refuses to run without `--write`, and it leaves a file alone when every value agrees within the tolerance, so that regenerating on another machine does not rewrite rounding noise. A regeneration is legitimate when the new numbers are intended and understood: a deliberate change of the pose-set code or of a registry metric that the cases call, of the synthetic generator, or a dependency whose algorithm changed (biotite surface areas, for example), after the new values were checked against an independent calculation. The commit that carries the new files states the reason as a regression note: one named value, before and after.
+
+The golden files are not installed with the package. An engine that wants the same check writes `make_synthetic_poses()` into its own fixture, calls its own `score_pose_set`, and compares with the rule above; the 1YCR complex that the generator reads is part of the installed package (`binding_metrics/testing/data/`).
 
 ## Parallelism
 

@@ -556,3 +556,30 @@ def test_the_keys_of_the_nested_blocks_are_the_ones_of_the_code(synthetic_result
         assert list(pair) == ["matrix", "statistics"]
     assert list(agreement["contacts"]["contact_map_jaccard"]) == ["matrix", "statistics"]
     assert agreement["contacts"]["contact_map_jaccard"]["matrix"]["direction"] == "similarity"
+
+
+# ---------------------------------------------------------------------------- the golden results
+
+
+def test_the_page_describes_the_golden_results_as_the_tests_use_them():
+    from tests.golden import pose_set_cases as golden
+
+    section = _section("## Checking a change against the golden results")
+    assert golden.RTOL == golden.ATOL == 1e-6
+    assert "`|live - golden| <= 1e-6 + 1e-6 * |golden|`" in section
+    assert "rtol=1e-06 atol=1e-06" in section
+    for name in golden.CASES:
+        assert f"`{name}.json`" in section
+        assert (golden.GOLDEN_DIR / f"{name}.json").is_file()
+    for path in (
+        "tests/poses/test_golden_pose_set.py",
+        "tests/poses/test_golden_descriptors.py",
+        "scripts/regen_pose_golden.py",
+    ):
+        assert path in section
+        assert (ROOT / path).is_file(), path
+    assert "--write" in section
+    ordered = [line for line in TEXT.splitlines() if line.startswith("## ")]
+    assert ordered.index("## Checking a change against the golden results") == (
+        ordered.index("## Determinism") + 1
+    )
