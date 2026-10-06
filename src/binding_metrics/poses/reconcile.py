@@ -7,6 +7,10 @@ engine decides what a gap or a correlation means.
 
 * ``gap_between_backends``: the difference of two back-ends' means per aggregated key, and
   the same difference in units of the spread over seeds.
+* ``consensus_interface`` and ``compare_consensus_interfaces``: the residues that most poses
+  of a back-end hold in the interface, and the Jaccard index of two back-ends' consensus sets.
+* ``rank_agreement``: Spearman's rho or Kendall's tau between two back-ends' values of a
+  metric over a population of constructs.
 
 A value that cannot be computed is None with a reason, never NaN. A reason is a short sentence
 under the name of the field it explains (``reasons["standardised_gap"]``); the dictionary is
@@ -20,10 +24,15 @@ Importing this module imports numpy and the standard library only.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
 import numpy as np
+
+from binding_metrics.poses.aggregate import group_key
+from binding_metrics.poses.reference import ResidueKey
 
 #: Value of ``scale`` that standardises a gap by the standard deviation pooled over the seeds
 #: of the two back-ends.
@@ -285,4 +294,491 @@ def _gap_entry(
         "scale": scale_value,
         "scale_kind": scale_kind,
         "reasons": reasons,
+    }
+
+
+# ---------------------------------------------------------------------- interface consensus
+
+#: A consensus residue must reach this fraction of the valid poses, up to this relative slack:
+#: ``0.1 + 0.2`` is not ``0.3`` in floating point and must not decide a residue.
+_FRACTION_SLACK = 1e-9
+
+
+def _check_fraction(value: Any, name: str) -> float:
+    number = _number(value)
+    if number is None or not 0.0 < number <= 1.0:
+        raise ValueError(f"{name} must be a number in (0, 1], got {value!r}")
+    return number
+
+
+@dataclass(frozen=True)
+class ConsensusInterface:
+    """The interface residues that at least ``min_fraction`` of a back-end's valid poses share.
+
+    Attributes:
+        backend: The back-end the poses came from.
+        min_fraction: The fraction of the valid poses a residue has to reach.
+        n_poses: The valid poses that voted (the denominator of every fraction).
+        n_total: The rows of the back-end, valid or not.
+        binder: Binder positions (1-based, as ``binder_index``) in the consensus.
+        receptor: Receptor residues in the consensus, as ``ResidueKey`` in the numbering of
+            the reference.
+        binder_fractions: Binder position -> fraction of the valid poses with it in the
+            interface, for every position that is in the interface of at least one pose.
+        receptor_fractions: The same for the receptor residues.
+        n_unmapped_receptor: Receptor interface residues without a reference key, summed over
+            the poses. They are left out of the vote: no other pose can be compared on them.
+        skipped: ``{reason: count}`` of the rows that did not vote.
+        reason: Why the consensus is empty because no pose voted, else None.
+    """
+
+    backend: str
+    min_fraction: float
+    n_poses: int
+    n_total: int
+    binder: frozenset
+    receptor: frozenset
+    binder_fractions: dict = field(default_factory=dict)
+    receptor_fractions: dict = field(default_factory=dict)
+    n_unmapped_receptor: int = 0
+    skipped: dict = field(default_factory=dict)
+    reason: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """A JSON-ready dictionary: sorted lists, receptor keys as ``[chain, number, icode]``."""
+        return {
+            "backend": self.backend,
+            "min_fraction": self.min_fraction,
+            "n_poses": self.n_poses,
+            "n_total": self.n_total,
+            "binder": sorted(self.binder),
+            "receptor": [key.to_list() for key in sorted(self.receptor)],
+            "binder_fractions": [[i, f] for i, f in sorted(self.binder_fractions.items())],
+            "receptor_fractions": [
+                [key.to_list(), f] for key, f in sorted(self.receptor_fractions.items())
+            ],
+            "n_unmapped_receptor": self.n_unmapped_receptor,
+            "skipped": dict(self.skipped),
+            "reason": self.reason,
+        }
+
+
+def _interface_of_table(table: Sequence[Any], pose_id: str):
+    """``(binder positions, receptor keys, n unmapped receptor)`` of one residue table."""
+    binder: set[int] = set()
+    receptor: set[ResidueKey] = set()
+    unmapped = 0
+    for position, line in enumerate(table):
+        where = f"line {position} of the residue_table of pose {pose_id!r}"
+        if not isinstance(line, Mapping):
+            raise ValueError(f"{where} is a {type(line).__name__}, not a mapping")
+        role = line.get("role")
+        if role not in ("binder", "receptor"):
+            raise ValueError(f"{where} has role {role!r}, expected 'binder' or 'receptor'")
+        flag = line.get("in_interface")
+        if not isinstance(flag, (bool, np.bool_)):
+            raise ValueError(f"{where} has in_interface {flag!r}, expected a bool")
+        if not flag:
+            continue
+        if role == "binder":
+            index = line.get("binder_index")
+            if isinstance(index, bool) or not isinstance(index, (int, np.integer)):
+                raise ValueError(f"{where} has binder_index {index!r}, expected an integer")
+            binder.add(int(index))
+        elif line.get("reference_chain") is None or line.get("reference_number") is None:
+            unmapped += 1
+        else:
+            try:
+                key = ResidueKey(
+                    line["reference_chain"],
+                    line["reference_number"],
+                    line.get("reference_icode") or "",
+                )
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"{where} has no valid reference residue: {error}") from error
+            receptor.add(key)
+    return binder, receptor, unmapped
+
+
+def consensus_interface(
+    rows: Sequence[Mapping[str, Any]], backend: str, min_fraction: float = 0.5
+) -> ConsensusInterface:
+    """The interface residues shared by at least ``min_fraction`` of a back-end's valid poses.
+
+    The interface of a pose is read from the ``residue_table`` of its row (one dictionary per
+    residue; the columns used are ``role``, ``in_interface``, ``binder_index`` and, for a
+    receptor residue, ``reference_chain``, ``reference_number`` and ``reference_icode``). The
+    receptor is compared in the numbering of the reference, so a residue the pose cannot map
+    to the reference is left out and counted in ``n_unmapped_receptor``; the peptide is
+    compared by position. A pose is valid when its row has not ``"status": "failed"`` and has
+    a ``residue_table``; the other poses are counted in ``skipped`` and do not vote. A residue
+    is in the consensus when ``count / n_poses >= min_fraction``, so a residue held by exactly
+    half of the poses is in the default consensus of an even number of poses.
+
+    Args:
+        rows: Per-pose rows of a pose-set result, with ``provenance["backend"]``.
+        backend: The back-end whose poses vote.
+        min_fraction: A number in (0, 1].
+
+    Returns:
+        A ``ConsensusInterface``. With no valid pose both sets are empty, ``n_poses`` is 0 and
+        ``reason`` says why.
+
+    Raises:
+        ValueError: If ``min_fraction`` is not in (0, 1], ``backend`` is not a non-empty
+            string, a row is not a mapping, or a residue table line is malformed (it names
+            the pose and the line).
+    """
+    if not isinstance(backend, str) or not backend:
+        raise ValueError(f"backend must be a non-empty string, got {backend!r}")
+    min_fraction = _check_fraction(min_fraction, "min_fraction")
+    members = []
+    for position, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            raise ValueError(f"row {position} is a {type(row).__name__}, not a mapping")
+        if group_key(row, ("backend",)) == backend:
+            members.append((str(row.get("id", f"#{position}")), row))
+
+    skipped: list[str] = []
+    binder_counts: Counter = Counter()
+    receptor_counts: Counter = Counter()
+    unmapped = 0
+    n_poses = 0
+    for pose_id, row in members:
+        if row.get("status") == "failed":
+            skipped.append(str(row.get("reason") or "pose failed"))
+            continue
+        table = row.get("residue_table")
+        if isinstance(table, (str, bytes)) or not isinstance(table, Sequence):
+            skipped.append("the row has no residue_table")
+            continue
+        binder, receptor, pose_unmapped = _interface_of_table(table, pose_id)
+        n_poses += 1
+        binder_counts.update(binder)
+        receptor_counts.update(receptor)
+        unmapped += pose_unmapped
+
+    def kept(counts: Counter) -> frozenset:
+        return frozenset(
+            item for item, count in counts.items() if _reaches(count / n_poses, min_fraction)
+        )
+
+    reason = None
+    if n_poses == 0:
+        reason = (
+            f"no row for back-end {backend!r}"
+            if not members
+            else f"no valid pose of back-end {backend!r} has a residue_table"
+        )
+    return ConsensusInterface(
+        backend=backend,
+        min_fraction=min_fraction,
+        n_poses=n_poses,
+        n_total=len(members),
+        binder=kept(binder_counts) if n_poses else frozenset(),
+        receptor=kept(receptor_counts) if n_poses else frozenset(),
+        binder_fractions={i: c / n_poses for i, c in sorted(binder_counts.items())},
+        receptor_fractions={k: c / n_poses for k, c in sorted(receptor_counts.items())},
+        n_unmapped_receptor=unmapped,
+        skipped=_counted(skipped),
+        reason=reason,
+    )
+
+
+def _reaches(fraction: float, minimum: float) -> bool:
+    return fraction >= minimum or math.isclose(fraction, minimum, rel_tol=_FRACTION_SLACK)
+
+
+def _counted(texts: Sequence[str]) -> dict[str, int]:
+    """``{text: count}``, most frequent first, ties in alphabetical order."""
+    counts = Counter(texts)
+    return {text: counts[text] for text in sorted(counts, key=lambda text: (-counts[text], text))}
+
+
+def _tagged(consensus: ConsensusInterface) -> frozenset:
+    """Both sides in one set, each item tagged with the side it belongs to."""
+    return frozenset(("binder", i) for i in consensus.binder) | frozenset(
+        ("receptor", key) for key in consensus.receptor
+    )
+
+
+def _jaccard(first: frozenset, second: frozenset) -> Optional[float]:
+    union = len(first | second)
+    return len(first & second) / union if union else None
+
+
+def compare_consensus_interfaces(
+    consensus_a: ConsensusInterface,
+    consensus_b: ConsensusInterface,
+    *,
+    limit: Optional[float] = None,
+) -> dict[str, Any]:
+    """The Jaccard index of two back-ends' consensus interfaces, and what each has alone.
+
+    ``jaccard = |A & B| / |A | B|`` over the binder positions and the receptor residues
+    together; ``jaccard_binder`` and ``jaccard_receptor`` give each side alone.
+
+    Args:
+        consensus_a: The consensus of the first back-end (``consensus_interface``).
+        consensus_b: The consensus of the second.
+        limit: Optional number in [0, 1]. When given, the result also carries
+            ``below_limit``, True when ``jaccard < limit``. The function never says "differs"
+            on its own: the engine picks the limit.
+
+    Returns:
+        ``{"backend_a", "backend_b", "jaccard", "jaccard_binder", "jaccard_receptor",
+        "only_a": {"binder": [positions], "receptor": [ResidueKey]}, "only_b": {...},
+        "reasons": {field: sentence}}`` plus ``"below_limit"`` with a ``limit``. The lists are
+        sorted (use ``ResidueKey.label`` or ``to_list()`` for text). A Jaccard of two empty
+        sets is None ("both ... are empty"). When a back-end has no valid pose every field is
+        None with that reason, because an empty consensus would read as "no interface".
+
+    Raises:
+        ValueError: If an argument is not a ``ConsensusInterface`` or ``limit`` is not a
+            number in [0, 1].
+    """
+    for name, value in (("consensus_a", consensus_a), ("consensus_b", consensus_b)):
+        if not isinstance(value, ConsensusInterface):
+            raise ValueError(f"{name} must be a ConsensusInterface, got {type(value).__name__}")
+    if limit is not None:
+        limit_number = _number(limit)
+        if limit_number is None or not 0.0 <= limit_number <= 1.0:
+            raise ValueError(f"limit must be a number in [0, 1], got {limit!r}")
+        limit = limit_number
+
+    result: dict[str, Any] = {
+        "backend_a": consensus_a.backend,
+        "backend_b": consensus_b.backend,
+    }
+    fields = ("jaccard", "jaccard_binder", "jaccard_receptor", "only_a", "only_b")
+    unusable = [c.reason for c in (consensus_a, consensus_b) if c.n_poses == 0]
+    if unusable:
+        why = "; ".join(unusable)
+        result.update({name: None for name in fields})
+        result["reasons"] = {name: why for name in fields}
+    else:
+        a, b = consensus_a, consensus_b
+        result["jaccard"] = _jaccard(_tagged(a), _tagged(b))
+        result["jaccard_binder"] = _jaccard(a.binder, b.binder)
+        result["jaccard_receptor"] = _jaccard(a.receptor, b.receptor)
+        result["only_a"] = {
+            "binder": sorted(a.binder - b.binder),
+            "receptor": sorted(a.receptor - b.receptor),
+        }
+        result["only_b"] = {
+            "binder": sorted(b.binder - a.binder),
+            "receptor": sorted(b.receptor - a.receptor),
+        }
+        result["reasons"] = {
+            name: f"both consensus {label} are empty"
+            for name, label in (
+                ("jaccard", "interfaces"),
+                ("jaccard_binder", "binder sets"),
+                ("jaccard_receptor", "receptor sets"),
+            )
+            if result[name] is None
+        }
+    if limit is not None:
+        result["below_limit"] = None if result["jaccard"] is None else result["jaccard"] < limit
+        if result["below_limit"] is None:
+            result["reasons"]["below_limit"] = result["reasons"]["jaccard"]
+    return result
+
+
+# ---------------------------------------------------------------------- rank correlation
+
+RANK_METHODS = ("spearman", "kendall")
+
+
+def _average_ranks(values: np.ndarray) -> np.ndarray:
+    """1-based ranks; tied values share the mean of the ranks they span (the midrank)."""
+    order = np.argsort(values, kind="mergesort")
+    ordered = values[order]
+    ranks = np.empty(len(values), dtype=float)
+    start = 0
+    while start < len(values):
+        stop = start
+        while stop + 1 < len(values) and ordered[stop + 1] == ordered[start]:
+            stop += 1
+        ranks[order[start : stop + 1]] = (start + stop) / 2.0 + 1.0
+        start = stop + 1
+    return ranks
+
+
+def _clip_correlation(value: float) -> float:
+    return max(-1.0, min(1.0, value))
+
+
+def _rank_correlation(
+    x: Sequence[float], y: Sequence[float], method: str, names: tuple[str, str]
+) -> tuple[Optional[float], Optional[str]]:
+    """``(coefficient, None)`` or ``(None, why)`` for two equally long lists of numbers.
+
+    Spearman's rho is the Pearson correlation of the midranks (the definition with ties).
+    Kendall's tau-b is ``sum_{i<j} sign(dx) sign(dy) / sqrt(P_x P_y)``, with ``P_x`` the number
+    of pairs not tied in ``x`` and ``P_y`` the same for ``y``. Either is undefined when one
+    list is constant.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    for values, name in zip((x, y), names):
+        if np.ptp(values) == 0:
+            return None, f"every value of {name} is tied, so the rank correlation is undefined"
+    if method == "spearman":
+        dx = _average_ranks(x)
+        dy = _average_ranks(y)
+        dx = dx - dx.mean()
+        dy = dy - dy.mean()
+        return _clip_correlation(float(dx @ dy / math.sqrt((dx @ dx) * (dy @ dy)))), None
+    sx = np.sign(x[:, None] - x[None, :])
+    sy = np.sign(y[:, None] - y[None, :])
+    return (
+        _clip_correlation(float((sx * sy).sum() / math.sqrt(np.abs(sx).sum() * np.abs(sy).sum()))),
+        None,
+    )
+
+
+MIN_CONSTRUCTS_FOR_RANK = 3
+
+
+def rank_agreement(
+    table: Sequence[Mapping[str, Any]],
+    backend_a: str,
+    backend_b: str,
+    metrics: Optional[Iterable[str]] = None,
+    method: str = "spearman",
+) -> dict[str, dict[str, Any]]:
+    """Do two back-ends order the constructs of a population the same way?
+
+    For each metric, the rank correlation between the values of ``backend_a`` and
+    ``backend_b`` over the constructs that have a valid value for both. Spearman's rho uses
+    midranks for ties and is the Pearson correlation of the ranks; Kendall's tau is tau-b,
+    which corrects for ties in either list. Both are implemented here (no scipy) and match
+    ``scipy.stats.spearmanr`` and ``kendalltau``. Only exact ties count as ties.
+
+    Args:
+        table: Rows ``{"construct": id, "backend": name, "<metric>": value, ...}``, one per
+            construct and back-end: a list of dictionaries, or the aggregated means of
+            ``aggregate_poses`` written out in that shape. Rows of other back-ends are ignored.
+        backend_a: The first back-end.
+        backend_b: The second; it must differ from ``backend_a``.
+        metrics: Column names to correlate, in the order reported. By default every column
+            (other than ``construct`` and ``backend``) that has a number in a row of either
+            back-end, sorted.
+        method: ``"spearman"`` (default) or ``"kendall"``.
+
+    Returns:
+        ``{metric: {"method", "correlation": float | None, "n", "n_constructs", "n_dropped",
+        "n_missing_a", "n_missing_b", "reason"}}``. A valid value is a finite number (not
+        None, NaN, infinity, a bool or a string). ``n`` is the number of constructs used,
+        ``n_constructs`` the constructs that appear in a row of either back-end, ``n_dropped``
+        the difference, and ``n_missing_a`` and ``n_missing_b`` how many constructs lack a
+        valid value for each back-end (a missing row included). ``reason`` is present only
+        when ``correlation`` is None: fewer than 3 constructs, or one back-end's values all
+        tie. With ``metrics=None`` and no row for the two back-ends the result is empty.
+
+    Raises:
+        ValueError: If a back-end name is not a non-empty string or the names are equal,
+            ``method`` is unknown, ``metrics`` is a bare string, repeats a name or names
+            ``construct`` or ``backend``, ``table`` is not a list of mappings, a row has no
+            ``construct`` or no ``backend``, or a construct appears twice for one back-end.
+    """
+    _check_backends(backend_a, backend_b)
+    if method not in RANK_METHODS:
+        raise ValueError(f"method must be one of {RANK_METHODS}, got {method!r}")
+    if isinstance(table, (str, bytes, Mapping)) or not isinstance(table, Iterable):
+        raise ValueError("table must be a list of row dictionaries")
+    rows_of: dict[str, dict[Any, Mapping[str, Any]]] = {backend_a: {}, backend_b: {}}
+    for position, row in enumerate(table):
+        if not isinstance(row, Mapping):
+            raise ValueError(f"table row {position} is a {type(row).__name__}, not a mapping")
+        for column in ("construct", "backend"):
+            if row.get(column) is None:
+                raise ValueError(f"table row {position} has no {column!r}")
+        backend = row["backend"]
+        if not isinstance(backend, str):
+            raise ValueError(f"table row {position} has backend {backend!r}, expected a string")
+        if backend not in rows_of:
+            continue
+        construct = row["construct"]
+        try:
+            hash(construct)
+        except TypeError as error:
+            raise ValueError(
+                f"table row {position} has an unhashable construct {construct!r}"
+            ) from error
+        if construct in rows_of[backend]:
+            raise ValueError(
+                f"construct {construct!r} appears twice for back-end {backend!r} "
+                f"(table row {position}); give one row per construct and back-end"
+            )
+        rows_of[backend][construct] = row
+
+    constructs = sorted(
+        set(rows_of[backend_a]) | set(rows_of[backend_b]),
+        key=lambda construct: (type(construct).__name__, str(construct)),
+    )
+    names = _metric_names(metrics, rows_of[backend_a], rows_of[backend_b])
+
+    result: dict[str, dict[str, Any]] = {}
+    for metric in names:
+        values_a = _valid_values(rows_of[backend_a], constructs, metric)
+        values_b = _valid_values(rows_of[backend_b], constructs, metric)
+        used = [c for c in constructs if values_a[c] is not None and values_b[c] is not None]
+        entry: dict[str, Any] = {
+            "method": method,
+            "correlation": None,
+            "n": len(used),
+            "n_constructs": len(constructs),
+            "n_dropped": len(constructs) - len(used),
+            "n_missing_a": sum(values_a[c] is None for c in constructs),
+            "n_missing_b": sum(values_b[c] is None for c in constructs),
+        }
+        if len(used) < MIN_CONSTRUCTS_FOR_RANK:
+            entry["reason"] = (
+                f"needs at least {MIN_CONSTRUCTS_FOR_RANK} constructs with a valid value for "
+                f"both back-ends (n = {len(used)}, {entry['n_dropped']} dropped)"
+            )
+        else:
+            entry["correlation"], why = _rank_correlation(
+                [values_a[c] for c in used],
+                [values_b[c] for c in used],
+                method,
+                (f"back-end {backend_a!r}", f"back-end {backend_b!r}"),
+            )
+            if why is not None:
+                entry["reason"] = why
+        result[metric] = entry
+    return result
+
+
+def _metric_names(metrics, rows_a: Mapping, rows_b: Mapping) -> list[str]:
+    reserved = ("construct", "backend")
+    if metrics is None:
+        columns = {
+            column
+            for row in (*rows_a.values(), *rows_b.values())
+            for column, value in row.items()
+            if column not in reserved and _number(value) is not None
+        }
+        return sorted(str(column) for column in columns)
+    if isinstance(metrics, str):
+        raise ValueError(f"metrics must be a list of column names, got the string {metrics!r}")
+    names = list(metrics)
+    for name in names:
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"metrics must be non-empty column names, got {name!r}")
+        if name in reserved:
+            raise ValueError(f"{name!r} is not a metric: it identifies the row")
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        raise ValueError(f"metrics repeats {repeated}")
+    return names
+
+
+def _valid_values(rows: Mapping, constructs: Sequence, metric: str) -> dict[Any, Optional[float]]:
+    """``{construct: finite float or None}``; None when the row or the value is missing."""
+    return {
+        construct: _number(rows[construct].get(metric)) if construct in rows else None
+        for construct in constructs
     }

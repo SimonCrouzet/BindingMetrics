@@ -7,7 +7,14 @@ import numpy as np
 import pytest
 
 from binding_metrics.poses.aggregate import aggregate_poses
-from binding_metrics.poses.reconcile import gap_between_backends
+from binding_metrics.poses.reconcile import (
+    ConsensusInterface,
+    compare_consensus_interfaces,
+    consensus_interface,
+    gap_between_backends,
+    rank_agreement,
+)
+from binding_metrics.poses.reference import ResidueKey
 
 KEY = "interface.delta_sasa"
 
@@ -296,3 +303,544 @@ class TestGapValidation:
         before = json.dumps(aggregates, sort_keys=True)
         gap_between_backends(aggregates, "a", "b")
         assert json.dumps(aggregates, sort_keys=True) == before
+
+
+# ---------------------------------------------------------------------- consensus interface
+
+
+def residue_table(binder=(), receptor=(), n_binder=8, unmapped=0, chain="A"):
+    """A residue table in the format of the design note (8.5): the columns that are read.
+
+    ``binder`` holds the 1-based positions in the interface, ``receptor`` the reference
+    residues in the interface, as numbers or ``(number, icode)`` pairs on ``chain``;
+    ``unmapped`` adds receptor interface residues that have no reference key.
+    """
+    table = [
+        {"role": "binder", "binder_index": i, "in_interface": i in set(binder)}
+        for i in range(1, n_binder + 1)
+    ]
+    for item in receptor:
+        number, icode = item if isinstance(item, tuple) else (item, "")
+        table.append(
+            {
+                "role": "receptor",
+                "binder_index": None,
+                "reference_chain": chain,
+                "reference_number": number,
+                "reference_icode": icode,
+                "in_interface": True,
+            }
+        )
+    table.append(  # a receptor residue outside the interface never counts
+        {
+            "role": "receptor",
+            "reference_chain": chain,
+            "reference_number": 999,
+            "reference_icode": "",
+            "in_interface": False,
+        }
+    )
+    for _ in range(unmapped):
+        table.append(
+            {
+                "role": "receptor",
+                "reference_chain": None,
+                "reference_number": None,
+                "reference_icode": None,
+                "in_interface": True,
+            }
+        )
+    return table
+
+
+def pose_row(pose_id, backend, binder=(), receptor=(), **kwargs):
+    return make_row(
+        pose_id,
+        backend,
+        1,
+        residue_table=residue_table(binder, receptor, **kwargs),
+    )
+
+
+def four_poses(backend="a"):
+    """Binder 1 in 4 of 4 poses, 2 in 2, 3 in 1; receptor 25 in 4, 26 in 3, 30 in 2, 31 in 1."""
+    return [
+        pose_row(f"{backend}1", backend, [1, 2, 3], [25, 26, 30, 31]),
+        pose_row(f"{backend}2", backend, [1, 2], [25, 26, 30]),
+        pose_row(f"{backend}3", backend, [1], [25, 26]),
+        pose_row(f"{backend}4", backend, [1], [25]),
+    ]
+
+
+class TestConsensusInterface:
+    def test_default_threshold_keeps_residues_held_by_at_least_half_of_the_poses(self):
+        consensus = consensus_interface(four_poses(), "a")
+        assert isinstance(consensus, ConsensusInterface)
+        assert consensus.binder == {1, 2}
+        assert consensus.receptor == {ResidueKey("A", n) for n in (25, 26, 30)}
+        assert (consensus.n_poses, consensus.n_total, consensus.reason) == (4, 4, None)
+        assert consensus.binder_fractions == {1: 1.0, 2: 0.5, 3: 0.25}
+        assert consensus.receptor_fractions[ResidueKey("A", 26)] == 0.75
+        assert consensus.receptor_fractions[ResidueKey("A", 31)] == 0.25
+
+    @pytest.mark.parametrize(
+        "min_fraction, binder, receptor",
+        [
+            (0.25, {1, 2, 3}, {25, 26, 30, 31}),  # the fraction is reached exactly
+            (0.2500001, {1, 2}, {25, 26, 30}),  # just above the fraction of the rarest
+            (0.5, {1, 2}, {25, 26, 30}),  # exactly half is in
+            (0.5000001, {1}, {25, 26}),  # just above half is out
+            (0.75, {1}, {25, 26}),
+            (1.0, {1}, {25}),
+        ],
+    )
+    def test_boundary_of_min_fraction(self, min_fraction, binder, receptor):
+        consensus = consensus_interface(four_poses(), "a", min_fraction=min_fraction)
+        assert consensus.binder == binder
+        assert consensus.receptor == {ResidueKey("A", n) for n in receptor}
+
+    def test_a_decimal_fraction_is_reached_by_the_matching_count(self):
+        rows = [pose_row(f"p{i}", "a", [1] if i < 7 else [2]) for i in range(10)]
+        assert consensus_interface(rows, "a", 0.7).binder == {1}
+        assert consensus_interface(rows, "a", 0.71).binder == frozenset()
+        # 0.1 + 0.2 is 0.30000000000000004 in floating point; 3 of 10 must still reach it
+        assert consensus_interface(rows, "a", 0.1 + 0.2).binder == {1, 2}
+
+    def test_failed_poses_and_rows_without_a_table_do_not_vote_and_are_counted(self):
+        rows = [
+            pose_row("a1", "a", [1, 2], [25]),
+            pose_row("a2", "a", [1], [26]),
+            make_row("a3", "a", 3, status="failed"),
+            make_row("a4", "a", 4),
+        ]
+        consensus = consensus_interface(rows, "a")
+        assert (consensus.n_poses, consensus.n_total) == (2, 4)
+        assert consensus.binder == {1, 2}  # 2 of the 2 voters hold 1, 1 of 2 holds 2
+        assert consensus.receptor == {ResidueKey("A", 25), ResidueKey("A", 26)}
+        assert consensus.skipped == {"pose failed": 1, "the row has no residue_table": 1}
+
+    def test_rows_of_other_back_ends_are_ignored(self):
+        rows = four_poses("a") + [pose_row("b1", "b", [7], [90])]
+        consensus = consensus_interface(rows, "a")
+        assert 7 not in consensus.binder and ResidueKey("A", 90) not in consensus.receptor
+        assert consensus_interface(rows, "b").binder == {7}
+
+    def test_insertion_codes_make_distinct_residues(self):
+        rows = [
+            pose_row("a1", "a", receptor=[52, (52, "A")]),
+            pose_row("a2", "a", receptor=[(52, "A")]),
+        ]
+        consensus = consensus_interface(rows, "a", min_fraction=1.0)
+        assert consensus.receptor == {ResidueKey("A", 52, "A")}
+        assert consensus_interface(rows, "a", 0.5).receptor == {
+            ResidueKey("A", 52),
+            ResidueKey("A", 52, "A"),
+        }
+
+    def test_unmapped_receptor_interface_residues_are_counted_and_left_out(self):
+        rows = [pose_row("a1", "a", [1], [25], unmapped=2), pose_row("a2", "a", [1], [25])]
+        consensus = consensus_interface(rows, "a")
+        assert consensus.n_unmapped_receptor == 2
+        assert consensus.receptor == {ResidueKey("A", 25)}
+
+    def test_without_a_valid_pose_the_sets_are_empty_and_the_reason_says_why(self):
+        none_for_backend = consensus_interface(four_poses("a"), "b")
+        assert (none_for_backend.n_poses, none_for_backend.n_total) == (0, 0)
+        assert none_for_backend.binder == frozenset() and none_for_backend.receptor == frozenset()
+        assert "no row for back-end 'b'" in none_for_backend.reason
+        only_failed = consensus_interface([make_row("a1", "a", 1, status="failed")], "a")
+        assert only_failed.n_poses == 0 and only_failed.n_total == 1
+        assert "no valid pose" in only_failed.reason
+        assert consensus_interface([], "a").n_total == 0
+
+    def test_an_empty_interface_in_every_pose_is_a_valid_empty_consensus(self):
+        consensus = consensus_interface([pose_row("a1", "a"), pose_row("a2", "a")], "a")
+        assert consensus.n_poses == 2 and consensus.reason is None
+        assert consensus.binder == frozenset() and consensus.receptor == frozenset()
+
+    def test_to_dict_is_json_ready_and_sorted(self):
+        data = consensus_interface(four_poses(), "a").to_dict()
+        json.dumps(data, allow_nan=False)
+        assert data["binder"] == [1, 2]
+        assert data["receptor"] == [["A", 25, ""], ["A", 26, ""], ["A", 30, ""]]
+        assert data["binder_fractions"] == [[1, 1.0], [2, 0.5], [3, 0.25]]
+        assert data["reason"] is None and data["n_poses"] == 4
+
+    def test_input_order_does_not_matter(self):
+        rows = four_poses()
+        assert consensus_interface(rows[::-1], "a") == consensus_interface(rows, "a")
+
+    @pytest.mark.parametrize("bad", [0, 0.0, -0.1, 1.01, float("nan"), None, True, "0.5"])
+    def test_min_fraction_must_be_in_the_half_open_unit_interval(self, bad):
+        with pytest.raises(ValueError, match="min_fraction"):
+            consensus_interface(four_poses(), "a", min_fraction=bad)
+
+    @pytest.mark.parametrize("bad", ["", None, 3])
+    def test_backend_must_be_a_non_empty_string(self, bad):
+        with pytest.raises(ValueError, match="backend"):
+            consensus_interface(four_poses(), bad)
+
+    def test_malformed_rows_and_table_lines_raise_with_the_pose_and_line(self):
+        with pytest.raises(ValueError, match="row 0 is a str"):
+            consensus_interface(["a1"], "a")
+        base = pose_row("a1", "a", [1])
+
+        def with_line(line):
+            row = dict(base)
+            row["residue_table"] = [dict(base["residue_table"][0]), line]
+            return [row]
+
+        with pytest.raises(ValueError, match=r"line 1 .*'a1'.*role 'ligand'"):
+            consensus_interface(with_line({"role": "ligand", "in_interface": True}), "a")
+        with pytest.raises(ValueError, match="in_interface None"):
+            consensus_interface(with_line({"role": "binder", "binder_index": 1}), "a")
+        with pytest.raises(ValueError, match="binder_index 'x'"):
+            consensus_interface(
+                with_line({"role": "binder", "binder_index": "x", "in_interface": True}), "a"
+            )
+        with pytest.raises(ValueError, match="not a mapping"):
+            consensus_interface(with_line("binder"), "a")
+        with pytest.raises(ValueError, match="no valid reference residue"):
+            line = {
+                "role": "receptor",
+                "reference_chain": "A",
+                "reference_number": "25",
+                "in_interface": True,
+            }
+            consensus_interface(with_line(line), "a")
+
+
+class TestCompareConsensus:
+    @staticmethod
+    def consensus(backend, binder, receptor):
+        rows = [pose_row(f"{backend}1", backend, binder, receptor)]
+        return consensus_interface(rows, backend, min_fraction=1.0)
+
+    def test_jaccard_and_difference_lists_on_hand_built_sets(self):
+        a = self.consensus("a", [1, 2, 3], [25, 26, 50])
+        b = self.consensus("b", [2, 3, 4], [26, 51, 52])
+        got = compare_consensus_interfaces(a, b)
+        assert (got["backend_a"], got["backend_b"]) == ("a", "b")
+        assert got["jaccard_binder"] == pytest.approx(2 / 4)
+        assert got["jaccard_receptor"] == pytest.approx(1 / 5)
+        assert got["jaccard"] == pytest.approx(3 / 9)  # 2 + 1 shared of 4 + 5 in the union
+        key = lambda n: ResidueKey("A", n)  # noqa: E731
+        assert got["only_a"] == {"binder": [1], "receptor": [key(25), key(50)]}
+        assert got["only_b"] == {"binder": [4], "receptor": [key(51), key(52)]}
+        assert got["reasons"] == {} and "below_limit" not in got
+
+    def test_swapping_the_back_ends_swaps_the_lists_and_keeps_the_value(self):
+        a = self.consensus("a", [1, 2], [25])
+        b = self.consensus("b", [2, 3], [25, 26])
+        forward, backward = compare_consensus_interfaces(a, b), compare_consensus_interfaces(b, a)
+        assert forward["jaccard"] == pytest.approx(backward["jaccard"])
+        assert forward["only_a"] == backward["only_b"]
+        assert forward["only_b"] == backward["only_a"]
+
+    def test_identical_consensus_sets_have_jaccard_one_and_no_difference(self):
+        a = self.consensus("a", [1, 2], [25, 26])
+        b = self.consensus("b", [1, 2], [25, 26])
+        got = compare_consensus_interfaces(a, b)
+        assert got["jaccard"] == got["jaccard_binder"] == got["jaccard_receptor"] == 1.0
+        assert got["only_a"] == got["only_b"] == {"binder": [], "receptor": []}
+
+    def test_disjoint_sets_have_jaccard_zero(self):
+        got = compare_consensus_interfaces(
+            self.consensus("a", [1], [25]), self.consensus("b", [2], [26])
+        )
+        assert got["jaccard"] == 0.0
+
+    def test_two_empty_consensus_sets_have_no_jaccard(self):
+        a = self.consensus("a", [], [])
+        b = self.consensus("b", [], [])
+        got = compare_consensus_interfaces(a, b)
+        assert got["jaccard"] is None and got["only_a"] == got["only_b"]
+        assert got["reasons"]["jaccard"] == "both consensus interfaces are empty"
+        assert got["reasons"]["jaccard_binder"] == "both consensus binder sets are empty"
+        assert got["reasons"]["jaccard_receptor"] == "both consensus receptor sets are empty"
+
+    def test_an_empty_side_with_a_non_empty_other_is_zero_not_none(self):
+        got = compare_consensus_interfaces(
+            self.consensus("a", [], [25]), self.consensus("b", [], [26])
+        )
+        assert got["jaccard_receptor"] == 0.0
+        assert got["jaccard_binder"] is None
+        assert list(got["reasons"]) == ["jaccard_binder"]
+
+    def test_limit_adds_the_boolean_next_to_the_value(self):
+        a = self.consensus("a", [1, 2, 3], [25, 26, 50])
+        b = self.consensus("b", [2, 3, 4], [26, 51, 52])  # jaccard 1/3
+        assert compare_consensus_interfaces(a, b, limit=0.5)["below_limit"] is True
+        assert compare_consensus_interfaces(a, b, limit=0.2)["below_limit"] is False
+        at_value = compare_consensus_interfaces(a, b, limit=3 / 9)
+        assert at_value["below_limit"] is False  # strictly below
+        assert at_value["jaccard"] == pytest.approx(1 / 3)
+
+    def test_limit_with_no_jaccard_is_none_with_a_reason(self):
+        a, b = self.consensus("a", [], []), self.consensus("b", [], [])
+        got = compare_consensus_interfaces(a, b, limit=0.5)
+        assert got["below_limit"] is None
+        assert got["reasons"]["below_limit"] == got["reasons"]["jaccard"]
+
+    def test_a_back_end_without_a_valid_pose_gives_none_everywhere(self):
+        a = self.consensus("a", [1], [25])
+        nothing = consensus_interface([], "b")
+        got = compare_consensus_interfaces(a, nothing, limit=0.5)
+        for name in ("jaccard", "jaccard_binder", "jaccard_receptor", "only_a", "only_b"):
+            assert got[name] is None
+            assert "no row for back-end 'b'" in got["reasons"][name]
+        assert got["below_limit"] is None
+        json.dumps(got, allow_nan=False)
+
+    @pytest.mark.parametrize("bad", [-0.1, 1.5, float("nan"), "0.5", True])
+    def test_limit_must_be_in_the_unit_interval(self, bad):
+        a = self.consensus("a", [1], [25])
+        with pytest.raises(ValueError, match="limit"):
+            compare_consensus_interfaces(a, a, limit=bad)
+
+    def test_arguments_must_be_consensus_objects(self):
+        a = self.consensus("a", [1], [25])
+        with pytest.raises(ValueError, match="consensus_b must be a ConsensusInterface"):
+            compare_consensus_interfaces(a, {"binder": [1]})
+        with pytest.raises(ValueError, match="consensus_a"):
+            compare_consensus_interfaces(None, a)
+
+
+# ---------------------------------------------------------------------- rank agreement
+
+
+def population(values_a, values_b, metric="score", constructs=None):
+    """A long table: one row per construct and back-end; ``None`` leaves the value out."""
+    names = constructs or [f"c{i}" for i in range(len(values_a))]
+    rows = []
+    for name, a, b in zip(names, values_a, values_b):
+        rows.append({"construct": name, "backend": "a", metric: a})
+        rows.append({"construct": name, "backend": "b", metric: b})
+    return rows
+
+
+class TestRankAgreementClosedForms:
+    def test_spearman_without_ties_is_one_minus_six_sum_d_squared_over_n_n_squared_minus_one(self):
+        x, y = [1, 2, 3, 4, 5], [2, 1, 4, 3, 5]
+        got = rank_agreement(population(x, y), "a", "b")["score"]
+        assert got["correlation"] == pytest.approx(1 - 6 * 4 / (5 * 24), abs=1e-14)
+        assert got["correlation"] == pytest.approx(0.8)
+        assert (got["method"], got["n"], got["n_dropped"]) == ("spearman", 5, 0)
+        assert "reason" not in got
+
+    def test_spearman_with_ties_uses_midranks(self):
+        # ranks of x: 1, 2.5, 2.5, 4; of y: 1, 3, 2, 4; Pearson of the ranks = 4.5 / sqrt(4.5 * 5)
+        got = rank_agreement(population([1, 2, 2, 3], [1, 3, 2, 4]), "a", "b")["score"]
+        assert got["correlation"] == pytest.approx(4.5 / math.sqrt(22.5), rel=1e-14)
+        assert got["correlation"] == pytest.approx(0.9486832980505138)
+
+    def test_spearman_is_one_for_any_increasing_relation_and_minus_one_for_a_decreasing_one(self):
+        x = [0.1, 0.5, 2.0, 7.0, 40.0]
+        up = rank_agreement(population(x, [3 * v**3 + 1 for v in x]), "a", "b")["score"]
+        down = rank_agreement(population(x, [-math.exp(v) for v in x]), "a", "b")["score"]
+        assert up["correlation"] == pytest.approx(1.0)
+        assert down["correlation"] == pytest.approx(-1.0)
+
+    def test_kendall_without_ties_is_concordant_minus_discordant_over_pairs(self):
+        x, y = [1, 2, 3, 4, 5], [2, 1, 4, 3, 5]  # 8 concordant and 2 discordant pairs of 10
+        got = rank_agreement(population(x, y), "a", "b", method="kendall")["score"]
+        assert got["correlation"] == pytest.approx((8 - 2) / 10)
+        assert got["method"] == "kendall"
+
+    def test_kendall_tau_b_corrects_for_ties(self):
+        # 5 concordant pairs, 0 discordant, one pair tied in x: tau-b = 5 / sqrt((6-1)(6-0))
+        got = rank_agreement(population([1, 2, 2, 3], [1, 3, 2, 4]), "a", "b", method="kendall")
+        assert got["score"]["correlation"] == pytest.approx(5 / math.sqrt(30), rel=1e-14)
+
+    def test_kendall_with_ties_in_both_lists(self):
+        # x = 1 1 2 2, y = 1 2 2 2. Pairs: (1,3) and (1,4) are concordant; (1,2) is tied in x;
+        # (2,3) and (2,4) are tied in y; (3,4) is tied in both. 2 concordant, 0 discordant,
+        # P_x = 4 pairs untied in x, P_y = 3 untied in y: tau-b = 2 / sqrt(4 * 3).
+        got = rank_agreement(population([1, 1, 2, 2], [1, 2, 2, 2]), "a", "b", method="kendall")
+        assert got["score"]["correlation"] == pytest.approx(2 / math.sqrt(12), rel=1e-14)
+
+    @pytest.mark.parametrize("method", ["spearman", "kendall"])
+    def test_swapping_the_back_ends_keeps_the_coefficient(self, method):
+        table = population([3.0, 1.0, 2.0, 5.0, 4.0], [10.0, 30.0, 20.0, 50.0, 40.0])
+        forward = rank_agreement(table, "a", "b", method=method)["score"]
+        backward = rank_agreement(table, "b", "a", method=method)["score"]
+        assert forward["correlation"] == pytest.approx(backward["correlation"], abs=1e-14)
+        assert (forward["n_missing_a"], forward["n_missing_b"]) == (0, 0)
+
+    @pytest.mark.parametrize("method", ["spearman", "kendall"])
+    def test_agrees_with_scipy_on_seeded_data_with_ties(self, method):
+        stats = pytest.importorskip("scipy.stats")
+        rng = np.random.default_rng(11)
+        for n in (3, 4, 8, 25, 60):
+            x = rng.integers(0, 6, size=n).astype(float)
+            y = (x + rng.normal(0, 1.5, size=n)).round()
+            if np.ptp(x) == 0 or np.ptp(y) == 0:
+                continue
+            got = rank_agreement(population(list(x), list(y)), "a", "b", method=method)["score"]
+            function = stats.spearmanr if method == "spearman" else stats.kendalltau
+            assert got["correlation"] == pytest.approx(function(x, y)[0], abs=1e-12)
+
+    def test_the_coefficient_never_leaves_minus_one_to_one(self):
+        rng = np.random.default_rng(3)
+        for _ in range(20):
+            x = rng.normal(size=12)
+            for method in ("spearman", "kendall"):
+                for y in (x, -x, 5 * x + 2):
+                    got = rank_agreement(population(list(x), list(y)), "a", "b", method=method)
+                    assert -1.0 <= got["score"]["correlation"] <= 1.0
+
+
+class TestRankAgreementDropsAndReasons:
+    def test_constructs_without_a_value_for_either_back_end_are_dropped_and_counted(self):
+        table = population(
+            [1.0, 2.0, None, 4.0, 5.0, float("nan"), 7.0],
+            [1.5, None, 3.0, 4.5, 5.5, 6.0, 7.5],
+        )
+        table.append({"construct": "only_a", "backend": "a", "score": 9.0})
+        got = rank_agreement(table, "a", "b")["score"]
+        assert got["n"] == 4  # c0, c3, c4, c6
+        assert got["n_constructs"] == 8
+        assert got["n_dropped"] == 4
+        assert got["n_missing_a"] == 2  # c2 (None) and c5 (NaN)
+        assert got["n_missing_b"] == 2  # c1 (None) and only_a (no row)
+        assert got["correlation"] == pytest.approx(1.0)
+
+    def test_infinity_bool_and_text_count_as_missing(self):
+        table = population([1.0, 2.0, 3.0, float("inf"), True, "x", 6.0], [1, 2, 3, 4, 5, 6, 7])
+        got = rank_agreement(table, "a", "b")["score"]
+        assert (got["n"], got["n_missing_a"], got["n_missing_b"]) == (4, 3, 0)
+
+    def test_a_missing_key_in_a_row_is_a_missing_value(self):
+        table = population([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0])
+        del table[2]["score"]  # c1, back-end a
+        got = rank_agreement(table, "a", "b")["score"]
+        assert (got["n"], got["n_dropped"], got["n_missing_a"]) == (3, 1, 1)
+
+    def test_fewer_than_three_constructs_gives_none_with_a_reason(self):
+        got = rank_agreement(population([1.0, 2.0], [2.0, 1.0]), "a", "b")["score"]
+        assert got["correlation"] is None and got["n"] == 2
+        assert "at least 3 constructs" in got["reason"] and "n = 2" in got["reason"]
+        three = rank_agreement(population([1.0, 2.0, 3.0], [1.0, 3.0, 2.0]), "a", "b")["score"]
+        assert three["correlation"] == pytest.approx(0.5) and "reason" not in three
+
+    def test_the_reason_counts_the_dropped_constructs(self):
+        table = population([1.0, None, None, 4.0], [1.0, 2.0, 3.0, 4.0])
+        reason = rank_agreement(table, "a", "b")["score"]["reason"]
+        assert "n = 2" in reason and "2 dropped" in reason
+
+    @pytest.mark.parametrize("method", ["spearman", "kendall"])
+    def test_a_constant_list_gives_none_with_the_back_end_named(self, method):
+        got = rank_agreement(population([5, 5, 5, 5], [1, 2, 3, 4]), "a", "b", method=method)
+        assert got["score"]["correlation"] is None and got["score"]["n"] == 4
+        assert "back-end 'a'" in got["score"]["reason"] and "tied" in got["score"]["reason"]
+        got = rank_agreement(population([1, 2, 3, 4], [7, 7, 7, 7]), "a", "b", method=method)
+        assert "back-end 'b'" in got["score"]["reason"]
+
+    def test_no_row_for_either_back_end_gives_n_zero_and_a_reason(self):
+        got = rank_agreement(
+            [{"construct": "c", "backend": "z", "score": 1.0}], "a", "b", ["score"]
+        )
+        assert got["score"]["n"] == 0 and got["score"]["n_constructs"] == 0
+        assert got["score"]["correlation"] is None and "n = 0" in got["score"]["reason"]
+
+    def test_nothing_is_nan(self):
+        tables = [
+            population([5, 5, 5], [1, 2, 3]),
+            population([1.0, 2.0], [2.0, 1.0]),
+            population([float("nan")] * 4, [1, 2, 3, 4]),
+        ]
+        for table in tables:
+            for method in ("spearman", "kendall"):
+                json.dumps(rank_agreement(table, "a", "b", method=method), allow_nan=False)
+
+    def test_other_back_ends_are_ignored_and_order_does_not_matter(self):
+        table = population([1.0, 3.0, 2.0, 5.0, 4.0], [2.0, 1.0, 3.0, 5.0, 4.0])
+        expected = rank_agreement(table, "a", "b")
+        noisy = table + [{"construct": "c0", "backend": "z", "score": -1.0}]
+        shuffled = np.random.default_rng(0).permutation(len(noisy))
+        assert rank_agreement([noisy[i] for i in shuffled], "a", "b") == expected
+
+
+class TestRankAgreementColumns:
+    def table(self):
+        rows = []
+        for i in range(5):
+            rows.append({"construct": f"c{i}", "backend": "a", "m1": i, "m2": 10 - i, "label": "x"})
+            rows.append(
+                {"construct": f"c{i}", "backend": "b", "m1": 2 * i, "m2": i * i, "label": "y"}
+            )
+        return rows
+
+    def test_default_metrics_are_the_numeric_columns_sorted(self):
+        got = rank_agreement(self.table(), "a", "b")
+        assert list(got) == ["m1", "m2"]
+        assert got["m1"]["correlation"] == pytest.approx(1.0)
+        assert got["m2"]["correlation"] == pytest.approx(-1.0)
+
+    def test_explicit_metrics_keep_their_order_and_may_be_absent_columns(self):
+        got = rank_agreement(self.table(), "a", "b", metrics=["m2", "nope", "m1"])
+        assert list(got) == ["m2", "nope", "m1"]
+        assert got["nope"]["n"] == 0 and got["nope"]["correlation"] is None
+        assert got["nope"]["n_missing_a"] == got["nope"]["n_missing_b"] == 5
+        assert "reason" in got["nope"]
+
+    def test_an_empty_table_gives_an_empty_result_or_n_zero(self):
+        assert rank_agreement([], "a", "b") == {}
+        got = rank_agreement([], "a", "b", metrics=["score"])
+        assert got["score"]["n"] == 0 and "reason" in got["score"]
+
+    def test_constructs_may_be_numbers(self):
+        table = population([1.0, 2.0, 3.0], [1.0, 2.0, 3.0], constructs=[10, 2, 33])
+        assert rank_agreement(table, "a", "b")["score"]["n"] == 3
+
+
+class TestRankAgreementValidation:
+    def test_back_end_names_and_method(self):
+        table = population([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+        with pytest.raises(ValueError, match="differ"):
+            rank_agreement(table, "a", "a")
+        with pytest.raises(ValueError, match="backend_b"):
+            rank_agreement(table, "a", "")
+        with pytest.raises(ValueError, match="method must be one of"):
+            rank_agreement(table, "a", "b", method="pearson")
+
+    def test_table_must_be_a_list_of_mappings_with_construct_and_backend(self):
+        with pytest.raises(ValueError, match="list of row dictionaries"):
+            rank_agreement("rows", "a", "b")
+        with pytest.raises(ValueError, match="list of row dictionaries"):
+            rank_agreement({"construct": "c"}, "a", "b")
+        with pytest.raises(ValueError, match="table row 0 is a list"):
+            rank_agreement([[1, 2]], "a", "b")
+        with pytest.raises(ValueError, match="table row 0 has no 'construct'"):
+            rank_agreement([{"backend": "a", "score": 1.0}], "a", "b")
+        with pytest.raises(ValueError, match="table row 1 has no 'backend'"):
+            rank_agreement(
+                [{"construct": "c", "backend": "a"}, {"construct": "c", "score": 1.0}], "a", "b"
+            )
+        with pytest.raises(ValueError, match="expected a string"):
+            rank_agreement([{"construct": "c", "backend": 3, "score": 1.0}], "a", "b")
+        with pytest.raises(ValueError, match="unhashable"):
+            rank_agreement([{"construct": ["c"], "backend": "a", "score": 1.0}], "a", "b")
+
+    def test_two_rows_for_one_construct_and_back_end_raise(self):
+        table = population([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+        table.append({"construct": "c1", "backend": "a", "score": 9.0})
+        with pytest.raises(ValueError, match="construct 'c1' appears twice for back-end 'a'"):
+            rank_agreement(table, "a", "b")
+
+    def test_metrics_argument_is_checked(self):
+        table = population([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+        with pytest.raises(ValueError, match="list of column names"):
+            rank_agreement(table, "a", "b", metrics="score")
+        with pytest.raises(ValueError, match="non-empty column names"):
+            rank_agreement(table, "a", "b", metrics=["score", ""])
+        with pytest.raises(ValueError, match="identifies the row"):
+            rank_agreement(table, "a", "b", metrics=["backend"])
+        with pytest.raises(ValueError, match="repeats"):
+            rank_agreement(table, "a", "b", metrics=["score", "score"])
+
+    def test_the_table_is_not_modified(self):
+        table = population([1.0, None, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0])
+        before = json.dumps(table, sort_keys=True)
+        rank_agreement(table, "a", "b")
+        assert json.dumps(table, sort_keys=True) == before
