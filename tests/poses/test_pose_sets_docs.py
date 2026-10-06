@@ -348,3 +348,37 @@ def test_the_page_names_the_cost_classes_the_registry_declares():
     for name in ("static", "model", "structural", "md"):
         assert name in classes
         assert f"`{name}`" in section
+
+
+# ---------------------------------------------------------------------------- pickling
+
+
+def test_the_objects_the_page_says_pickle_do_pickle():
+    import copy
+    import pickle
+
+    from binding_metrics.capabilities import Capabilities
+    from binding_metrics.poses import Partner, ResidueKey, superpose_receptor
+    from binding_metrics.testing import bundled_complex_path, make_synthetic_poses
+
+    path = bundled_complex_path()
+    reference = Reference(
+        path,
+        "A",
+        "B",
+        residue_sets={"core": [("A", 51), ("A", 54)]},
+        partners={"crystal_peptide": Partner(path, chains=["B"])},
+    )
+    pose = make_synthetic_poses().poses[1]
+    frame = superpose_receptor(pose, reference, receptor_chain="A")
+    capabilities = Capabilities(closures={"none"}, reasons={"closures": "a linear binder only"})
+    for original in (reference, reference.partners["crystal_peptide"], frame, capabilities):
+        for clone in (pickle.loads(pickle.dumps(original)), copy.deepcopy(original)):
+            assert type(clone) is type(original)
+    assert pickle.loads(pickle.dumps(reference)).content_hash() == reference.content_hash()
+    assert pickle.loads(pickle.dumps(frame)).transform.to_dict() == frame.transform.to_dict()
+    assert pickle.loads(pickle.dumps(FrameOptions())) == FrameOptions()
+    assert pickle.loads(pickle.dumps(ResidueKey("A", 52, "A"))) == ResidueKey("A", 52, "A")
+    for name in ("Reference", "Partner", "ResidueKey", "FrameOptions", "FrameResult", "Transform"):
+        assert f"`{name}`" in _section("## Reference")
+    assert "`Capabilities`" in _section("## Parallelism")
