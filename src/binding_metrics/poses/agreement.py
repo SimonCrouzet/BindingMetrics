@@ -87,6 +87,42 @@ test of item 4; it does not judge whether a ring is well formed or closed; it do
 reversed direction of a ring (the mirror sequence); it applies no weight to closure atoms; and
 the cyclic shift is not used by the positional spread or by the contact maps.
 
+Statistics of a set. Every statistic takes a ``PairMatrix`` (or atoms) and says what it needs.
+
+* ``pair_statistics``: minimum, mean and maximum over the pairs inside each group and between
+  groups; needs one pair.
+* ``complete_linkage_clusters``: agglomerative clustering with complete linkage, implemented
+  here. Start with one cluster per pose, ordered by pose id; at each step merge the two clusters
+  with the smallest linkage distance (the largest distance between a member of one and a member
+  of the other); stop when that distance exceeds the cutoff, a distance within the tolerance of
+  the cutoff counting as within it. Ties go to the pair of clusters with the smallest
+  ``(rank of the lowest member of the first cluster, rank of the lowest member of the second)``,
+  the rank being the position in the sorted ids. Cluster labels run from 0 and follow
+  ``(-size, rank of the lowest member)``. Per cutoff: the number of clusters, the sizes, the
+  fraction of poses in the largest cluster, the label of each pose and, when groups are given,
+  the clusters that mix groups. An undefined distance counts as infinite, so those two poses
+  never share a cluster. The linkage is complete and fixed (``CLUSTER_LINKAGE``); the cutoffs
+  default to ``DEFAULT_CLUSTER_CUTOFFS_ANGSTROM``. Needs two poses.
+* ``medoid`` and ``medoids``: the pose with the smallest sum of distances to the other poses
+  (the smallest mean, which orders the poses the same way); a tie, within the tolerance of the
+  sums, goes to the lowest pose id. A pose with an undefined distance to another pose is not a
+  candidate. One pose is its own medoid, with no distance. ``medoids`` gives the overall one,
+  one per group and the RMSD between the medoids of two groups.
+* ``jaccard_matrix`` (and ``interface_jaccard``, ``contact_map_jaccard``): the Jaccard index
+  ``|A & B| / |A | B|`` of two sets; two empty sets give no value, with a reason. The interface
+  and contact sets come from the caller (``heavy_atom_contacts`` and ``interface_residues``
+  build them from atoms with a plain distance rule: a residue is in the interface, and a residue
+  pair is in contact, when two of their heavy atoms are closer than ``contact_cutoff_angstrom``,
+  default 5.0, the contact distance of the CAPRI fraction of native contacts). Binder residues
+  are named by their 1-based position in the binder chain, receptor residues by their key; the
+  numbers of the receptor residues must already be those of one numbering for all poses.
+* ``positional_spread``: for each binder position, the root mean square distance of the alpha
+  carbons of the poses from their mean position, ``sqrt(mean_i |x_i - mean(x)|^2)`` in angstrom
+  (divisor n, the population form, like the RMSF of the toolkit), and the mean of that over the
+  positions. The poses are in the common frame, so no further superposition is applied; it
+  describes the poses given and does not estimate a population spread. A position needs two
+  poses with an alpha carbon.
+
 Cannot compute. A quantity that cannot be computed is None with a reason, never NaN: in the
 dictionaries of ``to_dict`` and in the results of the statistics. The one place where NaN
 appears is ``PairMatrix.values``, which is the numeric array of the matrix; NaN there marks an
@@ -102,7 +138,7 @@ import dataclasses
 import logging
 import math
 from dataclasses import dataclass
-from typing import Any, Collection, Mapping, Optional, Sequence
+from typing import Any, Callable, Collection, Mapping, NamedTuple, Optional, Sequence
 
 import numpy as np
 
@@ -139,6 +175,14 @@ TIE_TOLERANCE_ANGSTROM = 1e-9
 #: ``capabilities.detect_closures`` (a stretched closure bond of a predicted model still counts).
 HEAD_TO_TAIL_CUTOFF_ANGSTROM = 2.0
 
+#: The linkage of ``complete_linkage_clusters``; it is not a parameter.
+CLUSTER_LINKAGE = "complete"
+#: Cutoffs (angstrom) of the clustering when the caller gives none: the scale of the seed spread
+#: of one model and of the gap between two models for a peptide of about a dozen residues.
+DEFAULT_CLUSTER_CUTOFFS_ANGSTROM = (1.0, 2.0)
+#: Heavy-atom distance (angstrom) below which two residues are in contact.
+DEFAULT_CONTACT_CUTOFF_ANGSTROM = 5.0
+
 _REFIT_MAX_ITERATIONS = 10
 _BACKBONE_ORDER = tuple(sorted(BACKBONE_HEAVY_ATOM_NAMES))
 
@@ -170,6 +214,7 @@ class BinderView:
         pose_id: The pose's id (used in messages).
         coord: Heavy-atom coordinates of the binder, shape (n, 3), float64, in file order.
         residues: The binder residues in file order; waters and hydrogens are not part of it.
+        atom_residue: Index into ``residues`` of the residue of each row of ``coord``.
         keys_unique: Whether no two residues share a key.
         closed_head_to_tail: Whether C of the last residue is within
             ``HEAD_TO_TAIL_CUTOFF_ANGSTROM`` of N of the first.
@@ -178,6 +223,7 @@ class BinderView:
     pose_id: str
     coord: np.ndarray
     residues: tuple[BinderResidue, ...]
+    atom_residue: np.ndarray
     keys_unique: bool
     closed_head_to_tail: bool
 
@@ -226,6 +272,7 @@ class BinderView:
             pose_id=pose_id,
             coord=view_coord,
             residues=tuple(residues),
+            atom_residue=np.cumsum(changed) - 1,
             keys_unique=len(set(keys)) == len(keys),
             closed_head_to_tail=_is_closed_head_to_tail(residues, view_coord),
         )
@@ -914,3 +961,683 @@ def pair_statistics(
         "between": between,
         "between_reason": "only one group" if len(names) < 2 else None,
     }
+
+
+# --------------------------------------------------------------------------- medoid
+
+
+def _require_distance(matrix: PairMatrix, what: str) -> None:
+    if matrix.direction != "distance":
+        raise ValueError(f"{what} needs a distance matrix, got a {matrix.direction} matrix")
+
+
+def medoid(matrix: PairMatrix) -> dict[str, Any]:
+    """The pose with the smallest sum of distances to the other poses of a distance matrix.
+
+    A tie, within ``TIE_TOLERANCE_ANGSTROM`` per distance, goes to the lowest pose id. A pose
+    with an undefined distance to another pose of the matrix is not a candidate; take a
+    ``subset`` first to leave a pose out.
+
+    Returns:
+        ``{"pose_id", "sum_distance_angstrom", "mean_distance_angstrom", "tied_with",
+        "n_poses", "excluded"}``; ``tied_with`` lists the other poses that tie, ``excluded`` the
+        poses that were not candidates. One pose is its own medoid with no distance and a
+        ``reason``; with no candidate ``pose_id`` is None with a ``reason``.
+
+    Raises:
+        ValueError: If the matrix is not a distance matrix.
+    """
+    _require_distance(matrix, "medoid")
+    ids = matrix.pose_ids
+    n_poses = len(ids)
+    out: dict[str, Any] = {
+        "pose_id": None,
+        "sum_distance_angstrom": None,
+        "mean_distance_angstrom": None,
+        "tied_with": [],
+        "n_poses": n_poses,
+        "excluded": [],
+    }
+    if n_poses == 0:
+        out["reason"] = "no pose"
+        return out
+    if n_poses == 1:
+        out["pose_id"] = ids[0]
+        out["reason"] = "one pose: it is its own medoid and has no distance to compare"
+        return out
+    off_diagonal = matrix.values.copy()
+    np.fill_diagonal(off_diagonal, 0.0)
+    complete = ~np.isnan(off_diagonal).any(axis=1)
+    out["excluded"] = [pose_id for pose_id, ok in zip(ids, complete) if not ok]
+    if not complete.any():
+        out["reason"] = "no pose has a defined distance to every other pose"
+        return out
+    sums = off_diagonal.sum(axis=1)
+    tolerance = TIE_TOLERANCE_ANGSTROM * (n_poses - 1)
+    smallest = sums[complete].min()
+    winners = [i for i in range(n_poses) if complete[i] and sums[i] <= smallest + tolerance]
+    chosen = winners[0]  # the ids are sorted, so the first winner has the lowest id
+    out["pose_id"] = ids[chosen]
+    out["sum_distance_angstrom"] = float(sums[chosen])
+    out["mean_distance_angstrom"] = float(sums[chosen] / (n_poses - 1))
+    out["tied_with"] = [ids[i] for i in winners[1:]]
+    return out
+
+
+def medoids(matrix: PairMatrix, groups: Optional[Mapping[str, str]] = None) -> dict[str, Any]:
+    """The medoid of the whole set, of each group, and the RMSD between the medoids of two groups.
+
+    Args:
+        matrix: A distance matrix.
+        groups: ``{pose_id: group label}``; None gives only the overall medoid.
+
+    Returns:
+        ``{"overall": medoid(matrix), "per_group": {group: medoid}, "between_groups":
+        {"a|b": {"medoid_a", "medoid_b", "distance_angstrom"}}}``; ``distance_angstrom`` is None
+        with a ``reason`` when a group has no medoid or the two medoids have no defined
+        distance.
+
+    Raises:
+        ValueError: If the matrix is not a distance matrix, or a pose has no group label.
+    """
+    _require_distance(matrix, "medoids")
+    out: dict[str, Any] = {"overall": medoid(matrix), "per_group": {}, "between_groups": {}}
+    if groups is None:
+        return out
+    missing = [pose_id for pose_id in matrix.pose_ids if pose_id not in groups]
+    if missing:
+        raise ValueError(f"poses without a group label: {missing}")
+    names = sorted({groups[pose_id] for pose_id in matrix.pose_ids})
+    for name in names:
+        members = [pose_id for pose_id in matrix.pose_ids if groups[pose_id] == name]
+        out["per_group"][name] = medoid(matrix.subset(members))
+    for position, first in enumerate(names):
+        for second in names[position + 1 :]:
+            id_a = out["per_group"][first]["pose_id"]
+            id_b = out["per_group"][second]["pose_id"]
+            entry: dict[str, Any] = {"medoid_a": id_a, "medoid_b": id_b, "distance_angstrom": None}
+            if id_a is None or id_b is None:
+                entry["reason"] = "a group has no medoid"
+            else:
+                distance = matrix.value(id_a, id_b)
+                entry["distance_angstrom"] = distance
+                if distance is None:
+                    entry["reason"] = matrix.reason(id_a, id_b) or "no value"
+            out["between_groups"][f"{first}|{second}"] = entry
+    return out
+
+
+# --------------------------------------------------------------------------- clustering
+
+
+@dataclass(frozen=True)
+class ClusterResult:
+    """Complete-linkage clusters of a set at one cutoff.
+
+    Attributes:
+        cutoff_angstrom: The cutoff.
+        n_clusters: Number of clusters; None when the set has fewer than two poses.
+        sizes: Cluster sizes in label order (largest first, then by lowest pose id).
+        largest_cluster_fraction: ``max(sizes) / n_poses``.
+        labels: ``{pose_id: label}``.
+        clusters: Pose ids of each cluster, in label order, each sorted.
+        mixed_clusters: Labels of the clusters that contain poses of more than one group; None
+            when no groups were given.
+        n_undefined_pairs: Pairs without a distance, which never share a cluster.
+        reason: Why the numbers are None; None otherwise.
+    """
+
+    cutoff_angstrom: float
+    n_clusters: Optional[int]
+    sizes: Optional[tuple[int, ...]]
+    largest_cluster_fraction: Optional[float]
+    labels: Optional[dict[str, int]]
+    clusters: Optional[tuple[tuple[str, ...], ...]]
+    mixed_clusters: Optional[tuple[int, ...]]
+    n_undefined_pairs: int = 0
+    reason: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-ready dictionary; ``reason`` is present only when the numbers are None."""
+        out: dict[str, Any] = {
+            "cutoff_angstrom": self.cutoff_angstrom,
+            "linkage": CLUSTER_LINKAGE,
+            "n_clusters": self.n_clusters,
+            "sizes": None if self.sizes is None else list(self.sizes),
+            "largest_cluster_fraction": self.largest_cluster_fraction,
+            "labels": None if self.labels is None else dict(self.labels),
+            "clusters": None if self.clusters is None else [list(c) for c in self.clusters],
+            "mixed_clusters": None if self.mixed_clusters is None else list(self.mixed_clusters),
+            "n_undefined_pairs": self.n_undefined_pairs,
+        }
+        if self.reason is not None:
+            out["reason"] = self.reason
+        return out
+
+
+def _merge_sequence(distances: np.ndarray) -> list[tuple[float, list[int], list[int]]]:
+    """Every complete-linkage merge of the poses, in order: ``(height, first, second)``.
+
+    Poses are the rows of ``distances`` (rank = row number). The clusters stay in a list ordered
+    by their lowest member, so the first pair of the row-major scan of the upper triangle among
+    the tied smallest linkage distances is the one with the smallest ``(rank of the lowest member
+    of the first cluster, rank of the lowest member of the second)``. The merged cluster keeps the
+    place of the first one, which keeps the order. The sequence does not depend on a cutoff: a
+    cutoff only decides how many merges are applied.
+    """
+    linkage = np.where(np.isnan(distances), np.inf, distances).astype(np.float64)
+    np.fill_diagonal(linkage, np.inf)
+    members: list[list[int]] = [[i] for i in range(len(linkage))]
+    merges: list[tuple[float, list[int], list[int]]] = []
+    while len(members) > 1:
+        upper_rows, upper_columns = np.triu_indices(len(members), 1)
+        values = linkage[upper_rows, upper_columns]
+        smallest = values.min()
+        if not np.isfinite(smallest):
+            break
+        chosen = int(np.flatnonzero(values <= smallest + TIE_TOLERANCE_ANGSTROM)[0])
+        i, j = int(upper_rows[chosen]), int(upper_columns[chosen])
+        merges.append((float(linkage[i, j]), list(members[i]), list(members[j])))
+        merged = np.maximum(linkage[i], linkage[j])  # complete linkage: the farthest member
+        linkage[i, :] = merged
+        linkage[:, i] = merged
+        linkage[i, i] = np.inf
+        linkage = np.delete(np.delete(linkage, j, axis=0), j, axis=1)
+        members[i] = sorted(members[i] + members[j])
+        del members[j]
+    return merges
+
+
+def _clusters_at(n_poses: int, merges, cutoff: float) -> list[list[int]]:
+    members: list[list[int]] = [[i] for i in range(n_poses)]
+    position = {i: i for i in range(n_poses)}  # lowest member -> index in ``members``
+    for height, first, second in merges:
+        if height > cutoff + TIE_TOLERANCE_ANGSTROM:
+            break
+        i, j = position[first[0]], position[second[0]]
+        members[i] = sorted(members[i] + members[j])
+        del members[j]
+        position = {cluster[0]: index for index, cluster in enumerate(members)}
+    return members
+
+
+def complete_linkage_clusters(
+    matrix: PairMatrix,
+    cutoffs_angstrom: Sequence[float] = DEFAULT_CLUSTER_CUTOFFS_ANGSTROM,
+    *,
+    groups: Optional[Mapping[str, str]] = None,
+) -> list[ClusterResult]:
+    """Cluster the poses of a distance matrix by complete linkage, once per cutoff.
+
+    The module docstring gives the rule and the tie rule. The result is deterministic and does
+    not depend on the order in which the poses were given. Poses within a cluster are all within
+    the cutoff of each other (the cutoff is the largest allowed distance inside a cluster).
+
+    Args:
+        matrix: A distance matrix (``PairwiseRmsd`` for example).
+        cutoffs_angstrom: The cutoffs, finite and positive; one result for each, in order.
+        groups: ``{pose_id: group label}``, to find the clusters that mix groups.
+
+    Returns:
+        One ``ClusterResult`` per cutoff. With fewer than two poses the numbers are None with a
+        reason.
+
+    Raises:
+        ValueError: For a cutoff that is not a positive finite number, a matrix that is not a
+            distance matrix, or a pose without a group label.
+    """
+    _require_distance(matrix, "clustering")
+    cutoffs = [
+        float(c)
+        for c in ([cutoffs_angstrom] if np.isscalar(cutoffs_angstrom) else cutoffs_angstrom)
+    ]
+    bad = [c for c in cutoffs if not (math.isfinite(c) and c > 0)]
+    if bad or not cutoffs:
+        raise ValueError(
+            f"cutoffs_angstrom must be positive finite numbers, got {list(cutoffs_angstrom)}"
+        )
+    ids = matrix.pose_ids
+    n_poses = len(ids)
+    if groups is not None:
+        missing = [pose_id for pose_id in ids if pose_id not in groups]
+        if missing:
+            raise ValueError(f"poses without a group label: {missing}")
+    if n_poses < 2:
+        reason = f"needs at least 2 poses (got {n_poses})"
+        return [ClusterResult(c, None, None, None, None, None, None, 0, reason) for c in cutoffs]
+    n_undefined = int(np.isnan(np.triu(matrix.values, 1)).sum())
+    merges = _merge_sequence(matrix.values)
+    results = []
+    for cutoff in cutoffs:
+        clusters = _clusters_at(n_poses, merges, cutoff)
+        clusters.sort(key=lambda members: (-len(members), members[0]))
+        labels = {ids[i]: label for label, members in enumerate(clusters) for i in members}
+        mixed = None
+        if groups is not None:
+            mixed = tuple(
+                label
+                for label, members in enumerate(clusters)
+                if len({groups[ids[i]] for i in members}) > 1
+            )
+        results.append(
+            ClusterResult(
+                cutoff_angstrom=cutoff,
+                n_clusters=len(clusters),
+                sizes=tuple(len(members) for members in clusters),
+                largest_cluster_fraction=len(clusters[0]) / n_poses,
+                labels=labels,
+                clusters=tuple(tuple(ids[i] for i in members) for members in clusters),
+                mixed_clusters=mixed,
+                n_undefined_pairs=n_undefined,
+            )
+        )
+    return results
+
+
+# --------------------------------------------------------------------------- Jaccard
+
+
+def jaccard_matrix(
+    sets_by_pose: Mapping[str, Collection],
+    *,
+    name: str = "jaccard",
+    empty_reason: str = "both sets are empty",
+) -> PairMatrix:
+    """The Jaccard index ``|A & B| / |A | B|`` of the set of each pose with that of each other pose.
+
+    Args:
+        sets_by_pose: ``{pose_id: collection of hashable items}``, for example the interface
+            residues of each pose.
+        name: Name of the matrix.
+        empty_reason: The reason given for a pair of two empty sets, which has no value.
+
+    Returns:
+        A similarity ``PairMatrix`` (1 on the diagonal, except for an empty set, which has no
+        value there either).
+    """
+    ids = tuple(sorted(sets_by_pose))
+    sets = [frozenset(sets_by_pose[pose_id]) for pose_id in ids]
+    n_poses = len(ids)
+    values = np.full((n_poses, n_poses), np.nan)
+    reasons: dict[tuple[str, str], str] = {}
+    for i in range(n_poses):
+        if sets[i]:
+            values[i, i] = 1.0
+        for j in range(i + 1, n_poses):
+            union = sets[i] | sets[j]
+            if not union:
+                reasons[(ids[i], ids[j])] = empty_reason
+                continue
+            values[i, j] = values[j, i] = len(sets[i] & sets[j]) / len(union)
+    return PairMatrix(name, None, "similarity", ids, values, reasons)
+
+
+class InterfaceResidues(NamedTuple):
+    """The interface of one pose.
+
+    Attributes:
+        binder: 1-based positions in the binder chain of the binder residues in the interface.
+        receptor: Keys of the receptor residues in the interface (the key type of the caller;
+            plain ``(chain, number, insertion code)`` tuples from ``interface_residues``).
+    """
+
+    binder: frozenset
+    receptor: frozenset
+
+    @property
+    def combined(self) -> frozenset:
+        """Both sides in one set, tagged ``("binder", position)`` or ``("receptor", key)``."""
+        return frozenset(("binder", i) for i in self.binder) | frozenset(
+            ("receptor", key) for key in self.receptor
+        )
+
+
+def interface_jaccard(interfaces: Mapping[str, InterfaceResidues]) -> dict[str, PairMatrix]:
+    """Jaccard matrices of the interface residue sets: both sides, receptor only, binder only.
+
+    Args:
+        interfaces: ``{pose_id: InterfaceResidues}``; computing the interface (by buried area, by
+            distance, ...) is the caller's job, and ``interface_residues`` is a simple helper.
+
+    Returns:
+        ``{"all": matrix, "receptor": matrix, "binder": matrix}``; a pair of two empty
+        interfaces has no value, with the reason ``"both interfaces empty"``.
+    """
+    reason = "both interfaces empty"
+    return {
+        "all": jaccard_matrix(
+            {k: v.combined for k, v in interfaces.items()},
+            name="jaccard_interface",
+            empty_reason=reason,
+        ),
+        "receptor": jaccard_matrix(
+            {k: v.receptor for k, v in interfaces.items()},
+            name="jaccard_interface_receptor",
+            empty_reason=reason,
+        ),
+        "binder": jaccard_matrix(
+            {k: v.binder for k, v in interfaces.items()},
+            name="jaccard_interface_binder",
+            empty_reason=reason,
+        ),
+    }
+
+
+def contact_map_jaccard(contacts_by_pose: Mapping[str, Collection]) -> PairMatrix:
+    """Jaccard index of the contact maps of the poses.
+
+    A contact map is the set of residue pairs ``(binder position, receptor residue key)`` that
+    have two heavy atoms closer than the contact cutoff (``heavy_atom_contacts``). Two poses
+    with the same contacts score 1; a pair of two empty maps has no value.
+    """
+    return jaccard_matrix(
+        contacts_by_pose, name="contact_map_jaccard", empty_reason="both contact maps empty"
+    )
+
+
+def _plain_key(chain: str, number: int, insertion_code: str) -> tuple[str, int, str]:
+    """The default residue key of the contact helpers: ``(chain ID, number, insertion code)``."""
+    return (chain, number, insertion_code)
+
+
+def heavy_atom_contacts(
+    atoms,
+    binder_chain: str,
+    *,
+    target_chain: Optional[str] = None,
+    cutoff_angstrom: float = DEFAULT_CONTACT_CUTOFF_ANGSTROM,
+    key_factory: Callable[[str, int, str], Any] = _plain_key,
+) -> frozenset:
+    """The residue pairs of the binder and the receptor with two heavy atoms closer than a cutoff.
+
+    Args:
+        atoms: A biotite ``AtomArray`` of one pose, in the common frame, with the receptor
+            numbered as it should be compared across poses.
+        binder_chain: The binder chain ID.
+        target_chain: The receptor chain ID; None takes every atom outside the binder chain.
+            Hydrogens and waters are never part of either side.
+        cutoff_angstrom: Contact distance, default 5.0 (the heavy-atom contact distance of the
+            CAPRI fraction of native contacts); a pair at exactly the cutoff is not in contact.
+        key_factory: Builds the receptor residue key from ``(chain ID, number, insertion
+            code)``; the default gives a plain tuple, ``ResidueKey`` gives the layer's key.
+
+    Returns:
+        A frozenset of ``(binder position, receptor key)``, the position being the 1-based index
+        of the residue in the binder chain.
+
+    Raises:
+        ValueError: If the binder chain is missing or empty, or ``target_chain`` is not in the
+            structure.
+    """
+    view = BinderView.from_atoms(atoms, binder_chain)
+    chain_id = _strings(atoms.chain_id)
+    if target_chain is None:
+        in_target = chain_id != str(binder_chain)
+    else:
+        in_target = chain_id == str(target_chain)
+        if not in_target.any():
+            raise ValueError(f"no atom of chain {target_chain!r}")
+    res_name = np.char.upper(_strings(atoms.res_name))
+    rows = np.flatnonzero(
+        in_target & ~_hydrogen_mask(atoms) & ~np.isin(res_name, sorted(WATER_NAMES_ALL))
+    )
+    if rows.size == 0:
+        return frozenset()
+    target = np.asarray(atoms.coord, dtype=np.float64)[rows]
+    # only the receptor atoms near the binder can be in contact
+    low, high = view.coord.min(axis=0) - cutoff_angstrom, view.coord.max(axis=0) + cutoff_angstrom
+    near = np.all((target >= low) & (target <= high), axis=1)
+    rows, target = rows[near], target[near]
+    if rows.size == 0:
+        return frozenset()
+    res_id = np.asarray(atoms.res_id)[rows]
+    ins_code = _insertion_codes(atoms)[rows]
+    chains = chain_id[rows]
+    contacts = set()
+    limit = cutoff_angstrom**2
+    for start in range(0, len(view.coord), 128):
+        block = view.coord[start : start + 128]
+        squared = np.sum((block[:, None, :] - target[None, :, :]) ** 2, axis=2)
+        for binder_row, target_row in np.argwhere(squared < limit):
+            position = int(view.atom_residue[start + binder_row]) + 1
+            key = key_factory(
+                str(chains[target_row]), int(res_id[target_row]), str(ins_code[target_row])
+            )
+            contacts.add((position, key))
+    return frozenset(contacts)
+
+
+def interface_residues(
+    atoms,
+    binder_chain: str,
+    *,
+    target_chain: Optional[str] = None,
+    cutoff_angstrom: float = DEFAULT_CONTACT_CUTOFF_ANGSTROM,
+    key_factory: Callable[[str, int, str], Any] = _plain_key,
+) -> InterfaceResidues:
+    """The residues of the binder and of the receptor that touch the other partner.
+
+    A simple distance rule, not the buried-area definition of the interface metrics: a residue
+    is in the interface when one of its heavy atoms is closer than ``cutoff_angstrom`` (default
+    5.0) to a heavy atom of the other partner. Computing the interface by another rule and
+    passing it as ``InterfaceResidues`` is the caller's choice. The arguments are those of
+    ``heavy_atom_contacts``.
+    """
+    contacts = heavy_atom_contacts(
+        atoms,
+        binder_chain,
+        target_chain=target_chain,
+        cutoff_angstrom=cutoff_angstrom,
+        key_factory=key_factory,
+    )
+    return InterfaceResidues(
+        binder=frozenset(position for position, _ in contacts),
+        receptor=frozenset(key for _, key in contacts),
+    )
+
+
+# --------------------------------------------------------------------------- positional spread
+
+
+@dataclass(frozen=True)
+class PositionSpread:
+    """The spread of the alpha carbons of the poses at one binder position.
+
+    Attributes:
+        binder_index: 1-based position in the binder chain of the reference pose.
+        chain, number, insertion_code, residue: The reference pose's residue at that position.
+        n_poses: Poses with an alpha carbon at the position.
+        spread_angstrom: ``sqrt(mean_i |x_i - mean(x)|^2)``; None with a ``reason`` when fewer
+            than two poses have an alpha carbon there.
+        reason: Why ``spread_angstrom`` is None.
+    """
+
+    binder_index: int
+    chain: str
+    number: int
+    insertion_code: str
+    residue: str
+    n_poses: int
+    spread_angstrom: Optional[float]
+    reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PositionalSpread:
+    """Per-position spread of the alpha carbons of a set of poses.
+
+    Attributes:
+        pose_ids: The poses that were used, sorted.
+        reference_id: The pose whose residues name the positions (the first usable id unless
+            one was given); the other poses are paired with it by residue key or position.
+        positions: One ``PositionSpread`` per residue of the reference pose that has an alpha
+            carbon; empty when the spread cannot be computed.
+        mean_spread_angstrom: Mean of the spreads that exist; None with a ``reason`` otherwise.
+        excluded: ``{pose_id: reason}`` for the poses that could not be used.
+        reason: Why the whole result is empty or None.
+    """
+
+    pose_ids: tuple[str, ...]
+    reference_id: Optional[str]
+    positions: tuple[PositionSpread, ...]
+    mean_spread_angstrom: Optional[float]
+    excluded: dict[str, str]
+    reason: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-ready dictionary; ``reason`` keys appear only where a value is None."""
+        out: dict[str, Any] = {
+            "pose_ids": list(self.pose_ids),
+            "reference_id": self.reference_id,
+            "positions": [
+                {
+                    k: v
+                    for k, v in dataclasses.asdict(p).items()
+                    if not (k == "reason" and v is None)
+                }
+                for p in self.positions
+            ],
+            "mean_spread_angstrom": self.mean_spread_angstrom,
+            "excluded": dict(self.excluded),
+        }
+        if self.reason is not None:
+            out["reason"] = self.reason
+        return out
+
+
+def positional_spread(
+    poses,
+    binder_chain: str,
+    *,
+    residue_pairing: str = "auto",
+    reference_id: Optional[str] = None,
+) -> PositionalSpread:
+    """How far the alpha carbons of the poses scatter around their mean, per binder position.
+
+    For each residue of the reference pose that has an alpha carbon, ``spread = sqrt(mean_i
+    |x_i - mean(x)|^2)`` over the poses that have an alpha carbon at the paired residue (divisor
+    n). The poses are taken as they are in the common frame. The residues of the other poses
+    are paired with those of the reference pose by ``residue_pairing`` (see the module
+    docstring); a pose that cannot be paired is listed in ``excluded``. The cyclic shift is not
+    applied: a ring with another origin is excluded or paired by position.
+
+    Call it once per group (for example per back-end) for the spread inside a group.
+
+    Args:
+        poses: ``{pose_id: atoms}`` or ``(pose_id, atoms)`` pairs, in the common frame.
+        binder_chain: The binder chain ID.
+        residue_pairing: ``"auto"``, ``"key"`` or ``"position"``.
+        reference_id: The pose that names the positions; the first usable id by default.
+
+    Returns:
+        A ``PositionalSpread``. With fewer than two usable poses it has no positions and a
+        reason.
+
+    Raises:
+        ValueError: For an unknown ``residue_pairing`` or a ``reference_id`` that is not a pose.
+    """
+    _check_choice("residue_pairing", residue_pairing, RESIDUE_PAIRINGS)
+    items = _items(poses)
+    views: dict[str, BinderView] = {}
+    excluded: dict[str, str] = {}
+    for pose_id, atoms in items:
+        try:
+            views[pose_id] = BinderView.from_atoms(atoms, binder_chain, pose_id)
+        except ValueError as error:
+            excluded[pose_id] = f"pose {pose_id!r}: {error}"
+    if reference_id is not None and reference_id not in {pose_id for pose_id, _ in items}:
+        raise ValueError(f"reference_id {reference_id!r} is not one of the poses")
+    if reference_id is not None and reference_id in excluded:
+        raise ValueError(excluded[reference_id])
+    reference = reference_id or next(iter(views), None)
+    usable: dict[str, dict[int, np.ndarray]] = {}
+    if reference is not None:
+        ref_view = views[reference]
+        for pose_id, view in views.items():
+            if pose_id == reference:
+                pairs = [(i, i) for i in range(len(ref_view.residues))]
+            else:
+                pairs, _, why = _pair_residues(ref_view, view, residue_pairing)
+                if pairs is None:
+                    excluded[pose_id] = why
+                    continue
+            usable[pose_id] = {
+                i: view.coord[view.residues[j].atom_rows["CA"]]
+                for i, j in pairs
+                if "CA" in view.residues[j].atom_rows
+            }
+    pose_ids = tuple(sorted(usable))
+    if len(pose_ids) < 2:
+        return PositionalSpread(
+            pose_ids,
+            reference,
+            (),
+            None,
+            excluded,
+            f"needs at least 2 usable poses (got {len(pose_ids)})",
+        )
+    positions = []
+    for index, residue in enumerate(views[reference].residues):
+        if "CA" not in residue.atom_rows:
+            continue
+        coords = np.array([usable[p][index] for p in pose_ids if index in usable[p]])
+        spread: Optional[float] = None
+        why = None
+        if len(coords) >= 2:
+            spread = float(np.sqrt(np.mean(np.sum((coords - coords.mean(axis=0)) ** 2, axis=1))))
+        else:
+            why = f"needs at least 2 poses with an alpha carbon here (got {len(coords)})"
+        positions.append(
+            PositionSpread(
+                index + 1,
+                residue.key[0],
+                residue.key[1],
+                residue.key[2],
+                residue.name,
+                len(coords),
+                spread,
+                why,
+            )
+        )
+    defined = [p.spread_angstrom for p in positions if p.spread_angstrom is not None]
+    mean = float(np.mean(defined)) if defined else None
+    return PositionalSpread(
+        pose_ids,
+        reference,
+        tuple(positions),
+        mean,
+        excluded,
+        None if defined else "no position has two poses with an alpha carbon",
+    )
+
+
+def positional_spread_by_group(
+    poses,
+    binder_chain: str,
+    groups: Mapping[str, str],
+    *,
+    residue_pairing: str = "auto",
+) -> dict[str, PositionalSpread]:
+    """``positional_spread`` of each group of poses.
+
+    Args:
+        poses: ``{pose_id: atoms}`` or ``(pose_id, atoms)`` pairs.
+        binder_chain: The binder chain ID.
+        groups: ``{pose_id: group label}``; every pose needs one.
+        residue_pairing: As in ``positional_spread``.
+
+    Returns:
+        ``{group: PositionalSpread}`` in sorted group order.
+
+    Raises:
+        ValueError: If a pose has no group label.
+    """
+    items = _items(poses)
+    missing = [pose_id for pose_id, _ in items if pose_id not in groups]
+    if missing:
+        raise ValueError(f"poses without a group label: {missing}")
+    out = {}
+    for name in sorted({groups[pose_id] for pose_id, _ in items}):
+        members = [(pose_id, atoms) for pose_id, atoms in items if groups[pose_id] == name]
+        out[name] = positional_spread(members, binder_chain, residue_pairing=residue_pairing)
+    return out

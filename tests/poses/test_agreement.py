@@ -19,12 +19,25 @@ import biotite.structure.io as strucio  # noqa: E402
 
 from binding_metrics.poses import agreement  # noqa: E402
 from binding_metrics.poses.agreement import (  # noqa: E402
+    CLUSTER_LINKAGE,
+    DEFAULT_CLUSTER_CUTOFFS_ANGSTROM,
     BinderView,
+    InterfaceResidues,
     PairMatrix,
     binder_closure_families,
+    complete_linkage_clusters,
+    contact_map_jaccard,
+    heavy_atom_contacts,
+    interface_jaccard,
+    interface_residues,
+    jaccard_matrix,
+    medoid,
+    medoids,
     pair_statistics,
     pairwise_peptide_rmsd,
     peptide_rmsd,
+    positional_spread,
+    positional_spread_by_group,
 )
 
 DATA = Path(__file__).resolve().parents[2] / "data"
@@ -945,3 +958,607 @@ def test_the_modules_import_without_openmm_biotite_or_mdtraj():
     )
     done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
+
+
+# ---------------------------------------------------------------------------
+# hand-built distance matrices (float64, so that ties are exact)
+# ---------------------------------------------------------------------------
+
+
+def line_matrix(positions, ids=None):
+    """Distances of points on a line, as a distance ``PairMatrix`` (ids sorted as given)."""
+    ids = tuple(ids or [f"p{i}" for i in range(len(positions))])
+    points = np.asarray(positions, dtype=np.float64)
+    values = np.abs(points[:, None] - points[None, :])
+    return PairMatrix("test", "angstrom", "distance", ids, values, {})
+
+
+OFFSET_IDS = tuple(OFFSETS)
+OFFSET_MATRIX = line_matrix(list(OFFSETS.values()), OFFSET_IDS)
+
+
+def partition(result):
+    """The clusters of a ``ClusterResult`` as a set of frozensets."""
+    return {frozenset(cluster) for cluster in result.clusters}
+
+
+# ---------------------------------------------------------------------------
+# medoid
+# ---------------------------------------------------------------------------
+
+
+class TestMedoid:
+    def test_the_medoid_of_each_group_is_the_pose_with_the_smallest_distance_sum(self):
+        groups = {name: name[0] for name in OFFSETS}
+        result = medoids(OFFSET_MATRIX, groups)
+        # sums inside the groups: a1 1.2, a2 0.8, a3 1.2 and b1 1.2, b2 0.9, b3 1.5
+        assert result["per_group"]["a"]["pose_id"] == "a2"
+        assert result["per_group"]["a"]["sum_distance_angstrom"] == pytest.approx(0.8)
+        assert result["per_group"]["b"]["pose_id"] == "b2"
+        assert result["per_group"]["b"]["mean_distance_angstrom"] == pytest.approx(0.45)
+        between = result["between_groups"]["a|b"]
+        assert (between["medoid_a"], between["medoid_b"]) == ("a2", "b2")
+        assert between["distance_angstrom"] == pytest.approx(1.9)
+
+    def test_an_exact_tie_goes_to_the_lowest_id_and_names_the_others(self):
+        # a3 and b1 both have a distance sum of 6.0 to the other five poses
+        result = medoid(OFFSET_MATRIX)
+        assert result["pose_id"] == "a3"
+        assert result["sum_distance_angstrom"] == pytest.approx(6.0)
+        assert result["mean_distance_angstrom"] == pytest.approx(1.2)
+        assert result["tied_with"] == ["b1"]
+
+    def test_a_tie_that_only_rounding_hides_is_still_a_tie(self):
+        # p1 and p2 mirror each other, but their floating-point sums differ by 1e-16
+        matrix = line_matrix([0.1, 0.2, 0.3, 0.4])
+        assert matrix.values[1].sum() != matrix.values[2].sum()
+        result = medoid(matrix)
+        assert result["pose_id"] == "p1"
+        assert result["tied_with"] == ["p2"]
+
+    def test_all_poses_equidistant_gives_the_lowest_id(self):
+        values = np.ones((4, 4)) - np.eye(4)
+        matrix = PairMatrix("test", "angstrom", "distance", ("a", "b", "c", "d"), values, {})
+        result = medoid(matrix)
+        assert result["pose_id"] == "a"
+        assert result["tied_with"] == ["b", "c", "d"]
+
+    def test_two_poses_tie_and_the_lower_id_wins(self):
+        result = medoid(line_matrix([0.0, 0.7], ["x", "y"]))
+        assert result["pose_id"] == "x"
+        assert result["tied_with"] == ["y"]
+        assert result["mean_distance_angstrom"] == pytest.approx(0.7)
+
+    def test_one_pose_is_its_own_medoid_with_a_reason(self):
+        result = medoid(line_matrix([0.0], ["only"]))
+        assert result["pose_id"] == "only"
+        assert result["mean_distance_angstrom"] is None
+        assert "own medoid" in result["reason"]
+
+    def test_no_pose_has_no_medoid(self):
+        result = medoid(line_matrix([], []))
+        assert result["pose_id"] is None and result["reason"] == "no pose"
+
+    def test_a_pose_with_an_undefined_distance_is_not_a_candidate(self):
+        values = line_matrix([0.0, 1.0, 2.0, 3.0]).values.copy()
+        values[0, 3] = values[3, 0] = np.nan
+        matrix = PairMatrix(
+            "test", "angstrom", "distance", ("a", "b", "c", "d"), values, {("a", "d"): "why"}
+        )
+        result = medoid(matrix)
+        assert result["pose_id"] == "b"
+        assert result["excluded"] == ["a", "d"]
+        # leaving a pose out restores the others
+        assert medoid(matrix.subset(["a", "b", "c"]))["excluded"] == []
+
+    def test_no_candidate_gives_none_with_a_reason(self):
+        values = np.array([[0.0, np.nan], [np.nan, 0.0]])
+        matrix = PairMatrix("t", "angstrom", "distance", ("a", "b"), values, {("a", "b"): "x"})
+        result = medoid(matrix)
+        assert result["pose_id"] is None
+        assert "every other pose" in result["reason"]
+
+    def test_the_medoid_distance_between_groups_can_be_undefined(self):
+        values = np.array([[0.0, np.nan], [np.nan, 0.0]])
+        matrix = PairMatrix(
+            "t", "angstrom", "distance", ("a", "b"), values, {("a", "b"): "no atoms"}
+        )
+        entry = medoids(matrix, {"a": "g", "b": "h"})["between_groups"]["g|h"]
+        assert entry["distance_angstrom"] is None and entry["reason"] == "no atoms"
+
+    def test_a_similarity_matrix_has_no_medoid(self):
+        matrix = jaccard_matrix({"a": {1}, "b": {1, 2}})
+        with pytest.raises(ValueError, match="distance matrix"):
+            medoid(matrix)
+        with pytest.raises(ValueError, match="distance matrix"):
+            medoids(matrix)
+
+    def test_poses_need_a_group_label(self):
+        with pytest.raises(ValueError, match="without a group label"):
+            medoids(OFFSET_MATRIX, {"a1": "a"})
+
+    def test_the_medoid_of_computed_poses(self, translated_set):
+        matrix = pairwise_peptide_rmsd(translated_set, "B")
+        result = medoids(matrix, {name: name[0] for name in translated_set})
+        assert (result["per_group"]["a"]["pose_id"], result["per_group"]["b"]["pose_id"]) == (
+            "a2",
+            "b2",
+        )
+        _json_strict(result)
+
+
+# ---------------------------------------------------------------------------
+# clustering
+# ---------------------------------------------------------------------------
+
+
+class TestClustering:
+    def test_defaults_and_the_fixed_linkage(self):
+        assert DEFAULT_CLUSTER_CUTOFFS_ANGSTROM == (1.0, 2.0)
+        assert CLUSTER_LINKAGE == "complete"
+        results = complete_linkage_clusters(OFFSET_MATRIX)
+        assert [r.cutoff_angstrom for r in results] == [1.0, 2.0]
+
+    def test_two_groups_are_two_clusters_at_both_default_cutoffs(self):
+        # diameters 0.8 and 0.9, farthest between-pair 2.9: complete linkage keeps them apart
+        for result in complete_linkage_clusters(OFFSET_MATRIX):
+            assert result.n_clusters == 2
+            assert partition(result) == {
+                frozenset("a1 a2 a3".split()),
+                frozenset("b1 b2 b3".split()),
+            }
+            assert result.sizes == (3, 3)
+            assert result.largest_cluster_fraction == 0.5
+
+    def test_a_larger_cutoff_joins_everything(self):
+        (result,) = complete_linkage_clusters(OFFSET_MATRIX, [3.0])
+        assert (result.n_clusters, result.sizes, result.largest_cluster_fraction) == (1, (6,), 1.0)
+
+    def test_the_tie_at_a_small_cutoff_goes_to_the_lowest_ranks(self):
+        # a1-a2 and a2-a3 are both 0.4: the pair with the lowest ranks, (a1, a2), merges first;
+        # the pair b1-b2 (0.3) merges before either
+        (result,) = complete_linkage_clusters(OFFSET_MATRIX, [0.5])
+        assert result.clusters == (("a1", "a2"), ("b1", "b2"), ("a3",), ("b3",))
+        assert result.sizes == (2, 2, 1, 1)
+        assert result.largest_cluster_fraction == pytest.approx(2 / 6)
+        assert result.labels == {"a1": 0, "a2": 0, "b1": 1, "b2": 1, "a3": 2, "b3": 3}
+
+    def test_the_tie_does_not_depend_on_floating_point_rounding(self):
+        # 0.7 - 0.4 is 0.29999999999999993 and 0.4 - 0.1 is 0.30000000000000004
+        matrix = line_matrix([0.1, 0.4, 0.7])
+        (result,) = complete_linkage_clusters(matrix, [0.35])
+        assert result.clusters == (("p0", "p1"), ("p2",))
+
+    def test_labels_follow_size_then_lowest_member(self):
+        matrix = line_matrix([0.0, 10.0, 10.1, 20.0, 20.1, 20.2], list("abcdef"))
+        (result,) = complete_linkage_clusters(matrix, [0.5])
+        assert result.clusters == (("d", "e", "f"), ("b", "c"), ("a",))
+        assert result.sizes == (3, 2, 1)
+
+    def test_the_cutoff_itself_is_inside_the_cluster(self):
+        assert complete_linkage_clusters(line_matrix([0.0, 1.0]), [1.0])[0].n_clusters == 1
+        assert complete_linkage_clusters(line_matrix([0.0, 1.000001]), [1.0])[0].n_clusters == 2
+
+    def test_complete_linkage_does_not_chain(self):
+        # 0 - 0.9 - 1.8: single linkage would give one cluster at 1.0, complete linkage two
+        (result,) = complete_linkage_clusters(line_matrix([0.0, 0.9, 1.8]), [1.0])
+        assert partition(result) == {frozenset({"p0", "p1"}), frozenset({"p2"})}
+
+    def test_an_undefined_distance_keeps_two_poses_apart(self):
+        values = np.array([[0.0, np.nan, 0.1], [np.nan, 0.0, 0.1], [0.1, 0.1, 0.0]])
+        matrix = PairMatrix(
+            "test", "angstrom", "distance", ("p0", "p1", "p2"), values, {("p0", "p1"): "no atoms"}
+        )
+        (result,) = complete_linkage_clusters(matrix, [1.0])
+        assert result.clusters == (("p0", "p2"), ("p1",))
+        assert result.n_undefined_pairs == 1
+
+    def test_clusters_that_mix_groups_are_listed(self):
+        groups = {"a1": "x", "a2": "x", "a3": "y", "b1": "y", "b2": "y", "b3": "y"}
+        (result,) = complete_linkage_clusters(OFFSET_MATRIX, [1.0], groups=groups)
+        # {a1, a2, a3} has x and y poses, {b1, b2, b3} only y
+        assert result.mixed_clusters == (0,)
+        assert complete_linkage_clusters(OFFSET_MATRIX, [1.0])[0].mixed_clusters is None
+
+    def test_one_or_no_pose_has_no_clusters_and_says_why(self):
+        for n_poses in (0, 1):
+            (result,) = complete_linkage_clusters(line_matrix([0.0] * n_poses), [1.0])
+            assert result.n_clusters is None and result.sizes is None
+            assert result.largest_cluster_fraction is None and result.labels is None
+            assert result.reason == f"needs at least 2 poses (got {n_poses})"
+            _json_strict(result.to_dict())
+
+    def test_two_poses_are_one_cluster_or_two(self):
+        matrix = line_matrix([0.0, 0.5], ["x", "y"])
+        near, far = complete_linkage_clusters(matrix, [1.0, 0.3])
+        assert (near.n_clusters, near.largest_cluster_fraction) == (1, 1.0)
+        assert (far.n_clusters, far.sizes, far.largest_cluster_fraction) == (2, (1, 1), 0.5)
+        assert "reason" not in near.to_dict()
+
+    @pytest.mark.parametrize("cutoffs", [[0.0], [-1.0], [float("nan")], [float("inf")], []])
+    def test_a_cutoff_must_be_positive_and_finite(self, cutoffs):
+        with pytest.raises(ValueError, match="cutoffs_angstrom"):
+            complete_linkage_clusters(OFFSET_MATRIX, cutoffs)
+
+    def test_a_single_number_is_accepted(self):
+        (result,) = complete_linkage_clusters(OFFSET_MATRIX, 1.0)
+        assert result.cutoff_angstrom == 1.0
+
+    def test_a_similarity_matrix_cannot_be_clustered(self):
+        with pytest.raises(ValueError, match="distance matrix"):
+            complete_linkage_clusters(jaccard_matrix({"a": {1}, "b": {1}}))
+
+    def test_the_dictionary_is_json_ready(self):
+        out = _json_strict(complete_linkage_clusters(OFFSET_MATRIX, [0.5])[0].to_dict())
+        assert out["linkage"] == "complete"
+        assert out["labels"]["a3"] == 2 and out["clusters"][0] == ["a1", "a2"]
+
+    def test_the_result_agrees_with_scipy_on_random_distances(self):
+        scipy_cluster = pytest.importorskip("scipy.cluster.hierarchy")
+        scipy_spatial = pytest.importorskip("scipy.spatial.distance")
+        rng = np.random.default_rng(11)
+        for n_poses in (5, 9, 14):
+            points = rng.normal(0.0, 1.5, size=(n_poses, 3))
+            ids = [f"p{i:02d}" for i in range(n_poses)]
+            values = scipy_spatial.squareform(scipy_spatial.pdist(points))
+            matrix = PairMatrix("test", "angstrom", "distance", tuple(ids), values, {})
+            tree = scipy_cluster.linkage(scipy_spatial.pdist(points), method="complete")
+            for cutoff in (0.8, 1.5, 2.5, 3.5):
+                (ours,) = complete_linkage_clusters(matrix, [cutoff])
+                labels = scipy_cluster.fcluster(tree, t=cutoff, criterion="distance")
+                theirs = {
+                    frozenset(ids[i] for i in np.flatnonzero(labels == label))
+                    for label in set(labels)
+                }
+                assert partition(ours) == theirs, (n_poses, cutoff)
+
+    def test_the_number_of_clusters_does_not_grow_with_the_cutoff(self):
+        rng = np.random.default_rng(3)
+        points = rng.normal(0.0, 2.0, size=(12, 3))
+        values = np.linalg.norm(points[:, None] - points[None, :], axis=2)
+        matrix = PairMatrix(
+            "test", "angstrom", "distance", tuple(f"p{i:02d}" for i in range(12)), values, {}
+        )
+        cutoffs = [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, float(values.max()) + 0.1]
+        results = complete_linkage_clusters(matrix, cutoffs)
+        counts = [r.n_clusters for r in results]
+        assert counts == sorted(counts, reverse=True)
+        assert counts[-1] == 1
+        for result in results:
+            assert sum(result.sizes) == 12
+            assert sorted(result.labels.values()) == sorted(
+                label for label, size in enumerate(result.sizes) for _ in range(size)
+            )
+
+    def test_clusters_of_computed_poses(self, translated_set):
+        matrix = pairwise_peptide_rmsd(translated_set, "B")
+        by_cutoff = {
+            r.cutoff_angstrom: r for r in complete_linkage_clusters(matrix, [0.5, 1.0, 3.5])
+        }
+        assert by_cutoff[1.0].sizes == (3, 3)
+        assert by_cutoff[3.5].sizes == (6,)
+        assert by_cutoff[0.5].n_clusters == 4
+
+
+# ---------------------------------------------------------------------------
+# Jaccard indices, interface residues and contact maps
+# ---------------------------------------------------------------------------
+
+
+class TestJaccard:
+    def test_the_index_of_overlapping_sets(self):
+        matrix = jaccard_matrix({"b": {2, 3, 4}, "a": {1, 2, 3}, "c": {9}})
+        assert matrix.pose_ids == ("a", "b", "c")
+        assert matrix.direction == "similarity" and matrix.unit is None
+        assert matrix.value("a", "b") == pytest.approx(2 / 4)
+        assert matrix.value("a", "c") == 0.0
+        assert matrix.value("a", "a") == 1.0
+
+    def test_two_empty_sets_have_no_value_and_one_empty_set_gives_zero(self):
+        matrix = jaccard_matrix({"a": set(), "b": set(), "c": {1}}, empty_reason="both empty")
+        assert matrix.value("a", "b") is None
+        assert matrix.reason("a", "b") == "both empty"
+        assert matrix.value("a", "c") == 0.0
+        assert matrix.value("a", "a") is None
+        _json_strict(matrix.to_dict())
+
+    def test_statistics_of_a_similarity_matrix_use_the_same_groups(self):
+        matrix = jaccard_matrix({"a1": {1, 2}, "a2": {1, 2}, "b1": {1, 3}, "b2": {3}})
+        stats = pair_statistics(matrix, {"a1": "a", "a2": "a", "b1": "b", "b2": "b"})
+        assert stats["within"]["a"]["mean"] == 1.0
+        assert stats["within"]["b"]["mean"] == pytest.approx(0.5)
+        assert stats["between"]["a|b"]["n_pairs"] == 4
+        assert stats["between"]["a|b"]["max"] == pytest.approx(1 / 3)
+
+    def test_interface_jaccard_gives_both_sides_and_each_side(self):
+        interfaces = {
+            "p": InterfaceResidues(frozenset({1, 2, 3}), frozenset({("A", 5, ""), ("A", 6, "")})),
+            "q": InterfaceResidues(frozenset({2, 3}), frozenset({("A", 5, ""), ("A", 7, "")})),
+            "r": InterfaceResidues(frozenset(), frozenset()),
+            "s": InterfaceResidues(frozenset(), frozenset()),
+        }
+        out = interface_jaccard(interfaces)
+        assert set(out) == {"all", "receptor", "binder"}
+        assert out["binder"].value("p", "q") == pytest.approx(2 / 3)
+        assert out["receptor"].value("p", "q") == pytest.approx(1 / 3)
+        assert out["all"].value("p", "q") == pytest.approx(3 / 6)
+        assert out["all"].value("r", "s") is None
+        assert out["all"].reason("r", "s") == "both interfaces empty"
+        assert out["all"].value("p", "r") == 0.0
+
+    def test_a_receptor_key_and_a_binder_position_never_collide_in_the_combined_set(self):
+        interface = InterfaceResidues(frozenset({5}), frozenset({5}))
+        assert len(interface.combined) == 2
+
+    def test_the_contact_map_jaccard_has_its_own_reason(self):
+        matrix = contact_map_jaccard({"a": set(), "b": set(), "c": {(1, "x")}, "d": {(1, "x")}})
+        assert matrix.name == "contact_map_jaccard"
+        assert matrix.reason("a", "b") == "both contact maps empty"
+        assert matrix.value("c", "d") == 1.0
+
+
+def _contact_fixture():
+    """A one-residue binder and a receptor with a near atom, a water and a hydrogen close by."""
+    rows = [
+        ("B", 1, "", "ALA", "N", (0.0, 0.0, 0.0)),
+        ("B", 1, "", "ALA", "CA", (1.4, 0.0, 0.0)),
+        ("B", 2, "", "GLY", "CA", (0.0, 3.0, 0.0)),
+        ("A", 10, "", "GLY", "CA", (1.4, 4.0, 0.0)),
+        ("A", 11, "A", "GLY", "CA", (1.4, 0.0, 5.0)),
+        ("A", 12, "", "HOH", "O", (0.0, 1.5, 0.0)),
+        ("A", 13, "", "GLY", "H", (0.0, 1.0, 1.0)),
+        ("A", 14, "", "GLY", "CA", (1.4, 0.0, 8.0)),
+    ]
+    atoms = build_atoms(rows)
+    atoms.element[atoms.atom_name == "H"] = "H"
+    return atoms
+
+
+class TestContacts:
+    def test_residue_pairs_closer_than_the_cutoff(self):
+        atoms = _contact_fixture()
+        contacts = heavy_atom_contacts(atoms, "B", target_chain="A")
+        # B:1 is 4.0 from A:10 and exactly 5.0 from A:11A (not closer than the cutoff); the
+        # water and the hydrogen are ignored; B:2 sits 3.0 from the first atom of B:1 only
+        assert contacts == frozenset({(1, ("A", 10, "")), (2, ("A", 10, ""))})
+        wider = heavy_atom_contacts(atoms, "B", target_chain="A", cutoff_angstrom=5.01)
+        assert (1, ("A", 11, "A")) in wider
+        assert (1, ("A", 14, "")) not in wider
+
+    def test_the_binder_position_counts_residues_not_numbers(self):
+        atoms = _contact_fixture()
+        atoms.res_id[atoms.chain_id == "B"] += 100
+        assert {position for position, _ in heavy_atom_contacts(atoms, "B")} == {1, 2}
+
+    def test_every_atom_outside_the_binder_is_the_receptor_by_default(self):
+        atoms = _contact_fixture()
+        assert heavy_atom_contacts(atoms, "B") == heavy_atom_contacts(atoms, "B", target_chain="A")
+
+    def test_the_key_type_is_chosen_by_the_caller(self):
+        from collections import namedtuple
+
+        Key = namedtuple("Key", "chain number icode")
+        contacts = heavy_atom_contacts(_contact_fixture(), "B", key_factory=Key)
+        assert (1, Key("A", 10, "")) in contacts
+
+    def test_an_unknown_target_chain_is_refused_and_an_empty_receptor_has_no_contact(self):
+        atoms = _contact_fixture()
+        with pytest.raises(ValueError, match="no atom of chain 'Z'"):
+            heavy_atom_contacts(atoms, "B", target_chain="Z")
+        assert heavy_atom_contacts(atoms[atoms.chain_id == "B"], "B") == frozenset()
+        assert heavy_atom_contacts(atoms, "B", cutoff_angstrom=0.5) == frozenset()
+
+    def test_a_missing_binder_chain_is_refused(self):
+        with pytest.raises(ValueError, match="no atom of chain 'Q'"):
+            heavy_atom_contacts(_contact_fixture(), "Q")
+
+    def test_the_interface_residues_of_the_fixture(self):
+        interface = interface_residues(_contact_fixture(), "B", target_chain="A")
+        assert interface.binder == frozenset({1, 2})
+        assert interface.receptor == frozenset({("A", 10, "")})
+
+    def test_the_contacts_of_the_p53_peptide_match_a_brute_force_search(self, p53):
+        contacts = heavy_atom_contacts(p53, "B", target_chain="A")
+        binder = p53[(p53.chain_id == "B")]
+        receptor = p53[(p53.chain_id == "A")]
+        numbers = _numbers(p53, "B")
+        expected = set()
+        for i in range(binder.array_length()):
+            distances = np.linalg.norm(
+                receptor.coord.astype(np.float64) - binder.coord[i].astype(np.float64), axis=1
+            )
+            position = numbers.index(int(binder.res_id[i])) + 1
+            for j in np.flatnonzero(distances < 5.0):
+                expected.add((position, ("A", int(receptor.res_id[j]), str(receptor.ins_code[j]))))
+        assert contacts == expected
+        assert len(contacts) > 40
+
+    def test_the_known_hot_spot_residues_of_p53_are_in_the_interface(self, p53):
+        # Phe19, Trp23 and Leu26 of p53 bury themselves in MDM2: positions 3, 7 and 10 of 17-29
+        interface = interface_residues(p53, "B", target_chain="A")
+        assert {3, 7, 10} <= interface.binder
+        assert all(key[0] == "A" and isinstance(key[1], int) for key in interface.receptor)
+
+    def test_a_larger_cutoff_gives_a_superset(self, p53):
+        small = interface_residues(p53, "B", cutoff_angstrom=4.0)
+        large = interface_residues(p53, "B", cutoff_angstrom=6.0)
+        assert small.binder <= large.binder and small.receptor <= large.receptor
+        assert len(large.receptor) > len(small.receptor)
+
+    def test_contact_maps_fall_apart_when_the_peptide_leaves(self, p53):
+        near = heavy_atom_contacts(p53, "B", target_chain="A")
+        far = heavy_atom_contacts(moved(p53, "B", [0.0, 0.0, 40.0]), "B", target_chain="A")
+        assert far == frozenset()
+        matrix = contact_map_jaccard({"near": near, "same": near, "far": far})
+        assert matrix.value("near", "same") == 1.0
+        assert matrix.value("far", "near") == 0.0
+
+    def test_the_waters_of_a_ring_chain_are_not_binder_atoms(self, csa):
+        contacts = heavy_atom_contacts(csa, "C", target_chain="A")
+        positions = {position for position, _ in contacts}
+        assert positions and positions <= set(range(1, 12))
+
+
+# ---------------------------------------------------------------------------
+# positional spread
+# ---------------------------------------------------------------------------
+
+
+class TestPositionalSpread:
+    def test_translations_along_one_axis_give_the_population_standard_deviation(
+        self, translated_set
+    ):
+        result = positional_spread(translated_set, "B")
+        expected = float(np.std(list(OFFSETS.values())))  # divisor n
+        assert len(result.positions) == 13
+        for position in result.positions:
+            assert position.spread_angstrom == pytest.approx(expected, abs=TOL)
+            assert position.n_poses == 6
+        assert result.mean_spread_angstrom == pytest.approx(expected, abs=TOL)
+        assert result.pose_ids == tuple(sorted(OFFSETS)) and result.reference_id == "a1"
+        assert result.excluded == {} and result.reason is None
+
+    def test_the_positions_are_named_after_the_reference_residues(self, translated_set):
+        positions = positional_spread(translated_set, "B").positions
+        assert [p.binder_index for p in positions] == list(range(1, 14))
+        assert (positions[0].chain, positions[0].number, positions[0].residue) == ("B", 17, "GLU")
+        assert (positions[2].number, positions[2].insertion_code, positions[2].residue) == (
+            19,
+            "",
+            "PHE",
+        )
+
+    def test_two_poses_scatter_by_half_their_distance(self, p53):
+        result = positional_spread({"a": p53, "b": moved(p53, "B", [0.0, 3.0, 0.0])}, "B")
+        assert result.mean_spread_angstrom == pytest.approx(1.5, abs=TOL)
+
+    def test_identical_poses_do_not_scatter(self, p53):
+        result = positional_spread({"a": p53, "b": p53.copy(), "c": p53.copy()}, "B")
+        assert result.mean_spread_angstrom == pytest.approx(0.0, abs=1e-6)
+
+    def test_one_pose_has_no_spread_and_says_why(self, p53):
+        result = positional_spread({"only": p53}, "B")
+        assert result.positions == () and result.mean_spread_angstrom is None
+        assert result.reason == "needs at least 2 usable poses (got 1)"
+        assert result.reference_id == "only"
+        _json_strict(result.to_dict())
+
+    def test_no_pose_has_no_spread(self):
+        result = positional_spread({}, "B")
+        assert result.reference_id is None and result.reason.startswith("needs at least 2")
+
+    def test_a_pose_that_cannot_be_paired_or_read_is_excluded_with_its_reason(self, p53):
+        different = renamed_residue(p53, "B", 21, "GLU")
+        no_binder = p53[p53.chain_id == "A"]
+        result = positional_spread(
+            {"a": p53, "b": moved(p53, "B", [0.0, 2.0, 0.0]), "c": different, "d": no_binder}, "B"
+        )
+        assert result.pose_ids == ("a", "b")
+        assert set(result.excluded) == {"c", "d"}
+        assert "is ASP" in result.excluded["c"] and "no atom of chain" in result.excluded["d"]
+        assert result.mean_spread_angstrom == pytest.approx(1.0, abs=TOL)
+
+    def test_a_position_that_only_one_pose_has_gets_no_spread(self, p53):
+        missing = _numbers(p53, "B")[6]
+        poses = {"a": p53, "b": without_residue(moved(p53, "B", [0.0, 2.0, 0.0]), "B", missing)}
+        result = positional_spread(poses, "B")
+        by_index = {p.binder_index: p for p in result.positions}
+        assert by_index[7].spread_angstrom is None
+        assert by_index[7].n_poses == 1 and "at least 2 poses" in by_index[7].reason
+        assert by_index[8].spread_angstrom == pytest.approx(1.0, abs=TOL)
+        # the mean runs over the positions that have a value
+        assert result.mean_spread_angstrom == pytest.approx(1.0, abs=TOL)
+        out = _json_strict(result.to_dict())
+        assert "reason" in out["positions"][6] and "reason" not in out["positions"][0]
+
+    def test_another_numbering_is_paired_by_position(self, p53):
+        renumbered_pose = renumbered(moved(p53, "B", [0.0, 2.0, 0.0]), "B", 100)
+        result = positional_spread({"a": p53, "b": renumbered_pose}, "B")
+        assert result.excluded == {}
+        assert result.mean_spread_angstrom == pytest.approx(1.0, abs=TOL)
+        assert (
+            positional_spread(
+                {"a": p53, "b": renumbered_pose}, "B", residue_pairing="key"
+            ).excluded["b"]
+            == "no residue key is shared"
+        )
+
+    def test_the_reference_pose_can_be_chosen(self, p53):
+        renumbered_pose = renumbered(p53, "B", 100)
+        result = positional_spread({"a": p53, "b": renumbered_pose}, "B", reference_id="b")
+        assert result.reference_id == "b"
+        assert result.positions[0].number == 117
+        with pytest.raises(ValueError, match="not one of the poses"):
+            positional_spread({"a": p53}, "B", reference_id="z")
+        with pytest.raises(ValueError, match="no atom of chain"):
+            positional_spread({"a": p53, "b": p53[p53.chain_id == "A"]}, "B", reference_id="b")
+
+    def test_every_position_of_a_ring_has_a_spread(self, csa):
+        poses = {
+            "a": csa,
+            "b": moved(csa, "C", [0.0, 0.0, 1.0]),
+            "c": moved(csa, "C", [0.0, 0.0, -1.0]),
+        }
+        result = positional_spread(poses, "C")
+        # every residue with an alpha carbon, in the 11-residue ring (waters are not residues)
+        assert len(result.positions) == 11
+        expected = float(np.std([0.0, 1.0, -1.0]))
+        assert result.mean_spread_angstrom == pytest.approx(expected, abs=TOL)
+
+    def test_the_spread_of_each_group(self, translated_set):
+        groups = {name: name[0] for name in translated_set}
+        by_group = positional_spread_by_group(translated_set, "B", groups)
+        assert list(by_group) == ["a", "b"]
+        assert by_group["a"].mean_spread_angstrom == pytest.approx(
+            float(np.std([0.0, 0.4, 0.8])), abs=TOL
+        )
+        assert by_group["b"].mean_spread_angstrom == pytest.approx(
+            float(np.std([2.0, 2.3, 2.9])), abs=TOL
+        )
+        with pytest.raises(ValueError, match="without a group label"):
+            positional_spread_by_group(translated_set, "B", {"a1": "a"})
+
+    def test_a_bad_pairing_option_raises(self, p53):
+        with pytest.raises(ValueError, match="residue_pairing"):
+            positional_spread({"a": p53}, "B", residue_pairing="index")
+
+
+# ---------------------------------------------------------------------------
+# the pieces together on one set
+# ---------------------------------------------------------------------------
+
+
+def test_the_agreement_of_two_groups_of_computed_poses_end_to_end(p53):
+    poses = {
+        "m1:s1": moved(p53, "B", [0.0, 0.0, 0.0]),
+        "m1:s2": moved(p53, "B", [0.4, 0.0, 0.0]),
+        "m1:s3": moved(p53, "B", [0.8, 0.0, 0.0]),
+        "m2:s1": moved(p53, "B", [0.0, 2.0, 0.0]),
+        "m2:s2": moved(p53, "B", [0.0, 2.3, 0.0]),
+        "m2:s3": moved(p53, "B", [0.0, 2.9, 0.0]),
+    }
+    groups = {pose_id: pose_id.split(":")[0] for pose_id in poses}
+    matrix = pairwise_peptide_rmsd(poses, "B", kind="ca")
+    stats = pair_statistics(matrix, groups)
+    clusters = complete_linkage_clusters(matrix, groups=groups)
+    picks = medoids(matrix, groups)
+    contacts = {
+        pose_id: heavy_atom_contacts(atoms, "B", target_chain="A")
+        for pose_id, atoms in poses.items()
+    }
+    overlap = contact_map_jaccard(contacts)
+    spread = positional_spread_by_group(poses, "B", groups)
+    assert stats["within"]["m1"]["max"] == pytest.approx(0.8, abs=TOL)
+    assert [c.n_clusters for c in clusters] == [2, 2] and clusters[0].mixed_clusters == ()
+    assert picks["per_group"]["m1"]["pose_id"] == "m1:s2"
+    assert overlap.value("m1:s1", "m1:s1") == 1.0
+    assert set(spread) == {"m1", "m2"}
+    _json_strict(
+        {
+            "stats": stats,
+            "clusters": [c.to_dict() for c in clusters],
+            "medoids": picks,
+            "jaccard": overlap.to_dict(),
+            "spread": {k: v.to_dict() for k, v in spread.items()},
+        }
+    )
