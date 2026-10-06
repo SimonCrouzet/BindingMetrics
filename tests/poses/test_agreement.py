@@ -39,6 +39,7 @@ from binding_metrics.poses.agreement import (  # noqa: E402
     positional_spread,
     positional_spread_by_group,
 )
+from binding_metrics.poses.reference import ResidueKey  # noqa: E402
 
 DATA = Path(__file__).resolve().parents[2] / "data"
 TOL = 2e-5
@@ -629,7 +630,7 @@ class TestResidueCorrespondence:
             "DAL", "MLE", "MLE", "MVA", "BMT", "ABA", "SAR", "MLE", "VAL", "MLE", "ALA",
         ]  # fmt: skip
         assert view.keys_unique
-        assert view.residues[0].key == ("C", 1, "")
+        assert view.residues[0].key == ResidueKey("C", 1, "")
         expected_atoms = int(
             np.sum((csa.chain_id == "C") & (csa.res_name != "HOH") & (csa.element != "H"))
         )
@@ -1403,8 +1404,12 @@ class TestJaccard:
 
     def test_interface_jaccard_gives_both_sides_and_each_side(self):
         interfaces = {
-            "p": InterfaceResidues(frozenset({1, 2, 3}), frozenset({("A", 5, ""), ("A", 6, "")})),
-            "q": InterfaceResidues(frozenset({2, 3}), frozenset({("A", 5, ""), ("A", 7, "")})),
+            "p": InterfaceResidues(
+                frozenset({1, 2, 3}), frozenset({ResidueKey("A", 5), ResidueKey("A", 6)})
+            ),
+            "q": InterfaceResidues(
+                frozenset({2, 3}), frozenset({ResidueKey("A", 5), ResidueKey("A", 7)})
+            ),
             "r": InterfaceResidues(frozenset(), frozenset()),
             "s": InterfaceResidues(frozenset(), frozenset()),
         }
@@ -1451,10 +1456,10 @@ class TestContacts:
         contacts = heavy_atom_contacts(atoms, "B", target_chain="A")
         # B:1 is 4.0 from A:10 and exactly 5.0 from A:11A (not closer than the cutoff); the
         # water and the hydrogen are ignored; B:2 sits 3.0 from the first atom of B:1 only
-        assert contacts == frozenset({(1, ("A", 10, "")), (2, ("A", 10, ""))})
+        assert contacts == frozenset({(1, ResidueKey("A", 10)), (2, ResidueKey("A", 10))})
         wider = heavy_atom_contacts(atoms, "B", target_chain="A", cutoff_angstrom=5.01)
-        assert (1, ("A", 11, "A")) in wider
-        assert (1, ("A", 14, "")) not in wider
+        assert (1, ResidueKey("A", 11, "A")) in wider
+        assert (1, ResidueKey("A", 14)) not in wider
 
     def test_the_binder_position_counts_residues_not_numbers(self):
         atoms = _contact_fixture()
@@ -1465,12 +1470,25 @@ class TestContacts:
         atoms = _contact_fixture()
         assert heavy_atom_contacts(atoms, "B") == heavy_atom_contacts(atoms, "B", target_chain="A")
 
-    def test_the_key_type_is_chosen_by_the_caller(self):
+    def test_the_default_key_is_a_residue_key_and_the_caller_may_choose_another(self):
+        atoms = _contact_fixture()
+        default = heavy_atom_contacts(atoms, "B")
+        assert all(isinstance(key, ResidueKey) for _, key in default)
+        tuples = heavy_atom_contacts(atoms, "B", key_factory=lambda *fields: tuple(fields))
+        assert (1, ("A", 10, "")) in tuples
         from collections import namedtuple
 
         Key = namedtuple("Key", "chain number icode")
-        contacts = heavy_atom_contacts(_contact_fixture(), "B", key_factory=Key)
-        assert (1, Key("A", 10, "")) in contacts
+        assert (1, Key("A", 10, "")) in heavy_atom_contacts(atoms, "B", key_factory=Key)
+
+    def test_a_receptor_atom_without_a_chain_id_cannot_make_a_residue_key(self):
+        atoms = _contact_fixture()
+        atoms.chain_id[atoms.chain_id == "A"] = ""
+        with pytest.raises(ValueError, match="chain must not be empty"):
+            heavy_atom_contacts(atoms, "B")
+        # a caller that does not need a ResidueKey can still count the contacts
+        contacts = heavy_atom_contacts(atoms, "B", key_factory=lambda *fields: tuple(fields))
+        assert (1, ("", 10, "")) in contacts
 
     def test_an_unknown_target_chain_is_refused_and_an_empty_receptor_has_no_contact(self):
         atoms = _contact_fixture()
@@ -1486,7 +1504,7 @@ class TestContacts:
     def test_the_interface_residues_of_the_fixture(self):
         interface = interface_residues(_contact_fixture(), "B", target_chain="A")
         assert interface.binder == frozenset({1, 2})
-        assert interface.receptor == frozenset({("A", 10, "")})
+        assert interface.receptor == frozenset({ResidueKey("A", 10)})
 
     def test_the_contacts_of_the_p53_peptide_match_a_brute_force_search(self, p53):
         contacts = heavy_atom_contacts(p53, "B", target_chain="A")
@@ -1500,7 +1518,9 @@ class TestContacts:
             )
             position = numbers.index(int(binder.res_id[i])) + 1
             for j in np.flatnonzero(distances < 5.0):
-                expected.add((position, ("A", int(receptor.res_id[j]), str(receptor.ins_code[j]))))
+                expected.add(
+                    (position, ResidueKey("A", int(receptor.res_id[j]), str(receptor.ins_code[j])))
+                )
         assert contacts == expected
         assert len(contacts) > 40
 
@@ -1508,7 +1528,7 @@ class TestContacts:
         # Phe19, Trp23 and Leu26 of p53 bury themselves in MDM2: positions 3, 7 and 10 of 17-29
         interface = interface_residues(p53, "B", target_chain="A")
         assert {3, 7, 10} <= interface.binder
-        assert all(key[0] == "A" and isinstance(key[1], int) for key in interface.receptor)
+        assert all(isinstance(key, ResidueKey) and key.chain == "A" for key in interface.receptor)
 
     def test_a_larger_cutoff_gives_a_superset(self, p53):
         small = interface_residues(p53, "B", cutoff_angstrom=4.0)
@@ -1552,12 +1572,17 @@ class TestPositionalSpread:
     def test_the_positions_are_named_after_the_reference_residues(self, translated_set):
         positions = positional_spread(translated_set, "B").positions
         assert [p.binder_index for p in positions] == list(range(1, 14))
-        assert (positions[0].chain, positions[0].number, positions[0].residue) == ("B", 17, "GLU")
-        assert (positions[2].number, positions[2].insertion_code, positions[2].residue) == (
-            19,
-            "",
-            "PHE",
-        )
+        assert (positions[0].key, positions[0].residue) == (ResidueKey("B", 17), "GLU")
+        assert (positions[2].key, positions[2].residue) == (ResidueKey("B", 19), "PHE")
+        assert positions[0].to_dict() == {
+            "binder_index": 1,
+            "chain": "B",
+            "number": 17,
+            "icode": "",
+            "residue": "GLU",
+            "n_poses": 6,
+            "spread_angstrom": positions[0].spread_angstrom,
+        }
 
     def test_two_poses_scatter_by_half_their_distance(self, p53):
         result = positional_spread({"a": p53, "b": moved(p53, "B", [0.0, 3.0, 0.0])}, "B")
@@ -1618,7 +1643,7 @@ class TestPositionalSpread:
         renumbered_pose = renumbered(p53, "B", 100)
         result = positional_spread({"a": p53, "b": renumbered_pose}, "B", reference_id="b")
         assert result.reference_id == "b"
-        assert result.positions[0].number == 117
+        assert result.positions[0].key == ResidueKey("B", 117)
         with pytest.raises(ValueError, match="not one of the poses"):
             positional_spread({"a": p53}, "B", reference_id="z")
         with pytest.raises(ValueError, match="no atom of chain"):
@@ -1693,3 +1718,13 @@ def test_the_agreement_of_two_groups_of_computed_poses_end_to_end(p53):
             "spread": {k: v.to_dict() for k, v in spread.items()},
         }
     )
+
+
+def test_the_reference_module_does_not_import_the_agreement_module():
+    script = (
+        "import sys, binding_metrics.poses.reference\n"
+        "assert 'binding_metrics.poses.agreement' not in sys.modules\n"
+        "import binding_metrics.poses.agreement\n"
+    )
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr

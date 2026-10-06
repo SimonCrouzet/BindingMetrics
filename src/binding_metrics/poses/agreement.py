@@ -27,8 +27,9 @@ chain ID (an author-numbered file lists the waters of a chain under its ID). Ato
 residue and atom name twice (alternate locations) count once: the first one.
 
 Residue correspondence between two poses (``residue_pairing``). A residue is identified by its
-key, the tuple ``(chain ID, residue number, insertion code)`` (the three fields of the layer's
-``ResidueKey``), so ``52`` and ``52A`` are two residues.
+``ResidueKey`` (``binding_metrics.poses.reference``): chain ID, residue number and insertion
+code, so ``52`` and ``52A`` are two residues. Every residue key that this module returns (the
+binder residues, the contacts, the interface, the positional spread) is a ``ResidueKey``.
 
 * ``"key"``: residues with the same key are paired; a residue present in one pose only is
   dropped.
@@ -154,6 +155,7 @@ from binding_metrics.core.residues import (
     VARIANT_TO_PARENT_RESIDUE,
     WATER_NAMES_ALL,
 )
+from binding_metrics.poses.reference import ResidueKey
 from binding_metrics.poses.symmetry import (
     C_TERMINAL_CARBOXYLATE,
     best_labelling,
@@ -208,7 +210,7 @@ class BinderResidue:
             name).
     """
 
-    key: tuple[str, int, str]
+    key: ResidueKey
     name: str
     atom_rows: Mapping[str, int]
 
@@ -271,7 +273,7 @@ class BinderView:
             atom_rows: dict[str, int] = {}
             for row in range(start, stop):
                 atom_rows.setdefault(str(atom_name[row]), int(row))
-            key = (str(binder_chain), int(res_id[start]), str(ins_code[start]))
+            key = ResidueKey(str(binder_chain), int(res_id[start]), str(ins_code[start]))
             residues.append(BinderResidue(key, str(names[start]), atom_rows))
         keys = [residue.key for residue in residues]
         view_coord = np.asarray(coord[rows], dtype=np.float64)
@@ -339,8 +341,8 @@ def _identity_name(res_name: str) -> str:
     return D_AA_MAP.get(name, name)
 
 
-def _label(key: tuple[str, int, str]) -> str:
-    return f"{key[0]}:{key[1]}{key[2]}"
+def _label(key: ResidueKey) -> str:
+    return key.label
 
 
 def _name_conflict(a: BinderView, b: BinderView, pairs: Sequence[tuple[int, int]]) -> Optional[str]:
@@ -1290,8 +1292,9 @@ class InterfaceResidues(NamedTuple):
 
     Attributes:
         binder: 1-based positions in the binder chain of the binder residues in the interface.
-        receptor: Keys of the receptor residues in the interface (the key type of the caller;
-            plain ``(chain, number, insertion code)`` tuples from ``interface_residues``).
+        receptor: Keys of the receptor residues in the interface: ``ResidueKey`` from
+            ``interface_residues`` (a caller that builds the sets may use any hashable key, as
+            long as one numbering serves all poses).
     """
 
     binder: frozenset
@@ -1348,18 +1351,13 @@ def contact_map_jaccard(contacts_by_pose: Mapping[str, Collection]) -> PairMatri
     )
 
 
-def _plain_key(chain: str, number: int, insertion_code: str) -> tuple[str, int, str]:
-    """The default residue key of the contact helpers: ``(chain ID, number, insertion code)``."""
-    return (chain, number, insertion_code)
-
-
 def heavy_atom_contacts(
     atoms,
     binder_chain: str,
     *,
     target_chain: Optional[str] = None,
     cutoff_angstrom: float = DEFAULT_CONTACT_CUTOFF_ANGSTROM,
-    key_factory: Callable[[str, int, str], Any] = _plain_key,
+    key_factory: Callable[[str, int, str], Any] = ResidueKey,
 ) -> frozenset:
     """The residue pairs of the binder and the receptor with two heavy atoms closer than a cutoff.
 
@@ -1372,15 +1370,17 @@ def heavy_atom_contacts(
         cutoff_angstrom: Contact distance, default 5.0 (the heavy-atom contact distance of the
             CAPRI fraction of native contacts); a pair at exactly the cutoff is not in contact.
         key_factory: Builds the receptor residue key from ``(chain ID, number, insertion
-            code)``; the default gives a plain tuple, ``ResidueKey`` gives the layer's key.
+            code)``; the default is ``ResidueKey``, a callable of the same three arguments
+            (a tuple-making function, a named tuple) gives another key type.
 
     Returns:
         A frozenset of ``(binder position, receptor key)``, the position being the 1-based index
         of the residue in the binder chain.
 
     Raises:
-        ValueError: If the binder chain is missing or empty, or ``target_chain`` is not in the
-            structure.
+        ValueError: If the binder chain is missing or empty, ``target_chain`` is not in the
+            structure, or a receptor atom in contact has an empty chain ID (a ``ResidueKey``
+            needs one).
     """
     view = BinderView.from_atoms(atoms, binder_chain)
     chain_id = _strings(atoms.chain_id)
@@ -1426,7 +1426,7 @@ def interface_residues(
     *,
     target_chain: Optional[str] = None,
     cutoff_angstrom: float = DEFAULT_CONTACT_CUTOFF_ANGSTROM,
-    key_factory: Callable[[str, int, str], Any] = _plain_key,
+    key_factory: Callable[[str, int, str], Any] = ResidueKey,
 ) -> InterfaceResidues:
     """The residues of the binder and of the receptor that touch the other partner.
 
@@ -1458,7 +1458,8 @@ class PositionSpread:
 
     Attributes:
         binder_index: 1-based position in the binder chain of the reference pose.
-        chain, number, insertion_code, residue: The reference pose's residue at that position.
+        key: ``ResidueKey`` of the reference pose's residue at that position.
+        residue: Its name.
         n_poses: Poses with an alpha carbon at the position.
         spread_angstrom: ``sqrt(mean_i |x_i - mean(x)|^2)``; None with a ``reason`` when fewer
             than two poses have an alpha carbon there.
@@ -1466,13 +1467,26 @@ class PositionSpread:
     """
 
     binder_index: int
-    chain: str
-    number: int
-    insertion_code: str
+    key: ResidueKey
     residue: str
     n_poses: int
     spread_angstrom: Optional[float]
     reason: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-ready dictionary with the key flattened to ``chain``, ``number``, ``icode``."""
+        out: dict[str, Any] = {
+            "binder_index": self.binder_index,
+            "chain": self.key.chain,
+            "number": self.key.number,
+            "icode": self.key.icode,
+            "residue": self.residue,
+            "n_poses": self.n_poses,
+            "spread_angstrom": self.spread_angstrom,
+        }
+        if self.reason is not None:
+            out["reason"] = self.reason
+        return out
 
 
 @dataclass(frozen=True)
@@ -1502,14 +1516,7 @@ class PositionalSpread:
         out: dict[str, Any] = {
             "pose_ids": list(self.pose_ids),
             "reference_id": self.reference_id,
-            "positions": [
-                {
-                    k: v
-                    for k, v in dataclasses.asdict(p).items()
-                    if not (k == "reason" and v is None)
-                }
-                for p in self.positions
-            ],
+            "positions": [position.to_dict() for position in self.positions],
             "mean_spread_angstrom": self.mean_spread_angstrom,
             "excluded": dict(self.excluded),
         }
@@ -1603,9 +1610,7 @@ def positional_spread(
         positions.append(
             PositionSpread(
                 index + 1,
-                residue.key[0],
-                residue.key[1],
-                residue.key[2],
+                residue.key,
                 residue.name,
                 len(coords),
                 spread,
