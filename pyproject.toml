@@ -92,6 +92,11 @@ Repository = "https://github.com/SimonCrouzet/BindingMetrics"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The 1YCR complex that binding_metrics.testing.make_synthetic_poses reads. `data/` is not a
+# package (no __init__.py), so the pattern is relative to the testing package directory.
+[tool.setuptools.package-data]
+"binding_metrics.testing" = ["data/*.pdb"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

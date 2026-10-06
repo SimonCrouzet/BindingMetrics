@@ -42,11 +42,13 @@ files of ``SyntheticPoses.write`` keep the float32 values exactly; a PDB file wo
 
 Where the complex comes from
 ----------------------------
-By default the bundled copy of ``example_linear_p53_1YCR.pdb``. If the package ships it as
-data (``binding_metrics/testing/data/``) that copy is read; otherwise, when running from a
-source tree, the file in the repository's ``data/`` directory; an installed package without
-the data raises ``FileNotFoundError`` that names ``complex_path``. Pass ``complex_path`` to
-use any other two-chain structure. Only the atoms of the two chains are kept.
+By default the bundled copy of ``example_linear_p53_1YCR.pdb`` (PDB entry 1YCR, MDM2 bound to
+the p53 transactivation peptide). The package ships it as data in
+``binding_metrics/testing/data/``, declared in ``pyproject.toml``, and it is found through
+``importlib.resources``, so it is there in an installed wheel, an sdist install and an editable
+install. A source tree that lacks that copy falls back to the repository's ``data/`` directory;
+if neither exists ``FileNotFoundError`` names ``complex_path``. Pass ``complex_path`` to use any
+other two-chain structure. Only the atoms of the two chains are kept.
 
 Poses are ``DockedPose`` objects built from in-memory atoms, with ``backend`` and ``seed`` in
 their provenance (the group key of the pose-set aggregates) and a round-number
@@ -58,10 +60,13 @@ the structure is read or written.
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import io
 import math
 import re
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Sequence, Union
@@ -73,6 +78,11 @@ from binding_metrics.poses.experimental import ExperimentalPose
 
 #: Name of the bundled complex file.
 BUNDLED_COMPLEX_NAME = "example_linear_p53_1YCR.pdb"
+
+#: Files that ``importlib.resources`` had to extract from an archive (a zipped install); they
+#: must outlive the call that returns their path, so they are removed when the process exits.
+_EXTRACTED_RESOURCES = contextlib.ExitStack()
+atexit.register(_EXTRACTED_RESOURCES.close)
 
 DEFAULT_BACKENDS = ("backend_a", "backend_b")
 DEFAULT_SEEDS = (1, 2, 3)
@@ -185,20 +195,42 @@ class SyntheticPoses:
 # ---------------------------------------------------------------------- the complex
 
 
+def _packaged_complex_path() -> Optional[Path]:
+    """Path of the copy shipped as package data, found through ``importlib.resources``.
+
+    None when this package has no such file. For an install from an archive the file is
+    extracted once to a temporary location that lives until the process exits.
+    """
+    try:
+        resource = resources.files(__package__).joinpath("data", BUNDLED_COMPLEX_NAME)
+        if not resource.is_file():
+            return None
+    except (ModuleNotFoundError, FileNotFoundError, NotADirectoryError):
+        return None
+    if isinstance(resource, Path):
+        return resource
+    return Path(_EXTRACTED_RESOURCES.enter_context(resources.as_file(resource)))
+
+
 def _candidate_paths() -> list[Path]:
-    here = Path(__file__).resolve()
-    return [
-        here.parent / "data" / BUNDLED_COMPLEX_NAME,  # package data, once the package ships it
-        here.parents[3] / "data" / BUNDLED_COMPLEX_NAME,  # the repository's data/ in a source tree
-    ]
+    """Where the bundled complex may be, best first: package data, then the source tree."""
+    candidates = []
+    packaged = _packaged_complex_path()
+    if packaged is not None:
+        candidates.append(packaged)
+    candidates.append(Path(__file__).resolve().parents[3] / "data" / BUNDLED_COMPLEX_NAME)
+    return candidates
 
 
 def bundled_complex_path() -> Path:
     """Path of the bundled 1YCR file (MDM2 chain A, p53 peptide chain B).
 
+    The copy in the package data (``binding_metrics/testing/data/``) is used when it exists,
+    else the repository's ``data/`` directory of a source tree.
+
     Raises:
-        FileNotFoundError: If neither the package data nor a source tree's ``data/`` has it;
-            pass ``complex_path`` to ``make_synthetic_poses`` then.
+        FileNotFoundError: If neither has it; pass ``complex_path`` to ``make_synthetic_poses``
+            then.
     """
     candidates = _candidate_paths()
     for path in candidates:
@@ -206,8 +238,9 @@ def bundled_complex_path() -> Path:
             return path
     raise FileNotFoundError(
         f"the bundled complex {BUNDLED_COMPLEX_NAME} was not found (looked in "
-        f"{[str(path) for path in candidates]}); it is read from the repository's data/ "
-        "directory in a source tree. Pass complex_path=<a two-chain structure file>."
+        f"{[str(path) for path in candidates]}); it ships as package data of "
+        "binding_metrics.testing and, in a source tree, is read from the repository's data/ "
+        "directory. Pass complex_path=<a two-chain structure file>."
     )
 
 
