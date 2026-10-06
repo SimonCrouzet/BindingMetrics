@@ -34,6 +34,14 @@ sphere-overlap volume) and how much of the receptor surface that the partner cov
 covers too (buried area shared over the receptor atoms that the pose and the reference have in
 common). The partner and the binder keep only heavy polymer atoms, as the interface metric does.
 
+Per-residue table (``interface_residue_table``, design section 8.5). One row per binder residue
+and per receptor residue with buried area, in a fixed column order and sort order, for a reader
+that wants the residue-level picture rather than the set-level one. The areas are those of
+``_collect_per_residue`` with threshold 0, labelled with the numbering of the pose and, for the
+receptor residues that the frame pairs, with the reference numbering. There is no
+per-residue interaction energy: the only energy-like column is the Eisenberg-McLachlan solvation
+term, which is a surface-area model.
+
 Residue identity everywhere is ``(chain, number, insertion code)``: ``52`` and ``52A`` are two
 residues.
 """
@@ -86,6 +94,25 @@ PARTNER_COLUMNS = (
     "pose_buried_area_angstrom2",
     "shared_fraction_of_partner",
     "overlap_volume_angstrom3",
+)
+
+#: The columns of a row of the per-residue table, in order (design section 8.5).
+TABLE_COLUMNS = (
+    "chain",
+    "role",
+    "number",
+    "icode",
+    "name",
+    "binder_index",
+    "reference_chain",
+    "reference_number",
+    "reference_icode",
+    "buried_area_angstrom2",
+    "polar_area_angstrom2",
+    "apolar_area_angstrom2",
+    "solvation_dg_kcal_mol",
+    "in_interface",
+    "in_sets",
 )
 
 #: The columns of a residue-set block, in order (design section 8.3).
@@ -244,18 +271,22 @@ def interface_areas(
     )
 
 
+def _check_areas(areas: InterfaceAreas, binder_chain: str, target_chain: str, probe_radius) -> None:
+    if (areas.binder_chain, areas.target_chain) != (binder_chain, target_chain):
+        raise ValueError(
+            f"areas were computed for binder '{areas.binder_chain}' and target "
+            f"'{areas.target_chain}', not '{binder_chain}' and '{target_chain}'"
+        )
+    if areas.probe_radius != float(probe_radius):
+        raise ValueError(
+            f"areas were computed with probe_radius {areas.probe_radius}, not {probe_radius}"
+        )
+
+
 def _areas_or_reason(atoms, binder_chain, target_chain, probe_radius, areas):
     """``(areas, None)``, or ``(None, reason)`` when a chain has no heavy polymer atom."""
     if areas is not None:
-        if (areas.binder_chain, areas.target_chain) != (binder_chain, target_chain):
-            raise ValueError(
-                f"areas were computed for binder '{areas.binder_chain}' and target "
-                f"'{areas.target_chain}', not '{binder_chain}' and '{target_chain}'"
-            )
-        if areas.probe_radius != float(probe_radius):
-            raise ValueError(
-                f"areas were computed with probe_radius {areas.probe_radius}, not {probe_radius}"
-            )
+        _check_areas(areas, binder_chain, target_chain, probe_radius)
         return areas, None
     try:
         return interface_areas(atoms, binder_chain, target_chain, probe_radius=probe_radius), None
@@ -376,6 +407,7 @@ def residue_set_descriptors(
                 "stage read"
             )
     if reason is not None:
+        logger.debug("residue sets have no value: %s", reason)
         return {name: _set_failure(len(members), None, reason) for name, members in sets.items()}
 
     mapped_keys = frozenset(area_of_reference)
@@ -703,6 +735,7 @@ def partner_descriptors(
     if binder is not None and len(binder) == 0:
         reason = "the binder has no atom with finite coordinates"
     if reason is not None:
+        logger.debug("partner descriptors have no value: %s", reason)
         return {name: _partner_failure(reason) for name in partners}
 
     _, _, _, sasa_fn, vdw_fn = _import_biotite()
@@ -758,6 +791,127 @@ def _area_columns(pose_burial: np.ndarray, partner_burial: np.ndarray, reasons: 
     return columns
 
 
+# ---------------------------------------------------------------------------- C3: residue table
+
+
+def _table_row(row: Mapping, role: str, threshold: float) -> dict:
+    return {
+        "chain": row["chain"],
+        "role": role,
+        "number": row["res_id"],
+        "icode": row["ins_code"],
+        "name": row["res_name"],
+        "binder_index": None,
+        "reference_chain": None,
+        "reference_number": None,
+        "reference_icode": None,
+        "buried_area_angstrom2": float(row["buried_sasa"]),
+        "polar_area_angstrom2": float(row["polar_area"]),
+        "apolar_area_angstrom2": float(row["apolar_area"]),
+        "solvation_dg_kcal_mol": float(row["delta_g_res"]),
+        "in_interface": bool(row["buried_sasa"] >= threshold),
+        "in_sets": None,
+    }
+
+
+def interface_residue_table(
+    atoms,
+    frame: Optional[FrameResult] = None,
+    reference: Optional[Reference] = None,
+    *,
+    binder_chain: str,
+    target_chain: str,
+    interface_threshold_angstrom2: float = DEFAULT_INTERFACE_THRESHOLD_ANGSTROM2,
+    probe_radius: float = DEFAULT_PROBE_RADIUS,
+    areas: Optional[InterfaceAreas] = None,
+) -> list[dict]:
+    """The interface of a pose residue by residue, in a long format with fixed columns.
+
+    One dict per residue, with the keys of ``TABLE_COLUMNS`` in this order:
+
+    * ``chain``, ``role`` (``"binder"`` or ``"receptor"``), ``number``, ``icode``, ``name``:
+      the residue as the atoms label it;
+    * ``binder_index``: 1-based position in the binder chain, in file order (None for a
+      receptor residue);
+    * ``reference_chain``, ``reference_number``, ``reference_icode``: the reference residue that
+      the frame pairs with a receptor residue (None for a binder residue, an unpaired receptor
+      residue, or when there is no frame);
+    * ``buried_area_angstrom2``, ``polar_area_angstrom2`` (N and O atoms),
+      ``apolar_area_angstrom2`` (C and S atoms): the buried area of the residue, from
+      ``_collect_per_residue`` with threshold 0;
+    * ``solvation_dg_kcal_mol``: the solvation term of the residue (``delta_g_res`` of
+      ``_collect_per_residue``; Eisenberg & McLachlan, Nature 319:199-203, 1986), negative when
+      burial is favourable;
+    * ``in_interface``: whether the buried area is at least ``interface_threshold_angstrom2``;
+    * ``in_sets``: for a receptor residue, the sorted names of the reference residue sets that
+      contain its paired reference residue (an empty list when there are none, the residue is
+      unpaired or there is no reference); None for a binder residue.
+
+    Rows: every binder residue (zero area allowed) and every receptor residue with buried area
+    above zero, sorted by ``(role, chain, number, icode)``, so the binder rows come first. The
+    table does not depend on the frame or the reference except through the reference columns
+    and ``in_sets``; a missing or failed ``frame`` leaves those empty.
+
+    Args:
+        atoms: The pose, as for ``residue_set_descriptors``.
+        frame: The ``FrameResult`` of this pose, for the reference columns; optional.
+        reference: The ``Reference`` whose ``residue_sets`` fill ``in_sets``; optional, and
+            needs ``frame``.
+        binder_chain: The binder chain ID in ``atoms``.
+        target_chain: The receptor chain ID in ``atoms``.
+        interface_threshold_angstrom2: Smallest residue buried area for ``in_interface``
+            (default 0.5). It does not remove rows.
+        probe_radius: Solvent probe radius in angstrom (default 1.4).
+        areas: The result of ``interface_areas`` for these atoms and chains, when the caller
+            has it already.
+
+    Raises:
+        TypeError: For an argument of the wrong type.
+        ValueError: For an invalid chain ID or threshold, ``reference`` without ``frame``,
+            ``areas`` computed for other chains or another probe, or a chain with no heavy
+            polymer atom (a table cannot carry a reason).
+    """
+    if reference is not None and not isinstance(reference, Reference):
+        raise TypeError(f"reference must be a Reference, got {type(reference).__name__}")
+    if frame is not None and not isinstance(frame, FrameResult):
+        raise TypeError(f"frame must be a FrameResult or None, got {type(frame).__name__}")
+    if reference is not None and frame is None:
+        raise ValueError("reference needs the frame: its sets are read through the residue pairing")
+    _check_chains(binder_chain, target_chain)
+    _check_number("interface_threshold_angstrom2", interface_threshold_angstrom2, minimum=0.0)
+    _check_number("probe_radius", probe_radius, minimum=0.0, exclusive=True)
+    _check_one_model(atoms)
+    if areas is None:
+        areas = interface_areas(atoms, binder_chain, target_chain, probe_radius=probe_radius)
+    else:
+        _check_areas(areas, binder_chain, target_chain, probe_radius)
+
+    paired = {}
+    if frame is not None and frame.ok:
+        paired = {(key.chain, key.number, key.icode): other for key, other in frame.pairs}
+    sets = {} if reference is None else reference.residue_sets
+    rows = []
+    for index, residue in enumerate(areas.binder_residues, start=1):
+        row = _table_row(residue, "binder", interface_threshold_angstrom2)
+        row["binder_index"] = index
+        rows.append(row)
+    for residue in areas.receptor_residues:
+        if residue["buried_sasa"] <= 0:
+            continue
+        row = _table_row(residue, "receptor", interface_threshold_angstrom2)
+        other = paired.get((residue["chain"], residue["res_id"], residue["ins_code"]))
+        if other is not None:
+            row["reference_chain"] = other.chain
+            row["reference_number"] = other.number
+            row["reference_icode"] = other.icode
+        row["in_sets"] = sorted(
+            name for name, members in sets.items() if other is not None and other in members
+        )
+        rows.append(row)
+    rows.sort(key=lambda row: (row["role"], row["chain"], row["number"], row["icode"]))
+    return rows
+
+
 __all__ = [
     "DEFAULT_CLASH_CUTOFFS_ANGSTROM",
     "DEFAULT_INTERFACE_THRESHOLD_ANGSTROM2",
@@ -766,8 +920,10 @@ __all__ = [
     "DEFAULT_SHELL_ANGSTROM",
     "PARTNER_COLUMNS",
     "SET_COLUMNS",
+    "TABLE_COLUMNS",
     "InterfaceAreas",
     "interface_areas",
+    "interface_residue_table",
     "partner_descriptors",
     "residue_set_descriptors",
     "sphere_overlap_volume",

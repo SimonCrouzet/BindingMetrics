@@ -23,8 +23,10 @@ from binding_metrics.poses.descriptors import (
     DEFAULT_SHELL_ANGSTROM,
     PARTNER_COLUMNS,
     SET_COLUMNS,
+    TABLE_COLUMNS,
     InterfaceAreas,
     interface_areas,
+    interface_residue_table,
     partner_descriptors,
     residue_set_descriptors,
     sphere_overlap_volume,
@@ -878,3 +880,283 @@ class TestScaleCheck1YCR:
         assert at_ten["clash_atoms"]["2.2"] < at_zero["clash_atoms"]["2.2"]
         volumes = [results[s]["overlap_volume_angstrom3"] for s in self.SHIFTS]
         assert volumes[0] > volumes[1] > volumes[3]
+
+
+# ---------------------------------------------------------------------------
+# C3: per-residue interface table
+# ---------------------------------------------------------------------------
+
+EXPECTED_COLUMNS = [
+    "chain",
+    "role",
+    "number",
+    "icode",
+    "name",
+    "binder_index",
+    "reference_chain",
+    "reference_number",
+    "reference_icode",
+    "buried_area_angstrom2",
+    "polar_area_angstrom2",
+    "apolar_area_angstrom2",
+    "solvation_dg_kcal_mol",
+    "in_interface",
+    "in_sets",
+]
+
+
+def table_of(pose_atoms, frame=None, reference=None, **kwargs):
+    return interface_residue_table(
+        pose_atoms, frame, reference, binder_chain="B", target_chain="A", **kwargs
+    )
+
+
+def by_residue(rows, role, number, icode=""):
+    found = [r for r in rows if (r["role"], r["number"], r["icode"]) == (role, number, icode)]
+    assert len(found) == 1, (role, number, icode, len(found))
+    return found[0]
+
+
+class TestResidueTable:
+    def test_columns_are_fixed_and_in_order(self, reference, pose):
+        frame, placed = pose
+        rows = table_of(placed, frame, reference)
+        assert list(TABLE_COLUMNS) == EXPECTED_COLUMNS
+        assert rows and all(list(row) == EXPECTED_COLUMNS for row in rows)
+
+    def test_rows_are_every_binder_residue_and_the_receptor_residues_with_area(self, pose):
+        frame, placed = pose
+        rows = table_of(placed)
+        binder = [r for r in rows if r["role"] == "binder"]
+        receptor = [r for r in rows if r["role"] == "receptor"]
+        assert [r["number"] for r in binder] == [1, 2, 3]
+        assert [r["number"] for r in receptor] == [1, 2, 6]  # the other nine have no area
+        assert [r["role"] for r in rows] == ["binder"] * 3 + ["receptor"] * 3
+
+    def test_binder_residue_without_area_is_still_a_row(self):
+        far = tiny_complex(contacts=(1, 2, 3), height=34.0)
+        rows = table_of(far)
+        assert [(r["role"], r["number"]) for r in rows] == [
+            ("binder", 1),
+            ("binder", 2),
+            ("binder", 3),
+        ]
+        assert all(r["buried_area_angstrom2"] == 0.0 for r in rows)
+        assert not any(r["in_interface"] for r in rows)
+
+    def test_areas_binder_index_and_flags_by_hand(self, reference, pose):
+        frame, placed = pose
+        rows = table_of(placed, frame, reference)
+        binder_two = by_residue(rows, "binder", 2)
+        assert binder_two["name"] == "ALA" and binder_two["chain"] == "B"
+        assert binder_two["binder_index"] == 2
+        assert binder_two["buried_area_angstrom2"] == pytest.approx(CAP_AREA, rel=0.03)
+        # one carbon atom per residue: all of the area is apolar, none polar
+        assert binder_two["apolar_area_angstrom2"] == binder_two["buried_area_angstrom2"]
+        assert binder_two["polar_area_angstrom2"] == 0.0
+        # carbon: -0.016 kcal/mol per square angstrom of buried area
+        assert binder_two["solvation_dg_kcal_mol"] == pytest.approx(
+            -0.016 * binder_two["buried_area_angstrom2"], rel=1e-6
+        )
+        assert binder_two["in_interface"] is True
+        assert binder_two["in_sets"] is None
+        receptor_six = by_residue(rows, "receptor", 6)
+        assert receptor_six["name"] == "THR" and receptor_six["binder_index"] is None
+        assert receptor_six["buried_area_angstrom2"] == pytest.approx(CAP_AREA, rel=0.03)
+
+    def test_reference_columns_and_set_membership(self, reference, pose):
+        frame, placed = pose
+        rows = table_of(placed, frame, reference)
+        receptor = {r["number"]: r for r in rows if r["role"] == "receptor"}
+        # numbers agree here: the reference is the same complex
+        assert (receptor[2]["reference_chain"], receptor[2]["reference_number"]) == ("A", 2)
+        assert receptor[2]["reference_icode"] == ""
+        # sets: s_a = {2,3,6,7}, s_b = {6,7,8}, contacts = {1,2,6}, far = {9..12}
+        assert receptor[1]["in_sets"] == ["contacts"]
+        assert receptor[2]["in_sets"] == ["contacts", "s_a"]
+        assert receptor[6]["in_sets"] == ["contacts", "s_a", "s_b"]
+        binder = [r for r in rows if r["role"] == "binder"]
+        assert all(
+            r["reference_chain"] is None
+            and r["reference_number"] is None
+            and r["reference_icode"] is None
+            and r["in_sets"] is None
+            for r in binder
+        )
+
+    def test_receptor_residue_that_the_frame_does_not_pair(self, reference_atoms):
+        # The reference lacks residue 12, so residue 12 of the pose has no reference residue.
+        ref = Reference(without(reference_atoms, "A", (12,)), "A", "B", residue_sets={"s": keys(1)})
+        pose_atoms = tiny_complex(contacts=(1, 12))
+        frame = frame_of(pose_atoms, ref)
+        assert len(frame.pairs) == 11
+        rows = table_of(pose_atoms, frame, ref)
+        unpaired = by_residue(rows, "receptor", 12)
+        assert unpaired["reference_chain"] is None and unpaired["reference_number"] is None
+        assert unpaired["reference_icode"] is None
+        assert unpaired["in_sets"] == []
+        assert by_residue(rows, "receptor", 1)["in_sets"] == ["s"]
+
+    def test_pose_numbering_and_reference_numbering_are_both_given(self, reference_atoms):
+        shifted = tiny_complex(numbering={i: (i + 100, "") for i in range(1, 13)})
+        mapping = {("A", i + 100): ("A", i) for i in range(1, 13)}
+        ref = Reference(reference_atoms, "A", "B", residue_map=mapping, residue_sets=SETS)
+        rows = table_of(shifted, frame_of(shifted, ref), ref)
+        row = by_residue(rows, "receptor", 102)
+        assert (row["reference_chain"], row["reference_number"]) == ("A", 2)
+        assert row["in_sets"] == ["contacts", "s_a"]
+
+    def test_set_names_are_sorted(self, reference_atoms):
+        sets = {"zeta": keys(1), "alpha": keys(1, 2), "mid": keys(1)}
+        ref = Reference(reference_atoms, "A", "B", residue_sets=sets)
+        pose_atoms = tiny_complex()
+        rows = table_of(pose_atoms, frame_of(pose_atoms, ref), ref)
+        assert by_residue(rows, "receptor", 1)["in_sets"] == ["alpha", "mid", "zeta"]
+        assert by_residue(rows, "receptor", 2)["in_sets"] == ["alpha"]
+
+    def test_threshold_sets_the_flag_and_removes_no_row(self, pose):
+        frame, placed = pose
+        everything = table_of(placed)
+        strict = table_of(placed, interface_threshold_angstrom2=2 * CAP_AREA)
+        assert len(strict) == len(everything) == 6
+        assert not any(r["in_interface"] for r in strict)
+        assert all(r["in_interface"] for r in everything)
+
+    def test_no_frame_and_failed_frame_leave_the_reference_columns_empty(self, reference):
+        short = without(tiny_complex(), "A", range(6, 13))
+        failed = superpose_receptor(short, reference)
+        assert not failed.ok
+        for frame, ref in ((None, None), (failed, reference)):
+            rows = table_of(short, frame, ref)
+            receptor = [r for r in rows if r["role"] == "receptor"]
+            assert receptor
+            assert all(r["reference_number"] is None and r["in_sets"] == [] for r in receptor)
+
+    def test_reference_without_frame_is_refused(self, reference, pose):
+        _, placed = pose
+        with pytest.raises(ValueError, match="reference needs the frame"):
+            table_of(placed, None, reference)
+
+    def test_wrong_types_and_missing_chain(self, reference, pose):
+        frame, placed = pose
+        with pytest.raises(TypeError, match="reference must be a Reference"):
+            table_of(placed, frame, "reference")
+        with pytest.raises(TypeError, match="frame must be a FrameResult"):
+            table_of(placed, "frame", reference)
+        with pytest.raises(ValueError, match=r"no heavy polymer atom left for chain\(s\) \['B'\]"):
+            table_of(placed[placed.chain_id == "A"])
+        with pytest.raises(ValueError, match="interface_threshold_angstrom2"):
+            table_of(placed, interface_threshold_angstrom2=-1.0)
+
+    def test_areas_can_be_shared(self, reference, pose):
+        frame, placed = pose
+        areas = interface_areas(placed, "B", "A")
+        assert table_of(placed, frame, reference, areas=areas) == table_of(placed, frame, reference)
+        with pytest.raises(ValueError, match="probe_radius"):
+            table_of(placed, frame, reference, areas=areas, probe_radius=1.0)
+
+    def test_table_is_plain_json(self, reference, pose):
+        frame, placed = pose
+        rows = json.loads(json.dumps(table_of(placed, frame, reference)))
+        assert rows[0]["role"] == "binder"
+
+
+class TestResidueTableSortOrder:
+    """Sorted by (role, chain, number, icode): the binder first, an insertion code after the
+    plain number, and numbers compared as numbers."""
+
+    NUMBERING = {i: (i, "") for i in range(1, 13)} | {
+        1: (9, ""),
+        2: (10, ""),
+        3: (52, "B"),
+        4: (52, "A"),
+        5: (52, ""),
+        6: (-3, ""),
+        7: (100, ""),
+    }
+
+    def test_order_with_insertion_codes_and_mixed_numbers(self):
+        atoms = tiny_complex(contacts=(1, 2, 3, 4, 5, 6, 7), numbering=self.NUMBERING)
+        rows = table_of(atoms)
+        assert [(r["role"], r["number"], r["icode"]) for r in rows] == [
+            *[("binder", n, "") for n in range(1, 8)],
+            ("receptor", -3, ""),
+            ("receptor", 9, ""),
+            ("receptor", 10, ""),
+            ("receptor", 52, ""),
+            ("receptor", 52, "A"),
+            ("receptor", 52, "B"),
+            ("receptor", 100, ""),
+        ]
+        # binder_index follows the chain, not the sort
+        assert [r["binder_index"] for r in rows[:7]] == list(range(1, 8))
+
+    def test_insertion_codes_are_kept_in_the_reference_columns(self):
+        atoms = tiny_complex(contacts=(4, 5), numbering=self.NUMBERING)
+        sets = {"coded": [ResidueKey("A", 52, "A")], "plain": [ResidueKey("A", 52)]}
+        ref = Reference(atoms, "A", "B", residue_sets=sets)
+        rows = table_of(atoms, frame_of(atoms, ref), ref)
+        coded = by_residue(rows, "receptor", 52, "A")
+        plain = by_residue(rows, "receptor", 52)
+        assert (coded["reference_number"], coded["reference_icode"]) == (52, "A")
+        assert coded["in_sets"] == ["coded"]
+        assert (plain["reference_number"], plain["reference_icode"]) == (52, "")
+        assert plain["in_sets"] == ["plain"]
+
+
+class TestResidueTableAgainstTheInterfaceMetric:
+    """The area columns are the per-residue values of ``compute_interface_metrics``."""
+
+    @staticmethod
+    def check_equal_to_per_residue(path, binder, target):
+        from binding_metrics.metrics.interface import compute_interface_metrics
+
+        atoms = _load(path)
+        result = compute_interface_metrics(path, binder_chain=binder, target_chain=target)
+        rows = interface_residue_table(atoms, binder_chain=binder, target_chain=target)
+        in_interface = [r for r in rows if r["in_interface"]]
+        expected = result["per_residue"]
+        assert len(in_interface) == len(expected) > 0
+        by_key = {(r["chain"], r["number"], r["icode"]): r for r in in_interface}
+        for entry in expected:
+            row = by_key[(entry["chain"], entry["res_id"], entry["ins_code"])]
+            assert row["name"] == entry["res_name"]
+            assert row["buried_area_angstrom2"] == entry["buried_sasa"]
+            assert row["polar_area_angstrom2"] == entry["polar_area"]
+            assert row["apolar_area_angstrom2"] == entry["apolar_area"]
+            assert row["solvation_dg_kcal_mol"] == pytest.approx(entry["delta_g_res"], abs=1e-12)
+        return rows, result
+
+    def test_linear_peptide(self):
+        rows, result = self.check_equal_to_per_residue(YCR, "B", "A")
+        binder = [r for r in rows if r["role"] == "binder"]
+        assert len(binder) == 13
+        assert sum(r["buried_area_angstrom2"] for r in rows) == pytest.approx(
+            result["delta_sasa"], rel=1e-6
+        )
+
+    def test_residues_with_insertion_codes(self):
+        rows, result = self.check_equal_to_per_residue(SFTI, "I", "A")
+        coded = [r for r in rows if r["role"] == "receptor" and r["icode"]]
+        # of the ten residues numbered 60 and 60A-60I, only 60B and 60G have buried area
+        assert [(r["number"], r["icode"], r["in_interface"]) for r in coded] == [
+            (60, "B", True),
+            (60, "G", True),
+        ]
+        order = [(r["number"], r["icode"]) for r in rows if r["role"] == "receptor"]
+        assert order == sorted(order)
+        first = order.index((60, ""))
+        assert order[first : first + 3] == [(60, ""), (60, "B"), (60, "G")]
+
+    def test_binder_with_residues_that_have_no_buried_area(self):
+        # cyclosporin in 1CWA: residue 11 (ALA) is outside the interface and still a row
+        rows, result = self.check_equal_to_per_residue(
+            DATA / "example_ncaa_cyclosporin_1CWA.cif", "C", "A"
+        )
+        binder = [r for r in rows if r["role"] == "binder"]
+        assert [r["binder_index"] for r in binder] == list(range(1, 12))
+        assert [r["name"] for r in binder][:3] == ["DAL", "MLE", "MLE"]
+        assert binder[10]["name"] == "ALA" and binder[10]["in_interface"] is False
+        assert result["n_interface_residues_peptide"] == sum(r["in_interface"] for r in binder) == 9
+        receptor = [r for r in rows if r["role"] == "receptor"]
+        assert all(r["buried_area_angstrom2"] > 0 for r in receptor)
