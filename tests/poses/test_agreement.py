@@ -1088,7 +1088,9 @@ def test_the_modules_import_without_openmm_biotite_or_mdtraj():
         "sys.meta_path.insert(0, Block())\n"
         "import binding_metrics.poses.agreement, binding_metrics.poses.symmetry\n"
     )
-    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    done = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, encoding="utf-8"
+    )
     assert done.returncode == 0, done.stderr
 
 
@@ -1802,5 +1804,7 @@ def test_the_reference_module_does_not_import_the_agreement_module():
         "assert 'binding_metrics.poses.agreement' not in sys.modules\n"
         "import binding_metrics.poses.agreement\n"
     )
-    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    done = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, encoding="utf-8"
+    )
     assert done.returncode == 0, done.stderr

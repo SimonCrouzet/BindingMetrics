@@ -192,7 +192,11 @@ class TestConstruction:
             """
         )
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=120
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "ok"

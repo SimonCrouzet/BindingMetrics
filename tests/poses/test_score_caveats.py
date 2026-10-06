@@ -221,7 +221,8 @@ class TestNothingBreaks:
             encoding="utf-8"
         )
         assert INCOMPLETE_MEDOID_CAVEAT in html
-        data = json.loads(write_pose_report(caveat_result, "json", tmp_path / "r.json").read_text())
+        written = write_pose_report(caveat_result, "json", tmp_path / "r.json")
+        data = json.loads(written.read_text(encoding="utf-8"))
         assert data["representatives"]["caveats"]["backend_a"] == INCOMPLETE_MEDOID_CAVEAT
         again = PoseSetResult.from_dict(data)
         assert again.to_json(include_timing=False) == caveat_result.to_json(include_timing=False)
