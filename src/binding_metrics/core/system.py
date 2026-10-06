@@ -23,6 +23,8 @@ from binding_metrics.core.residues import (
     TERMINAL_CAP_NAMES,
     WATER_NAMES_ALL,
     WATER_NAMES_PDB_AMBER,
+    residue_label,
+    residue_number,
 )
 from binding_metrics.io.structures import author_chain_ids, copy_author_chain_ids
 from binding_metrics.utils import add_to_report, extend_report
@@ -278,7 +280,8 @@ def find_chain_breaks(topology, positions) -> list:
     Returns:
         A list with one dict per break: ``chain`` (the author chain ID of a topology read
         from an mmCIF, see ``io.structures.author_chain_ids``, otherwise the chain ID),
-        ``residue_before`` and ``residue_after`` (residue numbers as strings) and
+        ``residue_before`` and ``residue_after`` (residue numbers as strings, with the insertion
+        code appended when there is one: ``"60B"``) and
         ``c_n_distance_angstrom``.
     """
     import numpy as np
@@ -308,8 +311,8 @@ def find_chain_breaks(topology, positions) -> list:
                         breaks.append(
                             {
                                 "chain": author_ids[chain.index],
-                                "residue_before": str(previous[0].id),
-                                "residue_after": str(res.id),
+                                "residue_before": residue_number(previous[0]),
+                                "residue_after": residue_number(res),
                                 "c_n_distance_angstrom": round(distance, 2),
                             }
                         )
@@ -577,7 +580,7 @@ def repair_ca_hydrogen_chirality(topology, positions, verbose: bool = True):
         if norm < _DEGENERATE_TRIPOD_NORM:
             continue  # degenerate planar tripod
         pos[idx["HA"]] = ca - u / norm * _CA_HA_BOND_NM  # ideal 4th tetrahedral vertex
-        repaired.append(f"{res.name}{res.id}/{res.chain.id}")
+        repaired.append(f"{residue_label(res)}/{res.chain.id}")
 
     if repaired and verbose:
         log.info("  Repaired %d wrong-side Cα hydrogen(s): %s", len(repaired), ", ".join(repaired))

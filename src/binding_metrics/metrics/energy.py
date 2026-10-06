@@ -37,7 +37,7 @@ except ImportError:
 # OpenMM is imported inside the functions that use it, so this module can be
 # imported (and its CLI parser built) on installs without OpenMM.
 from binding_metrics._constants import DEFAULT_RANDOM_SEED
-from binding_metrics.core.residues import BACKBONE_HEAVY_ATOM_NAMES, CYSTEINE_NAMES
+from binding_metrics.core.residues import BACKBONE_HEAVY_ATOM_NAMES, CYSTEINE_NAMES, residue_label
 from binding_metrics.metrics._common import ChainAliasAction, require_openmm, resolve_chain_role
 from binding_metrics.utils import configure_logging
 
@@ -486,7 +486,7 @@ def _repair_orphaned_cys(
     if not orphans:
         return topology, positions
 
-    names = [f"{r.name}{r.id}" for r in topology.residues() if r.index in orphans]
+    names = [residue_label(r) for r in topology.residues() if r.index in orphans]
     prefix = f"[{label}] " if label else ""
     logger.info(f"{prefix}  Repairing orphaned CYS (cross-chain disulfide severed): {names}")
 
@@ -1006,7 +1006,7 @@ def compute_interaction_energy(
                     if residue.index not in restrained_residues:
                         warnings.warn(
                             f"compute_interaction_energy: no backbone atoms "
-                            f"(N/CA/C/O) found for residue {residue.name}{residue.id} "
+                            f"(N/CA/C/O) found for residue {residue_label(residue)} "
                             f"(chain {residue.chain.id}); backbone restraint skipped "
                             "for this residue.",
                             stacklevel=2,

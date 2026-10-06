@@ -182,7 +182,11 @@ class AtomSnapshot:
         seen: dict = {}
         chain_names = author_chain_ids(topology)
         for residue in topology.residues():
-            base = (chain_names[residue.chain.index], str(residue.id))
+            base = (
+                chain_names[residue.chain.index],
+                str(residue.id),
+                str(residue.insertionCode or "").strip(),
+            )
             occurrence = seen.get(base, 0)
             seen[base] = occurrence + 1
             key = base + (occurrence,)

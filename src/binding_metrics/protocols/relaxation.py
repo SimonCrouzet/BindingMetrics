@@ -72,6 +72,7 @@ from binding_metrics.core.residues import (
     PROTEIN_RESIDUES,
     STANDARD_AMINO_ACIDS,
     WATER_NAMES_WITH_H2O,
+    residue_number,
 )
 from binding_metrics.io.structures import (
     attach_author_chain_ids,
@@ -140,6 +141,22 @@ _FRAME_COUNT_TOLERANCE = 1e-9
 def _md_frame_count(duration_ps: float, save_interval_ps: float) -> int:
     """Number of trajectory frames an MD run of ``duration_ps`` produces."""
     return int(duration_ps / save_interval_ps + _FRAME_COUNT_TOLERANCE)
+
+
+def _cyclic_atom_label(
+    atom_id: tuple, residue_numbers: dict[str, list[str]], author_ids: dict[str, str]
+) -> str:
+    """``"chain:number:atom"`` for the atom of a closure bond.
+
+    ``atom_id`` is ``(chain ID in the topology, 0-based residue index in the chain, atom
+    name)``; ``residue_numbers`` lists the residue numbers of each chain (with the insertion
+    code appended, see ``core.residues.residue_number``) and ``author_ids`` maps the chain
+    ID of the topology to the author ID. An index beyond the chain is printed as it is.
+    """
+    chain, index, atom_name = atom_id
+    numbers = residue_numbers.get(chain, [])
+    number = numbers[index] if index < len(numbers) else index
+    return f"{author_ids.get(chain, chain)}:{number}:{atom_name}"
 
 
 @dataclass
@@ -1330,23 +1347,14 @@ class ImplicitRelaxation(Relaxer):
                 _chain_res_ids: dict[str, list[str]] = {}
                 _author_ids: dict[str, str] = {}  # chain ID in the topology -> author ID
                 for _chain, _author_id in zip(topology.chains(), author_chain_ids(topology)):
-                    _chain_res_ids[_chain.id] = [r.id for r in _chain.residues()]
+                    _chain_res_ids[_chain.id] = [residue_number(r) for r in _chain.residues()]
                     _author_ids.setdefault(_chain.id, _author_id)
-
-                def _fmt_atom(aid: tuple) -> str:
-                    ch, idx, name = aid
-                    res_id = (
-                        _chain_res_ids.get(ch, [None] * (idx + 1))[idx]
-                        if idx < len(_chain_res_ids.get(ch, []))
-                        else idx
-                    )
-                    return f"{_author_ids.get(ch, ch)}:{res_id}:{name}"
 
                 result.peptide_cyclic_bonds = [
                     {
                         "type": b.cyclic_type,
-                        "atom1": _fmt_atom(b.atom1_id),
-                        "atom2": _fmt_atom(b.atom2_id),
+                        "atom1": _cyclic_atom_label(b.atom1_id, _chain_res_ids, _author_ids),
+                        "atom2": _cyclic_atom_label(b.atom2_id, _chain_res_ids, _author_ids),
                     }
                     for b in bond_info
                 ]

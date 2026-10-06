@@ -14,6 +14,7 @@ from binding_metrics.core.residues import (
     PROTEIN_RESIDUES,
     STANDARD_AMINO_ACIDS,
     WATER_NAMES_STRIP_HETEROGENS,
+    residue_label,
 )
 from binding_metrics.utils import add_to_report, backfill_auth_columns, extend_report
 
@@ -754,25 +755,23 @@ def strip_heterogens(
             min_dist = float(dists.min())
             if min_dist < warn_cutoff_ang:
                 logger.warning(
-                    "  Warning: removing heterogen %s%s "
+                    "  Warning: removing heterogen %s "
                     "(chain %s) which is %.1f Å from "
                     "the protein — it may be a functional cofactor or ion. "
                     "Parametrize it via custom_bond_handler to keep it.",
-                    res.name,
-                    res.id,
+                    residue_label(res),
                     author_id,
                     min_dist,
                 )
             else:
                 logger.info(
-                    "  Removing distant heterogen %s%s (chain %s, %.1f Å from protein)",
-                    res.name,
-                    res.id,
+                    "  Removing distant heterogen %s (chain %s, %.1f Å from protein)",
+                    residue_label(res),
                     author_id,
                     min_dist,
                 )
         else:
-            logger.info("  Removing heterogen %s%s (chain %s)", res.name, res.id, author_id)
+            logger.info("  Removing heterogen %s (chain %s)", residue_label(res), author_id)
         atoms_to_remove.extend(res.atoms())
 
     if report is not None:

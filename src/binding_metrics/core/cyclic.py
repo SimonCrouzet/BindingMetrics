@@ -52,6 +52,7 @@ from binding_metrics.core.residues import (
     CUSTOM_HYDROGEN_RESIDUES,
     CYSTEINE_NAMES,
     STANDARD_AMINO_ACIDS,
+    residue_label,
 )
 from binding_metrics.io.structures import author_chain_ids, topology_chain_id
 
@@ -661,7 +662,7 @@ def _detect_cyclization(topology, positions, chain_id: str) -> list:
                 if cg is None:
                     warnings.warn(
                         f"detect_cyclization: atom CG not found on ASP residue "
-                        f"{res.name}{res.id} (chain {chain_name}, index {i}); "
+                        f"{residue_label(res)} (chain {chain_name}, index {i}); "
                         "lactam_n_asp bond may not be detected.",
                         stacklevel=2,
                     )
@@ -692,7 +693,7 @@ def _detect_cyclization(topology, positions, chain_id: str) -> list:
                 if cd is None:
                     warnings.warn(
                         f"detect_cyclization: atom CD not found on GLU residue "
-                        f"{res.name}{res.id} (chain {chain_name}, index {i}); "
+                        f"{residue_label(res)} (chain {chain_name}, index {i}); "
                         "lactam_n_glu bond may not be detected.",
                         stacklevel=2,
                     )
@@ -727,7 +728,7 @@ def _detect_cyclization(topology, positions, chain_id: str) -> list:
                 if nz is None:
                     warnings.warn(
                         f"detect_cyclization: atom NZ not found on LYS residue "
-                        f"{res.name}{res.id} (chain {chain_name}, index {i}); "
+                        f"{residue_label(res)} (chain {chain_name}, index {i}); "
                         "lactam_c_lys bond may not be detected.",
                         stacklevel=2,
                     )

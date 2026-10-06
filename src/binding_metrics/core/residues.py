@@ -1,7 +1,8 @@
 """Residue, water and backbone-atom name sets shared by the package.
 
 Pure Python with no third-party imports, so the module loads without OpenMM,
-biotite or numpy. The sets below look alike on purpose in places (a protonation
+biotite or numpy (the two label functions at the end only read the attributes of an
+OpenMM residue). The sets below look alike on purpose in places (a protonation
 variant list and its subset that biotite does not know); each constant says what
 it is for, and two sets that differ only in a few names stay separate so that
 neither consumer changes behaviour.
@@ -147,3 +148,17 @@ CUSTOM_HYDROGEN_RESIDUES: frozenset[str] = (
 
 #: Backbone heavy atoms of an amino-acid residue: N, CA, C and the carbonyl O.
 BACKBONE_HEAVY_ATOM_NAMES: frozenset[str] = frozenset({"N", "CA", "C", "O"})
+
+
+def residue_number(residue) -> str:
+    """Number of an OpenMM residue with its insertion code appended: ``"60B"``.
+
+    OpenMM keeps the insertion code apart from ``Residue.id``, so ``f"{residue.id}"`` names
+    residues 60 and 60A alike. Without a code the result is ``residue.id``.
+    """
+    return f"{residue.id}{str(getattr(residue, 'insertionCode', '') or '').strip()}"
+
+
+def residue_label(residue) -> str:
+    """Name and number of an OpenMM residue as the logs and results print them: ``"ASP60B"``."""
+    return f"{residue.name}{residue_number(residue)}"
