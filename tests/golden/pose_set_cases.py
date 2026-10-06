@@ -10,8 +10,8 @@ Cases
 ``synthetic_1ycr``
     ``make_synthetic_poses()`` (two back-ends, three seeds, every pose in its own random frame)
     scored against the unmoved 1YCR complex with the epitope as a residue set and the crystal
-    peptide as a partner, with three cheap static metrics. It is what an engine reproduces with
-    ``make_synthetic_poses()`` and its own call.
+    peptide as a partner, with a few cheap static metrics (``SYNTHETIC_METRICS``). It is what an
+    engine reproduces with ``make_synthetic_poses()`` and its own call.
 ``descriptors_1ycr``
     The crystal peptide and the same peptide translated by 6 angstrom, on the public complex
     1YCR, with two residue sets and the crystal peptide as partner. No frame noise: the
@@ -171,6 +171,14 @@ class GoldenCase:
         return GOLDEN_DIR / f"{self.name}.json"
 
 
+def _metrics_phrase(names) -> str:
+    """``metric a`` or ``metrics a, b and c``, from the tuple the case runs."""
+    names = list(names)
+    if len(names) == 1:
+        return f"metric {names[0]}"
+    return f"metrics {', '.join(names[:-1])} and {names[-1]}"
+
+
 CASES = {
     case.name: case
     for case in (
@@ -179,7 +187,7 @@ CASES = {
             "score_pose_set on make_synthetic_poses() (backend_a and backend_b, seeds 1 to 3, "
             "random frames) against the unmoved 1YCR complex, with the 4.5 angstrom epitope and "
             "the buried-area interface as residue sets, the crystal peptide as partner and the "
-            "metrics delta_sasa_static, ramachandran, omega and coulomb.",
+            f"{_metrics_phrase(SYNTHETIC_METRICS)}.",
             run_synthetic_1ycr,
         ),
         GoldenCase(
@@ -187,7 +195,7 @@ CASES = {
             "score_pose_set on the crystal peptide of 1YCR and the same peptide shifted 6 "
             "angstrom along (2/3, -1/3, 2/3), identity frame, with the 4.5 angstrom epitope and "
             "the buried-area interface as residue sets, the crystal peptide as partner and the "
-            "metric delta_sasa_static.",
+            f"{_metrics_phrase(DESCRIPTOR_METRICS)}.",
             run_descriptors_1ycr,
         ),
     )

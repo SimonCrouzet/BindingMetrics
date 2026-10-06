@@ -11,6 +11,7 @@ import copy
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import sys
 from dataclasses import replace
@@ -76,6 +77,13 @@ class TestAgainstTheCommittedFile:
         }
         assert document["ignored"] == list(golden.IGNORED)
         assert "regen_pose_golden.py --write" in document["regenerate"]
+
+    def test_the_description_names_the_metrics_that_run_and_no_other(self, case, document):
+        run = document["result"]["parameters"]["metrics"]
+        ending = re.search(r"the metrics? (.+)\.$", case.description)
+        assert ending, case.description
+        named = re.split(r", | and ", ending.group(1))
+        assert named == run
 
     def test_the_default_tolerance_is_one_in_a_million_of_the_value_and_of_one(self):
         assert (golden.RTOL, golden.ATOL) == (1e-6, 1e-6)
