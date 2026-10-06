@@ -4,7 +4,7 @@ A co-folding model run with five seeds returns five structures of one peptide-re
 
 The layer reports numbers and judges none of them. Every threshold is an option with a documented default, and the code that reads the result decides what a gap or an overlap means.
 
-The names load from `binding_metrics.poses` on first access. Importing the package imports nothing heavy, and biotite is imported when a structure is read. The pose kinds are described in [`poses.md`](poses.md) and the metrics that the layer runs in [`metrics.md`](metrics.md).
+The names load from `binding_metrics.poses` on first access. Importing the package imports nothing heavy, and biotite is imported when a structure is read. A call with the static metrics imports no simulation package (`openmm`, `simtk`, `mdtraj`, `pdbfixer`) and does not look for one, so it runs on the `static` extra alone. The pose kinds are described in [`poses.md`](poses.md) and the metrics that the layer runs in [`metrics.md`](metrics.md).
 
 ## A worked example
 
@@ -418,7 +418,7 @@ When two back-ends predict the same constructs, the next questions are how far t
 | `construct` | The label given to the call, or None. |
 | `binder_chain`, `target_chain` | The chains that were used, given or detected. |
 | `input_key` | The SHA-256 of the pose ids, content hashes and provenance, the chains, the content hash of each reference and the parameters. Equal for equal inputs, whatever the run: it does not depend on the package version, `n_workers` or the temporary directory. A callable is not in it. |
-| `provenance` | `collect_provenance()` (package version, git sha, Python, OS, OpenMM version, platform, seed) plus `pose_set_schema_version`, `n_poses` and `run` (`n_workers`, `start_method`, `on_error`, `tmp_dir`, `keep_tmp`), and `temp_dir` when the directory was kept. |
+| `provenance` | `collect_provenance()` (package version, git sha, Python, OS, OpenMM version read from the installed distribution without importing it, platform, seed) plus `pose_set_schema_version`, `n_poses` and `run` (`n_workers`, `start_method`, `on_error`, `tmp_dir`, `keep_tmp`), and `temp_dir` when the directory was kept. |
 | `parameters` | `options` (every option group), `metrics`, `metric_scope` (`all`, `representatives` or `none` for each metric), `metric_kwargs`, `aggregate`, `group_by`, `representative`, `heavy`, `preflight`, `residue_maps`, `residue_table`, `include_transform`. The resolved values, so that a result says what produced it. |
 | `references` | `implicit`, `implicit_pose_id`, `metrics_frame_variant` and `variants`: for each variant the `content_hash` and the `Reference.to_dict()` record. |
 | `preflight` | The `PreflightReport` as a dictionary, or None with `preflight="off"`. |

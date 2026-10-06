@@ -1088,13 +1088,13 @@ The limits are wide on purpose: they separate a relaxed structure from an explod
     "git_sha": "...",             # HEAD of the source checkout, else None
     "python": "3.12.3",
     "os": "Linux-...",
-    "openmm_version": "8.2",      # None when OpenMM is not importable
+    "openmm_version": "8.2.0",    # installed OpenMM distribution (not imported); None if absent
     "platform": "CUDA",           # platform the relaxation reported, else None
     "seed": 1,                    # random seed of the run; None = fresh randomness
 }
 ```
 
-`git_sha` is set only when the package is imported from its own git checkout. Collection is best effort and never raises; a field that cannot be determined is `None`. `binding-metrics-batch` writes the same block as `provenance_<key>` columns at the end of every CSV row. `binding_metrics.provenance.collect_provenance(seed, platform)` builds the block for your own result files.
+`git_sha` is set only when the package is imported from its own git checkout. `openmm_version` is read from the metadata of the installed OpenMM distribution, so collecting the block does not import OpenMM (the library's own `__version__` can be shorter, `8.2` for the conda 8.2.0 build). Collection is best effort and never raises; a field that cannot be determined is `None`. `binding-metrics-batch` writes the same block as `provenance_<key>` columns at the end of every CSV row. `binding_metrics.provenance.collect_provenance(seed, platform)` builds the block for your own result files.
 
 Four optional keys describe a run that used OpenFold3 and are absent otherwise (adding them needs no schema bump). `openfold3_version` is the installed `openfold3` version (None when it is not installed or unreadable), added when the pipeline starts OpenFold3: the `openfold` step without `--predictor`, or `--predictor of3` without `--prediction-dir`; the environment of `--openfold-conda-env` is asked through `conda run -n <env> python`, and `collect_provenance(openfold3=True, openfold3_python_cmd=...)` adds it in your own code. It is not recorded for an output that was read from disk, because the installed version is not the one that made it. `openfold3_checkpoint` is the checkpoint file name that the record of the prediction names (`inference_ckpt_name` of OpenFold3's `experiment_config.json`), added by `--predictor` when the record has it. `openfold3_use_msa_server` (bool) is whether the run used the ColabFold MSA server (`--openfold-no-msa-server` makes it False), added together with `openfold3_version`. `prediction_weights` is the `weights` dictionary of the prediction step (see "custom weights" under the prediction store), added when the step knows the weights: custom ones, or the checkpoint that OpenFold3 recorded for its default weights. A batch writes `provenance_openfold3_version` and `provenance_openfold3_use_msa_server` for the samples OpenFold3 predicted, and `provenance_prediction_weights_sha256`, `..._path` and the other entries of the weights.
 
