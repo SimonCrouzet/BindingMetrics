@@ -27,6 +27,13 @@ residues (a trimmed construct lacks some), ``I`` the residues of ``P`` that are 
 interface. A set with more than ``max_unmapped_fraction`` (default 0.5) of its residues outside
 ``P`` has no value, and says so.
 
+Steric exclusion (``partner_descriptors``, design section 8.4). The partner is a known binder
+that is already placed on the reference receptor (``Reference.partners``). The descriptors say
+how much of the pose's binder lies where the partner lies (distances between heavy atoms, a
+sphere-overlap volume) and how much of the receptor surface that the partner covers the pose
+covers too (buried area shared over the receptor atoms that the pose and the reference have in
+common). The partner and the binder keep only heavy polymer atoms, as the interface metric does.
+
 Residue identity everywhere is ``(chain, number, insertion code)``: ``52`` and ``52A`` are two
 residues.
 """
@@ -42,6 +49,7 @@ import numpy as np
 
 from binding_metrics.metrics.interface import (
     _collect_per_residue,
+    _get_vdw_radii,
     _import_biotite,
     _per_atom_sasa,
     filter_hetero_atoms,
@@ -59,6 +67,26 @@ DEFAULT_INTERFACE_THRESHOLD_ANGSTROM2 = 0.5
 DEFAULT_MAX_UNMAPPED_FRACTION = 0.5
 #: Radius of the solvent probe (angstrom): water.
 DEFAULT_PROBE_RADIUS = 1.4
+
+#: Heavy-atom distances (angstrom) below which an atom, or a pair of atoms, counts as a clash.
+#: 2.2 is the cutoff of the validation work for clashing pairs; 3.0 also catches strongly
+#: compressed carbon pairs and some hydrogen-bonded N/O pairs, so both are reported.
+DEFAULT_CLASH_CUTOFFS_ANGSTROM = (2.2, 3.0)
+#: A binder atom within this distance (angstrom) of a partner atom is in the partner's shell.
+DEFAULT_SHELL_ANGSTROM = 4.0
+
+#: The columns of a partner block, in order (design section 8.4).
+PARTNER_COLUMNS = (
+    "min_distance_angstrom",
+    "clash_atoms",
+    "clash_pairs",
+    "shell_fraction",
+    "shared_buried_area_angstrom2",
+    "partner_buried_area_angstrom2",
+    "pose_buried_area_angstrom2",
+    "shared_fraction_of_partner",
+    "overlap_volume_angstrom3",
+)
 
 #: The columns of a residue-set block, in order (design section 8.3).
 SET_COLUMNS = (
@@ -421,12 +449,326 @@ def _set_block(members, mapped_keys, interface_keys, area_of_reference, total_ar
     return block
 
 
+# ---------------------------------------------------------------------------- B2: partners
+
+# Rows of the binder-by-partner distance matrix built at a time; bounds the memory of a large
+# partner.
+_DISTANCE_BLOCK_ELEMENTS = 500_000
+
+
+def sphere_overlap_volume(radius_a, radius_b, distance):
+    """Volume (angstrom^3 for radii and distance in angstrom) shared by two spheres.
+
+    The closed form for the lens of two spheres of radii ``R`` and ``r`` whose centres are ``d``
+    apart, ``R + r > d > |R - r|``::
+
+        pi (R + r - d)^2 (d^2 + 2 d (R + r) - 3 (R - r)^2) / (12 d)
+
+    When ``d <= |R - r|`` the smaller sphere lies inside the larger one and the volume is that
+    of the smaller sphere, ``4/3 pi min(R, r)^3`` (also the volume for ``d = 0``); when
+    ``d >= R + r`` the spheres do not overlap and the volume is 0. The two branches agree at
+    ``d = |R - r|``, so the function is continuous in ``d``.
+
+    Args:
+        radius_a, radius_b, distance: Numbers or arrays that broadcast together; radii are
+            positive and distances are not negative.
+
+    Returns:
+        A float for scalar inputs, otherwise an array of the broadcast shape.
+    """
+    radius_a, radius_b, distance = np.broadcast_arrays(
+        *(np.asarray(value, dtype=np.float64) for value in (radius_a, radius_b, distance))
+    )
+    if np.any(radius_a <= 0) or np.any(radius_b <= 0):
+        raise ValueError("sphere radii must be positive")
+    if np.any(distance < 0):
+        raise ValueError("a distance cannot be negative")
+    small = np.minimum(radius_a, radius_b)
+    reach = radius_a + radius_b
+    inside = distance <= np.abs(radius_a - radius_b)
+    lens = (distance < reach) & ~inside
+    volume = np.zeros(distance.shape)
+    volume[inside] = 4.0 / 3.0 * np.pi * small[inside] ** 3
+    d, total = distance[lens], reach[lens]
+    volume[lens] = (
+        np.pi
+        * (total - d) ** 2
+        * (d**2 + 2 * d * total - 3 * (radius_a[lens] - radius_b[lens]) ** 2)
+    ) / (12 * d)
+    return float(volume) if volume.ndim == 0 else volume
+
+
+def _check_cutoffs(cutoffs: Any) -> tuple:
+    try:
+        values = tuple(cutoffs)
+    except TypeError as error:
+        raise TypeError(
+            f"clash_cutoffs_angstrom must be a sequence of numbers, got {cutoffs!r}"
+        ) from error
+    if not values:
+        raise ValueError("clash_cutoffs_angstrom must not be empty")
+    for value in values:
+        _check_number("clash_cutoffs_angstrom", value, minimum=0.0, exclusive=True)
+    if len({float(value) for value in values}) != len(values):
+        raise ValueError(f"clash_cutoffs_angstrom repeats a cutoff: {values!r}")
+    return tuple(float(value) for value in values)
+
+
+def _partner_failure(reason: str) -> dict:
+    block: dict[str, Any] = dict.fromkeys(PARTNER_COLUMNS)
+    block["reason"] = reason
+    return block
+
+
+def _heavy_polymer(atoms):
+    return filter_hydrogens(filter_hetero_atoms(atoms))
+
+
+def _finite(atoms):
+    return atoms[np.isfinite(np.asarray(atoms.coord, dtype=np.float64)).all(axis=1)]
+
+
+def _contact_columns(binder, partner, vdw_fn, cutoffs, shell_angstrom) -> dict:
+    """Distances, clash counts, shell fraction and overlap volume of two heavy-atom sets."""
+    binder_xyz = np.asarray(binder.coord, dtype=np.float64)
+    partner_xyz = np.asarray(partner.coord, dtype=np.float64)
+    binder_radii = _get_vdw_radii(binder, vdw_fn)
+    partner_radii = _get_vdw_radii(partner, vdw_fn)
+    nearest = np.empty(len(binder_xyz))
+    pair_counts = dict.fromkeys(cutoffs, 0)
+    overlap = 0.0
+    step = max(1, _DISTANCE_BLOCK_ELEMENTS // len(partner_xyz))
+    for start in range(0, len(binder_xyz), step):
+        rows = slice(start, start + step)
+        offsets = binder_xyz[rows, None, :] - partner_xyz[None, :, :]
+        distance = np.sqrt(np.sum(offsets * offsets, axis=2))
+        nearest[rows] = distance.min(axis=1)
+        for cutoff in cutoffs:
+            pair_counts[cutoff] += int(np.count_nonzero(distance < cutoff))
+        reach = binder_radii[rows, None] + partner_radii[None, :]
+        close = distance < reach
+        if close.any():
+            first, second = np.nonzero(close)
+            overlap += float(
+                sphere_overlap_volume(
+                    binder_radii[rows][first], partner_radii[second], distance[first, second]
+                ).sum()
+            )
+    return {
+        "min_distance_angstrom": float(nearest.min()),
+        "clash_atoms": {str(c): int(np.count_nonzero(nearest < c)) for c in cutoffs},
+        "clash_pairs": {str(c): pair_counts[c] for c in cutoffs},
+        "shell_fraction": float(np.count_nonzero(nearest <= shell_angstrom) / len(nearest)),
+        "overlap_volume_angstrom3": overlap,
+    }
+
+
+def _matched_receptor_atoms(pose_receptor, reference_receptor, frame: FrameResult):
+    """Rows of the pose receptor and of the reference receptor that are the same atom.
+
+    Same atom: the residues are paired by the frame and the atom name is the same. The first
+    atom of a repeated name in a residue (an alternate location) is used.
+    """
+    reference_row: dict[tuple, int] = {}
+    for row, (number, icode, name) in enumerate(
+        zip(
+            reference_receptor.res_id.tolist(),
+            np.char.strip(reference_receptor.ins_code.astype(str)).tolist(),
+            np.char.strip(reference_receptor.atom_name.astype(str)).tolist(),
+        )
+    ):
+        reference_row.setdefault((number, icode, name), row)
+    reference_of = {
+        (pose_key.chain, pose_key.number, pose_key.icode): (key.number, key.icode)
+        for pose_key, key in frame.pairs
+    }
+    pose_rows, reference_rows = [], []
+    for row, (chain, number, icode, name) in enumerate(
+        zip(
+            pose_receptor.chain_id.tolist(),
+            pose_receptor.res_id.tolist(),
+            np.char.strip(pose_receptor.ins_code.astype(str)).tolist(),
+            np.char.strip(pose_receptor.atom_name.astype(str)).tolist(),
+        )
+    ):
+        paired = reference_of.get((chain, number, icode))
+        if paired is None:
+            continue
+        match = reference_row.get((paired[0], paired[1], name))
+        if match is not None:
+            pose_rows.append(row)
+            reference_rows.append(match)
+    return np.array(pose_rows, dtype=np.int64), np.array(reference_rows, dtype=np.int64)
+
+
+def partner_descriptors(
+    atoms,
+    frame: FrameResult,
+    reference: Reference,
+    *,
+    binder_chain: str,
+    target_chain: str,
+    clash_cutoffs_angstrom=DEFAULT_CLASH_CUTOFFS_ANGSTROM,
+    shell_angstrom: float = DEFAULT_SHELL_ANGSTROM,
+    probe_radius: float = DEFAULT_PROBE_RADIUS,
+    areas: Optional[InterfaceAreas] = None,
+) -> dict[str, dict]:
+    """How the binder of a pose lies against each partner of a reference.
+
+    Let ``B`` be the heavy atoms of the pose's binder and ``Q`` those of a partner (both in the
+    reference frame, polymer atoms only), ``d_ij`` the distance of binder atom ``i`` to partner
+    atom ``j`` and ``r_i`` the van der Waals radius that the surface-area code uses for the
+    atom (biotite's single-radius table by element, 1.8 for an element without an entry). The
+    block of one partner has these columns:
+
+    ====================================  =====================================================
+    ``min_distance_angstrom``             ``min d_ij``
+    ``clash_atoms``                       ``{cutoff: binder atoms with some d_ij < cutoff}``
+    ``clash_pairs``                       ``{cutoff: pairs with d_ij < cutoff}``
+    ``shell_fraction``                    binder atoms with ``min_j d_ij <= shell`` over ``|B|``
+    ``shared_buried_area_angstrom2``      ``sum_a min(b_pose(a), b_partner(a))``
+    ``partner_buried_area_angstrom2``     ``sum_a b_partner(a)``
+    ``pose_buried_area_angstrom2``        ``sum_a b_pose(a)``
+    ``shared_fraction_of_partner``        ``shared / partner buried``
+    ``overlap_volume_angstrom3``          sum over pairs with ``d_ij < r_i + r_j`` of the volume
+                                          that the two spheres share (``sphere_overlap_volume``)
+    ====================================  =====================================================
+
+    The keys of the two clash dictionaries are the cutoffs written as floats (``"2.2"``,
+    ``"3.0"``). ``b_X(a)`` is the area of receptor atom ``a`` that ``X`` buries: the area of the
+    receptor alone minus its area with ``X`` added, clamped at zero. The sums run over the
+    receptor atoms ``a`` that the pose and the reference both have (residues paired by the
+    frame, same atom name): ``b_pose`` is measured on the pose's receptor with the pose's binder
+    and ``b_partner`` on the reference's receptor with the partner, so the shared area is the
+    receptor surface that the pose and the partner both cover. When the partner is the pose's
+    own binder in the pose's own receptor, the shared area is the partner's whole area.
+
+    The overlap volume is a proxy. A triple overlap is counted once per pair, so a crowded site
+    is overestimated; atoms at van der Waals distance contribute nothing, and compression adds
+    volume. Two atoms of one hydrogen bond (N...O about 2.9 angstrom, radii 1.55 and 1.52)
+    overlap a little, as they count in any distance-based clash count.
+
+    A partner with no value (the frame failed, a chain has no heavy polymer atom, the partner
+    has none) has every column None and a ``reason``. A column that cannot be computed alone is
+    None and named in ``column_reasons`` (``{column: why}``): ``shared_fraction_of_partner``
+    when the partner buries no area on the matched atoms, and the four area columns when no
+    receptor atom is matched.
+
+    Args:
+        atoms: The pose in the frame of the reference, as for ``residue_set_descriptors``.
+        frame: The ``FrameResult`` of this pose against ``reference``.
+        reference: The ``Reference``; its ``partners`` are measured, and its receptor chain
+            carries the partner's buried area.
+        binder_chain: The binder chain ID in ``atoms``.
+        target_chain: The receptor chain ID in ``atoms``.
+        clash_cutoffs_angstrom: Distances for the clash counts (default ``(2.2, 3.0)``); a
+            sequence of distinct positive numbers.
+        shell_angstrom: Distance of the contact shell (default 4.0); a binder atom at exactly
+            this distance is in the shell.
+        probe_radius: Solvent probe radius in angstrom (default 1.4).
+        areas: The result of ``interface_areas`` for these atoms and chains, when the caller
+            has it already.
+
+    Returns:
+        ``{partner name: block}`` in the order of ``reference.partners``; empty when the
+        reference has no partner. The reference receptor is measured once per call and the
+        partner once per partner.
+
+    Raises:
+        TypeError: For an argument of the wrong type.
+        ValueError: For an invalid chain ID, cutoff or threshold, ``areas`` computed for other
+            chains or another probe, or a partner chain that its structure does not have.
+    """
+    _check_common(frame, reference, atoms, binder_chain, target_chain, probe_radius)
+    cutoffs = _check_cutoffs(clash_cutoffs_angstrom)
+    _check_number("shell_angstrom", shell_angstrom, minimum=0.0, exclusive=True)
+    partners = reference.partners
+    if not partners:
+        return {}
+    reason = _frame_reason(frame)
+    if reason is None:
+        areas, reason = _areas_or_reason(atoms, binder_chain, target_chain, probe_radius, areas)
+    reference_receptor = None
+    if reason is None:
+        reference_atoms = _heavy_polymer(reference.atoms())
+        reference_receptor = reference_atoms[
+            np.asarray(reference_atoms.chain_id) == reference.receptor_chain
+        ]
+        if len(reference_receptor) == 0:
+            reason = (
+                f"the reference receptor chain '{reference.receptor_chain}' has no heavy "
+                "polymer atom"
+            )
+    binder = None if reason is not None else _finite(areas.binder_atoms)
+    if binder is not None and len(binder) == 0:
+        reason = "the binder has no atom with finite coordinates"
+    if reason is not None:
+        return {name: _partner_failure(reason) for name in partners}
+
+    _, _, _, sasa_fn, vdw_fn = _import_biotite()
+    pose_rows, reference_rows = _matched_receptor_atoms(
+        areas.receptor_atoms, reference_receptor, frame
+    )
+    pose_burial = areas.buried_receptor[pose_rows]
+    receptor_alone = _per_atom_sasa(reference_receptor, probe_radius, sasa_fn, vdw_fn)
+    blocks = {}
+    for name, partner in partners.items():
+        partner_atoms = _finite(_heavy_polymer(partner.atoms()))
+        if len(partner_atoms) == 0:
+            blocks[name] = _partner_failure(f"partner '{name}' has no heavy polymer atom")
+            continue
+        with_partner = _per_atom_sasa(
+            reference_receptor + partner_atoms, probe_radius, sasa_fn, vdw_fn
+        )
+        partner_burial = np.maximum(receptor_alone - with_partner[: len(reference_receptor)], 0.0)
+        columns = _contact_columns(binder, partner_atoms, vdw_fn, cutoffs, shell_angstrom)
+        reasons: dict[str, str] = {}
+        columns.update(_area_columns(pose_burial, partner_burial[reference_rows], reasons))
+        block = {column: columns[column] for column in PARTNER_COLUMNS}
+        if reasons:
+            block["column_reasons"] = reasons
+        blocks[name] = block
+    return blocks
+
+
+def _area_columns(pose_burial: np.ndarray, partner_burial: np.ndarray, reasons: dict) -> dict:
+    """The four area columns over the matched receptor atoms (both arrays are in one order)."""
+    columns: dict[str, Any] = {
+        "shared_buried_area_angstrom2": None,
+        "partner_buried_area_angstrom2": None,
+        "pose_buried_area_angstrom2": None,
+        "shared_fraction_of_partner": None,
+    }
+    if len(pose_burial) == 0:
+        why = "no receptor atom of the pose matches the reference receptor"
+        reasons.update(dict.fromkeys(columns, why))
+        return columns
+    shared = float(np.minimum(pose_burial, partner_burial).sum())
+    partner_area = float(partner_burial.sum())
+    columns["shared_buried_area_angstrom2"] = shared
+    columns["partner_buried_area_angstrom2"] = partner_area
+    columns["pose_buried_area_angstrom2"] = float(pose_burial.sum())
+    columns["shared_fraction_of_partner"] = _ratio(
+        shared,
+        partner_area,
+        reasons,
+        "shared_fraction_of_partner",
+        "the partner buries no area on the receptor atoms that the pose has",
+    )
+    return columns
+
+
 __all__ = [
+    "DEFAULT_CLASH_CUTOFFS_ANGSTROM",
     "DEFAULT_INTERFACE_THRESHOLD_ANGSTROM2",
     "DEFAULT_MAX_UNMAPPED_FRACTION",
     "DEFAULT_PROBE_RADIUS",
+    "DEFAULT_SHELL_ANGSTROM",
+    "PARTNER_COLUMNS",
     "SET_COLUMNS",
     "InterfaceAreas",
     "interface_areas",
+    "partner_descriptors",
     "residue_set_descriptors",
+    "sphere_overlap_volume",
 ]

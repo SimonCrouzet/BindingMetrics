@@ -16,13 +16,18 @@ import numpy as np
 import pytest
 
 from binding_metrics.poses.descriptors import (
+    DEFAULT_CLASH_CUTOFFS_ANGSTROM,
     DEFAULT_INTERFACE_THRESHOLD_ANGSTROM2,
     DEFAULT_MAX_UNMAPPED_FRACTION,
     DEFAULT_PROBE_RADIUS,
+    DEFAULT_SHELL_ANGSTROM,
+    PARTNER_COLUMNS,
     SET_COLUMNS,
     InterfaceAreas,
     interface_areas,
+    partner_descriptors,
     residue_set_descriptors,
+    sphere_overlap_volume,
 )
 from binding_metrics.poses.frame import (
     FrameOptions,
@@ -30,7 +35,7 @@ from binding_metrics.poses.frame import (
     renumber_to_reference,
     superpose_receptor,
 )
-from binding_metrics.poses.reference import Reference, ResidueKey
+from binding_metrics.poses.reference import Partner, Reference, ResidueKey
 
 struc = pytest.importorskip("biotite.structure")
 
@@ -58,11 +63,12 @@ def _load(path):
     return load_structure(path)
 
 
-def tiny_complex(contacts=(1, 2, 6), height=HEIGHT, numbering=None):
+def tiny_complex(contacts=(1, 2, 6), height=HEIGHT, numbering=None, binder_xyz=None):
     """Twelve receptor residues on a 4 x 3 grid (10 angstrom apart, z = 0), chain A, and one
     binder atom (chain B) at ``height`` above each receptor residue of ``contacts``.
 
     ``numbering`` maps the residue index 1..12 to ``(number, icode)``; default ``(index, "")``.
+    ``binder_xyz`` places the binder atoms at these coordinates instead.
     Every residue is one carbon named CA with an amino-acid name, so the residue is a polymer
     residue and the sequence is not periodic.
     """
@@ -72,8 +78,10 @@ def tiny_complex(contacts=(1, 2, 6), height=HEIGHT, numbering=None):
     for i in range(1, 13):
         number, icode = numbering[i]
         rows.append(("A", number, icode, RESIDUE_NAMES[i - 1], grid[i]))
-    for position, i in enumerate(contacts, start=1):
-        rows.append(("B", position, "", "ALA", grid[i] + np.array([0.0, 0.0, height])))
+    if binder_xyz is None:
+        binder_xyz = [grid[i] + np.array([0.0, 0.0, height]) for i in contacts]
+    for position, xyz in enumerate(binder_xyz, start=1):
+        rows.append(("B", position, "", "ALA", np.asarray(xyz, dtype=float)))
     atoms = struc.AtomArray(len(rows))
     for row, (chain, number, icode, name, xyz) in enumerate(rows):
         atoms.chain_id[row] = chain
@@ -467,3 +475,406 @@ class TestInsertionCodes:
         # Residues with less than 0.5 square angstrom are outside the interface and the set but
         # inside the total, so the fraction is just below one.
         assert 0.999 < everything["receptor_buried_area_in_set_fraction"] < 1.0
+
+
+# ---------------------------------------------------------------------------
+# B2: steric exclusion against a partner
+# ---------------------------------------------------------------------------
+
+
+def lens_equal_spheres(radius, distance):
+    """Volume shared by two spheres of one radius: pi (4 r + d) (2 r - d)^2 / 12."""
+    return math.pi * (4 * radius + distance) * (2 * radius - distance) ** 2 / 12
+
+
+def lens_by_integration(radius_a, radius_b, distance, points=2_000_001):
+    """Volume shared by two spheres from the area of the common disc at each position along
+    the axis (a trapezoid rule on a fine grid), independent of the closed form."""
+    x = np.linspace(-radius_a, distance + radius_b, points)
+    disc = np.minimum(radius_a**2 - x**2, radius_b**2 - (x - distance) ** 2)
+    area = math.pi * np.clip(disc, 0.0, None)
+    return float(np.sum((area[1:] + area[:-1]) / 2 * np.diff(x)))
+
+
+def carbon_atoms(xyz, chain="P", residue_name="ALA"):
+    """One carbon per residue (numbered from 1) at the given coordinates."""
+    xyz = np.asarray(xyz, dtype=float).reshape(-1, 3)
+    atoms = struc.AtomArray(len(xyz))
+    atoms.chain_id[:] = chain
+    atoms.res_id[:] = np.arange(1, len(xyz) + 1)
+    atoms.res_name[:] = residue_name
+    atoms.atom_name[:] = "CA"
+    atoms.element[:] = "C"
+    atoms.coord = xyz.astype(np.float32)
+    return atoms
+
+
+def measure_partners(pose_atoms, frame, reference, **kwargs):
+    return partner_descriptors(
+        pose_atoms, frame, reference, binder_chain="B", target_chain="A", **kwargs
+    )
+
+
+def frame_of(pose_atoms, reference):
+    frame = superpose_receptor(pose_atoms, reference)
+    assert frame.ok, frame.reason
+    return frame
+
+
+class TestSphereOverlapVolume:
+    def test_equal_spheres_match_the_textbook_lens(self):
+        for distance in (0.5, 1.7, 2.5, 3.3):
+            assert sphere_overlap_volume(1.7, 1.7, distance) == pytest.approx(
+                lens_equal_spheres(1.7, distance), rel=1e-12
+            )
+
+    @pytest.mark.parametrize(
+        "radius_a, radius_b, distance", [(1.7, 1.52, 2.0), (2.0, 1.0, 2.2), (1.55, 1.8, 0.4)]
+    )
+    def test_unequal_spheres_match_numerical_integration(self, radius_a, radius_b, distance):
+        assert sphere_overlap_volume(radius_a, radius_b, distance) == pytest.approx(
+            lens_by_integration(radius_a, radius_b, distance), rel=1e-5
+        )
+
+    def test_contained_sphere_is_the_smaller_sphere(self):
+        smaller = 4 / 3 * math.pi * 1.0**3
+        assert sphere_overlap_volume(2.0, 1.0, 0.5) == pytest.approx(smaller, rel=1e-12)
+        assert sphere_overlap_volume(1.0, 2.0, 0.0) == pytest.approx(smaller, rel=1e-12)
+        # two equal spheres on one centre coincide
+        assert sphere_overlap_volume(1.7, 1.7, 0.0) == pytest.approx(
+            4 / 3 * math.pi * 1.7**3, rel=1e-12
+        )
+
+    def test_continuous_where_the_branches_meet(self):
+        smaller = 4 / 3 * math.pi * 1.0**3
+        assert sphere_overlap_volume(2.0, 1.0, 1.0) == pytest.approx(smaller, rel=1e-12)
+        assert sphere_overlap_volume(2.0, 1.0, 1.0 + 1e-7) == pytest.approx(smaller, rel=1e-5)
+
+    def test_no_overlap_at_or_beyond_contact(self):
+        assert sphere_overlap_volume(1.7, 1.52, 3.22) == 0.0
+        assert sphere_overlap_volume(1.7, 1.52, 5.0) == 0.0
+
+    def test_falls_as_the_spheres_part(self):
+        distances = np.linspace(0.0, 3.5, 36)
+        volumes = sphere_overlap_volume(1.7, 1.52, distances)
+        assert np.all(np.diff(volumes) <= 1e-12)
+        assert volumes[0] > 0 and volumes[-1] == 0.0
+
+    def test_arrays_broadcast_and_scalars_are_floats(self):
+        assert isinstance(sphere_overlap_volume(1.7, 1.7, 2.0), float)
+        volumes = sphere_overlap_volume([1.7, 1.52], 1.7, [[1.0], [2.0]])
+        assert volumes.shape == (2, 2)
+
+    def test_invalid_input(self):
+        with pytest.raises(ValueError, match="radii"):
+            sphere_overlap_volume(0.0, 1.0, 1.0)
+        with pytest.raises(ValueError, match="negative"):
+            sphere_overlap_volume(1.0, 1.0, -0.1)
+
+
+ANCHOR_DISTANCES = (1.0, 2.5, 3.9, 4.0, 5.0)
+
+
+@pytest.fixture(scope="module")
+def anchor_setup(reference_atoms):
+    """Binder atoms at known distances from a one-atom partner, away from the receptor."""
+    anchor = np.array([30.0, 30.0, 30.0])
+    pose_atoms = tiny_complex(binder_xyz=[anchor + [d, 0.0, 0.0] for d in ANCHOR_DISTANCES])
+    reference = Reference(
+        reference_atoms, "A", "B", partners={"anchor": Partner(carbon_atoms([anchor]))}
+    )
+    return pose_atoms, reference, frame_of(pose_atoms, reference)
+
+
+@pytest.fixture(scope="module")
+def cap_reference(reference_atoms):
+    """A reference whose partner is one atom above receptor residue 1."""
+    partner = Partner(carbon_atoms([[0.0, 0.0, HEIGHT]]))
+    return Reference(reference_atoms, "A", "B", partners={"cap": partner})
+
+
+@pytest.fixture(scope="module")
+def two_partner_reference(reference_atoms):
+    partners = {
+        "cap": Partner(carbon_atoms([[0.0, 0.0, HEIGHT]])),
+        "second": Partner(carbon_atoms([[10.0, 0.0, HEIGHT]])),
+    }
+    return Reference(reference_atoms, "A", "B", partners=partners)
+
+
+class TestPartnerContacts:
+    def test_distances_clashes_shell_and_volume_by_hand(self, anchor_setup):
+        pose_atoms, reference, frame = anchor_setup
+        block = measure_partners(pose_atoms, frame, reference)["anchor"]
+        assert list(block)[: len(PARTNER_COLUMNS)] == list(PARTNER_COLUMNS)
+        assert block["min_distance_angstrom"] == 1.0
+        # 1.0 is within both cutoffs, 2.5 within 3.0 only; the partner has one atom, so atoms
+        # and pairs agree.
+        assert block["clash_atoms"] == {"2.2": 1, "3.0": 2}
+        assert block["clash_pairs"] == {"2.2": 1, "3.0": 2}
+        # 1.0, 2.5, 3.9 and 4.0 are in the shell (4.0 exactly: the shell is closed), 5.0 is not.
+        assert block["shell_fraction"] == pytest.approx(4 / 5)
+        # Carbon radius 1.7: the pairs closer than 3.4 are the first two.
+        expected = lens_equal_spheres(1.7, 1.0) + lens_equal_spheres(1.7, 2.5)
+        assert block["overlap_volume_angstrom3"] == pytest.approx(expected, rel=1e-12)
+
+    def test_partner_far_from_the_receptor_buries_nothing(self, anchor_setup):
+        pose_atoms, reference, frame = anchor_setup
+        block = measure_partners(pose_atoms, frame, reference)["anchor"]
+        assert block["shared_buried_area_angstrom2"] == 0.0
+        assert block["partner_buried_area_angstrom2"] == 0.0
+        assert block["pose_buried_area_angstrom2"] == 0.0
+        assert block["shared_fraction_of_partner"] is None
+        assert list(block["column_reasons"]) == ["shared_fraction_of_partner"]
+        assert "reason" not in block
+
+    def test_cutoffs_and_shell_are_parameters(self, anchor_setup):
+        pose_atoms, reference, frame = anchor_setup
+        block = measure_partners(
+            pose_atoms, frame, reference, clash_cutoffs_angstrom=(1.5, 4.0), shell_angstrom=3.0
+        )["anchor"]
+        # 1.0, 2.5 and 3.9 are closer than 4.0; the atom at exactly 4.0 is not (clashes are strict)
+        assert block["clash_atoms"] == {"1.5": 1, "4.0": 3}
+        assert block["clash_pairs"] == {"1.5": 1, "4.0": 3}
+        assert block["shell_fraction"] == pytest.approx(2 / 5)
+
+    def test_defaults_are_the_documented_ones(self):
+        assert DEFAULT_CLASH_CUTOFFS_ANGSTROM == (2.2, 3.0)
+        assert DEFAULT_SHELL_ANGSTROM == 4.0
+
+    def test_clash_pairs_count_every_partner_atom(self, reference_atoms):
+        # Two partner atoms 1.2 apart and one binder atom 2.0 from the first (2.33 from the
+        # second): one pair under 2.2, two pairs under 3.0, and one binder atom either way.
+        anchor = np.array([30.0, 30.0, 30.0])
+        pose_atoms = tiny_complex(binder_xyz=[anchor + [2.0, 0.0, 0.0]])
+        partner = Partner(carbon_atoms([anchor, anchor + [0.0, 1.2, 0.0]]))
+        reference = Reference(reference_atoms, "A", "B", partners={"two": partner})
+        block = measure_partners(pose_atoms, frame_of(pose_atoms, reference), reference)["two"]
+        assert block["clash_atoms"] == {"2.2": 1, "3.0": 1}
+        assert block["clash_pairs"] == {"2.2": 1, "3.0": 2}
+        assert block["min_distance_angstrom"] == 2.0
+
+    def test_result_is_plain_json(self, anchor_setup):
+        pose_atoms, reference, frame = anchor_setup
+        text = json.dumps(measure_partners(pose_atoms, frame, reference))
+        assert json.loads(text)["anchor"]["clash_atoms"]["3.0"] == 2
+
+
+class TestPartnerBuriedArea:
+    """One partner atom above receptor residue 1 buries a cap there and nowhere else."""
+
+    def test_pose_covering_the_partner_surface_and_more(self, cap_reference):
+        pose_atoms = tiny_complex(contacts=(1, 2))
+        block = measure_partners(pose_atoms, frame_of(pose_atoms, cap_reference), cap_reference)[
+            "cap"
+        ]
+        assert block["partner_buried_area_angstrom2"] == pytest.approx(CAP_AREA, rel=0.03)
+        assert block["pose_buried_area_angstrom2"] == pytest.approx(2 * CAP_AREA, rel=0.03)
+        assert block["shared_buried_area_angstrom2"] == pytest.approx(CAP_AREA, rel=0.03)
+        # the atom that both bury is covered by the same sphere in both: the whole partner area
+        assert block["shared_fraction_of_partner"] == pytest.approx(1.0, rel=1e-9)
+        assert block["shared_buried_area_angstrom2"] == block["partner_buried_area_angstrom2"]
+        assert block["min_distance_angstrom"] == 0.0
+
+    def test_pose_covering_other_surface_shares_nothing(self, cap_reference):
+        pose_atoms = tiny_complex(contacts=(2, 3))
+        block = measure_partners(pose_atoms, frame_of(pose_atoms, cap_reference), cap_reference)[
+            "cap"
+        ]
+        assert block["shared_buried_area_angstrom2"] == 0.0
+        assert block["shared_fraction_of_partner"] == 0.0
+        assert block["pose_buried_area_angstrom2"] == pytest.approx(2 * CAP_AREA, rel=0.03)
+
+    def test_areas_are_summed_over_matched_receptor_atoms_only(self, cap_reference):
+        # Residue 1 is missing from the pose: the partner's area on it is not counted.
+        pose_atoms = without(tiny_complex(contacts=(1, 2)), "A", (1,))
+        block = measure_partners(pose_atoms, frame_of(pose_atoms, cap_reference), cap_reference)[
+            "cap"
+        ]
+        assert block["partner_buried_area_angstrom2"] == 0.0
+        assert block["shared_buried_area_angstrom2"] == 0.0
+        assert block["pose_buried_area_angstrom2"] == pytest.approx(CAP_AREA, rel=0.03)
+        assert block["shared_fraction_of_partner"] is None
+        assert "partner buries no area" in block["column_reasons"]["shared_fraction_of_partner"]
+
+    def test_atoms_of_a_renumbered_pose_are_matched_through_the_pairing(self, reference_atoms):
+        shifted = tiny_complex(contacts=(1, 2), numbering={i: (i + 100, "") for i in range(1, 13)})
+        mapping = {("A", i + 100): ("A", i) for i in range(1, 13)}
+        ref = Reference(
+            reference_atoms,
+            "A",
+            "B",
+            residue_map=mapping,
+            partners={"cap": Partner(carbon_atoms([[0.0, 0.0, HEIGHT]]))},
+        )
+        block = measure_partners(shifted, frame_of(shifted, ref), ref)["cap"]
+        assert block["shared_fraction_of_partner"] == pytest.approx(1.0, rel=1e-9)
+
+    def test_no_matched_atom_gives_the_area_columns_a_reason(self, cap_reference):
+        import dataclasses
+
+        pose_atoms = tiny_complex(contacts=(1, 2))
+        frame = dataclasses.replace(frame_of(pose_atoms, cap_reference), pairs=())
+        block = measure_partners(pose_atoms, frame, cap_reference)["cap"]
+        area_columns = [c for c in PARTNER_COLUMNS if "area" in c or c.endswith("of_partner")]
+        assert sorted(block["column_reasons"]) == sorted(area_columns)
+        assert all(block[c] is None for c in area_columns)
+        assert block["min_distance_angstrom"] == 0.0
+
+    def test_areas_can_be_shared(self, cap_reference):
+        pose_atoms = tiny_complex(contacts=(1, 2))
+        frame = frame_of(pose_atoms, cap_reference)
+        areas = interface_areas(pose_atoms, "B", "A")
+        assert measure_partners(pose_atoms, frame, cap_reference, areas=areas) == measure_partners(
+            pose_atoms, frame, cap_reference
+        )
+
+
+class TestPartnerFailures:
+    def test_blocks_follow_the_partners_of_the_reference(self, two_partner_reference):
+        pose_atoms = tiny_complex(contacts=(1, 2))
+        blocks = measure_partners(
+            pose_atoms, frame_of(pose_atoms, two_partner_reference), two_partner_reference
+        )
+        assert list(blocks) == ["cap", "second"]
+        assert blocks["second"]["shared_buried_area_angstrom2"] == pytest.approx(CAP_AREA, rel=0.03)
+
+    def test_no_partner_gives_an_empty_dict(self, reference_atoms):
+        plain = Reference(reference_atoms, "A", "B")
+        pose_atoms = tiny_complex()
+        assert measure_partners(pose_atoms, frame_of(pose_atoms, plain), plain) == {}
+
+    def test_failed_frame(self, two_partner_reference, reference_atoms):
+        short = without(reference_atoms, "A", range(6, 13))
+        frame = superpose_receptor(short, two_partner_reference)
+        assert not frame.ok
+        for block in measure_partners(short, frame, two_partner_reference).values():
+            assert block["reason"].startswith("the frame failed: ")
+            assert all(block[c] is None for c in PARTNER_COLUMNS)
+
+    def test_missing_binder_chain(self, two_partner_reference):
+        pose_atoms = tiny_complex()
+        frame = frame_of(pose_atoms, two_partner_reference)
+        blocks = measure_partners(
+            pose_atoms[pose_atoms.chain_id == "A"], frame, two_partner_reference
+        )
+        for block in blocks.values():
+            assert "no heavy polymer atom left for chain(s) ['B']" in block["reason"]
+
+    def test_partner_without_polymer_atoms(self, reference_atoms):
+        water = carbon_atoms([[0.0, 0.0, 3.0]], chain="W", residue_name="HOH")
+        water.element[:] = "O"
+        water.atom_name[:] = "O"
+        ref = Reference(
+            reference_atoms,
+            "A",
+            "B",
+            partners={
+                "water": Partner(water, chains="W"),
+                "cap": Partner(carbon_atoms([[0, 0, 4]])),
+            },
+        )
+        pose_atoms = tiny_complex()
+        blocks = measure_partners(pose_atoms, frame_of(pose_atoms, ref), ref)
+        assert blocks["water"]["reason"] == "partner 'water' has no heavy polymer atom"
+        assert "reason" not in blocks["cap"]  # the other partner is still measured
+
+    def test_partner_chain_missing_from_its_structure_raises(self, reference_atoms):
+        ref = Reference(
+            reference_atoms,
+            "A",
+            "B",
+            partners={"x": Partner(carbon_atoms([[0, 0, 4]]), chains="Z")},
+        )
+        pose_atoms = tiny_complex()
+        with pytest.raises(ValueError, match="partner chains"):
+            measure_partners(pose_atoms, frame_of(pose_atoms, ref), ref)
+
+    @pytest.mark.parametrize(
+        "kwargs, error",
+        [
+            ({"clash_cutoffs_angstrom": ()}, ValueError),
+            ({"clash_cutoffs_angstrom": (2.2, 2.2)}, ValueError),
+            ({"clash_cutoffs_angstrom": (0.0,)}, ValueError),
+            ({"clash_cutoffs_angstrom": 2.2}, TypeError),
+            ({"shell_angstrom": 0.0}, ValueError),
+            ({"shell_angstrom": "4"}, TypeError),
+            ({"probe_radius": -1.0}, ValueError),
+        ],
+    )
+    def test_invalid_parameters(self, two_partner_reference, kwargs, error):
+        pose_atoms = tiny_complex()
+        with pytest.raises(error):
+            measure_partners(
+                pose_atoms,
+                frame_of(pose_atoms, two_partner_reference),
+                two_partner_reference,
+                **kwargs,
+            )
+
+
+SCALE_SHIFTS = (0.0, 3.0, 6.0, 10.0)
+
+
+@pytest.fixture(scope="module")
+def results():
+    """The crystal peptide of 1YCR as the partner, and the peptide translated away from the
+    receptor by each shift (along the line from the centre of the binding site to the peptide)."""
+    atoms = _load(YCR)
+    reference = Reference(YCR, "A", "B", partners={"crystal": Partner(YCR, chains="B")})
+    frame = frame_of(atoms, reference)
+    peptide = atoms.chain_id == "B"
+    receptor = (atoms.chain_id == "A") & ~atoms.hetero
+    offsets = atoms.coord[receptor][:, None, :] - atoms.coord[peptide][None, :, :]
+    near = np.sqrt((offsets**2).sum(axis=2)).min(axis=1) < 4.5
+    away = atoms.coord[peptide].mean(axis=0) - atoms.coord[receptor][near].mean(axis=0)
+    away /= np.linalg.norm(away)
+    measured = {}
+    for shift in SCALE_SHIFTS:
+        pose_atoms = atoms.copy()
+        pose_atoms.coord[peptide] += (shift * away).astype(np.float32)
+        measured[shift] = measure_partners(pose_atoms, frame, reference)["crystal"]
+    return measured
+
+
+class TestScaleCheck1YCR:
+    """The crystal peptide as the partner; the poses are translations of the peptide away from
+    the receptor (design section 8.4): the shared area is the partner's at 0 and falls to 0."""
+
+    SHIFTS = SCALE_SHIFTS
+
+    def test_pose_equal_to_the_partner_shares_all_of_its_area(self, results):
+        at_zero = results[0.0]
+        assert at_zero["shared_buried_area_angstrom2"] == at_zero["partner_buried_area_angstrom2"]
+        assert at_zero["pose_buried_area_angstrom2"] == at_zero["partner_buried_area_angstrom2"]
+        assert at_zero["shared_fraction_of_partner"] == 1.0
+        # the design note measured 662 square angstrom for the crystal peptide on MDM2
+        assert at_zero["partner_buried_area_angstrom2"] == pytest.approx(662.3, abs=1.0)
+
+    def test_shared_area_falls_monotonically_to_zero(self, results):
+        shared = [results[s]["shared_buried_area_angstrom2"] for s in self.SHIFTS]
+        assert shared[0] > shared[1] > shared[2] > shared[3]
+        assert shared[3] == pytest.approx(0.0, abs=1e-9)
+        fractions = [results[s]["shared_fraction_of_partner"] for s in self.SHIFTS]
+        assert fractions[0] == 1.0
+        assert 0.3 < fractions[1] < 0.8
+        assert 0.05 < fractions[2] < 0.4
+        assert fractions[3] == pytest.approx(0.0, abs=1e-12)
+
+    def test_partner_area_does_not_depend_on_the_pose(self, results):
+        areas = {r["partner_buried_area_angstrom2"] for r in results.values()}
+        assert len(areas) == 1
+
+    def test_contact_columns_follow_the_translation(self, results):
+        at_zero, at_ten = results[0.0], results[10.0]
+        assert at_zero["min_distance_angstrom"] == 0.0
+        assert at_zero["clash_atoms"] == {
+            "2.2": 113,
+            "3.0": 113,
+        }  # the 113 heavy atoms of the peptide
+        assert at_zero["shell_fraction"] == 1.0
+        assert at_zero["overlap_volume_angstrom3"] > 0
+        assert at_ten["shell_fraction"] < 0.5
+        assert at_ten["clash_atoms"]["2.2"] < at_zero["clash_atoms"]["2.2"]
+        volumes = [results[s]["overlap_volume_angstrom3"] for s in self.SHIFTS]
+        assert volumes[0] > volumes[1] > volumes[3]
