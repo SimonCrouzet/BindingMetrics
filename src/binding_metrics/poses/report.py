@@ -53,7 +53,7 @@ from typing import Any, Mapping
 
 from binding_metrics.metrics.registry import METRICS_BY_NAME
 from binding_metrics.poses.aggregate import group_key
-from binding_metrics.poses.score import PoseSetResult
+from binding_metrics.poses.score import REPRESENTATIVE_META_KEYS, PoseSetResult
 
 logger = logging.getLogger(__name__)
 
@@ -432,7 +432,7 @@ def _representative_blocks(representatives: Mapping[str, Any]) -> list[Block]:
     items = [
         f"{group}: {_number(pose_id)}"
         for group, pose_id in representatives.items()
-        if group not in ("rule", "reasons")
+        if group not in REPRESENTATIVE_META_KEYS
     ]
     blocks: list[Block] = [
         ("heading", 2, "Representatives"),
@@ -442,6 +442,9 @@ def _representative_blocks(representatives: Mapping[str, Any]) -> list[Block]:
     reasons = representatives.get("reasons") or {}
     if reasons:
         blocks.append(("list", [f"no representative for {k}: {v}" for k, v in reasons.items()]))
+    caveats = representatives.get("caveats") or {}
+    if caveats:
+        blocks.append(("list", [f"caveat for {k}: {v}" for k, v in caveats.items()]))
     return blocks
 
 

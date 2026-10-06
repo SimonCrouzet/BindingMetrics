@@ -100,6 +100,7 @@ from binding_metrics.metrics.registry import MetricSpec, get_metric
 from binding_metrics.poses.aggregate import (
     DEFAULT_STATISTICS,
     REASON_POLICIES,
+    RESERVED_GROUP_KEYS,
     PoseDistances,
     aggregate_poses,
     group_key,
@@ -204,6 +205,9 @@ ON_ERROR_MODES = ("record", "raise")
 
 #: Name of the reference that stands in when none is given (the first readable pose).
 IMPLICIT_REFERENCE_NAME = "first_pose"
+
+#: The keys of ``result["representatives"]`` that are not a group: the rule and the sentences.
+REPRESENTATIVE_META_KEYS = ("rule", "reasons", "caveats")
 
 #: The registry name that the layer serves from the pose itself.
 SERVED_METRIC = "prediction"
@@ -2053,7 +2057,7 @@ def score_pose_set(
             for pose_id in ids
             if group_by
         }
-        & {"all", "rule", "reasons"}
+        & set(RESERVED_GROUP_KEYS)
     )
     if reserved_groups:
         raise ValueError(
@@ -2227,7 +2231,7 @@ def score_pose_set(
         "include_transform": include_transform,
     }
     references = _references_block(variants, implicit, scan)
-    warnings = _collect_warnings(rows, representatives, notes, profile_warnings)
+    warnings = _collect_warnings(rows, representatives, notes, profile_warnings, agreement)
     from binding_metrics.provenance import collect_provenance
 
     provenance = collect_provenance()
@@ -2441,7 +2445,7 @@ def _run_heavy(
         {
             pose_id
             for key, pose_id in representatives.items()
-            if key not in ("rule", "reasons") and isinstance(pose_id, str)
+            if key not in REPRESENTATIVE_META_KEYS and isinstance(pose_id, str)
         }
     )
     logger.info("heavy metrics %s on %d representative(s)", [p.name for p in heavy], len(chosen))
@@ -2496,11 +2500,33 @@ def _references_block(variants: Mapping[str, Reference], implicit: bool, scan: _
     }
 
 
+def _medoid_caveats(
+    agreement: Mapping[str, Any], representatives: Mapping[str, Any]
+) -> list[tuple[str, str]]:
+    """``[(group, sentence)]`` of the medoids chosen with a caveat, once per group and sentence.
+
+    Read from ``agreement["medoids"]`` (the overall medoid is the group ``"all"``) and from
+    ``representatives["caveats"]``; both come from ``agreement.medoid`` and say the same thing
+    when they cover the same poses.
+    """
+    found: list[tuple[str, str]] = []
+    medoids = agreement.get("medoids") or {}
+    overall = medoids.get("overall") or {}
+    if overall.get("caveat"):
+        found.append(("all", overall["caveat"]))
+    for group, entry in (medoids.get("per_group") or {}).items():
+        if entry.get("caveat"):
+            found.append((group, entry["caveat"]))
+    found += list((representatives.get("caveats") or {}).items())
+    return list(dict.fromkeys(found))
+
+
 def _collect_warnings(
     rows: Sequence[Mapping[str, Any]],
     representatives: Mapping[str, Any],
     preflight_notes: Sequence[str],
     profile_warnings: Sequence[str],
+    agreement: Mapping[str, Any],
 ) -> list[str]:
     warnings = list(preflight_notes)
     for row in rows:
@@ -2510,6 +2536,8 @@ def _collect_warnings(
     warnings += profile_warnings
     for key, reason in (representatives.get("reasons") or {}).items():
         warnings.append(f"no representative for {key!r}: {reason}")
+    for group, caveat in _medoid_caveats(agreement, representatives):
+        warnings.append(f"medoid of {group!r}: {caveat}")
     return warnings
 
 
@@ -2520,6 +2548,7 @@ __all__ = [
     "PoseScoringError",
     "PoseSetOptions",
     "PoseSetResult",
+    "REPRESENTATIVE_META_KEYS",
     "RESERVED_ROW_NAMES",
     "RESULT_KEYS",
     "RepresentativeOptions",
