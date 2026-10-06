@@ -322,6 +322,27 @@ class TestMarkdown:
         for text in (result.summary(), summary_html(result)):
             assert isinstance(text, str) and text.strip()
 
+    def test_the_summary_says_that_the_spread_is_of_the_alpha_carbons_whatever_the_kind(
+        self, synthetic
+    ):
+        result = score_pose_set(synthetic.poses, "B", "A", options={"agreement": {"kind": "heavy"}})
+        text = result.summary()
+        assert (
+            "the clusters and the medoids use the heavy atoms (complete linkage), "
+            "the spread is of the alpha carbons." in text
+        )
+        assert "use the heavy atoms (complete linkage)." not in text
+        assert "the medoids and the spread" not in text
+        assert "### Mean spread of the alpha carbons per position" in text
+
+    def test_the_html_says_the_same(self, synthetic):
+        result = score_pose_set(synthetic.poses, "B", "A", options={"agreement": {"kind": "heavy"}})
+        page = summary_html(result)
+        assert (
+            "the clusters and the medoids use the heavy atoms (complete linkage), "
+            "the spread is of the alpha carbons." in page
+        )
+
     def test_one_pose_and_a_single_back_end_say_why_there_is_no_between_block(self, synthetic):
         result = score_pose_set(synthetic.poses[:3], "B", "A")
         assert "Between groups: only one back-end." in result.summary()

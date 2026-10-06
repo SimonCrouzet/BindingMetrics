@@ -305,8 +305,8 @@ def _agreement_blocks(agreement: Mapping[str, Any]) -> list[Block]:
         return blocks + [("text", f"Agreement was not computed: {reason}.")]
     ids = agreement["pose_ids"]
     text = (
-        f"{len(ids)} poses compared in the frame of the reference; the clusters, the medoids and "
-        f"the spread use the {agreement['kind']} atoms (complete linkage)."
+        f"{len(ids)} poses compared in the frame of the reference; the clusters and the medoids "
+        f"use the {agreement['kind']} atoms (complete linkage), the spread is of the alpha carbons."
     )
     if agreement["excluded"]:
         text += f" Left out: {', '.join(sorted(agreement['excluded']))}."

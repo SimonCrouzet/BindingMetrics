@@ -259,8 +259,9 @@ class AgreementOptions:
     """The choices and thresholds of the agreement stage (design section 4), with defaults.
 
     Attributes:
-        kind: The atom set of the matrix that feeds the clusters, the medoids and the spread:
-            ``"ca"``, ``"backbone"`` or ``"heavy"``. All three matrices are reported.
+        kind: The atom set of the matrix that feeds the clusters and the medoids: ``"ca"``,
+            ``"backbone"`` or ``"heavy"``. All three matrices are reported. The positional spread
+            is always of the alpha carbons.
         cluster_cutoffs_angstrom: One clustering per cutoff, complete linkage.
         linkage: ``"complete"``, the only linkage (kept as a field so the result records it).
         symmetry: ``"standard"`` matches the interchangeable side-chain atoms in the labelling
