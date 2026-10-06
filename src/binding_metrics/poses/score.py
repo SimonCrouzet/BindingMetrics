@@ -46,7 +46,11 @@ The row of a pose
 that names its program, unless the pose sets them), ``native`` (what the tool that made the pose
 reported), ``status``, ``reason``, ``reasons``, ``independent_of_design``, ``profile``,
 ``frame``, then one block per requested registry metric exactly as the function returned it
-(numpy values become lists and numbers). ``status`` is ``"failed"`` when the structure could
+(numpy values become lists and numbers), then ``descriptors`` and ``residue_table`` when the
+reference asks for them: ``descriptors[variant] = {"sets": {set name: block}, "partners":
+{partner name: block}}`` for each reference variant that has residue sets or partners
+(``binding_metrics.poses.descriptors``), and with ``residue_table=True`` the interface residue
+by residue. ``status`` is ``"failed"`` when the structure could
 not be read, a chain is missing or the pose could not be placed on the reference (nothing else
 is attempted, ``reason`` says why), ``"partial"`` when a metric raised, was skipped or reported
 a ``reason``, else ``"ok"``. ``reasons`` maps the stage (``load``, ``chains``, ``frame``,
@@ -121,6 +125,17 @@ from binding_metrics.poses.agreement import (
     pairwise_peptide_rmsd,
     positional_spread,
     positional_spread_by_group,
+)
+from binding_metrics.poses.descriptors import (
+    DEFAULT_CLASH_CUTOFFS_ANGSTROM,
+    DEFAULT_INTERFACE_THRESHOLD_ANGSTROM2,
+    DEFAULT_MAX_UNMAPPED_FRACTION,
+    DEFAULT_PROBE_RADIUS,
+    DEFAULT_SHELL_ANGSTROM,
+    interface_areas,
+    interface_residue_table,
+    partner_descriptors,
+    residue_set_descriptors,
 )
 from binding_metrics.poses.frame import (
     FrameOptions,
@@ -398,11 +413,85 @@ class RepresentativeOptions:
         return _from_mapping(cls, data, "representative")
 
 
+@dataclass(frozen=True)
+class DescriptorOptions:
+    """The thresholds of the reference-site descriptors (design section 8), with defaults.
+
+    Attributes:
+        interface_threshold_angstrom2: Smallest buried area of a residue that puts it in the
+            interface (the threshold of ``compute_interface_metrics``).
+        clash_cutoffs_angstrom: Heavy-atom distances for the clash counts of a partner; the
+            keys of ``clash_atoms`` and ``clash_pairs`` are these numbers as text (``"2.2"``).
+        shell_angstrom: A binder atom within this distance of a partner atom is in its shell.
+        max_unmapped_fraction: A residue set of which a larger fraction is missing from the pose
+            has no value and a reason.
+        probe_radius: Radius of the solvent probe in angstrom.
+    """
+
+    interface_threshold_angstrom2: float = DEFAULT_INTERFACE_THRESHOLD_ANGSTROM2
+    clash_cutoffs_angstrom: tuple = DEFAULT_CLASH_CUTOFFS_ANGSTROM
+    shell_angstrom: float = DEFAULT_SHELL_ANGSTROM
+    max_unmapped_fraction: float = DEFAULT_MAX_UNMAPPED_FRACTION
+    probe_radius: float = DEFAULT_PROBE_RADIUS
+
+    def __post_init__(self):
+        cutoffs = self.clash_cutoffs_angstrom
+        cutoffs = (cutoffs,) if isinstance(cutoffs, (int, float)) else tuple(cutoffs)
+        if not cutoffs or not all(_is_positive_number(c) for c in cutoffs):
+            raise ValueError(
+                "clash_cutoffs_angstrom must be one or more positive finite numbers, got "
+                f"{self.clash_cutoffs_angstrom!r}"
+            )
+        object.__setattr__(self, "clash_cutoffs_angstrom", tuple(float(c) for c in cutoffs))
+        if not (
+            isinstance(self.interface_threshold_angstrom2, (int, float))
+            and not isinstance(self.interface_threshold_angstrom2, bool)
+            and math.isfinite(self.interface_threshold_angstrom2)
+            and self.interface_threshold_angstrom2 >= 0
+        ):
+            raise ValueError(
+                "interface_threshold_angstrom2 must be a finite number of at least 0, got "
+                f"{self.interface_threshold_angstrom2!r}"
+            )
+        for name in ("shell_angstrom", "probe_radius"):
+            if not _is_positive_number(getattr(self, name)):
+                raise ValueError(
+                    f"{name} must be a positive finite number, got {getattr(self, name)!r}"
+                )
+        if not (
+            isinstance(self.max_unmapped_fraction, (int, float))
+            and not isinstance(self.max_unmapped_fraction, bool)
+            and 0.0 <= self.max_unmapped_fraction <= 1.0
+        ):
+            raise ValueError(
+                f"max_unmapped_fraction must be in [0, 1], got {self.max_unmapped_fraction!r}"
+            )
+
+    def to_dict(self) -> dict:
+        data = dataclasses.asdict(self)
+        data["clash_cutoffs_angstrom"] = list(self.clash_cutoffs_angstrom)
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> DescriptorOptions:
+        return _from_mapping(cls, data, "descriptors")
+
+
+def _is_positive_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
 _OPTION_GROUPS = {
     "frame": FrameOptions,
     "agreement": AgreementOptions,
     "aggregation": AggregationOptions,
     "representative": RepresentativeOptions,
+    "descriptors": DescriptorOptions,
 }
 
 
@@ -416,6 +505,7 @@ class PoseSetOptions:
         agreement: ``AgreementOptions``.
         aggregation: ``AggregationOptions``.
         representative: ``RepresentativeOptions``.
+        descriptors: ``DescriptorOptions``.
 
     The result echoes the resolved values under ``parameters["options"]``.
     """
@@ -424,6 +514,7 @@ class PoseSetOptions:
     agreement: AgreementOptions = field(default_factory=AgreementOptions)
     aggregation: AggregationOptions = field(default_factory=AggregationOptions)
     representative: RepresentativeOptions = field(default_factory=RepresentativeOptions)
+    descriptors: DescriptorOptions = field(default_factory=DescriptorOptions)
 
     def __post_init__(self):
         for name, cls in _OPTION_GROUPS.items():
@@ -925,6 +1016,7 @@ class _Context:
     residue_maps: dict
     include_transform: bool
     raise_mode: bool
+    residue_table: bool = False
 
 
 def _provenance_of(pose: Pose) -> dict:
@@ -1280,6 +1372,120 @@ def _score_pose(pose: Pose, ctx: _Context, outcome: _Outcome) -> None:
     if light:
         files = _PoseFiles(ctx, outcome.index, pose, outcome.metrics_atoms)
         _run_plans(outcome, light, pose, ctx, files)
+    if ctx.raise_mode and outcome.failure is not None:
+        return
+    _run_descriptors(outcome, atoms, frames, ctx)
+
+
+def _run_descriptors(outcome: _Outcome, atoms: Any, frames: Mapping[str, Any], ctx: _Context):
+    """The reference-site descriptors of one pose, per reference variant (design section 8).
+
+    Each variant that has residue sets or partners gets ``descriptors[variant] = {"sets": ...,
+    "partners": ...}``, measured on the pose placed in the frame of that variant; variants that
+    share a receptor (equal ``frame_key``) share the placed atoms and the buried areas.
+    ``residue_table`` is the per-residue interface table of the first variant. The descriptor
+    functions take the atoms with the numbering the frame stage read, so the renumbered copy of
+    the metrics is not used here. A block that has no value keeps its ``reason`` and is
+    recorded in ``reasons`` as ``descriptors.<variant>.sets.<set>`` (or ``.partners.<partner>``).
+    """
+    options = ctx.options.descriptors
+    first_name = next(iter(ctx.variants))
+    wanted = [
+        name
+        for name, reference in ctx.variants.items()
+        if reference.residue_sets or reference.partners
+    ]
+    if not wanted and not ctx.residue_table:
+        return
+    row = outcome.row
+    measured: dict[tuple, tuple] = {}
+
+    def placed_and_areas(name: str):
+        frame, reference = frames[name], ctx.variants[name]
+        key = (reference.frame_key(ctx.options.frame.frame_residues), frame.ok)
+        if key not in measured:
+            placed = place_in_reference_frame(atoms, frame) if frame.ok else atoms
+            try:
+                areas = (
+                    interface_areas(
+                        placed,
+                        ctx.binder_chain,
+                        ctx.target_chain,
+                        probe_radius=options.probe_radius,
+                    )
+                    if frame.ok
+                    else None
+                )
+            except ValueError:
+                areas = None  # a chain with no heavy polymer atom: each function gives the reason
+            measured[key] = (placed, areas)
+        return measured[key]
+
+    common = dict(binder_chain=ctx.binder_chain, target_chain=ctx.target_chain)
+    blocks: dict[str, Any] = {}
+    for name in wanted:
+        frame, reference = frames.get(name), ctx.variants[name]
+        if not isinstance(frame, FrameResult):  # the frame call raised: the row says so already
+            _note(outcome, f"descriptors.{name}", f"no frame for this variant: {frame['reason']}")
+            continue
+        try:
+            placed, areas = placed_and_areas(name)
+            sets = (
+                residue_set_descriptors(
+                    placed,
+                    frame,
+                    reference,
+                    interface_threshold_angstrom2=options.interface_threshold_angstrom2,
+                    max_unmapped_fraction=options.max_unmapped_fraction,
+                    probe_radius=options.probe_radius,
+                    areas=areas,
+                    **common,
+                )
+                if reference.residue_sets
+                else {}
+            )
+            partners = (
+                partner_descriptors(
+                    placed,
+                    frame,
+                    reference,
+                    clash_cutoffs_angstrom=options.clash_cutoffs_angstrom,
+                    shell_angstrom=options.shell_angstrom,
+                    probe_radius=options.probe_radius,
+                    areas=areas,
+                    **common,
+                )
+                if reference.partners
+                else {}
+            )
+        except Exception as exc:  # noqa: BLE001 - the descriptors read the whole pose; the row records the reason
+            _note(outcome, f"descriptors.{name}", _describe(exc), exc)
+            continue
+        blocks[name] = {"sets": _plain(sets), "partners": _plain(partners)}
+        for kind, group in (("sets", sets), ("partners", partners)):
+            for member, block in group.items():
+                if block.get("reason"):
+                    row["reasons"][f"descriptors.{name}.{kind}.{member}"] = block["reason"]
+    if blocks:
+        row["descriptors"] = blocks
+    if not ctx.residue_table:
+        return
+    frame = frames.get(first_name)
+    try:
+        placed, areas = placed_and_areas(first_name)
+        table = interface_residue_table(
+            placed,
+            frame,
+            ctx.variants[first_name],
+            interface_threshold_angstrom2=options.interface_threshold_angstrom2,
+            probe_radius=options.probe_radius,
+            areas=areas,
+            **common,
+        )
+    except Exception as exc:  # noqa: BLE001 - the table reads the whole pose; the row records the reason
+        _note(outcome, "residue_table", _describe(exc), exc)
+        return
+    row["residue_table"] = _plain(table)
 
 
 # ---------------------------------------------------------------------------- running poses
@@ -1671,6 +1877,7 @@ def score_pose_set(
     n_workers: int = 1,
     tmp_dir: str | os.PathLike | None = None,
     keep_tmp: bool = False,
+    residue_table: bool = False,
     include_transform: bool = True,
     construct: Optional[str] = None,
     residue_maps: Mapping[str, Mapping] | None = None,
@@ -1694,7 +1901,7 @@ def score_pose_set(
             on and measured against. The first variant defines the frame of the metrics and of
             the agreement. None uses the first readable pose (lowest id) as the reference.
         options: ``PoseSetOptions`` or a mapping ``{group: {option: value}}`` with the groups
-            ``frame``, ``agreement``, ``aggregation`` and ``representative``.
+            ``frame``, ``agreement``, ``aggregation``, ``representative`` and ``descriptors``.
         aggregate: Statistic names (``"mean"``, ``"std"``, ``"min"``, ``"max"``, ``"median"``)
             or a mapping ``{name: callable}``.
         group_by: Keys of the poses' provenance that define the groups; ``("backend",)`` by
@@ -1713,6 +1920,9 @@ def score_pose_set(
         tmp_dir: An existing directory for the temporary structure files (default the system
             temporary directory); a directory ``bm_poseset_*`` is made in it and removed on exit.
         keep_tmp: Leave that directory in place (its path is in ``provenance["temp_dir"]``).
+        residue_table: Add ``residue_table`` to each row: the interface residue by residue, in
+            long format (``descriptors.TABLE_COLUMNS``), with the reference numbering and the
+            residue sets of the first reference variant. Off by default; it is long.
         include_transform: Put the rotation and translation of each frame in the rows.
         construct: A name for the construct, recorded in the result.
         residue_maps: ``{pose id: {pose ResidueKey: reference ResidueKey}}`` that replace the
@@ -1742,7 +1952,11 @@ def score_pose_set(
     _one_of("on_error", on_error, ON_ERROR_MODES)
     if isinstance(n_workers, bool) or not isinstance(n_workers, int) or n_workers < 1:
         raise ValueError(f"n_workers must be an integer of at least 1, got {n_workers!r}")
-    for name, flag in (("keep_tmp", keep_tmp), ("include_transform", include_transform)):
+    for name, flag in (
+        ("keep_tmp", keep_tmp),
+        ("residue_table", residue_table),
+        ("include_transform", include_transform),
+    ):
         if not isinstance(flag, bool):
             raise TypeError(f"{name} must be True or False, got {flag!r}")
     if construct is not None and not isinstance(construct, str):
@@ -1859,6 +2073,7 @@ def score_pose_set(
                 residue_maps=maps_by_pose,
                 include_transform=include_transform,
                 raise_mode=raise_mode,
+                residue_table=residue_table,
             )
             items = list(enumerate(pose for _, pose in sorted_poses))
             outcomes = _score_poses(items, ctx, n_workers)
@@ -1934,6 +2149,7 @@ def score_pose_set(
             pose_id: sorted([k.to_list(), v.to_list()] for k, v in mapping.items())
             for pose_id, mapping in sorted(maps_by_pose.items())
         },
+        "residue_table": residue_table,
         "include_transform": include_transform,
     }
     references = _references_block(variants, implicit, scan)
@@ -2186,7 +2402,7 @@ _ROW_ORDER = (
 def _ordered_row(row: Mapping[str, Any], metric_order: Sequence[str]) -> dict:
     """The row with its keys in the fixed order: reserved fields, metric blocks, then the rest."""
     ordered = {key: row[key] for key in _ROW_ORDER if key in row}
-    for name in metric_order:
+    for name in (*metric_order, "descriptors", "residue_table"):
         if name in row:
             ordered[name] = row[name]
     for key, value in row.items():

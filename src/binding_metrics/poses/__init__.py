@@ -49,6 +49,7 @@ _EXPORTS = {
     "PoseSetOptions": "binding_metrics.poses.score",
     "AgreementOptions": "binding_metrics.poses.score",
     "AggregationOptions": "binding_metrics.poses.score",
+    "DescriptorOptions": "binding_metrics.poses.score",
     "RepresentativeOptions": "binding_metrics.poses.score",
     "PoseScoringError": "binding_metrics.poses.score",
     "SCHEMA_VERSION": "binding_metrics.poses.score",
@@ -154,6 +155,7 @@ if TYPE_CHECKING:
         SCHEMA_VERSION,
         AggregationOptions,
         AgreementOptions,
+        DescriptorOptions,
         PoseScoringError,
         PoseSetOptions,
         PoseSetResult,
@@ -163,6 +165,7 @@ if TYPE_CHECKING:
     from binding_metrics.predictors.record import PredictedPose
 
 __all__ = [
+    "DescriptorOptions",
     "AggregationOptions",
     "Aggregator",
     "AgreementOptions",
