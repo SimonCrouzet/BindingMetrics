@@ -69,7 +69,7 @@ def _table_after(text: str, marker: str) -> dict[str, list[str]]:
     for line in lines[1:]:
         if line.startswith("|"):
             started = True
-            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            cells = [cell.strip() for cell in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
             names = re.findall(r"`([^`]+)`", cells[0])
             for name in names:
                 rows[name] = cells[1:]
@@ -516,3 +516,43 @@ def test_the_preflight_page_says_what_the_pose_set_layer_does_with_the_check():
     for mode in ("error", "skip", "warn", "off"):
         assert f'"{mode}"' in section
     assert inspect.signature(score_pose_set).parameters["preflight"].default == "error"
+
+
+def test_the_keys_of_the_nested_blocks_are_the_ones_of_the_code(synthetic_result):
+    section = _section("## The result")
+    lines = section[section.index("| Block | Keys |") :].splitlines()[2:]
+    rows = []
+    for line in lines:
+        if not line.startswith("|"):
+            break
+        cells = [cell.strip() for cell in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
+        rows.append(re.findall(r"`([^`]+)`", cells[1]))
+    agreement = synthetic_result["agreement"]
+    statistics = agreement["rmsd"]["ca"]["statistics"]
+    medoids = agreement["medoids"]
+    variant = next(iter(synthetic_result["references"]["variants"].values()))
+    live = [
+        synthetic_result["preflight"],
+        variant,
+        variant["reference"],
+        agreement["rmsd"]["ca"],
+        agreement["rmsd"]["ca"]["matrix"],
+        statistics,
+        statistics["overall"],
+        medoids,
+        medoids["overall"],
+        medoids["between_groups"]["backend_a|backend_b"],
+        agreement["clusters"]["1.0"],
+        agreement["spread"],
+        agreement["spread"]["all"],
+        agreement["spread"]["all"]["positions"][0],
+        agreement["contacts"],
+        agreement["contacts"]["interface_jaccard"],
+    ]
+    assert len(rows) == len(live)
+    for documented, block in zip(rows, live):
+        assert documented == list(block), documented
+    for pair in agreement["contacts"]["interface_jaccard"].values():
+        assert list(pair) == ["matrix", "statistics"]
+    assert list(agreement["contacts"]["contact_map_jaccard"]) == ["matrix", "statistics"]
+    assert agreement["contacts"]["contact_map_jaccard"]["matrix"]["direction"] == "similarity"

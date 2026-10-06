@@ -451,6 +451,29 @@ When two back-ends predict the same constructs, the next questions are how far t
 
 `status` is `failed` when the structure could not be read, a chain is missing, or the pose could not be placed on the reference: the stage is the key of `reasons` (`load`, `chains`, `frame`) and nothing else is attempted. It is `partial` when `reasons` has an entry for anything else: `profile`, `agreement` (a binder that cannot be read), `frame:<variant>` (a variant other than the first), a metric name (the metric raised, was left out by the pre-flight check, does not apply to the kind of pose, or returned a `reason`), `descriptors.<variant>` and `descriptors.<variant>.sets.<set>`, `residue_table`. Otherwise it is `ok`. A metric that raised has no block and the sentence `"<ExceptionType>: <message>"`.
 
+**Keys of the nested blocks**, each in the order the result writes them.
+
+| Block | Keys |
+|---|---|
+| `preflight` | `policy`, `predictor_policy`, `mode`, `compatible`, `profile`, `metrics_requested`, `metrics_to_run`, `metrics_skipped`, `predictors`, `predictor_usable`, `violations`, `warnings`, `notes` |
+| `references.variants[name]` | `content_hash`, `reference` |
+| `references.variants[name].reference` | `schema`, `schema_version`, `name`, `structure`, `receptor_chain`, `binder_chain`, `residue_map`, `residue_sets`, `partners` |
+| `agreement.rmsd[kind]` | `matrix`, `statistics` |
+| `agreement.rmsd[kind].matrix` | `name`, `unit`, `direction`, `pose_ids`, `matrix`, `undefined_pairs` |
+| `agreement.rmsd[kind].statistics` | `n_poses`, `overall`, `within`, `between`, `between_reason` |
+| `overall`, `within[group]`, `between[a\|b]` | `n_pairs`, `n_defined`, `min`, `mean`, `max`, `min_pair`, `max_pair` |
+| `agreement.medoids` | `overall`, `per_group`, `between_groups` |
+| a medoid (`overall`, `per_group[group]`) | `pose_id`, `sum_distance_angstrom`, `mean_distance_angstrom`, `tied_with`, `n_poses`, `excluded` |
+| `agreement.medoids.between_groups[a\|b]` | `medoid_a`, `medoid_b`, `distance_angstrom` |
+| `agreement.clusters[cutoff]` | `cutoff_angstrom`, `linkage`, `n_clusters`, `sizes`, `largest_cluster_fraction`, `labels`, `clusters`, `mixed_clusters`, `n_undefined_pairs` |
+| `agreement.spread` | `all`, `per_group` |
+| `agreement.spread.all`, `agreement.spread.per_group[group]` | `pose_ids`, `reference_id`, `positions`, `mean_spread_angstrom`, `excluded` |
+| a position of the spread | `binder_index`, `chain`, `number`, `icode`, `residue`, `n_poses`, `spread_angstrom` |
+| `agreement.contacts` | `definition`, `cutoff_angstrom`, `excluded`, `interface_jaccard`, `contact_map_jaccard` |
+| `agreement.contacts.interface_jaccard` | `all`, `receptor`, `binder` |
+
+A matrix is `{"name": "rmsd_ca", "unit": "angstrom", "direction": "distance", ...}` with `matrix` as rows in the order of `pose_ids`; the Jaccard matrices have the direction `similarity`. A medoid also carries a `reason` when it has no distance to report (one pose, or no candidate) and a `caveat` when it was chosen by the fallback of the [representative rule](#the-representative-pose). Each entry of `agreement.contacts.interface_jaccard` and `agreement.contacts.contact_map_jaccard` has the keys `matrix` and `statistics` of a peptide RMSD.
+
 **A metric block next to the reserved names.** A metric is requested by its registry name and its block sits under that name in the row, so a metric whose name is one of the row's own keys is refused (`ValueError`, before any pose is read). The reserved names are `id`, `kind`, `content_hash`, `provenance`, `native`, `status`, `reason`, `reasons`, `independent_of_design`, `profile`, `frame`, `descriptors` and `residue_table`. A reader of the result finds a metric at `row[metric_name]` and a structured value at `row[metric_name][key]`, as `compute_interface_metrics` returns it.
 
 ## Writers
