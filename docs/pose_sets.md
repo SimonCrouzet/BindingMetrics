@@ -90,7 +90,7 @@ score_pose_set(poses, binder_chain=None, target_chain=None, metrics=(), referenc
                representative="medoid", heavy="representative", metric_kwargs=None,
                preflight="error", on_error="record", n_workers=1, tmp_dir=None,
                keep_tmp=False, residue_table=False, include_transform=True,
-               construct=None, residue_maps=None)
+               construct=None, residue_maps=None, start_method="spawn")
 ```
 
 | Argument | Meaning |
@@ -113,6 +113,7 @@ score_pose_set(poses, binder_chain=None, target_chain=None, metrics=(), referenc
 | `include_transform` | Puts the rotation and translation of each frame in the rows. |
 | `construct` | A name for the construct, recorded in the result. |
 | `residue_maps` | `{pose id: {pose ResidueKey: reference ResidueKey}}`, replacing the residue map of the reference for those poses. |
+| `start_method` | How the worker processes of `n_workers` above 1 are started: `"spawn"` (the default), `"forkserver"`, `"fork"`, or None for the platform default. See [Parallelism](#parallelism). |
 
 Which metrics run on which poses depends on the `cost_class` that the registry declares for them. A metric with the class `static` or `model` runs on every pose. A metric with the class `structural` or `md`, and a metric that declares none, is heavy: with `heavy="representative"` it runs on the representative poses only, in this process and one after the other, so that a metric that needs the GPU never runs in a worker. `heavy="all"` runs it on every pose and `"skip"` leaves it out. A pose that was not asked for a metric has no block for it and no entry in `reasons`.
 
@@ -417,7 +418,7 @@ When two back-ends predict the same constructs, the next questions are how far t
 | `construct` | The label given to the call, or None. |
 | `binder_chain`, `target_chain` | The chains that were used, given or detected. |
 | `input_key` | The SHA-256 of the pose ids, content hashes and provenance, the chains, the content hash of each reference and the parameters. Equal for equal inputs, whatever the run: it does not depend on the package version, `n_workers` or the temporary directory. A callable is not in it. |
-| `provenance` | `collect_provenance()` (package version, git sha, Python, OS, OpenMM version, platform, seed) plus `pose_set_schema_version`, `n_poses` and `run` (`n_workers`, `on_error`, `tmp_dir`, `keep_tmp`), and `temp_dir` when the directory was kept. |
+| `provenance` | `collect_provenance()` (package version, git sha, Python, OS, OpenMM version, platform, seed) plus `pose_set_schema_version`, `n_poses` and `run` (`n_workers`, `start_method`, `on_error`, `tmp_dir`, `keep_tmp`), and `temp_dir` when the directory was kept. |
 | `parameters` | `options` (every option group), `metrics`, `metric_scope` (`all`, `representatives` or `none` for each metric), `metric_kwargs`, `aggregate`, `group_by`, `representative`, `heavy`, `preflight`, `residue_maps`, `residue_table`, `include_transform`. The resolved values, so that a result says what produced it. |
 | `references` | `implicit`, `implicit_pose_id`, `metrics_frame_variant` and `variants`: for each variant the `content_hash` and the `Reference.to_dict()` record. |
 | `preflight` | The `PreflightReport` as a dictionary, or None with `preflight="off"`. |
@@ -525,7 +526,7 @@ The golden files are not installed with the package. An engine that wants the sa
 
 `n_workers` above 1 scores the poses in worker processes, up to one per pose. The agreement, the representatives and the aggregates run in the calling process, and so do the heavy metrics, one after the other. The result does not depend on `n_workers`.
 
-The workers are started with the start method of the platform: `fork` on Linux up to Python 3.13, `forkserver` on Linux from Python 3.14, `spawn` on macOS and Windows. The call's context and the poses are pickled to each worker and the rows and the placed atoms are pickled back, so a pose class of your own has to pickle; `Reference`, `Partner`, `FrameResult`, the declared limits of the registry metrics (`Capabilities`, `InputProfile`, `PreflightReport` and every registered `MetricSpec`) and the pose kinds of the package do. With `spawn` or `forkserver` the script that makes the call needs the usual `if __name__ == "__main__":` guard. When no worker process can be started (the executor cannot be made, a process cannot be created, or the pool breaks before the first pose came back), the call logs a warning and scores the poses one after the other. A pool that breaks after poses came back raises `BrokenProcessPool`. One pose, or `n_workers=1`, never starts a pool.
+The workers are started with `start_method`. The default is `"spawn"`: each worker is a fresh interpreter, which is safe in a process that has threads or has loaded GPU libraries, and costs a few seconds of start-up per worker. `"forkserver"` starts the workers from a server process, `"fork"` copies the calling process (the quickest start, but forking a process that has threads is deprecated since Python 3.12 and can deadlock), and None takes the start method of the platform: `fork` on Linux up to Python 3.13, `forkserver` on Linux from Python 3.14, `spawn` on macOS and Windows. An unknown name is a `ValueError`, and so is a method that the platform does not have when `n_workers` is above 1. The method that was used is in `provenance["run"]["start_method"]`; it does not change a value and is not part of `input_key`. The call's context and the poses are pickled to each worker and the rows and the placed atoms are pickled back, so a pose class of your own has to pickle; `Reference`, `Partner`, `FrameResult`, the declared limits of the registry metrics (`Capabilities`, `InputProfile`, `PreflightReport` and every registered `MetricSpec`) and the pose kinds of the package do. With `spawn` (the default) or `forkserver` the script that makes the call needs the usual `if __name__ == "__main__":` guard. When no worker process can be started (the executor cannot be made, a process cannot be created, or the pool breaks before the first pose came back), the call logs a warning and scores the poses one after the other. A pool that breaks after poses came back raises `BrokenProcessPool`. One pose, or `n_workers=1`, never starts a pool.
 
 ## What the layer does not cover
 

@@ -182,7 +182,11 @@ class TestPinnedLayout:
             provenance
         )
         assert provenance["pose_set_schema_version"] == SCHEMA_VERSION
-        pin(provenance["run"], ["n_workers", "on_error", "tmp_dir", "keep_tmp"], "provenance.run")
+        pin(
+            provenance["run"],
+            ["n_workers", "start_method", "on_error", "tmp_dir", "keep_tmp"],
+            "provenance.run",
+        )
 
     def test_the_parameters_block_and_the_name_of_every_option(self, result):
         parameters = result["parameters"]
