@@ -385,6 +385,28 @@ def test_the_objects_the_page_says_pickle_do_pickle():
     assert "`Capabilities`" in _section("## Parallelism")
 
 
+def test_every_registered_metric_spec_and_the_preflight_report_pickle():
+    import copy
+    import pickle
+
+    from binding_metrics.capabilities import preflight, profile_input
+    from binding_metrics.metrics.registry import METRICS_BY_NAME
+    from binding_metrics.testing import bundled_complex_path, make_synthetic_poses
+
+    for spec in METRICS_BY_NAME.values():
+        assert pickle.loads(pickle.dumps(spec)).name == spec.name
+        assert copy.deepcopy(spec).name == spec.name
+    pose = make_synthetic_poses().poses[0]
+    profile = profile_input(pose.atoms(), "B", "A")
+    assert pickle.loads(pickle.dumps(profile)).binder_chain == "B"
+    report = preflight(profile, ["interface"])
+    assert pickle.loads(pickle.dumps(report)).to_dict() == report.to_dict()
+    section = _section("## Parallelism")
+    for name in ("InputProfile", "PreflightReport", "MetricSpec"):
+        assert f"`{name}`" in section
+    assert bundled_complex_path().is_file()
+
+
 # ---------------------------------------------------------------------------- the changelog
 
 
@@ -583,3 +605,4 @@ def test_the_page_describes_the_golden_results_as_the_tests_use_them():
     assert ordered.index("## Checking a change against the golden results") == (
         ordered.index("## Determinism") + 1
     )
+
