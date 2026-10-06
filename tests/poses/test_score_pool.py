@@ -1,6 +1,7 @@
-"""score_pose_set with n_workers > 1: every start method, pickling, and a pool that cannot start."""
+"""score_pose_set with n_workers > 1: start methods, pickling, and a pool that cannot start."""
 
 import concurrent.futures
+import inspect
 import json
 import logging
 import multiprocessing
@@ -73,10 +74,6 @@ def comparable(result):
     return data
 
 
-def use_start_method(monkeypatch, method):
-    monkeypatch.setattr(score_module, "_pool_context", lambda: multiprocessing.get_context(method))
-
-
 CALL = dict(metrics=["delta_sasa_static", "hbonds"], residue_table=True)
 
 
@@ -86,54 +83,135 @@ def serial(synthetic, reference):
 
 
 class TestStartMethods:
-    def test_the_platform_default_gives_the_serial_result(self, synthetic, reference, serial):
-        pooled = score_pose_set(synthetic.poses, "B", "A", reference=reference, n_workers=2, **CALL)
-        assert comparable(pooled) == comparable(serial)
-        assert pooled["provenance"]["run"]["n_workers"] == 2
-
-    @pytest.mark.parametrize("method", START_METHODS)
-    def test_each_start_method_gives_the_serial_result(
-        self, monkeypatch, synthetic, reference, serial, method
+    def test_the_default_is_spawn_and_it_is_recorded_with_the_run(
+        self, monkeypatch, synthetic, reference, serial
     ):
-        use_start_method(monkeypatch, method)
-        pooled = score_pose_set(synthetic.poses, "B", "A", reference=reference, n_workers=3, **CALL)
+        assert inspect.signature(score_pose_set).parameters["start_method"].default == "spawn"
+        asked = []
+        real = score_module._pool_context
+        monkeypatch.setattr(
+            score_module, "_pool_context", lambda method=None: asked.append(method) or real(method)
+        )
+        pooled = score_pose_set(synthetic.poses, "B", "A", reference=reference, n_workers=2, **CALL)
+        assert asked == ["spawn"]
+        assert pooled["provenance"]["run"]["start_method"] == "spawn"
+        assert pooled["provenance"]["run"]["n_workers"] == 2
         assert comparable(pooled) == comparable(serial)
+
+    # the platform default is fork on Linux, and a threaded parent makes it warn on Python 3.12
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_none_is_the_platform_default_and_the_recorded_name_is_that_method(
+        self, monkeypatch, synthetic, reference, serial
+    ):
+        asked = []
+        real = score_module._pool_context
+        monkeypatch.setattr(
+            score_module, "_pool_context", lambda method=None: asked.append(method) or real(method)
+        )
+        pooled = score_pose_set(
+            synthetic.poses, "B", "A", reference=reference, n_workers=2, start_method=None, **CALL
+        )
+        assert asked == [None]
+        default = multiprocessing.get_context().get_start_method()
+        assert pooled["provenance"]["run"]["start_method"] == default
+        assert comparable(pooled) == comparable(serial)
+
+    @pytest.mark.parametrize("method", ["spawn", "forkserver"])
+    def test_spawn_and_forkserver_give_the_serial_result(
+        self, synthetic, reference, serial, method
+    ):
+        if method not in START_METHODS:
+            pytest.skip(f"{method} is not available on this platform")
+        pooled = score_pose_set(
+            synthetic.poses,
+            "B",
+            "A",
+            reference=reference,
+            n_workers=3,
+            start_method=method,
+            **CALL,
+        )
+        assert comparable(pooled) == comparable(serial)
+        assert pooled["provenance"]["run"]["start_method"] == method
         assert pooled.to_json(include_timing=False).count('"status": "failed"') == 0
 
-    def test_spawn_gives_the_serial_result_of_a_set_with_failures(
-        self, monkeypatch, synthetic, reference, tmp_path
+    # a threaded parent (pytest has threads) makes the fork of Python 3.12 warn
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_fork_runs_where_the_platform_has_it_and_gives_the_serial_result(
+        self, synthetic, reference, serial
     ):
-        use_start_method(monkeypatch, "spawn")
+        if "fork" not in START_METHODS:
+            pytest.skip("fork is not available on this platform")
+        pooled = score_pose_set(
+            synthetic.poses,
+            "B",
+            "A",
+            reference=reference,
+            n_workers=2,
+            start_method="fork",
+            **CALL,
+        )
+        assert comparable(pooled) == comparable(serial)
+        assert pooled["provenance"]["run"]["start_method"] == "fork"
+
+    def test_the_method_is_not_part_of_the_inputs_or_of_the_parameters(
+        self, synthetic, reference, serial
+    ):
+        other = score_pose_set(
+            synthetic.poses[:3], "B", "A", reference=reference, start_method="forkserver", **CALL
+        )
+        again = score_pose_set(synthetic.poses[:3], "B", "A", reference=reference, **CALL)
+        assert other.input_key == again.input_key
+        assert "start_method" not in other["parameters"]
+        assert other["provenance"]["run"]["start_method"] == "forkserver"
+        assert again["provenance"]["run"]["start_method"] == "spawn"
+        assert comparable(other) == comparable(again)
+
+    @pytest.mark.parametrize("name", ["Spawn", "threads", "", "fork ", 3, True, ["spawn"]])
+    def test_an_invalid_name_raises_before_any_structure_is_read(self, tmp_path, name):
+        corrupt = tmp_path / "corrupt.pdb"
+        corrupt.write_text("not a structure\n", encoding="utf-8")
+
+        class Unreadable(DockedPose):
+            def atoms(self):  # pragma: no cover - reached only when the check is missing
+                raise AssertionError("a structure was read before start_method was checked")
+
+        poses = [Unreadable(corrupt, given_id="p1"), Unreadable(corrupt, given_id="p2")]
+        with pytest.raises(ValueError, match="start_method must be one of"):
+            score_pose_set(poses, "B", "A", n_workers=2, start_method=name)
+        with pytest.raises(ValueError, match="start_method must be one of"):
+            score_pose_set(poses, "B", "A", start_method=name)  # also without a pool
+
+    def test_a_method_the_platform_lacks_is_a_clear_error_when_a_pool_is_asked_for(
+        self, monkeypatch, synthetic
+    ):
+        monkeypatch.setattr(multiprocessing, "get_all_start_methods", lambda: ["spawn"])
+        with pytest.raises(ValueError, match=r"'fork' is not available on this platform.*spawn"):
+            score_pose_set(synthetic.poses[:2], "B", "A", n_workers=2, start_method="fork")
+        # one worker never starts a pool, so the method is not needed
+        score_pose_set(synthetic.poses[:2], "B", "A", n_workers=1, start_method="fork")
+
+    def test_spawn_gives_the_serial_result_of_a_set_with_failures(
+        self, synthetic, reference, tmp_path
+    ):
         corrupt = tmp_path / "corrupt.pdb"
         corrupt.write_text("this is not a structure\n", encoding="utf-8")
         poses = list(synthetic.poses[:3]) + [DockedPose.from_file(corrupt, id="zz_corrupt")]
         pooled = score_pose_set(poses, "B", "A", reference=reference, n_workers=2, **CALL)
-        monkeypatch.undo()
         again = score_pose_set(poses, "B", "A", reference=reference, **CALL)
         assert pooled.row("zz_corrupt")["status"] == "failed"
         assert comparable(pooled) == comparable(again)
 
-    def test_spawn_runs_predicted_poses(self, monkeypatch, tmp_path):
-        use_start_method(monkeypatch, "spawn")
+    def test_spawn_runs_predicted_poses(self, tmp_path):
         poses = build_predicted_poses(tmp_path)
         reference = Reference(YCR, "A", "B")
-        pooled = score_pose_set(
-            poses,
-            "B",
-            "A",
-            metrics=["delta_sasa_static", "prediction"],
-            reference=reference,
-            n_workers=2,
-        )
-        monkeypatch.undo()
-        serial = score_pose_set(
-            poses, "B", "A", metrics=["delta_sasa_static", "prediction"], reference=reference
-        )
+        call = dict(metrics=["delta_sasa_static", "prediction"], reference=reference)
+        pooled = score_pose_set(poses, "B", "A", n_workers=2, **call)
+        serial = score_pose_set(poses, "B", "A", **call)
         assert comparable(pooled) == comparable(serial)
         assert pooled["poses"][0]["prediction"]["binder_avg_plddt"] > 60
 
-    def test_spawn_raises_the_first_failure_in_id_order(self, monkeypatch, synthetic, stub):
-        use_start_method(monkeypatch, "spawn")
+    def test_spawn_raises_the_first_failure_in_id_order(self, synthetic, stub):
         with pytest.raises(PoseScoringError, match="'backend_a-s2'.*stub failure") as info:
             score_pose_set(
                 synthetic.poses,
@@ -148,7 +226,7 @@ class TestStartMethods:
     def test_a_pool_of_one_worker_or_one_pose_runs_in_this_process(
         self, monkeypatch, synthetic, serial
     ):
-        def refuse():
+        def refuse(*args):
             raise AssertionError("no pool is needed for one worker or one pose")
 
         monkeypatch.setattr(score_module, "_pool_context", refuse)
@@ -163,7 +241,7 @@ class TestPickling:
     def captured(self, monkeypatch, synthetic, reference):
         seen = {}
 
-        def capture(items, ctx, n_workers, outcomes):
+        def capture(items, ctx, n_workers, start_method, outcomes):
             seen.update(items=list(items), ctx=ctx, n_workers=n_workers)
             raise score_module._PoolUnavailableError("captured")
 
@@ -239,7 +317,7 @@ class TestPickling:
     def test_an_outcome_and_a_result_pickle(self, synthetic, reference, serial):
         ctx_items = []
 
-        def capture(items, ctx, n_workers, outcomes):
+        def capture(items, ctx, n_workers, start_method, outcomes):
             ctx_items.append((items, ctx))
             raise score_module._PoolUnavailableError("captured")
 

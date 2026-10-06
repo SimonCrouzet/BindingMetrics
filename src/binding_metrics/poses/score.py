@@ -203,6 +203,9 @@ HEAVY_MODES = ("representative", "all", "skip")
 PREFLIGHT_MODES = ("error", "skip", "warn", "off")
 ON_ERROR_MODES = ("record", "raise")
 
+#: The values of ``start_method`` (None is the platform default as well).
+START_METHODS = ("spawn", "forkserver", "fork")
+
 #: Name of the reference that stands in when none is given (the first readable pose).
 IMPLICIT_REFERENCE_NAME = "first_pose"
 
@@ -1513,13 +1516,37 @@ def _pool_task(index: int, pose: Pose) -> _Outcome:
     return outcome
 
 
-def _pool_context():
-    """The multiprocessing context of the worker pool: the start method of the platform.
+def _pool_context(start_method: Optional[str] = None):
+    """The multiprocessing context of the worker pool.
 
-    ``fork`` on Linux up to Python 3.13, ``spawn`` on macOS and Windows, ``forkserver`` from
-    Python 3.14 on Linux. A test replaces this function to force one start method.
+    ``start_method`` is ``"spawn"``, ``"forkserver"`` or ``"fork"``, or None for the start
+    method of the platform (``fork`` on Linux up to Python 3.13, ``spawn`` on macOS and Windows,
+    ``forkserver`` from Python 3.14 on Linux).
     """
-    return multiprocessing.get_context()
+    return multiprocessing.get_context(start_method)
+
+
+def _check_start_method(start_method: Any, n_workers: int) -> str:
+    """Validate ``start_method`` and return the name of the method that a pool would use.
+
+    Raises:
+        ValueError: If it is not None or one of ``START_METHODS``, or (when a pool will be
+            used, ``n_workers > 1``) the platform does not have it.
+    """
+    if start_method is not None and start_method not in START_METHODS:
+        raise ValueError(
+            f"start_method must be one of {list(START_METHODS)} or None (the platform default), "
+            f"got {start_method!r}"
+        )
+    if start_method is None:
+        return multiprocessing.get_context().get_start_method()
+    available = multiprocessing.get_all_start_methods()
+    if n_workers > 1 and start_method not in available:
+        raise ValueError(
+            f"start_method {start_method!r} is not available on this platform (it has "
+            f"{available}); pass one of those, or None for the platform default"
+        )
+    return start_method
 
 
 class _PoolUnavailableError(Exception):
@@ -1546,7 +1573,11 @@ def _score_serially(
 
 
 def _score_in_pool(
-    items: Sequence[tuple[int, Pose]], ctx: _Context, n_workers: int, outcomes: list[_Outcome]
+    items: Sequence[tuple[int, Pose]],
+    ctx: _Context,
+    n_workers: int,
+    start_method: Optional[str],
+    outcomes: list[_Outcome],
 ) -> None:
     """Score ``items`` in worker processes, appending the outcomes to ``outcomes`` in order.
 
@@ -1561,7 +1592,7 @@ def _score_in_pool(
     try:
         pool = concurrent.futures.ProcessPoolExecutor(
             max_workers=min(n_workers, len(items)),
-            mp_context=_pool_context(),
+            mp_context=_pool_context(start_method),
             initializer=_init_worker,
             initargs=(ctx,),
         )
@@ -1595,20 +1626,24 @@ def _score_in_pool(
 
 
 def _score_poses(
-    items: Sequence[tuple[int, Pose]], ctx: _Context, n_workers: int
+    items: Sequence[tuple[int, Pose]],
+    ctx: _Context,
+    n_workers: int,
+    start_method: Optional[str] = None,
 ) -> list[_Outcome]:
     """Stage 3 over all poses, in id order; a pool of processes when ``n_workers > 1``.
 
-    The workers are started with the start method of the platform (``fork``, ``spawn`` or
-    ``forkserver``); the context and the poses are pickled to them, and the outcomes (the rows
-    and the placed atoms) are pickled back. With ``on_error="raise"`` the first failing pose (in
-    id order) raises and the poses after it are dropped. When no worker can be started, a
-    warning is logged and the poses that have no outcome yet are scored one after the other.
+    The workers are started with ``start_method`` (``"spawn"``, ``"forkserver"``, ``"fork"``, or
+    None for the platform default); the context and the poses are pickled to them, and the
+    outcomes (the rows and the placed atoms) are pickled back. With ``on_error="raise"`` the
+    first failing pose (in id order) raises and the poses after it are dropped. When no worker
+    can be started, a warning is logged and the poses that have no outcome yet are scored one
+    after the other.
     """
     outcomes: list[_Outcome] = []
     if n_workers > 1 and len(items) > 1:
         try:
-            _score_in_pool(items, ctx, n_workers, outcomes)
+            _score_in_pool(items, ctx, n_workers, start_method, outcomes)
             return outcomes
         except _PoolUnavailableError as error:
             logger.warning(
@@ -1947,6 +1982,7 @@ def score_pose_set(
     include_transform: bool = True,
     construct: Optional[str] = None,
     residue_maps: Mapping[str, Mapping] | None = None,
+    start_method: Optional[str] = "spawn",
 ) -> PoseSetResult:
     """Score the poses of one construct: frame, metrics, agreement, aggregates, representatives.
 
@@ -1981,10 +2017,9 @@ def score_pose_set(
             (``IncompatibleInputError``) before any pose is scored; ``"skip"`` leaves those
             metrics out and lists them; ``"warn"`` logs and runs; ``"off"`` does not check.
         on_error: ``"record"`` (default) or ``"raise"``, see the module docstring.
-        n_workers: Processes for the per-pose stage; 1 runs in this process. The workers use the
-            start method of the platform (``fork``, ``spawn`` or ``forkserver``); a pool that
-            cannot start gives a logged warning and the poses are scored in this process. The
-            metrics that need a GPU never run in a worker.
+        n_workers: Processes for the per-pose stage; 1 runs in this process. A pool that cannot
+            start gives a logged warning and the poses are scored in this process. The metrics
+            that need a GPU never run in a worker.
         tmp_dir: An existing directory for the temporary structure files (default the system
             temporary directory); a directory ``bm_poseset_*`` is made in it and removed on exit.
         keep_tmp: Leave that directory in place (its path is in ``provenance["temp_dir"]``).
@@ -1995,6 +2030,12 @@ def score_pose_set(
         construct: A name for the construct, recorded in the result.
         residue_maps: ``{pose id: {pose ResidueKey: reference ResidueKey}}`` that replace the
             residue map of the reference for those poses.
+        start_method: How the worker processes of ``n_workers > 1`` are started: ``"spawn"``
+            (default: a fresh interpreter, safe with threads and GPU libraries, needs the usual
+            ``if __name__ == "__main__":`` guard in a script), ``"forkserver"``, ``"fork"`` (the
+            fastest start, but ``fork`` of a multi-threaded process is deprecated since Python
+            3.12 and can deadlock), or None for the platform default. The method is not part of
+            the result's values: it is recorded in ``provenance["run"]`` and not in ``input_key``.
 
     Returns:
         A ``PoseSetResult``; its type never depends on an argument.
@@ -2020,6 +2061,7 @@ def score_pose_set(
     _one_of("on_error", on_error, ON_ERROR_MODES)
     if isinstance(n_workers, bool) or not isinstance(n_workers, int) or n_workers < 1:
         raise ValueError(f"n_workers must be an integer of at least 1, got {n_workers!r}")
+    start_method_name = _check_start_method(start_method, n_workers)
     for name, flag in (
         ("keep_tmp", keep_tmp),
         ("residue_table", residue_table),
@@ -2144,7 +2186,7 @@ def score_pose_set(
                 residue_table=residue_table,
             )
             items = list(enumerate(pose for _, pose in sorted_poses))
-            outcomes = _score_poses(items, ctx, n_workers)
+            outcomes = _score_poses(items, ctx, n_workers, start_method)
         stage_seconds["poses"] = time.perf_counter() - stage_started
         logger.info(
             "per-pose stage done: %d ok, %d failed",
@@ -2229,6 +2271,7 @@ def score_pose_set(
     provenance["n_poses"] = len(rows)
     provenance["run"] = {
         "n_workers": n_workers,
+        "start_method": start_method_name,
         "on_error": on_error,
         "tmp_dir": None if tmp_dir is None else str(tmp_dir),
         "keep_tmp": keep_tmp,
@@ -2543,6 +2586,7 @@ __all__ = [
     "RESULT_KEYS",
     "RepresentativeOptions",
     "SCHEMA",
+    "START_METHODS",
     "SCHEMA_VERSION",
     "score_pose_set",
 ]
