@@ -4,12 +4,15 @@ import functools
 import logging
 import re
 import tempfile
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from binding_metrics.core.residues import (
+    AMBER_PROTONATION_VARIANTS,
     PHOSPHO_RESIDUES,
     PROTEIN_RESIDUES,
+    STANDARD_AMINO_ACIDS,
     WATER_NAMES_STRIP_HETEROGENS,
 )
 from binding_metrics.utils import add_to_report, backfill_auth_columns, extend_report
@@ -1049,6 +1052,65 @@ def _ids_fit_cif(topology) -> bool:
     )
 
 
+#: Residue names whose bonds ``createStandardBonds`` rebuilds when OpenMM reads the file: the
+#: standard amino acids, the AMBER variants and the lactam names, which are renamed back to
+#: standard codes on output.
+_REBUILT_BY_OPENMM = (
+    STANDARD_AMINO_ACIDS
+    | AMBER_PROTONATION_VARIANTS
+    | {name for name, _ in _FF_INTERNAL_RESIDUE_RENAMES}
+)
+
+
+def _shared_residue_numbers(assigned: dict) -> set:
+    """``(auth chain, number)`` pairs that name two or more residues (60, 60A, ...).
+
+    ``assigned`` maps ``(auth chain, residue index)`` to ``(number, insertion code)``.
+    """
+    counts: Counter = Counter((chain, number) for (chain, _), (number, _) in assigned.items())
+    return {key for key, count in counts.items() if count > 1}
+
+
+def _drop_ambiguous_standard_bonds(block, renumbered: dict, out_to_auth: dict, shared: set) -> None:
+    """Remove the ``_struct_conn`` rows that OpenMM would resolve to the wrong residue.
+
+    ``PDBxFile`` looks the partners of a row up by number, chain and atom name, so a partner
+    whose number belongs to two residues (60 and 60A) is taken for the last of them, and the
+    row adds a bond to the wrong residue on top of the right one. A row inside one residue, or a
+    peptide bond between neighbours, of residues OpenMM bonds by itself, is redundant and is
+    dropped. A link between distant residues (a disulfide at 60A) cannot be dropped and stays.
+
+    Called before the partner columns are renumbered: ``renumbered`` maps the OpenMM
+    ``(chain, number)`` to the number written and ``out_to_auth`` the OpenMM chain to the
+    author chain.
+    """
+    columns = [
+        f"ptnr{n}_label_{field}"
+        for n in "12"
+        for field in ("asym_id", "comp_id", "seq_id", "atom_id")
+    ]
+    try:
+        table = block.find("_struct_conn.", columns)
+    except (RuntimeError, IndexError, ValueError):
+        return
+    if not table:
+        return
+    for index in reversed(range(len(table))):
+        asym1, comp1, seq1, atom1, asym2, comp2, seq2, atom2 = (table[index][i] for i in range(8))
+        ambiguous = any(
+            (out_to_auth.get(asym, asym), renumbered.get((asym, seq), seq)) in shared
+            for asym, seq in ((asym1, seq1), (asym2, seq2))
+        )
+        if not ambiguous or not {comp1, comp2} <= _REBUILT_BY_OPENMM or asym1 != asym2:
+            continue
+        inside_residue = seq1 == seq2
+        peptide_bond = (atom1, atom2) in (("C", "N"), ("N", "C")) and abs(
+            int(seq1) - int(seq2)
+        ) == 1
+        if inside_residue or peptide_bond:
+            table.remove_row(index)
+
+
 def save_cif(
     topology,
     positions,
@@ -1233,6 +1295,7 @@ def save_cif(
         # OpenMM (which keys atoms by auth_seq_id and _struct_conn partners by
         # label_seq_id) cannot match a bond of a non-standard residue on reload.
         renumbered: dict[tuple, str] = {}
+        shared_numbers: set = set()  # (auth chain, number) of two or more residues
         if out_table and out_to_auth:
             o_res_idx: dict[str, int] = {}
             o_prev_key: dict[str, tuple] = {}
@@ -1275,6 +1338,10 @@ def save_cif(
                 row[4] = new_seq  # label_seq_id → same, see `renumbered`
                 row[5] = new_ins_code or "."  # pdbx_PDB_ins_code → original
                 renumbered[(out_ch, seq)] = new_seq
+            shared_numbers = _shared_residue_numbers(assigned)
+
+        if shared_numbers:
+            _drop_ambiguous_standard_bonds(output_block, renumbered, out_to_auth, shared_numbers)
 
         # Patch the _struct_conn residue numbers first: the chain patch below
         # replaces the OpenMM chain letters this lookup is keyed on.

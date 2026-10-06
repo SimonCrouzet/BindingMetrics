@@ -157,3 +157,105 @@ def test_files_without_insertion_codes_keep_their_numbers(source, tmp_path):
     before, after = _residues(source), _residues(out)
     assert [r[:3] for r in after] == [r[:3] for r in before]
     assert not any(r[2] for r in after)
+
+
+def _struct_conn_block(rows):
+    """A gemmi block with one ``_struct_conn`` row per (comp1, seq1, atom1, comp2, seq2, atom2)."""
+    lines = [
+        "data_test",
+        "loop_",
+        "_struct_conn.id",
+        "_struct_conn.conn_type_id",
+        "_struct_conn.ptnr1_label_asym_id",
+        "_struct_conn.ptnr1_label_comp_id",
+        "_struct_conn.ptnr1_label_seq_id",
+        "_struct_conn.ptnr1_label_atom_id",
+        "_struct_conn.ptnr2_label_asym_id",
+        "_struct_conn.ptnr2_label_comp_id",
+        "_struct_conn.ptnr2_label_seq_id",
+        "_struct_conn.ptnr2_label_atom_id",
+    ]
+    for number, (comp1, seq1, atom1, comp2, seq2, atom2) in enumerate(rows, start=1):
+        lines.append(f"bond{number} covale A {comp1} {seq1} {atom1} A {comp2} {seq2} {atom2}")
+    return gemmi.cif.read_string("\n".join(lines) + "\n").sole_block()
+
+
+def _kept_rows(block):
+    table = block.find(
+        "_struct_conn.",
+        [
+            "ptnr1_label_comp_id",
+            "ptnr1_label_seq_id",
+            "ptnr1_label_atom_id",
+            "ptnr2_label_seq_id",
+            "ptnr2_label_atom_id",
+        ],
+    )
+    return [tuple(row) for row in table]
+
+
+class TestAmbiguousStructConnRows:
+    """OpenMM resolves a partner number that names two residues to the last of them."""
+
+    def test_only_the_rows_openmm_rebuilds_are_dropped(self):
+        from binding_metrics.io.structures import _drop_ambiguous_standard_bonds
+
+        # OpenMM numbers 1-5 became 219, 220, 221, 221 (with code A), 222; 221 is shared
+        renumbered = {("A", str(i + 1)): str(n) for i, n in enumerate([219, 220, 221, 221, 222])}
+        shared = {("A", "221")}
+        block = _struct_conn_block(
+            [
+                ("CYX", "2", "C", "ALA", "3", "N"),  # peptide bond into residue 221: dropped
+                ("CYX", "3", "N", "CYX", "3", "H"),  # inside residue 221: dropped
+                ("CYX", "1", "N", "CYX", "1", "H"),  # inside residue 219: kept
+                ("CYX", "1", "C", "CYX", "2", "N"),  # between 219 and 220: kept
+                ("CYX", "2", "SG", "CYX", "3", "SG"),  # a disulfide at 221 cannot be rebuilt
+                ("MLE", "3", "N", "MLE", "3", "CN"),  # not a residue OpenMM bonds: kept
+            ]
+        )
+        _drop_ambiguous_standard_bonds(block, renumbered, {"A": "A"}, shared)
+        assert _kept_rows(block) == [
+            ("CYX", "1", "N", "1", "H"),
+            ("CYX", "1", "C", "2", "N"),
+            ("CYX", "2", "SG", "3", "SG"),
+            ("MLE", "3", "N", "3", "CN"),
+        ]
+
+    def test_nothing_is_dropped_without_a_shared_number(self):
+        from binding_metrics.io.structures import _drop_ambiguous_standard_bonds
+
+        rows = [("CYX", "1", "C", "ALA", "2", "N"), ("CYX", "2", "N", "CYX", "2", "H")]
+        block = _struct_conn_block(rows)
+        _drop_ambiguous_standard_bonds(block, {("A", "1"): "5", ("A", "2"): "6"}, {"A": "A"}, set())
+        assert len(_kept_rows(block)) == 2
+
+
+@pytest.mark.skipif(not SFTI.exists(), reason="3P8F is not bundled")
+@pytest.mark.integration
+def test_prepped_trypsin_reloads_with_the_bonds_it_was_saved_with(tmp_path):
+    """Prep, save with the source numbering and reload: the same bonds, none added.
+
+    The bond C(CYS 220) - N(residue 221) is listed in ``_struct_conn`` next to the cystine, and
+    221 and 221A share a number, so OpenMM bonded C(220) to the nitrogen of 221A as well and the
+    force field found no template for the cystine.
+    """
+    pytest.importorskip("pdbfixer")
+    from binding_metrics.core.system import prep_structure
+    from binding_metrics.io.structures import save_structure
+
+    topology, positions = load_structure(SFTI)
+    topology, positions = prep_structure(
+        topology, positions, ph=7.4, keep_water=False, canonicalize=False
+    )
+    out = tmp_path / "prepped.cif"
+    save_structure(topology, positions, out, source_path=SFTI)
+    reloaded, _ = load_structure(out)
+
+    def bonds(topology):
+        return {tuple(sorted((b.atom1.index, b.atom2.index))) for b in topology.bonds()}
+
+    assert bonds(reloaded) == bonds(topology)
+    assert [(r.id, r.insertionCode) for r in reloaded.residues() if r.id == "221"] == [
+        ("221", ""),
+        ("221", "A"),
+    ]
