@@ -1,0 +1,1565 @@
+{
+  "golden_format": 1,
+  "name": "synthetic_1ycr",
+  "description": "score_pose_set on make_synthetic_poses() (backend_a and backend_b, seeds 1 to 3, random frames) against the unmoved 1YCR complex, with the 4.5 angstrom epitope and the buried-area interface as residue sets, the crystal peptide as partner and the metrics delta_sasa_static, ramachandran, omega and coulomb.",
+  "regenerate": "python scripts/regen_pose_golden.py --write",
+  "tolerance": {"rtol": 1e-06, "atol": 1e-06, "overrides": {}},
+  "ignored": ["package_version", "timing*", "provenance*", "references.*.path"],
+  "result": {
+    "schema": "binding_metrics.pose_set_result",
+    "schema_version": 1,
+    "construct": "synthetic-1ycr",
+    "binder_chain": "B",
+    "target_chain": "A",
+    "input_key": "2ab8f30daedc131c3bc30c994e692cf572a9645c086f4cb92432b4580789b264",
+    "parameters": {
+      "options": {
+        "frame": {
+          "pairing": "auto",
+          "frame_atoms": "ca",
+          "frame_residues": null,
+          "outliers": null,
+          "min_frame_residues": 10,
+          "min_frame_fraction": 0.5,
+          "min_sequence_identity": 0.8,
+          "min_pair_fraction": 0.9,
+          "site_cutoff_angstrom": 4.5,
+          "iqr_threshold": 1.5,
+          "iqr_max_iterations": 10,
+          "iqr_min_deviation_angstrom": 0.01,
+          "alignment_matrix": "BLOSUM62",
+          "alignment_gap_penalty": [-10, -1],
+          "renumber_receptor": true,
+          "metrics_frame": "reference"
+        },
+        "agreement": {
+          "kind": "ca",
+          "cluster_cutoffs_angstrom": [1.0, 2.0],
+          "linkage": "complete",
+          "symmetry": "standard",
+          "cyclic_shift": "off",
+          "residue_pairing": "auto",
+          "expected_closures": null,
+          "exclude_closure_mismatch": false,
+          "contact_cutoff_angstrom": 5.0,
+          "min_shared_atom_fraction": 0.8,
+          "shape_rmsd": true
+        },
+        "aggregation": {"min_n_ok": 1, "reason_policy": "exclude"},
+        "representative": {"confidence_key": "ranking_score", "confidence_direction": null},
+        "descriptors": {"interface_threshold_angstrom2": 0.5, "clash_cutoffs_angstrom": [2.2, 3.0], "shell_angstrom": 4.0, "max_unmapped_fraction": 0.5, "probe_radius": 1.4}
+      },
+      "metrics": ["delta_sasa_static", "omega", "coulomb"],
+      "metric_scope": {"delta_sasa_static": "all", "omega": "all", "coulomb": "all"},
+      "metric_kwargs": {},
+      "aggregate": ["mean", "std", "min", "max", "median"],
+      "group_by": ["backend"],
+      "representative": "medoid",
+      "heavy": "representative",
+      "preflight": "error",
+      "residue_maps": {},
+      "residue_table": false,
+      "include_transform": true
+    },
+    "references": {
+      "implicit": false,
+      "implicit_pose_id": null,
+      "metrics_frame_variant": "reference",
+      "variants": {
+        "reference": {
+          "content_hash": "7f51ad706754e1e1f0e0476040ad059f56e3ac5d73168a753a272aad61bf018e",
+          "reference": {
+            "schema": "binding_metrics.reference",
+            "schema_version": 1,
+            "name": "reference",
+            "structure": {"kind": "experimental", "chain_map": {}, "content_hash": "3f33ed8467fc26eea6c9c3283cbd3393dc26bddd644f4bf96ca21e6d0958a74b"},
+            "receptor_chain": "A",
+            "binder_chain": "B",
+            "residue_map": [],
+            "residue_sets": {
+              "crystal_interface": [["A", 25, ""], ["A", 26, ""], ["A", 49, ""], ["A", 50, ""], ["A", 51, ""], ["A", 54, ""], ["A", 57, ""], ["A", 58, ""], ["A", 61, ""], ["A", 62, ""], ["A", 67, ""], ["A", 70, ""], ["A", 71, ""], ["A", 72, ""], ["A", 73, ""], ["A", 75, ""], ["A", 86, ""], ["A", 91, ""], ["A", 93, ""], ["A", 94, ""], ["A", 96, ""], ["A", 99, ""], ["A", 100, ""], ["A", 103, ""], ["A", 104, ""]],
+              "epitope": [["A", 25, ""], ["A", 26, ""], ["A", 50, ""], ["A", 51, ""], ["A", 54, ""], ["A", 57, ""], ["A", 58, ""], ["A", 61, ""], ["A", 62, ""], ["A", 67, ""], ["A", 70, ""], ["A", 71, ""], ["A", 72, ""], ["A", 73, ""], ["A", 75, ""], ["A", 91, ""], ["A", 93, ""], ["A", 94, ""], ["A", 96, ""], ["A", 99, ""], ["A", 100, ""], ["A", 104, ""]]
+            },
+            "partners": {"crystal_peptide": {"structure": {"kind": "experimental", "chain_map": {}, "content_hash": "3f33ed8467fc26eea6c9c3283cbd3393dc26bddd644f4bf96ca21e6d0958a74b"}, "chains": ["B"]}}
+          }
+        }
+      }
+    },
+    "preflight": {
+      "policy": "error",
+      "predictor_policy": "error",
+      "mode": null,
+      "compatible": true,
+      "profile": {
+        "binder_chains": ["B"],
+        "receptor_chain": "A",
+        "n_binder_residues": 13,
+        "binder_type": "peptide",
+        "binder_type_source": "estimated",
+        "closures": ["none"],
+        "closure_bonds": [],
+        "residue_classes": ["canonical"],
+        "residue_names": {"canonical": ["ASN", "ASP", "GLU", "LEU", "LYS", "PHE", "PRO", "SER", "THR", "TRP"]},
+        "residue_labels": {"canonical": ["GLU 17", "THR 18", "PHE 19", "SER 20", "ASP 21", "LEU 22", "TRP 23", "LYS 24", "LEU 25", "LEU 26", "PRO 27", "GLU 28", "ASN 29"]},
+        "chain_ids": ["A", "B"],
+        "other_protein_chains": ["A"],
+        "notes": ["the structure has no bond table, so hydrocarbon staples and other side-chain cross-links were not looked for"]
+      },
+      "metrics_requested": ["delta_sasa_static", "omega", "coulomb"],
+      "metrics_to_run": ["delta_sasa_static", "omega", "coulomb"],
+      "metrics_skipped": [],
+      "predictors": [],
+      "predictor_usable": true,
+      "violations": [],
+      "warnings": [],
+      "notes": ["the structure has no bond table, so hydrocarbon staples and other side-chain cross-links were not looked for"]
+    },
+    "poses": [
+      {
+        "id": "backend_a-s1",
+        "kind": "docked",
+        "content_hash": "0dec2c85247b3e26a15b86a1df9c503d8737fdc7183212b868e9206aab2645bd",
+        "provenance": {"backend": "backend_a", "seed": 1, "offset_angstrom": 0.0, "rotation_degrees": 0.0, "synthetic": true},
+        "native": {"ranking_score": 0.55},
+        "status": "ok",
+        "reason": null,
+        "reasons": {},
+        "independent_of_design": null,
+        "profile": {
+          "n_binder_residues": 13,
+          "binder_type": "peptide",
+          "closures": ["none"],
+          "closure_bonds": [],
+          "residue_classes": ["canonical"],
+          "residue_names": {},
+          "notes": ["the structure has no bond table, so hydrocarbon staples and other side-chain cross-links were not looked for"],
+          "closures_as_expected": true,
+          "differs_from_first": []
+        },
+        "frame": {
+          "status": "ok",
+          "reason": null,
+          "pairing": "number",
+          "n_receptor_residues_pose": 85,
+          "n_receptor_residues_reference": 85,
+          "n_paired": 85,
+          "paired_fraction": 1.0,
+          "sequence_identity": 1.0,
+          "alignment_ambiguous": false,
+          "n_fit_residues": 85,
+          "n_fit_atoms": 85,
+          "n_rejected": 0,
+          "receptor_rmsd_angstrom": 6.519378928e-07,
+          "region_rmsd_angstrom": {"all": 6.519378928e-07, "site": 7.703686082e-07, "crystal_interface": 7.576742443e-07, "epitope": 7.703686082e-07},
+          "region_n_residues": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_n_paired": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_reasons": {},
+          "warnings": [],
+          "transform": {"rotation": [[-0.1994662287, -0.6684250927, -0.7165341019], [-0.812144309, 0.5219243792, -0.2607998539], [0.5483017828, 0.5299083297, -0.6469639226]], "translation": [25.56133622, 6.660379023, -4.058133348]},
+          "variant": "reference"
+        },
+        "delta_sasa_static": {"delta_sasa": 1465.720581, "sasa_peptide": 1616.008667, "sasa_receptor": 5293.208008, "sasa_complex": 5443.496094},
+        "omega": {
+          "omega_mean_dev": 1.275444031,
+          "omega_max_dev": 3.062408447,
+          "omega_outlier_fraction": 0.0,
+          "omega_outlier_count": 0,
+          "n_bonds_evaluated": 12,
+          "omega_cis_count": 0,
+          "cyclic_closure_detected": false,
+          "cyclic_closure_evaluated": false,
+          "per_residue": [
+            {"res_id": 17, "ins_code": "", "res_name": "GLU", "chain": "B", "omega": -179.7182159, "deviation": 0.2817840576, "is_outlier": false},
+            {"res_id": 18, "ins_code": "", "res_name": "THR", "chain": "B", "omega": -178.7716675, "deviation": 1.22833252, "is_outlier": false},
+            {"res_id": 19, "ins_code": "", "res_name": "PHE", "chain": "B", "omega": -179.1047821, "deviation": 0.8952178955, "is_outlier": false},
+            {"res_id": 20, "ins_code": "", "res_name": "SER", "chain": "B", "omega": 177.9061737, "deviation": 2.093826294, "is_outlier": false},
+            {"res_id": 21, "ins_code": "", "res_name": "ASP", "chain": "B", "omega": -177.9635773, "deviation": 2.036422729, "is_outlier": false},
+            {"res_id": 22, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": -176.9375916, "deviation": 3.062408447, "is_outlier": false},
+            {"res_id": 23, "ins_code": "", "res_name": "TRP", "chain": "B", "omega": 179.8538666, "deviation": 0.1461334229, "is_outlier": false},
+            {"res_id": 24, "ins_code": "", "res_name": "LYS", "chain": "B", "omega": 179.0272064, "deviation": 0.9727935791, "is_outlier": false},
+            {"res_id": 25, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": -179.4587097, "deviation": 0.5412902832, "is_outlier": false},
+            {"res_id": 26, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": 179.9397583, "deviation": 0.06024169922, "is_outlier": false},
+            {"res_id": 27, "ins_code": "", "res_name": "PRO", "chain": "B", "omega": -177.2232666, "deviation": 2.776733398, "is_outlier": false},
+            {"res_id": 28, "ins_code": "", "res_name": "GLU", "chain": "B", "omega": 178.789856, "deviation": 1.210144043, "is_outlier": false}
+          ]
+        },
+        "coulomb": {
+          "coulomb_energy_kJ": -91.58912,
+          "coulomb_energy_kcal": -21.89032505,
+          "n_charged_pairs": 16,
+          "n_attractive": 6,
+          "n_repulsive": 10,
+          "n_ionisable_residues_seen": 25,
+          "n_residues_unrecognised": 0,
+          "charged_atoms_peptide": [
+            {"residue": "GLU:B:17", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [32.30199814, -32.54299927, -7.09800005]},
+            {"residue": "GLU:B:17", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [33.98799896, -32.61800003, -8.498000145]},
+            {"residue": "ASP:B:21", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [26.87700081, -29.35800171, -14.50300026]},
+            {"residue": "ASP:B:21", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [28.23800087, -31.05699921, -14.04199982]},
+            {"residue": "LYS:B:24", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [24.75399971, -24.35099792, -15.35499954]},
+            {"residue": "GLU:B:28", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [17.3409996, -22.4260006, -8.053998947]},
+            {"residue": "GLU:B:28", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [15.31499958, -23.04299927, -7.418000698]}
+          ],
+          "charged_atoms_receptor": [
+            {"residue": "GLU:A:25", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [12.43900013, -16.74500084, -6.994998932]},
+            {"residue": "GLU:A:25", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [13.04300117, -15.16300011, -8.408999443]},
+            {"residue": "ARG:A:29", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [18.74300003, -1.578000069, -1.852999926]},
+            {"residue": "ARG:A:29", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [16.85300064, -1.508999825, -0.5599997044]},
+            {"residue": "LYS:A:31", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [25.56100082, -8.095999718, 7.462999821]},
+            {"residue": "LYS:A:36", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [36.28300095, -2.868000031, -1.654999733]},
+            {"residue": "LYS:A:39", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [26.39100075, -1.133000016, -8.324000359]},
+            {"residue": "LYS:A:45", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [18.15500069, -6.739999771, -10.06400013]},
+            {"residue": "ASP:A:46", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [22.35400009, -1.691000342, -2.633999825]},
+            {"residue": "ASP:A:46", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [21.47500038, 0.3359998465, -2.708999872]},
+            {"residue": "LYS:A:51", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [13.72600079, -19.09700012, -9.045000076]},
+            {"residue": "GLU:A:52", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [18.40099907, -9.331000328, -9.194999695]},
+            {"residue": "GLU:A:52", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [18.77300072, -9.430000305, -11.35900021]},
+            {"residue": "LYS:A:64", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [39.47900009, -11.93900108, -8.409000397]},
+            {"residue": "ARG:A:65", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [41.34899902, -23.72300148, -15.39500141]},
+            {"residue": "ARG:A:65", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [43.49300003, -22.92000198, -15.28900051]},
+            {"residue": "ASP:A:68", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [42.47600174, -28.20899963, -6.693000317]},
+            {"residue": "ASP:A:68", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [41.31100082, -29.71500015, -7.763000011]},
+            {"residue": "GLU:A:69", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [41.1780014, -25.97500038, -13.76900101]},
+            {"residue": "GLU:A:69", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [40.94100189, -27.07600021, -15.67899895]},
+            {"residue": "LYS:A:70", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [44.77000046, -29.67700005, -10.6989994]},
+            {"residue": "ASP:A:80", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [40.03099823, -13.30700111, -6.019000053]},
+            {"residue": "ASP:A:80", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [38.11299896, -13.72399998, -5.005999565]},
+            {"residue": "ASP:A:84", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [40.35599899, -10.68799877, 1.379000425]},
+            {"residue": "ASP:A:84", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [39.98400116, -8.527999878, 1.482000351]},
+            {"residue": "LYS:A:94", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [31.56599998, -34.20899963, -4.222000122]},
+            {"residue": "GLU:A:95", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [32.29600143, -26.3920002, 3.348999977]},
+            {"residue": "GLU:A:95", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [32.59899902, -28.29700089, 4.428999901]},
+            {"residue": "ARG:A:97", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [20.92099953, -26.01199913, 9.312000275]},
+            {"residue": "ARG:A:97", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [20.66600037, -28.11800003, 8.440999985]},
+            {"residue": "LYS:A:98", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [32.29600143, -22.81500053, 6.427000046]},
+            {"residue": "ARG:A:105", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [30.90399933, -13.93799973, 7.603000164]},
+            {"residue": "ARG:A:105", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [31.5890007, -16.0720005, 7.105999947]}
+          ]
+        },
+        "descriptors": {
+          "reference": {
+            "sets": {
+              "crystal_interface": {"n_set": 25, "n_set_mapped": 25, "n_interface": 25, "n_overlap": 25, "covered_fraction": 1.0, "interface_in_set_fraction": 1.0, "jaccard": 1.0, "receptor_buried_area_in_set_angstrom2": 662.0975357, "receptor_buried_area_in_set_fraction": 0.999641533},
+              "epitope": {"n_set": 22, "n_set_mapped": 22, "n_interface": 25, "n_overlap": 22, "covered_fraction": 1.0, "interface_in_set_fraction": 0.88, "jaccard": 0.88, "receptor_buried_area_in_set_angstrom2": 655.8078052, "receptor_buried_area_in_set_fraction": 0.9901452345}
+            },
+            "partners": {
+              "crystal_peptide": {
+                "min_distance_angstrom": 0.0,
+                "clash_atoms": {"2.2": 113, "3.0": 113},
+                "clash_pairs": {"2.2": 349, "3.0": 773},
+                "shell_fraction": 1.0,
+                "shared_buried_area_angstrom2": 662.3349609,
+                "partner_buried_area_angstrom2": 662.3349609,
+                "pose_buried_area_angstrom2": 662.3349609,
+                "shared_fraction_of_partner": 1.0,
+                "overlap_volume_angstrom3": 4504.290117
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "backend_a-s2",
+        "kind": "docked",
+        "content_hash": "825f3903f3b9fc72c77f3d19ce9d07b494986e3caf56fe3c80652d2c993413a6",
+        "provenance": {"backend": "backend_a", "seed": 2, "offset_angstrom": 0.4, "rotation_degrees": 0.0, "synthetic": true},
+        "native": {"ranking_score": 0.6},
+        "status": "ok",
+        "reason": null,
+        "reasons": {},
+        "independent_of_design": null,
+        "profile": {
+          "n_binder_residues": 13,
+          "binder_type": "peptide",
+          "closures": ["none"],
+          "closure_bonds": [],
+          "residue_classes": ["canonical"],
+          "residue_names": {},
+          "notes": ["the structure has no bond table, so hydrocarbon staples and other side-chain cross-links were not looked for"],
+          "closures_as_expected": true,
+          "differs_from_first": []
+        },
+        "frame": {
+          "status": "ok",
+          "reason": null,
+          "pairing": "number",
+          "n_receptor_residues_pose": 85,
+          "n_receptor_residues_reference": 85,
+          "n_paired": 85,
+          "paired_fraction": 1.0,
+          "sequence_identity": 1.0,
+          "alignment_ambiguous": false,
+          "n_fit_residues": 85,
+          "n_fit_atoms": 85,
+          "n_rejected": 0,
+          "receptor_rmsd_angstrom": 6.896184601e-07,
+          "region_rmsd_angstrom": {"all": 6.896184601e-07, "site": 8.406680011e-07, "crystal_interface": 8.070241218e-07, "epitope": 8.406680011e-07},
+          "region_n_residues": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_n_paired": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_reasons": {},
+          "warnings": [],
+          "transform": {"rotation": [[0.7878640527, -0.5075257976, -0.3488377836], [0.4946367536, 0.1840447803, 0.8493891928], [-0.3668851543, -0.8417512006, 0.3960431793]], "translation": [12.36650259, 3.287189115, -0.3127509507]},
+          "variant": "reference"
+        },
+        "delta_sasa_static": {"delta_sasa": 1481.600464, "sasa_peptide": 1616.008667, "sasa_receptor": 5293.208008, "sasa_complex": 5427.616211},
+        "omega": {
+          "omega_mean_dev": 1.275426229,
+          "omega_max_dev": 3.062393188,
+          "omega_outlier_fraction": 0.0,
+          "omega_outlier_count": 0,
+          "n_bonds_evaluated": 12,
+          "omega_cis_count": 0,
+          "cyclic_closure_detected": false,
+          "cyclic_closure_evaluated": false,
+          "per_residue": [
+            {"res_id": 17, "ins_code": "", "res_name": "GLU", "chain": "B", "omega": -179.7182312, "deviation": 0.2817687988, "is_outlier": false},
+            {"res_id": 18, "ins_code": "", "res_name": "THR", "chain": "B", "omega": -178.771637, "deviation": 1.228363037, "is_outlier": false},
+            {"res_id": 19, "ins_code": "", "res_name": "PHE", "chain": "B", "omega": -179.1048584, "deviation": 0.8951416016, "is_outlier": false},
+            {"res_id": 20, "ins_code": "", "res_name": "SER", "chain": "B", "omega": 177.9062195, "deviation": 2.093780518, "is_outlier": false},
+            {"res_id": 21, "ins_code": "", "res_name": "ASP", "chain": "B", "omega": -177.9636688, "deviation": 2.036331177, "is_outlier": false},
+            {"res_id": 22, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": -176.9376068, "deviation": 3.062393188, "is_outlier": false},
+            {"res_id": 23, "ins_code": "", "res_name": "TRP", "chain": "B", "omega": 179.8538361, "deviation": 0.1461639404, "is_outlier": false},
+            {"res_id": 24, "ins_code": "", "res_name": "LYS", "chain": "B", "omega": 179.0271606, "deviation": 0.9728393555, "is_outlier": false},
+            {"res_id": 25, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": -179.458725, "deviation": 0.5412750244, "is_outlier": false},
+            {"res_id": 26, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": 179.9397583, "deviation": 0.06024169922, "is_outlier": false},
+            {"res_id": 27, "ins_code": "", "res_name": "PRO", "chain": "B", "omega": -177.2233276, "deviation": 2.776672363, "is_outlier": false},
+            {"res_id": 28, "ins_code": "", "res_name": "GLU", "chain": "B", "omega": 178.789856, "deviation": 1.210144043, "is_outlier": false}
+          ]
+        },
+        "coulomb": {
+          "coulomb_energy_kJ": -99.9221227,
+          "coulomb_energy_kcal": -23.88196049,
+          "n_charged_pairs": 18,
+          "n_attractive": 7,
+          "n_repulsive": 11,
+          "n_ionisable_residues_seen": 25,
+          "n_residues_unrecognised": 0,
+          "charged_atoms_peptide": [
+            {"residue": "GLU:B:17", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [32.56866455, -32.67633438, -6.831333637]},
+            {"residue": "GLU:B:17", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [34.25466537, -32.75133514, -8.231334686]},
+            {"residue": "ASP:B:21", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [27.14366722, -29.49133301, -14.23633289]},
+            {"residue": "ASP:B:21", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [28.50466728, -31.19033241, -13.7753334]},
+            {"residue": "LYS:B:24", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [25.02066612, -24.48433495, -15.08833313]},
+            {"residue": "GLU:B:28", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [17.60766602, -22.5593338, -7.787333012]},
+            {"residue": "GLU:B:28", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [15.58166599, -23.17633247, -7.151333332]}
+          ],
+          "charged_atoms_receptor": [
+            {"residue": "GLU:A:25", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [12.43900013, -16.74500084, -6.994999886]},
+            {"residue": "GLU:A:25", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [13.04300022, -15.16300011, -8.409000397]},
+            {"residue": "ARG:A:29", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [18.74300003, -1.577999949, -1.852999926]},
+            {"residue": "ARG:A:29", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [16.85300064, -1.509000063, -0.560000062]},
+            {"residue": "LYS:A:31", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [25.56100082, -8.095999718, 7.462999344]},
+            {"residue": "LYS:A:36", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [36.28300095, -2.868000507, -1.654999971]},
+            {"residue": "LYS:A:39", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [26.39100075, -1.132999778, -8.324000359]},
+            {"residue": "LYS:A:45", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [18.15500069, -6.739999771, -10.06400013]},
+            {"residue": "ASP:A:46", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [22.35400009, -1.690999746, -2.633999825]},
+            {"residue": "ASP:A:46", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [21.47500038, 0.3360001445, -2.709000111]},
+            {"residue": "LYS:A:51", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [13.72599983, -19.09700012, -9.045000076]},
+            {"residue": "GLU:A:52", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [18.40099907, -9.331000328, -9.194999695]},
+            {"residue": "GLU:A:52", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [18.77300072, -9.429999352, -11.35900021]},
+            {"residue": "LYS:A:64", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [39.47900009, -11.93900013, -8.408999443]},
+            {"residue": "ARG:A:65", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [41.34899902, -23.72299957, -15.39500046]},
+            {"residue": "ARG:A:65", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [43.49300003, -22.92000008, -15.28899956]},
+            {"residue": "ASP:A:68", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [42.47600174, -28.20899963, -6.69299984]},
+            {"residue": "ASP:A:68", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [41.31100082, -29.71500015, -7.763000011]},
+            {"residue": "GLU:A:69", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [41.1780014, -25.97500038, -13.76900005]},
+            {"residue": "GLU:A:69", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [40.94100189, -27.07600021, -15.6789999]},
+            {"residue": "LYS:A:70", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [44.77000046, -29.67700005, -10.69900036]},
+            {"residue": "ASP:A:80", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [40.03099823, -13.30700016, -6.01900053]},
+            {"residue": "ASP:A:80", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [38.11299896, -13.72399998, -5.005999565]},
+            {"residue": "ASP:A:84", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [40.35599899, -10.68800068, 1.378998995]},
+            {"residue": "ASP:A:84", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [39.98400116, -8.527999878, 1.482000589]},
+            {"residue": "LYS:A:94", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [31.56599998, -34.20899963, -4.222000599]},
+            {"residue": "GLU:A:95", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [32.29600143, -26.3920002, 3.348999023]},
+            {"residue": "GLU:A:95", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [32.59899902, -28.29700089, 4.429000378]},
+            {"residue": "ARG:A:97", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [20.92099953, -26.01199913, 9.312000275]},
+            {"residue": "ARG:A:97", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [20.66600037, -28.11800003, 8.440999985]},
+            {"residue": "LYS:A:98", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [32.29600143, -22.81500053, 6.426999569]},
+            {"residue": "ARG:A:105", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [30.90399933, -13.93800068, 7.60299921]},
+            {"residue": "ARG:A:105", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [31.5890007, -16.0720005, 7.105999947]}
+          ]
+        },
+        "descriptors": {
+          "reference": {
+            "sets": {
+              "crystal_interface": {"n_set": 25, "n_set_mapped": 25, "n_interface": 25, "n_overlap": 25, "covered_fraction": 1.0, "interface_in_set_fraction": 1.0, "jaccard": 1.0, "receptor_buried_area_in_set_angstrom2": 663.7367509, "receptor_buried_area_in_set_fraction": 1.000000085},
+              "epitope": {"n_set": 22, "n_set_mapped": 22, "n_interface": 25, "n_overlap": 22, "covered_fraction": 1.0, "interface_in_set_fraction": 0.88, "jaccard": 0.88, "receptor_buried_area_in_set_angstrom2": 657.4470204, "receptor_buried_area_in_set_fraction": 0.9905238418}
+            },
+            "partners": {
+              "crystal_peptide": {
+                "min_distance_angstrom": 0.3999993006,
+                "clash_atoms": {"2.2": 113, "3.0": 113},
+                "clash_pairs": {"2.2": 406, "3.0": 777},
+                "shell_fraction": 1.0,
+                "shared_buried_area_angstrom2": 648.8632812,
+                "partner_buried_area_angstrom2": 662.3349609,
+                "pose_buried_area_angstrom2": 663.7366943,
+                "shared_fraction_of_partner": 0.9796603222,
+                "overlap_volume_angstrom3": 4106.029504
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "backend_a-s3",
+        "kind": "docked",
+        "content_hash": "8ae3c98d275a78882e90937742195892f73f42ffe3514948ce4b720f021577ae",
+        "provenance": {"backend": "backend_a", "seed": 3, "offset_angstrom": 0.8, "rotation_degrees": 0.0, "synthetic": true},
+        "native": {"ranking_score": 0.65},
+        "status": "ok",
+        "reason": null,
+        "reasons": {},
+        "independent_of_design": null,
+        "profile": {
+          "n_binder_residues": 13,
+          "binder_type": "peptide",
+          "closures": ["none"],
+          "closure_bonds": [],
+          "residue_classes": ["canonical"],
+          "residue_names": {},
+          "notes": ["the structure has no bond table, so hydrocarbon staples and other side-chain cross-links were not looked for"],
+          "closures_as_expected": true,
+          "differs_from_first": []
+        },
+        "frame": {
+          "status": "ok",
+          "reason": null,
+          "pairing": "number",
+          "n_receptor_residues_pose": 85,
+          "n_receptor_residues_reference": 85,
+          "n_paired": 85,
+          "paired_fraction": 1.0,
+          "sequence_identity": 1.0,
+          "alignment_ambiguous": false,
+          "n_fit_residues": 85,
+          "n_fit_atoms": 85,
+          "n_rejected": 0,
+          "receptor_rmsd_angstrom": 9.824007445e-07,
+          "region_rmsd_angstrom": {"all": 9.824007445e-07, "site": 1.097974666e-06, "crystal_interface": 1.051095523e-06, "epitope": 1.097974666e-06},
+          "region_n_residues": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_n_paired": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_reasons": {},
+          "warnings": [],
+          "transform": {"rotation": [[-0.9965303903, -0.08279693158, -0.008476399041], [-0.08206165594, 0.9604341239, 0.2661431537], [-0.0138948136, 0.2659153281, -0.9638962457]], "translation": [19.19902485, 8.500354254, 21.45826924]},
+          "variant": "reference"
+        },
+        "delta_sasa_static": {"delta_sasa": 1495.539917, "sasa_peptide": 1616.008667, "sasa_receptor": 5293.208008, "sasa_complex": 5413.676758},
+        "omega": {
+          "omega_mean_dev": 1.275442759,
+          "omega_max_dev": 3.062561035,
+          "omega_outlier_fraction": 0.0,
+          "omega_outlier_count": 0,
+          "n_bonds_evaluated": 12,
+          "omega_cis_count": 0,
+          "cyclic_closure_detected": false,
+          "cyclic_closure_evaluated": false,
+          "per_residue": [
+            {"res_id": 17, "ins_code": "", "res_name": "GLU", "chain": "B", "omega": -179.7182617, "deviation": 0.2817382812, "is_outlier": false},
+            {"res_id": 18, "ins_code": "", "res_name": "THR", "chain": "B", "omega": -178.7715759, "deviation": 1.228424072, "is_outlier": false},
+            {"res_id": 19, "ins_code": "", "res_name": "PHE", "chain": "B", "omega": -179.1047516, "deviation": 0.8952484131, "is_outlier": false},
+            {"res_id": 20, "ins_code": "", "res_name": "SER", "chain": "B", "omega": 177.90625, "deviation": 2.09375, "is_outlier": false},
+            {"res_id": 21, "ins_code": "", "res_name": "ASP", "chain": "B", "omega": -177.9636078, "deviation": 2.036392212, "is_outlier": false},
+            {"res_id": 22, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": -176.937439, "deviation": 3.062561035, "is_outlier": false},
+            {"res_id": 23, "ins_code": "", "res_name": "TRP", "chain": "B", "omega": 179.8539581, "deviation": 0.1460418701, "is_outlier": false},
+            {"res_id": 24, "ins_code": "", "res_name": "LYS", "chain": "B", "omega": 179.0271912, "deviation": 0.9728088379, "is_outlier": false},
+            {"res_id": 25, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": -179.4587402, "deviation": 0.5412597656, "is_outlier": false},
+            {"res_id": 26, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": 179.9396973, "deviation": 0.06030273438, "is_outlier": false},
+            {"res_id": 27, "ins_code": "", "res_name": "PRO", "chain": "B", "omega": -177.2232971, "deviation": 2.776702881, "is_outlier": false},
+            {"res_id": 28, "ins_code": "", "res_name": "GLU", "chain": "B", "omega": 178.789917, "deviation": 1.210083008, "is_outlier": false}
+          ]
+        },
+        "coulomb": {
+          "coulomb_energy_kJ": -94.09583219,
+          "coulomb_energy_kcal": -22.48944364,
+          "n_charged_pairs": 19,
+          "n_attractive": 7,
+          "n_repulsive": 12,
+          "n_ionisable_residues_seen": 25,
+          "n_residues_unrecognised": 0,
+          "charged_atoms_peptide": [
+            {"residue": "GLU:B:17", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [32.83533096, -32.80966568, -6.564667225]},
+            {"residue": "GLU:B:17", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [34.52133179, -32.88466644, -7.96466732]},
+            {"residue": "ASP:B:21", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [27.41033363, -29.62466621, -13.96966648]},
+            {"residue": "ASP:B:21", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [28.77133369, -31.32366562, -13.50866699]},
+            {"residue": "LYS:B:24", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [25.28733253, -24.61766434, -14.82166672]},
+            {"residue": "GLU:B:28", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [17.87433243, -22.6926651, -7.520666122]},
+            {"residue": "GLU:B:28", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [15.84833241, -23.30966377, -6.884666443]}
+          ],
+          "charged_atoms_receptor": [
+            {"residue": "GLU:A:25", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [12.43900013, -16.74500084, -6.994999409]},
+            {"residue": "GLU:A:25", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [13.04300022, -15.16299915, -8.40900135]},
+            {"residue": "ARG:A:29", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [18.74300003, -1.577999353, -1.852999926]},
+            {"residue": "ARG:A:29", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [16.85300064, -1.508999228, -0.56000036]},
+            {"residue": "LYS:A:31", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [25.56100082, -8.095999718, 7.462999344]},
+            {"residue": "LYS:A:36", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [36.28300095, -2.868000031, -1.655000448]},
+            {"residue": "LYS:A:39", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [26.39100075, -1.132998943, -8.324000359]},
+            {"residue": "LYS:A:45", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [18.15500069, -6.739999294, -10.06400013]},
+            {"residue": "ASP:A:46", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [22.35400009, -1.691000462, -2.633999348]},
+            {"residue": "ASP:A:46", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [21.47500038, 0.3359999359, -2.709001064]},
+            {"residue": "LYS:A:51", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [13.72599888, -19.09700012, -9.044999123]},
+            {"residue": "GLU:A:52", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [18.40099907, -9.331000328, -9.194999695]},
+            {"residue": "GLU:A:52", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [18.77300072, -9.430000305, -11.35900116]},
+            {"residue": "LYS:A:64", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [39.47900009, -11.93900013, -8.409000397]},
+            {"residue": "ARG:A:65", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [41.34899902, -23.72299767, -15.39500046]},
+            {"residue": "ARG:A:65", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [43.49300003, -22.91999817, -15.28900051]},
+            {"residue": "ASP:A:68", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [42.47600174, -28.20899963, -6.692999363]},
+            {"residue": "ASP:A:68", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [41.31100082, -29.71499825, -7.762999058]},
+            {"residue": "GLU:A:69", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [41.1780014, -25.97500038, -13.7689991]},
+            {"residue": "GLU:A:69", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [40.94100189, -27.07600021, -15.67900085]},
+            {"residue": "LYS:A:70", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [44.77000046, -29.67700005, -10.69900131]},
+            {"residue": "ASP:A:80", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [40.03099823, -13.30699921, -6.0189991]},
+            {"residue": "ASP:A:80", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [38.11299896, -13.72399902, -5.006000042]},
+            {"residue": "ASP:A:84", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [40.35599899, -10.68799877, 1.37899971]},
+            {"residue": "ASP:A:84", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [39.98400116, -8.527999878, 1.481999993]},
+            {"residue": "LYS:A:94", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [31.56599998, -34.20899963, -4.222000122]},
+            {"residue": "GLU:A:95", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [32.29600143, -26.39199829, 3.348999977]},
+            {"residue": "GLU:A:95", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [32.59899902, -28.29700089, 4.428999901]},
+            {"residue": "ARG:A:97", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [20.92099953, -26.01199913, 9.312000275]},
+            {"residue": "ARG:A:97", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [20.66600037, -28.11799812, 8.440999985]},
+            {"residue": "LYS:A:98", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [32.29600143, -22.81499863, 6.427000523]},
+            {"residue": "ARG:A:105", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [30.90399933, -13.93799973, 7.603000164]},
+            {"residue": "ARG:A:105", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [31.5890007, -16.0720005, 7.105999947]}
+          ]
+        },
+        "descriptors": {
+          "reference": {
+            "sets": {
+              "crystal_interface": {"n_set": 25, "n_set_mapped": 25, "n_interface": 24, "n_overlap": 24, "covered_fraction": 0.96, "interface_in_set_fraction": 1.0, "jaccard": 0.96, "receptor_buried_area_in_set_angstrom2": 662.7213231, "receptor_buried_area_in_set_fraction": 1.000000014},
+              "epitope": {
+                "n_set": 22,
+                "n_set_mapped": 22,
+                "n_interface": 24,
+                "n_overlap": 22,
+                "covered_fraction": 1.0,
+                "interface_in_set_fraction": 0.9166666667,
+                "jaccard": 0.9166666667,
+                "receptor_buried_area_in_set_angstrom2": 656.4315926,
+                "receptor_buried_area_in_set_fraction": 0.9905092522
+              }
+            },
+            "partners": {
+              "crystal_peptide": {
+                "min_distance_angstrom": 0.5006918745,
+                "clash_atoms": {"2.2": 113, "3.0": 113},
+                "clash_pairs": {"2.2": 438, "3.0": 749},
+                "shell_fraction": 1.0,
+                "shared_buried_area_angstrom2": 634.0046387,
+                "partner_buried_area_angstrom2": 662.3349609,
+                "pose_buried_area_angstrom2": 662.7213135,
+                "shared_fraction_of_partner": 0.9572265939,
+                "overlap_volume_angstrom3": 3691.522644
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "backend_b-s1",
+        "kind": "docked",
+        "content_hash": "a0f94d100a3890261bdfa76265fe6fb795197d126489a7953543d2b83be419d7",
+        "provenance": {"backend": "backend_b", "seed": 1, "offset_angstrom": 2.0, "rotation_degrees": 0.0, "synthetic": true},
+        "native": {"ranking_score": 0.7},
+        "status": "ok",
+        "reason": null,
+        "reasons": {},
+        "independent_of_design": null,
+        "profile": {
+          "n_binder_residues": 13,
+          "binder_type": "peptide",
+          "closures": ["none"],
+          "closure_bonds": [],
+          "residue_classes": ["canonical"],
+          "residue_names": {},
+          "notes": ["the structure has no bond table, so hydrocarbon staples and other side-chain cross-links were not looked for"],
+          "closures_as_expected": true,
+          "differs_from_first": []
+        },
+        "frame": {
+          "status": "ok",
+          "reason": null,
+          "pairing": "number",
+          "n_receptor_residues_pose": 85,
+          "n_receptor_residues_reference": 85,
+          "n_paired": 85,
+          "paired_fraction": 1.0,
+          "sequence_identity": 1.0,
+          "alignment_ambiguous": false,
+          "n_fit_residues": 85,
+          "n_fit_atoms": 85,
+          "n_rejected": 0,
+          "receptor_rmsd_angstrom": 1.250901323e-06,
+          "region_rmsd_angstrom": {"all": 1.250901323e-06, "site": 1.328843487e-06, "crystal_interface": 1.305873435e-06, "epitope": 1.328843487e-06},
+          "region_n_residues": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_n_paired": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_reasons": {},
+          "warnings": [],
+          "transform": {"rotation": [[0.8533205921, 0.04730789664, -0.5192359098], [0.461994313, 0.3929992676, 0.7950552373], [0.2416717233, -0.9183210433, 0.3134983885]], "translation": [1.882189125, 12.13043151, 26.41565356]},
+          "variant": "reference"
+        },
+        "delta_sasa_static": {"delta_sasa": 1511.890015, "sasa_peptide": 1616.008667, "sasa_receptor": 5293.208008, "sasa_complex": 5397.32666},
+        "omega": {
+          "omega_mean_dev": 1.275458018,
+          "omega_max_dev": 3.062469482,
+          "omega_outlier_fraction": 0.0,
+          "omega_outlier_count": 0,
+          "n_bonds_evaluated": 12,
+          "omega_cis_count": 0,
+          "cyclic_closure_detected": false,
+          "cyclic_closure_evaluated": false,
+          "per_residue": [
+            {"res_id": 17, "ins_code": "", "res_name": "GLU", "chain": "B", "omega": -179.7181854, "deviation": 0.2818145752, "is_outlier": false},
+            {"res_id": 18, "ins_code": "", "res_name": "THR", "chain": "B", "omega": -178.7716522, "deviation": 1.228347778, "is_outlier": false},
+            {"res_id": 19, "ins_code": "", "res_name": "PHE", "chain": "B", "omega": -179.1047058, "deviation": 0.8952941895, "is_outlier": false},
+            {"res_id": 20, "ins_code": "", "res_name": "SER", "chain": "B", "omega": 177.9062195, "deviation": 2.093780518, "is_outlier": false},
+            {"res_id": 21, "ins_code": "", "res_name": "ASP", "chain": "B", "omega": -177.9635162, "deviation": 2.036483765, "is_outlier": false},
+            {"res_id": 22, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": -176.9375305, "deviation": 3.062469482, "is_outlier": false},
+            {"res_id": 23, "ins_code": "", "res_name": "TRP", "chain": "B", "omega": 179.8538361, "deviation": 0.1461639404, "is_outlier": false},
+            {"res_id": 24, "ins_code": "", "res_name": "LYS", "chain": "B", "omega": 179.0272217, "deviation": 0.9727783203, "is_outlier": false},
+            {"res_id": 25, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": -179.4586487, "deviation": 0.5413513184, "is_outlier": false},
+            {"res_id": 26, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": 179.9396667, "deviation": 0.06033325195, "is_outlier": false},
+            {"res_id": 27, "ins_code": "", "res_name": "PRO", "chain": "B", "omega": -177.2233887, "deviation": 2.776611328, "is_outlier": false},
+            {"res_id": 28, "ins_code": "", "res_name": "GLU", "chain": "B", "omega": 178.7899323, "deviation": 1.210067749, "is_outlier": false}
+          ]
+        },
+        "coulomb": {
+          "coulomb_energy_kJ": -94.97812536,
+          "coulomb_energy_kcal": -22.70031677,
+          "n_charged_pairs": 19,
+          "n_attractive": 7,
+          "n_repulsive": 12,
+          "n_ionisable_residues_seen": 25,
+          "n_residues_unrecognised": 0,
+          "charged_atoms_peptide": [
+            {"residue": "GLU:B:17", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [33.63533401, -33.20966721, -5.764667034]},
+            {"residue": "GLU:B:17", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [35.32133102, -33.28466797, -7.16466713]},
+            {"residue": "ASP:B:21", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [28.21033478, -30.02466774, -13.16966724]},
+            {"residue": "ASP:B:21", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [29.57133484, -31.72366714, -12.7086668]},
+            {"residue": "LYS:B:24", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [26.08733368, -25.01766777, -14.02166653]},
+            {"residue": "GLU:B:28", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [18.67433357, -23.09266663, -6.720666409]},
+            {"residue": "GLU:B:28", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [16.6483345, -23.70966721, -6.084668159]}
+          ],
+          "charged_atoms_receptor": [
+            {"residue": "GLU:A:25", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [12.43900108, -16.74500275, -6.995000839]},
+            {"residue": "GLU:A:25", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [13.04300022, -15.16300106, -8.409000397]},
+            {"residue": "ARG:A:29", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [18.74300003, -1.578000546, -1.853000283]},
+            {"residue": "ARG:A:29", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [16.85300064, -1.508999825, -0.5600007772]},
+            {"residue": "LYS:A:31", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [25.56100082, -8.095999718, 7.462999821]},
+            {"residue": "LYS:A:36", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [36.28300095, -2.867999792, -1.654999733]},
+            {"residue": "LYS:A:39", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [26.39100075, -1.13300097, -8.324000359]},
+            {"residue": "LYS:A:45", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [18.15500069, -6.739999294, -10.06399918]},
+            {"residue": "ASP:A:46", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [22.35400009, -1.691000819, -2.633999586]},
+            {"residue": "ASP:A:46", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [21.47500038, 0.3360000551, -2.708999634]},
+            {"residue": "LYS:A:51", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [13.72600079, -19.09700012, -9.04500103]},
+            {"residue": "GLU:A:52", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [18.40099907, -9.331000328, -9.195000648]},
+            {"residue": "GLU:A:52", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [18.77300072, -9.430001259, -11.35900116]},
+            {"residue": "LYS:A:64", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [39.47900009, -11.93900013, -8.409000397]},
+            {"residue": "ARG:A:65", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [41.34899902, -23.72300148, -15.39500141]},
+            {"residue": "ARG:A:65", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [43.49300003, -22.92000008, -15.28900051]},
+            {"residue": "ASP:A:68", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [42.47600174, -28.20899963, -6.693000317]},
+            {"residue": "ASP:A:68", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [41.31100082, -29.71500015, -7.763000011]},
+            {"residue": "GLU:A:69", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [41.1780014, -25.97499847, -13.76900005]},
+            {"residue": "GLU:A:69", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [40.94100189, -27.07599831, -15.6789999]},
+            {"residue": "LYS:A:70", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [44.77000046, -29.67700005, -10.69900131]},
+            {"residue": "ASP:A:80", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [40.03099823, -13.30700111, -6.01900053]},
+            {"residue": "ASP:A:80", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [38.11299896, -13.72400093, -5.005999565]},
+            {"residue": "ASP:A:84", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [40.35599899, -10.68799782, 1.379000306]},
+            {"residue": "ASP:A:84", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [39.98400116, -8.527997971, 1.481999755]},
+            {"residue": "LYS:A:94", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [31.56600189, -34.20899963, -4.222000599]},
+            {"residue": "GLU:A:95", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [32.29600143, -26.3920002, 3.3489995]},
+            {"residue": "GLU:A:95", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [32.59899902, -28.29700089, 4.429000378]},
+            {"residue": "ARG:A:97", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [20.92099953, -26.01199913, 9.312000275]},
+            {"residue": "ARG:A:97", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [20.66600037, -28.11800003, 8.440999985]},
+            {"residue": "LYS:A:98", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [32.29600143, -22.81500053, 6.426999569]},
+            {"residue": "ARG:A:105", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [30.90399933, -13.93799877, 7.602999687]},
+            {"residue": "ARG:A:105", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [31.5890007, -16.0720005, 7.106000423]}
+          ]
+        },
+        "descriptors": {
+          "reference": {
+            "sets": {
+              "crystal_interface": {
+                "n_set": 25,
+                "n_set_mapped": 25,
+                "n_interface": 25,
+                "n_overlap": 24,
+                "covered_fraction": 0.96,
+                "interface_in_set_fraction": 0.96,
+                "jaccard": 0.9230769231,
+                "receptor_buried_area_in_set_angstrom2": 650.4756601,
+                "receptor_buried_area_in_set_fraction": 0.9962195359
+              },
+              "epitope": {"n_set": 22, "n_set_mapped": 22, "n_interface": 25, "n_overlap": 22, "covered_fraction": 1.0, "interface_in_set_fraction": 0.88, "jaccard": 0.88, "receptor_buried_area_in_set_angstrom2": 644.4375188, "receptor_buried_area_in_set_fraction": 0.9869719735}
+            },
+            "partners": {
+              "crystal_peptide": {
+                "min_distance_angstrom": 0.3453431726,
+                "clash_atoms": {"2.2": 113, "3.0": 113},
+                "clash_pairs": {"2.2": 354, "3.0": 662},
+                "shell_fraction": 1.0,
+                "shared_buried_area_angstrom2": 582.7730713,
+                "partner_buried_area_angstrom2": 662.3349609,
+                "pose_buried_area_angstrom2": 652.9440918,
+                "shared_fraction_of_partner": 0.8798766571,
+                "overlap_volume_angstrom3": 2385.429001
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "backend_b-s2",
+        "kind": "docked",
+        "content_hash": "596602b4c1f6cacbbcd89d4a5777cd824b329cea26fc910e7cdcadd718564f7a",
+        "provenance": {"backend": "backend_b", "seed": 2, "offset_angstrom": 2.3, "rotation_degrees": 0.0, "synthetic": true},
+        "native": {"ranking_score": 0.75},
+        "status": "ok",
+        "reason": null,
+        "reasons": {},
+        "independent_of_design": null,
+        "profile": {
+          "n_binder_residues": 13,
+          "binder_type": "peptide",
+          "closures": ["none"],
+          "closure_bonds": [],
+          "residue_classes": ["canonical"],
+          "residue_names": {},
+          "notes": ["the structure has no bond table, so hydrocarbon staples and other side-chain cross-links were not looked for"],
+          "closures_as_expected": true,
+          "differs_from_first": []
+        },
+        "frame": {
+          "status": "ok",
+          "reason": null,
+          "pairing": "number",
+          "n_receptor_residues_pose": 85,
+          "n_receptor_residues_reference": 85,
+          "n_paired": 85,
+          "paired_fraction": 1.0,
+          "sequence_identity": 1.0,
+          "alignment_ambiguous": false,
+          "n_fit_residues": 85,
+          "n_fit_atoms": 85,
+          "n_rejected": 0,
+          "receptor_rmsd_angstrom": 1.395972231e-06,
+          "region_rmsd_angstrom": {"all": 1.395972231e-06, "site": 1.361520215e-06, "crystal_interface": 1.372811326e-06, "epitope": 1.361520215e-06},
+          "region_n_residues": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_n_paired": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_reasons": {},
+          "warnings": [],
+          "transform": {"rotation": [[-0.6770518597, 0.6415165155, 0.3606346345], [0.3881517259, 0.7276153228, -0.5656095647], [-0.6252511631, -0.2429660519, -0.7416390501]], "translation": [-15.7034835, -10.6499022, 22.76555769]},
+          "variant": "reference"
+        },
+        "delta_sasa_static": {"delta_sasa": 1499.572144, "sasa_peptide": 1616.008667, "sasa_receptor": 5293.208008, "sasa_complex": 5409.644531},
+        "omega": {
+          "omega_mean_dev": 1.27545929,
+          "omega_max_dev": 3.062347412,
+          "omega_outlier_fraction": 0.0,
+          "omega_outlier_count": 0,
+          "n_bonds_evaluated": 12,
+          "omega_cis_count": 0,
+          "cyclic_closure_detected": false,
+          "cyclic_closure_evaluated": false,
+          "per_residue": [
+            {"res_id": 17, "ins_code": "", "res_name": "GLU", "chain": "B", "omega": -179.7182617, "deviation": 0.2817382812, "is_outlier": false},
+            {"res_id": 18, "ins_code": "", "res_name": "THR", "chain": "B", "omega": -178.7717896, "deviation": 1.228210449, "is_outlier": false},
+            {"res_id": 19, "ins_code": "", "res_name": "PHE", "chain": "B", "omega": -179.1047668, "deviation": 0.8952331543, "is_outlier": false},
+            {"res_id": 20, "ins_code": "", "res_name": "SER", "chain": "B", "omega": 177.9062347, "deviation": 2.093765259, "is_outlier": false},
+            {"res_id": 21, "ins_code": "", "res_name": "ASP", "chain": "B", "omega": -177.9634857, "deviation": 2.036514282, "is_outlier": false},
+            {"res_id": 22, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": -176.9376526, "deviation": 3.062347412, "is_outlier": false},
+            {"res_id": 23, "ins_code": "", "res_name": "TRP", "chain": "B", "omega": 179.8539276, "deviation": 0.1460723877, "is_outlier": false},
+            {"res_id": 24, "ins_code": "", "res_name": "LYS", "chain": "B", "omega": 179.026947, "deviation": 0.9730529785, "is_outlier": false},
+            {"res_id": 25, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": -179.458847, "deviation": 0.5411529541, "is_outlier": false},
+            {"res_id": 26, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": 179.9395752, "deviation": 0.06042480469, "is_outlier": false},
+            {"res_id": 27, "ins_code": "", "res_name": "PRO", "chain": "B", "omega": -177.2232666, "deviation": 2.776733398, "is_outlier": false},
+            {"res_id": 28, "ins_code": "", "res_name": "GLU", "chain": "B", "omega": 178.7897339, "deviation": 1.210266113, "is_outlier": false}
+          ]
+        },
+        "coulomb": {
+          "coulomb_energy_kJ": -100.9867969,
+          "coulomb_energy_kcal": -24.13642372,
+          "n_charged_pairs": 18,
+          "n_attractive": 7,
+          "n_repulsive": 11,
+          "n_ionisable_residues_seen": 25,
+          "n_residues_unrecognised": 0,
+          "charged_atoms_peptide": [
+            {"residue": "GLU:B:17", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [33.83533096, -33.30966568, -5.564666271]},
+            {"residue": "GLU:B:17", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [35.52133179, -33.38466644, -6.964666367]},
+            {"residue": "ASP:B:21", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [28.41033363, -30.12466621, -12.96966553]},
+            {"residue": "ASP:B:21", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [29.77133369, -31.82366562, -12.50866795]},
+            {"residue": "LYS:B:24", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [26.28733444, -25.11766624, -13.82166767]},
+            {"residue": "GLU:B:28", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [18.87433243, -23.19266701, -6.520666122]},
+            {"residue": "GLU:B:28", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [16.84833336, -23.80966568, -5.884666443]}
+          ],
+          "charged_atoms_receptor": [
+            {"residue": "GLU:A:25", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [12.43899918, -16.74499893, -6.994998932]},
+            {"residue": "GLU:A:25", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [13.04300022, -15.16299915, -8.409000397]},
+            {"residue": "ARG:A:29", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [18.74300003, -1.578000188, -1.853000045]},
+            {"residue": "ARG:A:29", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [16.85300255, -1.50899899, -0.560000658]},
+            {"residue": "LYS:A:31", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [25.56100082, -8.096001625, 7.462999821]},
+            {"residue": "LYS:A:36", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [36.28300095, -2.868000269, -1.654999971]},
+            {"residue": "LYS:A:39", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [26.39100075, -1.133000612, -8.324002266]},
+            {"residue": "LYS:A:45", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [18.15499878, -6.739999771, -10.06399918]},
+            {"residue": "ASP:A:46", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [22.35400009, -1.690999031, -2.633999825]},
+            {"residue": "ASP:A:46", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [21.47500229, 0.3360018134, -2.709000111]},
+            {"residue": "LYS:A:51", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [13.72599888, -19.09700012, -9.045000076]},
+            {"residue": "GLU:A:52", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [18.40099907, -9.330999374, -9.194998741]},
+            {"residue": "GLU:A:52", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [18.77300072, -9.429998398, -11.35899925]},
+            {"residue": "LYS:A:64", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [39.47900009, -11.93900108, -8.408999443]},
+            {"residue": "ARG:A:65", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [41.34899902, -23.72299957, -15.39499855]},
+            {"residue": "ARG:A:65", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [43.49300003, -22.92000008, -15.2889986]},
+            {"residue": "ASP:A:68", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [42.47600174, -28.20899773, -6.692999363]},
+            {"residue": "ASP:A:68", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [41.31100082, -29.71500015, -7.763000011]},
+            {"residue": "GLU:A:69", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [41.1780014, -25.97499847, -13.7689991]},
+            {"residue": "GLU:A:69", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [40.94100189, -27.07599831, -15.67899895]},
+            {"residue": "LYS:A:70", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [44.77000046, -29.67700195, -10.69900131]},
+            {"residue": "ASP:A:80", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [40.03099823, -13.30700111, -6.019000053]},
+            {"residue": "ASP:A:80", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [38.11299896, -13.72400093, -5.005999088]},
+            {"residue": "ASP:A:84", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [40.35599899, -10.68799973, 1.378997803]},
+            {"residue": "ASP:A:84", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [39.98400116, -8.527999878, 1.482000113]},
+            {"residue": "LYS:A:94", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [31.56599998, -34.20899963, -4.222001076]},
+            {"residue": "GLU:A:95", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [32.29600143, -26.39199829, 3.3489995]},
+            {"residue": "GLU:A:95", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [32.59899902, -28.29700089, 4.429000378]},
+            {"residue": "ARG:A:97", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [20.92099953, -26.01199913, 9.312001228]},
+            {"residue": "ARG:A:97", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [20.66600037, -28.11800003, 8.441000938]},
+            {"residue": "LYS:A:98", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [32.29600143, -22.81500053, 6.427000523]},
+            {"residue": "ARG:A:105", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [30.90399933, -13.93799973, 7.603000164]},
+            {"residue": "ARG:A:105", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [31.5890007, -16.0720005, 7.106000423]}
+          ]
+        },
+        "descriptors": {
+          "reference": {
+            "sets": {
+              "crystal_interface": {
+                "n_set": 25,
+                "n_set_mapped": 25,
+                "n_interface": 25,
+                "n_overlap": 24,
+                "covered_fraction": 0.96,
+                "interface_in_set_fraction": 0.96,
+                "jaccard": 0.9230769231,
+                "receptor_buried_area_in_set_angstrom2": 640.311737,
+                "receptor_buried_area_in_set_fraction": 0.9954174257
+              },
+              "epitope": {"n_set": 22, "n_set_mapped": 22, "n_interface": 25, "n_overlap": 22, "covered_fraction": 1.0, "interface_in_set_fraction": 0.88, "jaccard": 0.88, "receptor_buried_area_in_set_angstrom2": 634.0220064, "receptor_buried_area_in_set_fraction": 0.9856395206}
+            },
+            "partners": {
+              "crystal_peptide": {
+                "min_distance_angstrom": 0.1208244681,
+                "clash_atoms": {"2.2": 84, "3.0": 113},
+                "clash_pairs": {"2.2": 223, "3.0": 634},
+                "shell_fraction": 1.0,
+                "shared_buried_area_angstrom2": 563.9446411,
+                "partner_buried_area_angstrom2": 662.3349609,
+                "pose_buried_area_angstrom2": 643.2595215,
+                "shared_fraction_of_partner": 0.8514493034,
+                "overlap_volume_angstrom3": 2094.539471
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "backend_b-s3",
+        "kind": "docked",
+        "content_hash": "b405c668f5e84f4b55049d7e74ad22cfa46fcedffd941e935783f325fff8f2b9",
+        "provenance": {"backend": "backend_b", "seed": 3, "offset_angstrom": 2.9, "rotation_degrees": 0.0, "synthetic": true},
+        "native": {"ranking_score": 0.8},
+        "status": "ok",
+        "reason": null,
+        "reasons": {},
+        "independent_of_design": null,
+        "profile": {
+          "n_binder_residues": 13,
+          "binder_type": "peptide",
+          "closures": ["none"],
+          "closure_bonds": [],
+          "residue_classes": ["canonical"],
+          "residue_names": {},
+          "notes": ["the structure has no bond table, so hydrocarbon staples and other side-chain cross-links were not looked for"],
+          "closures_as_expected": true,
+          "differs_from_first": []
+        },
+        "frame": {
+          "status": "ok",
+          "reason": null,
+          "pairing": "number",
+          "n_receptor_residues_pose": 85,
+          "n_receptor_residues_reference": 85,
+          "n_paired": 85,
+          "paired_fraction": 1.0,
+          "sequence_identity": 1.0,
+          "alignment_ambiguous": false,
+          "n_fit_residues": 85,
+          "n_fit_atoms": 85,
+          "n_rejected": 0,
+          "receptor_rmsd_angstrom": 6.969735783e-07,
+          "region_rmsd_angstrom": {"all": 6.969735783e-07, "site": 6.484509363e-07, "crystal_interface": 6.649986604e-07, "epitope": 6.484509363e-07},
+          "region_n_residues": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_n_paired": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_reasons": {},
+          "warnings": [],
+          "transform": {"rotation": [[-0.1774078624, -0.305801048, 0.9354208515], [0.9696006448, 0.1084539412, 0.2193452352], [-0.1685260808, 0.9458982301, 0.2772643115]], "translation": [10.80688404, -9.591477594, -19.12170416]},
+          "variant": "reference"
+        },
+        "delta_sasa_static": {"delta_sasa": 1469.356323, "sasa_peptide": 1616.008667, "sasa_receptor": 5293.208008, "sasa_complex": 5439.860352},
+        "omega": {
+          "omega_mean_dev": 1.275436401,
+          "omega_max_dev": 3.062515259,
+          "omega_outlier_fraction": 0.0,
+          "omega_outlier_count": 0,
+          "n_bonds_evaluated": 12,
+          "omega_cis_count": 0,
+          "cyclic_closure_detected": false,
+          "cyclic_closure_evaluated": false,
+          "per_residue": [
+            {"res_id": 17, "ins_code": "", "res_name": "GLU", "chain": "B", "omega": -179.7182159, "deviation": 0.2817840576, "is_outlier": false},
+            {"res_id": 18, "ins_code": "", "res_name": "THR", "chain": "B", "omega": -178.7717743, "deviation": 1.228225708, "is_outlier": false},
+            {"res_id": 19, "ins_code": "", "res_name": "PHE", "chain": "B", "omega": -179.1046753, "deviation": 0.895324707, "is_outlier": false},
+            {"res_id": 20, "ins_code": "", "res_name": "SER", "chain": "B", "omega": 177.9061432, "deviation": 2.093856812, "is_outlier": false},
+            {"res_id": 21, "ins_code": "", "res_name": "ASP", "chain": "B", "omega": -177.963562, "deviation": 2.036437988, "is_outlier": false},
+            {"res_id": 22, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": -176.9374847, "deviation": 3.062515259, "is_outlier": false},
+            {"res_id": 23, "ins_code": "", "res_name": "TRP", "chain": "B", "omega": 179.8539124, "deviation": 0.1460876465, "is_outlier": false},
+            {"res_id": 24, "ins_code": "", "res_name": "LYS", "chain": "B", "omega": 179.0272522, "deviation": 0.9727478027, "is_outlier": false},
+            {"res_id": 25, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": -179.4588165, "deviation": 0.5411834717, "is_outlier": false},
+            {"res_id": 26, "ins_code": "", "res_name": "LEU", "chain": "B", "omega": 179.9397125, "deviation": 0.06028747559, "is_outlier": false},
+            {"res_id": 27, "ins_code": "", "res_name": "PRO", "chain": "B", "omega": -177.2233124, "deviation": 2.776687622, "is_outlier": false},
+            {"res_id": 28, "ins_code": "", "res_name": "GLU", "chain": "B", "omega": 178.7899017, "deviation": 1.210098267, "is_outlier": false}
+          ]
+        },
+        "coulomb": {
+          "coulomb_energy_kJ": -96.75340061,
+          "coulomb_energy_kcal": -23.12461774,
+          "n_charged_pairs": 18,
+          "n_attractive": 7,
+          "n_repulsive": 11,
+          "n_ionisable_residues_seen": 25,
+          "n_residues_unrecognised": 0,
+          "charged_atoms_peptide": [
+            {"residue": "GLU:B:17", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [34.23533249, -33.50966644, -5.164666653]},
+            {"residue": "GLU:B:17", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [35.92133331, -33.58466721, -6.564666748]},
+            {"residue": "ASP:B:21", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [28.81033325, -30.32466698, -12.56966686]},
+            {"residue": "ASP:B:21", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [30.17133331, -32.02366638, -12.10866642]},
+            {"residue": "LYS:B:24", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [26.68733215, -25.31766701, -13.42166615]},
+            {"residue": "GLU:B:28", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [19.27433205, -23.39266777, -6.120666027]},
+            {"residue": "GLU:B:28", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [17.24833298, -24.00966644, -5.484667301]}
+          ],
+          "charged_atoms_receptor": [
+            {"residue": "GLU:A:25", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [12.43900013, -16.74500084, -6.994999886]},
+            {"residue": "GLU:A:25", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [13.04300022, -15.16300011, -8.409000397]},
+            {"residue": "ARG:A:29", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [18.74300003, -1.577999949, -1.853000164]},
+            {"residue": "ARG:A:29", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [16.85300064, -1.508999825, -0.5599991083]},
+            {"residue": "LYS:A:31", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [25.56100082, -8.095999718, 7.463000298]},
+            {"residue": "LYS:A:36", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [36.28300095, -2.868000031, -1.654999733]},
+            {"residue": "LYS:A:39", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [26.39100075, -1.132999897, -8.324000359]},
+            {"residue": "LYS:A:45", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [18.15500069, -6.739999771, -10.06400013]},
+            {"residue": "ASP:A:46", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [22.35400009, -1.691000104, -2.634000301]},
+            {"residue": "ASP:A:46", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [21.47500038, 0.3359997869, -2.708999872]},
+            {"residue": "LYS:A:51", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [13.72599983, -19.09700012, -9.045000076]},
+            {"residue": "GLU:A:52", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [18.40099907, -9.331000328, -9.194999695]},
+            {"residue": "GLU:A:52", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [18.77300072, -9.430000305, -11.35900021]},
+            {"residue": "LYS:A:64", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [39.47900009, -11.93900013, -8.409000397]},
+            {"residue": "ARG:A:65", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [41.34899902, -23.72299957, -15.39500141]},
+            {"residue": "ARG:A:65", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [43.49300003, -22.92000008, -15.28899956]},
+            {"residue": "ASP:A:68", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [42.47600174, -28.20899963, -6.69299984]},
+            {"residue": "ASP:A:68", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [41.31100082, -29.71500015, -7.762999535]},
+            {"residue": "GLU:A:69", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [41.1780014, -25.97500038, -13.76900005]},
+            {"residue": "GLU:A:69", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [40.94100189, -27.07600021, -15.6789999]},
+            {"residue": "LYS:A:70", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [44.77000046, -29.67700005, -10.69900036]},
+            {"residue": "ASP:A:80", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [40.03099823, -13.30700016, -6.019000053]},
+            {"residue": "ASP:A:80", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [38.11299896, -13.72399998, -5.006000042]},
+            {"residue": "ASP:A:84", "ins_code": "", "atom": "OD1", "charge": -0.5, "coords": [40.35599899, -10.68799973, 1.378999591]},
+            {"residue": "ASP:A:84", "ins_code": "", "atom": "OD2", "charge": -0.5, "coords": [39.98400116, -8.528000832, 1.481999516]},
+            {"residue": "LYS:A:94", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [31.56599998, -34.20899963, -4.222000599]},
+            {"residue": "GLU:A:95", "ins_code": "", "atom": "OE1", "charge": -0.5, "coords": [32.29600143, -26.3920002, 3.348999977]},
+            {"residue": "GLU:A:95", "ins_code": "", "atom": "OE2", "charge": -0.5, "coords": [32.59899902, -28.29700089, 4.428999901]},
+            {"residue": "ARG:A:97", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [20.92099953, -26.01199913, 9.312001228]},
+            {"residue": "ARG:A:97", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [20.66600037, -28.11800003, 8.440999031]},
+            {"residue": "LYS:A:98", "ins_code": "", "atom": "NZ", "charge": 1.0, "coords": [32.29600143, -22.81500053, 6.427000046]},
+            {"residue": "ARG:A:105", "ins_code": "", "atom": "NH1", "charge": 0.5, "coords": [30.90399933, -13.93799973, 7.602999687]},
+            {"residue": "ARG:A:105", "ins_code": "", "atom": "NH2", "charge": 0.5, "coords": [31.5890007, -16.0720005, 7.105999947]}
+          ]
+        },
+        "descriptors": {
+          "reference": {
+            "sets": {
+              "crystal_interface": {
+                "n_set": 25,
+                "n_set_mapped": 25,
+                "n_interface": 24,
+                "n_overlap": 23,
+                "covered_fraction": 0.92,
+                "interface_in_set_fraction": 0.9583333333,
+                "jaccard": 0.8846153846,
+                "receptor_buried_area_in_set_angstrom2": 615.4092574,
+                "receptor_buried_area_in_set_fraction": 0.9924824355
+              },
+              "epitope": {
+                "n_set": 22,
+                "n_set_mapped": 22,
+                "n_interface": 24,
+                "n_overlap": 21,
+                "covered_fraction": 0.9545454545,
+                "interface_in_set_fraction": 0.875,
+                "jaccard": 0.84,
+                "receptor_buried_area_in_set_angstrom2": 608.8679375,
+                "receptor_buried_area_in_set_fraction": 0.9819331222
+              }
+            },
+            "partners": {
+              "crystal_peptide": {
+                "min_distance_angstrom": 0.3070339239,
+                "clash_atoms": {"2.2": 77, "3.0": 113},
+                "clash_pairs": {"2.2": 200, "3.0": 583},
+                "shell_fraction": 1.0,
+                "shared_buried_area_angstrom2": 520.4609985,
+                "partner_buried_area_angstrom2": 662.3349609,
+                "pose_buried_area_angstrom2": 620.0706787,
+                "shared_fraction_of_partner": 0.7857972616,
+                "overlap_volume_angstrom3": 1610.20709
+              }
+            }
+          }
+        }
+      }
+    ],
+    "agreement": {
+      "status": "ok",
+      "reason": null,
+      "kind": "ca",
+      "linkage": "complete",
+      "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3", "backend_b-s1", "backend_b-s2", "backend_b-s3"],
+      "groups": {"backend_a-s1": "backend_a", "backend_a-s2": "backend_a", "backend_a-s3": "backend_a", "backend_b-s1": "backend_b", "backend_b-s2": "backend_b", "backend_b-s3": "backend_b"},
+      "excluded": {},
+      "expected_closures": [],
+      "rmsd": {
+        "ca": {
+          "matrix": {
+            "name": "rmsd_ca",
+            "unit": "angstrom",
+            "direction": "distance",
+            "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3", "backend_b-s1", "backend_b-s2", "backend_b-s3"],
+            "matrix": [[0.0, 0.4000000037, 0.7999999707, 2.000000211, 2.299999485, 2.899999538], [0.4000000037, 0.0, 0.399999967, 1.600000207, 1.899999481, 2.499999535], [0.7999999707, 0.399999967, 0.0, 1.20000024, 1.499999514, 2.099999568], [2.000000211, 1.600000207, 1.20000024, 0.0, 0.2999992738, 0.8999993274], [2.299999485, 1.899999481, 1.499999514, 0.2999992738, 0.0, 0.6000000536], [2.899999538, 2.499999535, 2.099999568, 0.8999993274, 0.6000000536, 0.0]],
+            "undefined_pairs": []
+          },
+          "statistics": {
+            "n_poses": 6,
+            "overall": {"n_pairs": 15, "n_defined": 15, "min": 0.2999992738, "mean": 1.426666425, "max": 2.899999538, "min_pair": ["backend_b-s1", "backend_b-s2"], "max_pair": ["backend_a-s1", "backend_b-s3"]},
+            "within": {
+              "backend_a": {"n_pairs": 3, "n_defined": 3, "min": 0.399999967, "mean": 0.5333333138, "max": 0.7999999707, "min_pair": ["backend_a-s2", "backend_a-s3"], "max_pair": ["backend_a-s1", "backend_a-s3"]},
+              "backend_b": {"n_pairs": 3, "n_defined": 3, "min": 0.2999992738, "mean": 0.5999995516, "max": 0.8999993274, "min_pair": ["backend_b-s1", "backend_b-s2"], "max_pair": ["backend_b-s1", "backend_b-s3"]}
+            },
+            "between": {"backend_a|backend_b": {"n_pairs": 9, "n_defined": 9, "min": 1.20000024, "mean": 1.999999753, "max": 2.899999538, "min_pair": ["backend_a-s3", "backend_b-s1"], "max_pair": ["backend_a-s1", "backend_b-s3"]}},
+            "between_reason": null
+          }
+        },
+        "backbone": {
+          "matrix": {
+            "name": "rmsd_backbone",
+            "unit": "angstrom",
+            "direction": "distance",
+            "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3", "backend_b-s1", "backend_b-s2", "backend_b-s3"],
+            "matrix": [[0.0, 0.3999998999, 0.7999997202, 2.000000178, 2.299999704, 2.899999751], [0.3999998999, 0.0, 0.3999998203, 1.600000279, 1.899999804, 2.499999851], [0.7999997202, 0.3999998203, 0.0, 1.200000458, 1.499999984, 2.100000031], [2.000000178, 1.600000279, 1.200000458, 0.0, 0.2999995259, 0.8999995725], [2.299999704, 1.899999804, 1.499999984, 0.2999995259, 0.0, 0.6000000466], [2.899999751, 2.499999851, 2.100000031, 0.8999995725, 0.6000000466, 0.0]],
+            "undefined_pairs": []
+          },
+          "statistics": {
+            "n_poses": 6,
+            "overall": {"n_pairs": 15, "n_defined": 15, "min": 0.2999995259, "mean": 1.426666575, "max": 2.899999751, "min_pair": ["backend_b-s1", "backend_b-s2"], "max_pair": ["backend_a-s1", "backend_b-s3"]},
+            "within": {
+              "backend_a": {"n_pairs": 3, "n_defined": 3, "min": 0.3999998203, "mean": 0.5333331468, "max": 0.7999997202, "min_pair": ["backend_a-s2", "backend_a-s3"], "max_pair": ["backend_a-s1", "backend_a-s3"]},
+              "backend_b": {"n_pairs": 3, "n_defined": 3, "min": 0.2999995259, "mean": 0.599999715, "max": 0.8999995725, "min_pair": ["backend_b-s1", "backend_b-s2"], "max_pair": ["backend_b-s1", "backend_b-s3"]}
+            },
+            "between": {"backend_a|backend_b": {"n_pairs": 9, "n_defined": 9, "min": 1.200000458, "mean": 2.000000005, "max": 2.899999751, "min_pair": ["backend_a-s3", "backend_b-s1"], "max_pair": ["backend_a-s1", "backend_b-s3"]}},
+            "between_reason": null
+          }
+        },
+        "heavy": {
+          "matrix": {
+            "name": "rmsd_heavy",
+            "unit": "angstrom",
+            "direction": "distance",
+            "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3", "backend_b-s1", "backend_b-s2", "backend_b-s3"],
+            "matrix": [[0.0, 0.3999999041, 0.7999996589, 2.000000135, 2.299999742, 2.899999917], [0.3999999041, 0.0, 0.3999997548, 1.600000231, 1.899999838, 2.500000013], [0.7999996589, 0.3999997548, 0.0, 1.200000476, 1.500000083, 2.100000258], [2.000000135, 1.600000231, 1.200000476, 0.0, 0.2999996073, 0.8999997824], [2.299999742, 1.899999838, 1.500000083, 0.2999996073, 0.0, 0.6000001751], [2.899999917, 2.500000013, 2.100000258, 0.8999997824, 0.6000001751, 0.0]],
+            "undefined_pairs": []
+          },
+          "statistics": {
+            "n_poses": 6,
+            "overall": {"n_pairs": 15, "n_defined": 15, "min": 0.2999996073, "mean": 1.426666638, "max": 2.899999917, "min_pair": ["backend_b-s1", "backend_b-s2"], "max_pair": ["backend_a-s1", "backend_b-s3"]},
+            "within": {
+              "backend_a": {"n_pairs": 3, "n_defined": 3, "min": 0.3999997548, "mean": 0.5333331059, "max": 0.7999996589, "min_pair": ["backend_a-s2", "backend_a-s3"], "max_pair": ["backend_a-s1", "backend_a-s3"]},
+              "backend_b": {"n_pairs": 3, "n_defined": 3, "min": 0.2999996073, "mean": 0.599999855, "max": 0.8999997824, "min_pair": ["backend_b-s1", "backend_b-s2"], "max_pair": ["backend_b-s1", "backend_b-s3"]}
+            },
+            "between": {"backend_a|backend_b": {"n_pairs": 9, "n_defined": 9, "min": 1.200000476, "mean": 2.000000077, "max": 2.899999917, "min_pair": ["backend_a-s3", "backend_b-s1"], "max_pair": ["backend_a-s1", "backend_b-s3"]}},
+            "between_reason": null
+          }
+        }
+      },
+      "shape_rmsd": {
+        "ca": {
+          "matrix": {
+            "name": "rmsd_ca",
+            "unit": "angstrom",
+            "direction": "distance",
+            "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3", "backend_b-s1", "backend_b-s2", "backend_b-s3"],
+            "matrix": [[0.0, 1.192256837e-06, 1.439366682e-06, 1.399898401e-06, 1.710962822e-06, 1.236968296e-06], [1.192256837e-06, 0.0, 1.241749959e-06, 1.633711293e-06, 1.838300866e-06, 1.717866034e-06], [1.439366682e-06, 1.241749959e-06, 0.0, 1.90898343e-06, 2.081536887e-06, 1.726384248e-06], [1.399898401e-06, 1.633711293e-06, 1.90898343e-06, 0.0, 2.244495201e-06, 1.83206472e-06], [1.710962822e-06, 1.838300866e-06, 2.081536887e-06, 2.244495201e-06, 0.0, 1.783080208e-06], [1.236968296e-06, 1.717866034e-06, 1.726384248e-06, 1.83206472e-06, 1.783080208e-06, 0.0]],
+            "undefined_pairs": []
+          },
+          "statistics": {
+            "n_poses": 6,
+            "overall": {"n_pairs": 15, "n_defined": 15, "min": 1.192256837e-06, "mean": 1.665841726e-06, "max": 2.244495201e-06, "min_pair": ["backend_a-s1", "backend_a-s2"], "max_pair": ["backend_b-s1", "backend_b-s2"]},
+            "within": {
+              "backend_a": {"n_pairs": 3, "n_defined": 3, "min": 1.192256837e-06, "mean": 1.291124493e-06, "max": 1.439366682e-06, "min_pair": ["backend_a-s1", "backend_a-s2"], "max_pair": ["backend_a-s1", "backend_a-s3"]},
+              "backend_b": {"n_pairs": 3, "n_defined": 3, "min": 1.783080208e-06, "mean": 1.953213376e-06, "max": 2.244495201e-06, "min_pair": ["backend_b-s2", "backend_b-s3"], "max_pair": ["backend_b-s1", "backend_b-s2"]}
+            },
+            "between": {"backend_a|backend_b": {"n_pairs": 9, "n_defined": 9, "min": 1.236968296e-06, "mean": 1.69495692e-06, "max": 2.081536887e-06, "min_pair": ["backend_a-s1", "backend_b-s3"], "max_pair": ["backend_a-s3", "backend_b-s2"]}},
+            "between_reason": null
+          }
+        },
+        "backbone": {
+          "matrix": {
+            "name": "rmsd_backbone",
+            "unit": "angstrom",
+            "direction": "distance",
+            "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3", "backend_b-s1", "backend_b-s2", "backend_b-s3"],
+            "matrix": [[0.0, 1.242341953e-06, 1.586715901e-06, 1.502732251e-06, 1.689694227e-06, 1.353657414e-06], [1.242341953e-06, 0.0, 1.595367363e-06, 1.885232784e-06, 1.752147614e-06, 1.743799884e-06], [1.586715901e-06, 1.595367363e-06, 0.0, 2.076235507e-06, 2.150262238e-06, 1.880219684e-06], [1.502732251e-06, 1.885232784e-06, 2.076235507e-06, 0.0, 2.122598116e-06, 1.982017334e-06], [1.689694227e-06, 1.752147614e-06, 2.150262238e-06, 2.122598116e-06, 0.0, 2.024150816e-06], [1.353657414e-06, 1.743799884e-06, 1.880219684e-06, 1.982017334e-06, 2.024150816e-06, 0.0]],
+            "undefined_pairs": []
+          },
+          "statistics": {
+            "n_poses": 6,
+            "overall": {"n_pairs": 15, "n_defined": 15, "min": 1.242341953e-06, "mean": 1.772478206e-06, "max": 2.150262238e-06, "min_pair": ["backend_a-s1", "backend_a-s2"], "max_pair": ["backend_a-s3", "backend_b-s2"]},
+            "within": {
+              "backend_a": {"n_pairs": 3, "n_defined": 3, "min": 1.242341953e-06, "mean": 1.474808406e-06, "max": 1.595367363e-06, "min_pair": ["backend_a-s1", "backend_a-s2"], "max_pair": ["backend_a-s2", "backend_a-s3"]},
+              "backend_b": {"n_pairs": 3, "n_defined": 3, "min": 1.982017334e-06, "mean": 2.042922089e-06, "max": 2.122598116e-06, "min_pair": ["backend_b-s1", "backend_b-s3"], "max_pair": ["backend_b-s1", "backend_b-s2"]}
+            },
+            "between": {"backend_a|backend_b": {"n_pairs": 9, "n_defined": 9, "min": 1.353657414e-06, "mean": 1.781553511e-06, "max": 2.150262238e-06, "min_pair": ["backend_a-s1", "backend_b-s3"], "max_pair": ["backend_a-s3", "backend_b-s2"]}},
+            "between_reason": null
+          }
+        },
+        "heavy": {
+          "matrix": {
+            "name": "rmsd_heavy",
+            "unit": "angstrom",
+            "direction": "distance",
+            "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3", "backend_b-s1", "backend_b-s2", "backend_b-s3"],
+            "matrix": [[0.0, 1.368398617e-06, 1.645744734e-06, 1.646337183e-06, 1.690053088e-06, 1.396176604e-06], [1.368398617e-06, 0.0, 1.767433051e-06, 1.871211531e-06, 1.829495503e-06, 1.647222984e-06], [1.645744734e-06, 1.767433051e-06, 0.0, 2.155088472e-06, 2.139683327e-06, 1.918592522e-06], [1.646337183e-06, 1.871211531e-06, 2.155088472e-06, 0.0, 2.087491438e-06, 2.014473293e-06], [1.690053088e-06, 1.829495503e-06, 2.139683327e-06, 2.087491438e-06, 0.0, 2.009831116e-06], [1.396176604e-06, 1.647222984e-06, 1.918592522e-06, 2.014473293e-06, 2.009831116e-06, 0.0]],
+            "undefined_pairs": []
+          },
+          "statistics": {
+            "n_poses": 6,
+            "overall": {"n_pairs": 15, "n_defined": 15, "min": 1.368398617e-06, "mean": 1.812482231e-06, "max": 2.155088472e-06, "min_pair": ["backend_a-s1", "backend_a-s2"], "max_pair": ["backend_a-s3", "backend_b-s1"]},
+            "within": {
+              "backend_a": {"n_pairs": 3, "n_defined": 3, "min": 1.368398617e-06, "mean": 1.5938588e-06, "max": 1.767433051e-06, "min_pair": ["backend_a-s1", "backend_a-s2"], "max_pair": ["backend_a-s2", "backend_a-s3"]},
+              "backend_b": {"n_pairs": 3, "n_defined": 3, "min": 2.009831116e-06, "mean": 2.037265282e-06, "max": 2.087491438e-06, "min_pair": ["backend_b-s2", "backend_b-s3"], "max_pair": ["backend_b-s1", "backend_b-s2"]}
+            },
+            "between": {"backend_a|backend_b": {"n_pairs": 9, "n_defined": 9, "min": 1.396176604e-06, "mean": 1.810429024e-06, "max": 2.155088472e-06, "min_pair": ["backend_a-s1", "backend_b-s3"], "max_pair": ["backend_a-s3", "backend_b-s1"]}},
+            "between_reason": null
+          }
+        }
+      },
+      "unknown_residues": [],
+      "closure_mismatch_pairs": [],
+      "medoids": {
+        "overall": {"pose_id": "backend_a-s3", "sum_distance_angstrom": 5.99999926, "mean_distance_angstrom": 1.199999852, "tied_with": ["backend_b-s1"], "n_poses": 6, "excluded": []},
+        "per_group": {
+          "backend_a": {"pose_id": "backend_a-s2", "sum_distance_angstrom": 0.7999999707, "mean_distance_angstrom": 0.3999999853, "tied_with": [], "n_poses": 3, "excluded": []},
+          "backend_b": {"pose_id": "backend_b-s2", "sum_distance_angstrom": 0.8999993274, "mean_distance_angstrom": 0.4499996637, "tied_with": [], "n_poses": 3, "excluded": []}
+        },
+        "between_groups": {"backend_a|backend_b": {"medoid_a": "backend_a-s2", "medoid_b": "backend_b-s2", "distance_angstrom": 1.899999481}}
+      },
+      "clusters": {
+        "1.0": {
+          "cutoff_angstrom": 1.0,
+          "linkage": "complete",
+          "n_clusters": 2,
+          "sizes": [3, 3],
+          "largest_cluster_fraction": 0.5,
+          "labels": {"backend_a-s1": 0, "backend_a-s2": 0, "backend_a-s3": 0, "backend_b-s1": 1, "backend_b-s2": 1, "backend_b-s3": 1},
+          "clusters": [["backend_a-s1", "backend_a-s2", "backend_a-s3"], ["backend_b-s1", "backend_b-s2", "backend_b-s3"]],
+          "mixed_clusters": [],
+          "n_undefined_pairs": 0
+        },
+        "2.0": {
+          "cutoff_angstrom": 2.0,
+          "linkage": "complete",
+          "n_clusters": 2,
+          "sizes": [3, 3],
+          "largest_cluster_fraction": 0.5,
+          "labels": {"backend_a-s1": 0, "backend_a-s2": 0, "backend_a-s3": 0, "backend_b-s1": 1, "backend_b-s2": 1, "backend_b-s3": 1},
+          "clusters": [["backend_a-s1", "backend_a-s2", "backend_a-s3"], ["backend_b-s1", "backend_b-s2", "backend_b-s3"]],
+          "mixed_clusters": [],
+          "n_undefined_pairs": 0
+        }
+      },
+      "spread": {
+        "all": {
+          "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3", "backend_b-s1", "backend_b-s2", "backend_b-s3"],
+          "reference_id": "backend_a-s1",
+          "positions": [
+            {"binder_index": 1, "chain": "B", "number": 17, "icode": "", "residue": "GLU", "n_poses": 6, "spread_angstrom": 1.05987414},
+            {"binder_index": 2, "chain": "B", "number": 18, "icode": "", "residue": "THR", "n_poses": 6, "spread_angstrom": 1.059873531},
+            {"binder_index": 3, "chain": "B", "number": 19, "icode": "", "residue": "PHE", "n_poses": 6, "spread_angstrom": 1.0598738},
+            {"binder_index": 4, "chain": "B", "number": 20, "icode": "", "residue": "SER", "n_poses": 6, "spread_angstrom": 1.05987423},
+            {"binder_index": 5, "chain": "B", "number": 21, "icode": "", "residue": "ASP", "n_poses": 6, "spread_angstrom": 1.05987404},
+            {"binder_index": 6, "chain": "B", "number": 22, "icode": "", "residue": "LEU", "n_poses": 6, "spread_angstrom": 1.059873985},
+            {"binder_index": 7, "chain": "B", "number": 23, "icode": "", "residue": "TRP", "n_poses": 6, "spread_angstrom": 1.05987445},
+            {"binder_index": 8, "chain": "B", "number": 24, "icode": "", "residue": "LYS", "n_poses": 6, "spread_angstrom": 1.059873995},
+            {"binder_index": 9, "chain": "B", "number": 25, "icode": "", "residue": "LEU", "n_poses": 6, "spread_angstrom": 1.05987394},
+            {"binder_index": 10, "chain": "B", "number": 26, "icode": "", "residue": "LEU", "n_poses": 6, "spread_angstrom": 1.05987414},
+            {"binder_index": 11, "chain": "B", "number": 27, "icode": "", "residue": "PRO", "n_poses": 6, "spread_angstrom": 1.059874017},
+            {"binder_index": 12, "chain": "B", "number": 28, "icode": "", "residue": "GLU", "n_poses": 6, "spread_angstrom": 1.059874078},
+            {"binder_index": 13, "chain": "B", "number": 29, "icode": "", "residue": "ASN", "n_poses": 6, "spread_angstrom": 1.059874257}
+          ],
+          "mean_spread_angstrom": 1.059874047,
+          "excluded": {}
+        },
+        "per_group": {
+          "backend_a": {
+            "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3"],
+            "reference_id": "backend_a-s1",
+            "positions": [
+              {"binder_index": 1, "chain": "B", "number": 17, "icode": "", "residue": "GLU", "n_poses": 3, "spread_angstrom": 0.3265985805},
+              {"binder_index": 2, "chain": "B", "number": 18, "icode": "", "residue": "THR", "n_poses": 3, "spread_angstrom": 0.3265990996},
+              {"binder_index": 3, "chain": "B", "number": 19, "icode": "", "residue": "PHE", "n_poses": 3, "spread_angstrom": 0.3265990996},
+              {"binder_index": 4, "chain": "B", "number": 20, "icode": "", "residue": "SER", "n_poses": 3, "spread_angstrom": 0.3265983209},
+              {"binder_index": 5, "chain": "B", "number": 21, "icode": "", "residue": "ASP", "n_poses": 3, "spread_angstrom": 0.3265985805},
+              {"binder_index": 6, "chain": "B", "number": 22, "icode": "", "residue": "LEU", "n_poses": 3, "spread_angstrom": 0.3265987102},
+              {"binder_index": 7, "chain": "B", "number": 23, "icode": "", "residue": "TRP", "n_poses": 3, "spread_angstrom": 0.3265987102},
+              {"binder_index": 8, "chain": "B", "number": 24, "icode": "", "residue": "LYS", "n_poses": 3, "spread_angstrom": 0.3265985805},
+              {"binder_index": 9, "chain": "B", "number": 25, "icode": "", "residue": "LEU", "n_poses": 3, "spread_angstrom": 0.3265983209},
+              {"binder_index": 10, "chain": "B", "number": 26, "icode": "", "residue": "LEU", "n_poses": 3, "spread_angstrom": 0.326598256},
+              {"binder_index": 11, "chain": "B", "number": 27, "icode": "", "residue": "PRO", "n_poses": 3, "spread_angstrom": 0.3265983858},
+              {"binder_index": 12, "chain": "B", "number": 28, "icode": "", "residue": "GLU", "n_poses": 3, "spread_angstrom": 0.32659884},
+              {"binder_index": 13, "chain": "B", "number": 29, "icode": "", "residue": "ASN", "n_poses": 3, "spread_angstrom": 0.3265985805}
+            ],
+            "mean_spread_angstrom": 0.3265986204,
+            "excluded": {}
+          },
+          "backend_b": {
+            "pose_ids": ["backend_b-s1", "backend_b-s2", "backend_b-s3"],
+            "reference_id": "backend_b-s1",
+            "positions": [
+              {"binder_index": 1, "chain": "B", "number": 17, "icode": "", "residue": "GLU", "n_poses": 3, "spread_angstrom": 0.3741654102},
+              {"binder_index": 2, "chain": "B", "number": 18, "icode": "", "residue": "THR", "n_poses": 3, "spread_angstrom": 0.3741654668},
+              {"binder_index": 3, "chain": "B", "number": 19, "icode": "", "residue": "PHE", "n_poses": 3, "spread_angstrom": 0.3741652969},
+              {"binder_index": 4, "chain": "B", "number": 20, "icode": "", "residue": "SER", "n_poses": 3, "spread_angstrom": 0.3741655801},
+              {"binder_index": 5, "chain": "B", "number": 21, "icode": "", "residue": "ASP", "n_poses": 3, "spread_angstrom": 0.3741654102},
+              {"binder_index": 6, "chain": "B", "number": 22, "icode": "", "residue": "LEU", "n_poses": 3, "spread_angstrom": 0.3741652686},
+              {"binder_index": 7, "chain": "B", "number": 23, "icode": "", "residue": "TRP", "n_poses": 3, "spread_angstrom": 0.3741656367},
+              {"binder_index": 8, "chain": "B", "number": 24, "icode": "", "residue": "LYS", "n_poses": 3, "spread_angstrom": 0.3741657217},
+              {"binder_index": 9, "chain": "B", "number": 25, "icode": "", "residue": "LEU", "n_poses": 3, "spread_angstrom": 0.3741653535},
+              {"binder_index": 10, "chain": "B", "number": 26, "icode": "", "residue": "LEU", "n_poses": 3, "spread_angstrom": 0.3741655518},
+              {"binder_index": 11, "chain": "B", "number": 27, "icode": "", "residue": "PRO", "n_poses": 3, "spread_angstrom": 0.3741653429},
+              {"binder_index": 12, "chain": "B", "number": 28, "icode": "", "residue": "GLU", "n_poses": 3, "spread_angstrom": 0.3741658208},
+              {"binder_index": 13, "chain": "B", "number": 29, "icode": "", "residue": "ASN", "n_poses": 3, "spread_angstrom": 0.3741656889}
+            ],
+            "mean_spread_angstrom": 0.3741655038,
+            "excluded": {}
+          }
+        }
+      },
+      "contacts": {
+        "definition": "residue pairs with two heavy atoms closer than cutoff_angstrom; the interface is the residues in those pairs; receptor residues in the numbering of the reference when frame.renumber_receptor is true",
+        "cutoff_angstrom": 5.0,
+        "excluded": {},
+        "interface_jaccard": {
+          "all": {
+            "matrix": {
+              "name": "jaccard_interface",
+              "unit": null,
+              "direction": "similarity",
+              "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3", "backend_b-s1", "backend_b-s2", "backend_b-s3"],
+              "matrix": [[1.0, 0.9714285714, 0.9444444444, 0.8048780488, 0.7674418605, 0.7674418605], [0.9714285714, 1.0, 0.9714285714, 0.825, 0.7857142857, 0.7857142857], [0.9444444444, 0.9714285714, 1.0, 0.85, 0.8095238095, 0.8095238095], [0.8048780488, 0.825, 0.85, 1.0, 0.9512195122, 0.9512195122], [0.7674418605, 0.7857142857, 0.8095238095, 0.9512195122, 1.0, 1.0], [0.7674418605, 0.7857142857, 0.8095238095, 0.9512195122, 1.0, 1.0]],
+              "undefined_pairs": []
+            },
+            "statistics": {
+              "n_poses": 6,
+              "overall": {"n_pairs": 15, "n_defined": 15, "min": 0.7674418605, "mean": 0.8663319048, "max": 1.0, "min_pair": ["backend_a-s1", "backend_b-s2"], "max_pair": ["backend_b-s2", "backend_b-s3"]},
+              "within": {
+                "backend_a": {"n_pairs": 3, "n_defined": 3, "min": 0.9444444444, "mean": 0.9624338624, "max": 0.9714285714, "min_pair": ["backend_a-s1", "backend_a-s3"], "max_pair": ["backend_a-s1", "backend_a-s2"]},
+                "backend_b": {"n_pairs": 3, "n_defined": 3, "min": 0.9512195122, "mean": 0.9674796748, "max": 1.0, "min_pair": ["backend_b-s1", "backend_b-s2"], "max_pair": ["backend_b-s2", "backend_b-s3"]}
+              },
+              "between": {"backend_a|backend_b": {"n_pairs": 9, "n_defined": 9, "min": 0.7674418605, "mean": 0.8005819956, "max": 0.85, "min_pair": ["backend_a-s1", "backend_b-s2"], "max_pair": ["backend_a-s3", "backend_b-s1"]}},
+              "between_reason": null
+            }
+          },
+          "receptor": {
+            "matrix": {
+              "name": "jaccard_interface_receptor",
+              "unit": null,
+              "direction": "similarity",
+              "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3", "backend_b-s1", "backend_b-s2", "backend_b-s3"],
+              "matrix": [[1.0, 0.9583333333, 0.92, 0.7586206897, 0.7333333333, 0.7333333333], [0.9583333333, 1.0, 0.9583333333, 0.7857142857, 0.7586206897, 0.7586206897], [0.92, 0.9583333333, 1.0, 0.8214285714, 0.7931034483, 0.7931034483], [0.7586206897, 0.7857142857, 0.8214285714, 1.0, 0.9642857143, 0.9642857143], [0.7333333333, 0.7586206897, 0.7931034483, 0.9642857143, 1.0, 1.0], [0.7333333333, 0.7586206897, 0.7931034483, 0.9642857143, 1.0, 1.0]],
+              "undefined_pairs": []
+            },
+            "statistics": {
+              "n_poses": 6,
+              "overall": {"n_pairs": 15, "n_defined": 15, "min": 0.7333333333, "mean": 0.8467411056, "max": 1.0, "min_pair": ["backend_a-s1", "backend_b-s2"], "max_pair": ["backend_b-s2", "backend_b-s3"]},
+              "within": {
+                "backend_a": {"n_pairs": 3, "n_defined": 3, "min": 0.92, "mean": 0.9455555556, "max": 0.9583333333, "min_pair": ["backend_a-s1", "backend_a-s3"], "max_pair": ["backend_a-s1", "backend_a-s2"]},
+                "backend_b": {"n_pairs": 3, "n_defined": 3, "min": 0.9642857143, "mean": 0.9761904762, "max": 1.0, "min_pair": ["backend_b-s1", "backend_b-s2"], "max_pair": ["backend_b-s2", "backend_b-s3"]}
+              },
+              "between": {"backend_a|backend_b": {"n_pairs": 9, "n_defined": 9, "min": 0.7333333333, "mean": 0.7706531655, "max": 0.8214285714, "min_pair": ["backend_a-s1", "backend_b-s2"], "max_pair": ["backend_a-s3", "backend_b-s1"]}},
+              "between_reason": null
+            }
+          },
+          "binder": {
+            "matrix": {
+              "name": "jaccard_interface_binder",
+              "unit": null,
+              "direction": "similarity",
+              "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3", "backend_b-s1", "backend_b-s2", "backend_b-s3"],
+              "matrix": [[1.0, 1.0, 1.0, 0.9166666667, 0.8461538462, 0.8461538462], [1.0, 1.0, 1.0, 0.9166666667, 0.8461538462, 0.8461538462], [1.0, 1.0, 1.0, 0.9166666667, 0.8461538462, 0.8461538462], [0.9166666667, 0.9166666667, 0.9166666667, 1.0, 0.9230769231, 0.9230769231], [0.8461538462, 0.8461538462, 0.8461538462, 0.9230769231, 1.0, 1.0], [0.8461538462, 0.8461538462, 0.8461538462, 0.9230769231, 1.0, 1.0]],
+              "undefined_pairs": []
+            },
+            "statistics": {
+              "n_poses": 6,
+              "overall": {"n_pairs": 15, "n_defined": 15, "min": 0.8461538462, "mean": 0.9115384615, "max": 1.0, "min_pair": ["backend_a-s1", "backend_b-s2"], "max_pair": ["backend_a-s1", "backend_a-s2"]},
+              "within": {
+                "backend_a": {"n_pairs": 3, "n_defined": 3, "min": 1.0, "mean": 1.0, "max": 1.0, "min_pair": ["backend_a-s1", "backend_a-s2"], "max_pair": ["backend_a-s1", "backend_a-s2"]},
+                "backend_b": {"n_pairs": 3, "n_defined": 3, "min": 0.9230769231, "mean": 0.9487179487, "max": 1.0, "min_pair": ["backend_b-s1", "backend_b-s2"], "max_pair": ["backend_b-s2", "backend_b-s3"]}
+              },
+              "between": {"backend_a|backend_b": {"n_pairs": 9, "n_defined": 9, "min": 0.8461538462, "mean": 0.8696581197, "max": 0.9166666667, "min_pair": ["backend_a-s1", "backend_b-s2"], "max_pair": ["backend_a-s1", "backend_b-s1"]}},
+              "between_reason": null
+            }
+          }
+        },
+        "contact_map_jaccard": {
+          "matrix": {
+            "name": "contact_map_jaccard",
+            "unit": null,
+            "direction": "similarity",
+            "pose_ids": ["backend_a-s1", "backend_a-s2", "backend_a-s3", "backend_b-s1", "backend_b-s2", "backend_b-s3"],
+            "matrix": [[1.0, 0.9591836735, 0.8679245283, 0.6615384615, 0.5942028986, 0.4936708861], [0.9591836735, 1.0, 0.9038461538, 0.6615384615, 0.5942028986, 0.4936708861], [0.8679245283, 0.9038461538, 1.0, 0.734375, 0.6617647059, 0.5512820513], [0.6615384615, 0.6615384615, 0.734375, 1.0, 0.90625, 0.7567567568], [0.5942028986, 0.5942028986, 0.6617647059, 0.90625, 1.0, 0.8333333333], [0.4936708861, 0.4936708861, 0.5512820513, 0.7567567568, 0.8333333333, 1.0]],
+            "undefined_pairs": []
+          },
+          "statistics": {
+            "n_poses": 6,
+            "overall": {"n_pairs": 15, "n_defined": 15, "min": 0.4936708861, "mean": 0.7115693797, "max": 0.9591836735, "min_pair": ["backend_a-s1", "backend_b-s3"], "max_pair": ["backend_a-s1", "backend_a-s2"]},
+            "within": {
+              "backend_a": {"n_pairs": 3, "n_defined": 3, "min": 0.8679245283, "mean": 0.9103181185, "max": 0.9591836735, "min_pair": ["backend_a-s1", "backend_a-s3"], "max_pair": ["backend_a-s1", "backend_a-s2"]},
+              "backend_b": {"n_pairs": 3, "n_defined": 3, "min": 0.7567567568, "mean": 0.8321133634, "max": 0.90625, "min_pair": ["backend_b-s1", "backend_b-s3"], "max_pair": ["backend_b-s1", "backend_b-s2"]}
+            },
+            "between": {"backend_a|backend_b": {"n_pairs": 9, "n_defined": 9, "min": 0.4936708861, "mean": 0.6051384722, "max": 0.734375, "min_pair": ["backend_a-s1", "backend_b-s3"], "max_pair": ["backend_a-s3", "backend_b-s1"]}},
+            "between_reason": null
+          }
+        }
+      }
+    },
+    "aggregates": {
+      "backend_a": {
+        "coulomb.coulomb_energy_kJ": {"mean": -95.20235829, "std": 4.275281688, "min": -99.9221227, "max": -91.58912, "median": -94.09583219, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.coulomb_energy_kcal": {"mean": -22.75390973, "std": 1.021816847, "min": -23.88196049, "max": -21.89032505, "median": -22.48944364, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_attractive": {"mean": 6.666666667, "std": 0.5773502692, "min": 6.0, "max": 7.0, "median": 7.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_charged_pairs": {"mean": 17.66666667, "std": 1.527525232, "min": 16.0, "max": 19.0, "median": 18.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_ionisable_residues_seen": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_repulsive": {"mean": 11.0, "std": 1.0, "min": 10.0, "max": 12.0, "median": 11.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_residues_unrecognised": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.delta_sasa": {"mean": 1480.953654, "std": 14.9201867, "min": 1465.720581, "max": 1495.539917, "median": 1481.600464, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.sasa_complex": {"mean": 5428.263021, "std": 14.9201867, "min": 5413.676758, "max": 5443.496094, "median": 5427.616211, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.sasa_peptide": {"mean": 1616.008667, "std": 0.0, "min": 1616.008667, "max": 1616.008667, "median": 1616.008667, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.sasa_receptor": {"mean": 5293.208008, "std": 0.0, "min": 5293.208008, "max": 5293.208008, "median": 5293.208008, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_atoms.2.2": {"mean": 113.0, "std": 0.0, "min": 113.0, "max": 113.0, "median": 113.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_atoms.3.0": {"mean": 113.0, "std": 0.0, "min": 113.0, "max": 113.0, "median": 113.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_pairs.2.2": {"mean": 397.6666667, "std": 45.08140785, "min": 349.0, "max": 438.0, "median": 406.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_pairs.3.0": {"mean": 766.3333333, "std": 15.14375559, "min": 749.0, "max": 777.0, "median": 773.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.min_distance_angstrom": {"mean": 0.3002303917, "std": 0.2648366755, "min": 0.0, "max": 0.5006918745, "median": 0.3999993006, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.overlap_volume_angstrom3": {"mean": 4100.614088, "std": 406.4107976, "min": 3691.522644, "max": 4504.290117, "median": 4106.029504, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.partner_buried_area_angstrom2": {"mean": 662.3349609, "std": 0.0, "min": 662.3349609, "max": 662.3349609, "median": 662.3349609, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.pose_buried_area_angstrom2": {"mean": 662.9309896, "std": 0.7240077226, "min": 662.3349609, "max": 663.7366943, "median": 662.7213135, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.shared_buried_area_angstrom2": {"mean": 648.4009603, "std": 14.17081845, "min": 634.0046387, "max": 662.3349609, "median": 648.8632812, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.shared_fraction_of_partner": {"mean": 0.9789623054, "std": 0.02139524452, "min": 0.9572265939, "max": 1.0, "median": 0.9796603222, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.shell_fraction": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.covered_fraction": {"mean": 0.9866666667, "std": 0.02309401077, "min": 0.96, "max": 1.0, "median": 1.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.interface_in_set_fraction": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.jaccard": {"mean": 0.9866666667, "std": 0.02309401077, "min": 0.96, "max": 1.0, "median": 1.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_interface": {"mean": 24.66666667, "std": 0.5773502692, "min": 24.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_overlap": {"mean": 24.66666667, "std": 0.5773502692, "min": 24.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_set": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_set_mapped": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.receptor_buried_area_in_set_angstrom2": {"mean": 662.8518699, "std": 0.827368418, "min": 662.0975357, "max": 663.7367509, "median": 662.7213231, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.receptor_buried_area_in_set_fraction": {"mean": 0.9998805442, "std": 0.0002069898264, "min": 0.999641533, "max": 1.000000085, "median": 1.000000014, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.covered_fraction": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.interface_in_set_fraction": {"mean": 0.8922222222, "std": 0.02116950987, "min": 0.88, "max": 0.9166666667, "median": 0.88, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.jaccard": {"mean": 0.8922222222, "std": 0.02116950987, "min": 0.88, "max": 0.9166666667, "median": 0.88, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_interface": {"mean": 24.66666667, "std": 0.5773502692, "min": 24.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_overlap": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_set": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_set_mapped": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.receptor_buried_area_in_set_angstrom2": {"mean": 656.5621394, "std": 0.8273684156, "min": 655.8078052, "max": 657.4470204, "median": 656.4315926, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.receptor_buried_area_in_set_fraction": {"mean": 0.9903927761, "std": 0.000214501458, "min": 0.9901452345, "max": 0.9905238418, "median": 0.9905092522, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_fit_atoms": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_fit_residues": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_paired": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_receptor_residues_pose": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_receptor_residues_reference": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_rejected": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.paired_fraction": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.receptor_rmsd_angstrom": {"mean": 7.746523658e-07, "std": 1.808991374e-07, "min": 6.519378928e-07, "max": 9.824007445e-07, "median": 6.896184601e-07, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.all": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.crystal_interface": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.epitope": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.site": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.all": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.crystal_interface": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.epitope": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.site": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.all": {"mean": 7.746523658e-07, "std": 1.808991374e-07, "min": 6.519378928e-07, "max": 9.824007445e-07, "median": 6.896184601e-07, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.crystal_interface": {"mean": 8.719312962e-07, "std": 1.571105267e-07, "min": 7.576742443e-07, "max": 1.051095523e-06, "median": 8.070241218e-07, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.epitope": {"mean": 9.030037585e-07, "std": 1.724695402e-07, "min": 7.703686082e-07, "max": 1.097974666e-06, "median": 8.406680011e-07, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.site": {"mean": 9.030037585e-07, "std": 1.724695402e-07, "min": 7.703686082e-07, "max": 1.097974666e-06, "median": 8.406680011e-07, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.sequence_identity": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "native.ranking_score": {"mean": 0.6, "std": 0.05, "min": 0.55, "max": 0.65, "median": 0.6, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.n_bonds_evaluated": {"mean": 12.0, "std": 0.0, "min": 12.0, "max": 12.0, "median": 12.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_cis_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_max_dev": {"mean": 3.062454224, "std": 9.281559037e-05, "min": 3.062393188, "max": 3.062561035, "median": 3.062408447, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_mean_dev": {"mean": 1.275437673, "std": 9.931246028e-06, "min": 1.275426229, "max": 1.275444031, "median": 1.275442759, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_outlier_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_outlier_fraction": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}}
+      },
+      "backend_b": {
+        "coulomb.coulomb_energy_kJ": {"mean": -97.57277428, "std": 3.086999061, "min": -100.9867969, "max": -94.97812536, "median": -96.75340061, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.coulomb_energy_kcal": {"mean": -23.32045274, "std": 0.737810483, "min": -24.13642372, "max": -22.70031677, "median": -23.12461774, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_attractive": {"mean": 7.0, "std": 0.0, "min": 7.0, "max": 7.0, "median": 7.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_charged_pairs": {"mean": 18.33333333, "std": 0.5773502692, "min": 18.0, "max": 19.0, "median": 18.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_ionisable_residues_seen": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_repulsive": {"mean": 11.33333333, "std": 0.5773502692, "min": 11.0, "max": 12.0, "median": 11.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_residues_unrecognised": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.delta_sasa": {"mean": 1493.60616, "std": 21.88546188, "min": 1469.356323, "max": 1511.890015, "median": 1499.572144, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.sasa_complex": {"mean": 5415.610514, "std": 21.88546188, "min": 5397.32666, "max": 5439.860352, "median": 5409.644531, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.sasa_peptide": {"mean": 1616.008667, "std": 0.0, "min": 1616.008667, "max": 1616.008667, "median": 1616.008667, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.sasa_receptor": {"mean": 5293.208008, "std": 0.0, "min": 5293.208008, "max": 5293.208008, "median": 5293.208008, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_atoms.2.2": {"mean": 91.33333333, "std": 19.08751774, "min": 77.0, "max": 113.0, "median": 84.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_atoms.3.0": {"mean": 113.0, "std": 0.0, "min": 113.0, "max": 113.0, "median": 113.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_pairs.2.2": {"mean": 259.0, "std": 83.0722577, "min": 200.0, "max": 354.0, "median": 223.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_pairs.3.0": {"mean": 626.3333333, "std": 40.05413004, "min": 583.0, "max": 662.0, "median": 634.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.min_distance_angstrom": {"mean": 0.2577338549, "std": 0.1201042663, "min": 0.1208244681, "max": 0.3453431726, "median": 0.3070339239, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.overlap_volume_angstrom3": {"mean": 2030.058521, "std": 391.6128157, "min": 1610.20709, "max": 2385.429001, "median": 2094.539471, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.partner_buried_area_angstrom2": {"mean": 662.3349609, "std": 0.0, "min": 662.3349609, "max": 662.3349609, "median": 662.3349609, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.pose_buried_area_angstrom2": {"mean": 638.7580973, "std": 16.89267405, "min": 620.0706787, "max": 652.9440918, "median": 643.2595215, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.shared_buried_area_angstrom2": {"mean": 555.726237, "std": 31.95864871, "min": 520.4609985, "max": 582.7730713, "median": 563.9446411, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.shared_fraction_of_partner": {"mean": 0.839041074, "std": 0.04825148995, "min": 0.7857972616, "max": 0.8798766571, "median": 0.8514493034, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.shell_fraction": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.covered_fraction": {"mean": 0.9466666667, "std": 0.02309401077, "min": 0.92, "max": 0.96, "median": 0.96, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.interface_in_set_fraction": {"mean": 0.9594444444, "std": 0.0009622504486, "min": 0.9583333333, "max": 0.96, "median": 0.96, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.jaccard": {"mean": 0.9102564103, "std": 0.02220577958, "min": 0.8846153846, "max": 0.9230769231, "median": 0.9230769231, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_interface": {"mean": 24.66666667, "std": 0.5773502692, "min": 24.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_overlap": {"mean": 23.66666667, "std": 0.5773502692, "min": 23.0, "max": 24.0, "median": 24.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_set": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_set_mapped": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.receptor_buried_area_in_set_angstrom2": {"mean": 635.3988848, "std": 18.04204083, "min": 615.4092574, "max": 650.4756601, "median": 640.311737, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.receptor_buried_area_in_set_fraction": {"mean": 0.9947064657, "std": 0.001967378472, "min": 0.9924824355, "max": 0.9962195359, "median": 0.9954174257, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.covered_fraction": {"mean": 0.9848484848, "std": 0.02624319405, "min": 0.9545454545, "max": 1.0, "median": 1.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.interface_in_set_fraction": {"mean": 0.8783333333, "std": 0.002886751346, "min": 0.875, "max": 0.88, "median": 0.88, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.jaccard": {"mean": 0.8666666667, "std": 0.02309401077, "min": 0.84, "max": 0.88, "median": 0.88, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_interface": {"mean": 24.66666667, "std": 0.5773502692, "min": 24.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_overlap": {"mean": 21.66666667, "std": 0.5773502692, "min": 21.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_set": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_set_mapped": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.receptor_buried_area_in_set_angstrom2": {"mean": 629.1091543, "std": 18.2866308, "min": 608.8679375, "max": 644.4375188, "median": 634.0220064, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.receptor_buried_area_in_set_fraction": {"mean": 0.9848482054, "std": 0.002610965418, "min": 0.9819331222, "max": 0.9869719735, "median": 0.9856395206, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_fit_atoms": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_fit_residues": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_paired": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_receptor_residues_pose": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_receptor_residues_reference": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_rejected": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.paired_fraction": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.receptor_rmsd_angstrom": {"mean": 1.114615711e-06, "std": 3.688903701e-07, "min": 6.969735783e-07, "max": 1.395972231e-06, "median": 1.250901323e-06, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.all": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.crystal_interface": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.epitope": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.site": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.all": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.crystal_interface": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.epitope": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.site": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.all": {"mean": 1.114615711e-06, "std": 3.688903701e-07, "min": 6.969735783e-07, "max": 1.395972231e-06, "median": 1.250901323e-06, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.crystal_interface": {"mean": 1.114561141e-06, "std": 3.907684584e-07, "min": 6.649986604e-07, "max": 1.372811326e-06, "median": 1.305873435e-06, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.epitope": {"mean": 1.112938213e-06, "std": 4.025894492e-07, "min": 6.484509363e-07, "max": 1.361520215e-06, "median": 1.328843487e-06, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.site": {"mean": 1.112938213e-06, "std": 4.025894492e-07, "min": 6.484509363e-07, "max": 1.361520215e-06, "median": 1.328843487e-06, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.sequence_identity": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "native.ranking_score": {"mean": 0.75, "std": 0.05, "min": 0.7, "max": 0.8, "median": 0.75, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.n_bonds_evaluated": {"mean": 12.0, "std": 0.0, "min": 12.0, "max": 12.0, "median": 12.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_cis_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_max_dev": {"mean": 3.062444051, "std": 8.676514745e-05, "min": 3.062347412, "max": 3.062515259, "median": 3.062469482, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_mean_dev": {"mean": 1.275451236, "std": 1.286315147e-05, "min": 1.275436401, "max": 1.27545929, "median": 1.275458018, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_outlier_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_outlier_fraction": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}}
+      },
+      "all": {
+        "coulomb.coulomb_energy_kJ": {"mean": -96.38756629, "std": 3.578924456, "min": -100.9867969, "max": -91.58912, "median": -95.86576298, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.coulomb_energy_kcal": {"mean": -23.03718123, "std": 0.8553834742, "min": -24.13642372, "max": -21.89032505, "median": -22.91246725, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_attractive": {"mean": 6.833333333, "std": 0.4082482905, "min": 6.0, "max": 7.0, "median": 7.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_charged_pairs": {"mean": 18.0, "std": 1.095445115, "min": 16.0, "max": 19.0, "median": 18.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_ionisable_residues_seen": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_repulsive": {"mean": 11.16666667, "std": 0.7527726527, "min": 10.0, "max": 12.0, "median": 11.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.n_residues_unrecognised": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.delta_sasa": {"mean": 1487.279907, "std": 18.12898071, "min": 1465.720581, "max": 1511.890015, "median": 1488.57019, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.sasa_complex": {"mean": 5421.936768, "std": 18.12898071, "min": 5397.32666, "max": 5443.496094, "median": 5420.646484, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.sasa_peptide": {"mean": 1616.008667, "std": 0.0, "min": 1616.008667, "max": 1616.008667, "median": 1616.008667, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.sasa_receptor": {"mean": 5293.208008, "std": 0.0, "min": 5293.208008, "max": 5293.208008, "median": 5293.208008, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_atoms.2.2": {"mean": 102.1666667, "std": 16.92828009, "min": 77.0, "max": 113.0, "median": 113.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_atoms.3.0": {"mean": 113.0, "std": 0.0, "min": 113.0, "max": 113.0, "median": 113.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_pairs.2.2": {"mean": 328.3333333, "std": 96.65333241, "min": 200.0, "max": 438.0, "median": 351.5, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_pairs.3.0": {"mean": 696.3333333, "std": 81.32322342, "min": 583.0, "max": 777.0, "median": 705.5, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.min_distance_angstrom": {"mean": 0.2789821233, "std": 0.1853838895, "min": 0.0, "max": 0.5006918745, "median": 0.3261885483, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.overlap_volume_angstrom3": {"mean": 3065.336305, "std": 1188.937442, "min": 1610.20709, "max": 4504.290117, "median": 3038.475822, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.partner_buried_area_angstrom2": {"mean": 662.3349609, "std": 0.0, "min": 662.3349609, "max": 662.3349609, "median": 662.3349609, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.pose_buried_area_angstrom2": {"mean": 650.8445435, "std": 17.01920284, "min": 620.0706787, "max": 663.7366943, "median": 657.6395264, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.shared_buried_area_angstrom2": {"mean": 602.0635986, "std": 55.36649015, "min": 520.4609985, "max": 662.3349609, "median": 608.388855, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.shared_fraction_of_partner": {"mean": 0.9090016897, "std": 0.08359288489, "min": 0.7857972616, "max": 1.0, "median": 0.9185516255, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.shell_fraction": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.covered_fraction": {"mean": 0.9666666667, "std": 0.03011090611, "min": 0.92, "max": 1.0, "median": 0.96, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.interface_in_set_fraction": {"mean": 0.9797222222, "std": 0.02222152777, "min": 0.9583333333, "max": 1.0, "median": 0.98, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.jaccard": {"mean": 0.9484615385, "std": 0.04649871157, "min": 0.8846153846, "max": 1.0, "median": 0.9415384615, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_interface": {"mean": 24.66666667, "std": 0.5163977795, "min": 24.0, "max": 25.0, "median": 25.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_overlap": {"mean": 24.16666667, "std": 0.7527726527, "min": 23.0, "max": 25.0, "median": 24.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_set": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_set_mapped": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.receptor_buried_area_in_set_angstrom2": {"mean": 649.1253773, "std": 18.8833214, "min": 615.4092574, "max": 663.7367509, "median": 656.2865979, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.receptor_buried_area_in_set_fraction": {"mean": 0.997293505, "std": 0.003097853401, "min": 0.9924824355, "max": 1.000000085, "median": 0.9979305344, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.covered_fraction": {"mean": 0.9924242424, "std": 0.01855674048, "min": 0.9545454545, "max": 1.0, "median": 1.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.interface_in_set_fraction": {"mean": 0.8852777778, "std": 0.01550686825, "min": 0.875, "max": 0.9166666667, "median": 0.88, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.jaccard": {"mean": 0.8794444444, "std": 0.02425940062, "min": 0.84, "max": 0.9166666667, "median": 0.88, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_interface": {"mean": 24.66666667, "std": 0.5163977795, "min": 24.0, "max": 25.0, "median": 25.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_overlap": {"mean": 21.83333333, "std": 0.4082482905, "min": 21.0, "max": 22.0, "median": 22.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_set": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_set_mapped": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.receptor_buried_area_in_set_angstrom2": {"mean": 642.8356468, "std": 18.97719895, "min": 608.8679375, "max": 657.4470204, "median": 650.122662, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.receptor_buried_area_in_set_fraction": {"mean": 0.9876204908, "std": 0.003459471033, "min": 0.9819331222, "max": 0.9905238418, "median": 0.988558604, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_fit_atoms": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_fit_residues": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_paired": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_receptor_residues_pose": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_receptor_residues_reference": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_rejected": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.paired_fraction": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.receptor_rmsd_angstrom": {"mean": 9.446340383e-07, "std": 3.196785323e-07, "min": 6.519378928e-07, "max": 1.395972231e-06, "median": 8.396871614e-07, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.all": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.crystal_interface": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.epitope": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.site": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.all": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.crystal_interface": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.epitope": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.site": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.all": {"mean": 9.446340383e-07, "std": 3.196785323e-07, "min": 6.519378928e-07, "max": 1.395972231e-06, "median": 8.396871614e-07, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.crystal_interface": {"mean": 9.932462184e-07, "std": 2.976814651e-07, "min": 6.649986604e-07, "max": 1.372811326e-06, "median": 9.290598222e-07, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.epitope": {"mean": 1.007970986e-06, "std": 2.999188978e-07, "min": 6.484509363e-07, "max": 1.361520215e-06, "median": 9.693213336e-07, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.site": {"mean": 1.007970986e-06, "std": 2.999188978e-07, "min": 6.484509363e-07, "max": 1.361520215e-06, "median": 9.693213336e-07, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.sequence_identity": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "native.ranking_score": {"mean": 0.675, "std": 0.09354143467, "min": 0.55, "max": 0.8, "median": 0.675, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.n_bonds_evaluated": {"mean": 12.0, "std": 0.0, "min": 12.0, "max": 12.0, "median": 12.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_cis_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_max_dev": {"mean": 3.062449137, "std": 8.054945026e-05, "min": 3.062347412, "max": 3.062561035, "median": 3.062438965, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_mean_dev": {"mean": 1.275444455, "std": 1.26817038e-05, "min": 1.275426229, "max": 1.27545929, "median": 1.275443395, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_outlier_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "omega.omega_outlier_fraction": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}}
+      }
+    },
+    "representatives": {"backend_a": "backend_a-s2", "backend_b": "backend_b-s2", "all": "backend_a-s3", "rule": "medoid", "reasons": {}},
+    "warnings": [],
+    "nonfinite_fields": []
+  }
+}
