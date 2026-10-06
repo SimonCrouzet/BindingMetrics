@@ -52,6 +52,7 @@ _EXPORTS = {
     "RepresentativeOptions": "binding_metrics.poses.score",
     "PoseScoringError": "binding_metrics.poses.score",
     "SCHEMA_VERSION": "binding_metrics.poses.score",
+    "write_pose_report": "binding_metrics.poses.report",
     "aggregate_poses": "binding_metrics.poses.aggregate",
     "aggregate_values": "binding_metrics.poses.aggregate",
     "select_representatives": "binding_metrics.poses.aggregate",
@@ -148,6 +149,7 @@ if TYPE_CHECKING:
         normalize_references,
         polymer_residues,
     )
+    from binding_metrics.poses.report import write_pose_report
     from binding_metrics.poses.score import (
         SCHEMA_VERSION,
         AggregationOptions,
@@ -219,4 +221,5 @@ __all__ = [
     "select_representatives",
     "sphere_overlap_volume",
     "superpose_receptor",
+    "write_pose_report",
 ]

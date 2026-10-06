@@ -546,8 +546,9 @@ class PoseSetResult(dict):
 
     ``to_dict()`` is a plain-dictionary copy, ``to_json()`` the canonical JSON text,
     ``from_dict()`` the inverse (it rejects a ``schema_version`` it does not know) and
-    ``to_flat_rows()`` one flat row of scalar columns per pose. ``write_pose_report`` in
-    ``binding_metrics.poses.report`` writes JSON, CSV, Markdown and HTML.
+    ``to_flat_rows()`` one flat row of scalar columns per pose, ``summary()`` a Markdown text.
+    ``write_pose_report`` in ``binding_metrics.poses.report`` writes JSON, CSV, Markdown and
+    HTML.
     """
 
     @property
@@ -618,6 +619,16 @@ class PoseSetResult(dict):
         if missing:
             raise ValueError(f"the pose-set result lacks the keys {missing}")
         return cls(_plain(dict(data)))
+
+    def summary(self) -> str:
+        """A short Markdown summary: a table per group of poses, the failed poses with their
+        reasons, the agreement block, the aggregates, the representatives and the warnings.
+
+        Always a string. ``binding_metrics.poses.report`` has the rest of the writers.
+        """
+        from binding_metrics.poses.report import summary_markdown
+
+        return summary_markdown(self)
 
     def to_flat_rows(self, *, max_list_items: int = 16) -> list[dict]:
         """One flat dictionary of scalar columns per pose, rows in id order.
