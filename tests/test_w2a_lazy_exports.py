@@ -23,6 +23,7 @@ PACKAGES = [
     "binding_metrics.io",
     "binding_metrics.protocols",
     "binding_metrics.metrics",
+    "binding_metrics.poses",
 ]
 
 

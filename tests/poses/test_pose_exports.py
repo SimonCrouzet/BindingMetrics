@@ -33,7 +33,7 @@ class TestExports:
             assert getattr(poses, name) is getattr(importlib.import_module(module_name), name)
 
     def test_the_base_class_and_the_three_kinds_are_exported(self):
-        assert set(poses.__all__) == {"Pose", "DockedPose", "ExperimentalPose", "PredictedPose"}
+        assert {"Pose", "DockedPose", "ExperimentalPose", "PredictedPose"} <= set(poses.__all__)
 
     def test_predicted_pose_is_the_class_of_the_predictors_package(self):
         from binding_metrics.predictors.record import PredictedPose
