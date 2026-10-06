@@ -11,6 +11,8 @@ engine decides what a gap or a correlation means.
   of a back-end hold in the interface, and the Jaccard index of two back-ends' consensus sets.
 * ``rank_agreement``: Spearman's rho or Kendall's tau between two back-ends' values of a
   metric over a population of constructs.
+* ``hotspot_consistency``: whether the peptide positions that an alanine scan finds sensitive
+  are the positions a pose buries and holds in the interface.
 
 A value that cannot be computed is None with a reason, never NaN. A reason is a short sentence
 under the name of the field it explains (``reasons["standardised_gap"]``); the dictionary is
@@ -782,3 +784,188 @@ def _valid_values(rows: Mapping, constructs: Sequence, metric: str) -> dict[Any,
         construct: _number(rows[construct].get(metric)) if construct in rows else None
         for construct in constructs
     }
+
+
+# ---------------------------------------------------------------------- hotspot consistency
+
+#: Default size of the set of most sensitive positions. A choice, not a benchmark: the engine
+#: sets it in its own configuration.
+DEFAULT_TOP_M = 3
+
+#: Positions needed for a rank correlation between buried area and sensitivity.
+MIN_POSITIONS_FOR_RANK = 3
+
+
+def _read_sensitivities(sensitivities: Any) -> tuple[dict[int, float], int]:
+    """``({position: finite sensitivity}, number of positions with no usable value)``."""
+    if not isinstance(sensitivities, Mapping):
+        raise ValueError(
+            "sensitivities must be a mapping {binder position: sensitivity}, "
+            f"got {type(sensitivities).__name__}"
+        )
+    values: dict[int, float] = {}
+    missing = 0
+    for position, value in sensitivities.items():
+        if isinstance(position, (bool, np.bool_)) or not isinstance(position, (int, np.integer)):
+            raise ValueError(
+                f"sensitivity keys must be binder positions (integers), got {position!r}"
+            )
+        if position < 1:
+            raise ValueError(f"binder positions are 1-based, got {position!r}")
+        if value is None:
+            missing += 1
+        elif isinstance(value, (bool, np.bool_)) or not isinstance(
+            value, (int, float, np.integer, np.floating)
+        ):
+            raise ValueError(
+                f"the sensitivity of position {position} must be a number, got {value!r}"
+            )
+        elif _number(value) is None:
+            missing += 1
+        else:
+            values[int(position)] = float(value)
+    return values, missing
+
+
+def _read_binder_rows(residue_table: Any) -> dict[int, tuple[Optional[float], bool]]:
+    """``{binder_index: (buried area or None, in_interface)}`` from a per-residue table."""
+    if isinstance(residue_table, (str, bytes, Mapping)) or not isinstance(residue_table, Iterable):
+        raise ValueError("residue_table must be a list of row dictionaries")
+    binder: dict[int, tuple[Optional[float], bool]] = {}
+    for position, line in enumerate(residue_table):
+        where = f"line {position} of the residue table"
+        if not isinstance(line, Mapping):
+            raise ValueError(f"{where} is a {type(line).__name__}, not a mapping")
+        role = line.get("role")
+        if role not in ("binder", "receptor"):
+            raise ValueError(f"{where} has role {role!r}, expected 'binder' or 'receptor'")
+        if role == "receptor":
+            continue
+        for column in ("binder_index", "buried_area_angstrom2", "in_interface"):
+            if column not in line:
+                raise ValueError(f"{where} is a binder line without {column!r}")
+        index = line["binder_index"]
+        if isinstance(index, (bool, np.bool_)) or not isinstance(index, (int, np.integer)):
+            raise ValueError(f"{where} has binder_index {index!r}, expected an integer")
+        flag = line["in_interface"]
+        if not isinstance(flag, (bool, np.bool_)):
+            raise ValueError(f"{where} has in_interface {flag!r}, expected a bool")
+        area = line["buried_area_angstrom2"]
+        if area is not None and (
+            isinstance(area, (bool, np.bool_))
+            or not isinstance(area, (int, float, np.integer, np.floating))
+        ):
+            raise ValueError(f"{where} has buried_area_angstrom2 {area!r}, expected a number")
+        if int(index) in binder:
+            raise ValueError(f"binder position {int(index)} appears twice in the residue table")
+        binder[int(index)] = (_number(area), bool(flag))
+    return binder
+
+
+def hotspot_consistency(
+    sensitivities: Mapping[int, Optional[float]],
+    residue_table: Iterable[Mapping[str, Any]],
+    top_m: int = DEFAULT_TOP_M,
+) -> dict[str, Any]:
+    """Do the peptide positions that an alanine scan finds sensitive sit in the interface?
+
+    Two numbers for one pose, from the sensitivities of the scan and the per-residue interface
+    table of that pose (``buried_area_angstrom2`` and ``in_interface`` of the binder lines):
+
+    * ``spearman_area_vs_sensitivity``: Spearman's rho between the buried area and the
+      sensitivity over the positions that have both. A positive value means that the more
+      sensitive positions are the more buried ones.
+    * ``top_in_interface_fraction``: the fraction of the ``top_m`` most sensitive positions
+      that are in the interface.
+
+    Larger sensitivity means more important; a scan that scores the other way (a loss of
+    affinity written as a negative number, say) is passed with the sign changed. Positions are
+    the 1-based positions in the binder chain, as ``binder_index``. Only positions with a
+    finite sensitivity and a finite buried area are used; the others are counted, never
+    guessed.
+
+    Tie rule at the cut: every position whose sensitivity is at least that of the
+    ``top_m``-th most sensitive position is in the top set, so the set has more than
+    ``top_m`` members when a tie straddles the cut, and the fraction is taken over the whole
+    set. The result does not depend on the order of the table or of the mapping. When all
+    sensitivities tie, the top set is every position.
+
+    Args:
+        sensitivities: ``{binder position: sensitivity}``. None and non-finite values are
+            positions without a sensitivity (a glycine or alanine that cannot be scanned).
+        residue_table: The per-residue table of one pose, one dictionary per residue; receptor
+            lines are ignored. Binder lines need ``binder_index``, ``buried_area_angstrom2``
+            (None for an unknown area) and ``in_interface``.
+        top_m: Size of the top set, at least 1 (default ``DEFAULT_TOP_M``, 3).
+
+    Returns:
+        A JSON-ready dictionary: ``spearman_area_vs_sensitivity`` and
+        ``top_in_interface_fraction`` (each None with a reason), ``top_m``, ``n_top`` (the size
+        of the top set), ``n_top_in_interface``, ``top_positions`` (most sensitive first, ties
+        by position), ``n_positions`` (positions used), ``n_missing_sensitivity`` (positions
+        of ``sensitivities`` with no usable value), ``n_unmatched_positions`` (positions with
+        a sensitivity but no usable area in the table) and ``reasons`` (``{field: sentence}``,
+        empty when both numbers were computed). The Spearman value needs ``n_positions >= 3``
+        and a spread in both lists; the fraction needs ``n_positions >= top_m``. When the
+        fraction is None, ``n_top``, ``n_top_in_interface`` and ``top_positions`` are None.
+        Put the dictionary in a row (``row["hotspots"]``) and ``aggregate_poses`` summarises
+        its numbers over poses like any other block.
+
+    Raises:
+        ValueError: If ``sensitivities`` is not a mapping with positive integer keys and
+            numeric or None values, ``residue_table`` is not a list of well-formed lines, a
+            binder position occurs twice in it, or ``top_m`` is not an integer of at least 1.
+    """
+    if isinstance(top_m, (bool, np.bool_)) or not isinstance(top_m, (int, np.integer)) or top_m < 1:
+        raise ValueError(f"top_m must be an integer of at least 1, got {top_m!r}")
+    top_m = int(top_m)
+    scan, n_missing = _read_sensitivities(sensitivities)
+    table = _read_binder_rows(residue_table)
+
+    used = sorted(p for p in scan if p in table and table[p][0] is not None)
+    n_positions = len(used)
+    reasons: dict[str, str] = {}
+    result: dict[str, Any] = {
+        "spearman_area_vs_sensitivity": None,
+        "top_in_interface_fraction": None,
+        "top_m": top_m,
+        "n_top": None,
+        "n_top_in_interface": None,
+        "top_positions": None,
+        "n_positions": n_positions,
+        "n_missing_sensitivity": n_missing,
+        "n_unmatched_positions": len(scan) - n_positions,
+        "reasons": reasons,
+    }
+
+    if n_positions < MIN_POSITIONS_FOR_RANK:
+        reasons["spearman_area_vs_sensitivity"] = (
+            f"needs at least {MIN_POSITIONS_FOR_RANK} positions with both a sensitivity and a "
+            f"buried area (n = {n_positions})"
+        )
+    else:
+        rho, why = _rank_correlation(
+            [table[p][0] for p in used],
+            [scan[p] for p in used],
+            "spearman",
+            ("the buried area", "the sensitivity"),
+        )
+        result["spearman_area_vs_sensitivity"] = rho
+        if why is not None:
+            reasons["spearman_area_vs_sensitivity"] = why
+
+    if n_positions < top_m:
+        reasons["top_in_interface_fraction"] = (
+            f"only {n_positions} positions have both a sensitivity and a buried area, "
+            f"fewer than top_m = {top_m}"
+        )
+    else:
+        ranked = sorted(used, key=lambda p: (-scan[p], p))
+        cut = scan[ranked[top_m - 1]]
+        top = [p for p in ranked if scan[p] >= cut]
+        inside = sum(table[p][1] for p in top)
+        result["top_in_interface_fraction"] = inside / len(top)
+        result["n_top"] = len(top)
+        result["n_top_in_interface"] = inside
+        result["top_positions"] = top
+    return result

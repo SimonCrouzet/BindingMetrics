@@ -12,6 +12,7 @@ from binding_metrics.poses.reconcile import (
     compare_consensus_interfaces,
     consensus_interface,
     gap_between_backends,
+    hotspot_consistency,
     rank_agreement,
 )
 from binding_metrics.poses.reference import ResidueKey
@@ -844,3 +845,293 @@ class TestRankAgreementValidation:
         before = json.dumps(table, sort_keys=True)
         rank_agreement(table, "a", "b")
         assert json.dumps(table, sort_keys=True) == before
+
+
+# ---------------------------------------------------------------------- hotspot consistency
+
+
+def binder_table(areas, interface=None, threshold=0.5):
+    """Binder lines of a residue table for positions 1..n; None for an unknown area.
+
+    ``interface`` lists the positions in the interface; by default those with an area above
+    ``threshold`` (0.5, the interface threshold of the toolkit).
+    """
+    if interface is None:
+        interface = [i for i, a in enumerate(areas, start=1) if a is not None and a > threshold]
+    return [
+        {
+            "role": "binder",
+            "binder_index": i,
+            "buried_area_angstrom2": area,
+            "in_interface": i in set(interface),
+        }
+        for i, area in enumerate(areas, start=1)
+    ]
+
+
+def sensitivities_of(values):
+    return {i: v for i, v in enumerate(values, start=1)}
+
+
+class TestHotspotSpearman:
+    def test_spearman_without_ties_matches_the_closed_form(self):
+        areas = [10.0, 20.0, 30.0, 40.0, 50.0]
+        scan = sensitivities_of([1.0, 3.0, 2.0, 5.0, 4.0])  # rank differences 0, 1, 1, 1, 1
+        got = hotspot_consistency(scan, binder_table(areas))
+        assert got["spearman_area_vs_sensitivity"] == pytest.approx(1 - 6 * 4 / (5 * 24))
+        assert got["n_positions"] == 5 and got["reasons"] == {}
+
+    def test_spearman_with_tied_areas_uses_midranks(self):
+        # area ranks 1.5, 1.5, 3, 4, 5 and sensitivity ranks 1, 3, 2, 5, 4:
+        # Pearson of the ranks = 7 / sqrt(9.5 * 10)
+        areas = [0.0, 0.0, 30.0, 40.0, 50.0]
+        scan = sensitivities_of([0.1, 0.3, 0.2, 0.5, 0.4])
+        got = hotspot_consistency(scan, binder_table(areas))
+        assert got["spearman_area_vs_sensitivity"] == pytest.approx(7 / math.sqrt(95), rel=1e-14)
+
+    def test_more_buried_and_more_sensitive_gives_one_and_the_reverse_minus_one(self):
+        areas = [5.0, 80.0, 20.0, 150.0, 0.0, 60.0]
+        scan = sensitivities_of([0.2, 1.5, 0.7, 4.0, 0.0, 1.1])
+        up = hotspot_consistency(scan, binder_table(areas))
+        down = hotspot_consistency({k: -v for k, v in scan.items()}, binder_table(areas))
+        assert up["spearman_area_vs_sensitivity"] == pytest.approx(1.0)
+        assert down["spearman_area_vs_sensitivity"] == pytest.approx(-1.0)
+
+    def test_agrees_with_scipy_on_seeded_data(self):
+        stats = pytest.importorskip("scipy.stats")
+        rng = np.random.default_rng(21)
+        for n in (3, 5, 13, 40):
+            areas = rng.integers(0, 6, size=n).astype(float) * 20.0
+            sens = (areas / 20.0 + rng.normal(0, 1.2, size=n)).round(1)
+            if np.ptp(areas) == 0 or np.ptp(sens) == 0:
+                continue
+            got = hotspot_consistency(sensitivities_of(sens), binder_table(list(areas)))
+            assert got["spearman_area_vs_sensitivity"] == pytest.approx(
+                stats.spearmanr(areas, sens)[0], abs=1e-12
+            )
+
+    def test_receptor_lines_and_positions_without_a_sensitivity_are_ignored(self):
+        areas = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]
+        table = binder_table(areas) + [
+            {"role": "receptor", "buried_area_angstrom2": 999.0, "in_interface": True},
+            {"role": "receptor"},
+        ]
+        scan = {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0}  # positions 5 and 6 were not scanned
+        got = hotspot_consistency(scan, table)
+        assert got["n_positions"] == 4 and got["spearman_area_vs_sensitivity"] == pytest.approx(1.0)
+        assert got["n_unmatched_positions"] == 0
+
+    def test_order_of_the_table_and_of_the_mapping_does_not_matter(self):
+        areas = [0.0, 12.0, 0.0, 44.0, 30.0, 7.0, 90.0]
+        scan = sensitivities_of([0.0, 0.6, 0.1, 2.5, 1.0, 0.3, 3.0])
+        expected = hotspot_consistency(scan, binder_table(areas))
+        order = np.random.default_rng(2).permutation(len(areas))
+        table = binder_table(areas)
+        shuffled_table = [table[i] for i in order]
+        shuffled_scan = {k: scan[k] for k in (int(i) + 1 for i in order)}
+        assert hotspot_consistency(shuffled_scan, shuffled_table) == expected
+
+
+class TestHotspotTopM:
+    scan = sensitivities_of([5.0, 4.0, 3.0, 2.0, 1.0])
+
+    def test_fraction_of_the_top_m_in_the_interface(self):
+        table = binder_table([9.0] * 5, interface=[1, 2, 4])
+        three = hotspot_consistency(self.scan, table, top_m=3)
+        assert three["top_in_interface_fraction"] == pytest.approx(2 / 3)
+        assert (three["n_top"], three["n_top_in_interface"]) == (3, 2)
+        assert three["top_positions"] == [1, 2, 3] and three["top_m"] == 3
+        assert hotspot_consistency(self.scan, table, top_m=2)["top_in_interface_fraction"] == 1.0
+        assert hotspot_consistency(self.scan, table, top_m=1)["top_in_interface_fraction"] == 1.0
+        five = hotspot_consistency(self.scan, table, top_m=5)
+        assert five["top_in_interface_fraction"] == pytest.approx(3 / 5)
+
+    def test_default_top_m_is_three(self):
+        table = binder_table([9.0] * 5, interface=[1, 2, 4])
+        assert hotspot_consistency(self.scan, table) == hotspot_consistency(
+            self.scan, table, top_m=3
+        )
+        assert hotspot_consistency(self.scan, table)["top_m"] == 3
+
+    def test_ties_at_the_cut_all_enter_the_top_set(self):
+        scan = sensitivities_of([5.0, 4.0, 4.0, 4.0, 1.0])
+        table = binder_table([9.0] * 5, interface=[1, 2])
+        for top_m in (2, 3, 4):  # the cut falls inside the tie of positions 2, 3, 4
+            got = hotspot_consistency(scan, table, top_m=top_m)
+            assert got["top_positions"] == [1, 2, 3, 4]
+            assert (got["n_top"], got["n_top_in_interface"]) == (4, 2)
+            assert got["top_in_interface_fraction"] == pytest.approx(0.5)
+        one = hotspot_consistency(scan, table, top_m=1)
+        assert one["top_positions"] == [1] and one["top_in_interface_fraction"] == 1.0
+        five = hotspot_consistency(scan, table, top_m=5)
+        assert five["n_top"] == 5 and five["top_in_interface_fraction"] == pytest.approx(2 / 5)
+
+    def test_the_tie_rule_does_not_pick_by_position(self):
+        scan = sensitivities_of([3.0, 3.0, 3.0, 3.0])
+        table = binder_table([9.0] * 4, interface=[4])
+        got = hotspot_consistency(scan, table, top_m=1)
+        assert got["top_positions"] == [1, 2, 3, 4]
+        assert got["top_in_interface_fraction"] == pytest.approx(0.25)
+        assert got["spearman_area_vs_sensitivity"] is None
+
+    def test_top_positions_are_most_sensitive_first_with_ties_by_position(self):
+        scan = {7: 1.0, 2: 3.0, 5: 3.0, 9: 2.0}
+        table = [dict(line, binder_index=p) for line, p in zip(binder_table([5.0] * 4), scan)]
+        got = hotspot_consistency(scan, table, top_m=3)
+        assert got["top_positions"] == [2, 5, 9]
+
+    def test_negative_sensitivities_are_ordinary_numbers(self):
+        scan = sensitivities_of([-1.0, -3.0, -2.0])
+        table = binder_table([9.0, 9.0, 0.0], interface=[1, 2])
+        got = hotspot_consistency(scan, table, top_m=1)
+        assert got["top_positions"] == [1]
+
+
+class TestHotspotNoneWithReason:
+    def test_fewer_than_three_overlapping_positions(self):
+        got = hotspot_consistency({1: 2.0, 2: 1.0}, binder_table([30.0, 10.0]), top_m=2)
+        assert got["n_positions"] == 2
+        assert got["spearman_area_vs_sensitivity"] is None
+        assert "at least 3 positions" in got["reasons"]["spearman_area_vs_sensitivity"]
+        assert "n = 2" in got["reasons"]["spearman_area_vs_sensitivity"]
+        assert got["top_in_interface_fraction"] == 1.0  # the fraction needs only top_m positions
+
+    def test_top_m_larger_than_the_positions_gives_no_fraction(self):
+        scan = sensitivities_of([3.0, 2.0, 1.0, 0.5])
+        got = hotspot_consistency(scan, binder_table([9.0, 8.0, 7.0, 6.0]), top_m=5)
+        assert got["top_in_interface_fraction"] is None
+        assert (got["n_top"], got["n_top_in_interface"], got["top_positions"]) == (None,) * 3
+        assert "fewer than top_m = 5" in got["reasons"]["top_in_interface_fraction"]
+        assert got["spearman_area_vs_sensitivity"] is not None
+
+    def test_a_constant_buried_area_gives_no_rank_correlation(self):
+        got = hotspot_consistency(
+            sensitivities_of([1.0, 2.0, 3.0, 4.0]), binder_table([0.0, 0.0, 0.0, 0.0]), top_m=2
+        )
+        assert got["spearman_area_vs_sensitivity"] is None
+        reason = got["reasons"]["spearman_area_vs_sensitivity"]
+        assert "the buried area" in reason and "tied" in reason
+        assert got["top_in_interface_fraction"] == 0.0  # nothing is buried, nothing is in
+
+    def test_a_constant_sensitivity_gives_no_rank_correlation(self):
+        got = hotspot_consistency({1: 1.0, 2: 1.0, 3: 1.0}, binder_table([5.0, 50.0, 500.0]))
+        assert got["spearman_area_vs_sensitivity"] is None
+        assert "the sensitivity" in got["reasons"]["spearman_area_vs_sensitivity"]
+        assert got["top_positions"] == [1, 2, 3]
+
+    def test_missing_values_are_dropped_and_counted(self):
+        scan = {1: 1.0, 2: None, 3: float("nan"), 4: 4.0, 5: 5.0, 6: 6.0, 8: 2.0, 7: float("inf")}
+        areas = [10.0, 20.0, 30.0, None, 50.0, 60.0, 70.0]  # no row for position 8; 4 unknown
+        got = hotspot_consistency(scan, binder_table(areas), top_m=2)
+        assert got["n_missing_sensitivity"] == 3  # positions 2, 3 and 7
+        assert got["n_unmatched_positions"] == 2  # position 4 (area None) and 8 (no line)
+        assert got["n_positions"] == 3  # positions 1, 5 and 6
+        assert got["top_positions"] == [6, 5]
+        assert got["spearman_area_vs_sensitivity"] == pytest.approx(1.0)
+
+    def test_nan_infinite_and_none_areas_are_unmatched_not_errors(self):
+        areas = [10.0, float("nan"), float("inf"), None, 40.0, 50.0]
+        got = hotspot_consistency(sensitivities_of([1, 2, 3, 4, 5, 6]), binder_table(areas))
+        assert got["n_positions"] == 3 and got["n_unmatched_positions"] == 3
+
+    def test_empty_inputs_give_none_with_reasons_not_an_error(self):
+        got = hotspot_consistency({}, [])
+        assert got["n_positions"] == 0
+        assert got["spearman_area_vs_sensitivity"] is None
+        assert got["top_in_interface_fraction"] is None
+        assert set(got["reasons"]) == {"spearman_area_vs_sensitivity", "top_in_interface_fraction"}
+        only_scan = hotspot_consistency(sensitivities_of([1.0, 2.0, 3.0]), [])
+        assert only_scan["n_unmatched_positions"] == 3
+        only_table = hotspot_consistency({}, binder_table([1.0, 2.0, 3.0]))
+        assert only_table["n_positions"] == 0
+
+    def test_nothing_is_nan_and_the_result_is_json_ready(self):
+        cases = [
+            hotspot_consistency({}, []),
+            hotspot_consistency({1: 1.0, 2: 1.0, 3: 1.0}, binder_table([1.0, 2.0, 3.0])),
+            hotspot_consistency(
+                {1: float("nan"), 2: 1.0}, binder_table([float("nan"), 2.0, 3.0]), top_m=1
+            ),
+        ]
+        for result in cases:
+            json.dumps(result, allow_nan=False)
+
+
+class TestHotspotInRows:
+    def test_the_block_is_aggregated_like_any_other_numeric_block(self):
+        scan = sensitivities_of([0.1, 0.4, 0.2, 0.9, 0.7])
+        good = hotspot_consistency(scan, binder_table([0.0, 30.0, 5.0, 90.0, 60.0]))
+        blank = hotspot_consistency({}, [])
+        rows = [
+            make_row("a1", "a", 1, hotspots=good),
+            make_row("a2", "a", 2, hotspots=good),
+            make_row("a3", "a", 3, hotspots=blank),
+        ]
+        entry = aggregate_poses(rows)["a"]["hotspots.spearman_area_vs_sensitivity"]
+        assert (entry["n_ok"], entry["n_total"]) == (2, 3)
+        assert entry["mean"] == pytest.approx(good["spearman_area_vs_sensitivity"])
+        fraction = aggregate_poses(rows)["a"]["hotspots.top_in_interface_fraction"]
+        assert (fraction["n_ok"], fraction["n_total"]) == (2, 3)
+
+
+class TestHotspotValidation:
+    table = binder_table([1.0, 2.0, 3.0])
+
+    @pytest.mark.parametrize("bad", [0, -1, 1.5, True, None, "3"])
+    def test_top_m_must_be_a_positive_integer(self, bad):
+        with pytest.raises(ValueError, match="top_m"):
+            hotspot_consistency({1: 1.0}, self.table, top_m=bad)
+
+    @pytest.mark.parametrize("bad", [[1.0, 2.0], None, "scan"])
+    def test_sensitivities_must_be_a_mapping(self, bad):
+        with pytest.raises(ValueError, match="mapping"):
+            hotspot_consistency(bad, self.table)
+
+    @pytest.mark.parametrize("key", ["3", 2.0, True, 0, -2, None])
+    def test_sensitivity_keys_must_be_one_based_integer_positions(self, key):
+        with pytest.raises(ValueError, match="binder position"):
+            hotspot_consistency({key: 1.0}, self.table)
+
+    @pytest.mark.parametrize("value", ["high", True, [1.0]])
+    def test_sensitivity_values_must_be_numbers_or_none(self, value):
+        with pytest.raises(ValueError, match="must be a number"):
+            hotspot_consistency({1: value}, self.table)
+
+    def test_numpy_integers_and_floats_are_accepted(self):
+        scan = {np.int64(1): np.float64(1.0), np.int32(2): np.float32(2.0), 3: 3}
+        got = hotspot_consistency(scan, self.table)
+        assert got["n_positions"] == 3
+
+    @pytest.mark.parametrize("bad", ["rows", {"role": "binder"}, None, 3])
+    def test_the_table_must_be_a_list_of_rows(self, bad):
+        with pytest.raises(ValueError, match="list of row dictionaries"):
+            hotspot_consistency({1: 1.0}, bad)
+
+    def test_malformed_binder_lines_raise_with_the_line(self):
+        good = binder_table([1.0, 2.0, 3.0])
+        with pytest.raises(ValueError, match="line 3 of the residue table is a str"):
+            hotspot_consistency({1: 1.0}, [*good, "binder"])
+        with pytest.raises(ValueError, match="line 3 .*role 'peptide'"):
+            hotspot_consistency({1: 1.0}, [*good, {"role": "peptide"}])
+        for column in ("binder_index", "buried_area_angstrom2", "in_interface"):
+            line = dict(good[0])
+            del line[column]
+            with pytest.raises(ValueError, match=f"line 0 .*without '{column}'"):
+                hotspot_consistency({1: 1.0}, [line, *good[1:]])
+        with pytest.raises(ValueError, match="binder_index 'x'"):
+            hotspot_consistency({1: 1.0}, [dict(good[0], binder_index="x")])
+        with pytest.raises(ValueError, match="in_interface None"):
+            hotspot_consistency({1: 1.0}, [dict(good[0], in_interface=None)])
+        with pytest.raises(ValueError, match="buried_area_angstrom2 'big'"):
+            hotspot_consistency({1: 1.0}, [dict(good[0], buried_area_angstrom2="big")])
+
+    def test_a_binder_position_twice_in_the_table_raises(self):
+        with pytest.raises(ValueError, match="binder position 1 appears twice"):
+            hotspot_consistency({1: 1.0}, [*self.table, dict(self.table[0])])
+
+    def test_the_inputs_are_not_modified(self):
+        scan = sensitivities_of([1.0, None, 3.0, 2.0])
+        table = binder_table([5.0, 6.0, None, 8.0])
+        before = json.dumps([scan, table], sort_keys=True)
+        hotspot_consistency(scan, table)
+        assert json.dumps([scan, table], sort_keys=True) == before
