@@ -507,3 +507,12 @@ def test_the_changelog_records_the_issues_of_the_residue_number_and_pose_fixes()
     assert "(#123)" in _changelog_section("### Fixed")
     assert "[`docs/pose_sets.md`](docs/pose_sets.md)" in _changelog_section("### Added")
     assert (ROOT / "docs" / "pose_sets.md").is_file()
+
+
+def test_the_preflight_page_says_what_the_pose_set_layer_does_with_the_check():
+    preflight = (ROOT / "docs" / "preflight.md").read_text(encoding="utf-8")
+    section = preflight.split("## In a pose set", 1)[1].split("\n---\n", 1)[0]
+    assert "(pose_sets.md)" in section
+    for mode in ("error", "skip", "warn", "off"):
+        assert f'"{mode}"' in section
+    assert inspect.signature(score_pose_set).parameters["preflight"].default == "error"

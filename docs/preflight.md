@@ -183,6 +183,12 @@ In a batch each worker checks its sample first, the model step included, so a re
 
 ---
 
+## In a pose set
+
+`score_pose_set` runs the same check, on the profile of the first readable pose of the set and the metrics that it was asked for. The policy is its `preflight` argument (`"error"` by default, `"skip"`, `"warn"` or `"off"`), `provided` holds `reference_structure` when a reference is given and `predicted_structure` when the first pose is a predicted one, and `result["preflight"]` carries `report.to_dict()`. A metric that `skip` leaves out has the reason in the `reasons` of every pose. [`pose_sets.md`](pose_sets.md) describes the layer.
+
+---
+
 ## Declared limits
 
 A limit is declared only where code or the documentation of the model shows it, and its `reasons` sentence names that source. The tests in `tests/test_pre_openfold3_limits.py` and `tests/test_pre_metric_limits.py` pin the behaviour each sentence describes.
