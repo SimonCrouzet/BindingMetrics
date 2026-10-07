@@ -1223,9 +1223,13 @@ def save_cif(
         try:
             src_table = source_block.find("_atom_site.", [*source_columns, "?pdbx_PDB_ins_code"])
             has_ins_code = src_table.has_column(len(source_columns))
-            s_prev_auth = ""
+            s_prev_chain = ("", "")  # (label, author) chain of the previous heavy atom
             s_prev_residue = ("", "")
-            s_res_idx = -1
+            # One counter per author chain, which goes on when the chain returns: mmCIF
+            # lists the polymer chains first, then the ligands and the waters, each
+            # grouped by label chain, so the ligands and waters of chain A come after
+            # chain B. The output side below counts per author chain in the same way.
+            s_res_idx: dict[str, int] = {}
             for row in src_table:
                 label, auth, seq, atom = row[0], row[1], row[2], row[3]
                 ins_code = row[4] if has_ins_code else ""
@@ -1234,14 +1238,15 @@ def save_cif(
                 if label not in label_to_auth:
                     label_to_auth[label] = auth
                 if not str(atom).startswith("H"):
-                    if auth != s_prev_auth:
-                        s_prev_auth, s_prev_residue, s_res_idx = auth, residue, 0
+                    if (label, auth) != s_prev_chain:
+                        # PDBxFile starts a new chain, and so a new residue, on a change of
+                        # label or author chain, whatever the residue number.
+                        s_prev_chain = (label, auth)
+                        s_res_idx[auth] = s_res_idx.get(auth, -1) + 1
                     elif residue != s_prev_residue:
-                        s_prev_residue = residue
-                        s_res_idx += 1
-                    key = (auth, s_res_idx)
-                    if key not in seq_map:
-                        seq_map[key] = residue
+                        s_res_idx[auth] += 1
+                    s_prev_residue = residue
+                    seq_map.setdefault((auth, s_res_idx[auth]), residue)
         except (RuntimeError, IndexError, ValueError) as exc:
             logger.warning(
                 "cannot read the source residue numbering of %s (%s: %s); residue numbers "
