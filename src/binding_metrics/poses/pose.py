@@ -16,7 +16,7 @@ What the kinds have in common, and what the metrics and a downstream pipeline ma
   content hash, ``decoy_01-3f9a1c2e``.
 * ``structure_path``: the structure file, or None for an in-memory structure.
 * ``atoms()``: the structure as a biotite ``AtomArray`` with the chain IDs of ``chain_map``
-  applied, read once and cached. A gzip-compressed file is decompressed first.
+  applied. A gzip-compressed file is decompressed first.
 * ``chain_map``: renames chains, structure-file ID to the user's ID; empty means no renaming.
 * ``provenance``: free facts about the pose (program, method, a decoy flag, the run mode), a
   dictionary of JSON scalars.
@@ -26,6 +26,13 @@ What the kinds have in common, and what the metrics and a downstream pipeline ma
 * ``native_scores()``: what the tool that produced the pose reported, flat, values only
   (``float`` or None for a value that is missing). A computed metric is never stored on a
   pose: metrics are functions of a pose, and their results live in the result dictionaries.
+
+``atoms()`` and ``content_hash()`` of a pose with a path are a view of the file as it is when
+they are called: the result is cached with the file's size and modification time, and the
+file is read again when either has changed (a rewrite at the same path, a relaxed structure
+written back over its input). A call on an unchanged file costs one ``os.stat``. A rewrite
+that keeps both the size and the modification time, which a file system with a coarse clock
+allows within one tick, is not seen. An in-memory structure is never stale.
 
 Importing this module imports numpy and the standard library only (and
 ``binding_metrics.predictors.store`` for ``file_sha256``, which imports the standard library
@@ -89,7 +96,9 @@ class Pose(ABC):
         The bytes of the file for a pose with a ``structure_path`` (a compressed file is
         hashed as it is stored), the canonical serialisation of the atoms for an in-memory
         structure (``atoms_sha256``; the chain IDs of the source, before ``chain_map``).
-        The digest of a path is computed once per pose and path.
+        The digest of a path is cached with the file's size and modification time and
+        computed again when either has changed, so it is always that of the file as it is
+        now (one ``os.stat`` per call when the file is unchanged).
 
         Raises:
             ValueError: If the pose has no structure.
@@ -99,7 +108,9 @@ class Pose(ABC):
         inline = self._inline_atoms()
         if path is None and inline is None:
             raise ValueError(self._no_structure_message())
-        key = str(path) if path is not None else None
+        # the stamp is taken before the read: a rewrite during the read leaves an older stamp
+        # than the file, so the next call reads again instead of pairing new stamp and old bytes
+        key = (str(path), _file_stamp(path)) if path is not None else None
         cached = self.__dict__.get("_content_hash_cache")
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -112,22 +123,31 @@ class Pose(ABC):
     def atoms(self):
         """The structure as a biotite ``AtomArray``, chain IDs renamed by ``chain_map``.
 
-        Read once and cached (until ``structure_path`` or ``chain_map`` changes); treat the
-        result as read-only and copy it before modifying. Model 1 is read, with the author
-        chain and residue IDs. A gzip-compressed file is decompressed first. An in-memory
-        structure is returned as it is when ``chain_map`` is empty and as a renamed copy
-        otherwise; the array that was given is never modified.
+        The array is cached and returned again until ``structure_path``, ``chain_map`` or the
+        file's size or modification time changes, when the file is read again (one
+        ``os.stat`` per call on an unchanged file); treat the result as read-only and copy it
+        before modifying. A call that follows a rewrite returns a new array, and an array
+        returned before it keeps the old coordinates. Model 1 is read, with the author chain
+        and residue IDs. A gzip-compressed file is decompressed first. An in-memory structure
+        is returned as it is when ``chain_map`` is empty and as a renamed copy otherwise; the
+        array that was given is never modified.
 
         Raises:
             ValueError: If there is no structure, or ``chain_map`` names a chain the
                 structure does not have or would merge two chains into one.
+            FileNotFoundError: If the structure file does not exist (also when an earlier
+                call read it).
             ImportError: If biotite is not installed.
         """
         path = self.structure_path
         inline = self._inline_atoms()
         if path is None and inline is None:
             raise ValueError(self._no_structure_message())
-        key = (str(path) if path is not None else None, tuple(sorted(self.chain_map.items())))
+        key = (
+            str(path) if path is not None else None,
+            _file_stamp(path) if path is not None else None,  # before the read, as in content_hash
+            tuple(sorted(self.chain_map.items())),
+        )
         cached = self.__dict__.get("_atoms_cache")
         if cached is None or cached[0] != key:
             if path is not None:
@@ -231,6 +251,12 @@ def _stem(path: Path) -> str:
     if name.lower().endswith(".gz"):
         name = name[:-3]
     return Path(name).stem or name
+
+
+def _file_stamp(path: Path) -> tuple[int, int]:
+    """Size in bytes and modification time in nanoseconds of ``path``: what the caches check."""
+    stat = os.stat(path)
+    return stat.st_size, stat.st_mtime_ns
 
 
 def _read_structure(path: Path):
