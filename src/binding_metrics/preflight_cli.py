@@ -15,10 +15,11 @@ Rules the hooks follow:
 * A model whose output was made elsewhere (``--prediction-dir``) gets the policy ``warn``: what
   it was given is not known, so its limits never refuse an input that may have been predicted
   correctly.
-* The EvoBind adversarial check runs inside the model step. It is checked as the registry metric
-  ``evobind_adversarial`` against the design: ``--designed-with`` names the pipeline that made the
-  binder, and the check is left out (``--design-policy skip``, the default) when the model of the
-  run is one that pipeline ran itself. ``--on-incompatible`` does not change that rule.
+* The EvoBind adversarial check runs inside the model step. With ``--designed-with`` it is checked
+  as the registry metric ``evobind_adversarial`` against the design, which names the pipeline that
+  made the binder, and the check is left out (``--design-policy skip``, the default) when the model
+  of the run is one that pipeline ran itself. ``--on-incompatible`` does not change that rule.
+  Without ``--designed-with`` the report is exactly what it was before the option existed.
 * An input that cannot be profiled runs as it did before, with a warning and the status
   ``skipped`` in the block: a failed check is not an incompatibility.
 """
@@ -52,6 +53,7 @@ __all__ = [
     "ADVERSARIAL_CHECK",
     "BINDER_TYPE_CHOICES",
     "MODEL_STEP",
+    "NO_DESIGN_SOURCE_MESSAGE",
     "PIPELINE_STEP_METRICS",
     "PreflightOutcome",
     "add_preflight_args",
@@ -70,6 +72,13 @@ MODEL_STEP = "openfold"
 #: The registry name of the EvoBind adversarial check, which the model step runs on the input pose
 #: and the prediction. It rests on the prediction being independent of the design.
 ADVERSARIAL_CHECK = "evobind_adversarial"
+
+#: What a run with a model step logs (INFO, once) when no design source was given.
+NO_DESIGN_SOURCE_MESSAGE = (
+    "independence of the folding model from the design was not checked because no design source "
+    "was given; name the pipeline that made the binder with --designed-with "
+    f"{{{','.join(DESIGN_SOURCE_PREDICTORS)}}} (designed_with= in Python)"
+)
 
 #: Pipeline step -> the registry metrics it runs, for the steps whose limits are checked.
 PIPELINE_STEP_METRICS: dict[str, tuple[str, ...]] = {
@@ -117,8 +126,8 @@ def add_preflight_args(parser) -> None:
             "and a model that the pipeline ran itself agrees with it in part because the design "
             "was selected for that model: BoltzGen ran Boltz-2, BindCraft and ColabDesign ran "
             "AlphaFold2 (--predictor af2). The check is then handled by --design-policy. Without "
-            "this option nothing is decided and the report notes that independence was not "
-            "checked."
+            "this option nothing is decided and a run with a model step logs that independence "
+            "was not checked."
         ),
     )
     group.add_argument(
@@ -368,8 +377,10 @@ def check_input(
             predictor = _without_residue_check(predictor)
         metric_names.append(model_metric)
         step_of_metric[model_metric] = MODEL_STEP
-        # the adversarial check runs inside the model step; it has no limits of its own here
-        metric_names.append(SimpleNamespace(name=ADVERSARIAL_CHECK, capabilities=None))
+        if designed_with is not None:
+            # the adversarial check runs inside the model step and has no limits of its own;
+            # without a design source it is not listed, so the report is what it always was
+            metric_names.append(SimpleNamespace(name=ADVERSARIAL_CHECK, capabilities=None))
         provided.add("predicted_structure")
 
     error: Optional[IncompatibleInputError] = None

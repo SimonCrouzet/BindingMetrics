@@ -263,8 +263,10 @@ class TestInThePreflight:
         assert report.to_dict()["design"]["known"] is False
         assert any("'rfdiffusion' is not one of" in r.getMessage() for r in caplog.records)
 
-    def test_without_a_source_the_dictionary_is_the_one_it_always_was(self):
-        data = run(None, "boltz2").to_dict()
+    def test_without_a_source_the_dictionary_is_the_one_it_always_was(self, caplog):
+        with caplog.at_level(logging.INFO, logger=LOGGER):
+            report = run(None, "boltz2")
+        data = report.to_dict()
         assert "design" not in data
         assert list(data) == [
             "policy",
@@ -282,7 +284,12 @@ class TestInThePreflight:
             "notes",
         ]
         assert data["metrics_to_run"] == [CHECK, "omega"]
-        assert any("no design source was given" in note for note in data["notes"])
+        # the report says nothing new; the log says that independence was not checked
+        assert data["notes"] == [] and data["warnings"] == [] and data["violations"] == []
+        assert report.format() == run(None, "boltz2").format()
+        assert "Design origin" not in report.format() and "design:" not in report.format()
+        (record,) = [r for r in caplog.records if "no design source was given" in r.getMessage()]
+        assert record.levelno == logging.INFO
 
     def test_a_policy_that_is_not_one_of_the_three_is_refused_first(self):
         with pytest.raises(ValueError, match="design_policy must be one of"):

@@ -116,6 +116,7 @@ from binding_metrics.preflight_cli import (
     ADVERSARIAL_CHECK,
     BINDER_TYPE_CHOICES,
     MODEL_STEP,
+    NO_DESIGN_SOURCE_MESSAGE,
     add_preflight_args,
     check_input,
     model_step_of,
@@ -602,6 +603,8 @@ def run_pipeline(
     metrics = frozenset(metrics) - set(skipped_steps)
     skipped_geometry = outcome.skipped_geometry
     adversarial_skipped = outcome.skipped_checks.get(ADVERSARIAL_CHECK)
+    if designed_with is None and MODEL_STEP in metrics:
+        logger.info(NO_DESIGN_SOURCE_MESSAGE)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     runs_openfold3 = "openfold" in metrics and (

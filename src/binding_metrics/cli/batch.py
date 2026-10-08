@@ -154,6 +154,7 @@ from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.preflight_cli import (
     ADVERSARIAL_CHECK,
     BINDER_TYPE_CHOICES,
+    NO_DESIGN_SOURCE_MESSAGE,
     add_preflight_args,
     check_input,
     model_step_of,
@@ -1241,7 +1242,9 @@ def run_batch(
         if want_openfold
         else None
     )
-    if want_openfold and designed_with is not None:
+    if want_openfold and designed_with is None:
+        logger.info(NO_DESIGN_SOURCE_MESSAGE)
+    elif want_openfold:
         # one loud line for the batch; each sample's worker logs the same in its own log
         model_name = predictor or "of3"
         for text in check_design_origin(

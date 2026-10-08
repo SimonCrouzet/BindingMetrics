@@ -69,7 +69,9 @@ class TestWithoutASource:
         for row in result["poses"]:
             assert row["status"] == "ok" and CHECK in row and not row["reasons"]
         assert result["preflight"]["metrics_to_run"] == [CHECK]
-        assert any("no design source was given" in n for n in result["preflight"]["notes"])
+        assert result["preflight"]["notes"] == [] or not any(
+            "independence" in n for n in result["preflight"]["notes"]
+        )
         assert not any("design origin" in text for text in result["warnings"])
 
     def test_the_arguments_default_to_no_source_and_the_skip_policy(self):

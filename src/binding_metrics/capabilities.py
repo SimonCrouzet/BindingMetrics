@@ -1419,7 +1419,8 @@ class DesignOriginCheck:
         violations: One per check and model that the design ran itself, kind ``design``.
         warnings: The loud sentences: one per such pair under ``skip`` and ``warn``, and one for
             a source that is not in the table.
-        notes: What was not checked and why (no source given, no model named).
+        notes: What was not checked and why (no source given, no model named). ``preflight``
+            logs them, and puts them in its report only when a source was given.
         skipped: The checks that are left out: policy ``skip``, and every model that makes their
             second structure is one the design ran itself.
     """
@@ -2151,8 +2152,10 @@ def preflight(
             ``INDEPENDENCE_DEPENDENT_CHECKS`` (``evobind_adversarial``) means something only when
             the model that makes its second structure is not one of those: such a metric gets a
             violation of kind ``design`` per model, handled by ``design_policy``. A source that is
-            not in the table gives a warning and never blocks; None checks nothing, and the report
-            notes that independence was not checked.
+            not in the table gives a warning and never blocks; None checks nothing, leaves the
+            report as it was before this argument existed, and logs at INFO level that
+            independence was not checked when a metric of ``INDEPENDENCE_DEPENDENT_CHECKS`` is
+            requested.
         design_policy: What to do with a check that rests on independence and would read a
             structure from a model that the design ran itself, whatever ``policy`` says.
             ``skip`` (default) leaves it out of ``report.metrics_to_run`` when every model that
@@ -2238,7 +2241,8 @@ def preflight(
     )
     violations += design.violations
     warnings += design.warnings
-    notes += design.notes
+    if design.given:
+        notes += design.notes  # without a source the report stays as it was; the log says it
     left_out = set(design.skipped)
     if policy == "skip":
         left_out |= {name for kind, name in refused if kind == "metric"}

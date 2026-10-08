@@ -488,8 +488,8 @@ GOLDEN = {
                 "design was selected for that model: BoltzGen ran Boltz-2, "
                 "BindCraft and ColabDesign ran AlphaFold2 (--predictor af2). "
                 "The check is then handled by --design-policy. Without this "
-                "option nothing is decided and the report notes that "
-                "independence was not checked.",
+                "option nothing is decided and a run with a model step logs "
+                "that independence was not checked.",
             ),
             "--design-policy": (
                 "Pre-flight check",
@@ -951,8 +951,8 @@ GOLDEN = {
                 "design was selected for that model: BoltzGen ran Boltz-2, "
                 "BindCraft and ColabDesign ran AlphaFold2 (--predictor af2). "
                 "The check is then handled by --design-policy. Without this "
-                "option nothing is decided and the report notes that "
-                "independence was not checked.",
+                "option nothing is decided and a run with a model step logs "
+                "that independence was not checked.",
             ),
             "--design-policy": (
                 "Pre-flight check",

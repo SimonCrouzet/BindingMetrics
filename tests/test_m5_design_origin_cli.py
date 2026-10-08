@@ -16,10 +16,12 @@ import sys
 
 import pytest
 
-from binding_metrics.capabilities import POLICIES, IncompatibleInputError
+from binding_metrics.capabilities import POLICIES, IncompatibleInputError, preflight, profile_input
 from binding_metrics.cli import batch, run
 from binding_metrics.cli.batch import run_batch
+from binding_metrics.cli.prediction import RUNNERS
 from binding_metrics.cli.run import run_pipeline
+from binding_metrics.preflight_cli import NO_DESIGN_SOURCE_MESSAGE, check_input
 from tests.test_feat_c_support import (
     EXAMPLE_1YCR,
     PEPTIDE_CHAIN,
@@ -424,3 +426,121 @@ class TestBatch:
         with pytest.raises(SystemExit):
             batch.main()
         assert captured["designed_with"] == "colabdesign" and captured["design_policy"] == "skip"
+
+
+class TestWithoutASourceNothingChanges:
+    """A run that names no design source gets the pre-flight report it always had."""
+
+    @pytest.mark.parametrize(
+        "model, metric, predictor_name",
+        [
+            (("of3", "openfold", False, "score"), "openfold", "of3"),
+            (("boltz2", "prediction", False, "score"), "prediction", "boltz2"),
+            (("af2", "prediction", True, "predict"), "prediction", "af2"),
+        ],
+    )
+    def test_the_report_and_the_plan_are_those_of_the_check_without_the_option(
+        self, model, metric, predictor_name
+    ):
+        outcome = check_input(EXAMPLE_1YCR, "B", "A", model=model, include_plan=True)
+        # what check_input asked of preflight before the option existed
+        before = preflight(
+            profile_input(EXAMPLE_1YCR, "B", "A"),
+            [metric],
+            predictor_name,
+            policy="error",
+            predictor_policy="warn" if model[2] else None,
+            provided={"predicted_structure"},
+            mode=model[3],
+            runnable=frozenset(RUNNERS),
+        )
+        assert outcome.block["report"] == before.to_dict()
+        assert outcome.block["plan"] == before.format()
+        assert outcome.report.metrics_requested == (metric,)
+        assert "evobind_adversarial" not in outcome.block["plan"]
+        assert "Design origin" not in outcome.block["plan"]
+        assert "design" not in outcome.block["report"]
+        assert outcome.skipped_checks == {} and outcome.independent_of_design is None
+
+    def test_the_keys_of_the_block_are_the_old_ones(self):
+        block = check_input(EXAMPLE_1YCR, "B", "A", model=("of3", "openfold", False, "score")).block
+        assert list(block) == [
+            "status",
+            "reason",
+            "policy",
+            "skipped_steps",
+            "skipped_geometry",
+            "mode",
+            "report",
+        ]
+
+    def test_the_plan_text_of_an_openfold3_step_is_pinned(self):
+        plan = check_input(
+            EXAMPLE_1YCR, "B", "A", model=("of3", "openfold", False, "score"), include_plan=True
+        ).block["plan"]
+        lines = plan.splitlines()
+        assert lines[0] == (
+            "Pre-flight check: the input fits everything requested (policy: error)."
+        )
+        assert lines[2] == "Mode: score (every chain templated on its own, the pose not given)"
+        assert lines[3] == "Runs: metrics openfold; predictor OpenFold3 0.5.0"
+
+    def test_a_run_logs_once_that_independence_was_not_checked(self, tmp_path, caplog):
+        with caplog.at_level(logging.INFO, logger="binding_metrics.cli.run"):
+            pipeline(tmp_path, "af2")
+        records = [r for r in caplog.records if r.getMessage() == NO_DESIGN_SOURCE_MESSAGE]
+        assert len(records) == 1 and records[0].levelno == logging.INFO
+        assert "--designed-with {boltzgen,bindcraft,colabdesign}" in NO_DESIGN_SOURCE_MESSAGE
+        assert "independence of the folding model from the design was not checked" in (
+            NO_DESIGN_SOURCE_MESSAGE
+        )
+
+    def test_it_is_not_logged_with_a_source_without_a_model_step_or_for_the_plan_only(
+        self, tmp_path, caplog
+    ):
+        out = synthetic_output(tmp_path, "af2")
+        with caplog.at_level(logging.INFO, logger="binding_metrics.cli.run"):
+            pipeline(tmp_path, "af2", prediction_dir=out, designed_with="boltzgen")
+            run_pipeline(
+                EXAMPLE_1YCR,
+                tmp_path / "other",
+                skip_prep=True,
+                skip_relax=True,
+                metrics=frozenset(),
+            )
+            run_pipeline(
+                EXAMPLE_1YCR,
+                tmp_path / "plan",
+                skip_prep=True,
+                skip_relax=True,
+                metrics=frozenset({"openfold"}),
+                predictor="af2",
+                prediction_dir=out,
+                peptide_chain=PEPTIDE_CHAIN,
+                receptor_chain=RECEPTOR_CHAIN,
+                preflight_only=True,
+            )
+        assert not [r for r in caplog.records if r.getMessage() == NO_DESIGN_SOURCE_MESSAGE]
+
+    def test_a_batch_logs_it_once(self, tmp_path, caplog, monkeypatch):
+        StubOpenFold(monkeypatch)
+        folder = tmp_path / "in"
+        folder.mkdir()
+        text = EXAMPLE_1YCR.read_text(encoding="utf-8")
+        paths = []
+        for name in ("a", "b"):
+            path = folder / f"{name}.pdb"
+            path.write_text(f"REMARK   9 sample {name}\n{text}", encoding="utf-8")
+            paths.append(path)
+        with caplog.at_level(logging.INFO):
+            run_batch(
+                paths,
+                tmp_path / "out",
+                skip_prep=True,
+                skip_relax=True,
+                metrics={"openfold"},
+                openfold_conda_env=None,
+                predictor="of3",
+            )
+        records = [r for r in caplog.records if r.getMessage() == NO_DESIGN_SOURCE_MESSAGE]
+        assert [r.name for r in records] == ["binding_metrics.cli.batch"]
