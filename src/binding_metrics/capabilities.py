@@ -53,6 +53,9 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "BINDER_TYPES",
     "CLOSURE_FAMILIES",
+    "DEFAULT_DESIGN_POLICY",
+    "DESIGN_SOURCE_PREDICTORS",
+    "INDEPENDENCE_DEPENDENT_CHECKS",
     "MODES",
     "NEEDS",
     "POLICIES",
@@ -60,13 +63,17 @@ __all__ = [
     "Capabilities",
     "Closure",
     "ClosureEnd",
+    "DesignOrigin",
+    "DesignOriginCheck",
     "IncompatibleInputError",
     "InputProfile",
     "PreflightReport",
     "Violation",
+    "check_design_origin",
     "check_openfold3_residues",
     "check_weights_path",
     "classify_residue",
+    "design_origin",
     "detect_closures",
     "estimate_binder_type",
     "preflight",
@@ -1268,6 +1275,324 @@ def check_openfold3_residues(profile: InputProfile) -> list[Violation]:
 #: What ``preflight`` does with an incompatibility: raise, leave the step out, or log and go on.
 POLICIES: tuple[str, ...] = ("error", "skip", "warn")
 
+# ---------------------------------------------------------------------------
+# Design origin
+# ---------------------------------------------------------------------------
+
+#: The default of ``design_policy``: a check that would compare a design with the model that made
+#: it is left out, with a loud warning, and the rest of the run goes on.
+DEFAULT_DESIGN_POLICY = "skip"
+
+#: Design pipeline (lower case) -> the registry names of the prediction models it runs itself:
+#: BoltzGen is mapped to Boltz-2, BindCraft and ColabDesign to AlphaFold2, which this package
+#: runs as ``af2`` (ColabFold). To support another pipeline add a row; a caller can also name the
+#: models directly (``design_origin``). A source that is not in the table is never refused.
+DESIGN_SOURCE_PREDICTORS: dict[str, frozenset[str]] = {
+    "boltzgen": frozenset({"boltz2"}),
+    "bindcraft": frozenset({"af2"}),
+    "colabdesign": frozenset({"af2"}),
+}
+
+#: The registry metrics whose value means "a model other than the designer agrees", each with the
+#: sentence that says why independence matters. ``evobind_adversarial`` compares the design pose
+#: with a second prediction of the same complex and reads a large shift of the binder centre of
+#: mass as disagreement (Bryant et al. 2025). A design was selected for the confidence of the
+#: model that made or filtered it, so that model agrees with it partly by construction and its
+#: agreement says little. The confidence metrics (``prediction``, ``openfold``, ``interface_pae``,
+#: ``evobind_score``) are not listed: each reports one model's confidence in its own structure,
+#: to be read against that model's calibration, and none claims that a second model agrees.
+INDEPENDENCE_DEPENDENT_CHECKS: dict[str, str] = {
+    "evobind_adversarial": (
+        "it asks whether a model other than the designer puts the binder where the design has "
+        "it, and a model that made or filtered the design agrees with it partly by construction"
+    ),
+}
+
+
+def _check_design_policy(design_policy: str) -> None:
+    if design_policy not in POLICIES:
+        raise ValueError(f"design_policy must be one of {POLICIES}, got {design_policy!r}")
+
+
+def _model_label(name: str) -> str:
+    """The display name of a registered prediction model (``Boltz-2`` for ``boltz2``)."""
+    from binding_metrics.predictors.registry import PARSERS
+
+    spec = PARSERS.get(name)
+    return spec.display_name if spec is not None else name
+
+
+def _models_text(names: Iterable[str]) -> str:
+    return " and ".join(_model_label(name) for name in sorted(names))
+
+
+@dataclass(frozen=True)
+class DesignOrigin:
+    """The pipeline that made a designed binder, as far as the check can use it.
+
+    Attributes:
+        source: The design pipeline in lower case when it is in ``DESIGN_SOURCE_PREDICTORS``,
+            the name as given when it is not, None when only model names were given.
+        predictors: The registry names (lower case) of the prediction models that the pipeline
+            ran itself; empty when they are not known.
+    """
+
+    source: Optional[str] = None
+    predictors: frozenset[str] = frozenset()
+
+    @property
+    def known(self) -> bool:
+        """True when the models that the pipeline ran itself are known."""
+        return bool(self.predictors)
+
+    def shares_model_with(self, predictor: Optional[str]) -> bool:
+        """True when ``predictor`` (a registry name, any case) is a model the pipeline ran."""
+        return isinstance(predictor, str) and predictor.strip().casefold() in self.predictors
+
+    def phrase(self) -> str:
+        """The origin as a clause for a sentence, for example ``the design was made with
+        boltzgen, which ran Boltz-2 itself``."""
+        models = _models_text(self.predictors)
+        if self.source:
+            return f"the design was made with {self.source}, which ran {models} itself"
+        return f"the design pipeline ran {models} itself"
+
+    def short(self) -> str:
+        """The origin as a noun phrase: ``boltzgen, which ran Boltz-2 itself``."""
+        if not self.known:
+            return f"{self.source or 'a source'}, which is not known"
+        return f"{self.source or 'a pipeline'}, which ran {_models_text(self.predictors)} itself"
+
+    def to_dict(self) -> dict:
+        """JSON-ready form."""
+        return {"source": self.source, "predictors": sorted(self.predictors)}
+
+
+def design_origin(design_source: Any) -> DesignOrigin:
+    """Resolve a ``design_source`` argument.
+
+    Args:
+        design_source: None (no source), a ``DesignOrigin``, a design pipeline by name in any
+            case (``"BoltzGen"``; the names are the keys of ``DESIGN_SOURCE_PREDICTORS``), or the
+            models the pipeline ran itself as a list, tuple or set of registry names
+            (``("boltz2",)``). A name that is not in the table gives an origin with no models,
+            which no check can use; it is never an error.
+
+    Raises:
+        TypeError: ``design_source`` is none of these, or a collection holds a non-string.
+    """
+    if design_source is None:
+        return DesignOrigin()
+    if isinstance(design_source, DesignOrigin):
+        return design_source
+    if isinstance(design_source, str):
+        name = design_source.strip()
+        models = DESIGN_SOURCE_PREDICTORS.get(name.casefold())
+        if models is None:
+            return DesignOrigin(name or None)
+        return DesignOrigin(name.casefold(), frozenset(m.casefold() for m in models))
+    if isinstance(design_source, (list, tuple, set, frozenset)):
+        names = list(design_source)
+        if not all(isinstance(name, str) for name in names):
+            raise TypeError(f"design_source models must be strings, got {design_source!r}")
+        return DesignOrigin(None, frozenset(n.strip().casefold() for n in names if n.strip()))
+    raise TypeError(
+        "design_source must be None, a design pipeline name, or a list of the model names the "
+        f"design ran itself, got {type(design_source).__name__}"
+    )
+
+
+@dataclass(frozen=True)
+class DesignOriginCheck:
+    """What the origin of a design does to the checks that rest on independence.
+
+    Made by ``check_design_origin``; ``preflight`` folds it into its report.
+
+    Attributes:
+        origin: The resolved ``DesignOrigin``.
+        given: True when a design source was passed (known or not).
+        policy: ``error``, ``skip`` or ``warn``.
+        checks: The requested checks that rest on independence (``INDEPENDENCE_DEPENDENT_CHECKS``).
+        models: The models that make the second structure of those checks (registry names, lower
+            case).
+        violations: One per check and model that the design ran itself, kind ``design``.
+        warnings: The loud sentences: one per such pair under ``skip`` and ``warn``, and one for
+            a source that is not in the table.
+        notes: What was not checked and why (no source given, no model named).
+        skipped: The checks that are left out: policy ``skip``, and every model that makes their
+            second structure is one the design ran itself.
+    """
+
+    origin: DesignOrigin
+    given: bool
+    policy: str
+    checks: tuple[str, ...] = ()
+    models: tuple[str, ...] = ()
+    violations: tuple[Violation, ...] = ()
+    warnings: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+    skipped: tuple[str, ...] = ()
+
+    def independent(self, predictor: Optional[str]) -> Optional[bool]:
+        """Whether ``predictor`` is independent of the design: None when the models that the
+        design ran are not known or ``predictor`` is not named."""
+        if not self.origin.known or not isinstance(predictor, str) or not predictor.strip():
+            return None
+        return not self.origin.shares_model_with(predictor)
+
+    def reason(self, check: str, predictor: str) -> str:
+        """The fact that makes ``check`` circular on a structure from ``predictor``."""
+        return _design_fact(self.origin, check, predictor.strip().casefold())
+
+    def to_dict(self) -> dict:
+        """JSON-ready form, the ``design`` block of ``PreflightReport.to_dict``."""
+        action = {"skip": "skipped", "warn": "run", "error": "refused"}[self.policy]
+        circular = [m for m in self.models if self.origin.shares_model_with(m)]
+        return {
+            "source": self.origin.source,
+            "known": self.origin.known,
+            "predictors": sorted(self.origin.predictors),
+            "policy": self.policy,
+            "models": list(self.models),
+            "not_independent": circular,
+            "checks": [
+                {"check": c, "model": m, "action": action, "reason": self.reason(c, m)}
+                for c in self.checks
+                for m in circular
+            ],
+        }
+
+
+def _design_fact(origin: DesignOrigin, check: str, model: str) -> str:
+    return (
+        f"{origin.phrase()}, and the second structure of {check!r} comes from {_model_label(model)}"
+    )
+
+
+def _other_models_text(origin: DesignOrigin) -> str:
+    from binding_metrics.predictors.registry import PARSERS
+
+    others = [
+        f"{spec.display_name} ({name})"
+        for name, spec in sorted(PARSERS.items())
+        if name not in origin.predictors
+    ]
+    if not others:
+        return "another model"
+    return ", ".join(others[:-1]) + (" or " if len(others) > 1 else "") + others[-1]
+
+
+def _design_sentence(policy: str, origin: DesignOrigin, check: str, model: str) -> str:
+    """The loud warning for one check on a structure from ``model``: which check, why, how to
+    change it."""
+    label = _model_label(model)
+    if policy == "warn":
+        return (
+            f"{check} runs on a {label} structure although {origin.phrase()}; its agreement "
+            "is partly by construction, so read the result as not independent of the design"
+        )
+    return (
+        f"{check} is skipped because {origin.phrase()}, so a {label} structure agrees with the "
+        f"design partly by construction; predict with {_other_models_text(origin)} instead, or "
+        "pass design_policy='warn' (--design-policy warn) to run it anyway"
+    )
+
+
+def check_design_origin(
+    design_source: Any,
+    checks: Iterable[str],
+    models: Iterable[str],
+    *,
+    policy: str = DEFAULT_DESIGN_POLICY,
+) -> DesignOriginCheck:
+    """Decide what a design's origin does to the checks that rest on independence.
+
+    A check in ``INDEPENDENCE_DEPENDENT_CHECKS`` compares the design with a structure from
+    ``models``; when one of those models is a model that the design pipeline ran itself, the
+    agreement is partly by construction. This function needs no structure, so a caller that
+    has none (a batch step after the workers, a pose set) can ask it directly; ``preflight``
+    asks it for its metrics and predictors.
+
+    Args:
+        design_source: See ``design_origin``. None says nothing is known: nothing is decided and
+            a check that rests on independence gets a note.
+        checks: Metric names; those not in ``INDEPENDENCE_DEPENDENT_CHECKS`` are ignored.
+        models: The models that make the second structure (registry names, any case).
+        policy: ``skip`` (default) leaves a circular check out and warns loudly, ``warn`` runs it
+            and warns, ``error`` is the signal for the caller to refuse.
+
+    Returns:
+        The ``DesignOriginCheck``. An unknown source adds a warning and nothing else.
+
+    Raises:
+        ValueError: ``policy`` is not one of ``POLICIES``.
+        TypeError: ``design_source`` is of a type ``design_origin`` does not take.
+    """
+    _check_design_policy(policy)
+    origin = design_origin(design_source)
+    given = design_source is not None
+    checks = [checks] if isinstance(checks, str) else checks
+    models = [models] if isinstance(models, str) else models
+    wanted = tuple(dict.fromkeys(c for c in checks if c in INDEPENDENCE_DEPENDENT_CHECKS))
+    named = tuple(
+        dict.fromkeys(m.strip().casefold() for m in models if isinstance(m, str) and m.strip())
+    )
+    violations: list[Violation] = []
+    warnings: list[str] = []
+    notes: list[str] = []
+    if given and not origin.known:
+        shown = origin.source or repr(design_source)
+        warnings.append(
+            f"design source {shown!r} is not one of {', '.join(DESIGN_SOURCE_PREDICTORS)}, so "
+            "independence from the design was not checked; name the models the design ran "
+            "(design_source=('boltz2',), for example) to check it"
+        )
+    elif not given and wanted:
+        notes.append(
+            f"independence from the design was not checked for {_join(wanted)}: no design "
+            "source was given (design_source, --designed-with)"
+        )
+    elif origin.known and wanted and not named:
+        notes.append(
+            f"independence from the design was not checked for {_join(wanted)}: the model that "
+            "makes the second structure was not named"
+        )
+    circular = [m for m in named if origin.shares_model_with(m)]
+    for check in wanted:
+        for model in circular:
+            violations.append(
+                Violation(
+                    constraint="design_origin",
+                    fact=_design_fact(origin, check, model),
+                    requirement="a second structure from a model that the design did not run",
+                    reason=INDEPENDENCE_DEPENDENT_CHECKS[check],
+                    fix=(
+                        f"predict the complex with {_other_models_text(origin)}; or pass "
+                        "design_policy='warn' (--design-policy warn) to run the check anyway "
+                        "and label the result"
+                    ),
+                    subject=f"metric {check!r}",
+                    kind="design",
+                    name=check,
+                )
+            )
+            if policy != "error":
+                warnings.append(_design_sentence(policy, origin, check, model))
+    skipped: tuple[str, ...] = ()
+    if policy == "skip" and origin.known and named and len(circular) == len(named):
+        skipped = wanted
+    return DesignOriginCheck(
+        origin=origin,
+        given=given,
+        policy=policy,
+        checks=wanted,
+        models=named,
+        violations=tuple(violations),
+        warnings=tuple(warnings),
+        notes=tuple(notes),
+        skipped=skipped,
+    )
+
 
 @dataclass(frozen=True)
 class PreflightReport:
@@ -1291,6 +1616,9 @@ class PreflightReport:
             empty when it is the same.
         mode: The mode the predictors were asked to run in, one of ``MODES``; None when the
             caller did not say (an output whose making is not known).
+        design: What the origin of the design did to the checks that rest on independence
+            (``check_design_origin``); None when no design source was given. Its violations
+            (kind ``design``) are also in ``violations``, and its loud sentences in ``warnings``.
     """
 
     policy: str
@@ -1304,10 +1632,16 @@ class PreflightReport:
     predictor_usable: bool = True
     predictor_policy: str = ""
     mode: Optional[str] = None
+    design: Optional[DesignOriginCheck] = None
 
     def policy_of(self, kind: str) -> str:
-        """The policy that applies to a violation of ``kind`` (``metric`` or ``predictor``)."""
-        return (self.predictor_policy or self.policy) if kind == "predictor" else self.policy
+        """The policy that applies to a violation of ``kind`` (``metric``, ``predictor`` or
+        ``design``)."""
+        if kind == "predictor":
+            return self.predictor_policy or self.policy
+        if kind == "design":
+            return self.design.policy if self.design is not None else DEFAULT_DESIGN_POLICY
+        return self.policy
 
     @property
     def compatible(self) -> bool:
@@ -1331,6 +1665,8 @@ class PreflightReport:
         policy = self.policy
         if self.predictor_policy and self.predictor_policy != self.policy:
             policy = f"{self.policy}, predictor: {self.predictor_policy}"
+        if self.design is not None:
+            policy = f"{policy}, design: {self.design.policy}"
         if not n:
             heading = f"Pre-flight check: the input fits everything requested (policy: {policy})."
         elif self.refused:
@@ -1346,6 +1682,8 @@ class PreflightReport:
         lines = [heading, f"Input: {self.profile.describe()}"]
         if self.mode is not None:
             lines.append(f"Mode: {_MODE_TEXT[self.mode]}")
+        if self.design is not None:
+            lines.append(f"Design origin: {self.design.origin.short()}")
         if not self.refused:
             runs = [f"metrics {_join(self.metrics_to_run)}"] if self.metrics_requested else []
             runs += [f"predictor {label}" for label in self.predictors if self.predictor_usable]
@@ -1367,8 +1705,11 @@ class PreflightReport:
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
-        """JSON-ready form, for ``results["preflight"]``."""
-        return {
+        """JSON-ready form, for ``results["preflight"]``.
+
+        The key ``design`` is present only when a design source was given.
+        """
+        data = {
             "policy": self.policy,
             "predictor_policy": self.predictor_policy or self.policy,
             "mode": self.mode,
@@ -1380,7 +1721,9 @@ class PreflightReport:
                 {
                     "name": name,
                     "reasons": [
-                        v.fact for v in self.violations if v.kind == "metric" and v.name == name
+                        v.fact
+                        for v in self.violations
+                        if v.kind in ("metric", "design") and v.name == name
                     ],
                 }
                 for name in self.skipped_metrics
@@ -1391,6 +1734,9 @@ class PreflightReport:
             "warnings": list(self.warnings),
             "notes": list(self.notes),
         }
+        if self.design is not None:
+            data["design"] = self.design.to_dict()
+        return data
 
 
 class IncompatibleInputError(ValueError):
@@ -1748,6 +2094,9 @@ def preflight(
     runnable: Optional[Collection[str]] = None,
     weights: Optional[str | os.PathLike] = None,
     weights_kinds: Optional[Mapping[str, str]] = None,
+    design_source: Any = None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
+    prediction_models: Optional[Collection[str]] = None,
 ) -> PreflightReport:
     """Check an input against the limits of every requested metric and predictor, before any run.
 
@@ -1792,17 +2141,38 @@ def preflight(
             (``cli.prediction.runner_weights_kinds`` reads it from the runner registry). None
             says the caller does not know: the weights are not checked against the runners and the
             report says so.
+        design_source: The pipeline that made the designed binder: a name from
+            ``DESIGN_SOURCE_PREDICTORS`` in any case (``"boltzgen"``, ``"bindcraft"``,
+            ``"colabdesign"``), or the registry names of the models it ran itself
+            (``("boltz2",)``), see ``design_origin``. A metric of
+            ``INDEPENDENCE_DEPENDENT_CHECKS`` (``evobind_adversarial``) means something only when
+            the model that makes its second structure is not one of those: such a metric gets a
+            violation of kind ``design`` per model, handled by ``design_policy``. A source that is
+            not in the table gives a warning and never blocks; None checks nothing, and the report
+            notes that independence was not checked.
+        design_policy: What to do with a check that rests on independence and would read a
+            structure from a model that the design ran itself, whatever ``policy`` says.
+            ``skip`` (default) leaves it out of ``report.metrics_to_run`` when every model that
+            makes its second structure is circular, and puts one loud sentence in
+            ``report.warnings`` and the log; ``warn`` runs it and says so the same way;
+            ``error`` raises ``IncompatibleInputError``.
+        prediction_models: The registry names of the models that make the second structures of
+            the checks; None takes the names of ``predictor``. A pose set passes the back-ends of
+            its poses, which are not checked against the limits of a model.
 
     Returns:
         The ``PreflightReport``. Soft warnings for inputs a step accepts but never validated are
-        in ``report.warnings`` whatever the policy.
+        in ``report.warnings`` whatever the policy, and ``report.design`` says what the design
+        origin did when a ``design_source`` was given.
 
     Raises:
-        IncompatibleInputError: Policy ``error`` and at least one violation. Subclass of
+        IncompatibleInputError: Policy ``error`` and at least one violation, or ``design_policy``
+            ``error`` and a check on a model that the design ran itself. Subclass of
             ``ValueError``.
-        ValueError: ``policy`` or ``predictor_policy`` is not one of ``POLICIES``, ``mode`` is
-            not one of ``MODES``, or ``weights`` does not exist, cannot be read or is not the kind
-            a runner takes (``check_weights_path``).
+        ValueError: ``policy``, ``predictor_policy`` or ``design_policy`` is not one of
+            ``POLICIES``, ``mode`` is not one of ``MODES``, or ``weights`` does not exist, cannot
+            be read or is not the kind a runner takes (``check_weights_path``).
+        TypeError: ``design_source`` is of a type ``design_origin`` does not take.
         KeyError: A predictor name that is not registered.
         TypeError: A ``capabilities`` attribute that is neither None nor a ``Capabilities``.
     """
@@ -1812,6 +2182,7 @@ def preflight(
         raise ValueError(f"predictor_policy must be one of {POLICIES}, got {predictor_policy!r}")
     if mode is not None and mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+    _check_design_policy(design_policy)
     effective_predictor_policy = predictor_policy or policy
     steps = _metric_steps(metrics) + _predictor_steps(predictor)
 
@@ -1854,10 +2225,21 @@ def preflight(
             )
 
     requested = tuple(s.name for s in steps if s.kind == "metric")
+    design = check_design_origin(
+        design_source,
+        requested,
+        [s.name for s in steps if s.kind == "predictor"]
+        if prediction_models is None
+        else prediction_models,
+        policy=design_policy,
+    )
+    violations += design.violations
+    warnings += design.warnings
+    notes += design.notes
+    left_out = set(design.skipped)
     if policy == "skip":
-        to_run = tuple(name for name in requested if ("metric", name) not in refused)
-    else:
-        to_run = requested
+        left_out |= {name for kind, name in refused if kind == "metric"}
+    to_run = tuple(name for name in requested if name not in left_out)
     usable = not (
         effective_predictor_policy == "skip" and any(kind == "predictor" for kind, _ in refused)
     )
@@ -1875,10 +2257,17 @@ def preflight(
         predictor_usable=usable,
         predictor_policy=predictor_policy or "",
         mode=mode,
+        design=design if design.given else None,
     )
     if report.refused:
         raise IncompatibleInputError(report)
+    for text in design.warnings:
+        logger.warning("%s", text)
+    for text in design.notes:
+        logger.info("%s", text)
     for violation in violations:
+        if violation.kind == "design":
+            continue  # the sentence above says it, with what to do
         action = (
             "leaving it out" if report.policy_of(violation.kind) == "skip" else "running anyway"
         )

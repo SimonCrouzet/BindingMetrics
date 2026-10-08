@@ -103,7 +103,7 @@ The closure families are `head_to_tail`, `disulfide`, `lactam` (the four lactam 
 
 ## The check
 
-`preflight(profile, metrics, predictor=None, *, policy="error", predictor_policy=None, provided=None, mode=None, runnable=None, weights=None, weights_kinds=None)` compares the profile with the limits of every requested metric and predictor, before anything runs. It reads declarations only: it never runs, prepares or instantiates a metric, a predictor or a runner.
+`preflight(profile, metrics, predictor=None, *, policy="error", predictor_policy=None, provided=None, mode=None, runnable=None, weights=None, weights_kinds=None, design_source=None, design_policy="skip", prediction_models=None)` compares the profile with the limits of every requested metric and predictor, before anything runs. It reads declarations only: it never runs, prepares or instantiates a metric, a predictor or a runner.
 
 - `metrics` are registry names (`"omega"`) or objects with a `name` and a `capabilities` attribute (a `MetricSpec`). A name the registry does not know has no declared limit.
 - `predictor` is a registered name (`"of3"`), an adapter or runner (class or instance) with a `capabilities` attribute, a `Capabilities`, or a list of these.
@@ -113,6 +113,7 @@ The closure families are `head_to_tail`, `disulfide`, `lactam` (the four lactam 
 - `runnable` names the predictors that can be run from here; a model outside it that the fix offers is marked `[no runner here: give its output with --prediction-dir]`. The command-line tools pass the keys of `cli.prediction.RUNNERS`, so the mark comes from the registry and not from the text. All four registered models have a runner, so the mark shows only for a model that a caller adds to the registry without one.
 - `weights` is the path of custom weights (`--prediction-weights`) that the run gives the model. It must exist and be readable (`capabilities.check_weights_path`; a plain `ValueError` that lists what was found, not a violation). A predictor whose runner takes no custom weights is refused (constraint `weights`, kind `predictor`; fact "custom weights were given (path, a file)", requirement "a runner that starts the model with weights you choose", reason that the runner does not pass weights to the model, so a run would use the default weights), and the fix names the models whose runner does, with the kind each takes, then offers `--prediction-dir` and leaving the weights out. A predictor whose runner takes them gets a note, not a violation, and the declared hard limits stay in force.
 - `weights_kinds` maps a model name to the kind of weights its runner takes (`"file"` or `"directory"`) for the models whose runner supports custom weights. The command-line tools read it from the runner classes of `cli.prediction.RUNNERS` (`runner_weights_kinds`: the class attributes `supports_custom_weights` and `weights_kind`, nothing is instantiated), so a runner added there appears without a change here. `None` says the caller does not know, and the report says the weights were not checked against the runners.
+- `design_source` is the pipeline that made the designed binder, and `design_policy` says what to do with a check that rests on independence from it; see "The design origin" below. `prediction_models` names the models that make the second structures of those checks, by default the names of `predictor`.
 
 All violations are collected and reported at once. Each has the fact found in the input, the requirement, the step's own reason and a fix. For a refused predictor the fix lists the other registered predictors in two lists: those whose declared limits accept the input, and those that declare no limits (which is not the same as validated). The refused predictor is never offered, even when it is passed under another name than its registry entry: the entry is matched by registry name, by display name or by adapter class. When no other predictor declares support for the input, or none is registered, the fix says so.
 
@@ -136,6 +137,47 @@ predictor NarrowFold 9.9: closures
     why:      A disulfide has no field in the query.
     fix:      use a predictor whose declared limits accept this input: WideFold (wide); or use policy='skip' to leave the predictor out and run the rest
 ```
+
+---
+
+## The design origin
+
+A check that asks whether a second model agrees with the design means little when that model made the design. `evobind_adversarial` compares the design pose with a second prediction of the same complex and reads a large shift of the binder centre of mass as disagreement. A design pipeline selects its binders for the confidence of the model it runs inside its own loop, so a prediction from that model agrees with the design partly by construction, and the agreement tells little about the design. `preflight` therefore takes the pipeline that made the design, and leaves the check out when its second structure would come from a model that the pipeline ran itself.
+
+| `design_source` | Models the pipeline ran itself |
+|---|---|
+| `boltzgen` | `boltz2` (Boltz-2) |
+| `bindcraft`, `colabdesign` | `af2` (AlphaFold2, run through ColabFold) |
+
+The table is `capabilities.DESIGN_SOURCE_PREDICTORS`; a row added there supports another pipeline. The name is read in any case. A list of registry names, `design_source=("boltz2",)`, gives the models directly, for a pipeline that is not in the table. A name that is neither is never refused: the report warns that independence was not checked and everything runs. Without a source nothing is decided, and a check that rests on independence gets a note in `report.notes`.
+
+The checks that rest on independence are `capabilities.INDEPENDENCE_DEPENDENT_CHECKS`, today `evobind_adversarial`. The confidence metrics (`prediction`, `openfold`, `interface_pae`, `evobind_score`) report one model's confidence in its own structure and claim no agreement, so they run whoever made the design; they are read against the calibration of that model, as before.
+
+`design_policy` is separate from `policy`, so `--on-incompatible` does not change it. It applies to a check on a model that the design ran, and only to that check:
+
+| `design_policy` | Effect |
+|---|---|
+| `skip` (default) | The check is left out of `report.metrics_to_run` and put in `report.skipped_metrics` when every model that makes its second structure is one the design ran (with several models, as in a pose set, it stays for the others). One sentence goes to `report.warnings` and to the log at WARNING level. Everything else runs. |
+| `warn` | The check runs. The same finding is a warning that says the result is not independent of the design. |
+| `error` | Raises `IncompatibleInputError`; the message shows the finding with its reason and fix. |
+
+The sentence names the check, the reason and the way out:
+
+```
+evobind_adversarial is skipped because the design was made with boltzgen, which ran Boltz-2 itself, so a Boltz-2 structure agrees with the design partly by construction; predict with AlphaFold2 / ColabFold (af2), OpenFold3 (of3) or Protenix (protenix) instead, or pass design_policy='warn' (--design-policy warn) to run it anyway
+```
+
+The report keeps the same finding in machine-readable form. A violation of kind `design` (constraint `design_origin`) is in `violations`, the skipped check is in `metrics_skipped` with the fact as its reason, and `to_dict()["design"]` is present when a source was given:
+
+| Key | Content |
+|---|---|
+| `source`, `known` | The pipeline name in lower case (None when models were given), and whether its models are known. |
+| `predictors` | The models the pipeline ran itself. |
+| `policy` | The `design_policy`. |
+| `models`, `not_independent` | The models that make the second structures, and those among them that the design ran. |
+| `checks` | One entry per check and circular model: `check`, `model`, `action` (`skipped`, `run` or `refused`) and `reason`. |
+
+`capabilities.check_design_origin(design_source, checks, models, policy=...)` makes the same decision without a structure, for a caller that has none (a step that runs after the workers of a batch, a pose set); `preflight` calls it for its metrics and predictors.
 
 ---
 
