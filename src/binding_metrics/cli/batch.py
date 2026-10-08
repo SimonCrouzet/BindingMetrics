@@ -91,7 +91,13 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
-from binding_metrics.capabilities import POLICIES, IncompatibleInputError
+from binding_metrics.capabilities import (
+    DEFAULT_DESIGN_POLICY,
+    POLICIES,
+    IncompatibleInputError,
+    check_design_origin,
+    design_origin,
+)
 from binding_metrics.cli import (
     DEFAULT_OPENFOLD_TEMPLATES,
     OPENFOLD_MODE_HELP,
@@ -139,12 +145,14 @@ from binding_metrics.cli.run import (
     ALL_METRICS,
     KNOWN_METRICS,
     _collect_failures,
+    _label_independence,
     _merge_reason,
     _parse_metrics,
     run_pipeline,
 )
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.preflight_cli import (
+    ADVERSARIAL_CHECK,
     BINDER_TYPE_CHOICES,
     add_preflight_args,
     check_input,
@@ -237,6 +245,8 @@ def _run_one(
     preflight_model: Optional[tuple] = None,
     on_unmappable_residue: str = "error",
     prediction_weights: Optional[Path] = None,
+    designed_with=None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
 ) -> dict:
     """Run the pipeline for a single structure and return a flat results dict.
 
@@ -309,6 +319,8 @@ def _run_one(
                 preflight_model=preflight_model,
                 on_unmappable_residue=on_unmappable_residue,
                 prediction_weights=prediction_weights,
+                designed_with=designed_with,
+                design_policy=design_policy,
             )
             results["total_elapsed_s"] = round(time.time() - t0, 1)
 
@@ -435,6 +447,23 @@ def _model_step_allowed(
     return True, ""
 
 
+def _design_decision(
+    designed_with, design_policy: str, model: str
+) -> tuple[Optional[str], Optional[bool]]:
+    """What the design origin does to the adversarial check of the whole-batch model step.
+
+    Returns ``(reason, independent)``: the reason the check is left out for ``model`` (None when
+    it runs) and whether ``model`` is independent of the design (None when no source is known).
+    The answer does not depend on the sample, so a step asks once. A refusal (``error``) is the
+    worker's, which has already made the sample an error row.
+    """
+    decision = check_design_origin(
+        designed_with, [ADVERSARIAL_CHECK], [model], policy=design_policy
+    )
+    reason = "; ".join(decision.reason(check, model) for check in decision.skipped) or None
+    return reason, decision.independent(model)
+
+
 # ---------------------------------------------------------------------------
 # Batched OpenFold (single subprocess for all samples)
 # ---------------------------------------------------------------------------
@@ -471,6 +500,8 @@ def _run_batched_openfold(
     prediction_weights: Optional[Path] = None,
     prediction_cache: Optional[Path] = None,
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+    designed_with=None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
 ) -> None:
     """Run OpenFold3 on all successful samples in a single subprocess.
 
@@ -488,7 +519,10 @@ def _run_batched_openfold(
     stops the whole
     batch call (the error names each such residue) before the model starts. A sample that the
     pre-flight check leaves out (``on_incompatible="skip"``) gets ``openfold_skipped`` and the
-    reason in ``openfold_reason`` and is not part of the call.
+    reason in ``openfold_reason`` and is not part of the call. ``designed_with`` and
+    ``design_policy`` decide whether the adversarial check runs (it is left out, with
+    ``openfold_adversarial_skipped`` in the row, when the design pipeline ran OpenFold3 itself)
+    and add ``openfold_independent_of_design`` when the design source is known.
     """
     from binding_metrics.metrics.openfold import (
         _BatchSample,
@@ -496,6 +530,8 @@ def _run_batched_openfold(
         run_openfold_batched,
     )
     from binding_metrics.protocols.report import _flatten
+
+    adversarial_skipped, independent = _design_decision(designed_with, design_policy, "of3")
 
     # Build list of eligible samples (succeeded, have chain info)
     samples: list[_BatchSample] = []
@@ -628,17 +664,21 @@ def _run_batched_openfold(
                     )
                     _merge_reason(of_metrics, evobind, "evobind")
                     of_metrics.update(evobind)
-                    adversarial = compute_evobind_adversarial_check(
-                        design_structure_path=sid_to_input[sid],
-                        afm_structure_path=of_structure,
-                        binder_chain=pchain,
-                        receptor_chain=rchain,
-                        afm_plddt_per_atom=plddt,
-                    )
-                    _merge_reason(of_metrics, adversarial, "evobind adversarial")
-                    of_metrics.update(adversarial)
+                    if adversarial_skipped is not None:
+                        of_metrics["adversarial_skipped"] = adversarial_skipped
+                    else:
+                        adversarial = compute_evobind_adversarial_check(
+                            design_structure_path=sid_to_input[sid],
+                            afm_structure_path=of_structure,
+                            binder_chain=pchain,
+                            receptor_chain=rchain,
+                            afm_plddt_per_atom=plddt,
+                        )
+                        _merge_reason(of_metrics, adversarial, "evobind adversarial")
+                        of_metrics.update(adversarial)
                 except Exception as e:  # noqa: BLE001 - per-sample isolation; see evobind_error
                     of_metrics["evobind_error"] = str(e)
+            _label_independence(of_metrics, independent)
 
             # Flatten OF3 metrics into the row
             for k, v in _flatten({"openfold": of_metrics}).items():
@@ -735,6 +775,8 @@ def _run_batched_prediction(
     prediction_weights: Optional[Path] = None,
     prediction_lock_threshold: Optional[float] = None,
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+    designed_with=None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
 ) -> None:
     """The ``--predictor`` step of a batch: every sample through one shared prediction store.
 
@@ -753,8 +795,13 @@ def _run_batched_prediction(
     never stops the others. A sample that the pre-flight check leaves out
     (``on_incompatible="skip"``, the limits of the model) is dropped before its request is built,
     with ``prediction_skipped`` and the reason in the row, and does not fail the batch.
+    ``designed_with`` and ``design_policy`` decide whether the adversarial check runs (it is left
+    out, with ``prediction_adversarial_skipped`` in the row, when the design pipeline ran
+    ``predictor`` itself) and add ``prediction_independent_of_design`` when the source is known.
     """
     from binding_metrics.protocols.report import _flatten
+
+    adversarial_skipped, independent = _design_decision(designed_with, design_policy, predictor)
 
     candidates = _detect_sample_chains(
         rows, sid_to_input, peptide_chain, receptor_chain, "prediction"
@@ -872,11 +919,13 @@ def _run_batched_prediction(
                 mode=mode,
                 default_chain_map=None if adopt else runner_chain_map(runner, requests[sid]),
                 runner=runner,
+                adversarial_skipped=adversarial_skipped,
             )
             block = outcomes[sid][0]
             if predictor == "of3" and not adopt and not block.get("error"):
                 record_binder_cyclic(block, input_path, pchain, openfold_cyclic, openfold_conda_env)
         block, provenance = outcomes[sid]
+        _label_independence(block, independent)
         for key, value in _flatten({"prediction": block}).items():
             if key.startswith("prediction_"):
                 rows[idx][key] = value
@@ -963,6 +1012,8 @@ def run_batch(
     prediction_conda_env: Optional[str] = None,
     prediction_lock_threshold: Optional[float] = None,
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+    designed_with: Optional[str | Sequence[str]] = None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -1067,6 +1118,14 @@ def run_batch(
         preflight_only: Check every sample and return one row each (``preflight_status``,
             ``preflight_reason``, ``preflight_plan``) without preparing, relaxing or predicting
             anything and without creating ``output_dir``.
+        designed_with, design_policy: The pipeline that made the designed binders and what to do
+            about it (``--designed-with`` and ``--design-policy``), with the meaning they have in
+            ``run_pipeline``. The EvoBind adversarial check of the model step is left out of
+            every sample (``design_policy="skip"``, the default) when the design pipeline ran
+            the model itself; the rows get ``<step>_adversarial_skipped`` and
+            ``<step>_independent_of_design`` (``<step>`` is ``prediction`` or ``openfold``).
+            With ``"error"`` every sample is an error row; ``on_incompatible`` does not change
+            the rule. The loud warning is logged once for the batch and once in each sample's log.
 
     Returns:
         One flat row per path, in the order of ``paths`` whatever the number of
@@ -1137,6 +1196,9 @@ def run_batch(
         raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")
     if on_incompatible not in POLICIES:
         raise ValueError(f"on_incompatible must be one of {POLICIES}, got {on_incompatible!r}")
+    if design_policy not in POLICIES:
+        raise ValueError(f"design_policy must be one of {POLICIES}, got {design_policy!r}")
+    design_origin(designed_with)  # TypeError for a value that is no source
 
     input_paths = [Path(p) for p in paths]
     output_dir = Path(output_dir)
@@ -1160,6 +1222,8 @@ def run_batch(
             prediction_weights=prediction_weights,
             binder_type=binder_type,
             on_incompatible=on_incompatible,
+            designed_with=designed_with,
+            design_policy=design_policy,
         )
     output_dir.mkdir(parents=True, exist_ok=True)
     # Strip openfold from per-worker metrics: it runs as a single batched
@@ -1177,6 +1241,13 @@ def run_batch(
         if want_openfold
         else None
     )
+    if want_openfold and designed_with is not None:
+        # one loud line for the batch; each sample's worker logs the same in its own log
+        model_name = predictor or "of3"
+        for text in check_design_origin(
+            designed_with, [ADVERSARIAL_CHECK], [model_name], policy=design_policy
+        ).warnings:
+            logger.warning("%s", text)
 
     common_kwargs = dict(
         output_dir=output_dir,
@@ -1201,6 +1272,8 @@ def run_batch(
         preflight_model=preflight_model,
         on_unmappable_residue=on_unmappable_residue,
         prediction_weights=prediction_weights,
+        designed_with=designed_with,
+        design_policy=design_policy,
     )
     if on_error == "raise":
         common_kwargs["raise_errors"] = True
@@ -1294,6 +1367,8 @@ def run_batch(
             prediction_weights=prediction_weights,
             prediction_lock_threshold=route.lock_threshold,
             openfold_templates=openfold_templates,
+            designed_with=designed_with,
+            design_policy=design_policy,
         )
     elif want_openfold:
         _run_batched_openfold(
@@ -1313,6 +1388,8 @@ def run_batch(
             prediction_weights=prediction_weights,
             prediction_cache=prediction_cache,
             openfold_templates=openfold_templates,
+            designed_with=designed_with,
+            design_policy=design_policy,
         )
     return finished
 
@@ -1334,6 +1411,8 @@ def _preflight_only_rows(
     binder_type: str,
     on_incompatible: str,
     prediction_weights: Optional[Path] = None,
+    designed_with=None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
 ) -> list[dict]:
     """One row per sample with the pre-flight decision and nothing else (``--preflight-only``).
 
@@ -1364,6 +1443,8 @@ def _preflight_only_rows(
                 binder_type=binder_type,
                 on_incompatible=on_incompatible,
                 preflight_only=True,
+                designed_with=designed_with,
+                design_policy=design_policy,
             )
             block = results["preflight"]
             row["preflight_status"] = block["status"]
@@ -1626,6 +1707,8 @@ def main():
             on_unmappable_residue=args.on_unmappable_residue,
             binder_type=args.binder_type,
             on_incompatible=args.on_incompatible,
+            designed_with=args.designed_with,
+            design_policy=args.design_policy,
             preflight_only=True,
         )
         for row in rows:
@@ -1706,6 +1789,8 @@ def main():
         openfold_templates=args.openfold_templates,
         binder_type=args.binder_type,
         on_incompatible=args.on_incompatible,
+        designed_with=args.designed_with,
+        design_policy=args.design_policy,
         random_seed=args.random_seed,
         log_file=args.log_file,
         n_workers=args.workers,

@@ -31,6 +31,14 @@ Structure prediction:
         binding-metrics-run --input complex.cif --output-dir results/ \\
             --predictor boltz2 --prediction-dir boltz_out/
 
+Design origin:
+    --designed-with {boltzgen,bindcraft,colabdesign} names the pipeline that made the binder.
+    The EvoBind adversarial check asks whether a model other than the designer puts the binder
+    where the design has it, so when the model of the run is one that pipeline ran itself
+    (BoltzGen: Boltz-2; BindCraft and ColabDesign: AlphaFold2, --predictor af2) the check is left
+    out with a warning and the rest runs (--design-policy skip, the default; warn runs it and
+    marks the result, error refuses). --on-incompatible does not change this.
+
 Configuration file:
     --config run.toml supplies option defaults; flags on the command line override
     the file. Keys are the long option names (md-duration-ps or md_duration_ps):
@@ -60,7 +68,12 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
-from binding_metrics.capabilities import POLICIES, IncompatibleInputError
+from binding_metrics.capabilities import (
+    DEFAULT_DESIGN_POLICY,
+    POLICIES,
+    IncompatibleInputError,
+    design_origin,
+)
 from binding_metrics.cli import (
     DEFAULT_OPENFOLD_TEMPLATES,
     OPENFOLD_MODE_HELP,
@@ -100,6 +113,7 @@ from binding_metrics.cli.prediction import (
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.metrics.registry import get_metric
 from binding_metrics.preflight_cli import (
+    ADVERSARIAL_CHECK,
     BINDER_TYPE_CHOICES,
     MODEL_STEP,
     add_preflight_args,
@@ -192,11 +206,19 @@ def _warn(msg: str) -> None:
     logger.warning("  [warning] %s", msg)
 
 
-def _check_preflight_options(binder_type: str, on_incompatible: str) -> None:
+def _check_preflight_options(
+    binder_type: str,
+    on_incompatible: str,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
+    designed_with=None,
+) -> None:
     if binder_type not in BINDER_TYPE_CHOICES:
         raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")
     if on_incompatible not in POLICIES:
         raise ValueError(f"on_incompatible must be one of {POLICIES}, got {on_incompatible!r}")
+    if design_policy not in POLICIES:
+        raise ValueError(f"design_policy must be one of {POLICIES}, got {design_policy!r}")
+    design_origin(designed_with)  # TypeError for a value that is no source
 
 
 def _run_preflight(
@@ -218,6 +240,8 @@ def _run_preflight(
     prediction_mode: Optional[str] = None,
     openfold_mode: str = "score",
     prediction_weights: Optional[Path] = None,
+    designed_with=None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
 ):
     """The pre-flight check of one run, before anything is prepared, relaxed or predicted.
 
@@ -266,7 +290,25 @@ def _run_preflight(
         include_plan=include_plan,
         on_unmappable_residue=on_unmappable_residue,
         prediction_weights=prediction_weights,
+        designed_with=designed_with,
+        design_policy=design_policy,
     )
+
+
+def _label_independence(block: dict, independent: Optional[bool]) -> None:
+    """Add ``independent_of_design`` to the block of the model step when the design is known.
+
+    True when the model of the run is not one the design pipeline ran itself, False when it is.
+    Nothing is added without a known design source, so the block is unchanged for a run that did
+    not say where the design came from, nor to a block of a step that was left out or failed.
+    """
+    if (
+        independent is not None
+        and isinstance(block, dict)
+        and not block.get("skipped")
+        and not block.get("error")
+    ):
+        block["independent_of_design"] = independent
 
 
 def _step(name: str) -> None:
@@ -324,6 +366,8 @@ def run_pipeline(
     prediction_conda_env: Optional[str] = None,
     prediction_lock_threshold: Optional[float] = None,
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+    designed_with: Optional[str | Sequence[str]] = None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -432,6 +476,20 @@ def run_pipeline(
             not run.
         preflight_model: For a caller that runs the model step itself after this call (the
             batch): ``(model, metric, adopted, mode)``, so that its limits are checked here, first.
+        designed_with, design_policy: The pipeline that made the designed binder and what to do
+            about it (keyword-only; ``--designed-with`` and ``--design-policy``). The EvoBind
+            adversarial check asks whether a model other than the designer puts the binder where
+            the design has it, and a model that the design pipeline ran itself agrees partly by
+            construction. ``designed_with`` is ``"boltzgen"`` (Boltz-2), ``"bindcraft"`` or
+            ``"colabdesign"`` (AlphaFold2, ``af2``), in any case, or a list of the registry names
+            of the models the design ran. When the model step runs one of them, ``design_policy``
+            ``"skip"`` (default) leaves the adversarial check out, warns loudly and runs the rest;
+            ``"warn"`` runs it and warns; ``"error"`` raises ``IncompatibleInputError`` before
+            anything runs. ``on_incompatible`` does not change this rule. The block of the model
+            step (``results["prediction"]`` or ``results["openfold"]``) gets
+            ``independent_of_design`` (False for such a model, True for another) and, for a check
+            left out, ``adversarial_skipped`` with the reason. Without ``designed_with``
+            nothing is decided and the output is unchanged.
         The remaining arguments mirror the ``binding-metrics-run`` flags.
 
     Returns:
@@ -505,7 +563,7 @@ def run_pipeline(
             route.conda_env,
         )
     prediction_weights = check_weights_arg(prediction_weights, predictor)
-    _check_preflight_options(binder_type, on_incompatible)
+    _check_preflight_options(binder_type, on_incompatible, design_policy, designed_with)
 
     if sample_id is None:
         sample_id = input_path.stem
@@ -530,6 +588,8 @@ def run_pipeline(
         prediction_mode=prediction_mode,
         openfold_mode=openfold_mode,
         prediction_weights=prediction_weights,
+        designed_with=designed_with,
+        design_policy=design_policy,
     )
     if preflight_only:
         return {"sample_id": sample_id, "input": str(input_path), "preflight": outcome.block}
@@ -541,6 +601,7 @@ def run_pipeline(
         skip_relax = True
     metrics = frozenset(metrics) - set(skipped_steps)
     skipped_geometry = outcome.skipped_geometry
+    adversarial_skipped = outcome.skipped_checks.get(ADVERSARIAL_CHECK)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     runs_openfold3 = "openfold" in metrics and (
@@ -873,7 +934,9 @@ def run_pipeline(
                 prediction_weights=prediction_weights,
                 prediction_lock_threshold=route.lock_threshold,
                 openfold_templates=openfold_templates,
+                adversarial_skipped=adversarial_skipped,
             )
+            _label_independence(results["prediction"], outcome.independent_of_design)
             results["provenance"].update(prediction_provenance)
         else:
             results["prediction"] = {"skipped": True}
@@ -983,20 +1046,24 @@ def run_pipeline(
                     # Adversarial check: does the OF3 prediction agree with the
                     # input design pose? Large ΔCOM = OF3 places the binder
                     # elsewhere → design pose not supported by the prediction.
-                    try:
-                        adversarial = compute_evobind_adversarial_check(
-                            design_structure_path=input_path,
-                            afm_structure_path=of_structure,
-                            binder_chain=peptide_chain,
-                            receptor_chain=receptor_chain,
-                            afm_plddt_per_atom=plddt,
-                        )
-                        _merge_reason(of_metrics, adversarial, "evobind adversarial")
-                        of_metrics.update(adversarial)
-                    except Exception as e:  # noqa: BLE001 - per-check isolation; see adversarial_error
-                        _warn(f"EvoBind adversarial check failed: {e}")
-                        of_metrics["adversarial_error"] = str(e)
+                    if adversarial_skipped is not None:
+                        of_metrics["adversarial_skipped"] = adversarial_skipped
+                    else:
+                        try:
+                            adversarial = compute_evobind_adversarial_check(
+                                design_structure_path=input_path,
+                                afm_structure_path=of_structure,
+                                binder_chain=peptide_chain,
+                                receptor_chain=receptor_chain,
+                                afm_plddt_per_atom=plddt,
+                            )
+                            _merge_reason(of_metrics, adversarial, "evobind adversarial")
+                            of_metrics.update(adversarial)
+                        except Exception as e:  # noqa: BLE001 - per-check isolation; see adversarial_error
+                            _warn(f"EvoBind adversarial check failed: {e}")
+                            of_metrics["adversarial_error"] = str(e)
 
+                _label_independence(of_metrics, outcome.independent_of_design)
                 results["openfold"] = of_metrics
 
         except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results
@@ -1288,6 +1355,8 @@ def main():
                 binder_type=args.binder_type,
                 on_incompatible=args.on_incompatible,
                 preflight_only=args.preflight_only,
+                designed_with=args.designed_with,
+                design_policy=args.design_policy,
             )
         except ChainNotFoundError as e:
             print(f"ERROR: {e}", file=sys.stderr)

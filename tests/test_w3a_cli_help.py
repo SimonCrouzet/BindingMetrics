@@ -28,7 +28,9 @@ were added to both commands and are recorded here: ``--prediction-cyclic``,
 ``--prediction-no-msa-server``, ``--prediction-conda-env`` and ``--prediction-lock-threshold``.
 The help of ``--openfold-cyclic`` and ``--prediction-cyclic`` then gained the rule that ``auto``
 leaves a head-to-tail binder with modified residues linear, and the one-complex measurement
-behind it.
+behind it. Two options of the pre-flight group were added to both commands and are recorded the
+same way: ``--designed-with`` (the pipeline that made the designed binder) and ``--design-policy``
+(what to do with the adversarial check when the model of the run is one that pipeline ran).
 """
 
 import argparse
@@ -472,6 +474,37 @@ GOLDEN = {
                 "log the problems and run everything. An output read with "
                 "--prediction-dir only warns.",
             ),
+            "--designed-with": (
+                "Pre-flight check",
+                None,
+                ["boltzgen", "bindcraft", "colabdesign"],
+                None,
+                False,
+                "None",
+                "The pipeline that made the designed binder. The EvoBind "
+                "adversarial check asks whether a model other than the designer "
+                "places the binder where the design has it, and a model that "
+                "the pipeline ran itself agrees with it in part because the "
+                "design was selected for that model: BoltzGen ran Boltz-2, "
+                "BindCraft and ColabDesign ran AlphaFold2 (--predictor af2). "
+                "The check is then handled by --design-policy. Without this "
+                "option nothing is decided and the report notes that "
+                "independence was not checked.",
+            ),
+            "--design-policy": (
+                "Pre-flight check",
+                None,
+                ["error", "skip", "warn"],
+                None,
+                False,
+                "'skip'",
+                "What to do with the adversarial check when the model of the "
+                "run is one that --designed-with ran itself. skip (default): "
+                "leave the check out, warn loudly and run everything else. "
+                "warn: run it, warn, and mark the result as not independent of "
+                "the design. error: refuse. --on-incompatible does not change "
+                "this rule.",
+            ),
             "--preflight-only": (
                 "Pre-flight check",
                 None,
@@ -903,6 +936,37 @@ GOLDEN = {
                 "the incompatible steps, record why, and run the rest. warn: "
                 "log the problems and run everything. An output read with "
                 "--prediction-dir only warns.",
+            ),
+            "--designed-with": (
+                "Pre-flight check",
+                None,
+                ["boltzgen", "bindcraft", "colabdesign"],
+                None,
+                False,
+                "None",
+                "The pipeline that made the designed binder. The EvoBind "
+                "adversarial check asks whether a model other than the designer "
+                "places the binder where the design has it, and a model that "
+                "the pipeline ran itself agrees with it in part because the "
+                "design was selected for that model: BoltzGen ran Boltz-2, "
+                "BindCraft and ColabDesign ran AlphaFold2 (--predictor af2). "
+                "The check is then handled by --design-policy. Without this "
+                "option nothing is decided and the report notes that "
+                "independence was not checked.",
+            ),
+            "--design-policy": (
+                "Pre-flight check",
+                None,
+                ["error", "skip", "warn"],
+                None,
+                False,
+                "'skip'",
+                "What to do with the adversarial check when the model of the "
+                "run is one that --designed-with ran itself. skip (default): "
+                "leave the check out, warn loudly and run everything else. "
+                "warn: run it, warn, and mark the result as not independent of "
+                "the design. error: refuse. --on-incompatible does not change "
+                "this rule.",
             ),
             "--preflight-only": (
                 "Pre-flight check",

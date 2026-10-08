@@ -1257,10 +1257,13 @@ def _analyse(
     seed_index: int = 1,
     mode: Optional[str] = None,
     runner: Optional[Any] = None,
+    adversarial_skipped: Optional[str] = None,
 ) -> tuple[dict, dict]:
     """Every consumer of one prediction, all reading the record the session parsed once.
 
     ``runner`` is the runner of the session, asked why the model cannot be started when it cannot.
+    ``adversarial_skipped`` is the reason the adversarial check is not run (the design pipeline
+    ran this model itself); the block then holds it under the key of the same name.
     """
     from binding_metrics.metrics.evobind import compute_evobind_adversarial_from_records
     from binding_metrics.metrics.prediction import summarize_prediction
@@ -1297,15 +1300,18 @@ def _analyse(
 
         # Does the prediction agree with the input pose? A large COM shift means the model
         # puts the binder elsewhere, so the design pose is not supported by the prediction.
-        try:
-            adversarial = compute_evobind_adversarial_from_records(
-                input_path, record, binder_chain, receptor_chain
-            )
-            merge_reason(block, adversarial, "evobind adversarial")
-            block.update(adversarial)
-        except Exception as e:  # noqa: BLE001 - per-check isolation; see adversarial_error
-            logger.warning("  [warning] EvoBind adversarial check failed: %s", e)
-            block["adversarial_error"] = str(e)
+        if adversarial_skipped is not None:
+            block["adversarial_skipped"] = adversarial_skipped
+        else:
+            try:
+                adversarial = compute_evobind_adversarial_from_records(
+                    input_path, record, binder_chain, receptor_chain
+                )
+                merge_reason(block, adversarial, "evobind adversarial")
+                block.update(adversarial)
+            except Exception as e:  # noqa: BLE001 - per-check isolation; see adversarial_error
+                logger.warning("  [warning] EvoBind adversarial check failed: %s", e)
+                block["adversarial_error"] = str(e)
 
     block["mode"] = mode
     if record.model == "of3":
@@ -1338,6 +1344,7 @@ def run_prediction_step(
     mode: Optional[str] = None,
     default_chain_map: Optional[Mapping[str, str]] = None,
     runner: Optional[Any] = None,
+    adversarial_skipped: Optional[str] = None,
 ) -> tuple[dict, dict]:
     """The prediction step for one sample; never raises.
 
@@ -1361,6 +1368,8 @@ def run_prediction_step(
             precedence.
         runner: The runner of the session; when the model cannot be started, its
             ``unavailable_reason()`` (if it has one) is added to the error text.
+        adversarial_skipped: The reason the EvoBind adversarial check is left out, from the
+            pre-flight check (the design pipeline ran this model itself); None runs it.
 
     Returns:
         ``(block, provenance)``: the value of ``results["prediction"]`` and the provenance keys
@@ -1386,6 +1395,7 @@ def run_prediction_step(
             seed_index=seed_index,
             mode=mode,
             runner=runner,
+            adversarial_skipped=adversarial_skipped,
         )
     except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["prediction"]
         logger.warning("  [warning] %s prediction failed: %s", display_name(request.model), e)
@@ -1421,6 +1431,7 @@ def run_single_prediction(
     prediction_weights: Optional[Path] = None,
     prediction_lock_threshold: Optional[float] = None,
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+    adversarial_skipped: Optional[str] = None,
 ) -> tuple[dict, dict]:
     """The whole prediction step of ``run_pipeline``: store, session, request, consumers.
 
@@ -1436,7 +1447,8 @@ def run_single_prediction(
     given its templates (``"structure"``, the default, or ``"alignment"``; ``"alignment"`` is
     refused for a runner without a ``template_mode`` setting). The runner's ``output_chain_map``
     names the chains of its prediction, unless ``prediction_binder_chain`` or
-    ``prediction_target_chain`` is given.
+    ``prediction_target_chain`` is given. ``adversarial_skipped`` is the reason the EvoBind
+    adversarial check is left out (the design pipeline ran this model itself); None runs it.
 
     Returns:
         ``(block, provenance)`` as ``run_prediction_step``; the block is ``{"skipped": True}``
@@ -1498,6 +1510,7 @@ def run_single_prediction(
         mode=mode,
         default_chain_map=default_chain_map,
         runner=runner,
+        adversarial_skipped=adversarial_skipped,
     )
     if predictor == "of3" and not adopt and not block.get("error"):
         record_binder_cyclic(block, input_path, binder_chain, openfold_cyclic, openfold_conda_env)
