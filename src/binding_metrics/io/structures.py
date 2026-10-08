@@ -111,7 +111,10 @@ def _restore_struct_conn_bonds(path: Path, topology) -> int:
 
     Partners are matched through ``_atom_site.id``, which OpenMM keeps as
     ``Atom.id``. The author columns of ``_struct_conn`` are used when present
-    (wwPDB files always have them) and the label columns otherwise. A partner
+    (wwPDB files always have them) and the label columns otherwise. A residue
+    is told apart by chain, number and insertion code, so a row can name 60 or
+    60A when the file gives the code (``pdbx_ptnr1_PDB_ins_code``, which
+    ``save_cif`` writes for a file whose residues share a number). A partner
     that matches no atom, or more than one, is skipped.
 
     Returns the number of bonds added.
@@ -884,6 +887,119 @@ def drop_other_protein_chains(
     return modeller.topology, modeller.positions
 
 
+#: Null insertion code in ``_struct_conn``, as the wwPDB files write it.
+_NO_INSERTION_CODE = "?"
+
+#: The ``_struct_conn`` columns that ``PDBxFile.writeFile`` writes, and the only ones it reads.
+_STRUCT_CONN_LABEL_COLUMNS = [
+    "id",
+    "conn_type_id",
+    "ptnr1_label_asym_id",
+    "ptnr1_label_comp_id",
+    "ptnr1_label_seq_id",
+    "ptnr1_label_atom_id",
+    "ptnr2_label_asym_id",
+    "ptnr2_label_comp_id",
+    "ptnr2_label_seq_id",
+    "ptnr2_label_atom_id",
+]
+
+
+def _author_partner_columns(partner: str) -> list[str]:
+    """Names of the ``_struct_conn`` columns that give partner "1" or "2" by author numbering."""
+    return [
+        f"ptnr{partner}_auth_asym_id",
+        f"ptnr{partner}_auth_comp_id",
+        f"ptnr{partner}_auth_seq_id",
+        f"pdbx_ptnr{partner}_PDB_ins_code",
+    ]
+
+
+def _add_author_partner_columns(block) -> bool:
+    """Add the author partner columns to the ``_struct_conn`` loop, ``?`` in the rows it has.
+
+    Returns False when the block has no ``_struct_conn`` loop.
+    """
+    column = block.find_loop("_struct_conn.id")
+    loop = column.get_loop() if column else None
+    if loop is None:
+        return False
+    present = set(loop.tags)
+    missing = [
+        f"_struct_conn.{name}"
+        for partner in "12"
+        for name in _author_partner_columns(partner)
+        if f"_struct_conn.{name}" not in present
+    ]
+    if missing:
+        loop.add_columns(missing, "?")
+    return True
+
+
+def _listed_by_pdbx(atom1, atom2) -> bool:
+    """True when ``PDBxFile.writeFile`` lists the bond in ``_struct_conn``.
+
+    It lists a bond that touches a residue it does not know (the standard residues are rebuilt
+    on reading) and the disulfides of two CYS.
+    """
+    from openmm.app import PDBFile
+
+    standard = PDBFile._standardResidues
+    if atom1.residue.name not in standard or atom2.residue.name not in standard:
+        return True
+    return (
+        atom1.name == "SG"
+        and atom2.name == "SG"
+        and atom1.residue.name == "CYS"
+        and atom2.residue.name == "CYS"
+    )
+
+
+def _shares_residue_number(topology) -> bool:
+    """True when two residues of a chain have the same number (60 and 60A)."""
+    counts = Counter((res.chain.id, str(res.id)) for res in topology.residues())
+    return any(count > 1 for count in counts.values())
+
+
+def _annotate_listed_rows(block, topology, res_key: dict, shared: set) -> bool:
+    """Give the rows that ``PDBxFile`` wrote the author partner columns.
+
+    The rows say a partner by chain, number and atom name, which names two residues where
+    60 and 60A share a number. The bond a row stands for is known from the topology: the rows are
+    the bonds listed by ``_listed_by_pdbx`` in the order of ``topology.bonds()``. The comparison
+    of the residue and atom names guards that order; when it does not hold the rows are left
+    as they are (and the function returns False).
+    """
+    listed = [(a1, a2) for a1, a2 in topology.bonds() if _listed_by_pdbx(a1, a2)]
+    names = [f"ptnr{n}_label_{field}" for n in "12" for field in ("comp_id", "atom_id")]
+    table = block.find("_struct_conn.", names)
+    rows_match = len(table) == len(listed) and all(
+        (row.str(0), row.str(1), row.str(2), row.str(3))
+        == (a1.residue.name, a1.name, a2.residue.name, a2.name)
+        for row, (a1, a2) in zip(table, listed)
+    )
+    if not rows_match:
+        logger.warning(
+            "the _struct_conn rows written by OpenMM do not follow the bonds of the topology; "
+            "the partners at residues that share a number (%s) cannot be told apart",
+            ", ".join(f"{chain} {number}" for chain, number in sorted(shared)),
+        )
+        return False
+    _add_author_partner_columns(block)
+    for partner, side in (("1", 0), ("2", 1)):
+        table = block.find(
+            "_struct_conn.", [f"ptnr{partner}_label_seq_id", *_author_partner_columns(partner)]
+        )
+        for row, bond in zip(table, listed):
+            residue = bond[side].residue
+            asym, number, code = res_key.get(residue.index, (residue.chain.id, str(residue.id), ""))
+            row[1], row[2], row[3] = asym, residue.name, number
+            row[4] = code or _NO_INSERTION_CODE
+            if (asym, number) in shared:
+                row[0] = "."
+    return True
+
+
 def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
     """Add non-disulfide non-sequential intra-chain bonds to _struct_conn.
 
@@ -894,6 +1010,13 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
 
     Without gemmi the bonds cannot be written, so a saved cyclic peptide comes
     back linear on reload; that is logged as a warning when such bonds exist.
+
+    A partner is a residue of the written ``_atom_site``: author chain, number and insertion
+    code. When two residues of a chain share a number (60 and 60A), ``PDBxFile`` keys their
+    atoms alike and resolves a row to the last of them, so the file then carries the author
+    partner columns and the insertion codes in every row, which ``load_structure`` reads, and a
+    partner at a shared number has ``.`` as its ``label_seq_id``, which ``PDBxFile`` finds
+    in no residue and so leaves the row alone.
     """
     custom_bonds = []
     for bond in topology.bonds():
@@ -907,90 +1030,103 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
             continue  # disulfide, already in _struct_conn
         custom_bonds.append((a1, a2))
 
-    if not custom_bonds:
+    if not custom_bonds and not _shares_residue_number(topology):
         return
 
     try:
         import gemmi
     except ImportError:
-        logger.warning(
-            "gemmi is not installed: the %d ring-closure or other non-sequential "
-            "bond(s) of %s cannot be written to _struct_conn, so the file reloads "
-            "without them (a cyclic peptide comes back linear). Install with: "
-            "pip install binding-metrics[structure]",
-            len(custom_bonds),
-            cif_path,
-        )
+        if custom_bonds:
+            logger.warning(
+                "gemmi is not installed: the %d ring-closure or other non-sequential "
+                "bond(s) of %s cannot be written to _struct_conn, so the file reloads "
+                "without them (a cyclic peptide comes back linear). Install with: "
+                "pip install binding-metrics[structure]",
+                len(custom_bonds),
+                cif_path,
+            )
         return
 
     doc = gemmi.cif.read(str(cif_path))
     block = doc.sole_block()
 
-    # Derive each residue's (auth_asym_id, auth_seq_id) from the FINAL _atom_site
-    # that was just written.  Those rows are 1:1 with topology.atoms(), and those
+    # Derive each residue's (auth_asym_id, auth_seq_id, insertion code) from the FINAL
+    # _atom_site that was just written.  Those rows are 1:1 with topology.atoms(), and those
     # are the exact columns OpenMM's PDBxFile keys atoms on when it reloads the
     # file.  Using the topology chain id / a chain-local index here instead would
     # not match _atom_site after save_cif has rewritten it to the original auth
     # IDs, and OpenMM would silently drop the bond on reload.
-    res_key: dict[int, tuple[str, str]] = {}
-    site = block.find("_atom_site.", ["auth_asym_id", "auth_seq_id"])
+    res_key: dict[int, tuple[str, str, str]] = {}
+    site = block.find("_atom_site.", ["auth_asym_id", "auth_seq_id", "?pdbx_PDB_ins_code"])
     if site:
+        has_code = site.has_column(2)
         for atom, row in zip(topology.atoms(), site):
-            res_key.setdefault(atom.residue.index, (row[0], row[1]))
+            code = row[2] if has_code and row[2] not in ("?", ".") else ""
+            res_key.setdefault(atom.residue.index, (row[0], row[1], code))
 
-    def _asym_seq(res) -> tuple[str, str]:
+    def _partner(res) -> tuple[str, str, str]:
         # Fall back to the topology's own values if _atom_site could not be read.
-        return res_key.get(res.index, (res.chain.id, str(res.id)))
+        return res_key.get(res.index, (res.chain.id, str(res.id), res.insertionCode.strip()))
 
-    existing = block.find(["_struct_conn.id"])
-    n_existing = len(existing) if existing else 0
+    numbers = Counter((asym, seq) for asym, seq, _ in res_key.values())
+    shared = {key for key, count in numbers.items() if count > 1}
 
-    # Use the SAME label_* column names PDBxFile.writeFile emits.  On reload
-    # OpenMM reads struct_conn partners exclusively via ptnr*_label_asym_id /
-    # ptnr*_label_seq_id / ptnr*_label_atom_id — a freshly-created loop that used
-    # auth_* column names would be written but never read back.  The values we
-    # store come from _atom_site's auth_asym_id / auth_seq_id (which save_cif has
-    # already made equal to the label_asym_id it writes), so they match the atom
-    # keys OpenMM builds.
-    _STRUCT_CONN_COLS = [
-        "_struct_conn.id",
-        "_struct_conn.conn_type_id",
-        "_struct_conn.ptnr1_label_asym_id",
-        "_struct_conn.ptnr1_label_comp_id",
-        "_struct_conn.ptnr1_label_seq_id",
-        "_struct_conn.ptnr1_label_atom_id",
-        "_struct_conn.ptnr2_label_asym_id",
-        "_struct_conn.ptnr2_label_comp_id",
-        "_struct_conn.ptnr2_label_seq_id",
-        "_struct_conn.ptnr2_label_atom_id",
-    ]
     loop_ref = block.find_loop("_struct_conn.id")
-    if loop_ref:
-        loop = loop_ref.get_loop()
-    else:
-        loop = block.init_loop("_struct_conn.", [col.split(".")[1] for col in _STRUCT_CONN_COLS])
+    loop = loop_ref.get_loop() if loop_ref else None
+    with_author = loop is not None and "_struct_conn.ptnr1_auth_seq_id" in loop.tags
+    changed = False
+    if shared and not with_author:
+        if loop is None:
+            with_author = True  # the loop made below has the columns
+        elif _annotate_listed_rows(block, topology, res_key, shared):
+            with_author, changed = True, True
+    # Without the author columns a row can only be found by its label numbers: keep them.
+    ambiguous = shared if with_author else set()
 
-    for i, (a1, a2) in enumerate(custom_bonds):
-        r1, r2 = a1.residue, a2.residue
-        asym1, seq1 = _asym_seq(r1)
-        asym2, seq2 = _asym_seq(r2)
-        bond_id = f"covale{n_existing + i + 1}"
-        loop.add_row(
-            [
-                bond_id,
-                "covale",
-                asym1,
-                r1.name,
-                seq1,
-                a1.name,
-                asym2,
-                r2.name,
-                seq2,
-                a2.name,
-            ]
-        )
+    if ambiguous:
+        # The label_seq_id of a residue at a shared number is "." in _atom_site and in the rows,
+        # which is how a reader that matches the label columns (biotite) still finds one residue.
+        labels = block.find("_atom_site.", ["auth_asym_id", "auth_seq_id", "label_seq_id"])
+        for row in labels:
+            if (row[0], row[1]) in ambiguous and row[2] != ".":
+                row[2] = "."
+                changed = True
 
-    doc.write_file(str(cif_path))
+    if custom_bonds:
+        existing = block.find(["_struct_conn.id"])
+        n_existing = len(existing) if existing else 0
+
+        # Use the SAME label_* column names PDBxFile.writeFile emits.  On reload
+        # OpenMM reads struct_conn partners exclusively via ptnr*_label_asym_id /
+        # ptnr*_label_seq_id / ptnr*_label_atom_id — a freshly-created loop that used
+        # auth_* column names would be written but never read back.  The values we
+        # store come from _atom_site's auth_asym_id / auth_seq_id (which save_cif has
+        # already made equal to the label_asym_id it writes), so they match the atom
+        # keys OpenMM builds.
+        columns = list(_STRUCT_CONN_LABEL_COLUMNS)
+        if with_author:
+            columns += _author_partner_columns("1") + _author_partner_columns("2")
+        if loop is None:
+            loop = block.init_loop("_struct_conn.", columns)
+        tags = [tag.split(".", 1)[1] for tag in loop.tags]
+
+        for i, (a1, a2) in enumerate(custom_bonds):
+            values = {"id": f"covale{n_existing + i + 1}", "conn_type_id": "covale"}
+            for n, atom in (("1", a1), ("2", a2)):
+                asym, seq, code = _partner(atom.residue)
+                values[f"ptnr{n}_label_asym_id"] = asym
+                values[f"ptnr{n}_label_comp_id"] = atom.residue.name
+                values[f"ptnr{n}_label_seq_id"] = "." if (asym, seq) in ambiguous else seq
+                values[f"ptnr{n}_label_atom_id"] = atom.name
+                values[f"ptnr{n}_auth_asym_id"] = asym
+                values[f"ptnr{n}_auth_comp_id"] = atom.residue.name
+                values[f"ptnr{n}_auth_seq_id"] = seq
+                values[f"pdbx_ptnr{n}_PDB_ins_code"] = code or _NO_INSERTION_CODE
+            loop.add_row([values.get(tag, "?") for tag in tags])
+        changed = True
+
+    if changed:
+        doc.write_file(str(cif_path))
 
 
 #: Force-field-internal residue names that prep introduces to match specialised
@@ -1110,6 +1246,52 @@ def _drop_ambiguous_standard_bonds(block, renumbered: dict, out_to_auth: dict, s
             table.remove_row(index)
 
 
+def _patch_struct_conn_partners(
+    block,
+    file_name: str,
+    renumbered: dict,
+    ins_codes: dict,
+    out_to_auth: dict,
+    shared: set,
+) -> None:
+    """Point the ``_struct_conn`` partners at the residue numbers written to ``_atom_site``.
+
+    ``PDBxFile`` wrote each partner as its OpenMM chain letter and its 1-based number in the
+    chain; ``renumbered`` and ``ins_codes`` map that pair to the number and the insertion code
+    now in ``_atom_site``. Called before the label chain IDs are replaced.
+
+    ``shared`` holds the ``(author chain, number)`` pairs of two or more residues (60 and 60A).
+    When it is not empty every row also gets the author partner columns, with the insertion
+    code, so that ``load_structure`` can tell the residues apart; a partner at a shared number
+    has ``.`` as its ``label_seq_id``, which ``PDBxFile`` finds in no residue, because it would
+    resolve the number to the last of the residues that have it and bond the wrong atom.
+    """
+    with_author = bool(shared) and _add_author_partner_columns(block)
+    for partner in "12":
+        names = [f"ptnr{partner}_label_{field}" for field in ("asym_id", "comp_id", "seq_id")]
+        if with_author:
+            names += _author_partner_columns(partner)
+        try:
+            for row in block.find("_struct_conn.", names):
+                out_chain, comp, seq = row[0], row[1], row[2]
+                number = renumbered.get((out_chain, seq), seq)
+                if with_author:
+                    author_chain = out_to_auth.get(out_chain, out_chain)
+                    row[3], row[4], row[5] = author_chain, comp, number
+                    row[6] = ins_codes.get((out_chain, seq)) or _NO_INSERTION_CODE
+                    if (author_chain, number) in shared:
+                        number = "."
+                row[2] = number
+        except (RuntimeError, IndexError, ValueError) as exc:
+            logger.warning(
+                "cannot restore residue numbers in _struct_conn.ptnr%s_label_seq_id of %s (%s: %s)",
+                partner,
+                file_name,
+                type(exc).__name__,
+                exc,
+            )
+
+
 def save_cif(
     topology,
     positions,
@@ -1131,6 +1313,16 @@ def save_cif(
 
     Falls back to raw OpenMM output if gemmi is not available (logged as a
     warning) or source is None.
+
+    Residues that share a number (60 and 60A) cannot be told apart by the label
+    columns of ``_struct_conn`` that ``PDBxFile`` reads, which resolve a number to
+    the last residue that has it. When a chain has such residues, every row of
+    ``_struct_conn`` also names its partners by ``ptnr*_auth_asym_id``,
+    ``ptnr*_auth_comp_id``, ``ptnr*_auth_seq_id`` and
+    ``pdbx_ptnr*_PDB_ins_code``, which ``load_structure`` reads, and the
+    ``label_seq_id`` of those residues is ``.`` in ``_atom_site`` and in the rows,
+    so ``PDBxFile`` leaves the rows to ``load_structure``. A file with no shared
+    number is written as before.
 
     Args:
         topology: OpenMM Topology object
@@ -1299,6 +1491,7 @@ def save_cif(
         # OpenMM (which keys atoms by auth_seq_id and _struct_conn partners by
         # label_seq_id) cannot match a bond of a non-standard residue on reload.
         renumbered: dict[tuple, str] = {}
+        renumbered_codes: dict[tuple, str] = {}  # the insertion code written for the same keys
         shared_numbers: set = set()  # (auth chain, number) of two or more residues
         if out_table and out_to_auth:
             o_res_idx: dict[str, int] = {}
@@ -1342,38 +1535,31 @@ def save_cif(
                 row[4] = new_seq  # label_seq_id → same, see `renumbered`
                 row[5] = new_ins_code or "."  # pdbx_PDB_ins_code → original
                 renumbered[(out_ch, seq)] = new_seq
+                renumbered_codes[(out_ch, seq)] = new_ins_code
             shared_numbers = _shared_residue_numbers(assigned)
+            for row in out_table:
+                if (row[0], row[1]) in shared_numbers:
+                    row[4] = "."  # label_seq_id: see _patch_struct_conn_partners
 
         if shared_numbers:
             _drop_ambiguous_standard_bonds(output_block, renumbered, out_to_auth, shared_numbers)
 
         # Patch the _struct_conn residue numbers first: the chain patch below
         # replaces the OpenMM chain letters this lookup is keyed on.
-        for chain_col, seq_col in (
-            ("ptnr1_label_asym_id", "ptnr1_label_seq_id"),
-            ("ptnr2_label_asym_id", "ptnr2_label_seq_id"),
-        ):
-            try:
-                for row in output_block.find("_struct_conn.", [chain_col, seq_col]):
-                    row[1] = renumbered.get((row[0], row[1]), row[1])
-            except (RuntimeError, IndexError, ValueError) as exc:
-                logger.warning(
-                    "cannot restore residue numbers in _struct_conn.%s of %s (%s: %s)",
-                    seq_col,
-                    output_path.name,
-                    type(exc).__name__,
-                    exc,
-                )
+        _patch_struct_conn_partners(
+            output_block,
+            output_path.name,
+            renumbered,
+            renumbered_codes,
+            out_to_auth,
+            shared_numbers,
+        )
 
         # Patch _struct_conn chain IDs (PDBxFile writes label_asym_id with
-        # sequential letters; auth_asym_id variants may also appear).
+        # sequential letters).
         if out_to_auth:
-            for col in (
-                "ptnr1_label_asym_id",
-                "ptnr2_label_asym_id",
-                "ptnr1_auth_asym_id",
-                "ptnr2_auth_asym_id",
-            ):
+            # The author partner columns were written with the author chain above.
+            for col in ("ptnr1_label_asym_id", "ptnr2_label_asym_id"):
                 try:
                     sc_table = output_block.find("_struct_conn.", [col])
                     for row in sc_table:
