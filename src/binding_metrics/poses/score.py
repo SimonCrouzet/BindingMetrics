@@ -237,6 +237,20 @@ _REFUSED_INPUT_TYPES = {
     "prediction_dir": "reads the output directory of a prediction run",
 }
 _FILE_INPUT_TYPES = ("static_structure", "md_simulation", "predicted_structure")
+
+#: Registry metrics that compare the design with a second structure and whose second structure,
+#: in a pose set, is the pose: the reference is the design. The value is the keyword that takes the
+#: per-atom pLDDT of the second structure. The registry slots are ``path_arg`` for the design
+#: and ``secondary_path_arg`` for the second structure, so the layer fills them the other way
+#: round from the way it fills them for ``structure_rmsd`` and ``dockq``.
+_POSE_IS_SECOND_STRUCTURE = {"evobind_adversarial": "afm_plddt_per_atom"}
+
+_POSE_AS_SECOND_STRUCTURE_REASON = (
+    "in a pose set the reference is the design and each pose is the second, predicted structure, "
+    "whose per-atom pLDDT the score divides by (evobind_adversarial_score is None without it), "
+    "so the poses must be predicted poses with per-atom pLDDT and a receptor chain is required. "
+    "Give predicted poses (PredictedPose), or leave '{name}' out of the metric list."
+)
 _STRUCTURE_SUFFIXES = (".cif", ".mmcif", ".pdb")
 _LIGHT_COST_CLASSES = ("static", "model")
 
@@ -1270,22 +1284,37 @@ def _evaluate_metric(plan: _MetricPlan, pose: Pose, ctx: _Context, files: _PoseF
         return _serve_prediction(pose, ctx, extra)
     spec = plan.spec
     kwargs: dict[str, Any] = {}
-    if spec.input_type == "atom_array":
-        kwargs[spec.path_arg] = files.atoms()
+    plddt_keyword = _POSE_IS_SECOND_STRUCTURE.get(plan.name)
+    if plddt_keyword is not None:
+        # the reference is the design, the pose the second structure and its pLDDT the weight
+        kwargs[spec.path_arg] = ctx.reference_path
+        kwargs[spec.secondary_path_arg] = files.path()
+        kwargs[plddt_keyword] = getattr(pose, "plddt_per_atom", None)
     else:
-        kwargs[spec.path_arg] = files.path()
-    if spec.input_type == "predicted_structure" and "plddt_per_atom" not in extra:
-        plddt = getattr(pose, "plddt_per_atom", None)
-        if plddt is None:
-            raise _NotApplicableError(
-                f"{plan.name} needs the per-atom pLDDT of a predicted pose; this pose has none"
-            )
-        kwargs["plddt_per_atom"] = plddt
-    if spec.secondary_path_arg:
-        kwargs[spec.secondary_path_arg] = ctx.reference_path
+        if spec.input_type == "atom_array":
+            kwargs[spec.path_arg] = files.atoms()
+        else:
+            kwargs[spec.path_arg] = files.path()
+        if spec.input_type == "predicted_structure" and "plddt_per_atom" not in extra:
+            plddt = getattr(pose, "plddt_per_atom", None)
+            if plddt is None:
+                raise _NotApplicableError(
+                    f"{plan.name} needs the per-atom pLDDT of a predicted pose; this pose has none"
+                )
+            kwargs["plddt_per_atom"] = plddt
+        if spec.secondary_path_arg:
+            kwargs[spec.secondary_path_arg] = ctx.reference_path
     kwargs.update(_chain_kwargs(spec, ctx.binder_chain, ctx.target_chain))
     kwargs.update(extra)
-    return spec.call(**kwargs)
+    block = spec.call(**kwargs)
+    if plddt_keyword is not None and kwargs.get(plddt_keyword) is None:
+        # the geometry stays; the score cannot be weighted and must not look like a number
+        block = dict(block)
+        block["reason"] = (
+            f"{plan.name}: the pose has no per-atom pLDDT, so the score that divides by it is "
+            "None; the displacement and the distances are the geometry of the pose"
+        )
+    return block
 
 
 def _run_plans(
@@ -1782,7 +1811,7 @@ def _preflight(
     every back-end is a model the design ran; otherwise it stays, and the poses of such a
     back-end skip it one by one (``_Context.design_skips``).
     """
-    from binding_metrics.capabilities import preflight
+    from binding_metrics.capabilities import Capabilities, preflight
 
     if mode == "off" and design_source is None:
         return None, list(plans), []
@@ -1792,6 +1821,19 @@ def _preflight(
     if first_kind == "predicted":
         provided.add("predicted_structure")
     checked = [plan.name for plan in plans if plan.scope != "none"]
+    # a pose set reads the check the other way round from the pipeline, so its refusal says so
+    with_limits = [
+        SimpleNamespace(
+            name=name,
+            capabilities=Capabilities(
+                needs={"receptor_chain", "predicted_structure"},
+                reasons={"needs": _POSE_AS_SECOND_STRUCTURE_REASON.format(name=name)},
+            ),
+        )
+        if name in _POSE_IS_SECOND_STRUCTURE
+        else name
+        for name in checked
+    ]
     if mode == "off":
         # the metrics get no limits here, so only the design rule can find anything
         no_limits = [SimpleNamespace(name=name, capabilities=None) for name in checked]
@@ -1807,7 +1849,7 @@ def _preflight(
     else:
         report = preflight(
             profile,
-            checked,
+            with_limits,
             provided=provided,
             policy=mode,
             design_source=design_source,
@@ -2099,7 +2141,11 @@ def score_pose_set(
             on each pose; ``()`` gives the frame, the native scores and the agreement only.
             Metrics that read a trajectory or a prediction directory are refused; ``"prediction"``
             is built from a ``PredictedPose``. A metric that compares with a second structure
-            (``structure_rmsd``, ``dockq``, ``evobind_adversarial``) needs ``reference``.
+            (``structure_rmsd``, ``dockq``, ``evobind_adversarial``) needs ``reference``. For
+            ``evobind_adversarial`` the reference is the design and each pose is the second
+            structure, weighted by its per-atom pLDDT, so the poses must be ``PredictedPose``
+            objects (the pre-flight check refuses other poses; with ``"warn"`` the score of such
+            a pose is None, with a ``reason``).
         reference: A ``Reference``, or ``{variant name: Reference}``, that the poses are placed
             on and measured against. The first variant defines the frame of the metrics and of
             the agreement. None uses the first readable pose (lowest id) as the reference.
