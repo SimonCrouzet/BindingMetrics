@@ -823,6 +823,8 @@ If you find this useful, have ideas, or are working on something in the same spa
 
 Contributions, bug reports, and feature requests are welcome. Please open an issue to discuss significant changes before submitting a pull request. All pull requests should include tests and pass the existing test suite (`pytest`).
 
+**Warnings as errors.** `pyproject.toml` turns a `DeprecationWarning` attributed to a `binding_metrics` module into an error, so a deprecated name used by the package's own code fails the test; a test that provokes the warning on purpose says so with `pytest.warns`. A warning is attributed to the caller of the deprecated name, so a use from a test module or a script stays in the warnings summary and does not fail. To make every `DeprecationWarning` an error, run `python -W error::DeprecationWarning -m pytest -m "not gpu"`. OpenMM 8.2 crashes the interpreter (exit code 139) when its own import-time warning (`builtin type SwigPyPacked has no __module__ attribute`) is an error, as in `python -W error::DeprecationWarning -c "import openmm"`; the test configuration ignores that warning by message and `tests/conftest.py` imports OpenMM with it ignored, so the flag is safe for the suite but not for a bare `import openmm` of your own.
+
 ---
 
 ## Credit & Citation

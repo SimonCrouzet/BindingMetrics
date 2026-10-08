@@ -1,6 +1,7 @@
 """Pytest configuration and shared fixtures."""
 
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 # ---------------------------------------------------------------------------
 
 try:
-    import openmm as _openmm
+    # OpenMM 8.2 emits DeprecationWarning ("builtin type SwigPyPacked has no __module__
+    # attribute") while its SWIG extension is created. Where that warning is an error
+    # (python -W error::DeprecationWarning) the interpreter segfaults inside the import, so
+    # the import is done with the warning ignored and the suite can run with warnings as errors.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        import openmm as _openmm
 
     _openmm.Platform.getPlatformByName("CUDA")
     HAS_CUDA = True
