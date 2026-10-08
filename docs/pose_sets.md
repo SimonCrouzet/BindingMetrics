@@ -90,7 +90,8 @@ score_pose_set(poses, binder_chain=None, target_chain=None, metrics=(), referenc
                representative="medoid", heavy="representative", metric_kwargs=None,
                preflight="error", on_error="record", n_workers=1, tmp_dir=None,
                keep_tmp=False, residue_table=False, include_transform=True,
-               construct=None, residue_maps=None, start_method="spawn")
+               construct=None, residue_maps=None, start_method="spawn",
+               design_source=None, design_policy="skip")
 ```
 
 | Argument | Meaning |
@@ -114,6 +115,8 @@ score_pose_set(poses, binder_chain=None, target_chain=None, metrics=(), referenc
 | `construct` | A name for the construct, recorded in the result. |
 | `residue_maps` | `{pose id: {pose ResidueKey: reference ResidueKey}}`, replacing the residue map of the reference for those poses. |
 | `start_method` | How the worker processes of `n_workers` above 1 are started: `"spawn"` (the default), `"forkserver"`, `"fork"`, or None for the platform default. See [Parallelism](#parallelism). |
+| `design_source` | The pipeline that made the designed binder: `"boltzgen"`, `"bindcraft"` or `"colabdesign"` in any case, or the registry names of the models it ran itself, `("boltz2",)`. It sets `independent_of_design` in every row and drives `design_policy`; see [The design origin](#the-design-origin). None decides nothing. |
+| `design_policy` | `"skip"` (the default), `"warn"` or `"error"`: what to do with a check that rests on independence (`evobind_adversarial`) on the poses of a back-end that the design pipeline ran itself. `preflight` does not change it. |
 
 Which metrics run on which poses depends on the `cost_class` that the registry declares for them. A metric with the class `static` or `model` runs on every pose. A metric with the class `structural` or `md`, and a metric that declares none, is heavy: with `heavy="representative"` it runs on the representative poses only, in this process and one after the other, so that a metric that needs the GPU never runs in a worker. `heavy="all"` runs it on every pose and `"skip"` leaves it out. A pose that was not asked for a metric has no block for it and no entry in `reasons`.
 
@@ -394,6 +397,16 @@ When two back-ends predict the same constructs, the next questions are how far t
 
 **Hotspot consistency.** `hotspot_consistency(sensitivities, residue_table, top_m=3)` takes an alanine scan `{binder position: sensitivity}` (larger means more important; pass the negated scale otherwise) and the per-residue table of one pose, and returns `spearman_area_vs_sensitivity` (the buried area against the sensitivity over the positions that have both; it needs 3 positions and a spread in both), `top_in_interface_fraction` (the fraction of the `top_m` most sensitive positions that are in the interface; it needs at least `top_m` positions), `top_positions`, `n_top`, `n_top_in_interface`, `n_positions`, `n_missing_sensitivity`, `n_unmatched_positions` and `reasons`. Every position whose sensitivity is at least that of the `top_m`-th most sensitive one is in the top set, so the set has more than `top_m` members when a tie straddles the cut, and the fraction is taken over the whole set. The default `top_m` of 3 is a choice, not a benchmark. The caller runs it on one pose's `residue_table`; `score_pose_set` has no argument for the sensitivities.
 
+## The design origin
+
+A model that took part in the design agrees with the design partly because the design was selected for that model. When BoltzGen made a construct, the Boltz-2 poses of the construct are therefore not an independent witness, and an OpenFold3 pose of the same construct is. `design_source` names the pipeline (`capabilities.DESIGN_SOURCE_PREDICTORS` maps BoltzGen to `boltz2` and BindCraft and ColabDesign to `af2`; the models can also be named directly) and the layer compares it with the `backend` of each pose. It reports the label and never drops a pose for it.
+
+- `independent_of_design` in each row is False for a pose whose back-end the pipeline ran, True for a pose with another back-end, and None when no usable source was given or the pose names no back-end.
+- The checks that rest on independence (`capabilities.INDEPENDENCE_DEPENDENT_CHECKS`, today `evobind_adversarial`) follow `design_policy`. With `"skip"`, the default, the check is not run on the poses of such a back-end: their rows hold the reason under the metric's name in `reasons` (status `partial`), their group counts them in `n_total` and not in `n_ok` of the keys of that metric, and the other back-ends are measured as asked. When every back-end is one the design ran, the check is left out of the whole set and `preflight["metrics_skipped"]` lists it. `"warn"` runs the check on all the poses. `"error"` raises `IncompatibleInputError` before a pose is scored.
+- `warnings` carries the sentence of the check (which check, why, and how to run it anyway) and one sentence that names the back-ends whose poses are not independent, with the number of poses; `summary()` prints both. `preflight` has a `design` block (see [`preflight.md`](preflight.md#the-design-origin)) and `parameters["design"]` holds `source`, `predictors` and `policy`, so that a result with another source has another `input_key`.
+
+The rule holds whatever `preflight` says: `preflight="off"` skips the limits of the metrics and not the design origin. The aggregates have no column for the label; a group of a back-end that is not independent shows it in the `reasons` of the keys of a skipped check, and in the label of its rows.
+
 ## The result
 
 `score_pose_set` returns a `PoseSetResult`, a `dict` subclass: `result["poses"]`, `json.dumps(result)` and `copy.deepcopy` work as they do for a dictionary, and the methods read it and never change it.
@@ -419,14 +432,14 @@ When two back-ends predict the same constructs, the next questions are how far t
 | `binder_chain`, `target_chain` | The chains that were used, given or detected. |
 | `input_key` | The SHA-256 of the pose ids, content hashes and provenance, the chains, the content hash of each reference and the parameters. Equal for equal inputs, whatever the run: it does not depend on the package version, `n_workers` or the temporary directory. A callable is not in it. |
 | `provenance` | `collect_provenance()` (package version, git sha, Python, OS, OpenMM version read from the installed distribution without importing it, platform, seed) plus `pose_set_schema_version`, `n_poses` and `run` (`n_workers`, `start_method`, `on_error`, `tmp_dir`, `keep_tmp`), and `temp_dir` when the directory was kept. |
-| `parameters` | `options` (every option group), `metrics`, `metric_scope` (`all`, `representatives` or `none` for each metric), `metric_kwargs`, `aggregate`, `group_by`, `representative`, `heavy`, `preflight`, `residue_maps`, `residue_table`, `include_transform`. The resolved values, so that a result says what produced it. |
+| `parameters` | `options` (every option group), `metrics`, `metric_scope` (`all`, `representatives` or `none` for each metric), `metric_kwargs`, `aggregate`, `group_by`, `representative`, `heavy`, `preflight`, `residue_maps`, `residue_table`, `include_transform`, and `design` (`source`, `predictors`, `policy`) when `design_source` is given. The resolved values, so that a result says what produced it. |
 | `references` | `implicit`, `implicit_pose_id`, `metrics_frame_variant` and `variants`: for each variant the `content_hash` and the `Reference.to_dict()` record. |
-| `preflight` | The `PreflightReport` as a dictionary, or None with `preflight="off"`. |
+| `preflight` | The `PreflightReport` as a dictionary, or None with `preflight="off"`. It has one more block, `design`, when `design_source` is given. |
 | `poses` | The rows, sorted by id. |
 | `agreement` | The block described in [Agreement between poses](#agreement-between-poses). |
 | `aggregates` | `{group: {key path: entry}}`, see [Aggregation](#aggregation). |
 | `representatives` | See [The representative pose](#the-representative-pose). |
-| `warnings` | Strings: the warnings of the pre-flight check, of each frame (prefixed by the pose id), a binder profile that differs from the first pose's, a group without representative, and a medoid that was chosen with a caveat. |
+| `warnings` | Strings: the warnings of the pre-flight check (with a design source, the check that was left out and the back-ends whose poses are not independent), of each frame (prefixed by the pose id), a binder profile that differs from the first pose's, a group without representative, and a medoid that was chosen with a caveat. |
 | `nonfinite_fields` | The key paths of every NaN or infinite number in the result. |
 | `timing` | `stages_seconds` and `poses_seconds`. Not part of `input_key`. |
 
@@ -443,7 +456,7 @@ When two back-ends predict the same constructs, the next questions are how far t
 | `status` | `ok`, `partial` or `failed`. |
 | `reason` | The sentence that explains a `failed` status, else None. |
 | `reasons` | `{stage or metric: sentence}` for everything that is missing. |
-| `independent_of_design` | None. The key is reserved for a check that is not part of the layer yet. |
+| `independent_of_design` | False for a pose whose back-end is a model that the design pipeline ran itself, True for a pose with another back-end, None when `design_source` says nothing usable (absent, or a name outside the table) or the pose names no back-end. See [The design origin](#the-design-origin). |
 | `profile` | The binder profile read by the pre-flight machinery: `n_binder_residues`, `binder_type`, `closures`, `closure_bonds`, `residue_classes`, `residue_names` (the non-canonical classes), `notes`, then `closures_as_expected` and `differs_from_first` (the fields in which the profile differs from the first pose's). |
 | `frame` | The block described in [The common frame](#the-common-frame). |
 | one block per metric | In the order requested, under the registry name, exactly as the function returned it (numpy values become lists and numbers). |
@@ -531,7 +544,7 @@ The workers are started with `start_method`. The default is `"spawn"`: each work
 ## What the layer does not cover
 
 - **No per-pose hotspot call.** `hotspot_consistency` takes the sensitivities and one pose's residue table, and the caller runs it. The result has no `hotspots` key.
-- **No design-origin check.** `independent_of_design` is present in every row and is None.
+- **The design origin rests on a table.** `DESIGN_SOURCE_PREDICTORS` maps three pipelines to the models they ran, and `evobind_adversarial` is the only check that follows the rule. A pipeline outside the table needs `design_source=("model",)`. The confidence metrics of a model that made the design are reported with the label and are not left out. The layer compares back-end names and cannot tell that a pose really came from the model it names.
 - **No per-residue energy.** The residue table has a solvation term, which is a surface-area model.
 - **No real model output was used to test the layer.** The repository holds no output of a real co-folding model. The layer was tested on the synthetic set, on the bundled complexes of `data/` and on the fixtures of the adapters (the Boltz-2 case is the adapter fixture with the 1YCR atoms). The heavy metrics that need OpenMM were tested with stand-ins that are registered under test names, not run. The worker pool was tested on Linux with the `fork`, `spawn` and `forkserver` start methods; macOS and Windows were not tested.
 - **One binder chain and one target chain.** A binder of several chains is not supported.

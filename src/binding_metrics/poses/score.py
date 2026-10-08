@@ -57,7 +57,21 @@ a ``reason``, else ``"ok"``. ``reasons`` maps the stage (``load``, ``chains``, `
 ``profile``, ``agreement``) or the metric name to a sentence; a metric that raised has no block
 and its sentence is ``"<ExceptionType>: <message>"``. A pose that failed counts in ``n_total`` of
 the aggregates and never in ``n_ok``. No value is NaN unless a registry metric returned it; the
-paths of those NaN are in ``nonfinite_fields``.
+paths of those NaN are in ``nonfinite_fields``. ``independent_of_design`` is None unless
+``design_source`` names the pipeline that made the design (see below): then it is False for a
+pose whose back-end is a model that pipeline ran itself and True for any other back-end (None
+when the pose names none).
+
+The design origin. A check that asks whether a model other than the designer agrees with the
+design (``INDEPENDENCE_DEPENDENT_CHECKS`` of ``binding_metrics.capabilities``, today
+``evobind_adversarial``) means little for the pose of the model that made the design.
+``design_source`` (``"boltzgen"``, ``"bindcraft"``, ``"colabdesign"`` or the registry names of
+the models the design ran) and ``design_policy`` apply the rule of the pre-flight check to the
+back-ends of the poses: with ``"skip"`` (default) the check is not run on the poses of such a
+back-end, the pose records why in ``reasons``, and a warning names the check and the back-end;
+``"warn"`` runs it and warns; ``"error"`` raises ``IncompatibleInputError`` before a pose is
+scored. The labels and the rule hold whatever ``preflight`` says, and the layer never drops a
+pose for its origin.
 
 Determinism. No random numbers are used. Rows are sorted by id, so the order of ``poses`` does
 not change the result, and ``n_workers`` does not change a value. ``timing`` and ``provenance``
@@ -92,6 +106,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field, fields
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Literal, Mapping, Optional, Sequence
 
 import numpy as np
@@ -1014,7 +1029,9 @@ class _Outcome:
 class _Context:
     """What every worker needs, built once in the parent and sent to each worker once.
 
-    Everything in it pickles, because a worker may be started by ``spawn``.
+    Everything in it pickles, because a worker may be started by ``spawn``. ``design_skips`` is
+    ``{back-end: {check: reason}}`` for the checks that rest on independence and that the design
+    origin leaves out of the poses of that back-end.
     """
 
     binder_chain: str
@@ -1029,6 +1046,13 @@ class _Context:
     include_transform: bool
     raise_mode: bool
     residue_table: bool = False
+    design_skips: dict = field(default_factory=dict)
+
+
+def _backend_key(provenance: Mapping[str, Any]) -> Optional[str]:
+    """The back-end of a pose as the design origin compares it: lower case, None when unnamed."""
+    backend = provenance.get("backend")
+    return backend.strip().casefold() if isinstance(backend, str) and backend.strip() else None
 
 
 def _provenance_of(pose: Pose) -> dict:
@@ -1269,8 +1293,12 @@ def _run_plans(
 ) -> None:
     """Run the metrics of ``plans`` on one pose and write their blocks and reasons to its row."""
     row = outcome.row
+    skips = ctx.design_skips.get(_backend_key(row["provenance"]), {})
     for plan in plans:
         name = plan.name
+        if name in skips:
+            row["reasons"][name] = skips[name]
+            continue
         try:
             block = _evaluate_metric(plan, pose, ctx, files)
         except _NotApplicableError as note:
@@ -1739,16 +1767,24 @@ def _preflight(
     *,
     has_reference: bool,
     first_kind: str,
+    design_source: Any = None,
+    design_policy: str = "skip",
+    backends: Sequence[str] = (),
 ) -> tuple[Optional[dict], list[_MetricPlan], list[str]]:
     """The pre-flight check of the requested metrics against the first pose's profile.
 
     Returns the report as a dictionary (None when ``mode`` is ``"off"``), the plans with the
     metrics that the check left out (policy ``"skip"``) marked as skipped, and the warnings of
-    the report. A refused input raises ``IncompatibleInputError``.
+    the report. A refused input raises ``IncompatibleInputError``. The design origin
+    (``design_source``, ``design_policy``, the ``backends`` of the poses) is part of the check
+    whatever ``mode`` says: with ``"off"`` the limits of the metrics are not read and only that
+    rule is applied. A check that rests on independence is left out of the whole set only when
+    every back-end is a model the design ran; otherwise it stays, and the poses of such a
+    back-end skip it one by one (``_Context.design_skips``).
     """
     from binding_metrics.capabilities import preflight
 
-    if mode == "off":
+    if mode == "off" and design_source is None:
         return None, list(plans), []
     provided = set()
     if has_reference:
@@ -1756,19 +1792,82 @@ def _preflight(
     if first_kind == "predicted":
         provided.add("predicted_structure")
     checked = [plan.name for plan in plans if plan.scope != "none"]
-    report = preflight(profile, checked, provided=provided, policy=mode)
+    if mode == "off":
+        # the metrics get no limits here, so only the design rule can find anything
+        no_limits = [SimpleNamespace(name=name, capabilities=None) for name in checked]
+        report = preflight(
+            profile,
+            no_limits,
+            provided=provided,
+            policy="warn",
+            design_source=design_source,
+            design_policy=design_policy,
+            prediction_models=backends,
+        )
+    else:
+        report = preflight(
+            profile,
+            checked,
+            provided=provided,
+            policy=mode,
+            design_source=design_source,
+            design_policy=design_policy,
+            prediction_models=backends,
+        )
     kept = set(report.metrics_to_run)
     updated = []
     for plan in plans:
         if plan.scope != "none" and plan.name not in kept:
             facts = [
-                v.fact for v in report.violations if v.kind == "metric" and v.name == plan.name
+                v.fact
+                for v in report.violations
+                if v.kind in ("metric", "design") and v.name == plan.name
             ]
             reason = "left out by the pre-flight check: " + "; ".join(facts)
             plan = dataclasses.replace(plan, skipped=reason)
         updated.append(plan)
     warnings = [f"preflight: {text}" for text in report.warnings]
-    return report.to_dict(), updated, warnings
+    return (None if mode == "off" else report.to_dict()), updated, warnings
+
+
+def _design_skips(design: Any, plans: Sequence[_MetricPlan]) -> dict[str, dict[str, str]]:
+    """``{back-end: {check: reason}}`` for the checks that run on some back-ends and not others.
+
+    Only under the policy ``skip``, for a design whose models are known, and only for a check
+    that the pre-flight check left in the set (it is left out of the set when every back-end is
+    circular). The reason is the fact that ``preflight`` reports as a violation.
+    """
+    if design.policy != "skip" or not design.origin.known:
+        return {}
+    live = {plan.name for plan in plans if plan.scope != "none" and plan.skipped is None}
+    skips: dict[str, dict[str, str]] = {}
+    for check in design.checks:
+        if check not in live:
+            continue
+        for backend in design.models:
+            if design.origin.shares_model_with(backend):
+                skips.setdefault(backend, {})[check] = design.reason(check, backend)
+    return skips
+
+
+def _design_warnings(design: Any, rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One sentence that names the back-ends whose poses are not independent of the design."""
+    if not design.origin.known:
+        return []
+    counts = Counter(
+        key
+        for key in (_backend_key(row["provenance"]) for row in rows)
+        if design.origin.shares_model_with(key)
+    )
+    if not counts:
+        return []
+    named = ", ".join(
+        f"{backend} ({n} pose{'s' if n != 1 else ''})" for backend, n in sorted(counts.items())
+    )
+    return [
+        f"design origin: the poses of {named} are not independent of the design "
+        f"({design.origin.short()}); their independent_of_design is False"
+    ]
 
 
 # ---------------------------------------------------------------------------- agreement
@@ -1983,6 +2082,8 @@ def score_pose_set(
     construct: Optional[str] = None,
     residue_maps: Mapping[str, Mapping] | None = None,
     start_method: Optional[str] = "spawn",
+    design_source: str | Sequence[str] | None = None,
+    design_policy: Literal["error", "skip", "warn"] = "skip",
 ) -> PoseSetResult:
     """Score the poses of one construct: frame, metrics, agreement, aggregates, representatives.
 
@@ -2036,6 +2137,19 @@ def score_pose_set(
             fastest start, but ``fork`` of a multi-threaded process is deprecated since Python
             3.12 and can deadlock), or None for the platform default. The method is not part of
             the result's values: it is recorded in ``provenance["run"]`` and not in ``input_key``.
+        design_source: The pipeline that made the designed binder: ``"boltzgen"``, ``"bindcraft"``
+            or ``"colabdesign"`` in any case (``capabilities.DESIGN_SOURCE_PREDICTORS``), or the
+            registry names of the models it ran itself, ``("boltz2",)``. A pose whose
+            ``provenance["backend"]`` is one of those models gets ``independent_of_design`` False,
+            any other pose with a back-end True; None, a name that is not in the table (it
+            warns and never blocks) and a pose without a back-end give None. Recorded in
+            ``parameters["design"]`` and so in ``input_key``.
+        design_policy: What to do with a check that rests on independence
+            (``capabilities.INDEPENDENCE_DEPENDENT_CHECKS``, today ``evobind_adversarial``) on the
+            poses of such a back-end. ``"skip"`` (default) does not run it there, records the
+            reason in the ``reasons`` of the pose and warns in ``result["warnings"]``; ``"warn"``
+            runs it and warns; ``"error"`` raises ``IncompatibleInputError`` before a pose is
+            scored. ``preflight`` does not change this rule, not even ``"off"``.
 
     Returns:
         A ``PoseSetResult``; its type never depends on an argument.
@@ -2044,9 +2158,13 @@ def score_pose_set(
         TypeError, ValueError, KeyError: For an argument that is invalid, before any pose is
             scored. An invalid ``Reference`` raises ``ValueError`` listing every problem.
         ImportError: If a requested metric needs a package that is not installed.
-        IncompatibleInputError: If the pre-flight check refuses the input.
+        IncompatibleInputError: If the pre-flight check refuses the input, or ``design_policy``
+            is ``"error"`` and a requested check would read the poses of a back-end that the
+            design pipeline ran itself.
         PoseScoringError: With ``on_error="raise"``, at the first pose that failed.
     """
+    from binding_metrics.capabilities import POLICIES, check_design_origin, design_origin
+
     started = time.perf_counter()
     stage_seconds: dict[str, float] = {}
 
@@ -2059,6 +2177,8 @@ def score_pose_set(
     _one_of("heavy", heavy, HEAVY_MODES)
     _one_of("preflight", preflight, PREFLIGHT_MODES)
     _one_of("on_error", on_error, ON_ERROR_MODES)
+    _one_of("design_policy", design_policy, POLICIES)
+    origin = design_origin(design_source)  # TypeError for a value that is no source
     if isinstance(n_workers, bool) or not isinstance(n_workers, int) or n_workers < 1:
         raise ValueError(f"n_workers must be an integer of at least 1, got {n_workers!r}")
     start_method_name = _check_start_method(start_method, n_workers)
@@ -2083,6 +2203,9 @@ def score_pose_set(
     ids = [pose_id for pose_id, _ in sorted_poses]
     maps_by_pose = _check_residue_maps(residue_maps, ids)
     provenance_by_id = {pose_id: _provenance_of(pose) for pose_id, pose in sorted_poses}
+    backends = tuple(
+        sorted({key for key in map(_backend_key, provenance_by_id.values()) if key is not None})
+    )
     reserved_groups = sorted(
         {
             group_key({"provenance": provenance_by_id[pose_id]}, group_by)
@@ -2141,7 +2264,17 @@ def score_pose_set(
             preflight,
             has_reference=not implicit,
             first_kind=scan.pose.kind,
+            design_source=design_source,
+            design_policy=design_policy,
+            backends=backends,
         )
+    design = check_design_origin(
+        design_source,
+        [plan.name for plan in plans if plan.scope != "none"],
+        backends,
+        policy=design_policy,
+    )
+    design_skips = _design_skips(design, plans)
     stage_seconds["first_pose"] = time.perf_counter() - stage_started
 
     tmp_root: Optional[str] = None
@@ -2184,6 +2317,7 @@ def score_pose_set(
                 include_transform=include_transform,
                 raise_mode=raise_mode,
                 residue_table=residue_table,
+                design_skips=design_skips,
             )
             items = list(enumerate(pose for _, pose in sorted_poses))
             outcomes = _score_poses(items, ctx, n_workers, start_method)
@@ -2231,6 +2365,7 @@ def score_pose_set(
                 if row["status"] != "failed":
                     row["reasons"][plan.name] = plan.skipped
     for row in rows:
+        row["independent_of_design"] = design.independent(_backend_key(row["provenance"]))
         _refresh_status(row)
         if row["status"] == "failed":
             logger.warning("pose %s failed: %s", row["id"], row["reason"])
@@ -2262,8 +2397,16 @@ def score_pose_set(
         "residue_table": residue_table,
         "include_transform": include_transform,
     }
+    if design_source is not None:
+        parameters["design"] = {**origin.to_dict(), "policy": design_policy}
     references = _references_block(variants, implicit, scan)
-    warnings = _collect_warnings(rows, representatives, notes, profile_warnings, agreement)
+    warnings = _collect_warnings(
+        rows,
+        representatives,
+        [*notes, *_design_warnings(design, rows)],
+        profile_warnings,
+        agreement,
+    )
     from binding_metrics.provenance import collect_provenance
 
     provenance = collect_provenance()

@@ -311,6 +311,36 @@ class TestPinnedLayout:
             "preflight",
         )
 
+    def test_a_design_source_adds_one_block_to_parameters_and_to_preflight_and_nothing_else(
+        self, synthetic, result
+    ):
+        # Adding keys does not change schema_version. They are present only with a source, so the
+        # default layout above, the golden results and every reader of them stay as they are.
+        with_source = score(synthetic, design_source="boltzgen")
+        assert list(with_source) == list(result)
+        pin(
+            with_source["parameters"],
+            [*result["parameters"], "design"],
+            "parameters with a design source",
+        )
+        pin(
+            with_source["parameters"]["design"],
+            ["source", "predictors", "policy"],
+            "parameters.design",
+        )
+        pin(
+            with_source["preflight"],
+            [*result["preflight"], "design"],
+            "preflight with a design source",
+        )
+        pin(
+            with_source["preflight"]["design"],
+            ["source", "known", "predictors", "policy", "models", "not_independent", "checks"],
+            "preflight.design",
+        )
+        assert [list(row) for row in with_source["poses"]] == [list(row) for row in result["poses"]]
+        assert with_source["schema_version"] == result["schema_version"] == 1
+
     def test_a_row_and_its_frame_profile_and_descriptor_blocks(self, result):
         row = result["poses"][0]
         pin(

@@ -149,7 +149,7 @@ A check that asks whether a second model agrees with the design means little whe
 | `boltzgen` | `boltz2` (Boltz-2) |
 | `bindcraft`, `colabdesign` | `af2` (AlphaFold2, run through ColabFold) |
 
-The table is `capabilities.DESIGN_SOURCE_PREDICTORS`; a row added there supports another pipeline. The name is read in any case. A list of registry names, `design_source=("boltz2",)`, gives the models directly, for a pipeline that is not in the table. A name that is neither is never refused: the report warns that independence was not checked and everything runs. Without a source nothing is decided, and a check that rests on independence gets a note in `report.notes`.
+The table is `capabilities.DESIGN_SOURCE_PREDICTORS`; a row added there supports another pipeline. The name is read in any case. A list of registry names, `design_source=("boltz2",)`, gives the models directly, for a pipeline that is not in the table. A name that is not in the table is never refused: the report warns that independence was not checked and everything runs. Without a source nothing is decided, and a check that rests on independence gets a note in `report.notes`.
 
 The checks that rest on independence are `capabilities.INDEPENDENCE_DEPENDENT_CHECKS`, today `evobind_adversarial`. The confidence metrics (`prediction`, `openfold`, `interface_pae`, `evobind_score`) report one model's confidence in its own structure and claim no agreement, so they run whoever made the design; they are read against the calibration of that model, as before.
 
@@ -231,7 +231,7 @@ In a batch each worker checks its sample first, the model step included, so a re
 
 ## In a pose set
 
-`score_pose_set` runs the same check, on the profile of the first readable pose of the set and the metrics that it was asked for. The policy is its `preflight` argument (`"error"` by default, `"skip"`, `"warn"` or `"off"`), `provided` holds `reference_structure` when a reference is given and `predicted_structure` when the first pose is a predicted one, and `result["preflight"]` carries `report.to_dict()`. A metric that `skip` leaves out has the reason in the `reasons` of every pose. [`pose_sets.md`](pose_sets.md) describes the layer.
+`score_pose_set` runs the same check, on the profile of the first readable pose of the set and the metrics that it was asked for. The policy is its `preflight` argument (`"error"` by default, `"skip"`, `"warn"` or `"off"`), `provided` holds `reference_structure` when a reference is given and `predicted_structure` when the first pose is a predicted one, and `result["preflight"]` carries `report.to_dict()`. A metric that `skip` leaves out has the reason in the `reasons` of every pose. The design origin is part of it: `design_source` and `design_policy` of `score_pose_set` apply the rule above to the back-ends of the poses (`prediction_models`), `result["preflight"]` gets the `design` block, and the check is left out of the poses of a back-end that the design ran while the other back-ends keep it; `preflight="off"` does not switch this rule off. [`pose_sets.md`](pose_sets.md) describes the layer.
 
 ---
 
