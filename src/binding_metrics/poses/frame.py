@@ -825,7 +825,9 @@ def prepare_reference(
 ) -> PreparedReference:
     """Validate a reference against its structure and read what the frame stage needs.
 
-    The result is cached on the ``Reference`` (per cutoff), so repeated calls are free.
+    The result is cached on the ``Reference`` (per cutoff) together with the content hash of
+    its structure, so repeated calls are cheap (one ``os.stat`` of a structure file) and a
+    structure file that was rewritten is read again.
 
     Args:
         reference: The reference.
@@ -838,8 +840,12 @@ def prepare_reference(
     """
     cache = reference.__dict__.setdefault("_prepared_cache", {})
     cutoff = float(site_cutoff_angstrom)
-    if cutoff in cache:
-        return cache[cutoff]
+    # the prepared data come from the structure only (the other fields of the reference are
+    # frozen), so its hash, which follows a rewrite of the file, is what the entry must match
+    structure_hash = reference.structure.content_hash()
+    entry = cache.get(cutoff)
+    if entry is not None and entry[0] == structure_hash:
+        return entry[1]
     reference.validate()
     atoms = _single_model(reference.atoms(), "the reference structure")
     table = _build_table(atoms, reference.receptor_chain)
@@ -847,7 +853,7 @@ def prepare_reference(
     if reference.binder_chain is not None:
         site = _site_keys(atoms, table, reference.binder_chain, cutoff)
     prepared = PreparedReference(reference, table, site, cutoff)
-    cache[cutoff] = prepared
+    cache[cutoff] = (structure_hash, prepared)
     return prepared
 
 
