@@ -5,6 +5,7 @@ import logging
 import re
 import tempfile
 from collections import Counter
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -13,6 +14,8 @@ from binding_metrics.core.residues import (
     PHOSPHO_RESIDUES,
     PROTEIN_RESIDUES,
     STANDARD_AMINO_ACIDS,
+    VARIANT_TO_PARENT_RESIDUE,
+    WATER_NAMES_ALL,
     WATER_NAMES_STRIP_HETEROGENS,
     residue_label,
 )
@@ -1246,6 +1249,117 @@ def _drop_ambiguous_standard_bonds(block, renumbered: dict, out_to_auth: dict, s
             table.remove_row(index)
 
 
+#: Residue names that prep changes, mapped to the name they have in the source file: the
+#: protonation variants and the lactam names. Waters are mapped to HOH in ``_alignment_token``.
+_NAME_IN_SOURCE = {**VARIANT_TO_PARENT_RESIDUE, **dict(_FF_INTERNAL_RESIDUE_RENAMES)}
+
+
+def _alignment_token(name: str) -> str:
+    """The residue name as the source file would write it, for pairing source and output."""
+    if name in WATER_NAMES_ALL:
+        return "HOH"
+    return _NAME_IN_SOURCE.get(name, name)
+
+
+def _aligned_pairs(source: list[str], output: list[str]) -> set[tuple[int, int]]:
+    """``(source index, output index)`` pairs of residues with the same name, in order.
+
+    The common start and end are paired first, which is all there is to do in the usual cases
+    (identical lists, one residue dropped, a cap added). What remains between them is aligned
+    with ``SequenceMatcher``. A run of the same number of residues that differ in name is
+    paired by position: prep renames residues one for one (MSE to MET).
+    """
+    n_source, n_output = len(source), len(output)
+    shortest = min(n_source, n_output)
+    pairs: set[tuple[int, int]] = set()
+    start = 0
+    while start < shortest and source[start] == output[start]:
+        pairs.add((start, start))
+        start += 1
+    end = 0
+    while end < shortest - start and source[n_source - 1 - end] == output[n_output - 1 - end]:
+        pairs.add((n_source - 1 - end, n_output - 1 - end))
+        end += 1
+    source_middle, output_middle = source[start : n_source - end], output[start : n_output - end]
+    if source_middle and output_middle:
+        matcher = SequenceMatcher(None, source_middle, output_middle, autojunk=False)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal" or (tag == "replace" and i2 - i1 == j2 - j1):
+                pairs.update((start + i1 + k, start + j1 + k) for k in range(i2 - i1))
+    return pairs
+
+
+def _pair_residues(source_names: list[str], output_names: list[str]) -> dict[int, int]:
+    """Map the index of each output residue of an author chain to its source residue.
+
+    The residues are paired by name along the chain, so a residue that prep or the caller
+    dropped or added does not move the numbers of the residues after it. Where the names cannot
+    say which residue is meant (one of five glycines in a row is missing) the residues are left
+    unpaired: the alignment is run from both ends of the chain and only the pairs that both
+    runs give are kept. A residue without a partner gets the OpenMM number, never the number
+    of a neighbour.
+    """
+    source = [_alignment_token(name) for name in source_names]
+    output = [_alignment_token(name) for name in output_names]
+    if source == output:
+        return {index: index for index in range(len(output))}
+    n_source, n_output = len(source), len(output)
+    backward = {
+        (n_source - 1 - i, n_output - 1 - j) for i, j in _aligned_pairs(source[::-1], output[::-1])
+    }
+    return {j: i for i, j in _aligned_pairs(source, output) & backward}
+
+
+def _take_number(candidate: tuple[str, str], taken: set) -> tuple[str, str]:
+    """``candidate``, or the next free number above all that are taken when it is taken."""
+    if candidate in taken:
+        numeric = [int(number) for number, _ in taken if str(number).lstrip("-").isdigit()]
+        candidate = (str(max(numeric) + 1 if numeric else 1), "")
+    taken.add(candidate)
+    return candidate
+
+
+def _assign_residue_numbers(output_residues: dict, source_residues: dict) -> dict:
+    """The ``(number, insertion code)`` to write for each residue of the output.
+
+    ``output_residues`` maps an author chain to its residues in output order, each as
+    ``(OpenMM number, name)``; ``source_residues`` maps it to ``((number, code), name)`` in the
+    order of the source. The result maps ``(author chain, index in the output chain)`` to the
+    pair.
+
+    Residues that pair with a source residue keep its number and code; they are numbered
+    first. Numbers stay unique per chain: several output chains can map back to one author
+    chain (waters especially), each with its own 1-based numbering from PDBxFile, and two
+    residues with one number are folded into one by the reader. That is a silent structural
+    mutation, so uniqueness wins over fidelity to the source numbering where the two conflict.
+    Unpaired residues take the number OpenMM gave them, or the next free one above everything
+    used when that number is taken.
+    """
+    assigned: dict[tuple, tuple[str, str]] = {}
+    for auth_chain, residues in output_residues.items():
+        source = source_residues.get(auth_chain, [])
+        pairs = (
+            _pair_residues([name for _, name in source], [name for _, name in residues])
+            if source
+            else {}
+        )
+        taken: set[tuple[str, str]] = set()
+        for index in sorted(pairs):
+            assigned[(auth_chain, index)] = _take_number(source[pairs[index]][0], taken)
+        unpaired = [index for index in range(len(residues)) if index not in pairs]
+        for index in unpaired:
+            assigned[(auth_chain, index)] = _take_number((residues[index][0], ""), taken)
+        if source and unpaired:
+            logger.info(
+                "%d of %d residues of chain %s have no counterpart in the source and keep the "
+                "numbers OpenMM gave them",
+                len(unpaired),
+                len(residues),
+                auth_chain,
+            )
+    return assigned
+
+
 def _patch_struct_conn_partners(
     block,
     file_name: str,
@@ -1382,13 +1496,14 @@ def save_cif(
         # The topology carries the source label_asym_id as chain IDs (that's what
         # PDBxFile sets when it reads a CIF).  So we need two things from the source:
         #
-        #   label_to_auth : source label_asym_id → source auth_asym_id
-        #   seq_map       : (source_auth_chain, res_idx) → (auth_seq_id, insertion code)
+        #   label_to_auth   : source label_asym_id → source auth_asym_id
+        #   source_residues : source_auth_chain → [((auth_seq_id, insertion code), name)]
         #
         # Then for each output chain (sequential letter[i]):
         #   original chain = label_to_auth[ topology.chains()[i].id ]
         #
-        # And residue numbers are restored by positional index within that auth chain.
+        # And residue numbers are restored by pairing the residues of each auth chain, source
+        # and output, by name along the chain (see ``_pair_residues``).
         # A residue is a run of rows with one (number, insertion code), which is where
         # OpenMM's PDBxFile starts a new residue: 60 and 60A are two residues.
         #
@@ -1400,9 +1515,16 @@ def save_cif(
         # source label → auth
         label_to_auth: dict[str, str] = {}
         source_auth_ids: set[str] = set()
-        # (source_auth_chain, heavy-atom res_idx) → (original auth_seq_id, insertion code)
-        seq_map: dict[tuple, tuple[str, str]] = {}
+        # source_auth_chain → [((auth_seq_id, insertion code), residue name)] in file order
+        source_residues: dict[str, list[tuple[tuple[str, str], str]]] = {}
         source_columns = ["label_asym_id", "auth_asym_id", "auth_seq_id", "auth_atom_id"]
+        optional_columns = [
+            "pdbx_PDB_ins_code",
+            "type_symbol",
+            "auth_comp_id",
+            "label_comp_id",
+            "pdbx_PDB_model_num",
+        ]
         absent = [c for c in source_columns if not source_block.find_loop(f"_atom_site.{c}")]
         if absent:
             logger.warning(
@@ -1414,42 +1536,49 @@ def save_cif(
             )
         try:
             src_table = source_block.find(
-                "_atom_site.", [*source_columns, "?pdbx_PDB_ins_code", "?type_symbol"]
+                "_atom_site.", [*source_columns, *(f"?{name}" for name in optional_columns)]
             )
-            has_ins_code = src_table.has_column(len(source_columns))
-            has_element = src_table.has_column(len(source_columns) + 1)
+            column = {
+                name: len(source_columns) + i
+                for i, name in enumerate(optional_columns)
+                if src_table.has_column(len(source_columns) + i)
+            }
+
+            def optional(row, name: str) -> str:
+                value = row[column[name]] if name in column else ""
+                return "" if value in ("?", ".") else value
+
             s_prev_chain = ("", "")  # (label, author) chain of the previous heavy atom
             s_prev_residue = ("", "")
-            # One counter per author chain, which goes on when the chain returns: mmCIF
-            # lists the polymer chains first, then the ligands and the waters, each
-            # grouped by label chain, so the ligands and waters of chain A come after
-            # chain B. The output side below counts per author chain in the same way.
-            s_res_idx: dict[str, int] = {}
+            first_model = None  # PDBxFile builds the topology from the first model only
             for row in src_table:
                 label, auth, seq, atom = row[0], row[1], row[2], row[3]
-                ins_code = row[4] if has_ins_code else ""
-                residue = (seq, "" if ins_code in ("?", ".") else ins_code)
+                residue = (seq, optional(row, "pdbx_PDB_ins_code"))
                 source_auth_ids.add(auth)
                 if label not in label_to_auth:
                     label_to_auth[label] = auth
-                element = row[5] if has_element else ""
+                model = optional(row, "pdbx_PDB_model_num")
+                if first_model is None:
+                    first_model = model
+                elif model != first_model:
+                    continue
+                element = optional(row, "type_symbol")
                 # The element, not the atom name: an ion named HG (mercury) or HO (holmium)
                 # has no other atom to start its residue.
                 is_hydrogen = (
-                    element.upper() in ("H", "D")
-                    if element not in ("", "?", ".")
-                    else str(atom).startswith("H")
+                    element.upper() in ("H", "D") if element else str(atom).startswith("H")
                 )
-                if not is_hydrogen:
-                    if (label, auth) != s_prev_chain:
-                        # PDBxFile starts a new chain, and so a new residue, on a change of
-                        # label or author chain, whatever the residue number.
-                        s_prev_chain = (label, auth)
-                        s_res_idx[auth] = s_res_idx.get(auth, -1) + 1
-                    elif residue != s_prev_residue:
-                        s_res_idx[auth] += 1
-                    s_prev_residue = residue
-                    seq_map.setdefault((auth, s_res_idx[auth]), residue)
+                if is_hydrogen:
+                    continue
+                # One list per author chain, which goes on when the chain returns: mmCIF
+                # lists the polymer chains first, then the ligands and the waters, each
+                # grouped by label chain, so the ligands and waters of chain A come after
+                # chain B. PDBxFile starts a new chain, and so a new residue, on a change of
+                # label or author chain, whatever the residue number.
+                if (label, auth) != s_prev_chain or residue != s_prev_residue:
+                    name = optional(row, "auth_comp_id") or optional(row, "label_comp_id")
+                    source_residues.setdefault(auth, []).append((residue, name))
+                    s_prev_chain, s_prev_residue = (label, auth), residue
         except (RuntimeError, IndexError, ValueError) as exc:
             logger.warning(
                 "cannot read the source residue numbering of %s (%s: %s); residue numbers "
@@ -1494,6 +1623,7 @@ def save_cif(
                 "label_asym_id",
                 "label_seq_id",
                 "pdbx_PDB_ins_code",
+                "label_comp_id",
             ],
         )
         # (chain, residue number) as OpenMM wrote them -> the residue number written
@@ -1505,42 +1635,28 @@ def save_cif(
         renumbered_codes: dict[tuple, str] = {}  # the insertion code written for the same keys
         shared_numbers: set = set()  # (auth chain, number) of two or more residues
         if out_table and out_to_auth:
-            o_res_idx: dict[str, int] = {}
-            o_prev_key: dict[str, tuple] = {}
-            # Residue numbers must stay unique per auth chain. Several output
-            # chains can map back to one auth chain (waters especially), and
-            # each of those carries its own 1-based numbering from PDBxFile —
-            # so merging them without renumbering makes two distinct residues
-            # share a number, and the reader folds them into one. That is a
-            # silent structural mutation, so uniqueness wins over fidelity to
-            # the source numbering where the two conflict.
-            # A residue is a (number, insertion code) pair: 60 and 60A may share a number.
-            assigned: dict[tuple, tuple[str, str]] = {}  # (auth_ch, res_idx) → (seq, code)
-            used: dict[str, set] = {}  # auth_ch → (seq, code) pairs already taken
+            # Residues of the output in order, per author chain, with the (output chain,
+            # OpenMM number) key and the name of each; several output chains can map to one
+            # author chain, and the index of a residue counts in output order across them.
+            output_residues: dict[str, list[tuple[str, str]]] = {}
+            row_residue: list[tuple[str, int]] = []  # (author chain, index) of each row
+            previous_key: dict[str, tuple] = {}
             for row in out_table:
-                out_ch, seq, atom = row[0], row[1], row[2]
+                out_ch, seq = row[0], row[1]
                 auth_ch = out_to_auth.get(out_ch, out_ch)
                 res_key = (out_ch, seq)
-                if auth_ch not in o_res_idx:
-                    o_res_idx[auth_ch] = 0
-                    o_prev_key[auth_ch] = res_key
-                elif res_key != o_prev_key[auth_ch]:
-                    o_res_idx[auth_ch] += 1
-                    o_prev_key[auth_ch] = res_key
-                row[0] = auth_ch  # auth_asym_id  → original auth
-                row[3] = auth_ch  # label_asym_id → same, for consistency
+                residues = output_residues.setdefault(auth_ch, [])
+                if previous_key.get(auth_ch) != res_key:
+                    residues.append((seq, row[6]))
+                    previous_key[auth_ch] = res_key
+                row_residue.append((auth_ch, len(residues) - 1))
 
-                res_id = (auth_ch, o_res_idx[auth_ch])
-                if res_id not in assigned:
-                    taken = used.setdefault(auth_ch, set())
-                    candidate = seq_map.get(res_id, (seq, ""))
-                    if candidate in taken:
-                        # Number and code already belong to a different residue: take
-                        # the next free number above everything used so far.
-                        numeric = [int(s) for s, _ in taken if str(s).lstrip("-").isdigit()]
-                        candidate = (str(max(numeric) + 1 if numeric else 1), "")
-                    taken.add(candidate)
-                    assigned[res_id] = candidate
+            # A residue is a (number, insertion code) pair: 60 and 60A may share a number.
+            assigned = _assign_residue_numbers(output_residues, source_residues)
+            for row, res_id in zip(out_table, row_residue):
+                out_ch, seq = row[0], row[1]
+                row[0] = res_id[0]  # auth_asym_id  → original auth
+                row[3] = res_id[0]  # label_asym_id → same, for consistency
                 new_seq, new_ins_code = assigned[res_id]
                 row[1] = new_seq  # auth_seq_id → original, or unique
                 row[4] = new_seq  # label_seq_id → same, see `renumbered`
