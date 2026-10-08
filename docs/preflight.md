@@ -142,7 +142,7 @@ predictor NarrowFold 9.9: closures
 
 ## The design origin
 
-A check that asks whether a second model agrees with the design means little when that model made the design. `evobind_adversarial` compares the design pose with a second prediction of the same complex and reads a large shift of the binder centre of mass as disagreement. A design pipeline selects its binders for the confidence of the model it runs inside its own loop, so a prediction from that model agrees with the design partly by construction, and the agreement tells little about the design. `preflight` therefore takes the pipeline that made the design, and leaves the check out when its second structure would come from a model that the pipeline ran itself.
+A check that asks whether a second model agrees with the design means little when that model made the design. `evobind_adversarial` compares the design pose with a second prediction of the same complex and reads a large shift of the binder centre of mass as disagreement. A design pipeline selects its binders for the confidence of the model it runs inside its own loop, so a prediction from that model agrees with the design in part because the design was selected for it, and the agreement tells little about the design. `preflight` therefore takes the pipeline that made the design, and leaves the check out when its second structure would come from a model that the pipeline ran itself.
 
 | `design_source` | Models the pipeline ran itself |
 |---|---|
@@ -164,7 +164,7 @@ The checks that rest on independence are `capabilities.INDEPENDENCE_DEPENDENT_CH
 The sentence names the check, the reason and the way out:
 
 ```
-evobind_adversarial is skipped because the design was made with boltzgen, which ran Boltz-2 itself, so a Boltz-2 structure agrees with the design partly by construction; predict with AlphaFold2 / ColabFold (af2), OpenFold3 (of3) or Protenix (protenix) instead, or pass design_policy='warn' (--design-policy warn) to run it anyway
+evobind_adversarial is skipped because the design was made with boltzgen, which ran Boltz-2 itself, so a Boltz-2 structure agrees with the design in part because the design was selected for that model; predict with AlphaFold2 / ColabFold (af2), OpenFold3 (of3) or Protenix (protenix) instead, or pass design_policy='warn' (--design-policy warn) to run it anyway
 ```
 
 The report keeps the same finding in machine-readable form. A violation of kind `design` (constraint `design_origin`) is in `violations`, the skipped check is in `metrics_skipped` with the fact as its reason, and `to_dict()["design"]` is present when a source was given:

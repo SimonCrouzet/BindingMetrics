@@ -1297,14 +1297,15 @@ DESIGN_SOURCE_PREDICTORS: dict[str, frozenset[str]] = {
 #: sentence that says why independence matters. ``evobind_adversarial`` compares the design pose
 #: with a second prediction of the same complex and reads a large shift of the binder centre of
 #: mass as disagreement (Bryant et al. 2025). A design was selected for the confidence of the
-#: model that made or filtered it, so that model agrees with it partly by construction and its
+#: model that made or filtered it, so that model agrees with it in part for that reason and its
 #: agreement says little. The confidence metrics (``prediction``, ``openfold``, ``interface_pae``,
 #: ``evobind_score``) are not listed: each reports one model's confidence in its own structure,
 #: to be read against that model's calibration, and none claims that a second model agrees.
 INDEPENDENCE_DEPENDENT_CHECKS: dict[str, str] = {
     "evobind_adversarial": (
         "it asks whether a model other than the designer puts the binder where the design has "
-        "it, and a model that made or filtered the design agrees with it partly by construction"
+        "it, and a model that made or filtered the design agrees with it in part because the "
+        "design was selected for that model"
     ),
 }
 
@@ -1489,11 +1490,13 @@ def _design_sentence(policy: str, origin: DesignOrigin, check: str, model: str) 
     if policy == "warn":
         return (
             f"{check} runs on a {label} structure although {origin.phrase()}; its agreement "
-            "is partly by construction, so read the result as not independent of the design"
+            "is in part due to the design having been selected for that model, so read the "
+            "result as not independent of the design"
         )
     return (
         f"{check} is skipped because {origin.phrase()}, so a {label} structure agrees with the "
-        f"design partly by construction; predict with {_other_models_text(origin)} instead, or "
+        f"design in part because the design was selected for that model; predict with "
+        f"{_other_models_text(origin)} instead, or "
         "pass design_policy='warn' (--design-policy warn) to run it anyway"
     )
 
@@ -1509,9 +1512,9 @@ def check_design_origin(
 
     A check in ``INDEPENDENCE_DEPENDENT_CHECKS`` compares the design with a structure from
     ``models``; when one of those models is a model that the design pipeline ran itself, the
-    agreement is partly by construction. This function needs no structure, so a caller that
-    has none (a batch step after the workers, a pose set) can ask it directly; ``preflight``
-    asks it for its metrics and predictors.
+    agreement is in part due to the design having been selected for that model. This function
+    needs no structure, so a caller that has none (a batch step after the workers, a pose set)
+    can ask it directly; ``preflight`` asks it for its metrics and predictors.
 
     Args:
         design_source: See ``design_origin``. None says nothing is known: nothing is decided and
@@ -2262,7 +2265,7 @@ def preflight(
     if report.refused:
         raise IncompatibleInputError(report)
     for text in design.warnings:
-        logger.warning("%s", text)
+        logger.warning("design origin: %s", text)
     for text in design.notes:
         logger.info("%s", text)
     for violation in violations:

@@ -3,8 +3,9 @@ against the model that made the design.
 
 ``evobind_adversarial`` asks whether a model other than the designer puts the binder where the
 design has it. When the design pipeline ran that model itself (BoltzGen and Boltz-2, BindCraft and
-ColabDesign and AlphaFold2), its agreement is partly by construction, so the default policy leaves
-the check out with a loud warning and runs everything else. An unknown source never blocks.
+ColabDesign and AlphaFold2), the design was selected for that model and its agreement says little,
+so the default policy leaves the check out with a loud warning and runs everything else. An
+unknown source never blocks.
 """
 
 from __future__ import annotations
@@ -58,7 +59,7 @@ class TestTheTables:
         for name, why in INDEPENDENCE_DEPENDENT_CHECKS.items():
             spec = METRICS_BY_NAME[name]
             assert spec.secondary_path_arg, name
-            assert "partly by construction" in why
+            assert "selected for that model" in why
 
     def test_the_confidence_metrics_are_not_among_them(self):
         for name in ("prediction", "openfold", "interface_pae", "evobind_score"):
@@ -118,7 +119,7 @@ class TestTheDecision:
     def test_the_loud_sentence_says_which_check_why_and_how_to_override(self):
         (text,) = check_design_origin("boltzgen", [CHECK], ["boltz2"]).warnings
         assert text.startswith(f"{CHECK} is skipped because the design was made with boltzgen")
-        assert "Boltz-2" in text and "partly by construction" in text
+        assert "Boltz-2" in text and "the design was selected for that model" in text
         assert "OpenFold3 (of3)" in text and "Boltz-2 (boltz2)" not in text.split("predict with")[1]
         assert "design_policy='warn' (--design-policy warn)" in text
 
