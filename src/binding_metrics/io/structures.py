@@ -1413,8 +1413,11 @@ def save_cif(
                 output_path.name,
             )
         try:
-            src_table = source_block.find("_atom_site.", [*source_columns, "?pdbx_PDB_ins_code"])
+            src_table = source_block.find(
+                "_atom_site.", [*source_columns, "?pdbx_PDB_ins_code", "?type_symbol"]
+            )
             has_ins_code = src_table.has_column(len(source_columns))
+            has_element = src_table.has_column(len(source_columns) + 1)
             s_prev_chain = ("", "")  # (label, author) chain of the previous heavy atom
             s_prev_residue = ("", "")
             # One counter per author chain, which goes on when the chain returns: mmCIF
@@ -1429,7 +1432,15 @@ def save_cif(
                 source_auth_ids.add(auth)
                 if label not in label_to_auth:
                     label_to_auth[label] = auth
-                if not str(atom).startswith("H"):
+                element = row[5] if has_element else ""
+                # The element, not the atom name: an ion named HG (mercury) or HO (holmium)
+                # has no other atom to start its residue.
+                is_hydrogen = (
+                    element.upper() in ("H", "D")
+                    if element not in ("", "?", ".")
+                    else str(atom).startswith("H")
+                )
+                if not is_hydrogen:
                     if (label, auth) != s_prev_chain:
                         # PDBxFile starts a new chain, and so a new residue, on a change of
                         # label or author chain, whatever the residue number.
