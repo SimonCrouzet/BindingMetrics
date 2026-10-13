@@ -309,6 +309,8 @@ class PredictionSession:
             PredictionFailedError: The run failed, now or earlier (``rerun`` forces a new run
                 once per session).
             PredictionUnavailableError: Nothing is stored and no runner can produce it.
+            ValueError: A run is needed and a file of the request changed or vanished since the
+                request was made (``PredictionRequest.verify_files``); nothing is run.
         """
         key = _ident(request)
         with self._key_lock(key):
@@ -413,6 +415,8 @@ class PredictionSession:
 
         Raises:
             PredictionUnavailableError: Something has to run and there is no usable runner.
+            ValueError: A request that has to run has a file that changed or vanished since it
+                was made; nothing is run, for any request of its model.
         """
         wanted: dict[str, list[PredictionRequest]] = {}
         seen = set()

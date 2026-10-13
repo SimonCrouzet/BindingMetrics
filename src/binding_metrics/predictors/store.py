@@ -27,6 +27,7 @@ Public names and signatures (the module imports the standard library only)::
         .describe() -> dict                 # canonical() plus name and paths, for request.json
         .with_model_version(version: str) -> PredictionRequest
         .for_adoption() -> PredictionRequest    # the same request with the name in its key
+        .verify_files(*, allow_missing: bool = False) -> None   # raises ValueError
 
     @dataclass(frozen=True)
     class StoredPrediction:
@@ -97,6 +98,16 @@ unavailable on this machine (``PredictionRunner.is_available()``) raises
 ``PredictionUnavailableError`` and records nothing, so a missing installation is not remembered
 as a failed prediction. ``KeyboardInterrupt`` and ``SystemExit`` stop the run, remove its
 temporary directory and propagate.
+
+Files. A request hashes its input file and each extra file when it is made, and the runner reads
+the files later. ``ensure``, ``get_or_run`` and ``run_missing`` call ``request.verify_files()``
+before anything is dropped or started, so a file that was edited, replaced or deleted between
+``make_request`` and the run raises ``ValueError`` (nothing is stored) instead of storing the
+output of the new content under the key of the old. A request that finds its entry in the store
+needs no file, so a moved input does not hide a finished run. ``adopt`` refuses a file that
+changed and ignores one that is gone, because parse-only usage may happen where the inputs are
+not. Custom weights are not re-hashed (a checkpoint is gigabytes; its reference carries the
+hash made when it was first read).
 
 Model versions. A request made without ``model_version`` takes the runner's ``version()`` when a
 runner is given and that version is known. Outputs adopted without a declared version are found
@@ -347,6 +358,45 @@ class PredictionRequest:
             described["weights"] = self.weights.to_dict()  # the content, and where it was
         return described
 
+    def verify_files(self, *, allow_missing: bool = False) -> None:
+        """Raise ``ValueError`` when a file of the request is not what was hashed.
+
+        The key holds the content hash of ``input_path`` and of each extra file as it was when
+        the request was made, and a runner reads the files when it runs. An edit in between
+        would store the output of the new content under the key of the old one, so the store
+        calls this before it starts a run. It reads each file once (one SHA-256 per file). The
+        custom weights are not checked: they are large, and their reference carries the hash
+        made when they were first read.
+
+        Args:
+            allow_missing: Skip a file that does not exist (adopting outputs does not read the
+                inputs); a file that exists and changed is still refused.
+
+        Raises:
+            ValueError: A file changed since the request was made, or cannot be read; the
+                message names the role of the file.
+        """
+        files = {} if self.input_path is None else {_INPUT_ROLE: self.input_path}
+        files.update(self.extra_files)
+        for role, path in files.items():
+            try:
+                current = file_sha256(path)
+            except OSError as exc:
+                if allow_missing and isinstance(exc, FileNotFoundError):
+                    continue
+                raise ValueError(
+                    f"the {role} file {path} of the {self.model} request '{self.name}' cannot be "
+                    f"read now ({type(exc).__name__}); it was hashed when the request was made, "
+                    "so nothing was run. Restore the file or make the request again"
+                ) from exc
+            if current != self.content_hashes.get(role):
+                raise ValueError(
+                    f"the {role} file {path} of the {self.model} request '{self.name}' changed "
+                    "since the request was made, so a run would store the output of the new "
+                    "content under the key of the old one; nothing was run. Make the request "
+                    "again from the file as it is now"
+                )
+
     def with_model_version(self, version: str) -> PredictionRequest:
         """A copy with ``model_version`` set; the files are not read again."""
         clone = copy.copy(self)
@@ -543,7 +593,8 @@ class PredictionStore:
         Raises:
             PredictionFailedError: The run failed now, or failed earlier and ``rerun`` is False.
             PredictionUnavailableError: Nothing is stored and the model cannot be run here.
-            ValueError: ``runner`` is for another model.
+            ValueError: ``runner`` is for another model, or a file of the request changed or
+                vanished since the request was made and a run is needed (``verify_files``).
         """
         return self.ensure(request, runner, rerun=rerun).require_ok()
 
@@ -570,6 +621,7 @@ class PredictionStore:
                 f"(key {request.key()[:12]}) and no runner to compute it"
             )
         _require_available(request, runner)
+        request.verify_files()  # before a rerun drops anything
         seen = self._read_entry(self.path_for(request))
         seen_run_id = seen.run_id if seen is not None else None
         if rerun:
@@ -602,7 +654,9 @@ class PredictionStore:
 
         Raises:
             PredictionUnavailableError: Something has to run and the model cannot be run here.
-            ValueError: ``runner`` is for another model, or ``max_batch`` is not positive.
+            ValueError: ``runner`` is for another model, ``max_batch`` is not positive, or a
+                request that has to run has a file that changed or vanished since it was made
+                (``verify_files``); nothing runs then, for any of the requests.
         """
         if max_batch < 1:
             raise ValueError(f"max_batch must be at least 1, got {max_batch}")
@@ -633,6 +687,8 @@ class PredictionStore:
                     f"{len(todo)} prediction(s) have no stored output and there is no runner"
                 )
             _require_available(next(iter(todo.values())), runner)
+            for request in todo.values():
+                request.verify_files()  # all of them, before one run starts or one is dropped
             if rerun:
                 for request in resolved:
                     self._drop_adoption(request)
@@ -684,10 +740,13 @@ class PredictionStore:
 
         Raises:
             FileNotFoundError: ``directory`` is not a directory.
+            ValueError: A file of the request changed since it was made (a missing one is
+                ignored; see ``PredictionRequest.verify_files``).
         """
         source = Path(directory).resolve()
         if not source.is_dir():
             raise FileNotFoundError(f"cannot adopt {directory}: it is not a directory")
+        request.verify_files(allow_missing=True)
         slot = request.for_adoption()
         with self._locked(slot):
             current = self._read_entry(self.path_for(slot))

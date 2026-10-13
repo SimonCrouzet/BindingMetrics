@@ -184,9 +184,11 @@ def score_request(tmp_path, runner=None, **kwargs):
     runner = runner or OpenFold3Runner()
     kwargs.setdefault("binder_chain", "B")
     kwargs.setdefault("receptor_chain", "A")
+    name = kwargs.pop("name", "q")
+    # one file per request: requests that share a path would be run on the last content written
     return runner.make_request(
-        complex_file(tmp_path, content=kwargs.pop("content", b"data_x\n")),
-        name=kwargs.pop("name", "q"),
+        complex_file(tmp_path, name=name, content=kwargs.pop("content", b"data_x\n")),
+        name=name,
         **kwargs,
     )
 
