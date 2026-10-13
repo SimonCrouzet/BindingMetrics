@@ -53,6 +53,88 @@ BEST_PLATFORM = "CUDA" if HAS_CUDA else "CPU"
 
 
 # ---------------------------------------------------------------------------
+# Guard against untagged slow tests
+# ---------------------------------------------------------------------------
+
+# The everyday run leaves out whatever carries one of these markers (docs/testing.md), so a test
+# that grows slow and has none of them silently lengthens it. The guard lists such tests at the
+# end of a session. It only reports unless --strict-slow is given, because a duration depends on
+# the load of the machine (a run with -n inflates the times of the heavy tests).
+SPEED_MARKERS = ("slow", "integration", "openfold", "gpu")
+SLOW_CALL_SECONDS = 2.0
+
+
+def pytest_addoption(parser):
+    group = parser.getgroup("slow-guard", "untagged slow tests")
+    group.addoption(
+        "--strict-slow",
+        action="store_true",
+        default=False,
+        help="fail the run when a test without a speed marker (slow, integration, openfold, gpu) "
+        "takes --slow-seconds or more",
+    )
+    group.addoption(
+        "--slow-seconds",
+        type=float,
+        default=SLOW_CALL_SECONDS,
+        metavar="SECONDS",
+        help="duration of the call of a test from which it should carry a speed marker "
+        f"(default {SLOW_CALL_SECONDS})",
+    )
+
+
+class _SlowGuard:
+    """Collects the tests that took long and carry no speed marker, from their reports.
+
+    The reports are what a pytest-xdist worker sends to the controller, which is the process
+    that runs this plugin, so the list is complete with ``-n``. Only the call of a test counts:
+    a fixture shared by a module is billed to the first test that uses it, and tagging that test
+    would only move the cost to the next one. The markers are read from ``report.keywords``,
+    which has the name of every marker of the test, its class and its module.
+    """
+
+    def __init__(self, config):
+        self.strict = config.getoption("--strict-slow")
+        self.threshold_seconds = config.getoption("--slow-seconds")
+        self.untagged: dict[str, float] = {}
+
+    def pytest_runtest_logreport(self, report):
+        if report.when != "call" or report.outcome not in ("passed", "failed"):
+            return
+        if report.duration < self.threshold_seconds:
+            return
+        if any(marker in report.keywords for marker in SPEED_MARKERS):
+            return
+        self.untagged[report.nodeid] = report.duration
+
+    def pytest_terminal_summary(self, terminalreporter):
+        if not self.untagged:
+            return
+        terminalreporter.section("untagged slow tests")
+        count = len(self.untagged)
+        terminalreporter.write_line(
+            f"{count} {'test' if count == 1 else 'tests'} took {self.threshold_seconds:g} s or "
+            f"more and carry none of {', '.join(SPEED_MARKERS)}, so the everyday run does not "
+            "leave them out. scripts/tag_slow_tests.py tags a list of node ids."
+        )
+        for nodeid, seconds in sorted(self.untagged.items(), key=lambda item: -item[1]):
+            terminalreporter.write_line(f"{seconds:8.2f} s  {nodeid}")
+        if self.strict:
+            terminalreporter.write_line("--strict-slow: the run fails.", red=True)
+
+    @pytest.hookimpl(trylast=True)
+    def pytest_sessionfinish(self, session, exitstatus):
+        if self.strict and self.untagged and exitstatus == pytest.ExitCode.OK:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_configure(config):
+    # A pytest-xdist worker has no terminal; its reports reach the controller's guard.
+    if not hasattr(config, "workerinput"):
+        config.pluginmanager.register(_SlowGuard(config), "slow-guard")
+
+
+# ---------------------------------------------------------------------------
 # Area tags
 # ---------------------------------------------------------------------------
 
