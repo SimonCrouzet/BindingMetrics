@@ -24,6 +24,7 @@ is imported when a request is made, never before)::
             weights: Optional[str | Path | WeightsRef] = None) -> PredictionRequest
         .fasta_text(request) -> str
         .output_chain_map(request) -> dict[str, str]          # {"A": receptor, "B": binder}
+        ._group_seeds(seeds) -> list[tuple[int, ...]]         # consecutive seeds: one request
         .prepare(request, work_dir) -> Path                   # <work_dir>/query/<name>.fasta
         .run(request, work_dir) -> Path                       # <work_dir>/predictions
         .supports_batch(request) -> bool                      # False
@@ -104,7 +105,13 @@ Settings that change the output
 * ``seeds``: ColabFold runs ``range(random_seed, random_seed + num_seeds)`` (line 451), so the
   seeds are consecutive integers from 0 up and the command line is ``--random-seed first
   --num-seeds count``. ``None`` gives ``(0,)``, the defaults of both flags (lines 1932, 1939).
-  Another list raises ``ValueError``.
+  Another list raises ``ValueError``. ``make_requests(input_path, seeds=[...], ...)`` therefore
+  gives one request when the seeds are ascending and consecutive (``[0, 1, 2]``, ``[5, 6]``) and
+  one request per seed otherwise (``[0, 2]``, ``[2, 1]``); a request that carries one seed is named
+  ``<name>_s<seed>``. ``seed_dimension`` stays False because a list is one request in the first
+  case only, and ``_group_seeds`` is the rule. The seed of each sample is the ``seed_<S>`` of its
+  file name (``colabfold/batch.py`` line 383, ``seed:03d``), which the adapter reports as
+  ``extras["seed_value"]``.
 * ``num_samples`` is the number of structures per seed: ``--num-models`` (1 to 5, default 5,
   line 1945). The early-stop threshold ``--stop-at-score`` keeps its default of 100, which no
   ranking confidence exceeds, so every model runs.
@@ -697,6 +704,19 @@ class ColabFoldRunner(PredictionRunner):
         if not (request.receptor_chain and request.binder_chain):
             raise ValueError("the request has no receptor_chain and binder_chain")
         return {"A": request.receptor_chain, "B": request.binder_chain}
+
+    def _group_seeds(self, seeds: Sequence[int]) -> list[tuple[int, ...]]:
+        """One group for seeds that ColabFold runs in one process, else one group per seed.
+
+        ColabFold iterates ``range(random_seed, random_seed + num_seeds)``, so a list that is
+        ascending and consecutive from its first value is one request (the command line holds
+        its first value and its length). Any other list, such as ``[0, 2]`` or ``[1, 0]``,
+        cannot be expressed that way and becomes one request per seed, in the order given.
+        """
+        values = list(seeds)
+        if values and values == list(range(values[0], values[0] + len(values))):
+            return [tuple(values)]
+        return [(seed,) for seed in values]
 
     # ------------------------------------------------------------------ running
 

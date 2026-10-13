@@ -27,6 +27,7 @@ and the openfold run module are imported when an input is read, never before)::
         ProtenixRunner(conda_env: Optional[str] = None)
         name = "protenix"; capabilities = None
         supports_custom_weights = True; weights_kind = "directory"
+        seed_dimension = True                             # one request carries all the seeds
         .conda_env
         .make_request(input_path, *, name: str, binder_chain: str, receptor_chain: str,
             mode: str = "predict", seeds: Optional[Sequence[int]] = None, num_samples: int = 5,
@@ -136,7 +137,10 @@ the documentation belong to ``runner/inference.py``, a second entry point). ``--
 true`` is always given: it is what makes Protenix write the per-atom pLDDT, PAE and PDE file the
 adapter needs for the interface PAE and PDE (``runner/dumper.py:258-275``). ``--seeds`` takes
 the values joined by commas, non-negative and distinct (the adapter orders seed directories by
-their numeric value and reads only decimal ones). ``--dtype`` is ``bf16``, ``fp32`` or ``fp16``
+their numeric value and reads only decimal ones). The class attribute ``seed_dimension`` is True:
+``make_requests(input_path, seeds=[...], ...)`` gives one request that holds the seeds in the order
+given, and the adapter reports the seed of each sample (``extras["seed_value"]``, from the
+``seed_<S>`` directory). ``--dtype`` is ``bf16``, ``fp32`` or ``fp16``
 (``runner/inference.py:217-221``; the documentation names the first two); a GPU of compute
 capability 7.x is forced to fp32 by Protenix (``inference.py:665-694``), which the request does
 not record. ``extra_args`` is appended as given (for example ``["--cycle", "4", "--step", "5"]``
@@ -1048,6 +1052,9 @@ class ProtenixRunner(PredictionRunner):
     #: the reason (see the module docstring).
     supports_custom_weights = True
     weights_kind = "directory"
+    #: ``protenix pred --seeds a,b,c`` runs every seed in one process and writes a ``seed_<S>``
+    #: directory for each, so ``make_requests`` gives one request that carries all of them.
+    seed_dimension = True
 
     def __init__(self, conda_env: Optional[str] = None):
         self.conda_env = conda_env
