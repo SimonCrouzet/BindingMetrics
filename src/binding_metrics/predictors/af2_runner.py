@@ -21,7 +21,8 @@ is imported when a request is made, never before)::
             model_type: str = "alphafold2_multimer_v3", num_relax: int = 0,
             data_dir: Optional[str | Path] = None, on_unmappable_residue: str = "error",
             extra_args: Sequence[str] = (),
-            weights: Optional[str | Path | WeightsRef] = None) -> PredictionRequest
+            weights: Optional[str | Path | WeightsRef] = None, msa_policy: str = "default",
+            receptor_msa: Optional[str] = None) -> PredictionRequest
         .fasta_text(request) -> str
         .output_chain_map(request) -> dict[str, str]          # {"A": receptor, "B": binder}
         ._group_seeds(seeds) -> list[tuple[int, ...]]         # consecutive seeds: one request
@@ -120,6 +121,23 @@ Settings that change the output
   writes ``--msa-mode single_sequence``, ColabFold's MSA-free mode, where
   ``get_msa_and_templates`` builds the alignment from the query itself and makes no server
   request. The alignments a server returns are not in the key.
+* ``msa_policy`` and ``receptor_msa`` (``predictors/_msa.py`` holds the rules the runners
+  share). ColabFold can only run without its server in the single-sequence mode, so this runner
+  declares ``supports_given_msa=False, supports_single=True``: ``receptor_msa="single"`` is
+  accepted and writes ``--msa-mode single_sequence``, which holds for both chains (the mode is
+  global to the job, so the binder is single-sequence too, as the policy wants); the path of an
+  alignment file is refused with the reason (the runner writes FASTA input, and ColabFold builds
+  the alignments of a FASTA job itself, with its server or from the sequence). Because "single"
+  means that no server is called, a request with ``receptor_msa="single"`` records
+  ``use_msa_server=False`` whatever was passed. Under ``msa_policy="forbid-server"`` the request
+  needs ``use_msa_server=False`` and ``receptor_msa="single"``, and ``prepare`` and ``run`` check
+  the command line they built with ``assert_no_server_flag`` before a process starts: any
+  ``--msa-mode mmseqs2...``, and a command without ``--msa-mode`` (the default of ColabFold calls
+  the server), is refused. The key: ``options["msa_policy"]`` only when it is not ``"default"``
+  and ``options["receptor_msa"] = "single"`` only when asked; a request without them keeps its
+  key. ColabFold 1.5.4 documents that "using an A3M file as input overwrites" ``--msa-mode``; the
+  runner does not write a3m input, and whether an a3m job can hold a precomputed receptor
+  alignment with a single-sequence peptide was not checked.
 * ``model_type``: ``--model-type``, ``alphafold2_multimer_v3`` by default, the model the adapter
   was written against. ``auto`` is not offered: for a complex it means the same
   (``set_model_type``, line 1731).
@@ -203,6 +221,15 @@ import sys
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from binding_metrics.predictors._msa import (
+    DEFAULT_MSA_POLICY,
+    FORBID_SERVER,
+    RECEPTOR_MSA_ROLE,
+    SINGLE_SEQUENCE,
+    assert_no_server_flag,
+    check_msa_of_request,
+    check_msa_request,
+)
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.store import PredictionRequest
 from binding_metrics.predictors.weights import WeightsRef
@@ -267,6 +294,12 @@ _TEMPLATE_FLAGS = (
     "--initial-guess",
 )
 
+#: Why the runner takes no alignment file, for the message of ``check_msa_request``.
+_MSA_FILE_REASON = (
+    "the runner gives colabfold_batch a FASTA file, whose alignments ColabFold builds itself, "
+    "with its MSA server or, with --msa-mode single_sequence, from the sequence"
+)
+
 _QUERY_DIRNAME = "query"
 _RESULT_DIRNAME = "predictions"
 
@@ -304,6 +337,10 @@ def _mode_message(mode: str) -> str:
 def _run_module() -> Any:
     """The module with the query builder; imported here so that the package stays light."""
     return importlib.import_module("binding_metrics.metrics._openfold_run")
+
+
+def _forbids_server(request: PredictionRequest) -> bool:
+    return request.options.get("msa_policy", DEFAULT_MSA_POLICY) == FORBID_SERVER
 
 
 def _safe_job_name(name: str) -> str:
@@ -604,6 +641,8 @@ class ColabFoldRunner(PredictionRunner):
         on_unmappable_residue: str = "error",
         extra_args: Sequence[str] = (),
         weights: Optional[str | Path | WeightsRef] = None,
+        msa_policy: str = DEFAULT_MSA_POLICY,
+        receptor_msa: Optional[str] = None,
     ) -> PredictionRequest:
         """The store request of one ColabFold run (see the module docstring for what it holds).
 
@@ -620,7 +659,8 @@ class ColabFoldRunner(PredictionRunner):
             num_samples: Structures per seed (``--num-models``, 1 to 5).
             num_recycles: ``--num-recycle``; None leaves it to ColabFold.
             use_msa_server: Send the sequences to the ColabFold MSA server (the default); False
-                folds from the single sequence (``--msa-mode single_sequence``).
+                folds from the single sequence (``--msa-mode single_sequence``). The request
+                records False whenever ``receptor_msa="single"`` is given.
             model_type: ``--model-type``.
             num_relax: ``--num-relax``, the number of top-ranked structures to relax.
             data_dir: ``--data``, the directory that holds ``params/``; its path is in the key.
@@ -631,6 +671,13 @@ class ColabFoldRunner(PredictionRunner):
                 ``PredictionStore.weights_reference`` made for it (it uses the store's hash
                 cache; a path is hashed here without one). Passed as ``--data``; its content is
                 in the key.
+            msa_policy: ``"default"`` or ``"forbid-server"``. The second needs
+                ``use_msa_server=False`` and ``receptor_msa="single"``, and the runner checks
+                the command line for a server mode before it starts a process. It is in the key
+                only when it is not ``"default"``.
+            receptor_msa: None (the default; the key is unchanged) or the word ``"single"``, the
+                receptor and the binder folded from their own sequences. The path of an
+                alignment is refused: ColabFold takes none from this runner.
 
         Raises:
             ValueError: A mode other than ``predict``, a missing or equal chain role, a chain the
@@ -638,7 +685,9 @@ class ColabFoldRunner(PredictionRunner):
                 change, seeds that are not consecutive from 0 up, an unknown model type or a
                 setting out of range, a ``data_dir`` that is not a directory, both ``weights`` and
                 ``data_dir``, ``weights`` that are not a directory with the marker file of the
-                model type in ``params/``, or an argument in ``extra_args`` that the runner owns.
+                model type in ``params/``, an argument in ``extra_args`` that the runner owns, a
+                ``receptor_msa`` that is a path, or a policy that the MSA arguments break
+                (``forbid-server`` with the server on or without ``receptor_msa="single"``).
             FileNotFoundError: ``weights`` does not exist.
             OSError: The structure file cannot be read.
         """
@@ -656,6 +705,15 @@ class ColabFoldRunner(PredictionRunner):
             )
         if weights is not None and data_dir is not None:
             raise ValueError("give weights or data_dir, not both")
+        fragments = check_msa_request(
+            self.name,
+            use_msa_server=use_msa_server,
+            msa_policy=msa_policy,
+            receptor_msa=receptor_msa,
+            supports_given_msa=False,
+            supports_single=True,
+            unsupported_reason=_MSA_FILE_REASON,
+        )
         if weights is not None:  # before the directory is hashed, which can take a while
             _check_weights_directory(
                 weights.path if isinstance(weights, WeightsRef) else Path(weights), model_type
@@ -673,12 +731,13 @@ class ColabFoldRunner(PredictionRunner):
             num_samples=num_samples,
             model_version=self.version() or "",
             options={
-                "use_msa_server": bool(use_msa_server),
+                "use_msa_server": bool(use_msa_server) and receptor_msa is None,
                 "model_type": model_type,
                 "num_recycles": num_recycles,
                 "num_relax": num_relax,
                 "data_dir": None if data_dir is None else str(data_dir),
                 "extra_args": [str(argument) for argument in extra_args],
+                **fragments.options,
             },
         )
         self._check_request(request)
@@ -723,10 +782,16 @@ class ColabFoldRunner(PredictionRunner):
     def prepare(self, request: PredictionRequest, work_dir: Path) -> Path:
         """Write the FASTA record to ``<work_dir>/query/<name>.fasta`` and return it.
 
-        Raises what ``run`` would raise about the request, without starting ColabFold.
+        Raises what ``run`` would raise about the request, without starting ColabFold, including
+        a command line that breaks ``msa_policy="forbid-server"`` (checked before the file is
+        written).
         """
         self._check_request(request)
         path = Path(work_dir) / _QUERY_DIRNAME / f"{request.name}.fasta"
+        if _forbids_server(request):
+            self._assert_policy(
+                request, self._command(request, path, Path(work_dir) / _RESULT_DIRNAME)
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.fasta_text(request), encoding="utf-8")
         return path
@@ -735,7 +800,9 @@ class ColabFoldRunner(PredictionRunner):
         """Run ``colabfold_batch`` for ``request`` and return ``<work_dir>/predictions``.
 
         Raises:
-            ValueError: The request is not one this runner can run (before anything is written).
+            ValueError: The request is not one this runner can run (before anything is written),
+                or its command line would make ColabFold use an MSA server under
+                ``msa_policy="forbid-server"``.
             FileNotFoundError: ``colabfold_batch`` is not on PATH and no conda environment is set.
             ColabFoldRunError: ColabFold exited non-zero.
             RuntimeError: ColabFold exited normally but wrote fewer structures than asked; the
@@ -751,7 +818,9 @@ class ColabFoldRunner(PredictionRunner):
         fasta = self.prepare(request, work_dir)
         results = Path(work_dir) / _RESULT_DIRNAME
         results.mkdir(parents=True, exist_ok=True)
-        _run_command(self._command(request, fasta, results))
+        command = self._command(request, fasta, results)
+        self._assert_policy(request, command)
+        _run_command(command)
         self._require_output(request, results)
         return results
 
@@ -817,12 +886,32 @@ class ColabFoldRunner(PredictionRunner):
                 "it. Create the directory first if that is what you want."
             )
         _check_extra_args(options.get("extra_args") or [])
+        check_msa_of_request(
+            self.name,
+            request,
+            supports_given_msa=False,
+            supports_single=True,
+            unsupported_reason=_MSA_FILE_REASON,
+        )
+
+    def _assert_policy(self, request: PredictionRequest, command: Sequence[str]) -> None:
+        """Under ``forbid-server``, refuse a command line that would make ColabFold use a server.
+
+        ``--msa-mode`` must be on the line and be ``single_sequence``: the other modes call the
+        ColabFold server, and without the flag ColabFold's own default does. Nothing is checked
+        under the default policy.
+        """
+        if _forbids_server(request):
+            assert_no_server_flag([str(word) for word in command], self.name)
 
     def _command(self, request: PredictionRequest, fasta: Path, results: Path) -> list[str]:
         """The command line of the run; every setting is written, the defaults included."""
         options = request.options
         seeds = tuple(request.seeds)
-        msa_mode = _MSA_SERVER_MODE if options.get("use_msa_server", True) else _NO_MSA_MODE
+        single = options.get(RECEPTOR_MSA_ROLE) == SINGLE_SEQUENCE
+        msa_mode = (
+            _MSA_SERVER_MODE if options.get("use_msa_server", True) and not single else _NO_MSA_MODE
+        )
         arguments = [
             str(fasta),
             str(results),
