@@ -235,10 +235,10 @@ with ``auth_asym_id`` and ``auth_seq_id``. A first run failed in Boltz-2's cuequ
 ``--no_kernels`` are what ``Boltz2RunError`` produced. The YAML and the templates of every mode
 were also read by Boltz-2's own ``parse_yaml`` (CPU) for 1YCR and 1CWA.
 
-What was not run: ``use_msa_server=True`` (network), a conda environment, ``weights``, any
-version other than 2.2.1, and a run that exits with status 0 without output (the swallowed
-preparation error and the batch skipped for memory rest on the source and on the stub of the
-tests).
+What was not run on 2026-10-01: ``use_msa_server=True`` (network), a conda environment,
+``weights``, any version other than 2.2.1, and a run that exits with status 0 without output (the
+swallowed preparation error and the batch skipped for memory rest on the source and on the stub of
+the tests).
 
 What was measured about the modes. A second set of runs moved the binder of 1YCR as a rigid body
 (receptor fixed; 3, 6 and 10 A away from the pocket, and a 30 degree tilt or roll with 4 A of
@@ -282,6 +282,30 @@ very probably seen, two made-up sequences, three seeds each: no accuracy of the 
 With ``write_embeddings=True`` on 1YCR (98 tokens) the run wrote ``embeddings_<name>.npz`` with
 ``s`` of shape (1, 98, 384) and ``z`` of shape (1, 98, 98, 128), float32, 4.6 MB compressed;
 the run without the flag wrote no such file, and both runs gave the same ipTM (0.943).
+
+What was measured about ``refold-lock`` and the given MSA. On 2026-10-13, Boltz-2 v2.2.1 on one
+machine, one diffusion sample, seeds 42 to 44, ``--no_kernels``, through the store and the adapter.
+Boltz-2's own ``parse_yaml`` (CPU) read the YAML of ``refold-lock`` as one template record on the
+receptor chain, forced, with the threshold, and none on the binder. On 1YCR in single-sequence
+mode (receptor Cα RMSD to the input; largest deviation of a templated residue's representative atom
+after one rigid alignment, Boltz-2's own guided quantity; binder Cα RMSD to the crystal peptide
+after superposing the receptor; ipTM; mean over three seeds, angstrom): unforced ``refold`` 0.48,
+3.90, 1.81, 0.952; ``refold-lock`` at 0.5 A 0.39, 0.49, 1.80, 0.954; at 1.0 A 0.44, 0.99, 1.85,
+0.953; at 2.0 A 0.46, 1.98, 1.86, 0.951. The largest deviation ended at the threshold in 9 of 9
+runs (one residue, the C-terminal one, moves 3.9 A unforced); the typical residue moves little in
+all cells (mean deviation 0.53 unforced, 0.33 to 0.50 locked); the binder, which has no template,
+is where the unforced run puts it (1.8 A from the crystal peptide, 2.0 A for ``predict``) and ipTM
+does not change beyond the seed spread. The term is flat inside the threshold: on 1CWA (a ring with
+nine modified residues) at 2.0 A the output was identical to the unforced run, because the
+receptor was within 0.90 A of the input, and at 0.5 A the largest deviation went from 0.90 to 0.49 A
+with nothing else changed. The threshold stays 2.0 A: no cost showed at 0.5 or 1.0 A either.
+With a receptor alignment of the public MDM2 sequence (1633 sequences, from the ColabFold server
+once) under ``msa_policy="forbid-server"`` in a network namespace without an interface, three
+seeds ran and no log mentions a server; a control with the server on failed in the server call.
+ipTM was 0.969 (0.965 to 0.972) with the given alignment, 0.969 (0.964 to 0.974) with the server
+for both entities, and 0.948 (0.943 to 0.954) in single-sequence mode. One public complex that the
+model very probably saw in training: nothing here says how the lock behaves for a designed receptor
+that the model does not already reproduce.
 
 Boltz-2 licence: MIT; no weights or model code are read or shipped here.
 """

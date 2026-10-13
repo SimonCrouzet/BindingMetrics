@@ -668,11 +668,13 @@ class Boltz2Parser(PredictionParser):
                 "`threshold` on the receptor chain alone (docs/prediction.md, Templates), the "
                 "same TemplateReferencePotential as for score-lock "
                 "(src/boltz/model/potentials/potentials.py): a guidance term with weight 0.1, "
-                "not a hard constraint, so the receptor can still move by about the threshold; "
-                "templates are for protein chains only; and its effect was measured once, on one "
-                "complex (1YCR, Boltz-2 v2.2.1, single-sequence mode): the receptor ended within "
-                "the threshold of the supplied pose and not on it, and the binder, which has no "
-                "template, was not held."
+                "not a hard constraint, which acts only on a residue that deviates by more than "
+                "the threshold; templates are for protein chains only; and its effect was "
+                "measured once, on one complex (1YCR, Boltz-2 v2.2.1, single-sequence mode, "
+                "three seeds): the largest deviation of a receptor residue ended at the threshold "
+                "(0.5, 1.0 and 2.0 A) against 3.9 A without the force, the typical residue "
+                "stayed 0.3 to 0.5 A from the input, and the binder, which has no template, was "
+                "not held."
             ),
             "closures:staple": (
                 "Boltz-2 takes a covalent link between residues only as a `bond` constraint, and "
