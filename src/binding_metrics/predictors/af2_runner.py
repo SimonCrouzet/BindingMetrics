@@ -124,7 +124,8 @@ Settings that change the output
   request. The alignments a server returns are not in the key.
 * ``msa_policy`` and ``receptor_msa`` (``predictors/_msa.py`` holds the rules the runners
   share). ColabFold can only run without its server in the single-sequence mode, so this runner
-  declares ``supports_given_msa=False, supports_single=True``: ``receptor_msa="single"`` is
+  declares ``supports_given_msa=False, supports_single=True`` (class attributes, which the
+  command line reads to refuse a file before anything runs): ``receptor_msa="single"`` is
   accepted and writes ``--msa-mode single_sequence``, which holds for both chains (the mode is
   global to the job, so the binder is single-sequence too, as the policy wants); the path of an
   alignment file is refused with the reason (the runner writes FASTA input, and ColabFold builds
@@ -604,6 +605,11 @@ class ColabFoldRunner(PredictionRunner):
     #: ColabFold takes a directory of parameter files with ``--data`` (see the module docstring).
     supports_custom_weights = True
     weights_kind = "directory"
+    #: The receptor MSA the runner accepts (``predictors/_msa.py``): the single-sequence mode only.
+    supports_given_msa = False
+    supports_single = True
+    #: Why an alignment file is refused; the command line reads it for its own message.
+    msa_unsupported_reason = _MSA_FILE_REASON
 
     def __init__(self, conda_env: Optional[str] = None):
         self.conda_env = conda_env
@@ -731,9 +737,9 @@ class ColabFoldRunner(PredictionRunner):
             use_msa_server=use_msa_server,
             msa_policy=msa_policy,
             receptor_msa=receptor_msa,
-            supports_given_msa=False,
-            supports_single=True,
-            unsupported_reason=_MSA_FILE_REASON,
+            supports_given_msa=self.supports_given_msa,
+            supports_single=self.supports_single,
+            unsupported_reason=self.msa_unsupported_reason,
         )
         if weights is not None:  # before the directory is hashed, which can take a while
             _check_weights_directory(
@@ -910,9 +916,9 @@ class ColabFoldRunner(PredictionRunner):
         check_msa_of_request(
             self.name,
             request,
-            supports_given_msa=False,
-            supports_single=True,
-            unsupported_reason=_MSA_FILE_REASON,
+            supports_given_msa=self.supports_given_msa,
+            supports_single=self.supports_single,
+            unsupported_reason=self.msa_unsupported_reason,
         )
 
     def _assert_policy(self, request: PredictionRequest, command: Sequence[str]) -> None:

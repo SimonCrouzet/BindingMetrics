@@ -670,7 +670,8 @@ def resolve_prediction_options(
       ``lock_threshold_angstrom``, ``msa_policy`` other than ``default`` and ``receptor_msa`` are
       refused for a runner that has not; the lock threshold also needs a lock mode
       (``score-lock`` or ``refold-lock``), and ``prediction_receptor_msa`` is ``"single"`` or an
-      existing file;
+      existing file that the runner takes (its ``supports_given_msa`` and ``supports_single``;
+      ColabFold takes ``"single"`` only);
     * the MSA policy needs the run to be from here, like the other ``--prediction-*`` settings.
       That ``forbid-server`` with the server on is refused is the job of the pre-flight check,
       which refuses it under every ``--on-incompatible`` value.
@@ -783,26 +784,50 @@ def resolve_prediction_options(
     if prediction_receptor_msa is not None:
         if not takes_setting(runner, "receptor_msa"):
             raise ValueError(unsupported_setting_message(predictor, "receptor_msa"))
-        check_receptor_msa_arg(prediction_receptor_msa)
+        check_receptor_msa_arg(prediction_receptor_msa, runner, predictor)
     return PredictionOptions(mode, cyclic, use_msa_server, conda_env, prediction_lock_threshold)
 
 
-def check_receptor_msa_arg(value: str | Path) -> None:
+def check_receptor_msa_arg(
+    value: str | Path, runner: Any = None, model: Optional[str] = None
+) -> None:
     """Check ``--prediction-receptor-msa`` before anything runs.
 
     ``"single"`` asks for a receptor predicted from its own sequence; anything else is the path of
     an alignment file, which must exist. A ``Path`` is always a file, whatever its name.
 
+    With a ``runner`` (a class or an object; ``model`` names it in the message) the value must
+    also be one the runner takes: its ``supports_given_msa`` and ``supports_single`` are given to
+    ``predictors._msa.check_msa_request``, the check that ``make_request`` makes, so that a runner
+    which would refuse the value when it builds the request refuses it here, before anything is
+    prepared or relaxed. A runner without those attributes (a stand-in) states no limit.
+
     Raises:
-        ValueError: The path is not a file.
+        ValueError: The path is not a file, or the runner cannot take what was asked.
     """
-    if isinstance(value, str) and value == "single":
-        return
-    if not Path(value).expanduser().is_file():
+    is_word = isinstance(value, str) and value == "single"
+    if not is_word and not Path(value).expanduser().is_file():
         raise ValueError(
             f"--prediction-receptor-msa is not a file: {value} (give the path of the alignment "
             "of the receptor, or the word single for a receptor without one)"
         )
+    if runner is None:
+        return
+    from binding_metrics.predictors._msa import check_msa_request
+
+    takes_single = bool(getattr(runner, "supports_single", True))
+    try:
+        check_msa_request(
+            model or str(getattr(runner, "name", "the runner")),
+            use_msa_server=False,  # the policy and the server are the pre-flight's to refuse
+            receptor_msa=value,
+            supports_given_msa=bool(getattr(runner, "supports_given_msa", True)),
+            supports_single=takes_single,
+            unsupported_reason=str(getattr(runner, "msa_unsupported_reason", "")),
+        )
+    except ValueError as exc:
+        hint = " (on the command line: --prediction-receptor-msa single)" if takes_single else ""
+        raise ValueError(f"--prediction-receptor-msa {value}: {exc}{hint}") from None
 
 
 def check_predictor(

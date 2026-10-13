@@ -15,6 +15,8 @@ Public names and signatures (this module imports the standard library only)::
         supported_modes: ClassVar[frozenset[str]] = frozenset({"predict"})
         default_mode: ClassVar[Optional[str]] = None
         seed_dimension: ClassVar[bool] = False  # one request can carry several seeds
+        supports_given_msa: ClassVar[bool] = True   # receptor_msa=PATH is accepted
+        supports_single: ClassVar[bool] = True      # receptor_msa="single" is accepted
         @abstractmethod
         def prepare(self, request: PredictionRequest, work_dir: Path) -> Path
         @abstractmethod
@@ -106,6 +108,12 @@ Contract, checked for the stub runners of ``tests/predictors/test_runners.py``:
   first value). ``seeds`` must be a non-empty sequence of distinct non-negative integers. The
   seeds of a request are part of its key, so ``make_requests`` changes no key: the request of
   one seed is the request that ``make_request(..., seeds=[seed])`` builds.
+* The receptor MSA. A runner whose ``make_request`` has a ``receptor_msa`` keyword says what it
+  accepts with the class attributes ``supports_given_msa`` (the path of an alignment file) and
+  ``supports_single`` (the word ``"single"``, a receptor predicted from its own sequence); both
+  are True by default. They are the two flags the runner gives ``_msa.check_msa_request``, and
+  the command line reads them to refuse a ``--prediction-receptor-msa`` the runner cannot take
+  before anything runs (``ColabFoldRunner`` accepts ``"single"`` only).
 * ``capabilities`` stays None on a runner. The limits of a model (the input classes it cannot
   handle) live on ``PredictionParser.capabilities``, which is what ``preflight`` reads, so
   ``OpenFold3Runner.capabilities`` is None while ``OpenFold3Parser.capabilities`` carries the
@@ -151,6 +159,10 @@ class PredictionRunner(ABC):
     #: True when one request can carry several seeds (the model runs them in one process and
     #: writes a seed dimension); False when one run takes one seed (see ``make_requests``).
     seed_dimension: ClassVar[bool] = False
+    #: True when ``make_request(receptor_msa=PATH)`` can give an alignment file to the model.
+    supports_given_msa: ClassVar[bool] = True
+    #: True when ``make_request(receptor_msa="single")`` can run a receptor without an alignment.
+    supports_single: ClassVar[bool] = True
 
     @abstractmethod
     def prepare(self, request: PredictionRequest, work_dir: Path) -> Path:

@@ -1287,6 +1287,9 @@ class ProtenixRunner(PredictionRunner):
     #: ``protenix pred --seeds a,b,c`` runs every seed in one process and writes a ``seed_<S>``
     #: directory for each, so ``make_requests`` gives one request that carries all of them.
     seed_dimension = True
+    #: The receptor MSA the runner accepts (``predictors/_msa.py``): a file or the word "single".
+    supports_given_msa = True
+    supports_single = True
 
     def __init__(self, conda_env: Optional[str] = None):
         self.conda_env = conda_env
@@ -1403,8 +1406,8 @@ class ProtenixRunner(PredictionRunner):
             use_msa_server=use_msa_server,
             msa_policy=msa_policy,
             receptor_msa=receptor_msa,
-            supports_given_msa=True,
-            supports_single=True,
+            supports_given_msa=self.supports_given_msa,
+            supports_single=self.supports_single,
         )
         options = _resolve_options(
             {
@@ -1584,7 +1587,12 @@ class ProtenixRunner(PredictionRunner):
         if request.binder_chain == request.receptor_chain:
             raise ValueError("binder_chain and receptor_chain must be different chains")
         _resolve_seeds(request.seeds)
-        check_msa_of_request(self.name, request, supports_given_msa=True, supports_single=True)
+        check_msa_of_request(
+            self.name,
+            request,
+            supports_given_msa=self.supports_given_msa,
+            supports_single=self.supports_single,
+        )
         return _resolve_options(request.options)
 
     def _assert_policy(self, request: PredictionRequest, command: Sequence[str]) -> None:
