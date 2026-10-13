@@ -72,7 +72,13 @@ RECEPTOR_MSA_ROLE = "receptor_msa"
 
 #: Models whose default, with the flag left out, is to call the server: the flag must be on the
 #: command line (ColabFold's ``--msa-mode`` defaults to ``mmseqs2_uniref_env``).
-_SERVER_BY_DEFAULT = {"af2": ("--msa-mode", "--msa_mode")}
+_SERVER_BY_DEFAULT = {"af2": "--msa_mode"}
+
+#: The options that decide whether a model calls an MSA server, spelled with underscores.
+_WATCHED_FLAGS = ("--use_msa_server", "--use_msa", "--msa_mode")
+
+#: Shortest option name (dashes included) read as the abbreviation of a watched flag.
+_SHORTEST_ABBREVIATION = 5
 
 _TRUE_WORDS = frozenset({"true", "1", "yes", "on", "t", "y"})
 _FALSE_WORDS = frozenset({"false", "0", "no", "off", "f", "n"})
@@ -232,17 +238,38 @@ def _boolean(word: str) -> Optional[bool]:
     return None
 
 
-def _value_of(command: Sequence[str], index: int, flag: str) -> tuple[Optional[str], int]:
-    """The value of ``flag`` at ``command[index]``: ``--flag=value`` or the next word.
+def _value_of(command: Sequence[str], index: int) -> Optional[str]:
+    """The value of the option at ``command[index]``: ``--name=value`` or the next word.
 
-    Returns ``(value, number of words used)``; ``value`` is None for a flag without one.
+    None for an option without one: the next word is another option, or there is none.
     """
-    word = command[index]
-    if word.startswith(flag + "="):
-        return word[len(flag) + 1 :], 1
+    name, equals, value = command[index].partition("=")
+    if equals:
+        return value
     if index + 1 < len(command) and not command[index + 1].startswith("--"):
-        return command[index + 1], 2
-    return None, 1
+        return command[index + 1]
+    return None
+
+
+def _spelled_with_underscores(name: str) -> str:
+    """``--use-msa-server`` as ``--use_msa_server``: the tools take the two spellings alike."""
+    return "--" + name[2:].replace("-", "_")
+
+
+def _flags_denoted_by(name: str) -> tuple[str, ...]:
+    """The watched flags that the option ``name`` can stand for, in the underscore spelling.
+
+    The name itself when it is one of them. Otherwise the flags it abbreviates: ``argparse``
+    accepts an unambiguous prefix of an option (``--msa-m`` for ``--msa-mode``), so a prefix of
+    a watched flag counts as that flag, and an ambiguous prefix as all of them (the guard errs
+    towards the refusal). Case is kept: option names are case sensitive.
+    """
+    spelled = _spelled_with_underscores(name)
+    if spelled in _WATCHED_FLAGS:
+        return (spelled,)
+    if len(spelled) < _SHORTEST_ABBREVIATION:
+        return ()
+    return tuple(flag for flag in _WATCHED_FLAGS if flag.startswith(spelled))
 
 
 def assert_no_server_flag(
@@ -253,8 +280,8 @@ def assert_no_server_flag(
 ) -> None:
     """Refuse a command line that would make the model call an MSA server.
 
-    Call it on the command a runner is about to start when the request's policy is
-    ``forbid-server``. It reads the flags of the four models:
+    Call it on the final command a runner is about to start (``extra_args`` included) when the
+    request's policy is ``forbid-server``. It reads the flags of the four models:
 
     * ``--use_msa_server`` (Boltz-2, OpenFold3): on when bare or ``true``; ``false`` is fine
       (OpenFold3 is started with ``--use_msa_server=false``);
@@ -265,7 +292,18 @@ def assert_no_server_flag(
       (``mmseqs2_uniref_env`` and ``mmseqs2_uniref`` do). The ``af2`` runner must have the flag on
       the command line, because the model's default calls the server.
 
-    A flag whose value is not a boolean word is refused too: the check errs towards the refusal,
+    How the options are read, as the tools read them:
+
+    * The hyphen and the underscore spelling of a name are the same option
+      (``--use-msa-server`` is ``--use_msa_server``; OpenFold3 takes both). Case is kept.
+    * The value is ``--name=value`` or the next word. A bare ``--use_msa_server`` or one followed
+      by a word that is not a boolean (an argument of the command) is on.
+    * An option can be given again and the last occurrence wins, so
+      ``--use_msa_server=false --use-msa-server=true`` is a server call and the reverse is not.
+    * A prefix of a watched name (``--msa-m``) counts as the option, for the tools that take an
+      unambiguous prefix.
+
+    A value that is not a boolean word is refused too: the check errs towards the refusal,
     because the cost of a wrong guess is a sequence sent out.
 
     Args:
@@ -279,34 +317,45 @@ def assert_no_server_flag(
     """
     words = shlex.split(command) if isinstance(command, str) else [os.fspath(w) for w in command]
 
-    def refuse(flag: str, value: Optional[str]) -> None:
-        shown = flag if value is None else f"{flag} {value}"
+    # the last occurrence of each watched flag: (the name as written, its value or None)
+    last: dict[str, tuple[str, Optional[str]]] = {}
+    for index, word in enumerate(words):
+        if not word.startswith("--"):
+            continue
+        name = word.partition("=")[0]
+        flags = _flags_denoted_by(name)
+        if not flags:
+            continue
+        value = _value_of(words, index)
+        if value is not None and "=" not in word and _boolean(value) is None:
+            if "--use_msa_server" in flags:
+                value = None  # a bare flag followed by an argument of the command
+        for flag in flags:
+            last[flag] = (name, value)
+
+    def refuse(name: str, value: Optional[str]) -> None:
+        shown = name if value is None else f"{name} {value}"
         raise ValueError(
             f"{runner_name}: msa_policy={FORBID_SERVER!r} but the command line would make the "
             f"model use an MSA server ({shown}); nothing was started"
         )
 
-    for index, word in enumerate(words):
-        flag = word.partition("=")[0]
+    for flag in _WATCHED_FLAGS:
+        if flag not in last:
+            continue
+        name, value = last[flag]
+        state = None if value is None else _boolean(value)
         if flag == "--use_msa_server":
-            value, _ = _value_of(words, index, flag)
-            if "=" not in word and value is not None and _boolean(value) is None:
-                value = None  # a bare flag followed by an argument of the command
-            if value is None or _boolean(value) is not False:
-                refuse(flag, value)
+            if state is not False:
+                refuse(name, value)
         elif flag == "--use_msa":
-            value, _ = _value_of(words, index, flag)
-            if value is None or _boolean(value) is None or _boolean(value):
-                if not (chains_have_msa_paths and value is not None and _boolean(value)):
-                    refuse(flag, value)
-        elif flag in ("--msa-mode", "--msa_mode"):
-            value, _ = _value_of(words, index, flag)
-            if value != "single_sequence":
-                refuse(flag, value)
+            if state is None or (state and not chains_have_msa_paths):
+                refuse(name, value)
+        elif value != "single_sequence":
+            refuse(name, value)
 
-    spellings = _SERVER_BY_DEFAULT.get(runner_name)
-    if spellings is not None and not any(w.partition("=")[0] in spellings for w in words):
+    if _SERVER_BY_DEFAULT.get(runner_name) and "--msa_mode" not in last:
         raise ValueError(
             f"{runner_name}: msa_policy={FORBID_SERVER!r} but the command line has no "
-            f"{spellings[0]}, and the default of the model calls an MSA server; nothing was started"
+            f"--msa-mode, and the default of the model calls an MSA server; nothing was started"
         )

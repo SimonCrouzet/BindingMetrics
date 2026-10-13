@@ -1027,6 +1027,8 @@ def _check_extra_args(extra_args: Sequence[str]) -> None:
     """Raise ``ValueError`` for an argument that the runner owns or that changes the mode.
 
     ``argparse`` accepts an unambiguous prefix of a flag, so a prefix of a refused flag counts.
+    The underscore spelling of a hyphenated flag counts as well (``--msa_mode`` for
+    ``--msa-mode``): the check must not depend on which of the two a tool takes.
     """
     refused = (
         (_OWNED_FLAGS, "the runner writes it from the request, whose key records the setting"),
@@ -1034,7 +1036,7 @@ def _check_extra_args(extra_args: Sequence[str]) -> None:
         (_TEMPLATE_FLAGS, "mode 'predict' folds from sequences only, and it adds templates"),
     )
     for argument in extra_args:
-        flag = str(argument).split("=", 1)[0]
+        flag = str(argument).split("=", 1)[0].replace("_", "-")
         if not flag.startswith("--") or len(flag) < 4:
             continue
         for flags, reason in refused:

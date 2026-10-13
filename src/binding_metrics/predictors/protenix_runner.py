@@ -635,7 +635,8 @@ def _check_extra_args(extra_args: Sequence[str]) -> list[str]:
     arguments = [str(argument) for argument in extra_args]
     for argument in arguments:
         if argument.startswith("--"):
-            flag = argument.split("=", 1)[0]
+            # the hyphen spelling of an option is the underscore one for a tool that takes both
+            flag = "--" + argument.split("=", 1)[0][2:].replace("-", "_")
         elif argument.startswith("-") and len(argument) >= 2:
             flag = argument[:2]
         else:
