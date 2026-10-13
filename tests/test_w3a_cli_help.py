@@ -27,8 +27,8 @@ is recorded the same way. When the runners of ColabFold, Boltz-2 and Protenix we
 were added to both commands and are recorded here: ``--prediction-cyclic``,
 ``--prediction-no-msa-server``, ``--prediction-conda-env`` and ``--prediction-lock-threshold``.
 The fifth mode ``refold-lock`` (refold with the receptor pinned by a forced template) then joined
-the choices of ``--prediction-mode``, whose help lists the modes of the Boltz-2 runner one by
-one, and the help of ``--prediction-lock-threshold`` names both lock modes.
+the choices of ``--prediction-mode``, whose help says that the Boltz-2 runner runs all five, and
+the help of ``--prediction-lock-threshold`` names both lock modes.
 The help of ``--openfold-cyclic`` and ``--prediction-cyclic`` then gained the rule that ``auto``
 leaves a head-to-tail binder with modified residues linear, and the one-complex measurement
 behind it. Two options of the pre-flight group were added to both commands and are recorded the
@@ -359,8 +359,8 @@ GOLDEN = {
                 "input by a forced template, the binder free). It is checked "
                 "against what the model supports and, for a run from here, "
                 "against what its runner can do (of3: refold, score; boltz2: "
-                "predict, refold, score, score-lock; af2 and protenix: "
-                "predict), before anything runs, and "
+                "all five; af2 and protenix: predict), before anything "
+                "runs, and "
                 "recorded. Default: the runner's own mode, that is for "
                 "--predictor of3 the value of --openfold-mode (score), "
                 "score for boltz2 and predict for af2 and protenix; for an "
@@ -824,8 +824,8 @@ GOLDEN = {
                 "input by a forced template, the binder free). It is checked "
                 "against what the model supports and, for a run from here, "
                 "against what its runner can do (of3: refold, score; boltz2: "
-                "predict, refold, score, score-lock; af2 and protenix: "
-                "predict), before anything runs, and "
+                "all five; af2 and protenix: predict), before anything "
+                "runs, and "
                 "recorded. Default: the runner's own mode, that is for "
                 "--predictor of3 the value of --openfold-mode (score), "
                 "score for boltz2 and predict for af2 and protenix; for an "

@@ -38,14 +38,18 @@ class TestTheDeclaration:
         assert isinstance(self.caps, Capabilities)
         assert self.caps.version == "2.2.1"
 
-    def test_it_limits_no_input_and_leaves_out_only_the_mode_it_builds_no_input_for(self):
-        assert self.caps.constrained_fields() == ("modes",)
-        assert self.caps.modes == frozenset(MODES) - {"refold-lock"}
+    def test_it_limits_nothing(self):
+        assert self.caps.is_unconstrained
+        assert self.caps.constrained_fields() == ()
+        assert self.caps.modes == frozenset(MODES)  # all five, with no reason to give
         assert self.caps.closures == frozenset()  # head-to-tail is not the only closure it takes
-        assert self.caps.binder_types == self.caps.residue_classes == frozenset()
 
-    def test_the_one_caveat_is_about_a_staple_and_cites_the_documentation(self):
-        assert sorted(self.caps.caveats) == ["closures:staple", "modes:score-lock"]
+    def test_the_caveats_are_the_staple_and_the_two_lock_modes(self):
+        assert sorted(self.caps.caveats) == [
+            "closures:staple",
+            "modes:refold-lock",
+            "modes:score-lock",
+        ]
         assert "docs/prediction.md" in self.caps.caveats["closures:staple"]
 
 

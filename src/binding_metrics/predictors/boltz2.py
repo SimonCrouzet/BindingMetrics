@@ -636,7 +636,7 @@ class Boltz2Parser(PredictionParser):
     # Not declared because nothing shows it: a limit on the residue classes (a modified residue is
     # a CCD code in `modifications`; D-amino acids and N-methyl are not mentioned), and on the
     # binder size (no maximum is stated).
-    # Modes (v2.2.1 source and documentation, checked against the clone on 2026-10-01): all four
+    # Modes (v2.2.1 source and documentation, checked against the clone on 2026-10-01): all five
     # are declared. predict is the plain input; refold and score need a template per chain, which
     # `templates` takes with `chain_id` (docs/prediction.md, Templates); an unforced template
     # carries no pose, because the template module lets features attend within the same chain only
@@ -646,16 +646,10 @@ class Boltz2Parser(PredictionParser):
     # row, and TemplateReferencePotential (src/boltz/model/potentials/potentials.py) aligns that
     # row rigidly over its templated tokens (weighted_rigid_align) and penalises a deviation
     # larger than the threshold. It is a guidance term, so score-lock is a caveat and not a promise.
+    # refold-lock is the same template for the receptor chain alone, with the binder free; it has
+    # the same caveat.
     capabilities = Capabilities(
-        modes={"predict", "refold", "score", "score-lock"},
-        reasons={
-            "modes": (
-                "The Boltz-2 runner of this package writes the inputs of 'predict', 'refold', "
-                "'score' and 'score-lock', and has none for 'refold-lock' (a forced template on "
-                "the receptor alone, the binder left free). Use 'refold' (the receptor is "
-                "templated without force) or 'score-lock' (both chains pinned)."
-            ),
-        },
+        modes={"predict", "refold", "score", "score-lock", "refold-lock"},
         caveats={
             "modes:score-lock": (
                 "Boltz-2 pins the pose through a template with `force: true` and a `threshold` "
@@ -668,6 +662,17 @@ class Boltz2Parser(PredictionParser):
                 "prediction stayed within about the threshold of the supplied pose, not on it "
                 "(binder C-alpha RMSD to the supplied pose 1.8 to 2.3 A for decoys 3 to 10 A "
                 "away, at the default threshold of 2.0 A)."
+            ),
+            "modes:refold-lock": (
+                "Boltz-2 pins the receptor through a template with `force: true` and a "
+                "`threshold` on the receptor chain alone (docs/prediction.md, Templates), the "
+                "same TemplateReferencePotential as for score-lock "
+                "(src/boltz/model/potentials/potentials.py): a guidance term with weight 0.1, "
+                "not a hard constraint, so the receptor can still move by about the threshold; "
+                "templates are for protein chains only; and its effect was measured once, on one "
+                "complex (1YCR, Boltz-2 v2.2.1, single-sequence mode): the receptor ended within "
+                "the threshold of the supplied pose and not on it, and the binder, which has no "
+                "template, was not held."
             ),
             "closures:staple": (
                 "Boltz-2 takes a covalent link between residues only as a `bond` constraint, and "

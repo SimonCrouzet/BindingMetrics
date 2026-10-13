@@ -128,6 +128,7 @@ class TestTheRequest:
             {"mode": "refold"},
             {"mode": "predict"},
             {"mode": "score-lock"},
+            {"mode": "refold-lock"},
             {"seeds": [7]},
             {"num_samples": 1},
             {"use_msa_server": False},
@@ -140,11 +141,12 @@ class TestTheRequest:
     def test_a_setting_that_changes_the_output_changes_the_key(self, change):
         assert make_request(**change).key() != make_request().key()
 
-    def test_the_lock_threshold_is_part_of_the_key_in_score_lock_only(self):
-        default = make_request(mode="score-lock")
+    @pytest.mark.parametrize("mode", ["score-lock", "refold-lock"])
+    def test_the_lock_threshold_is_part_of_the_key_in_the_lock_modes(self, mode):
+        default = make_request(mode=mode)
         assert default.options["lock_threshold_angstrom"] == DEFAULT_LOCK_THRESHOLD_ANGSTROM == 2.0
-        assert make_request(mode="score-lock", lock_threshold_angstrom=3).key() != default.key()
-        assert make_request(mode="score-lock", lock_threshold_angstrom=2).key() == default.key()
+        assert make_request(mode=mode, lock_threshold_angstrom=3).key() != default.key()
+        assert make_request(mode=mode, lock_threshold_angstrom=2).key() == default.key()
 
     def test_the_input_file_is_hashed_by_content(self, tmp_path):
         copy = tmp_path / "elsewhere.pdb"
@@ -155,6 +157,7 @@ class TestTheRequest:
 
     def test_the_modes_are_those_of_the_store_and_the_runner_names_them(self):
         assert set(RUN_MODES) == set(MODES)
+        assert len(RUN_MODES) == len(MODES) == 5
         assert Boltz2Runner.run_modes == RUN_MODES
 
     @pytest.mark.parametrize(
@@ -171,11 +174,17 @@ class TestTheRequest:
             ({"seeds": []}, "exactly one seed"),
             ({"on_unmappable_residue": "skip"}, "on_unmappable_residue must be one of"),
             ({"binder_cyclic": "yes"}, "binder_cyclic must be True, False or 'auto'"),
-            ({"lock_threshold_angstrom": 2.0}, "only applies to mode 'score-lock'"),
+            ({"lock_threshold_angstrom": 2.0}, "only applies to the lock modes"),
+            (
+                {"mode": "refold", "lock_threshold_angstrom": 2.0},
+                "lock modes 'score-lock' and 'refold-lock', not to mode 'refold'",
+            ),
             ({"mode": "score-lock", "lock_threshold_angstrom": 0}, "positive number"),
             ({"mode": "score-lock", "lock_threshold_angstrom": -1.0}, "positive number"),
             ({"mode": "score-lock", "lock_threshold_angstrom": math.nan}, "positive number"),
             ({"mode": "score-lock", "lock_threshold_angstrom": math.inf}, "positive number"),
+            ({"mode": "refold-lock", "lock_threshold_angstrom": 0}, "positive number"),
+            ({"mode": "refold-lock", "lock_threshold_angstrom": math.nan}, "positive number"),
             ({"extra_args": ["--seed", "3"]}, "repeats --seed"),
             ({"extra_args": ["--diffusion_samples=9"]}, "repeats --diffusion_samples"),
             ({"extra_args": ["--use_msa_server"]}, "repeats --use_msa_server"),
@@ -264,7 +273,7 @@ class TestTheYamlOfEachMode:
         assert "    force: true\n    threshold: 3.5\n" in yaml_path.read_text(encoding="utf-8")
 
     @pytest.mark.parametrize("mode", ["predict", "refold", "score"])
-    def test_force_and_threshold_appear_in_score_lock_only(self, tmp_path, mode):
+    def test_force_and_threshold_appear_in_the_lock_modes_only(self, tmp_path, mode):
         _, yaml_path = prepared(tmp_path, make_request(mode=mode))
         text = yaml_path.read_text(encoding="utf-8")
         assert "    force:" not in text and "    threshold:" not in text
@@ -284,10 +293,10 @@ class TestTheYamlOfEachMode:
         for template in document.get("templates", []):
             keys = {"cif", "chain_id", "template_id"}
             assert set(template) == keys | (
-                {"force", "threshold"} if mode == "score-lock" else set()
+                {"force", "threshold"} if mode in ("score-lock", "refold-lock") else set()
             )
             assert template["chain_id"] == template["template_id"]
-        if mode == "score-lock":
+        if mode in ("score-lock", "refold-lock"):
             assert document["templates"][0]["force"] is True
             assert document["templates"][0]["threshold"] == 2.0
 

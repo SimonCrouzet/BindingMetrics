@@ -295,15 +295,16 @@ class TestTheDeclarations:
     def test_the_other_modes_pass_for_openfold3(self, mode):
         assert preflight(PROFILE, [], "of3", mode=mode).compatible
 
-    def test_boltz2_declares_the_four_modes_it_builds_and_warns_for_lock(self):
+    def test_boltz2_declares_all_five_and_warns_for_lock(self):
         caps = self._caps("boltz2")
-        assert caps.modes == frozenset(MODES) - {"refold-lock"}
-        assert caps.constrained_fields() == ("modes",)  # refold-lock is refused, with a reason
-        report = preflight(PROFILE, [], "boltz2", mode="score-lock")
-        assert report.compatible
-        (warning,) = [w for w in report.warnings if "force: true" in w]
-        assert "guidance term" in warning and "measured once" in warning
-        assert preflight(PROFILE, [], "boltz2", mode="score").warnings == ()
+        assert caps.modes == frozenset(MODES) and caps.is_unconstrained
+        for mode in ("score-lock", "refold-lock"):
+            report = preflight(PROFILE, [], "boltz2", mode=mode)
+            assert report.compatible
+            (warning,) = [w for w in report.warnings if "force: true" in w]
+            assert "guidance term" in warning and "measured once" in warning
+        for mode in ("predict", "refold", "score"):
+            assert preflight(PROFILE, [], "boltz2", mode=mode).warnings == ()
 
     def test_protenix_declares_no_modes_and_warns_for_lock(self):
         caps = self._caps("protenix")

@@ -32,8 +32,8 @@ is read)::
         .version() -> Optional[str]
 
     class Boltz2RunError(subprocess.CalledProcessError)
-    RUN_MODES                                        # the four modes
-    DEFAULT_LOCK_THRESHOLD_ANGSTROM = 2.0            # score-lock, this package's choice
+    RUN_MODES                                        # the five modes
+    DEFAULT_LOCK_THRESHOLD_ANGSTROM = 2.0            # both lock modes, this package's choice
 
 Modes. ``input_path`` is the complex structure (PDB or mmCIF); ``binder_chain`` and
 ``receptor_chain`` are required in every mode. The YAML has one protein entity per chain, with
@@ -52,15 +52,19 @@ runner), and these templates:
   template row and the forced template pulls the prediction back to within the threshold of the
   input after a rigid alignment over the templated residues. It is a guidance term of weight
   0.1, not a hard constraint, so the pose can still move.
+* ``refold-lock``: ``receptor.cif`` holds the receptor chain alone and is listed for it with
+  ``force: true`` and a ``threshold``; the binder has no template and is free. It is ``refold``
+  with the receptor pinned to the input by the same guidance term as ``score-lock``, so the
+  receptor can still move by about the threshold and the binder is placed by the model.
 
 Any other mode raises ``ValueError``.
 
 The threshold. Boltz-2 requires ``threshold`` when ``force`` is true and documents no default,
 so ``lock_threshold_angstrom`` defaults to 2.0 here: that is this package's choice, not
 Boltz-2's. It is an option of the request (``options["lock_threshold_angstrom"]``, None outside
-``score-lock``) and so part of the key. It is the upper bound, in angstrom, on the distance of a
-residue's representative atom (CB, CA for glycine) from the aligned template before the guidance
-term acts; a smaller value pins the pose harder.
+the lock modes ``score-lock`` and ``refold-lock``) and so part of the key. It is the upper bound,
+in angstrom, on the distance of a residue's representative atom (CB, CA for glycine) from the
+aligned template before the guidance term acts; a smaller value pins the pose harder.
 
 Residues. Standard residues and their protonation variants are plain letters; D-amino acids,
 N-methylated and other peptide-linking Chemical Component Dictionary residues keep their
@@ -272,6 +276,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence, Union
 
+from binding_metrics.capabilities import LOCK_MODES
 from binding_metrics.predictors._closures import find_closures, place_closures
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.store import PredictionRequest
@@ -283,7 +288,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: The modes this runner builds an input for (the vocabulary of ``store.MODES``).
-RUN_MODES: tuple[str, ...] = ("predict", "refold", "score", "score-lock")
+RUN_MODES: tuple[str, ...] = ("predict", "refold", "score", "score-lock", "refold-lock")
 
 _DEFAULT_SEED = 42
 _DEFAULT_NUM_SAMPLES = 5
@@ -296,8 +301,8 @@ _DEFAULT_WRITE_EMBEDDINGS = False
 #: The closure families written as ``bond`` constraints (``closure_bonds="auto"``).
 _CLOSURE_BOND_FAMILIES = ("head_to_tail", "disulfide", "lactam")
 
-#: Threshold of the forced template in mode ``score-lock``, in angstrom. Boltz-2 gives no default
-#: (it raises when ``force`` has none), so this is the choice of this package.
+#: Threshold of the forced template in the lock modes, in angstrom. Boltz-2 gives no default (it
+#: raises when ``force`` has none), so this is the choice of this package.
 DEFAULT_LOCK_THRESHOLD_ANGSTROM = 2.0
 
 _ON_UNMAPPABLE_CHOICES = ("error", "x")
@@ -944,6 +949,9 @@ def _plan(request: PredictionRequest) -> _Plan:
     elif request.mode == "score-lock":
         threshold = float(options["lock_threshold_angstrom"])
         templates = (_Template("lock", (receptor_id, binder_id), force=True, threshold=threshold),)
+    elif request.mode == "refold-lock":
+        threshold = float(options["lock_threshold_angstrom"])
+        templates = (_Template("receptor", (receptor_id,), force=True, threshold=threshold),)
     else:
         raise ValueError(f"the boltz2 runner has no input for mode {request.mode!r}")
 
@@ -1136,7 +1144,7 @@ class Boltz2Runner(PredictionRunner):
         mode, the chain roles, the content hash of the input file, the seed, the number of
         samples, the custom weights by content when given, and ``options``: ``use_msa_server`` (what
         the server returns is not recorded), ``binder_cyclic``, ``on_unmappable_residue``,
-        ``lock_threshold_angstrom`` (None outside ``score-lock``) and ``extra_args``. The conda
+        ``lock_threshold_angstrom`` (None outside the lock modes) and ``extra_args``. The conda
         environment is not part of it (the version is).
 
         Args:
@@ -1144,8 +1152,8 @@ class Boltz2Runner(PredictionRunner):
             name: Name of the input; Boltz-2 names its output folder and files after it. A plain
                 file name.
             binder_chain, receptor_chain: Chain roles, required and different.
-            mode: ``"predict"``, ``"refold"``, ``"score"`` or ``"score-lock"`` (see the module
-                docstring).
+            mode: ``"predict"``, ``"refold"``, ``"score"``, ``"score-lock"`` or ``"refold-lock"``
+                (see the module docstring).
             seeds: One seed for ``--seed``; None takes 42. More than one raises, because the
                 output has no seed dimension: make one request per seed.
             num_samples: Structures of the run (``--diffusion_samples``).
@@ -1153,8 +1161,9 @@ class Boltz2Runner(PredictionRunner):
             on_unmappable_residue: ``"error"`` (default) or ``"x"`` (see the module docstring).
             binder_cyclic: ``"auto"`` (default), True or False; whether the binder entity is
                 written with ``cyclic: true``.
-            lock_threshold_angstrom: ``score-lock`` only: the threshold of the forced template
-                in angstrom; None takes 2.0, the choice of this package.
+            lock_threshold_angstrom: The lock modes (``score-lock``, ``refold-lock``) only: the
+                threshold of the forced template in angstrom; None takes 2.0, the choice of this
+                package.
             weights: A custom (fine-tuned) checkpoint file, or the ``WeightsRef`` that
                 ``PredictionStore.weights_reference`` made for it; passed as ``--checkpoint``,
                 content in the key. A path is hashed here without a cache; give a
@@ -1174,7 +1183,7 @@ class Boltz2Runner(PredictionRunner):
         Raises:
             ValueError: An unknown mode, a missing or equal chain role, a name that is not a plain
                 file name, more or fewer than one seed, a choice outside its values, a threshold
-                outside ``score-lock`` or not positive, ``extra_args`` that repeat a flag of
+                outside the lock modes or not positive, ``extra_args`` that repeat a flag of
                 the runner, a ``closure_bonds`` string other than ``"none"`` and ``"auto"`` or a
                 bond of the wrong shape; with ``"auto"`` also what ``prepare`` raises about the
                 binder chain and its closures (an unreadable structure, a missing chain, a
@@ -1197,7 +1206,7 @@ class Boltz2Runner(PredictionRunner):
             )
         if not (isinstance(binder_cyclic, bool) or binder_cyclic == "auto"):
             raise ValueError(f"binder_cyclic must be True, False or 'auto', got {binder_cyclic!r}")
-        if mode == "score-lock":
+        if mode in LOCK_MODES:
             threshold: Optional[float] = _check_threshold(
                 DEFAULT_LOCK_THRESHOLD_ANGSTROM
                 if lock_threshold_angstrom is None
@@ -1205,7 +1214,8 @@ class Boltz2Runner(PredictionRunner):
             )
         elif lock_threshold_angstrom is not None:
             raise ValueError(
-                f"lock_threshold_angstrom only applies to mode 'score-lock', not '{mode}'"
+                "lock_threshold_angstrom only applies to the lock modes "
+                f"{' and '.join(repr(lock) for lock in LOCK_MODES)}, not to mode '{mode}'"
             )
         else:
             threshold = None
@@ -1339,7 +1349,7 @@ class Boltz2Runner(PredictionRunner):
         _check_extra_args(options.get("extra_args", ()))
         _closure_bond_option(options.get("closure_bonds", _DEFAULT_CLOSURE_BONDS))
         _check_write_embeddings(options.get("write_embeddings", _DEFAULT_WRITE_EMBEDDINGS))
-        if request.mode == "score-lock":
+        if request.mode in LOCK_MODES:
             _check_threshold(options.get("lock_threshold_angstrom"))
         self.check_weights(request)
         if request.weights is not None and not request.weights.path.is_file():

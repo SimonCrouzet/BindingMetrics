@@ -1,9 +1,9 @@
 """The fifth mode, ``refold-lock``: refold with the receptor pinned by a forced template.
 
 Only the vocabulary is under test here: the word is in the store, in the capabilities and on the
-command line, OpenFold3 refuses it with a sentence of its own, and a model whose declaration does
-not list it is refused before anything runs. The keys of the four older modes are pinned to the
-values they had before the word existed.
+command line, OpenFold3 refuses it with a sentence of its own, Boltz-2 declares it, and a model
+that does not run it is refused before anything runs. The keys of the four older modes are pinned
+to the values they had before the word existed.
 """
 
 from __future__ import annotations
@@ -158,20 +158,19 @@ class TestOpenFold3:
             )
 
 
-class TestNoModelRunsIt:
-    """Each of the four models is refused, by its declaration or by its runner."""
+class TestOnlyBoltz2RunsIt:
+    """Three of the four models are refused, by their declaration or by their runner."""
 
     #: who refuses the mode in a run from here: the pre-flight check (the declaration does not
     #: list it) or the argument check (the runner does not run it and the model declares nothing)
     REFUSED_BY = {
         "of3": "preflight",
-        "boltz2": "preflight",
         "af2": "arguments",
         "protenix": "arguments",
     }
 
-    def test_every_model_is_covered(self):
-        assert sorted(self.REFUSED_BY) == sorted(PARSERS)
+    def test_every_model_but_boltz2_is_covered(self):
+        assert sorted(self.REFUSED_BY) == sorted(set(PARSERS) - {"boltz2"})
 
     @pytest.mark.parametrize("model", sorted(REFUSED_BY))
     def test_the_arguments_are_refused_or_left_to_the_preflight_check(self, model):
@@ -181,21 +180,37 @@ class TestNoModelRunsIt:
         else:
             assert prediction.check_predictor(model, None, "refold-lock").mode == "refold-lock"
 
-    @pytest.mark.parametrize("model", ["of3", "boltz2"])
-    def test_the_preflight_check_refuses_it_and_no_model_declares_it(self, model):
+    def test_the_arguments_of_boltz2_are_accepted(self):
+        assert prediction.check_predictor("boltz2", None, "refold-lock").mode == "refold-lock"
+
+    def test_the_preflight_check_refuses_it_and_names_boltz2_as_the_model_that_declares_it(self):
         with pytest.raises(IncompatibleInputError) as caught:
-            preflight(PROFILE, [], model, mode="refold-lock")
+            preflight(PROFILE, [], "of3", mode="refold-lock")
         (violation,) = caught.value.violations
         assert violation.fact == "mode 'refold-lock' was requested"
         assert violation.reason  # a refusal always says why
-        assert "no other registered predictor declares support for this input" in violation.fix
-        assert "in the mode 'refold-lock'" in violation.fix
+        assert violation.fix.startswith(
+            "predictors that declare the mode 'refold-lock' whose declared limits accept this "
+            "input: Boltz-2 (boltz2);"
+        )
 
-    def test_boltz2_is_still_accepted_in_its_four_modes(self):
-        for mode in ("predict", "refold", "score", "score-lock"):
+    def test_boltz2_is_accepted_in_all_five_modes(self):
+        for mode in MODES:
             assert preflight(PROFILE, [], "boltz2", mode=mode).compatible
 
-    @pytest.mark.parametrize("model", ["of3", "boltz2"])
+    def test_boltz2_is_accepted_in_this_mode_with_the_caveat_of_a_guidance_term(self):
+        report = preflight(PROFILE, [], "boltz2", mode="refold-lock")
+        (warning,) = report.warnings
+        assert warning.startswith("predictor Boltz-2 2.2.1: ")
+        assert "force: true" in warning and "guidance term" in warning
+        assert "weight 0.1" in warning and "measured once" in warning
+
+    def test_the_runner_of_boltz2_builds_an_input_for_it(self):
+        from binding_metrics.predictors.boltz2_runner import RUN_MODES
+
+        assert set(RUN_MODES) == set(MODES)
+
+    @pytest.mark.parametrize("model", ["of3"])
     def test_a_run_is_refused_before_anything_starts(self, model, tmp_path, monkeypatch):
         from binding_metrics.cli.run import run_pipeline
 
@@ -216,7 +231,7 @@ class TestNoModelRunsIt:
             )
         assert tripwires.calls == [] and not out.exists()
 
-    @pytest.mark.parametrize("model", sorted(REFUSED_BY))
+    @pytest.mark.parametrize("model", ["boltz2", *sorted(REFUSED_BY)])
     def test_an_output_made_elsewhere_can_be_read_in_the_mode(self, model, tmp_path):
         prediction.check_predictor(model, tmp_path, "refold-lock")  # no error
         request = prediction.make_request(
