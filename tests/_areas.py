@@ -300,14 +300,15 @@ class Project:
         return found
 
     def package_imports(
-        self, tree: ast.AST, current_module: str | None = None, *, strings: bool = True
+        self, tree: ast.AST, current_module: str | None = None, *, strings: str = "all"
     ) -> tuple[set[str], list[ast.ImportFrom]]:
         """Package modules a tree imports, and its imports that are not of the package.
 
         ``current_module`` (dotted, for a file of the package) resolves relative imports; in a
         test file a relative import is a helper, so the caller leaves it None and gets the
-        ``ImportFrom`` node back in the second item. ``strings`` also counts a string that is a
-        dotted module path or a console-script name.
+        ``ImportFrom`` node back in the second item. ``strings`` says which strings also count
+        when they are a dotted module path or a console-script name: ``"all"`` of them, only those
+        that are the argument of an ``import_module`` call (``"calls"``), or ``"none"``.
         """
         modules: set[str] = set()
         others: list[ast.ImportFrom] = []
@@ -329,8 +330,13 @@ class Project:
                     others.append(node)
                     continue
                 modules |= self.resolve_from_import(base, [a.name for a in node.names])
-            elif strings and isinstance(node, ast.Constant) and isinstance(node.value, str):
+            elif strings == "all" and isinstance(node, ast.Constant):
                 modules |= self._modules_named_by(node.value)
+            elif strings == "calls" and isinstance(node, ast.Call):
+                if _called_name(node) == "import_module" and node.args:
+                    argument = node.args[0]
+                    if isinstance(argument, ast.Constant):
+                        modules |= self._modules_named_by(argument.value)
         return modules, others
 
     def _relative_base(self, current_module: str, level: int, module: str | None) -> str:
@@ -351,8 +357,10 @@ class Project:
         self.module_names()
         return module in self._packages
 
-    def _modules_named_by(self, text: str) -> set[str]:
+    def _modules_named_by(self, text: object) -> set[str]:
         """Modules a string constant refers to: a dotted path or a console-script name."""
+        if not isinstance(text, str):
+            return set()
         if _DOTTED.fullmatch(text):
             return {self._deepest_module(text[len(PACKAGE) + 1 :].split(":")[0])}
         named = _CONSOLE_SCRIPT.fullmatch(text)
@@ -380,17 +388,16 @@ class Project:
         """Module -> modules it depends on when it runs, from its imports (lazy ones included).
 
         Importing ``a.b.c`` also imports ``a.b``, ``a`` and the root, so a module depends on the
-        parent packages of everything it imports. ``if TYPE_CHECKING:`` imports are left out, and
-        so are the strings of a package ``__init__``, whose ``_EXPORTS`` table only names modules
-        that load on first access. The strings elsewhere (``import_path="pkg.mod:func"`` of the
-        metric registry, ``import_module("pkg.mod")``) are real dependencies.
+        parent packages of everything it imports. ``if TYPE_CHECKING:`` imports are left out. A
+        string counts only as the argument of ``import_module``: the ``import_path="pkg.mod:func"``
+        strings of the metric registry and the ``_EXPORTS`` tables name modules that load on first
+        use, and following them would make every metric a dependency of the whole CLI.
         """
         if self._graph is None:
             graph = {}
             for module in self.module_names():
                 tree = _parse(self._path_of_module(module))
-                strings = not self._is_package(module)
-                imported = self.package_imports(tree, module, strings=strings)[0] if tree else set()
+                imported = self.package_imports(tree, module, strings="calls")[0] if tree else set()
                 depends = set(imported)
                 for name in imported:
                     parts = name.split(".") if name else []

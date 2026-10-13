@@ -160,6 +160,10 @@ PACKAGE_FILES = {
     "src/binding_metrics/metrics/registry.py": """
         SPEC = "binding_metrics.metrics.geometry:compute_ramachandran"
         """,
+    "src/binding_metrics/metrics/loader.py": """
+        import importlib
+        importlib.import_module("binding_metrics.metrics.geometry")
+        """,
     "src/binding_metrics/poses/__init__.py": "",
     "src/binding_metrics/poses/frame.py": "def frame(): ...\n",
     "src/binding_metrics/poses/report.py": "from . import frame\n",
@@ -273,9 +277,10 @@ def test_dependents_of_a_module_are_those_that_import_it(project):
     closure = project.dependents_closure({"core.system"})
     assert "cli.run" in closure
     assert closure == {"core.system", "cli.run"}
-    # the registry names the metric functions by string, so a metric change reaches it and the CLI
+    # a call to import_module is a dependency, a path kept as data (the registry) is not
     closure = project.dependents_closure({"metrics.geometry"})
-    assert {"metrics.registry", "cli.run"} <= closure
+    assert "metrics.loader" in closure
+    assert not closure & {"metrics.registry", "cli.run"}
     # a relative import is a dependency, and a type-checking import in the root is not
     assert "poses.report" in project.dependents_closure({"poses.frame"})
     assert "" not in project.dependents_closure({"core.system"})
