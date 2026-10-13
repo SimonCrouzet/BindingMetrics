@@ -160,6 +160,28 @@ class TestCheckReceptorMsaArg:
         with pytest.raises(ValueError, match="cannot be given the alignment"):
             check_receptor_msa_arg(alignment, ColabFoldRunner(), "af2")
 
+    def test_openfold3_refuses_a_file_or_the_word_with_the_server_on(self, alignment):
+        for value in (alignment, "single"):
+            with pytest.raises(ValueError) as caught:
+                check_receptor_msa_arg(value, runner_class("of3"), "of3", use_msa_server=True)
+            message = str(caught.value)
+            assert message.startswith(f"--prediction-receptor-msa {value} needs ")
+            assert "--prediction-no-msa-server for OpenFold3" in message
+            assert "would not be used" in message
+            check_receptor_msa_arg(value, runner_class("of3"), "of3", use_msa_server=False)
+
+    @pytest.mark.parametrize("model", ["af2", "protenix", "boltz2"])
+    def test_the_other_runners_accept_the_value_with_the_server_on(self, model, alignment):
+        """ColabFold and Protenix record the server off, Boltz-2 keeps the flag moot."""
+        value = "single" if model == "af2" else alignment
+        check_receptor_msa_arg(value, runner_class(model), model, use_msa_server=True)
+
+    def test_a_stand_in_without_the_attribute_states_no_conflict(self, alignment):
+        check_receptor_msa_arg(alignment, SimpleNamespace(), "stub", use_msa_server=True)
+
+    def test_the_flag_is_not_checked_when_the_caller_does_not_say(self, alignment):
+        check_receptor_msa_arg(alignment, runner_class("of3"), "of3")
+
     def test_the_policy_and_the_server_are_not_this_check(self, alignment):
         """``forbid-server`` with the server on is the pre-flight's refusal, not a usage error."""
         options = resolve_prediction_options(
@@ -169,6 +191,55 @@ class TestCheckReceptorMsaArg:
             prediction_msa_policy="forbid-server",
         )
         assert options.use_msa_server is True
+
+
+class TestOpenFold3WithTheServerOn:
+    """Issue 155: the pair is refused by the request, and now by the argument check too."""
+
+    def test_the_declarations(self):
+        assert PredictionRunner.msa_conflicts_with_server is False
+        assert runner_class("of3").msa_conflicts_with_server is True
+        for model in ("af2", "protenix", "boltz2"):
+            assert runner_class(model).msa_conflicts_with_server is False
+
+    def test_the_request_and_the_argument_check_agree(self, alignment):
+        from binding_metrics.predictors.of3_runner import OpenFold3Runner
+
+        with pytest.raises(ValueError, match="receptor_msa needs use_msa_server=False"):
+            OpenFold3Runner().make_request(
+                LINEAR, name="p", binder_chain="B", receptor_chain="A", mode="score",
+                receptor_msa=alignment,
+            )  # fmt: skip
+        with pytest.raises(ValueError, match="needs --prediction-no-msa-server"):
+            resolve_prediction_options("of3", None, prediction_receptor_msa=alignment)
+
+    def test_the_server_off_through_either_spelling_passes(self, alignment):
+        for keywords in (
+            dict(prediction_use_msa_server=False),
+            dict(openfold_use_msa_server=False),
+        ):
+            options = resolve_prediction_options(
+                "of3", None, prediction_receptor_msa=alignment, **keywords
+            )
+            assert options.use_msa_server is False
+
+    def test_both_commands_exit_2_with_and_without_the_plan_flag(
+        self, tmp_path, folder, alignment, monkeypatch, capsys
+    ):
+        words = ["--predictor", "of3", "--prediction-receptor-msa", str(alignment)]
+        errors = []
+        for plan_only in (True, False):
+            run_argv, batch_argv = both_commands(tmp_path, folder, words)
+            if not plan_only:
+                run_argv.remove("--preflight-only")
+                batch_argv.remove("--preflight-only")
+            for main, argv in ((run.main, run_argv), (batch.main, batch_argv)):
+                status, error = exit_of(main, argv, monkeypatch, capsys)
+                assert status == 2
+                errors.append(error)
+        assert len(set(errors)) == 1
+        assert "--prediction-no-msa-server for OpenFold3" in errors[0]
+        assert not (tmp_path / "out").exists() and not (tmp_path / "res").exists()
 
 
 class TestResolvePredictionOptions:

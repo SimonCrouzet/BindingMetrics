@@ -75,6 +75,36 @@ CASES = [
         " --prediction-receptor-msa single",
         0,
     ),
+    (
+        "a single-sequence receptor with the server on, OpenFold3 replaces it",
+        "--predictor of3 --prediction-receptor-msa single",
+        2,
+    ),
+    (
+        "a single-sequence receptor, server off through the other spelling, OpenFold3",
+        "--predictor of3 --openfold-no-msa-server --prediction-receptor-msa single",
+        0,
+    ),
+    (
+        "a single-sequence receptor, server off, OpenFold3",
+        "--predictor of3 --prediction-no-msa-server --prediction-receptor-msa single",
+        0,
+    ),
+    (
+        "a single-sequence receptor with the server on, Protenix records it off",
+        "--predictor protenix --prediction-receptor-msa single",
+        0,
+    ),
+    (
+        "a single-sequence receptor with the server on, ColabFold records it off",
+        "--predictor af2 --prediction-receptor-msa single",
+        0,
+    ),
+    (
+        "a single-sequence receptor with the server on, Boltz-2 keeps the flag moot",
+        "--predictor boltz2 --prediction-receptor-msa single",
+        0,
+    ),
     ("an option without a predictor", "--prediction-cyclic on", 2),
 ]
 
@@ -248,6 +278,16 @@ KEYWORDS = [
         "a mode the runner does not run",
         dict(predictor="af2", prediction_mode="score"),
         "cannot be run from here",
+    ),
+    (
+        "a single-sequence receptor with the server on, OpenFold3",
+        dict(predictor="of3", prediction_receptor_msa="single"),
+        "needs --prediction-no-msa-server for OpenFold3",
+    ),
+    (
+        "a single-sequence receptor with the server off, OpenFold3",
+        dict(predictor="of3", prediction_use_msa_server=False, prediction_receptor_msa="single"),
+        None,
     ),
 ]
 

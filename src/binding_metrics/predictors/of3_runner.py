@@ -194,6 +194,9 @@ class OpenFold3Runner(PredictionRunner):
     #: OpenFold3 loads a checkpoint file given with ``--inference-ckpt-path``.
     supports_custom_weights = True
     weights_kind = "file"
+    #: With the MSA server on OpenFold3 replaces the MSA files of the query, so ``make_request``
+    #: refuses a ``receptor_msa`` with ``use_msa_server=True`` (``_SERVER_REPLACES_MSA``).
+    msa_conflicts_with_server = True
     #: For a complex structure: ``score`` and ``refold``. Mode ``predict`` takes a query file that
     #: the caller wrote, and ``score-lock`` and ``refold-lock`` cannot be run (see
     #: ``make_request``). ``score`` is the default of the OpenFold3 step (``--openfold-mode``):

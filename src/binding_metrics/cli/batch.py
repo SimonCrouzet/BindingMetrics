@@ -1465,6 +1465,13 @@ def _preflight_only_rows(
     ``"ok"``.
     """
     rows = []
+    # The server setting of the run, merged from its two spellings by the caller: the argument
+    # check of each sample reads it (a receptor MSA with the server on is refused for OpenFold3),
+    # in the spelling that the model takes (the --openfold-* one is refused for another model).
+    server = True if preflight_msa is None else bool(preflight_msa[1])
+    server_settings = {"prediction_use_msa_server": server}
+    if predictor == "of3":
+        server_settings["openfold_use_msa_server"] = server
     for input_path in input_paths:
         sid = input_path.stem
         row: dict = {"sample_id": sid, "input": str(input_path)}
@@ -1492,6 +1499,7 @@ def _preflight_only_rows(
                 prediction_msa_policy=prediction_msa_policy,
                 prediction_receptor_msa=prediction_receptor_msa,
                 preflight_msa=preflight_msa,
+                **server_settings,
             )
             block = results["preflight"]
             row["preflight_status"] = block["status"]

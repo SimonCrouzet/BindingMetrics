@@ -784,12 +784,18 @@ def resolve_prediction_options(
     if prediction_receptor_msa is not None:
         if not takes_setting(runner, "receptor_msa"):
             raise ValueError(unsupported_setting_message(predictor, "receptor_msa"))
-        check_receptor_msa_arg(prediction_receptor_msa, runner, predictor)
+        check_receptor_msa_arg(
+            prediction_receptor_msa, runner, predictor, use_msa_server=use_msa_server
+        )
     return PredictionOptions(mode, cyclic, use_msa_server, conda_env, prediction_lock_threshold)
 
 
 def check_receptor_msa_arg(
-    value: str | Path, runner: Any = None, model: Optional[str] = None
+    value: str | Path,
+    runner: Any = None,
+    model: Optional[str] = None,
+    *,
+    use_msa_server: bool = False,
 ) -> None:
     """Check ``--prediction-receptor-msa`` before anything runs.
 
@@ -800,10 +806,15 @@ def check_receptor_msa_arg(
     also be one the runner takes: its ``supports_given_msa`` and ``supports_single`` are given to
     ``predictors._msa.check_msa_request``, the check that ``make_request`` makes, so that a runner
     which would refuse the value when it builds the request refuses it here, before anything is
-    prepared or relaxed. A runner without those attributes (a stand-in) states no limit.
+    prepared or relaxed. A runner without those attributes (a stand-in) states no limit. A runner
+    whose ``msa_conflicts_with_server`` is True (OpenFold3: with its server on it replaces the
+    alignment) also refuses the value with ``use_msa_server`` True, naming
+    ``--prediction-no-msa-server``; ``use_msa_server`` is the merged setting of the run and False
+    when the caller does not say.
 
     Raises:
-        ValueError: The path is not a file, or the runner cannot take what was asked.
+        ValueError: The path is not a file, the runner cannot take what was asked, or it ignores
+            the alignment while the server is on.
     """
     is_word = isinstance(value, str) and value == "single"
     if not is_word and not Path(value).expanduser().is_file():
@@ -828,6 +839,13 @@ def check_receptor_msa_arg(
     except ValueError as exc:
         hint = " (on the command line: --prediction-receptor-msa single)" if takes_single else ""
         raise ValueError(f"--prediction-receptor-msa {value}: {exc}{hint}") from None
+    if use_msa_server and getattr(runner, "msa_conflicts_with_server", False):
+        name = display_name(model) if model else "the runner"
+        raise ValueError(
+            f"--prediction-receptor-msa {value} needs --prediction-no-msa-server for {name}: "
+            "with the MSA server on its model replaces the alignment by the one the server "
+            "returns, so the alignment would not be used and the sequences would leave the machine"
+        )
 
 
 def check_predictor(

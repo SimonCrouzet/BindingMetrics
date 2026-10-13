@@ -17,6 +17,7 @@ Public names and signatures (this module imports the standard library only)::
         seed_dimension: ClassVar[bool] = False  # one request can carry several seeds
         supports_given_msa: ClassVar[bool] = True   # receptor_msa=PATH is accepted
         supports_single: ClassVar[bool] = True      # receptor_msa="single" is accepted
+        msa_conflicts_with_server: ClassVar[bool] = False  # a receptor_msa needs the server off
         @abstractmethod
         def prepare(self, request: PredictionRequest, work_dir: Path) -> Path
         @abstractmethod
@@ -114,6 +115,10 @@ Contract, checked for the stub runners of ``tests/predictors/test_runners.py``:
   are True by default. They are the two flags the runner gives ``_msa.check_msa_request``, and
   the command line reads them to refuse a ``--prediction-receptor-msa`` the runner cannot take
   before anything runs (``ColabFoldRunner`` accepts ``"single"`` only).
+  ``msa_conflicts_with_server`` (False by default) is True for a runner whose model ignores the
+  alignment while its MSA server is on and so refuses ``receptor_msa`` with
+  ``use_msa_server=True`` (``OpenFold3Runner``); the command line refuses that pair too, naming
+  ``--prediction-no-msa-server``.
 * ``capabilities`` stays None on a runner. The limits of a model (the input classes it cannot
   handle) live on ``PredictionParser.capabilities``, which is what ``preflight`` reads, so
   ``OpenFold3Runner.capabilities`` is None while ``OpenFold3Parser.capabilities`` carries the
@@ -163,6 +168,8 @@ class PredictionRunner(ABC):
     supports_given_msa: ClassVar[bool] = True
     #: True when ``make_request(receptor_msa="single")`` can run a receptor without an alignment.
     supports_single: ClassVar[bool] = True
+    #: True when ``make_request`` refuses a ``receptor_msa`` together with ``use_msa_server=True``.
+    msa_conflicts_with_server: ClassVar[bool] = False
 
     @abstractmethod
     def prepare(self, request: PredictionRequest, work_dir: Path) -> Path:
