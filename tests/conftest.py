@@ -52,6 +52,27 @@ def requires_cuda(item):
 BEST_PLATFORM = "CUDA" if HAS_CUDA else "CPU"
 
 
+# ---------------------------------------------------------------------------
+# Area tags
+# ---------------------------------------------------------------------------
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    """Tag every test with the areas of the code its file exercises.
+
+    ``pytest -m poses`` or ``-m "poses or preflight"`` then runs a part of the suite. The areas
+    come from the imports of the test file (tests/_areas.py), so nothing is written by hand and a
+    new test file is tagged when it is collected. ``tryfirst`` puts the tags on before pytest
+    applies ``-m``. Each area is registered in pyproject.toml, which ``--strict-markers`` needs.
+    """
+    from _areas import areas_of_test_file
+
+    for item in items:
+        for area in sorted(areas_of_test_file(Path(str(item.path)))):
+            item.add_marker(area)
+
+
 @pytest.fixture(autouse=True)
 def _restore_package_logging():
     """Undo what a CLI ``main()`` run inside a test leaves on the package loggers.

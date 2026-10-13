@@ -145,4 +145,20 @@ markers = [
     "gpu: requires a CUDA device — skipped on CPU-only machines and in CI",
     "slow: takes minutes; excluded from the default developer loop",
     "openfold: runs the parsers of an installed OpenFold3 (conda env openfold3, CPU only); skipped when absent",
+    # Areas of the code a test exercises, added by tests/conftest.py from the imports of the test
+    # file (tests/_areas.py); `pytest -m poses` runs one of them. Keep this list equal to
+    # AREA_DESCRIPTIONS there: tests/test_area_tags.py compares them.
+    "cli: the binding-metrics-run, -batch and -check-env entry points and their flags",
+    "core: system preparation, force fields, simulation, GAFF, cyclic and non-standard residues",
+    "io: reading and writing structures (load_structure, save_cif, chain detection)",
+    "metrics: the static and MD metrics, their registry and the prediction confidence metrics",
+    "of3: the OpenFold3 route: metrics/openfold.py with its helpers, the of3 adapter and runner",
+    "package: the package root, constants, logging setup and provenance",
+    "poses: the pose layer (kinds, reference, scoring, pose-set reports) and the testing package",
+    "predictors: model adapters, runners, the prediction store and session (OpenFold3 aside)",
+    "preflight: what a model or metric accepts and the check of an input before a run",
+    "protocols: relaxation, preparation, solvation, structural QC and the report",
+    "docs: reads docs/, README.md or CHANGELOG.md to check the text against the code",
+    "golden: compares with stored reference output (tests/golden, OpenFold3 golden files)",
+    "misc: imports nothing from the package",
 ]
