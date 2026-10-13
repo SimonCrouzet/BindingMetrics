@@ -262,7 +262,7 @@ class FileScan:
     names: frozenset[str]  # argument names and strings: candidates for fixture names
     reads_docs: bool
     usage: Mapping[str, int]  # module -> how many times the file refers to it
-    through: frozenset[str]  # packages whose lazy attribute lookup the file goes through
+    through: frozenset[str]  # modules it reaches without importing them by name (see closure)
 
 
 def _is_type_checking(test: ast.expr) -> bool:
@@ -300,7 +300,12 @@ def _called_name(call: ast.Call) -> str:
 
 
 class Closure(NamedTuple):
-    """What a test file uses: package modules, the files that use them, and lazy lookups."""
+    """What a test file uses: package modules, the files that use them, and what it reaches.
+
+    ``through`` holds the packages whose lazy attribute lookup the file goes through, the modules
+    of code that the file runs from a string and those of the console scripts it reads. A change
+    to them can break the file, but the file is not about them: the tags ignore them.
+    """
 
     modules: frozenset[str]
     files: frozenset[Path]
@@ -759,7 +764,7 @@ class Project:
                         reads_docs |= bool(_MARKDOWN_PATH.fullmatch(node.value))
                         if node.value == "pyproject.toml":
                             # a test that reads the console scripts runs through all of them
-                            modules = modules | set(self.console_scripts().values())
+                            through |= set(self.console_scripts().values())
                         elif node.value.endswith(".py") and node.value in self._script_names():
                             # a test that runs a script of scripts/ uses what the script imports
                             helpers.add(self.root / "scripts" / node.value)
@@ -769,9 +774,8 @@ class Project:
                             # a test that runs code given as a string (python -c) uses its imports
                             snippet = self._parse_snippet(node.value)
                             if snippet:
-                                modules = (
-                                    modules | self.package_imports(snippet, through=through)[0]
-                                )
+                                snippet_modules = self.package_imports(snippet, through=through)[0]
+                                through |= snippet_modules
                     else:
                         reads_docs |= _names_docs_folder(node)
             self._scans[path] = FileScan(

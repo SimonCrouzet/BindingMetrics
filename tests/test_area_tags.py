@@ -297,6 +297,8 @@ def with_coarse(*areas):
         # a module without a row in the table is still tagged, as misc
         ("import binding_metrics.newthing\n", {"misc"}),
         ("import json\n\ndef test_x():\n    assert json\n", {"misc"}),
+        # code that a test runs from a string is not what the test is about
+        ('CODE = """\nimport binding_metrics.core.system\nprint(1)\n"""\n', {"misc"}),
         ("def test_x(:\n", {"misc"}),
         # docs and golden are not modules
         ('from pathlib import Path\nTEXT = Path("docs") / "metrics.md"\n', {"docs"}),
