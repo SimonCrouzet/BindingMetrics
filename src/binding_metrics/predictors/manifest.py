@@ -41,6 +41,8 @@ Columns (every row has all of them; ``None`` where a value does not apply)::
     content_hash    SHA-256 of the structure file's bytes (``PredictedPose.content_hash``)
     avg_plddt, ptm, iptm, gpde, has_clash, disorder
                     the scalars of ``PredictedPose.native_scores()``
+    embeddings_path the Boltz-2 embeddings file of a request that asked for one
+                    (``provenance["embeddings_path"]``), else None; the arrays are not read
 
 and, after those, the keys of ``native_scores()`` that depend on the chains of the sample
 (``chain_ptm.<chain>``, ``chain_pair_iptm.<pair>``), which a sample has only when the model
@@ -78,7 +80,8 @@ logger = logging.getLogger(__name__)
 STATUS_MISSING = "missing"
 
 #: The columns every row has, in this order. The scalars after ``content_hash`` are the ones of
-#: ``PredictedPose.native_scores()`` that the ``ranking_score`` column does not already hold.
+#: ``PredictedPose.native_scores()`` that the ``ranking_score`` column does not already hold;
+#: ``embeddings_path`` comes last so that the columns before it keep their place.
 COLUMNS: tuple[str, ...] = (
     "backend",
     "model_version",
@@ -99,6 +102,7 @@ COLUMNS: tuple[str, ...] = (
     "gpde",
     "has_clash",
     "disorder",
+    "embeddings_path",
 )
 
 #: The models that rank the samples of a seed (see the module docstring for OpenFold3).
@@ -210,6 +214,7 @@ def _sample_row(
         rank=rank,
         structure_path=None if pose.structure_path is None else str(pose.structure_path),
         content_hash=_content_hash(pose),
+        embeddings_path=facts.get("embeddings_path"),
     )
     for name, value in scores.items():
         if name != "ranking_score":

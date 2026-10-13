@@ -61,6 +61,8 @@ How the prediction was requested. ``record`` adds the facts of the request to
     seed_index, sample   the 1-based positions of the sample
     msa_policy, msa_receptor, msa_binder
                          only when the request names an MSA policy or a receptor MSA
+    embeddings_path      only when the request asked for embeddings (Boltz-2 write_embeddings)
+                         and the file exists: the path of embeddings_<name>.npz in the store
     request_key          ``request.key()``
     model_version        ``request.model_version``, else the version the runner reported
     request_name         ``request.name``
@@ -224,6 +226,26 @@ def _msa_facts(request: PredictionRequest) -> dict[str, Any]:
         "msa_receptor": file_hash[:12] if file_hash is not None else ("single" if single else None),
         "msa_binder": "single",
     }
+
+
+def _embedding_facts(request: PredictionRequest, record: PredictedPose) -> dict[str, Any]:
+    """The embeddings file of a request that asked for one, as a provenance key.
+
+    ``options["write_embeddings"]`` is present only when it is True. The adapter puts the path in
+    ``record.extras["embeddings_path"]`` when the file exists, so the path follows the store's
+    rename; the arrays are never loaded here. A request that asked for embeddings and finds no
+    file gets a reason on the record and no key.
+    """
+    if not request.options.get("write_embeddings"):
+        return {}
+    path = record.extras.get("embeddings_path")
+    if path is None:
+        record.reasons.append(
+            "the request asked for embeddings (write_embeddings) but no embeddings file was "
+            "found beside the structures of the run"
+        )
+        return {}
+    return {"embeddings_path": str(path)}
 
 
 def _request_facts(
@@ -495,6 +517,7 @@ class PredictionSession:
                 if seed_problem:
                     record.reasons.append(seed_problem)
                 record.provenance.update(_request_facts(request, entry, record, seed))
+                record.provenance.update(_embedding_facts(request, record))
                 with self._guard:
                     self._records[memo_key] = record
                     self._counts["parsed"] += 1

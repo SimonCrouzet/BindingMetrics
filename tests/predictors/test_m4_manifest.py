@@ -29,7 +29,12 @@ from binding_metrics.predictors.store import (
 )
 from tests.predictors import synth_af2, synth_boltz2, synth_of3, synth_protenix, synth_stub
 from tests.predictors.synth_stub import StubParser
-from tests.predictors.test_m4_provenance import SynthRunner, make_request, truth_for
+from tests.predictors.test_m4_provenance import (
+    EmbeddingRunner,
+    SynthRunner,
+    make_request,
+    truth_for,
+)
 
 
 class FailingRunner(PredictionRunner):
@@ -308,6 +313,68 @@ class TestTheRows:
             assert row["seed"] == pose.provenance["seed"]
             assert row["model_version"] == pose.provenance["model_version"]
             assert row["request_key"] == pose.provenance["request_key"]
+
+
+class TestTheEmbeddingsColumn:
+    def test_the_column_is_last_of_the_fixed_ones_and_the_others_keep_their_place(self):
+        assert COLUMNS[-1] == "embeddings_path"
+        assert COLUMNS[:19] == (
+            "backend",
+            "model_version",
+            "request_key",
+            "request_name",
+            "status",
+            "reason",
+            "seed",
+            "seed_index",
+            "sample",
+            "ranking_score",
+            "rank",
+            "structure_path",
+            "content_hash",
+            "avg_plddt",
+            "ptm",
+            "iptm",
+            "gpde",
+            "has_clash",
+            "disorder",
+        )
+
+    def test_a_request_that_asked_for_embeddings_names_the_file_in_its_rows(self, store):
+        session = PredictionSession(store, [EmbeddingRunner()])
+        asked = make_request(
+            "boltz2",
+            name="a",
+            mode="score",
+            seeds=(42,),
+            num_samples=2,
+            options={"write_embeddings": True},
+        )
+        plain = make_request("boltz2", name="b", mode="score", seeds=(43,), num_samples=1)
+        for request in (asked, plain):
+            session.entry(request)
+        rows = manifest(session, [asked, plain])
+        with_file = only(rows, request_name="a")
+        assert len(with_file) == 2
+        for row in with_file:
+            assert Path(row["embeddings_path"]).name == "embeddings_a.npz"
+            assert Path(row["embeddings_path"]).is_file()
+        assert only(rows, request_name="b")[0]["embeddings_path"] is None
+        assert json.loads(json.dumps(rows)) == rows
+
+    def test_a_request_that_asked_and_found_no_file_has_none(self, store):
+        session = PredictionSession(store, [EmbeddingRunner(with_file=False)])
+        request = make_request(
+            "boltz2", mode="score", seeds=(42,), num_samples=1, options={"write_embeddings": True}
+        )
+        session.entry(request)
+        (row,) = manifest(session, request)
+        assert row["embeddings_path"] is None
+
+    def test_failed_and_missing_rows_have_the_column_too(self, mixed):
+        rows = manifest(mixed.session, mixed.requests)
+        assert all("embeddings_path" in row for row in rows)
+        assert all(row["embeddings_path"] is None for row in rows)
 
 
 class TestAnUnknownSeed:

@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from binding_metrics import predictors
@@ -366,6 +367,100 @@ class TestTheAdaptersThatReportTheSeed:
         record = get_parser("af2").load(tmp_path, "design")
         assert record.extras["layout"] == "alphafold"
         assert "seed_value" not in record.extras
+
+
+class EmbeddingRunner(SynthRunner):
+    """A Boltz-2 runner that writes ``embeddings_<name>.npz`` beside the structures, or not."""
+
+    def __init__(self, *, with_file=True, **kwargs):
+        super().__init__("boltz2", synth_boltz2, **kwargs)
+        self.with_file = with_file
+
+    def run(self, request, work_dir):
+        super().run(request, work_dir)
+        if self.with_file:
+            folder = synth_boltz2.prediction_directory(work_dir, request.name)
+            np.savez_compressed(
+                folder / f"embeddings_{request.name}.npz",
+                s=np.zeros((1, 7, 8), dtype=np.float32),
+                z=np.zeros((1, 7, 7, 4), dtype=np.float32),
+            )
+        return Path(work_dir)
+
+
+def embedding_request(**options):
+    return make_request("boltz2", mode="score", seeds=(42,), options=options)
+
+
+def embedding_reasons(pose):
+    return [reason for reason in pose.reasons if "embeddings" in reason]
+
+
+class TestTheEmbeddingsFile:
+    def test_a_request_that_asked_and_got_the_file_names_it(self, store):
+        session = make_session(store, EmbeddingRunner())
+        request = embedding_request(write_embeddings=True)
+        pose = session.record(request)
+        path = Path(pose.provenance["embeddings_path"])
+        assert path.name == "embeddings_design.npz" and path.is_file()
+        assert path.is_relative_to(session.lookup(request).prediction_dir)  # the store's copy
+        assert embedding_reasons(pose) == []
+        pose.validate()
+        assert json.loads(json.dumps(pose.provenance)) == pose.provenance
+
+    def test_every_sample_of_the_run_names_the_one_file(self, store):
+        session = make_session(store, EmbeddingRunner())
+        request = make_request(
+            "boltz2", mode="score", seeds=(42,), num_samples=2, options={"write_embeddings": True}
+        )
+        paths = {pose.provenance["embeddings_path"] for pose in session.records(request)}
+        assert len(paths) == 1
+
+    def test_a_request_that_asked_and_finds_no_file_gets_a_reason_and_no_key(self, store):
+        session = make_session(store, EmbeddingRunner(with_file=False))
+        pose = session.record(embedding_request(write_embeddings=True))
+        assert "embeddings_path" not in pose.provenance
+        (reason,) = embedding_reasons(pose)
+        assert "write_embeddings" in reason
+        pose.validate()
+
+    def test_a_request_that_did_not_ask_gets_no_key_and_no_reason(self, store):
+        for runner in (EmbeddingRunner(with_file=False), EmbeddingRunner(with_file=True)):
+            session = PredictionSession(
+                PredictionStore(store.root / type(runner).__name__), [runner]
+            )
+            pose = session.record(embedding_request())
+            assert "embeddings_path" not in pose.provenance
+            assert embedding_reasons(pose) == []
+
+    def test_write_embeddings_false_is_the_same_as_not_asking(self, store):
+        session = make_session(store, EmbeddingRunner(with_file=False))
+        pose = session.record(embedding_request(write_embeddings=False))
+        assert "embeddings_path" not in pose.provenance
+        assert embedding_reasons(pose) == []
+
+    def test_the_arrays_are_not_loaded_and_the_key_is_untouched(self, store, monkeypatch):
+        real_load = np.load
+
+        def load_but_not_embeddings(path, *args, **kwargs):
+            assert "embeddings_" not in Path(path).name, "the embeddings were loaded"
+            return real_load(path, *args, **kwargs)
+
+        monkeypatch.setattr(np, "load", load_but_not_embeddings)
+        session = make_session(store, EmbeddingRunner())
+        request = embedding_request(write_embeddings=True)
+        before = request.key()
+        session.record(request)
+        assert request.key() == before
+        assert embedding_request().key() != before  # the runner's rule: only True is in the key
+
+    def test_the_other_facts_are_still_there(self, store):
+        pose = make_session(store, EmbeddingRunner()).record(
+            embedding_request(write_embeddings=True)
+        )
+        assert pose.provenance["backend"] == "boltz2"
+        assert pose.provenance["seed"] == 42
+        assert pose.provenance["receptor_forced"] is False
 
 
 class TestTheModelVersion:
