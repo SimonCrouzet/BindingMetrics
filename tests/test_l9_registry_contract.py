@@ -365,13 +365,18 @@ class TestNewMetricsCallThroughTheSpec:
 
 class TestMandatoryFields:
     @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_required_string_fields_are_nonempty(self, spec):
+    def test_the_mandatory_fields_are_well_formed(self, spec):
+        """One case per metric; a failure lists every field that is wrong.
+
+        The six required strings are non-empty, the optional argument names are None or
+        identifiers, ``formats`` is a tuple of lower-case strings, and no argument name is
+        declared twice.
+        """
+        problems = []
         for field in ("name", "import_path", "description", "input_type", "chain_mode", "path_arg"):
             value = getattr(spec, field)
-            assert isinstance(value, str) and value.strip(), f"{spec.name}: empty {field}"
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_optional_arg_names_are_none_or_identifiers(self, spec):
+            if not (isinstance(value, str) and value.strip()):
+                problems.append(f"empty {field}")
         for field in (
             "secondary_path_arg",
             "chain_arg",
@@ -381,16 +386,12 @@ class TestMandatoryFields:
             "target_chain_arg",
         ):
             value = getattr(spec, field)
-            assert value is None or value.isidentifier(), f"{spec.name}: {field}={value!r}"
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_formats_is_a_tuple_of_lowercase_strings(self, spec):
-        assert isinstance(spec.formats, tuple)
-        assert all(f == f.lower() for f in spec.formats)
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_kwarg_names_are_distinct(self, spec):
-        """One kwarg cannot receive two roles."""
+            if not (value is None or (isinstance(value, str) and value.isidentifier())):
+                problems.append(f"{field}={value!r} is not an identifier")
+        if not isinstance(spec.formats, tuple):
+            problems.append(f"formats is a {type(spec.formats).__name__}, not a tuple")
+        elif not all(f == f.lower() for f in spec.formats):
+            problems.append(f"formats {spec.formats} are not lower case")
         names = [
             n
             for n in (
@@ -402,7 +403,9 @@ class TestMandatoryFields:
             )
             if n
         ]
-        assert len(names) == len(set(names)), f"{spec.name}: duplicated kwarg names {names}"
+        if len(names) != len(set(names)):
+            problems.append(f"duplicated kwarg names {names}")
+        assert not problems, f"{spec.name}: " + "; ".join(problems)
 
     def test_spec_is_frozen(self):
         spec = get_metric("interface")
