@@ -14,6 +14,7 @@ openfold module is imported when a run starts, never before)::
         name = "of3"; capabilities = None
         supports_custom_weights = True; weights_kind = "file"
         supported_modes = frozenset({"score", "refold"}); default_mode = "score"
+        seed_dimension = True                    # one request carries all the seeds
         .conda_env
         .make_request(input_path, *, name: str, binder_chain: Optional[str] = None,
             receptor_chain: Optional[str] = None, mode: str = "score",
@@ -60,7 +61,10 @@ are not hashed). What goes into the key:
   then in ``options``; None there means no generation). ``seeds`` and ``num_model_seeds`` cannot
   both be given, because OpenFold3 lets the generated seeds replace the explicit ones. A run
   writes the seeds to the runner YAML (``experiment_settings.seeds``): OpenFold3 0.5.0 does not
-  read seeds from the query file;
+  read seeds from the query file. One request carries all the seeds (``seed_dimension`` is True):
+  ``make_requests(input_path, seeds=[42, 7, 11], ...)`` returns that one request, and its
+  output holds the directories ``seed_7``, ``seed_11`` and ``seed_42``, which a session lists in
+  that numeric order;
 * the custom weights, when given (``weights``: a checkpoint file, passed to OpenFold3 as
   ``--inference-ckpt-path``): the SHA-256 and size of the file, never its path, so a fine-tuned
   checkpoint has its own entries and a moved copy shares them. Without ``weights`` the key is
@@ -160,6 +164,10 @@ class OpenFold3Runner(PredictionRunner):
     #: every chain is given its own structure.
     supported_modes = frozenset({"score", "refold"})
     default_mode = "score"
+    #: One OpenFold3 process samples every seed of the request and writes one ``seed_<value>``
+    #: directory for each, so ``make_requests`` gives one request for a list of seeds. The
+    #: attribute is not part of the key.
+    seed_dimension = True
 
     def __init__(self, conda_env: Optional[str] = None):
         self.conda_env = conda_env
