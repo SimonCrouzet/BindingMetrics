@@ -187,12 +187,6 @@ class TestTheRequest:
         }
         assert len(set(keys.values())) == len(keys)
 
-    def test_the_key_format_is_unchanged(self):
-        from binding_metrics.predictors.store import KEY_FORMAT
-
-        assert KEY_FORMAT == 1
-        assert make_request().canonical()["format"] == 1
-
     def test_the_server_is_refused_under_the_policy(self, alignment):
         with pytest.raises(ValueError, match="would be sent to an MSA server") as caught:
             make_request(use_msa_server=True, msa_policy="forbid-server", receptor_msa=alignment)

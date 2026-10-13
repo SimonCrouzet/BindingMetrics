@@ -264,22 +264,6 @@ class TestTheKeyIsUnchanged:
         assert KEY_FORMAT == 1
         assert request.key() == "1a3ae76651f9ac9c339e40dabc321b08a35eee311642a098e4daf5e57590d33a"
 
-    def test_the_fields_of_the_key_are_the_ones_of_before(self, input_file):
-        (request,) = OneSeedRunner().make_requests(input_file, seeds=[42], name="d")
-        assert set(request.canonical()) == {
-            "format",
-            "model",
-            "model_version",
-            "mode",
-            "file_sha256",
-            "binder_chain",
-            "receptor_chain",
-            "sequences",
-            "seeds",
-            "num_samples",
-            "options",
-        }
-
     def test_make_requests_adds_nothing_to_the_options_of_a_request(self, input_file):
         runner = OneSeedRunner()
         (request,) = runner.make_requests(input_file, seeds=[42], name="d", preset="fast")

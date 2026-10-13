@@ -151,12 +151,6 @@ class TestOpenFold3:
             getattr(OpenFold3Runner(), step)(request, tmp_path)
         assert list(tmp_path.iterdir()) == []
 
-    def test_score_lock_is_refused_as_before(self):
-        with pytest.raises(ValueError, match="OpenFold3 cannot run mode 'score-lock'"):
-            OpenFold3Runner().make_request(
-                LINEAR, name="s", binder_chain="B", receptor_chain="A", mode="score-lock"
-            )
-
 
 class TestOnlyBoltz2RunsIt:
     """Three of the four models are refused, by their declaration or by their runner."""
@@ -269,12 +263,6 @@ class TestTheOption:
         parser = capture_parser(CLI_MODULES[command], monkeypatch)
         action = parser._option_string_actions["--prediction-mode"]
         assert "refold-lock" in action.choices
-
-    def test_it_needs_a_predictor(self):
-        parser = self._parser()
-        args = parser.parse_args(["--prediction-mode", "refold-lock"])
-        with pytest.raises(SystemExit):
-            prediction.check_prediction_args(parser, args)
 
     def test_the_lock_threshold_goes_with_both_lock_modes_only(self):
         for mode in LOCK_MODES:

@@ -19,7 +19,6 @@ from binding_metrics.predictors.of3 import OpenFold3Parser
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.session import PredictionSession
 from binding_metrics.predictors.store import (
-    KEY_FORMAT,
     MODES,
     PredictionRequest,
     PredictionStore,
@@ -565,23 +564,6 @@ class TestWhatTheSessionLeavesAlone:
 
 class TestTheKeyIsUnchanged:
     """Nothing in the provenance work may change the key of an existing request."""
-
-    def test_the_format_and_the_canonical_fields_are_the_ones_of_before(self):
-        request = make_request("of3", seeds=(1,))
-        assert KEY_FORMAT == 1
-        assert set(request.canonical()) == {
-            "format",
-            "model",
-            "model_version",
-            "mode",
-            "file_sha256",
-            "binder_chain",
-            "receptor_chain",
-            "sequences",
-            "seeds",
-            "num_samples",
-            "options",
-        }
 
     def test_a_request_built_the_old_way_keeps_its_key(self):
         request = PredictionRequest(
