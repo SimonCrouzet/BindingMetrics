@@ -36,6 +36,7 @@ from typing import Any, Optional
 from binding_metrics.capabilities import (
     BINDER_TYPES,
     DEFAULT_DESIGN_POLICY,
+    DEFAULT_MSA_POLICY,
     DESIGN_SOURCE_PREDICTORS,
     INDEPENDENCE_DEPENDENT_CHECKS,
     POLICIES,
@@ -274,6 +275,17 @@ def _not_checked(reason: str, policy: str) -> PreflightOutcome:
     )
 
 
+def _plan_with_receptor_msa(plan: str, receptor_msa: Any) -> str:
+    """The plan text with a line for the receptor MSA, after the policy, mode or input line."""
+    lines = plan.split("\n")
+    for marker in ("MSA policy:", "Mode:", "Input:"):
+        for position, line in enumerate(lines):
+            if line.startswith(marker):
+                lines.insert(position + 1, f"Receptor MSA: {receptor_msa}")
+                return "\n".join(lines)
+    return plan
+
+
 def refusal_block(error: IncompatibleInputError) -> dict:
     """The ``results["preflight"]`` block of a refused input (a batch error row carries it)."""
     report = error.report
@@ -303,6 +315,9 @@ def check_input(
     prediction_weights: Optional[Path] = None,
     designed_with: Any = None,
     design_policy: str = DEFAULT_DESIGN_POLICY,
+    msa_policy: str = DEFAULT_MSA_POLICY,
+    msa_server: Optional[bool] = None,
+    receptor_msa: Any = None,
 ) -> PreflightOutcome:
     """Check one input against the steps and the model a run will execute.
 
@@ -330,6 +345,15 @@ def check_input(
             names. With a model step, the adversarial check is checked against it.
         design_policy: ``skip`` (default), ``warn`` or ``error``, see
             ``binding_metrics.capabilities.preflight``; independent of ``on_incompatible``.
+        msa_policy: ``default`` or ``forbid-server`` (``--prediction-msa-policy``). Under
+            ``forbid-server``, a model step that would use an MSA server (``msa_server`` True) is
+            refused under every ``on_incompatible`` value, see
+            ``binding_metrics.capabilities.preflight``. Not used without a model step, nor for an
+            output made elsewhere (the model is not run, so no server is called).
+        msa_server: Whether the model step would use an MSA server: True for a run from here with
+            the server on (the default of every runner), False with it off, None when not known.
+        receptor_msa: The receptor MSA of the request (``--prediction-receptor-msa``), a path or
+            ``"single"``; only named in the plan, it is checked when the request is built.
 
     Raises:
         ValueError: ``prediction_weights`` does not exist, cannot be read or is not the kind the
@@ -369,10 +393,12 @@ def check_input(
     adopted = False
     mode = None
     provided: set[str] = set()
+    checks_msa = False
     if reference_path is not None:
         provided.add("reference_structure")
     if model is not None:
         predictor, model_metric, adopted, mode = model
+        checks_msa = not adopted  # an output made elsewhere is read, no server is called
         if on_unmappable_residue == "x":
             predictor = _without_residue_check(predictor)
         metric_names.append(model_metric)
@@ -399,6 +425,8 @@ def check_input(
             design_source=designed_with,
             design_policy=design_policy,
             prediction_models=[] if model is None else [model[0]],
+            msa_policy=msa_policy if checks_msa else DEFAULT_MSA_POLICY,
+            msa_server=msa_server if checks_msa else None,
         )
     except IncompatibleInputError as refused:
         error, report = refused, refused.report
@@ -463,6 +491,8 @@ def check_input(
     }
     if include_plan:
         block["plan"] = report.format()
+        if receptor_msa is not None and checks_msa:
+            block["plan"] = _plan_with_receptor_msa(block["plan"], receptor_msa)
     return PreflightOutcome(
         block=block,
         report=report,

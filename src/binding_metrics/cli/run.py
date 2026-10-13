@@ -70,6 +70,7 @@ from binding_metrics._constants import (
 )
 from binding_metrics.capabilities import (
     DEFAULT_DESIGN_POLICY,
+    DEFAULT_MSA_POLICY,
     POLICIES,
     IncompatibleInputError,
     design_origin,
@@ -243,6 +244,9 @@ def _run_preflight(
     prediction_weights: Optional[Path] = None,
     designed_with=None,
     design_policy: str = DEFAULT_DESIGN_POLICY,
+    msa_policy: str = DEFAULT_MSA_POLICY,
+    msa_server: Optional[bool] = None,
+    receptor_msa: Optional[str | Path] = None,
 ):
     """The pre-flight check of one run, before anything is prepared, relaxed or predicted.
 
@@ -293,6 +297,9 @@ def _run_preflight(
         prediction_weights=prediction_weights,
         designed_with=designed_with,
         design_policy=design_policy,
+        msa_policy=msa_policy,
+        msa_server=msa_server,
+        receptor_msa=receptor_msa,
     )
 
 
@@ -369,6 +376,9 @@ def run_pipeline(
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
     designed_with: Optional[str | Sequence[str]] = None,
     design_policy: str = DEFAULT_DESIGN_POLICY,
+    prediction_msa_policy: str = DEFAULT_MSA_POLICY,
+    prediction_receptor_msa: Optional[str | Path] = None,
+    preflight_msa: Optional[tuple[str, Optional[bool]]] = None,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -479,6 +489,22 @@ def run_pipeline(
             not run.
         preflight_model: For a caller that runs the model step itself after this call (the
             batch): ``(model, metric, adopted, mode)``, so that its limits are checked here, first.
+        prediction_msa_policy, prediction_receptor_msa: The MSA policy of ``predictor`` run from
+            here (keyword-only; ``--prediction-msa-policy``, ``--prediction-receptor-msa``).
+            ``prediction_msa_policy`` is ``"default"`` or ``"forbid-server"``, under which no
+            sequence may be sent to an MSA server: the run then needs
+            ``prediction_use_msa_server=False`` and a receptor MSA, and the pre-flight check
+            refuses a run that would use the server under every ``on_incompatible`` value.
+            ``prediction_receptor_msa`` is the path of the receptor's alignment, or ``"single"``
+            for a receptor predicted from its own sequence; it is identified by content in the
+            key of the prediction. Both are passed to the runner only when they are not at their
+            default, and a runner whose ``make_request`` has no such setting raises
+            ``ValueError`` that names the option and the model. Refused with ``prediction_dir``
+            and without ``predictor``.
+        preflight_msa: For a caller that runs the model step itself after this call (the batch):
+            ``(msa_policy, uses_msa_server)`` of that step, so that the policy is checked here
+            with ``preflight_model``. Without it a run with ``predictor`` takes both from
+            ``prediction_msa_policy`` and the merged ``prediction_use_msa_server``.
         designed_with, design_policy: The pipeline that made the designed binder and what to do
             about it (keyword-only; ``--designed-with`` and ``--design-policy``). The EvoBind
             adversarial check asks whether a model other than the designer puts the binder where
@@ -557,6 +583,8 @@ def run_pipeline(
         prediction_conda_env=prediction_conda_env,
         prediction_lock_threshold=prediction_lock_threshold,
         openfold_templates=openfold_templates,
+        prediction_msa_policy=prediction_msa_policy,
+        prediction_receptor_msa=prediction_receptor_msa,
     )
     if predictor is not None and prediction_dir is None:
         # the --prediction-* spellings are merged into the settings of the run
@@ -565,6 +593,8 @@ def run_pipeline(
             route.use_msa_server,
             route.conda_env,
         )
+        if preflight_msa is None:
+            preflight_msa = (prediction_msa_policy, bool(openfold_use_msa_server))
     prediction_weights = check_weights_arg(prediction_weights, predictor)
     _check_preflight_options(binder_type, on_incompatible, design_policy, designed_with)
 
@@ -593,6 +623,9 @@ def run_pipeline(
         prediction_weights=prediction_weights,
         designed_with=designed_with,
         design_policy=design_policy,
+        msa_policy=DEFAULT_MSA_POLICY if preflight_msa is None else preflight_msa[0],
+        msa_server=None if preflight_msa is None else preflight_msa[1],
+        receptor_msa=prediction_receptor_msa,
     )
     if preflight_only:
         return {"sample_id": sample_id, "input": str(input_path), "preflight": outcome.block}
@@ -940,6 +973,8 @@ def run_pipeline(
                 prediction_lock_threshold=route.lock_threshold,
                 openfold_templates=openfold_templates,
                 adversarial_skipped=adversarial_skipped,
+                prediction_msa_policy=prediction_msa_policy,
+                prediction_receptor_msa=prediction_receptor_msa,
             )
             _label_independence(results["prediction"], outcome.independent_of_design)
             results["provenance"].update(prediction_provenance)
@@ -1356,6 +1391,8 @@ def main():
                 prediction_use_msa_server=not args.prediction_no_msa_server,
                 prediction_conda_env=args.prediction_conda_env,
                 prediction_lock_threshold=args.prediction_lock_threshold,
+                prediction_msa_policy=args.prediction_msa_policy,
+                prediction_receptor_msa=args.prediction_receptor_msa,
                 openfold_templates=args.openfold_templates,
                 binder_type=args.binder_type,
                 on_incompatible=args.on_incompatible,

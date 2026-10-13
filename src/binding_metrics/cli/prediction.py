@@ -66,7 +66,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple, Optional, Sequence
 
-from binding_metrics.capabilities import LOCK_MODES, MODES
+from binding_metrics.capabilities import DEFAULT_MSA_POLICY, LOCK_MODES, MODES, MSA_POLICIES
 from binding_metrics.cli import (
     DEFAULT_OPENFOLD_TEMPLATES,
     OPENFOLD_CYCLIC_CHOICES,
@@ -204,6 +204,35 @@ def add_prediction_args(parser: argparse.ArgumentParser, *, batch: bool = False)
         ),
     )
     group.add_argument(
+        "--prediction-msa-policy",
+        choices=MSA_POLICIES,
+        default=DEFAULT_MSA_POLICY,
+        help=(
+            "Whether the run may call an MSA server, for --predictor MODEL run from here. "
+            "default: the runner's own setting decides (--prediction-no-msa-server). "
+            "forbid-server: no sequence may be sent to a server, so the run needs "
+            "--prediction-no-msa-server and --prediction-receptor-msa (a PATH, or the word "
+            "single); the pre-flight check refuses a run that would use the server under every "
+            "--on-incompatible value, and the request is refused before anything starts. A model "
+            "whose runner has no such setting refuses the option. Needs --predictor."
+        ),
+    )
+    group.add_argument(
+        "--prediction-receptor-msa",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "The MSA of the receptor, for --predictor MODEL run from here: the path of an "
+            "alignment file of the receptor chain, or the word single for a receptor predicted "
+            "from its own sequence. The binder is single-sequence. The file is identified by "
+            "its content in the key of the prediction store, so the same alignment at another "
+            "path is the same prediction. In a batch the same file is used for every sample. A "
+            "model whose runner cannot take it refuses the option. Default: not given, the "
+            "model's own MSA setting applies. Needs --predictor."
+        ),
+    )
+    group.add_argument(
         "--prediction-conda-env",
         type=str,
         default=None,
@@ -277,6 +306,7 @@ _NEEDS_PREDICTOR = (
     ("prediction_mode", "--prediction-mode"),
     ("prediction_cyclic", "--prediction-cyclic"),
     ("prediction_no_msa_server", "--prediction-no-msa-server"),
+    ("prediction_receptor_msa", "--prediction-receptor-msa"),
     ("prediction_conda_env", "--prediction-conda-env"),
     ("prediction_lock_threshold", "--prediction-lock-threshold"),
     ("prediction_binder_chain", "--prediction-binder-chain"),
@@ -440,6 +470,8 @@ def check_prediction_args(parser: argparse.ArgumentParser, args: argparse.Namesp
         for attribute, option in _NEEDS_PREDICTOR:
             if getattr(args, attribute, None):
                 parser.error(f"{option} needs --predictor (which model made the output?)")
+        if getattr(args, "prediction_msa_policy", DEFAULT_MSA_POLICY) != DEFAULT_MSA_POLICY:
+            parser.error("--prediction-msa-policy needs --predictor (which model made the output?)")
     else:
         if args.prediction_dir is None and not has_runner(args.predictor):
             parser.error(no_runner_message(args.predictor))
@@ -456,6 +488,8 @@ def check_prediction_args(parser: argparse.ArgumentParser, args: argparse.Namesp
                 openfold_conda_env=getattr(args, "openfold_conda_env", None),
                 prediction_conda_env=getattr(args, "prediction_conda_env", None),
                 prediction_lock_threshold=getattr(args, "prediction_lock_threshold", None),
+                prediction_msa_policy=getattr(args, "prediction_msa_policy", DEFAULT_MSA_POLICY),
+                prediction_receptor_msa=getattr(args, "prediction_receptor_msa", None),
             )
         except ValueError as exc:
             parser.error(str(exc))
@@ -512,6 +546,8 @@ _RUNNER_SETTING_OPTIONS = {
     "binder_cyclic": "--prediction-cyclic",
     "use_msa_server": "--prediction-no-msa-server",
     "lock_threshold_angstrom": "--prediction-lock-threshold",
+    "msa_policy": "--prediction-msa-policy",
+    "receptor_msa": "--prediction-receptor-msa",
     "weights": "--prediction-weights",
     "seeds": "--openfold-seeds",
     "on_unmappable_residue": "--on-unmappable-residue",
@@ -605,11 +641,14 @@ def resolve_prediction_options(
     openfold_conda_env: Optional[str] = None,
     prediction_conda_env: Optional[str] = None,
     prediction_lock_threshold: Optional[float] = None,
+    prediction_msa_policy: str = DEFAULT_MSA_POLICY,
+    prediction_receptor_msa: Optional[str | Path] = None,
 ) -> PredictionOptions:
     """Merge the ``--openfold-*`` and ``--prediction-*`` spellings and check them for the runner.
 
     The ``--prediction-*`` options (``prediction_cyclic``, ``prediction_use_msa_server``,
-    ``prediction_conda_env``, ``prediction_lock_threshold``) are the settings of the
+    ``prediction_conda_env``, ``prediction_lock_threshold``, ``prediction_msa_policy``,
+    ``prediction_receptor_msa``) are the settings of the
     ``--predictor`` route for every model. The ``--openfold-*`` ones (``openfold_mode``,
     ``openfold_cyclic``, ``openfold_use_msa_server``, ``openfold_conda_env``) are those of the
     OpenFold3 step and, for ``predictor == "of3"``, the same settings under their older names.
@@ -627,9 +666,14 @@ def resolve_prediction_options(
       of the runner) must be one the runner runs, unless the model does not have it at all
       (``model_refuses_mode``): the pre-flight check refuses that one, with the models that do;
     * a setting is passed on only when the keyword is in the runner's ``make_request``:
-      ``binder_cyclic`` other than ``auto``, ``use_msa_server`` False and
-      ``lock_threshold_angstrom`` are refused for a runner that has not; the lock threshold
-      also needs a lock mode (``score-lock`` or ``refold-lock``).
+      ``binder_cyclic`` other than ``auto``, ``use_msa_server`` False,
+      ``lock_threshold_angstrom``, ``msa_policy`` other than ``default`` and ``receptor_msa`` are
+      refused for a runner that has not; the lock threshold also needs a lock mode
+      (``score-lock`` or ``refold-lock``), and ``prediction_receptor_msa`` is ``"single"`` or an
+      existing file;
+    * the MSA policy needs the run to be from here, like the other ``--prediction-*`` settings.
+      That ``forbid-server`` with the server on is refused is the job of the pre-flight check,
+      which refuses it under every ``--on-incompatible`` value.
 
     Returns:
         The merged settings; for the OpenFold3 step or an adopted output they are the
@@ -639,6 +683,10 @@ def resolve_prediction_options(
         ValueError: A setting that the model's runner cannot take, naming the option and the
             model, or a value that is not valid.
     """
+    if prediction_msa_policy not in MSA_POLICIES:
+        raise ValueError(
+            f"prediction_msa_policy must be one of {MSA_POLICIES}, got {prediction_msa_policy!r}"
+        )
     wants_run = predictor is not None and prediction_dir is None
     generic_given = [
         option
@@ -647,6 +695,8 @@ def resolve_prediction_options(
             ("--prediction-no-msa-server", not prediction_use_msa_server),
             ("--prediction-conda-env", prediction_conda_env is not None),
             ("--prediction-lock-threshold", prediction_lock_threshold is not None),
+            ("--prediction-msa-policy", prediction_msa_policy != DEFAULT_MSA_POLICY),
+            ("--prediction-receptor-msa", prediction_receptor_msa is not None),
         )
         if given
     ]
@@ -728,7 +778,31 @@ def resolve_prediction_options(
                 f"refold-lock, and the run is in mode {mode}; add --prediction-mode score-lock "
                 "or --prediction-mode refold-lock"
             )
+    if prediction_msa_policy != DEFAULT_MSA_POLICY and not takes_setting(runner, "msa_policy"):
+        raise ValueError(unsupported_setting_message(predictor, "msa_policy"))
+    if prediction_receptor_msa is not None:
+        if not takes_setting(runner, "receptor_msa"):
+            raise ValueError(unsupported_setting_message(predictor, "receptor_msa"))
+        check_receptor_msa_arg(prediction_receptor_msa)
     return PredictionOptions(mode, cyclic, use_msa_server, conda_env, prediction_lock_threshold)
+
+
+def check_receptor_msa_arg(value: str | Path) -> None:
+    """Check ``--prediction-receptor-msa`` before anything runs.
+
+    ``"single"`` asks for a receptor predicted from its own sequence; anything else is the path of
+    an alignment file, which must exist. A ``Path`` is always a file, whatever its name.
+
+    Raises:
+        ValueError: The path is not a file.
+    """
+    if isinstance(value, str) and value == "single":
+        return
+    if not Path(value).expanduser().is_file():
+        raise ValueError(
+            f"--prediction-receptor-msa is not a file: {value} (give the path of the alignment "
+            "of the receptor, or the word single for a receptor without one)"
+        )
 
 
 def check_predictor(
@@ -746,6 +820,8 @@ def check_predictor(
     prediction_conda_env: Optional[str] = None,
     prediction_lock_threshold: Optional[float] = None,
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+    prediction_msa_policy: str = DEFAULT_MSA_POLICY,
+    prediction_receptor_msa: Optional[str | Path] = None,
 ) -> PredictionOptions:
     """The Python-API counterpart of ``check_prediction_args``: raise before any step runs.
 
@@ -784,6 +860,8 @@ def check_predictor(
         openfold_conda_env=openfold_conda_env,
         prediction_conda_env=prediction_conda_env,
         prediction_lock_threshold=prediction_lock_threshold,
+        prediction_msa_policy=prediction_msa_policy,
+        prediction_receptor_msa=prediction_receptor_msa,
     )
 
 
@@ -919,6 +997,8 @@ def make_request(
     prediction_weights=None,
     prediction_lock_threshold: Optional[float] = None,
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+    prediction_msa_policy: str = DEFAULT_MSA_POLICY,
+    prediction_receptor_msa: Optional[str | Path] = None,
 ):
     """The store request of one sample.
 
@@ -935,7 +1015,9 @@ def make_request(
     ``mode`` always; ``seeds`` and ``on_unmappable_residue`` as given; ``binder_cyclic`` (when
     ``openfold_cyclic`` is not ``"auto"``), ``use_msa_server`` (when ``openfold_use_msa_server``
     is False), ``lock_threshold_angstrom``, ``template_mode`` (when ``openfold_templates`` is not
-    the default, ``"structure"``), and ``weights`` (a path, or the ``WeightsRef`` of
+    the default, ``"structure"``), ``msa_policy`` (when ``prediction_msa_policy`` is not
+    ``"default"``), ``receptor_msa`` (when ``prediction_receptor_msa`` is given: a path, or
+    ``"single"``), and ``weights`` (a path, or the ``WeightsRef`` of
     ``PredictionStore.weights_reference``; by content in the key) only when they are not at their
     defaults, so a runner without the keyword is never called with it. ``openfold_cyclic`` and
     ``openfold_use_msa_server`` are the settings of the run, after ``resolve_prediction_options``
@@ -980,6 +1062,8 @@ def make_request(
             openfold_templates,
             openfold_templates != DEFAULT_OPENFOLD_TEMPLATES,
         ),
+        ("msa_policy", prediction_msa_policy, prediction_msa_policy != DEFAULT_MSA_POLICY),
+        ("receptor_msa", prediction_receptor_msa, prediction_receptor_msa is not None),
     )
     keywords: dict[str, Any] = {}
     for keyword, value, passed in settings:
@@ -1437,6 +1521,8 @@ def run_single_prediction(
     prediction_lock_threshold: Optional[float] = None,
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
     adversarial_skipped: Optional[str] = None,
+    prediction_msa_policy: str = DEFAULT_MSA_POLICY,
+    prediction_receptor_msa: Optional[str | Path] = None,
 ) -> tuple[dict, dict]:
     """The whole prediction step of ``run_pipeline``: store, session, request, consumers.
 
@@ -1454,6 +1540,9 @@ def run_single_prediction(
     names the chains of its prediction, unless ``prediction_binder_chain`` or
     ``prediction_target_chain`` is given. ``adversarial_skipped`` is the reason the EvoBind
     adversarial check is left out (the design pipeline ran this model itself); None runs it.
+    ``prediction_msa_policy`` and ``prediction_receptor_msa`` are the MSA policy (``"default"`` or
+    ``"forbid-server"``) and the receptor's alignment (a path, or ``"single"``) of the request;
+    they reach the runner only when they are not at their default.
 
     Returns:
         ``(block, provenance)`` as ``run_prediction_step``; the block is ``{"skipped": True}``
@@ -1494,6 +1583,8 @@ def run_single_prediction(
             prediction_weights=weights,
             prediction_lock_threshold=prediction_lock_threshold,
             openfold_templates=openfold_templates,
+            prediction_msa_policy=prediction_msa_policy,
+            prediction_receptor_msa=prediction_receptor_msa,
         )
         default_chain_map = None if adopt else runner_chain_map(runner, request)
     except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["prediction"]

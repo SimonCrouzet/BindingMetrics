@@ -54,9 +54,12 @@ __all__ = [
     "BINDER_TYPES",
     "CLOSURE_FAMILIES",
     "DEFAULT_DESIGN_POLICY",
+    "DEFAULT_MSA_POLICY",
     "DESIGN_SOURCE_PREDICTORS",
     "INDEPENDENCE_DEPENDENT_CHECKS",
+    "LOCK_MODES",
     "MODES",
+    "MSA_POLICIES",
     "NEEDS",
     "POLICIES",
     "RESIDUE_CLASSES",
@@ -214,7 +217,8 @@ class Violation:
         fix: What to do instead; ``preflight`` fills it in.
         subject: The step, for example ``predictor OpenFold3 0.5.0`` or ``metric 'omega'``;
             ``preflight`` fills it in.
-        kind: ``metric`` or ``predictor``, filled in by ``preflight``.
+        kind: ``metric``, ``predictor`` or ``msa`` (an MSA policy the run would break), filled in
+            by ``preflight``.
         name: The registry name of the step, filled in by ``preflight``.
     """
 
@@ -1282,6 +1286,16 @@ def check_openfold3_residues(profile: InputProfile) -> list[Violation]:
 #: What ``preflight`` does with an incompatibility: raise, leave the step out, or log and go on.
 POLICIES: tuple[str, ...] = ("error", "skip", "warn")
 
+#: The MSA policies of a prediction request. ``default`` leaves the use of an MSA server to the
+#: runner's own setting. ``forbid-server`` says that no sequence may be sent to an MSA server:
+#: the request must give the receptor's MSA (or ask for a single sequence) and switch the server
+#: off, and ``preflight`` refuses a run that would use one under every ``POLICIES`` value. The
+#: pieces a runner needs for it are in ``binding_metrics.predictors._msa``.
+MSA_POLICIES: tuple[str, ...] = ("default", "forbid-server")
+
+#: The policy of a request that does not name one; it adds nothing to the key of the request.
+DEFAULT_MSA_POLICY = "default"
+
 # ---------------------------------------------------------------------------
 # Design origin
 # ---------------------------------------------------------------------------
@@ -1630,6 +1644,8 @@ class PreflightReport:
         design: What the origin of the design did to the checks that rest on independence
             (``check_design_origin``); None when no design source was given. Its violations
             (kind ``design``) are also in ``violations``, and its loud sentences in ``warnings``.
+        msa_policy: The MSA policy the predictors were checked against, one of ``MSA_POLICIES``.
+            A violation of it (kind ``msa``) is refused whatever ``policy`` says.
     """
 
     policy: str
@@ -1644,10 +1660,15 @@ class PreflightReport:
     predictor_policy: str = ""
     mode: Optional[str] = None
     design: Optional[DesignOriginCheck] = None
+    msa_policy: str = DEFAULT_MSA_POLICY
 
     def policy_of(self, kind: str) -> str:
-        """The policy that applies to a violation of ``kind`` (``metric``, ``predictor`` or
-        ``design``)."""
+        """The policy that applies to a violation of ``kind`` (``metric``, ``predictor``,
+        ``design`` or ``msa``). A forbidden MSA server is always an ``error``: ``skip`` and
+        ``warn`` would either drop the step the policy was set for or run it and send the
+        sequences out."""
+        if kind == "msa":
+            return "error"
         if kind == "predictor":
             return self.predictor_policy or self.policy
         if kind == "design":
@@ -1693,6 +1714,8 @@ class PreflightReport:
         lines = [heading, f"Input: {self.profile.describe()}"]
         if self.mode is not None:
             lines.append(f"Mode: {_MODE_TEXT[self.mode]}")
+        if self.msa_policy != DEFAULT_MSA_POLICY:
+            lines.append(f"MSA policy: {self.msa_policy} (no MSA server may be called)")
         if self.design is not None:
             lines.append(f"Design origin: {self.design.origin.short()}")
         if not self.refused:
@@ -1718,7 +1741,8 @@ class PreflightReport:
     def to_dict(self) -> dict:
         """JSON-ready form, for ``results["preflight"]``.
 
-        The key ``design`` is present only when a design source was given.
+        The key ``design`` is present only when a design source was given, and ``msa_policy`` only
+        when it is not the default.
         """
         data = {
             "policy": self.policy,
@@ -1747,6 +1771,8 @@ class PreflightReport:
         }
         if self.design is not None:
             data["design"] = self.design.to_dict()
+        if self.msa_policy != DEFAULT_MSA_POLICY:
+            data["msa_policy"] = self.msa_policy
         return data
 
 
@@ -2093,6 +2119,30 @@ def _check_weights(
         )
 
 
+def _msa_server_violation(step: _Step) -> Violation:
+    """The violation of the policy ``forbid-server`` by a run of ``step`` that uses a server."""
+    return Violation(
+        constraint="msa_policy",
+        fact="the run would use an MSA server",
+        requirement="msa_policy 'forbid-server': no sequence is sent to an MSA server",
+        reason=(
+            "The policy forbids the server and the run would use it. It is refused under every "
+            "--on-incompatible value: warn would run the model and send the sequences out, and "
+            "skip would drop the step the policy was set for."
+        ),
+        fix=(
+            "pass use_msa_server=False together with the MSA of the receptor (receptor_msa=PATH) "
+            "or receptor_msa='single' for a single-sequence receptor (on the command line: "
+            "--prediction-no-msa-server with --prediction-receptor-msa PATH or "
+            "--prediction-receptor-msa single); or set msa_policy='default' "
+            "(--prediction-msa-policy default) to allow the server"
+        ),
+        subject=step.subject,
+        kind="msa",
+        name=step.name,
+    )
+
+
 def preflight(
     profile: InputProfile,
     metrics: Iterable[Any] = (),
@@ -2108,6 +2158,8 @@ def preflight(
     design_source: Any = None,
     design_policy: str = DEFAULT_DESIGN_POLICY,
     prediction_models: Optional[Collection[str]] = None,
+    msa_policy: str = DEFAULT_MSA_POLICY,
+    msa_server: Optional[bool] = None,
 ) -> PreflightReport:
     """Check an input against the limits of every requested metric and predictor, before any run.
 
@@ -2172,6 +2224,16 @@ def preflight(
         prediction_models: The registry names of the models that make the second structures of
             the checks; None takes the names of ``predictor``. A pose set passes the back-ends of
             its poses, which are not checked against the limits of a model.
+        msa_policy: One of ``MSA_POLICIES``. ``default`` checks nothing. ``forbid-server`` says
+            that no sequence may leave the machine for an MSA server (see
+            ``binding_metrics.predictors._msa``).
+        msa_server: Whether the run of the predictors would use an MSA server; None when the
+            caller does not know or the model is not run (an output made elsewhere). Under
+            ``forbid-server``, True gives a violation of the constraint ``msa_policy`` for each
+            predictor (kind ``msa``, fact "the run would use an MSA server"). Unlike the other
+            violations it is refused under every ``policy``: a forbid cannot be downgraded to
+            ``skip`` or ``warn``, which would drop the step the policy was set for or send the
+            sequences out. None adds a note that the policy was not checked.
 
     Returns:
         The ``PreflightReport``. Soft warnings for inputs a step accepts but never validated are
@@ -2183,8 +2245,9 @@ def preflight(
             ``error`` and a check on a model that the design ran itself. Subclass of
             ``ValueError``.
         ValueError: ``policy``, ``predictor_policy`` or ``design_policy`` is not one of
-            ``POLICIES``, ``mode`` is not one of ``MODES``, or ``weights`` does not exist, cannot
-            be read or is not the kind a runner takes (``check_weights_path``).
+            ``POLICIES``, ``mode`` is not one of ``MODES``, ``msa_policy`` is not one of
+            ``MSA_POLICIES``, or ``weights`` does not exist, cannot be read or is not the kind a
+            runner takes (``check_weights_path``).
         TypeError: ``design_source`` is of a type ``design_origin`` does not take.
         KeyError: A predictor name that is not registered.
         TypeError: A ``capabilities`` attribute that is neither None nor a ``Capabilities``.
@@ -2195,6 +2258,8 @@ def preflight(
         raise ValueError(f"predictor_policy must be one of {POLICIES}, got {predictor_policy!r}")
     if mode is not None and mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+    if msa_policy not in MSA_POLICIES:
+        raise ValueError(f"msa_policy must be one of {MSA_POLICIES}, got {msa_policy!r}")
     _check_design_policy(design_policy)
     effective_predictor_policy = predictor_policy or policy
     steps = _metric_steps(metrics) + _predictor_steps(predictor)
@@ -2220,6 +2285,18 @@ def preflight(
 
     if weights is not None:
         _check_weights(steps, weights, weights_kinds, violations, notes, refused)
+
+    if msa_policy != DEFAULT_MSA_POLICY:
+        for step in steps:
+            if step.kind != "predictor":
+                continue
+            if msa_server is None:
+                notes.append(
+                    f"msa_policy '{msa_policy}' was not checked against {step.subject}: the "
+                    "caller did not say whether the run uses an MSA server"
+                )
+            elif msa_server:
+                violations.append(_msa_server_violation(step))
 
     typed = [s.subject for s in steps if s.capabilities and s.capabilities.binder_types]
     if profile.binder_type == "unknown" and typed:
@@ -2272,6 +2349,7 @@ def preflight(
         predictor_policy=predictor_policy or "",
         mode=mode,
         design=design if design.given else None,
+        msa_policy=msa_policy,
     )
     if report.refused:
         raise IncompatibleInputError(report)

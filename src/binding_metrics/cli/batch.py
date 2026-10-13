@@ -93,6 +93,7 @@ from binding_metrics._constants import (
 )
 from binding_metrics.capabilities import (
     DEFAULT_DESIGN_POLICY,
+    DEFAULT_MSA_POLICY,
     POLICIES,
     IncompatibleInputError,
     check_design_origin,
@@ -248,6 +249,7 @@ def _run_one(
     prediction_weights: Optional[Path] = None,
     designed_with=None,
     design_policy: str = DEFAULT_DESIGN_POLICY,
+    preflight_msa: Optional[tuple] = None,
 ) -> dict:
     """Run the pipeline for a single structure and return a flat results dict.
 
@@ -259,7 +261,8 @@ def _run_one(
     (``on_incompatible="error"``) is such an error row: ``batch_error`` and
     ``preflight_reason`` carry the reason and nothing was prepared or run.
     ``preflight_model`` is the whole-batch model step of this sample, as ``(model, metric,
-    adopted)``, so that its limits are checked here, before this worker does anything.
+    adopted)``, so that its limits are checked here, before this worker does anything;
+    ``preflight_msa`` is ``(msa_policy, uses_msa_server)`` of that step, checked with it.
 
     The row carries ``batch_status``:
 
@@ -322,6 +325,7 @@ def _run_one(
                 prediction_weights=prediction_weights,
                 designed_with=designed_with,
                 design_policy=design_policy,
+                preflight_msa=preflight_msa,
             )
             results["total_elapsed_s"] = round(time.time() - t0, 1)
 
@@ -419,6 +423,8 @@ def _model_step_allowed(
     on_incompatible: str,
     on_unmappable_residue: str = "error",
     prediction_weights: Optional[Path] = None,
+    msa_policy: str = DEFAULT_MSA_POLICY,
+    msa_server: Optional[bool] = None,
 ) -> tuple[bool, str]:
     """Whether the whole-batch model step may run for one sample, and why not.
 
@@ -426,10 +432,12 @@ def _model_step_allowed(
     it refused the sample, so it is not here, and under ``warn`` it logged the problems. What
     is left is ``skip``, where the sample's model step is dropped and the reason recorded. The
     check runs again here, before any request is built or the store touched, so that the
-    whole-batch step never depends on what the worker did.
+    whole-batch step never depends on what the worker did. A forbidden MSA server (``msa_policy``
+    ``forbid-server`` with ``msa_server`` True) is the exception to the rule above: it is refused
+    under ``warn`` too.
     """
-    if on_incompatible == "warn":
-        return True, ""
+    if on_incompatible == "warn" and msa_policy == DEFAULT_MSA_POLICY:
+        return True, ""  # a forbidden MSA server is refused under warn as well
     outcome = check_input(
         input_path,
         pchain,
@@ -440,6 +448,8 @@ def _model_step_allowed(
         model=model,
         on_unmappable_residue=on_unmappable_residue,
         prediction_weights=prediction_weights,
+        msa_policy=msa_policy,
+        msa_server=msa_server,
     )
     if outcome.refused or not outcome.model_usable:
         reason = outcome.block["reason"] or outcome.block["status"]
@@ -778,6 +788,8 @@ def _run_batched_prediction(
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
     designed_with=None,
     design_policy: str = DEFAULT_DESIGN_POLICY,
+    prediction_msa_policy: str = DEFAULT_MSA_POLICY,
+    prediction_receptor_msa: Optional[str | Path] = None,
 ) -> None:
     """The ``--predictor`` step of a batch: every sample through one shared prediction store.
 
@@ -799,6 +811,9 @@ def _run_batched_prediction(
     ``designed_with`` and ``design_policy`` decide whether the adversarial check runs (it is left
     out, with ``prediction_adversarial_skipped`` in the row, when the design pipeline ran
     ``predictor`` itself) and add ``prediction_independent_of_design`` when the source is known.
+    ``prediction_msa_policy`` and ``prediction_receptor_msa`` are the MSA policy and the receptor's
+    alignment of every request (the same file for every sample); they reach the runner only when
+    they are not at their default.
     """
     from binding_metrics.protocols.report import _flatten
 
@@ -822,6 +837,8 @@ def _run_batched_prediction(
             on_incompatible,
             on_unmappable_residue,
             prediction_weights,
+            prediction_msa_policy,
+            None if adopted else bool(openfold_use_msa_server),
         )
         if allowed:
             eligible.append(entry)
@@ -876,6 +893,8 @@ def _run_batched_prediction(
                     prediction_weights=weights_ref,
                     prediction_lock_threshold=prediction_lock_threshold,
                     openfold_templates=openfold_templates,
+                    prediction_msa_policy=prediction_msa_policy,
+                    prediction_receptor_msa=prediction_receptor_msa,
                 )
             except Exception as e:  # noqa: BLE001 - one unreadable input must not stop the batch
                 logger.warning(
@@ -1015,6 +1034,8 @@ def run_batch(
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
     designed_with: Optional[str | Sequence[str]] = None,
     design_policy: str = DEFAULT_DESIGN_POLICY,
+    prediction_msa_policy: str = DEFAULT_MSA_POLICY,
+    prediction_receptor_msa: Optional[str | Path] = None,
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -1109,6 +1130,12 @@ def run_batch(
             ``run_pipeline``: for ``predictor="of3"`` they are the settings of ``openfold_cyclic``,
             ``openfold_use_msa_server`` and ``openfold_conda_env``, and a setting that the model's
             runner has no keyword for raises ``ValueError``.
+        prediction_msa_policy, prediction_receptor_msa: The MSA policy of ``predictor`` run from
+            here (``--prediction-msa-policy``, ``--prediction-receptor-msa``), with the meaning
+            and the checks they have in ``run_pipeline``. Under ``"forbid-server"`` every
+            sample is checked with the server setting of the run and a sample that would use the
+            server is an error row whatever ``on_incompatible`` says. The receptor MSA is one
+            file (or ``"single"``) for every sample of the batch.
         prediction_weights: Custom weights for the model, such as a fine-tuned checkpoint
             (``--prediction-weights``): a file or a directory, as the model's runner takes it. They
             apply to ``predictor`` run from here and to the batched OpenFold3 step
@@ -1185,7 +1212,10 @@ def run_batch(
         prediction_conda_env=prediction_conda_env,
         prediction_lock_threshold=prediction_lock_threshold,
         openfold_templates=openfold_templates,
+        prediction_msa_policy=prediction_msa_policy,
+        prediction_receptor_msa=prediction_receptor_msa,
     )
+    preflight_msa = None  # (policy, uses a server) of the model step, for the pre-flight check
     if predictor is not None and prediction_dir is None:
         # the --prediction-* spellings are merged into the settings of the run
         openfold_cyclic, openfold_use_msa_server, openfold_conda_env = (
@@ -1193,6 +1223,7 @@ def run_batch(
             route.use_msa_server,
             route.conda_env,
         )
+        preflight_msa = (prediction_msa_policy, bool(openfold_use_msa_server))
     prediction_weights = check_weights_arg(prediction_weights, predictor)
     if binder_type not in BINDER_TYPE_CHOICES:
         raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")
@@ -1226,6 +1257,9 @@ def run_batch(
             on_incompatible=on_incompatible,
             designed_with=designed_with,
             design_policy=design_policy,
+            prediction_msa_policy=prediction_msa_policy,
+            prediction_receptor_msa=prediction_receptor_msa,
+            preflight_msa=preflight_msa,
         )
     output_dir.mkdir(parents=True, exist_ok=True)
     # Strip openfold from per-worker metrics: it runs as a single batched
@@ -1278,6 +1312,7 @@ def run_batch(
         prediction_weights=prediction_weights,
         designed_with=designed_with,
         design_policy=design_policy,
+        preflight_msa=preflight_msa,
     )
     if on_error == "raise":
         common_kwargs["raise_errors"] = True
@@ -1373,6 +1408,8 @@ def run_batch(
             openfold_templates=openfold_templates,
             designed_with=designed_with,
             design_policy=design_policy,
+            prediction_msa_policy=prediction_msa_policy,
+            prediction_receptor_msa=prediction_receptor_msa,
         )
     elif want_openfold:
         _run_batched_openfold(
@@ -1417,6 +1454,9 @@ def _preflight_only_rows(
     prediction_weights: Optional[Path] = None,
     designed_with=None,
     design_policy: str = DEFAULT_DESIGN_POLICY,
+    prediction_msa_policy: str = DEFAULT_MSA_POLICY,
+    prediction_receptor_msa: Optional[str | Path] = None,
+    preflight_msa: Optional[tuple] = None,
 ) -> list[dict]:
     """One row per sample with the pre-flight decision and nothing else (``--preflight-only``).
 
@@ -1449,6 +1489,9 @@ def _preflight_only_rows(
                 preflight_only=True,
                 designed_with=designed_with,
                 design_policy=design_policy,
+                prediction_msa_policy=prediction_msa_policy,
+                prediction_receptor_msa=prediction_receptor_msa,
+                preflight_msa=preflight_msa,
             )
             block = results["preflight"]
             row["preflight_status"] = block["status"]
@@ -1713,6 +1756,10 @@ def main():
             on_incompatible=args.on_incompatible,
             designed_with=args.designed_with,
             design_policy=args.design_policy,
+            openfold_use_msa_server=not args.openfold_no_msa_server,
+            prediction_use_msa_server=not args.prediction_no_msa_server,
+            prediction_msa_policy=args.prediction_msa_policy,
+            prediction_receptor_msa=args.prediction_receptor_msa,
             preflight_only=True,
         )
         for row in rows:
@@ -1790,6 +1837,8 @@ def main():
         prediction_use_msa_server=not args.prediction_no_msa_server,
         prediction_conda_env=args.prediction_conda_env,
         prediction_lock_threshold=args.prediction_lock_threshold,
+        prediction_msa_policy=args.prediction_msa_policy,
+        prediction_receptor_msa=args.prediction_receptor_msa,
         openfold_templates=args.openfold_templates,
         binder_type=args.binder_type,
         on_incompatible=args.on_incompatible,
