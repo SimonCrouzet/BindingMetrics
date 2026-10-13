@@ -8,7 +8,7 @@ The everyday command leaves out the tests that need a GPU, the tests that take a
 pytest -m "not gpu and not integration and not slow and not openfold" -n 4
 ```
 
-It runs 8,840 of the 9,239 cases that need no GPU. On commit 7afa35a, on a 15-core machine shared with other work (load 6 to 17), it took between 2 min 28 s and 2 min 48 s on four processes in two runs, 1 min 38 s with `-n 6` and 7 min 53 s on one process (the same command without `-n`). `-n` comes from pytest-xdist, which the `dev` extra installs (`pip install -e ".[dev]"`); nothing in the configuration sets it, so a plain `pytest` runs on one process and works without the plugin.
+It runs 8,840 of the 9,239 cases that need no GPU. Recorded on 14 October 2026 (commits 7afa35a and f124c4d) on a 15-core machine shared with other work, it took 1 min 40 s on four processes at a load of 2 to 5, between 2 min 28 s and 2 min 48 s at a load of 11 to 18, 1 min 38 s with `-n 6` at a load of 11, and 7 min 53 s on one process at a load of 6 to 17 (the same command without `-n`). `-n` comes from pytest-xdist, which the `dev` extra installs (`pip install -e ".[dev]"`); nothing in the configuration sets it, so a plain `pytest` runs on one process and works without the plugin.
 
 The full tier, `pytest -m "not gpu"`, is the gate before a pull request and before a signed release, and the run that CI makes; it took 9 min 37 s with `-n 4` and about twenty minutes on one process. `pytest -m gpu` runs the GPU tier on a machine with a CUDA device.
 
