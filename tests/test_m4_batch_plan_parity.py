@@ -17,6 +17,7 @@ import pytest
 from binding_metrics.cli import batch, run
 from binding_metrics.cli.batch import run_batch
 from binding_metrics.cli.run import run_pipeline
+from binding_metrics.predictors.runners import PredictionRunner
 from tests.test_pre_cli_run import LINEAR
 
 #: (id, command-line options, exit status of both commands)
@@ -31,9 +32,9 @@ CASES = [
         0,
     ),
     (
-        "lock threshold in refold-lock, which Boltz-2 does not declare",
+        "lock threshold in refold-lock, which Boltz-2 declares",
         "--predictor boltz2 --prediction-mode refold-lock --prediction-lock-threshold 1.0",
-        1,
+        0,
     ),
     (
         "lock threshold, ColabFold has no such setting",
@@ -64,9 +65,15 @@ CASES = [
     ("a mode the model does not have", "--predictor of3 --prediction-mode score-lock", 1),
     ("no MSA server", "--predictor af2 --prediction-no-msa-server", 0),
     (
-        "the policy without a server setting, runner lacks it",
+        "the policy with the server on, refused by the pre-flight",
         "--predictor af2 --prediction-msa-policy forbid-server",
-        2,
+        1,
+    ),
+    (
+        "the policy with no server and a single-sequence receptor",
+        "--predictor af2 --prediction-msa-policy forbid-server --prediction-no-msa-server"
+        " --prediction-receptor-msa single",
+        0,
     ),
     ("an option without a predictor", "--prediction-cyclic on", 2),
 ]
@@ -131,6 +138,79 @@ class TestTheCommandLines:
         assert (run_status, batch_status) == (status, status), (run_error, batch_error)
         assert run_error == batch_error
         assert not (tmp_path / "out").exists() and not (tmp_path / "res").exists()
+
+
+class RunnerWithoutMsaSettings(PredictionRunner):
+    """A ColabFold stand-in whose ``make_request`` has no ``msa_policy`` or ``receptor_msa``."""
+
+    name = "af2"
+
+    def make_request(self, input_path, *, name, binder_chain=None, receptor_chain=None):
+        raise NotImplementedError
+
+    def prepare(self, request, work_dir):
+        raise NotImplementedError
+
+    def run(self, request, work_dir):
+        raise NotImplementedError
+
+
+class TestARunnerWithoutTheMsaSettings:
+    """A runner that has no keyword for a setting is a usage error: the option is not available."""
+
+    @pytest.fixture(autouse=True)
+    def stand_in(self, monkeypatch):
+        from binding_metrics.cli import prediction
+
+        monkeypatch.setitem(
+            prediction.RUNNERS, "af2", f"{__name__}:{RunnerWithoutMsaSettings.__name__}"
+        )
+
+    @pytest.mark.parametrize(
+        "options, keyword",
+        [
+            ("--prediction-msa-policy forbid-server", "msa_policy"),
+            ("--prediction-receptor-msa single", "receptor_msa"),
+        ],
+    )
+    def test_both_commands_refuse_the_option_with_a_usage_error(
+        self, options, keyword, folder, tmp_path, monkeypatch, capsys
+    ):
+        words = ["--predictor", "af2", *options_of(options), "--preflight-only"]
+        run_status, run_error = plan_exit(
+            run.main,
+            ["binding-metrics-run", "--input", str(LINEAR), "--output-dir", str(tmp_path / "out"),
+             "--metrics", "openfold", *words],
+            monkeypatch,
+            capsys,
+        )  # fmt: skip
+        batch_status, batch_error = plan_exit(
+            batch.main,
+            ["binding-metrics-batch", "--input-dir", str(folder),
+             "--output-csv", str(tmp_path / "res" / "out.csv"), "--metrics", "openfold", *words],
+            monkeypatch,
+            capsys,
+        )  # fmt: skip
+        assert (run_status, batch_status) == (2, 2)
+        assert run_error == batch_error and f"its runner has no '{keyword}' setting" in run_error
+        assert not (tmp_path / "out").exists() and not (tmp_path / "res").exists()
+
+    def test_the_python_functions_raise_the_same_error(self, folder, tmp_path):
+        keywords = dict(predictor="af2", prediction_msa_policy="forbid-server")
+        common = dict(
+            metrics={"openfold"},
+            skip_prep=True,
+            skip_relax=True,
+            openfold_conda_env=None,
+            peptide_chain="B",
+            receptor_chain="A",
+            preflight_only=True,
+        )
+        with pytest.raises(ValueError, match="no 'msa_policy' setting") as from_batch:
+            run_batch([folder / "a.pdb"], tmp_path / "out", **common, **keywords)
+        with pytest.raises(ValueError, match="no 'msa_policy' setting") as from_run:
+            run_pipeline(LINEAR, tmp_path / "out2", **common, **keywords)
+        assert str(from_batch.value) == str(from_run.value)
 
 
 #: the same cases as keywords of the Python functions (those that have a keyword)
