@@ -38,6 +38,7 @@ def _imported_top_level_names() -> set:
 
 
 class TestReportExtra:
+    @pytest.mark.slow
     def test_every_package_of_the_extra_is_imported_somewhere(self, extras):
         imported = _imported_top_level_names()
         unused = [d for d in map(_distribution, extras["report"]) if d not in imported]
