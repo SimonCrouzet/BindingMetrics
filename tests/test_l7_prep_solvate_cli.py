@@ -45,6 +45,7 @@ class TestPrepSeed:
         assert seen["random_seed"] == expected
         assert summary["random_seed"] == expected
 
+    @pytest.mark.slow
     @requires_pdbfixer
     def test_same_seed_gives_the_same_file_and_another_seed_a_different_one(
         self, monkeypatch, capsys, tmp_path
@@ -86,6 +87,7 @@ def _run_solvate(monkeypatch, capsys, src, out_path, *extra):
     return json.loads(capsys.readouterr().out)
 
 
+@pytest.mark.slow
 @requires_pdbfixer
 class TestSolvateSeed:
     def test_seed_is_echoed_and_defaults_to_the_library_seed(

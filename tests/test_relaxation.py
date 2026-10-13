@@ -182,6 +182,7 @@ class TestImplicitRelaxation:
         assert relaxer._platform_used == "CPU"
         assert "no CUDA driver in this test" in relaxer._platform_fallback_reason
 
+    @pytest.mark.slow
     def test_addhydrogens_failure_raises_and_logs(self, tmp_path, prepped_example_cif, caplog):
         """Both addHydrogens attempts failing stops the run with a clear error."""
         from unittest import mock

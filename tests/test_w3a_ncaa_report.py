@@ -100,6 +100,7 @@ class TestRelaxationRecordsTheSources:
         assert result.ncaa_bond_order_source == {}
 
 
+@pytest.mark.slow
 class TestPrepReport:
     def test_cyclic_prep_records_the_sources(self, monkeypatch):
         pytest.importorskip("pdbfixer")
