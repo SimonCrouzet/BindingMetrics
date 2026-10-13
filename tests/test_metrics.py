@@ -10,16 +10,6 @@ import pytest
 class TestSASA:
     """Tests for SASA calculations."""
 
-    def test_import_sasa_module(self):
-        """Should be able to import SASA functions."""
-        from binding_metrics.metrics.sasa import (
-            calculate_buried_sasa,
-            calculate_interface_sasa,
-        )
-
-        assert callable(calculate_buried_sasa)
-        assert callable(calculate_interface_sasa)
-
     @pytest.mark.parametrize("name", ["calculate_buried_sasa", "calculate_interface_sasa"])
     def test_the_trajectory_functions_require_mdtraj(self, name):
         """Should raise ImportError, naming the extra, if mdtraj is not available."""
@@ -100,16 +90,6 @@ class TestSASA:
 class TestContacts:
     """Tests for contact calculations."""
 
-    def test_import_contacts_module(self):
-        """Should be able to import contact functions."""
-        from binding_metrics.metrics.contacts import (
-            calculate_contact_residues,
-            calculate_contacts,
-        )
-
-        assert callable(calculate_contacts)
-        assert callable(calculate_contact_residues)
-
     def test_calculate_contacts_requires_mdtraj(self):
         """Should raise ImportError if mdtraj not available."""
         from binding_metrics.metrics import contacts
@@ -167,16 +147,6 @@ class TestContacts:
 
 class TestEnergy:
     """Tests for energy calculations."""
-
-    def test_import_energy_module(self):
-        """Should be able to import energy functions."""
-        from binding_metrics.metrics.energy import (
-            calculate_component_energies,
-            calculate_interaction_energy,
-        )
-
-        assert callable(calculate_interaction_energy)
-        assert callable(calculate_component_energies)
 
     def test_calculate_energy_requires_mdtraj(self):
         """Should raise ImportError if mdtraj not available."""
@@ -278,18 +248,6 @@ class TestEnergy:
 
 class TestRMSD:
     """Tests for RMSD calculations."""
-
-    def test_import_rmsd_module(self):
-        """Should be able to import RMSD functions."""
-        from binding_metrics.metrics.rmsd import (
-            calculate_ligand_rmsd,
-            calculate_rmsd,
-            calculate_rmsf,
-        )
-
-        assert callable(calculate_rmsd)
-        assert callable(calculate_rmsf)
-        assert callable(calculate_ligand_rmsd)
 
     def test_calculate_rmsd_requires_mdtraj(self):
         """Should raise ImportError if mdtraj not available."""

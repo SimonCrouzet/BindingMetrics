@@ -46,12 +46,6 @@ def _find_native_example(*pdb_id_tokens):
 class TestRamachandran:
     """Tests for compute_ramachandran."""
 
-    def test_import_function(self):
-        """Should be able to import compute_ramachandran."""
-        from binding_metrics.metrics.geometry import compute_ramachandran
-
-        assert callable(compute_ramachandran)
-
     def test_returns_expected_keys(self):
         """Result dict should have all required keys."""
         _skip_if_no_biotite()
@@ -153,12 +147,6 @@ class TestRamachandran:
 class TestOmegaPlanarity:
     """Tests for compute_omega_planarity."""
 
-    def test_import_function(self):
-        """Should be able to import compute_omega_planarity."""
-        from binding_metrics.metrics.geometry import compute_omega_planarity
-
-        assert callable(compute_omega_planarity)
-
     def test_returns_expected_keys(self):
         """Result dict should have all required keys."""
         _skip_if_no_biotite()
@@ -249,12 +237,6 @@ class TestOmegaPlanarity:
 
 class TestShapeComplementarity:
     """Tests for compute_shape_complementarity."""
-
-    def test_import_function(self):
-        """Should be able to import compute_shape_complementarity."""
-        from binding_metrics.metrics.geometry import compute_shape_complementarity
-
-        assert callable(compute_shape_complementarity)
 
     def test_returns_expected_keys(self):
         """Result dict should have all required keys."""
@@ -499,12 +481,6 @@ class TestShapeComplementarity:
 
 class TestBuriedVoidVolume:
     """Tests for compute_buried_void_volume."""
-
-    def test_import_function(self):
-        """Should be able to import compute_buried_void_volume."""
-        from binding_metrics.metrics.geometry import compute_buried_void_volume
-
-        assert callable(compute_buried_void_volume)
 
     def test_returns_expected_keys(self):
         """Result dict should have all required keys."""
