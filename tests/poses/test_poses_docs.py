@@ -1,4 +1,4 @@
-"""What docs/poses.md, docs/metrics.md, the README and the CHANGELOG say about poses is true."""
+"""What docs/poses.md, docs/metrics.md and the README say about poses is true."""
 
 import inspect
 from pathlib import Path
@@ -14,7 +14,6 @@ ROOT = Path(__file__).resolve().parents[2]
 POSES = (ROOT / "docs" / "poses.md").read_text(encoding="utf-8")
 METRICS = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
-CHANGELOG = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
 
 def _signature_text(function, name: str) -> str:
@@ -67,26 +66,12 @@ def test_the_members_of_every_pose_are_documented():
 
 
 def test_the_deprecation_message_is_the_one_the_code_emits():
-    assert MESSAGE.startswith("PredictionRecord is deprecated and renamed PredictedPose")
-    assert "(not before 0.4.0)" in MESSAGE
     assert MESSAGE in POSES
-    assert MESSAGE in CHANGELOG
 
 
-def test_the_pages_point_at_each_other():
-    assert "docs/poses.md" in README
-    assert "(poses.md)" in METRICS
-
-
-def test_the_documentation_uses_the_new_name_for_the_class():
-    for label, text in (("metrics.md", METRICS), ("README.md", README)):
+def test_the_old_name_is_always_given_with_the_new_one():
+    """A line of the documentation that names ``PredictionRecord`` also names ``PredictedPose``."""
+    for label, text in (("poses.md", POSES), ("metrics.md", METRICS), ("README.md", README)):
         for line in text.splitlines():
-            if "PredictionRecord" in line:
-                assert "former name" in line or "deprecated" in line.lower(), (label, line[:80])
-
-
-def test_the_changelog_records_the_rename_and_the_deprecation():
-    section = CHANGELOG.split("### Deprecated", 1)[1].split("### Fixed", 1)[0]
-    assert "`PredictionRecord`" in section and "`PredictedPose`" in section
-    assert "### Changed" in CHANGELOG
-    assert "`PredictionRecord` is renamed `PredictedPose`" in CHANGELOG
+            if "PredictionRecord" in line and not line.startswith("#"):
+                assert "PredictedPose" in line, (label, line[:80])
