@@ -1095,6 +1095,45 @@ def _pump_stream(source, destination: str, notes: StreamNotes) -> None:
             pass
 
 
+def _openfold_predict_command(
+    query_json: str | Path,
+    output_dir: str | Path,
+    runner_yaml: str | Path,
+    *,
+    num_diffusion_samples: int = 5,
+    use_msa_server: bool = True,
+    num_model_seeds: Optional[int] = None,
+    inference_ckpt_path: Optional[str | Path] = None,
+    extra_args: Optional[Sequence[str]] = None,
+    conda_env: Optional[str] = None,
+) -> list[str]:
+    """The command line of ``run_openfold predict``, as ``run_openfold`` starts it.
+
+    It is a function of its own so that the runner can look at the flags a request would start
+    OpenFold3 with (for the MSA policy) without writing a file or starting a process.
+    ``num_model_seeds`` is the number that OpenFold3 generates seeds from, or None.
+    """
+    command = [
+        "run_openfold",
+        "predict",
+        f"--query_json={query_json}",
+        f"--output_dir={output_dir}",
+        f"--num_diffusion_samples={num_diffusion_samples}",
+        f"--use_msa_server={str(use_msa_server).lower()}",
+        f"--runner_yaml={runner_yaml}",
+    ]
+    if num_model_seeds is not None:
+        # A truthy --num_model_seeds replaces the seeds of the YAML (experiment_runner.py).
+        command.append(f"--num_model_seeds={num_model_seeds}")
+    if inference_ckpt_path is not None:
+        command.append(f"--inference_ckpt_path={inference_ckpt_path}")
+    if extra_args:
+        command.extend(extra_args)
+    if conda_env is not None:
+        return ["conda", "run", "-n", conda_env, "--no-capture-output"] + command
+    return command
+
+
 def _run_openfold_command(cmd: Sequence[str], output_dir: Path) -> OpenFoldRunInfo:
     """Run an OpenFold3 command line and explain how it failed.
 
@@ -1717,11 +1756,19 @@ def _query_chain(
     return chain
 
 
-#: File name of a dummy MSA. OpenFold3 0.5.0 parses an MSA file only when its name (without the
-#: suffix) is a key of ``MSASettings.max_seq_counts`` (``colabfold_main`` is one, and the name of
-#: its own dummy MSA), and skips any other file; a chain with no parsed MSA then fails with
-#: ``IndexError`` while its features are built.
-_DUMMY_MSA_FILE = "colabfold_main.a3m"
+#: File name of the MSA that the query gives a chain (a dummy MSA, or the receptor's alignment
+#: that the caller supplies). OpenFold3 0.5.0 parses an MSA file only when its name (without the
+#: suffix) is a key of ``MSASettings.max_seq_counts`` (``projects/of3_all_atom/config/
+#: dataset_config_components.py``: ``uniref90_hits``, ``uniprot_hits``, ``bfd_uniclust_hits``,
+#: ``bfd_uniref_hits``, ``cfdb_uniref30``, ``cfdb_hits``, ``mgnify_hits``, ``rfam_hits``,
+#: ``rnacentral_hits``, ``nt_hits``, ``nucleotide_collection_hits``,
+#: ``concat_cfdb_uniref100_filtered``, ``mmseqs_colabfold``, ``colabfold_main`` and
+#: ``colabfold_paired``) and a suffix of ``.a3m`` or ``.sto``; it skips any other file, and a
+#: chain with no parsed MSA then fails with ``IndexError`` while its features are built.
+#: ``colabfold_main`` is the name of the MSA that the ColabFold server returns, with a limit of
+#: 16384 rows, and of OpenFold3's own dummy MSA.
+_MAIN_MSA_FILE = "colabfold_main.a3m"
+_DUMMY_MSA_FILE = _MAIN_MSA_FILE
 
 
 def _write_dummy_msa(sequence: str, chain_id: str, directory: Path) -> Path:
@@ -1736,17 +1783,105 @@ def _write_dummy_msa(sequence: str, chain_id: str, directory: Path) -> Path:
     return path
 
 
-def _msa_fields(dummy_msa: bool, *, sequence: str, chain_id: str, directory: Path) -> dict:
-    """The arguments of :func:`_query_chain` that give a chain a dummy MSA, or none.
+def _first_a3m_sequence(path: Path) -> str:
+    """The first sequence of an A3M file without its insertions (lower case); empty if none.
 
+    A file that does not start with a ``>`` header line (a Stockholm file, say) has no first
+    sequence in this sense.
+    """
+    lines: list[str] = []
+    started = False
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line.startswith(">"):
+                if started:
+                    break
+                started = True
+            elif started and line:
+                lines.append(line)
+    return "".join(character for character in "".join(lines) if not character.islower())
+
+
+def _check_receptor_msa(path: str | Path, sequence: str, chain_id: str, sample: str = "") -> Path:
+    """Check that the alignment ``path`` is an A3M file made for ``sequence``; return its path.
+
+    OpenFold3 0.5.0 takes the first row of a chain's alignment as the query row of its MSA
+    features and puts the columns of that row on the residues of the chain by position
+    (``MsaSampleParserInference.parse_msas`` in ``core/data/io/sequence/msa.py`` and
+    ``map_msas_to_tokens`` in ``core/data/primitives/featurization/msa.py``, v0.5.0). It never
+    compares the row with the sequence of the chain, so an alignment made for another sequence
+    gives features that belong to that other sequence (a shorter one fails with ``IndexError``
+    while the features are built). The comparison is made here, before anything is written.
+
+    Raises:
+        FileNotFoundError: ``path`` is not a file.
+        ValueError: The file holds no A3M sequence, or its first sequence (insertions left out)
+            is not ``sequence``.
+    """
+    path = Path(path).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"receptor_msa_path is not a file: {path}")
+    where = f"chain {chain_id}" + (f" of sample '{sample}'" if sample else "")
+    first = _first_a3m_sequence(path)
+    if not first:
+        raise ValueError(
+            f"{path} holds no sequence in A3M format (a '>' header line, then the query sequence); "
+            f"OpenFold3 reads an alignment of {where} as an A3M file"
+        )
+    if first != sequence:
+        differs = next(
+            (i for i, (a, b) in enumerate(zip(first, sequence), start=1) if a != b),
+            min(len(first), len(sequence)) + 1,
+        )
+        raise ValueError(
+            f"the first sequence of the alignment {path} is not the sequence of {where}: it has "
+            f"{len(first)} residues, the chain has {len(sequence)}, and they first differ at "
+            f"position {differs}. OpenFold3 takes the first row of an alignment as the query of "
+            "the chain and does not compare it with the chain, so an alignment made for another "
+            "sequence would give the chain features of that sequence"
+        )
+    return path
+
+
+def _stage_receptor_msa(source: str | Path, directory: Path) -> Path:
+    """Copy the alignment ``source`` to ``<directory>/colabfold_main.a3m``; return that path.
+
+    The copy has the name that OpenFold3 parses (see ``_MAIN_MSA_FILE``) and sits in a folder of
+    its own, as the dummy MSA does. The query names the copy, so a run does not depend on the
+    original file staying where it was.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / _MAIN_MSA_FILE
+    shutil.copyfile(source, target)
+    return target
+
+
+def _msa_fields(
+    dummy_msa: bool,
+    *,
+    sequence: str,
+    chain_id: str,
+    directory: Path,
+    given_msa_path: Optional[str | Path] = None,
+) -> dict:
+    """The arguments of :func:`_query_chain` that give a chain its MSA, or none.
+
+    ``given_msa_path`` is an alignment the caller supplies for this chain (the receptor's): it is
+    copied to ``directory`` as ``colabfold_main.a3m`` and wins over the dummy MSA. Check it
+    first with :func:`_check_receptor_msa`.
+
+    Otherwise ``dummy_msa`` gives the chain an MSA that holds only the query sequence.
     OpenFold3's input reference suggests MSA-free inference through a dummy MSA that holds only
     the query sequence and discourages leaving the MSA input out. 0.5.0 builds the same dummy
     for a chain without MSA files (with a warning), so the prediction is the same either way
     (measured: three seeds of one complex, within 0.03 ipTM and 0.1 A of binder RMSD); the
     file is written so that the query says what it uses. Only a run without the ColabFold MSA
     server needs it: with the server on, OpenFold3 replaces ``main_msa_file_paths`` (with a
-    warning).
+    warning), the supplied alignment included.
     """
+    if given_msa_path is not None:
+        return {"main_msa_file_paths": [str(_stage_receptor_msa(given_msa_path, directory))]}
     if not dummy_msa:
         return {}
     return {"main_msa_file_paths": [str(_write_dummy_msa(sequence, chain_id, directory))]}
@@ -1789,6 +1924,7 @@ def prepare_refolding_query(
     conda_env: Optional[str] = None,
     template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: bool = False,
+    receptor_msa_path: Optional[str | Path] = None,
 ) -> Path:
     """Prepare an OpenFold3 query JSON for binder refolding with receptor as template.
 
@@ -1873,6 +2009,14 @@ def prepare_refolding_query(
             overwrites it: ``run_openfold_*`` sets it when ``use_msa_server`` is False. Default
             False, which leaves the MSA input out (OpenFold3 then builds the same dummy itself,
             with a warning; its input reference discourages leaving the MSA input out).
+        receptor_msa_path: An A3M alignment of the receptor chain, copied to
+            ``{output_dir}/msas/{query_name}_{receptor_chain}/colabfold_main.a3m`` and given to the
+            receptor chain as ``main_msa_file_paths`` (the name is one that OpenFold3 parses; see
+            :func:`_msa_fields`). The first sequence of the file must be the sequence of the
+            receptor chain as the query writes it: OpenFold3 takes it as the query row and does
+            not compare it with the chain. None (default) leaves the receptor to ``dummy_msa``.
+            A run with the ColabFold MSA server replaces it, so ``run_openfold_*`` refuses the
+            combination.
 
     Returns:
         Path to the written query JSON file.
@@ -1882,7 +2026,9 @@ def prepare_refolding_query(
             empty, ``binder_cyclic`` is not ``True``, ``False`` or ``"auto"``, it is ``True``
             and the installed OpenFold3 is older than 0.4.5, or ``template_mode`` is not
             ``"structure"`` or ``"alignment"``, or it is ``"structure"`` and the installed
-            OpenFold3 is older than 0.4.2. Nothing is written then.
+            OpenFold3 is older than 0.4.2, or the first sequence of ``receptor_msa_path`` is
+            not the receptor sequence. Nothing is written then.
+        FileNotFoundError: ``receptor_msa_path`` is not a file.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     import gemmi
@@ -1914,6 +2060,8 @@ def prepare_refolding_query(
         template_src, template_source = st, str(complex_structure_path)
     _check_template_chain_id(receptor_chain, str(complex_structure_path))
     _require_chain(template_src, receptor_chain, template_source)
+    if receptor_msa_path is not None:
+        _check_receptor_msa(receptor_msa_path, receptor_seq, receptor_chain)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1954,6 +2102,7 @@ def prepare_refolding_query(
                             sequence=receptor_seq,
                             chain_id=receptor_chain,
                             directory=output_dir / "msas" / f"{query_name}_{receptor_chain}",
+                            given_msa_path=receptor_msa_path,
                         ),
                     ),
                     _query_chain(
@@ -1991,6 +2140,7 @@ def prepare_scoring_query(
     conda_env: Optional[str] = None,
     template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: bool = False,
+    receptor_msa_path: Optional[str | Path] = None,
 ) -> Path:
     """Prepare an OpenFold3 query JSON to score an existing complex structure.
 
@@ -2060,6 +2210,8 @@ def prepare_scoring_query(
             reaches OpenFold3; see :func:`prepare_refolding_query`.
         dummy_msa: Give every chain a dummy MSA (query sequence only); see
             :func:`prepare_refolding_query`.
+        receptor_msa_path: An A3M alignment of the receptor chain; see
+            :func:`prepare_refolding_query`.
 
     Returns:
         Path to the written query JSON file.
@@ -2067,7 +2219,9 @@ def prepare_scoring_query(
     Raises:
         ValueError: If ``seeds`` is empty, ``binder_cyclic`` is ``True`` and the installed
             OpenFold3 is older than 0.4.5, or ``template_mode`` is not ``"structure"`` or
-            ``"alignment"`` (or it is ``"structure"`` and OpenFold3 is older than 0.4.2).
+            ``"alignment"`` (or it is ``"structure"`` and OpenFold3 is older than 0.4.2), or the
+            first sequence of ``receptor_msa_path`` is not the receptor sequence.
+        FileNotFoundError: ``receptor_msa_path`` is not a file.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     import gemmi
@@ -2101,6 +2255,8 @@ def prepare_scoring_query(
     _check_template_chain_id(binder_chain, str(complex_structure_path))
     _require_chain(template_src, receptor_chain, template_source)
     _require_chain(template_src, binder_chain, template_source)
+    if receptor_msa_path is not None:
+        _check_receptor_msa(receptor_msa_path, receptor_seq, receptor_chain)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2164,6 +2320,7 @@ def prepare_scoring_query(
                             sequence=receptor_seq,
                             chain_id=receptor_chain,
                             directory=output_dir / "msas" / f"{query_name}_{receptor_chain}",
+                            given_msa_path=receptor_msa_path,
                         ),
                     ),
                     _query_chain(
@@ -2337,6 +2494,7 @@ def prepare_batched_scoring_queries(
     conda_env: Optional[str] = None,
     template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: bool = False,
+    receptor_msa_path: Optional[str | Path] = None,
 ) -> Path:
     """Prepare a single OF3 query JSON that scores multiple complexes.
 
@@ -2360,6 +2518,9 @@ def prepare_batched_scoring_queries(
             reaches OpenFold3; see :func:`prepare_refolding_query`.
         dummy_msa: Give every chain a dummy MSA (query sequence only); see
             :func:`prepare_refolding_query`.
+        receptor_msa_path: One A3M alignment for the receptor chain of every sample, copied
+            once per sample; see :func:`prepare_refolding_query`. The samples must therefore
+            share the receptor sequence: the first sequence of the file is compared with each.
 
     Returns:
         Path to the combined query JSON file.
@@ -2368,7 +2529,9 @@ def prepare_batched_scoring_queries(
         ValueError: If ``seeds`` is empty, two samples share a query name, ``binder_cyclic``
             is ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode``
             is not ``"structure"`` or ``"alignment"`` (or it is ``"structure"`` and OpenFold3
-            is older than 0.4.2).
+            is older than 0.4.2), or the first sequence of ``receptor_msa_path`` is not the
+            receptor sequence of a sample (the message names the sample).
+        FileNotFoundError: ``receptor_msa_path`` is not a file.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     _check_template_mode(template_mode)
@@ -2377,6 +2540,11 @@ def prepare_batched_scoring_queries(
     _check_template_mode_supported(template_mode, conda_env)
     _check_batch_template_chain_ids(rows, binder_has_template=True)
     cyclic_flags = _batch_cyclic_flags(rows, binder_cyclic, conda_env)
+    if receptor_msa_path is not None:
+        for sample, _structure, receptor_sequence, *_ in rows:
+            _check_receptor_msa(
+                receptor_msa_path, receptor_sequence, sample.receptor_chain, sample.query_name
+            )
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2426,6 +2594,7 @@ def prepare_batched_scoring_queries(
                         sequence=receptor_seq,
                         chain_id=s.receptor_chain,
                         directory=output_dir / "msas" / f"{s.query_name}_{s.receptor_chain}",
+                        given_msa_path=receptor_msa_path,
                     ),
                 ),
                 _query_chain(
@@ -2459,6 +2628,7 @@ def prepare_batched_refolding_queries(
     conda_env: Optional[str] = None,
     template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: bool = False,
+    receptor_msa_path: Optional[str | Path] = None,
 ) -> Path:
     """Prepare a single OF3 query JSON that refolds binders for multiple complexes.
 
@@ -2482,6 +2652,9 @@ def prepare_batched_refolding_queries(
             reaches OpenFold3; see :func:`prepare_refolding_query`.
         dummy_msa: Give every chain a dummy MSA (query sequence only); see
             :func:`prepare_refolding_query`.
+        receptor_msa_path: One A3M alignment for the receptor chain of every sample, copied
+            once per sample; see :func:`prepare_refolding_query`. The samples must therefore
+            share the receptor sequence: the first sequence of the file is compared with each.
 
     Returns:
         Path to the combined query JSON file.
@@ -2490,7 +2663,9 @@ def prepare_batched_refolding_queries(
         ValueError: If ``seeds`` is empty, two samples share a query name, ``binder_cyclic``
             is ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode``
             is not ``"structure"`` or ``"alignment"`` (or it is ``"structure"`` and OpenFold3
-            is older than 0.4.2).
+            is older than 0.4.2), or the first sequence of ``receptor_msa_path`` is not the
+            receptor sequence of a sample (the message names the sample).
+        FileNotFoundError: ``receptor_msa_path`` is not a file.
         UnmappableResidueError: See ``on_unmappable_residue``.
     """
     _check_template_mode(template_mode)
@@ -2499,6 +2674,11 @@ def prepare_batched_refolding_queries(
     _check_template_mode_supported(template_mode, conda_env)
     _check_batch_template_chain_ids(rows, binder_has_template=False)
     cyclic_flags = _batch_cyclic_flags(rows, binder_cyclic, conda_env)
+    if receptor_msa_path is not None:
+        for sample, _structure, receptor_sequence, *_ in rows:
+            _check_receptor_msa(
+                receptor_msa_path, receptor_sequence, sample.receptor_chain, sample.query_name
+            )
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2535,6 +2715,7 @@ def prepare_batched_refolding_queries(
                         sequence=receptor_seq,
                         chain_id=s.receptor_chain,
                         directory=output_dir / "msas" / f"{s.query_name}_{s.receptor_chain}",
+                        given_msa_path=receptor_msa_path,
                     ),
                 ),
                 _query_chain(

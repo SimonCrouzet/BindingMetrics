@@ -81,6 +81,7 @@ from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     _extract_chain_to_cif,
     _extract_sequence_from_structure,
     _merge_runner_settings,
+    _openfold_predict_command,
     _query_seeds,
     _resolve_run_seeds,
     _run_openfold_command,
@@ -149,6 +150,29 @@ def _dummy_msa_kwargs(dummy_msa: Optional[bool], use_msa_server: bool) -> dict:
     """
     wanted = (not use_msa_server) if dummy_msa is None else bool(dummy_msa)
     return {"dummy_msa": True} if wanted else {}
+
+
+def _receptor_msa_kwargs(receptor_msa_path: Optional[str | Path], use_msa_server: bool) -> dict:
+    """``{"receptor_msa_path": path}`` for the query builder, or ``{}`` when none is given.
+
+    With the ColabFold MSA server on, OpenFold3 replaces ``main_msa_file_paths`` of every chain
+    (with a warning), so the alignment would not be used and the sequences would leave the
+    machine all the same; the combination is refused before anything is written. Nothing is
+    passed for None, so that a query builder that predates the option, or a test double that
+    replaces it, is called exactly as before.
+
+    Raises:
+        ValueError: ``receptor_msa_path`` is given and ``use_msa_server`` is true.
+    """
+    if receptor_msa_path is None:
+        return {}
+    if use_msa_server:
+        raise ValueError(
+            "receptor_msa_path needs use_msa_server=False: with the ColabFold MSA server on, "
+            "OpenFold3 replaces the MSA files of the query by the ones it gets from the server, "
+            "so the alignment would not be used"
+        )
+    return {"receptor_msa_path": receptor_msa_path}
 
 
 def _find_prediction_files(
@@ -567,29 +591,17 @@ def run_openfold(
             seeds=seed_values,
         )
 
-    of3_cmd = [
-        "run_openfold",
-        "predict",
-        f"--query_json={query_json}",
-        f"--output_dir={output_dir}",
-        f"--num_diffusion_samples={num_diffusion_samples}",
-        f"--use_msa_server={str(use_msa_server).lower()}",
-        f"--runner_yaml={effective_yaml}",
-    ]
-    if generated_seeds is not None:
-        # A truthy --num_model_seeds replaces the seeds of the YAML (experiment_runner.py).
-        of3_cmd.append(f"--num_model_seeds={generated_seeds}")
-
-    if inference_ckpt_path is not None:
-        of3_cmd.append(f"--inference_ckpt_path={inference_ckpt_path}")
-
-    if extra_args:
-        of3_cmd.extend(extra_args)
-
-    if conda_env is not None:
-        cmd = ["conda", "run", "-n", conda_env, "--no-capture-output"] + of3_cmd
-    else:
-        cmd = of3_cmd
+    cmd = _openfold_predict_command(
+        query_json,
+        output_dir,
+        effective_yaml,
+        num_diffusion_samples=num_diffusion_samples,
+        use_msa_server=use_msa_server,
+        num_model_seeds=generated_seeds,
+        inference_ckpt_path=inference_ckpt_path,
+        extra_args=extra_args,
+        conda_env=conda_env,
+    )
 
     _run_openfold_command(cmd, output_dir)
     return output_dir
@@ -621,6 +633,7 @@ def run_openfold_scoring(
     binder_cyclic: bool | str = "auto",
     template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: Optional[bool] = None,
+    receptor_msa_path: Optional[str | Path] = None,
 ) -> Path:
     """Run OpenFold3 scoring of an existing complex structure (Mode 1).
 
@@ -677,6 +690,11 @@ def run_openfold_scoring(
             that OpenFold3's input reference suggests (it discourages leaving the MSA input out);
             with the server on it would be overwritten. True or False decides it. See
             :func:`prepare_refolding_query`.
+        receptor_msa_path: An A3M alignment of the receptor chain, given to OpenFold3 as the MSA
+            of that chain (``colabfold_main.a3m`` in a folder of its own); the binder keeps the
+            dummy MSA. None (default) gives the receptor the dummy MSA too. It needs
+            ``use_msa_server=False`` (the server replaces it) and its first sequence must be the
+            receptor sequence; see :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory
@@ -688,7 +706,10 @@ def run_openfold_scoring(
         ValueError: ``seeds`` and ``num_model_seeds`` are both given, ``binder_cyclic`` is
             ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode`` is not
             ``"structure"`` or ``"alignment"``, or it is ``"structure"`` and the installed
-            OpenFold3 is older than 0.4.2 (checked before anything is written).
+            OpenFold3 is older than 0.4.2 (checked before anything is written), or
+            ``receptor_msa_path`` is given with ``use_msa_server=True`` or does not start with
+            the receptor sequence.
+        FileNotFoundError: ``receptor_msa_path`` is not a file.
     """
     _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
@@ -707,6 +728,7 @@ def run_openfold_scoring(
         conda_env=conda_env,
         **_template_mode_kwargs(template_mode),
         **_dummy_msa_kwargs(dummy_msa, use_msa_server),
+        **_receptor_msa_kwargs(receptor_msa_path, use_msa_server),
     )
 
     run_openfold(
@@ -747,6 +769,7 @@ def run_openfold_refolding(
     binder_cyclic: bool | str = "auto",
     template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: Optional[bool] = None,
+    receptor_msa_path: Optional[str | Path] = None,
 ) -> Path:
     """Run OpenFold3 refolding: binder predicted from sequence, receptor given as template.
 
@@ -809,6 +832,11 @@ def run_openfold_refolding(
             that OpenFold3's input reference suggests (it discourages leaving the MSA input out);
             with the server on it would be overwritten. True or False decides it. See
             :func:`prepare_refolding_query`.
+        receptor_msa_path: An A3M alignment of the receptor chain, given to OpenFold3 as the MSA
+            of that chain (``colabfold_main.a3m`` in a folder of its own); the binder keeps the
+            dummy MSA. None (default) gives the receptor the dummy MSA too. It needs
+            ``use_msa_server=False`` (the server replaces it) and its first sequence must be the
+            receptor sequence; see :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory
@@ -820,7 +848,10 @@ def run_openfold_refolding(
         ValueError: ``seeds`` and ``num_model_seeds`` are both given, ``binder_cyclic`` is
             ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode`` is not
             ``"structure"`` or ``"alignment"``, or it is ``"structure"`` and the installed
-            OpenFold3 is older than 0.4.2 (checked before anything is written).
+            OpenFold3 is older than 0.4.2 (checked before anything is written), or
+            ``receptor_msa_path`` is given with ``use_msa_server=True`` or does not start with
+            the receptor sequence.
+        FileNotFoundError: ``receptor_msa_path`` is not a file.
     """
     _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
@@ -839,6 +870,7 @@ def run_openfold_refolding(
         conda_env=conda_env,
         **_template_mode_kwargs(template_mode),
         **_dummy_msa_kwargs(dummy_msa, use_msa_server),
+        **_receptor_msa_kwargs(receptor_msa_path, use_msa_server),
     )
 
     run_openfold(
@@ -881,6 +913,7 @@ def run_openfold_batched(
     binder_cyclic: bool | str = "auto",
     template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: Optional[bool] = None,
+    receptor_msa_path: Optional[str | Path] = None,
 ) -> Path:
     """Run OpenFold3 inference on multiple samples in a single subprocess.
 
@@ -931,6 +964,12 @@ def run_openfold_batched(
             that OpenFold3's input reference suggests (it discourages leaving the MSA input out);
             with the server on it would be overwritten. True or False decides it. See
             :func:`prepare_refolding_query`.
+        receptor_msa_path: One A3M alignment for the receptor chain of every sample, given to
+            OpenFold3 as the MSA of that chain (a copy, ``colabfold_main.a3m``, in a folder per
+            sample); the binders keep the dummy MSA. None (default) gives the receptors the
+            dummy MSA too. It needs ``use_msa_server=False`` (the server replaces it) and its
+            first sequence must be the receptor sequence of every sample; see
+            :func:`prepare_batched_refolding_queries`.
 
     Returns:
         Path to the OF3 predictions output directory.
@@ -941,7 +980,10 @@ def run_openfold_batched(
         ValueError: ``seeds`` and ``num_model_seeds`` are both given, ``binder_cyclic`` is
             ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode`` is not
             ``"structure"`` or ``"alignment"``, or it is ``"structure"`` and the installed
-            OpenFold3 is older than 0.4.2 (checked before anything is written).
+            OpenFold3 is older than 0.4.2 (checked before anything is written), or
+            ``receptor_msa_path`` is given with ``use_msa_server=True`` or does not start with
+            the receptor sequence.
+        FileNotFoundError: ``receptor_msa_path`` is not a file.
     """
     _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
@@ -959,6 +1001,7 @@ def run_openfold_batched(
         conda_env=conda_env,
         **_template_mode_kwargs(template_mode),
         **_dummy_msa_kwargs(dummy_msa, use_msa_server),
+        **_receptor_msa_kwargs(receptor_msa_path, use_msa_server),
     )
 
     run_openfold(
