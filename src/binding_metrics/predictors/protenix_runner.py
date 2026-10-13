@@ -370,18 +370,24 @@ class ProtenixRunError(RuntimeError):
 # ---------------------------------------------------------------------- messages
 
 
+#: What each mode other than ``predict`` asks for, for the message that refuses it. Every word of
+#: ``store.MODES`` but ``predict`` needs an entry, or ``_unsupported_mode_message`` raises
+#: ``KeyError`` instead of the ``ValueError`` it is for (a test walks ``MODES``).
+_MODE_NEEDS: dict[str, str] = {
+    "refold": "gives the receptor as a template and predicts the binder freely",
+    "score": "gives every chain its own structure as a template",
+    "score-lock": (
+        "gives every chain its own structure as a template and pins the relative pose of the chains"
+    ),
+    "refold-lock": "gives the receptor a forced template and leaves the binder free",
+}
+
+
 def _unsupported_mode_message(mode: str) -> str:
     """Why the runner cannot run ``mode``, and the documented routes that exist."""
     if mode not in MODES:
         return f"mode must be one of {MODES}, got {mode!r}; the Protenix runner runs 'predict'"
-    needs = {
-        "refold": "gives the receptor as a template and predicts the binder freely",
-        "score": "gives every chain its own structure as a template",
-        "score-lock": (
-            "gives every chain its own structure as a template and pins the relative pose of "
-            "the chains"
-        ),
-    }[mode]
+    needs = _MODE_NEEDS[mode]
     return (
         f"The Protenix runner supports mode 'predict' only, not '{mode}'. Mode '{mode}' {needs}. "
         "Protenix takes templates as alignment files, `templatesPath` in .a3m or .hhr format "
