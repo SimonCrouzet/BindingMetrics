@@ -95,9 +95,10 @@ closure of the binder. ``True`` writes the head-to-tail bond whether or not the 
 for a binder that is to be predicted closed, besides the detected disulfides; it needs at least
 two residues. ``False`` writes none of them. A position is found from the residue name and number
 of the closure in the sequence sent (the residues that are amino acids of the chain, as the query
-reader counts them); a closure that cannot be placed, or whose atoms are not the ones above, raises
-``ValueError`` instead of a guess, and so does a closure search that fails in ``"auto"`` (a
-linear prediction of a ring is not the fallback). The choice is in the key. A list given as
+reader counts them; ``predictors/_closures.py`` does this for the Boltz-2 runner too); a closure
+that cannot be placed, or whose atoms are not the ones above, raises ``ValueError`` instead of a
+guess, and so does a closure search that fails in ``"auto"`` (a linear prediction of a ring is not
+the fallback). The choice is in the key. A list given as
 ``covalent_bonds`` is written after these, as given and not interpreted; a bond that is already
 there is not written twice. TO VERIFY: the documentation has no example of a polymer-polymer bond
 and names the atoms only by the rule of line 243. The code that applies a bond
@@ -243,6 +244,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from binding_metrics.predictors._closures import find_closures, place_closures
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.store import MODES, PredictionRequest
 from binding_metrics.predictors.weights import WeightsRef
@@ -266,6 +268,9 @@ _DEFAULT_BINDER_CYCLIC = "auto"
 #: The binder is the second entity of the input, and its only copy the first
 #: (``docs/infer_json_format.md:233-235``).
 _BINDER_ENTITY = 2
+
+#: The closure families that ``covalent_bonds`` documents (``docs/infer_json_format.md:224-229``).
+_DOCUMENTED_CLOSURE_FAMILIES = ("head_to_tail", "disulfide")
 
 #: The only model with constraint embedders switched on (``configs/configs_model_type.py:123-136``).
 CONSTRAINT_MODEL_NAME = "protenix_base_constraint_v0.5.0"
@@ -780,58 +785,24 @@ def _closure_bonds(
     """
     if binder_cyclic is False:
         return []
-    from binding_metrics.capabilities import _read_atoms, detect_closures
-
     length = len(residues)
-    try:
-        closures = detect_closures(_read_atoms(structure_path), binder_chain)
-    except Exception as exc:  # noqa: BLE001 - external reader; raised again with the way out
-        raise ValueError(
-            f"could not look for ring closures in chain {binder_chain} of {structure_path} "
-            f"({exc}), and a linear prediction of a ring is not the fallback: pass "
-            "binder_cyclic=False to write no closure, or binder_cyclic=True to write the "
+    closures = find_closures(
+        structure_path,
+        binder_chain,
+        fallback_advice=(
+            "pass binder_cyclic=False to write no closure, or binder_cyclic=True to write the "
             "head-to-tail bond"
-        ) from exc
-    places: dict[tuple[str, int], list[int]] = {}
-    for position, key in enumerate(residues, start=1):
-        places.setdefault(key, []).append(position)
-
-    def position_of(end: Any, closure: Any) -> int:
-        found = places.get((end.residue_name, end.residue_number), [])
-        if len(found) != 1:
-            raise ValueError(
-                f"cannot place the {closure.describe()} of chain {binder_chain}: residue "
-                f"{end.residue_name} {end.residue_number} is {'not' if not found else 'twice'} "
-                f"in the {length} residues sent for the chain. Pass binder_cyclic=False to write "
-                "no closure"
-            )
-        return found[0]
-
-    bonds: list[dict[str, Any]] = []
-    not_written: list[str] = []
-    head_to_tail = False
-    for closure in closures:
-        ends = (closure.end1, closure.end2)
-        if closure.family == "head_to_tail":
-            by_atom = {end.atom_name: position_of(end, closure) for end in ends}
-            if set(by_atom) != {"C", "N"} or by_atom["C"] != length or by_atom["N"] != 1:
-                raise ValueError(
-                    f"the {closure.describe()} of chain {binder_chain} is not between C of the "
-                    f"last residue ({length}) and N of the first: {by_atom}. Pass "
-                    "binder_cyclic=False to write no closure"
-                )
-            bonds.append(_bond(length, "C", 1, "N"))
-            head_to_tail = True
-        elif closure.family == "disulfide":
-            if any(end.atom_name != "SG" for end in ends):
-                raise ValueError(
-                    f"the {closure.describe()} of chain {binder_chain} is not between two SG "
-                    "atoms. Pass binder_cyclic=False to write no closure"
-                )
-            first, second = sorted(position_of(end, closure) for end in ends)
-            bonds.append(_bond(first, "SG", second, "SG"))
-        else:
-            not_written.append(closure.describe())
+        ),
+    )
+    placed, not_written = place_closures(
+        closures,
+        residues,
+        binder_chain,
+        families=_DOCUMENTED_CLOSURE_FAMILIES,
+        way_out="Pass binder_cyclic=False to write no closure",
+    )
+    bonds = [_bond(bond.position1, bond.atom1, bond.position2, bond.atom2) for bond in placed]
+    head_to_tail = any(bond.family == "head_to_tail" for bond in placed)
     if binder_cyclic is True and not head_to_tail:
         if length < 2:
             raise ValueError(
