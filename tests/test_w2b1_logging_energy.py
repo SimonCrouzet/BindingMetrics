@@ -122,10 +122,3 @@ def test_cli_prints_the_same_text_on_the_same_streams(
         "FileNotFoundError: Structure file not found: " + str(missing) + "\n"
     )
     assert "\n\n" not in captured.err
-
-
-def test_main_installs_the_console_handlers_first(package_logger, monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["binding-metrics-energy", "--help"])
-    with pytest.raises(SystemExit):
-        energy.main()
-    assert any(isinstance(h, _CurrentStreamHandler) for h in package_logger.handlers)

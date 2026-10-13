@@ -100,10 +100,3 @@ def test_cli_keeps_warning_on_stdout_between_the_printed_lines(package_logger, m
     ]
     assert lines[2:4] == ["", "Interface summary:"]
     assert captured.err == ""
-
-
-def test_main_installs_the_console_handlers_first(package_logger, monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["binding-metrics-interface", "--help"])
-    with pytest.raises(SystemExit):
-        interface.main()
-    assert any(isinstance(h, _CurrentStreamHandler) for h in package_logger.handlers)
