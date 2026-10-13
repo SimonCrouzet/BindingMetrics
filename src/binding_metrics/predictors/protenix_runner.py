@@ -37,7 +37,8 @@ and the openfold run module are imported when an input is read, never before)::
             constraints: Optional[Mapping] = None,
             covalent_bonds: Optional[Sequence[Mapping]] = None,
             on_unmappable_residue: str = "error", binder_cyclic: bool | str = "auto",
-            extra_args: Sequence[str] = ()) -> PredictionRequest
+            extra_args: Sequence[str] = (), msa_policy: str = "default",
+            receptor_msa: Optional[str | Path] = None) -> PredictionRequest
         .check_weights(request)                           # raises when the weights cannot be used
         .prepare(request, work_dir) -> Path               # <work_dir>/input/<name>.json
         .run(request, work_dir) -> Path                   # <work_dir>/predictions
@@ -150,10 +151,11 @@ or ``--use_template``, ``--use_rna_msa`` or ``--use_seeds_in_json``, raises ``Va
 
 MSA. ``use_msa_server`` (default True) is ``--use_msa``. Protenix has no separate switch for the
 server: with ``--use_msa true`` and no ``pairedMsaPath``/``unpairedMsaPath`` in the JSON, which
-this runner never writes, ``protenix pred`` searches the MSA over the network, and the sequences
-leave the machine (``runner/msa_search.py:194-253``). ``msa_server_mode`` is ``--msa_server_mode``:
-``protenix`` asks ``https://protenix-server.com/api/msa``, and the code asserts that URL in this
-mode (``protenix/web_service/colab_request_utils.py:58-59``); ``colabfold`` asks the host in
+this runner writes only for a receptor MSA (below), ``protenix pred`` searches the MSA over the
+network, and the sequences leave the machine (``runner/msa_search.py:194-253``).
+``msa_server_mode`` is ``--msa_server_mode``: ``protenix`` asks
+``https://protenix-server.com/api/msa``, and the code asserts that URL in this mode
+(``protenix/web_service/colab_request_utils.py:58-59``); ``colabfold`` asks the host in
 ``$MMSEQS_SERVICE_HOST_URL``, which defaults to the same URL
 (``protenix/web_service/colab_request_parser.py:38-39,279-300``). ``False`` runs without an MSA,
 which Protenix warns "might degrade significantly" (``msa_search.py:243-249``). A failed search
@@ -162,6 +164,49 @@ continues with the sequence itself as the MSA, exit status 0 (``colab_request_pa
 ``451-457``). The runner reads the output for those lines and raises, because that prediction is
 not the one the request asks for. What the server returns, and ``MMSEQS_SERVICE_HOST_URL``, are
 not in the key (``use_msa_server`` and ``msa_server_mode`` are).
+
+The receptor MSA and the policy (``receptor_msa``, ``msa_policy``; ``predictors/_msa.py`` holds the
+rules the runners share). ``receptor_msa`` is the path of an a3m file for the receptor or the word
+``"single"``. Either way the runner gives EVERY chain an alignment file and passes ``--use_msa
+true``: the receptor gets the user's file (copied to ``<work_dir>/input/msa/<name>_receptor.a3m``)
+or, for ``"single"``, an a3m that holds its own sequence; the binder gets an a3m that holds its own
+sequence (``<name>_binder.a3m``; an alignment of 4 to 12 residues is of no use). Each path is the
+``unpairedMsaPath`` of the chain's ``proteinChain`` entry. No chain may be left without one: the
+check that decides on a search is made per task, and one chain with neither path (or with a path
+that is not a file) starts the search for all of the task's chains, which then replace the paths
+of the others too (``runner/msa_search.py``, ``need_msa_search``, ``update_seq_msa``). So under
+``msa_policy="forbid-server"`` the runner reads the written JSON back and passes
+``chains_have_msa_paths=True`` to ``assert_no_server_flag`` only when every ``proteinChain`` names
+files that exist; the check runs in ``prepare`` and again in ``run``, before a process starts.
+``--use_msa false`` skips the alignment features altogether (``infer_dataloader.py``,
+``if self.use_msa else {}``), so a given file needs ``--use_msa true`` even though no server is
+called; for that reason a request with a ``receptor_msa`` records ``use_msa_server=False`` whatever
+was passed, and one key stands for the run. The key: ``options["msa_policy"]`` only when it is not
+``"default"``, ``options["receptor_msa"] = "single"`` only when asked, and
+``extra_files["receptor_msa"]`` only when a file is given (identified by content). A request without
+these fields has the key and the input JSON it had. A file is checked against the receptor: its
+first record must have as many aligned columns as the receptor has residues (what Protenix checks),
+and a request whose file does not raises ``ValueError`` at ``make_request`` and ``prepare``.
+
+UNVERIFIED, not run: no Protenix installation or weights existed where this was written. The
+alignment formats were read on 2026-10-13 in the files of commit 85767b8 (through a fetch that
+returns the file's text; nothing was executed): ``docs/infer_json_format.md`` ("proteinChain":
+``pairedMsaPath``, "typically ``pairing.a3m``", and ``unpairedMsaPath``, "typically
+``non_pairing.a3m``", both optional), ``runner/msa_search.py`` (``need_msa_search``,
+``update_infer_json``), ``protenix/data/msa/msa_featurizer.py`` (``InferenceMSAFeaturizer`` opens
+each path and reads its text; a missing key leaves the alignment empty, a path that does not exist
+raises), ``protenix/data/msa/msa_utils.py`` (``RawMsa.from_a3m``; the first record need not be the
+query, for a protein chain only the aligned length of the first record is compared with the
+sequence and a difference raises ``ValueError``; an alignment with no record is replaced by the
+query; lowercase letters are insertions) and ``protenix/data/tools/common.py`` (``parse_fasta``:
+``>`` opens a record, ``#`` lines are skipped, sequence lines are joined). What no run has
+confirmed: (1) that a job whose chains all have an ``unpairedMsaPath`` and no ``pairedMsaPath``
+runs end to end with ``--use_msa true`` and makes no network call (the pairing of two protein
+chains is then built from empty paired alignments); (2) that a one-sequence a3m with an ``X``
+(unknown residue) is accepted; (3) that a chain of four residues or fewer, for which the
+featurizer skips the alignment (``len(seq) <= 4``), is not affected by the file; (4) how the
+species in a header is read, which only the pairing uses. All of the writing is in
+``_write_msa_files``, the one function to correct if a run shows another format.
 
 Weights. ``model_name`` selects the model; ``protenix pred`` loads
 ``<load_checkpoint_dir>/<model_name>.pt`` and downloads the file, and the CCD data files, from
@@ -209,7 +254,8 @@ command-line default, when the caller gives none), the samples per seed, the cha
 content hash of the structure and ``options``: ``model_name``, ``dtype``, ``use_msa_server``,
 ``msa_server_mode``, ``on_unmappable_residue``, ``binder_cyclic``, ``constraints``,
 ``covalent_bonds``, ``extra_args``, ``need_atom_confidence`` (always true) and
-``checkpoint_size_bytes``, and the weights when given. Not in the key: the conda environment and
+``checkpoint_size_bytes``, and the weights when given; ``msa_policy`` and ``receptor_msa`` only
+when asked for (see "The receptor MSA and the policy"). Not in the key: the conda environment and
 where the input lives.
 
 Output and failures. The output directory ``<work_dir>/predictions`` holds
@@ -249,6 +295,15 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from binding_metrics.predictors._closures import find_closures, place_closures
+from binding_metrics.predictors._msa import (
+    DEFAULT_MSA_POLICY,
+    FORBID_SERVER,
+    RECEPTOR_MSA_ROLE,
+    SINGLE_SEQUENCE,
+    assert_no_server_flag,
+    check_msa_of_request,
+    check_msa_request,
+)
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.store import MODES, PredictionRequest
 from binding_metrics.predictors.weights import WeightsRef
@@ -272,6 +327,12 @@ _DEFAULT_BINDER_CYCLIC = "auto"
 #: The binder is the second entity of the input, and its only copy the first
 #: (``docs/infer_json_format.md:233-235``).
 _BINDER_ENTITY = 2
+
+#: The ``proteinChain`` key that names the unpaired alignment of a chain, and the folder (below
+#: ``input/``) where the runner writes the alignments it gives. UNVERIFIED by a run: see the
+#: module docstring, "MSA".
+_UNPAIRED_MSA_KEY = "unpairedMsaPath"
+_MSA_DIRNAME = "msa"
 
 #: The closure families that ``covalent_bonds`` documents (``docs/infer_json_format.md:224-229``).
 _DOCUMENTED_CLOSURE_FAMILIES = ("head_to_tail", "disulfide")
@@ -856,8 +917,170 @@ def _merge_bonds(
     return merged
 
 
-def _job_dict(request: PredictionRequest, options: Mapping[str, Any]) -> dict[str, Any]:
-    """The Protenix job (one element of the input JSON list) for ``request``."""
+# ---------------------------------------------------------------------- the MSA files
+#
+# Everything about the alignment files that Protenix reads lives in this section, so that a
+# correction of the format touches these functions only. The format is UNVERIFIED by a run (see
+# the module docstring, "MSA"): it rests on the files of commit 85767b8 as read on 2026-10-13.
+
+
+def _msa_source(request: PredictionRequest) -> Optional[Path | str]:
+    """The receptor MSA of a request: its file, the word ``"single"``, or None for neither."""
+    given = request.extra_files.get(RECEPTOR_MSA_ROLE)
+    if given is not None:
+        return Path(given)
+    if request.options.get(RECEPTOR_MSA_ROLE) == SINGLE_SEQUENCE:
+        return SINGLE_SEQUENCE
+    return None
+
+
+def _single_sequence_a3m(sequence: str) -> str:
+    """An a3m file that holds the query only: what a chain without an alignment is given."""
+    return f">query\n{sequence}\n"
+
+
+def _first_record(text: str) -> Optional[tuple[str, str]]:
+    """``(description, sequence)`` of the first record of an a3m text, None when it has none.
+
+    Read as ``protenix/data/tools/common.py:parse_fasta`` reads it: lines that are empty or start
+    with ``#`` are skipped, a line that starts with ``>`` opens a record, and the lines after it
+    are joined into its sequence.
+    """
+    description: Optional[str] = None
+    sequence: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(">"):
+            if description is not None:
+                break
+            description = line[1:]
+        elif description is not None:
+            sequence.append(line)
+    return None if description is None else (description, "".join(sequence))
+
+
+def _read_receptor_alignment(path: Path, receptor_sequence: str, *, warn: bool = True) -> str:
+    """The text of the receptor's alignment file, checked against the receptor sequence.
+
+    Protenix compares the aligned length of the first record with the length of the chain's
+    sequence and raises ``ValueError`` ("MSA query/size mismatch") when they differ
+    (``protenix/data/msa/msa_utils.py``, ``RawMsa._verify_query``); the check is made here so
+    that the run fails before the model starts. Lowercase letters are insertions and count for
+    nothing. The residues themselves are not compared by Protenix, and a difference is allowed
+    here (an alignment of the wild type for a point mutant is a use of the option), but it is
+    logged unless ``warn`` is False.
+
+    Raises:
+        ValueError: The file is not UTF-8 text, has no record, or its first record does not have
+            as many aligned columns as the receptor has residues.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"receptor_msa {path} is not a UTF-8 text file (an a3m alignment)"
+        ) from exc
+    record = _first_record(text)
+    if record is None or not record[1]:
+        raise ValueError(
+            f"receptor_msa {path} holds no sequence: an a3m file is a '>' line and the aligned "
+            "sequence after it, the receptor's own sequence first"
+        )
+    aligned = "".join(letter for letter in record[1] if not letter.islower())
+    if len(aligned) != len(receptor_sequence):
+        raise ValueError(
+            f"the first sequence of receptor_msa {path} has {len(aligned)} aligned columns and "
+            f"the receptor has {len(receptor_sequence)} residues; Protenix raises 'MSA query/size "
+            "mismatch' for it. The first record must be the receptor's own sequence (lowercase "
+            "letters are insertions)"
+        )
+    differing = sum(
+        1
+        for found, wanted in zip(aligned, receptor_sequence)
+        if found != wanted and "-" not in (found, wanted) and "X" not in (found, wanted)
+    )
+    if differing and warn:
+        logger.warning(
+            "The first sequence of receptor_msa %s differs from the receptor at %d of %d "
+            "positions; Protenix uses the alignment as given.",
+            path,
+            differing,
+            len(receptor_sequence),
+        )
+    return text if text.endswith("\n") else text + "\n"
+
+
+def _write_msa_files(
+    directory: Path,
+    name: str,
+    receptor_sequence: str,
+    binder_sequence: str,
+    source: Path | str,
+) -> tuple[Path, Path]:
+    """Write the alignment file of each chain and return ``(receptor path, binder path)``.
+
+    The receptor gets the user's file (copied, so that the work directory holds what the run
+    read) or, for ``source == "single"``, an a3m with its own sequence. The binder always gets an
+    a3m with its own sequence: with ``--use_msa true`` a chain without a path is searched on the
+    server, and the search replaces the paths of the other chains too (``runner/msa_search.py``,
+    ``need_msa_search`` and ``update_seq_msa``). This is the one place that writes the files; the
+    format is UNVERIFIED by a run (see the module docstring, "MSA").
+
+    Raises:
+        ValueError: As ``_read_receptor_alignment``.
+    """
+    if source == SINGLE_SEQUENCE:
+        receptor_text = _single_sequence_a3m(receptor_sequence)
+    else:
+        receptor_text = _read_receptor_alignment(Path(source), receptor_sequence)
+    directory.mkdir(parents=True, exist_ok=True)
+    paths = (directory / f"{name}_receptor.a3m", directory / f"{name}_binder.a3m")
+    for path, text in zip(paths, (receptor_text, _single_sequence_a3m(binder_sequence))):
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+    return paths
+
+
+def _forbids_server(request: PredictionRequest) -> bool:
+    return request.options.get("msa_policy", DEFAULT_MSA_POLICY) == FORBID_SERVER
+
+
+def _chains_have_msa_paths(job_path: Path) -> bool:
+    """True when every ``proteinChain`` of the written input names alignment files that exist.
+
+    This is what makes ``--use_msa true`` read files and search nothing: ``need_msa_search`` asks
+    for a search when a chain has no path or a path that is not a file. Read from the JSON on
+    disk, which is what the process reads.
+    """
+    jobs = json.loads(job_path.read_text(encoding="utf-8"))
+    chains = [
+        entry["proteinChain"]
+        for job in jobs
+        for entry in job["sequences"]
+        if "proteinChain" in entry
+    ]
+    if not chains:
+        return False
+    for chain in chains:
+        paths = [chain[key] for key in ("pairedMsaPath", _UNPAIRED_MSA_KEY) if chain.get(key)]
+        if not paths or not all(Path(path).is_file() for path in paths):
+            return False
+    return True
+
+
+def _job_dict(
+    request: PredictionRequest,
+    options: Mapping[str, Any],
+    msa_directory: Optional[Path] = None,
+) -> dict[str, Any]:
+    """The Protenix job (one element of the input JSON list) for ``request``.
+
+    ``msa_directory`` is where the alignment files go when the request names a receptor MSA; it
+    is needed then and ignored otherwise. The files are written last, after every check that can
+    refuse the input.
+    """
     chain_ids = [request.receptor_chain, request.binder_chain]
     entities = _read_entities(Path(request.input_path), chain_ids, options["on_unmappable_residue"])
     sequences = []
@@ -875,6 +1098,15 @@ def _job_dict(request: PredictionRequest, options: Mapping[str, Any]) -> dict[st
         job["covalent_bonds"] = bonds
     if options["constraints"] is not None:
         job["constraint"] = options["constraints"]
+    source = _msa_source(request)
+    if source is not None:
+        if msa_directory is None:
+            raise ValueError("a request with a receptor MSA needs a directory for the MSA files")
+        paths = _write_msa_files(
+            msa_directory, request.name, entities[0][1], entities[1][1], source
+        )
+        for entry, path in zip(sequences, paths):
+            entry["proteinChain"][_UNPAIRED_MSA_KEY] = str(path)
     return job
 
 
@@ -1105,6 +1337,8 @@ class ProtenixRunner(PredictionRunner):
         on_unmappable_residue: str = _DEFAULT_ON_UNMAPPABLE,
         binder_cyclic: bool | str = _DEFAULT_BINDER_CYCLIC,
         extra_args: Sequence[str] = (),
+        msa_policy: str = DEFAULT_MSA_POLICY,
+        receptor_msa: Optional[str | Path] = None,
     ) -> PredictionRequest:
         """The store request of one Protenix run (see the module docstring for what it holds).
 
@@ -1116,7 +1350,9 @@ class ProtenixRunner(PredictionRunner):
             mode: ``"predict"``; the other modes raise (see the module docstring).
             seeds: Seed values; None is ``[101]``, the default of ``protenix pred``.
             num_samples: Structures per seed (``--sample``).
-            use_msa_server: Search the MSA over the network (``--use_msa``); False runs without.
+            use_msa_server: Search the MSA over the network (``--use_msa``); False runs without,
+                unless ``receptor_msa`` is given (then every chain reads an alignment file, no
+                server is called, and the request records False whatever was passed).
             msa_server_mode: ``"protenix"`` or ``"colabfold"`` (``--msa_server_mode``).
             model_name: Model variant (``--model_name``).
             dtype: ``"bf16"``, ``"fp32"`` or ``"fp16"`` (``--dtype``).
@@ -1131,13 +1367,26 @@ class ProtenixRunner(PredictionRunner):
             binder_cyclic: ``"auto"`` (default), ``True`` or ``False``: whether the closures of
                 the binder are written as ``covalent_bonds`` (see the module docstring).
             extra_args: Extra command-line arguments, passed verbatim after the runner's own.
+            msa_policy: ``"default"`` or ``"forbid-server"``. The second needs
+                ``use_msa_server=False`` and a ``receptor_msa``, and the runner checks the
+                command line for a server flag before it starts a process. It is in the key
+                only when it is not ``"default"``.
+            receptor_msa: The alignment of the receptor: the path of an a3m file (its first
+                record is the receptor's own sequence), or ``"single"`` for the receptor's
+                sequence alone. Every chain is then given an alignment file (the binder's is
+                its own sequence) and ``--use_msa true`` reads them (see the module docstring,
+                "MSA"). The file is identified by content in the key; None (the default) leaves
+                the key as it was.
 
         Raises:
             ValueError: A mode other than ``predict``, ``weights`` that Protenix cannot load (not
                 a directory, no ``<model_name>.pt``, no CCD data in the real root), a missing or
                 equal chain role, an unusable seed, a choice that is not offered, ``constraints``
-                with a model that ignores them, or an ``extra_args`` entry that sets what the
-                runner sets.
+                with a model that ignores them, an ``extra_args`` entry that sets what the
+                runner sets, a policy that the MSA arguments break (``forbid-server`` with the
+                server on or without a receptor MSA), or a receptor MSA file that does not
+                align with the receptor.
+            FileNotFoundError: ``receptor_msa`` is a path that is not a file.
         """
         if mode != "predict":
             raise ValueError(_unsupported_mode_message(mode))
@@ -1149,11 +1398,19 @@ class ProtenixRunner(PredictionRunner):
                 f"binder_chain and receptor_chain are both {binder_chain!r}: they are two "
                 "entities of the input"
             )
+        fragments = check_msa_request(
+            self.name,
+            use_msa_server=use_msa_server,
+            msa_policy=msa_policy,
+            receptor_msa=receptor_msa,
+            supports_given_msa=True,
+            supports_single=True,
+        )
         options = _resolve_options(
             {
                 "model_name": model_name,
                 "dtype": dtype,
-                "use_msa_server": use_msa_server,
+                "use_msa_server": bool(use_msa_server) and receptor_msa is None,
                 "msa_server_mode": msa_server_mode,
                 "on_unmappable_residue": on_unmappable_residue,
                 "binder_cyclic": binder_cyclic,
@@ -1178,6 +1435,13 @@ class ProtenixRunner(PredictionRunner):
                 Path(getattr(weights, "path", weights)).expanduser(), options["model_name"]
             )
             _check_weights_environment()
+        if RECEPTOR_MSA_ROLE in fragments.extra_files:
+            (receptor,) = _read_entities(
+                Path(input_path), [receptor_chain], options["on_unmappable_residue"]
+            )
+            _read_receptor_alignment(
+                fragments.extra_files[RECEPTOR_MSA_ROLE], receptor[1], warn=False
+            )
         return PredictionRequest(
             self.name,
             name,
@@ -1189,10 +1453,12 @@ class ProtenixRunner(PredictionRunner):
             seeds=_resolve_seeds(seeds),
             num_samples=num_samples,
             model_version=self.version() or "",
+            extra_files=fragments.extra_files,
             options={
                 **options,
                 "need_atom_confidence": True,
                 "checkpoint_size_bytes": checkpoint_size,
+                **fragments.options,
             },
         )
 
@@ -1202,13 +1468,20 @@ class ProtenixRunner(PredictionRunner):
         """Write the input JSON to ``<work_dir>/input/<name>.json`` and return its path.
 
         The structure is read first: a residue Protenix cannot take, or a chain the structure
-        lacks, raises before any file is written. Protenix is not started.
+        lacks, raises before any file is written. A request with a receptor MSA also gets its
+        alignment files, ``<work_dir>/input/msa/<name>_receptor.a3m`` and ``..._binder.a3m``, and
+        under ``msa_policy="forbid-server"`` the command line is checked for a server flag.
+        Protenix is not started.
         """
         options = self._check_request(request)
-        job = _job_dict(request, options)
         path = Path(work_dir).resolve() / "input" / f"{request.name}.json"
+        job = _job_dict(request, options, msa_directory=path.parent / _MSA_DIRNAME)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps([job], indent=2) + "\n", encoding="utf-8")
+        if _forbids_server(request):
+            self._assert_policy(
+                request, self._command(request, path, path.parent.parent / "predictions")
+            )
         return path
 
     def run(self, request: PredictionRequest, work_dir: Path) -> Path:
@@ -1216,7 +1489,8 @@ class ProtenixRunner(PredictionRunner):
 
         Raises:
             ValueError: As for ``prepare``, ``weights`` that cannot be loaded (``check_weights``) or
-                linked, or a mode other than ``predict``.
+                linked, a mode other than ``predict``, or a request that breaks its MSA policy
+                (checked again here for a request made by hand, before a process starts).
             FileNotFoundError: ``protenix`` is not on PATH and no conda environment is set.
             ProtenixRunError: Protenix exited non-zero, reported a failed MSA search, or left no
                 complete output for every seed and sample (see the module docstring).
@@ -1225,6 +1499,7 @@ class ProtenixRunner(PredictionRunner):
         job_path = self.prepare(request, work_dir)
         output_dir = work_dir / "predictions"
         cmd = self._command(request, job_path, output_dir)
+        self._assert_policy(request, cmd)
         logger.info("Running Protenix: %s", " ".join(cmd))
         environment: Optional[dict[str, str]] = None
         notes: list[str] = []
@@ -1309,11 +1584,29 @@ class ProtenixRunner(PredictionRunner):
         if request.binder_chain == request.receptor_chain:
             raise ValueError("binder_chain and receptor_chain must be different chains")
         _resolve_seeds(request.seeds)
+        check_msa_of_request(self.name, request, supports_given_msa=True, supports_single=True)
         return _resolve_options(request.options)
+
+    def _assert_policy(self, request: PredictionRequest, command: Sequence[str]) -> None:
+        """Under ``forbid-server``, refuse a command line that would make Protenix use a server.
+
+        ``--use_msa true`` passes only when every chain of the input JSON on disk names an
+        alignment file that exists (``chains_have_msa_paths``); the JSON is read back because it
+        is what the process reads. Nothing is checked under the default policy.
+        """
+        if not _forbids_server(request):
+            return
+        words = [str(word) for word in command]
+        job_path = Path(words[words.index("--input") + 1])
+        assert_no_server_flag(
+            words, self.name, chains_have_msa_paths=_chains_have_msa_paths(job_path)
+        )
 
     def _command(self, request: PredictionRequest, job_path: Path, output_dir: Path) -> list[str]:
         """The ``protenix pred`` command line (see the module docstring)."""
         options = _resolve_options(request.options)
+        # With a receptor MSA every chain reads a file, which only ``--use_msa true`` does.
+        use_msa = options["use_msa_server"] or _msa_source(request) is not None
         executable = "protenix" if self.conda_env else shutil.which("protenix") or "protenix"
         cmd = [
             executable,
@@ -1331,7 +1624,7 @@ class ProtenixRunner(PredictionRunner):
             "--model_name",
             options["model_name"],
             "--use_msa",
-            "true" if options["use_msa_server"] else "false",
+            "true" if use_msa else "false",
             "--msa_server_mode",
             options["msa_server_mode"],
             "--need_atom_confidence",
