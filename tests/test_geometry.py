@@ -144,31 +144,6 @@ class TestRamachandran:
             expected_pct = 100.0 * result["ramachandran_outlier_count"] / n_eval
             assert result["ramachandran_outlier_pct"] == pytest.approx(expected_pct, abs=0.1)
 
-    def test_classify_ramachandran_favoured_alpha(self):
-        """Alpha-helix region should be classified as favoured."""
-        from binding_metrics.metrics.geometry import _classify_ramachandran
-
-        # Canonical alpha helix
-        assert _classify_ramachandran(-60.0, -45.0) == "favoured"
-
-    def test_classify_ramachandran_favoured_beta(self):
-        """Beta-sheet region should be classified as favoured."""
-        from binding_metrics.metrics.geometry import _classify_ramachandran
-
-        assert _classify_ramachandran(-120.0, 130.0) == "favoured"
-
-    def test_classify_ramachandran_outlier(self):
-        """Upper-right quadrant (rarely observed) should be outlier."""
-        from binding_metrics.metrics.geometry import _classify_ramachandran
-
-        assert _classify_ramachandran(60.0, 150.0) == "outlier"
-
-    def test_classify_ramachandran_nan(self):
-        """NaN input (terminus) should return None."""
-        from binding_metrics.metrics.geometry import _classify_ramachandran
-
-        assert _classify_ramachandran(np.nan, np.nan) is None
-
 
 # ---------------------------------------------------------------------------
 # Omega planarity tests
@@ -730,5 +705,6 @@ class TestClassifyRamachandran:
     def test_nan_returns_none(self):
         from binding_metrics.metrics.geometry import _classify_ramachandran
 
+        assert _classify_ramachandran(np.nan, np.nan) is None
         assert _classify_ramachandran(np.nan, -45.0) is None
         assert _classify_ramachandran(-60.0, np.nan) is None
