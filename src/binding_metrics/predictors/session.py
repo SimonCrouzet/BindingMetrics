@@ -16,6 +16,9 @@ numpy when they are used)::
         .entry(request) -> StoredPrediction
         .record(request, *, seed_index: int = 1, sample: int = 1,
                 chain_map: Optional[Mapping[str, str]] = None) -> PredictedPose
+        .records(request, *, chain_map: Optional[Mapping[str, str]] = None)
+                -> list[PredictedPose]
+        .lookup(request) -> Optional[StoredPrediction]
         .prefetch(requests: Iterable[PredictionRequest]) -> None
         .adopt(request, directory, *, copy_outputs: bool = False, check: bool = True)
                 -> StoredPrediction
@@ -26,7 +29,10 @@ numpy when they are used)::
 
 What a pipeline calls, in this order: build the requests (``OpenFold3Runner.make_request``),
 ``prefetch`` them all when a batch of samples is about to be processed (one batched model run
-for the missing ones), and ``record`` for every metric that needs the prediction. Parse-only
+for the missing ones), and ``record`` for every metric that needs the prediction. ``records``
+returns every sample of one request in the model's natural order, and ``lookup`` says what the
+store holds for a request without running anything (``binding_metrics.predictors.manifest``
+lists the samples of a set of requests with it). Parse-only
 usage (``--predictor X --prediction-dir D``) calls ``adopt`` first; ``record`` then treats the
 directory exactly like a run.
 
@@ -324,32 +330,49 @@ class PredictionSession:
             ValueError: ``chain_map`` is not a valid map.
             KeyError: No parser is registered for the model.
         """
-        entry = self.entry(request)
-        key = _ident(request)
-        chains = tuple(sorted((chain_map or {}).items()))
-        memo_key = (key, seed_index, sample, chains)
-        with self._key_lock(key):
-            record = self._records.get(memo_key)
-            if record is None:
-                parser = self._parser(entry.model)
-                record = parser.complete(
-                    parser.load(
-                        entry.prediction_dir,
-                        entry.name,
-                        seed_index=seed_index,
-                        sample=sample,
-                        chain_map=chain_map,
-                    )
-                )
-                if request.weights is not None:
-                    # what the run was started with; an adapter may add what the model reports
-                    # (OpenFold3: inference_ckpt_path and inference_ckpt_name)
-                    record.extras["weights"] = request.weights.to_dict()
-                record.provenance.update(_request_facts(request, entry, record))
-                with self._guard:
-                    self._records[memo_key] = record
-                    self._counts["parsed"] += 1
-        return record
+        return self._parsed(request, self.entry(request), seed_index, sample, chain_map)
+
+    def records(
+        self,
+        request: PredictionRequest,
+        *,
+        chain_map: Optional[Mapping[str, str]] = None,
+    ) -> list[PredictedPose]:
+        """Every sample of ``request`` as a parsed, completed record, in the model's natural order.
+
+        The samples come from ``PredictionParser.list_samples`` (seed position, then sample
+        position, as the adapter counts them) and each is read with ``record``, so a sample that
+        was parsed before is not parsed again and the model runs on the first miss only. The
+        records carry the provenance described in the module docstring. A run that wrote no
+        sample gives an empty list.
+
+        Args:
+            request: What to predict.
+            chain_map: Model chain ID to user chain ID, as for ``record``.
+
+        Raises:
+            PredictionFailedError, PredictionUnavailableError: See ``entry``.
+            ValueError: ``chain_map`` is not a valid map.
+            KeyError: No parser is registered for the model.
+        """
+        return self._parsed_samples(request, self.entry(request), chain_map)
+
+    def lookup(self, request: PredictionRequest) -> Optional[StoredPrediction]:
+        """The entry the store (or this session's memory) holds for ``request``; never runs a model.
+
+        Unlike ``entry`` it returns a failed entry instead of raising, returns None when nothing
+        is stored instead of running the model or raising ``PredictionUnavailableError``, and
+        does not change the counters or the memory of the session. It resolves the request as
+        ``entry`` does: outputs adopted for the name first, and a request without a
+        ``model_version`` under the version its runner reports (``runner.version()`` is called,
+        which may start a subprocess that reads the installed version, never the model).
+        """
+        with self._guard:
+            remembered = self._entries.get(_ident(request))
+        if remembered is not None:
+            return remembered
+        found, _ = self.store._find(request, self._runners.get(request.model))
+        return found
 
     def prefetch(self, requests: Iterable[PredictionRequest]) -> None:
         """Make sure the entries of all ``requests`` exist, in as few model runs as possible.
@@ -426,6 +449,56 @@ class PredictionSession:
             return dict(self._counts)
 
     # ------------------------------------------------------------------ internals
+
+    def _parsed(
+        self,
+        request: PredictionRequest,
+        entry: StoredPrediction,
+        seed_index: int,
+        sample: int,
+        chain_map: Optional[Mapping[str, str]],
+    ) -> PredictedPose:
+        """The record of one sample of a finished ``entry``, parsed once and then remembered.
+
+        ``record`` and ``records`` get the entry from ``entry`` (which may run the model);
+        ``binding_metrics.predictors.manifest`` gets it from ``lookup``, which never does.
+        """
+        key = _ident(request)
+        chains = tuple(sorted((chain_map or {}).items()))
+        memo_key = (key, seed_index, sample, chains)
+        with self._key_lock(key):
+            record = self._records.get(memo_key)
+            if record is None:
+                parser = self._parser(entry.model)
+                record = parser.complete(
+                    parser.load(
+                        entry.prediction_dir,
+                        entry.name,
+                        seed_index=seed_index,
+                        sample=sample,
+                        chain_map=chain_map,
+                    )
+                )
+                if request.weights is not None:
+                    # what the run was started with; an adapter may add what the model reports
+                    # (OpenFold3: inference_ckpt_path and inference_ckpt_name)
+                    record.extras["weights"] = request.weights.to_dict()
+                record.provenance.update(_request_facts(request, entry, record))
+                with self._guard:
+                    self._records[memo_key] = record
+                    self._counts["parsed"] += 1
+        return record
+
+    def _parsed_samples(
+        self,
+        request: PredictionRequest,
+        entry: StoredPrediction,
+        chain_map: Optional[Mapping[str, str]],
+    ) -> list[PredictedPose]:
+        """All samples of a finished ``entry`` in the adapter's natural order."""
+        parser = self._parser(entry.model)
+        refs = parser.list_samples(entry.prediction_dir, entry.name)
+        return [self._parsed(request, entry, ref.seed_index, ref.sample, chain_map) for ref in refs]
 
     def _key_lock(self, key: _Ident) -> threading.Lock:
         with self._guard:

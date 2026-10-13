@@ -37,6 +37,7 @@ _EXPORTS = {
     "PredictionFailedError": "binding_metrics.predictors.store",
     "PredictionUnavailableError": "binding_metrics.predictors.store",
     "PredictionSession": "binding_metrics.predictors.session",
+    "prediction_manifest": "binding_metrics.predictors.manifest",
     "receptor_forced": "binding_metrics.predictors.session",
     "receptor_templated": "binding_metrics.predictors.session",
     "PARSERS": "binding_metrics.predictors.registry",
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
     from binding_metrics.predictors.af2_runner import ColabFoldRunner
     from binding_metrics.predictors.base import PredictionParser
     from binding_metrics.predictors.boltz2_runner import Boltz2Runner
+    from binding_metrics.predictors.manifest import prediction_manifest
     from binding_metrics.predictors.of3_runner import OpenFold3Runner
     from binding_metrics.predictors.protenix_runner import ProtenixRunner
     from binding_metrics.predictors.record import (
@@ -112,6 +114,7 @@ __all__ = [
     "StoredPrediction",
     "TokenLayout",
     "get_parser",
+    "prediction_manifest",
     "receptor_forced",
     "receptor_templated",
     "register_parser",

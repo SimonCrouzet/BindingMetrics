@@ -188,6 +188,7 @@ class TestPackageExports:
             "StoredPrediction",
             "TokenLayout",
             "get_parser",
+            "prediction_manifest",
             "receptor_forced",
             "receptor_templated",
             "register_parser",
