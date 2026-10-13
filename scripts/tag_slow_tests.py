@@ -579,7 +579,7 @@ def format_report(reports: list[FileReport], dry_run: bool) -> str:
             if report.functions:
                 parts.append(f"{len(report.functions)} functions")
             if report.classes:
-                parts.append(f"{len(report.classes)} classes")
+                parts.append(f"{len(report.classes)} classes ({', '.join(report.classes)})")
             if report.cases:
                 parts.append(f"{len(report.cases)} parametrised cases")
             if report.import_added:
