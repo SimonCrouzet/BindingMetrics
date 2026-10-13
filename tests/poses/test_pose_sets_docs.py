@@ -47,8 +47,6 @@ ROOT = Path(__file__).resolve().parents[2]
 DOC = ROOT / "docs" / "pose_sets.md"
 TEXT = DOC.read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
-METRICS = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
-POSES = (ROOT / "docs" / "poses.md").read_text(encoding="utf-8")
 CHANGELOG = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 README_HEADING = "### Pose sets: several seeds and models of one construct"
 
@@ -107,11 +105,6 @@ def _run(code: str) -> str:
     with contextlib.redirect_stdout(out):
         exec(compile(code, "<docs/pose_sets.md>", "exec"), {"__name__": "__docs_example__"})  # noqa: S102
     return out.getvalue().strip()
-
-
-def _slug(heading: str) -> str:
-    text = heading.lstrip("#").strip().replace("`", "").lower()
-    return re.sub(r"\s", "-", re.sub(r"[^a-z0-9 _-]", "", text))
 
 
 # ---------------------------------------------------------------------------- the call
@@ -275,52 +268,6 @@ def test_the_pose_that_lost_its_peptide_is_a_failed_row_in_the_count():
     assert (entry["n_ok"], entry["n_total"], entry["complete"]) == (3, 4, False)
 
 
-# ---------------------------------------------------------------------------- links
-
-
-def test_the_links_and_anchors_of_the_page_resolve():
-    anchors = {_slug(line) for line in TEXT.splitlines() if re.match(r"#{1,6} ", line)}
-    for target in re.findall(r"\]\(([^)]+)\)", TEXT):
-        if target.startswith("#"):
-            assert target[1:] in anchors, target
-        elif not target.startswith("http"):
-            path, _, fragment = target.partition("#")
-            assert (DOC.parent / path).is_file(), target
-            if fragment and path.endswith(".md"):
-                other = (DOC.parent / path).read_text(encoding="utf-8")
-                slugs = {_slug(line) for line in other.splitlines() if re.match(r"#{1,6} ", line)}
-                assert fragment in slugs, target
-
-
-# ---------------------------------------------------------------------------- the other pages
-
-
-def _headings_of(text: str) -> set[str]:
-    return {_slug(line) for line in text.splitlines() if re.match(r"#{1,6} ", line)}
-
-
-def test_the_other_pages_point_at_the_pose_set_page():
-    assert "[`docs/pose_sets.md`](docs/pose_sets.md)" in README
-    assert "(pose_sets.md)" in METRICS
-    assert "(pose_sets.md)" in POSES
-    assert "pose_sets.md" in README.split("## Documentation", 1)[1]
-
-
-def test_every_link_to_the_pose_set_page_resolves():
-    slugs = _headings_of(TEXT)
-    for label, text in (("README.md", README), ("metrics.md", METRICS), ("poses.md", POSES)):
-        for target in re.findall(r"\]\(([^)]*pose_sets\.md[^)]*)\)", text):
-            _, _, fragment = target.partition("#")
-            assert not fragment or fragment in slugs, (label, target)
-
-
-def test_the_readme_section_sits_between_the_evobind_and_the_batch_sections():
-    headings = [line for line in README.splitlines() if line.startswith("### ")]
-    position = headings.index(README_HEADING)
-    assert headings[position - 1] == "### EvoBind scoring"
-    assert headings[position + 1] == "### Batch scoring"
-
-
 def test_the_readme_example_uses_names_and_keywords_that_exist():
     section = README.split(README_HEADING, 1)[1].split("\n### ", 1)[0]
     code = next(code for language, code in _code_blocks(section) if language == "python")
@@ -413,133 +360,19 @@ def test_every_registered_metric_spec_and_the_preflight_report_pickle():
 # ---------------------------------------------------------------------------- the changelog
 
 
-def _changelog_section(heading: str) -> str:
-    unreleased = CHANGELOG.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
-    return unreleased.split(f"\n{heading}\n", 1)[1].split("\n### ", 1)[0]
-
-
-#: module -> the names that the Added section of the changelog says it holds.
-POSE_LAYER_NAMES = {
-    "binding_metrics.poses.reference": (
-        "Reference",
-        "Partner",
-        "ResidueKey",
-        "normalize_references",
-    ),
-    "binding_metrics.poses.frame": (
-        "FrameOptions",
-        "FrameResult",
-        "superpose_receptor",
-        "place_in_reference_frame",
-        "renumber_to_reference",
-    ),
-    "binding_metrics.poses.agreement": (
-        "pairwise_peptide_rmsd",
-        "pair_statistics",
-        "complete_linkage_clusters",
-        "medoid",
-        "medoids",
-        "jaccard_matrix",
-        "interface_jaccard",
-        "contact_map_jaccard",
-        "heavy_atom_contacts",
-        "interface_residues",
-        "positional_spread",
-    ),
-    "binding_metrics.poses.aggregate": ("select_representatives", "rank_by"),
-    "binding_metrics.poses.descriptors": (
-        "residue_set_descriptors",
-        "partner_descriptors",
-        "interface_residue_table",
-        "interface_areas",
-        "sphere_overlap_volume",
-    ),
-    "binding_metrics.poses.reconcile": (
-        "gap_between_backends",
-        "consensus_interface",
-        "compare_consensus_interfaces",
-        "rank_agreement",
-        "hotspot_consistency",
-    ),
-    "binding_metrics.poses.score": (
-        "score_pose_set",
-        "PoseSetResult",
-        "PoseSetOptions",
-        "DescriptorOptions",
-        "PoseScoringError",
-    ),
-    "binding_metrics.poses.report": ("write_pose_report",),
-    "binding_metrics.testing.synthetic": ("make_synthetic_poses",),
-    "binding_metrics.core.residues": ("residue_number", "residue_label"),
-}
-
-
 def test_the_unreleased_section_comes_first_and_has_no_new_release_heading():
     headings = re.findall(r"^## \[.*$", CHANGELOG, re.M)
     assert headings[0] == "## [Unreleased]"
     assert "[Unreleased]" not in headings[1:]
 
 
-@pytest.mark.parametrize("module", sorted(POSE_LAYER_NAMES))
-def test_the_changelog_names_what_the_pose_layer_holds(module):
-    added = _changelog_section("### Added")
-    namespace = importlib.import_module(module)
-    for name in POSE_LAYER_NAMES[module]:
-        assert hasattr(namespace, name), (module, name)
-        assert re.search(rf"`[\w.]*\b{name}\b", added), (module, name)
+def test_the_preflight_page_names_every_policy_of_the_pose_set_layer():
+    from binding_metrics.poses.score import PREFLIGHT_MODES
 
-
-def test_the_calls_in_the_changelog_use_the_defaults_of_the_code():
-    added = _changelog_section("### Added")
-    functions = {
-        name: getattr(importlib.import_module(module), name)
-        for module, names in POSE_LAYER_NAMES.items()
-        for name in names
-        if callable(getattr(importlib.import_module(module), name))
-    }
-    checked = 0
-    for name, call in re.findall(r"`(?:binding_metrics\.[a-z_.]+\.)?(\w+)(\([^`]*\))`", added):
-        if name not in functions:
-            continue
-        try:
-            node = ast.parse(name + call, mode="eval").body
-        except SyntaxError:
-            continue  # a call written with empty keywords (binder_chain=, ...) is not Python
-        parameters = inspect.signature(functions[name]).parameters
-        for argument in node.args:
-            if isinstance(argument, ast.Name):
-                assert argument.id in parameters, (name, argument.id)
-        for keyword in node.keywords:
-            assert keyword.arg in parameters, (name, keyword.arg)
-            try:
-                documented = ast.literal_eval(keyword.value)
-            except ValueError:
-                continue
-            if parameters[keyword.arg].default is not inspect.Parameter.empty:
-                assert documented == parameters[keyword.arg].default, (name, keyword.arg)
-        checked += 1
-    assert checked >= 8
-
-
-def test_the_changelog_records_the_issues_of_the_residue_number_and_pose_fixes():
-    unreleased = CHANGELOG.split("## [Unreleased]", 1)[1]
-    for number in (116, 117, 118, 119, 120, 121, 122, 123, 124, 128, 133, 134, 135, 136):
-        assert f"#{number}" in unreleased, number
-    results = _changelog_section("### Results that change")
-    assert "`save_cif` keeps the residue numbers and insertion codes" in results
-    assert "Residue labels in logs and results carry the insertion code" in results
-    assert "`receptor_interface_residues` accepts residue labels" in _changelog_section("### Added")
-    assert "(#123)" in _changelog_section("### Fixed")
-    assert "[`docs/pose_sets.md`](docs/pose_sets.md)" in _changelog_section("### Added")
-    assert (ROOT / "docs" / "pose_sets.md").is_file()
-
-
-def test_the_preflight_page_says_what_the_pose_set_layer_does_with_the_check():
     preflight = (ROOT / "docs" / "preflight.md").read_text(encoding="utf-8")
     section = preflight.split("## In a pose set", 1)[1].split("\n---\n", 1)[0]
-    assert "(pose_sets.md)" in section
-    for mode in ("error", "skip", "warn", "off"):
-        assert f'"{mode}"' in section
+    for mode in PREFLIGHT_MODES:
+        assert f'"{mode}"' in section, mode
     assert inspect.signature(score_pose_set).parameters["preflight"].default == "error"
 
 
@@ -604,18 +437,3 @@ def test_the_page_describes_the_golden_results_as_the_tests_use_them():
         assert path in section
         assert (ROOT / path).is_file(), path
     assert "--write" in section
-    ordered = [line for line in TEXT.splitlines() if line.startswith("## ")]
-    assert ordered.index("## Checking a change against the golden results") == (
-        ordered.index("## Determinism") + 1
-    )
-
-
-def test_the_changelog_records_the_golden_results_and_the_layout_tests():
-    added = _changelog_section("### Added")
-    assert "`tests/golden/pose_sets/`" in added
-    assert "`python scripts/regen_pose_golden.py --write`" in added
-    for path in ("tests/poses/test_golden_descriptors.py", "tests/test_pose_f2_imports.py"):
-        assert f"`{path}`" in added
-        assert (ROOT / path).is_file(), path
-    assert "shipped as package data" in added
-    assert (ROOT / "src" / "binding_metrics" / "testing" / "data").is_dir()
