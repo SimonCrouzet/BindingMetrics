@@ -799,6 +799,7 @@ configure_logging(logging.INFO)
 - [`docs/pose_sets.md`](docs/pose_sets.md): scoring the poses of one construct together (`score_pose_set`): the common frame, agreement between poses, aggregation that counts the failed poses, representative poses, reference-site descriptors, reconciliation of two back-ends, the result schema and the writers
 - [`docs/nonstandard.md`](docs/nonstandard.md): D-amino acids, N-methylated and phosphorylated residues, the GAFF2 route, cyclic closures and their limits
 - [`docs/report_thresholds.md`](docs/report_thresholds.md): the scorecard thresholds
+- [`docs/testing.md`](docs/testing.md): the area markers of the tests (`pytest -m poses_frame`), the helper that runs the tests for a diff, and the full suite as the gate before a pull request
 - [`CHANGELOG.md`](CHANGELOG.md): what changed, with the results that differ from earlier versions
 - [`METRICS.md`](METRICS.md) points to `docs/metrics.md`
 
@@ -829,6 +830,8 @@ If you find this useful, have ideas, or are working on something in the same spa
 Contributions, bug reports, and feature requests are welcome. Please open an issue to discuss significant changes before submitting a pull request. All pull requests should include tests and pass the existing test suite (`pytest`).
 
 **Warnings as errors.** `pyproject.toml` turns a `DeprecationWarning` attributed to a `binding_metrics` module into an error, so a deprecated name used by the package's own code fails the test; a test that provokes the warning on purpose says so with `pytest.warns`. A warning is attributed to the caller of the deprecated name, so a use from a test module or a script stays in the warnings summary and does not fail. To make every `DeprecationWarning` an error, run `python -W error::DeprecationWarning -m pytest -m "not gpu"`. OpenMM 8.2 crashes the interpreter (exit code 139) when its own import-time warning (`builtin type SwigPyPacked has no __module__ attribute`) is an error, as in `python -W error::DeprecationWarning -c "import openmm"`; the test configuration ignores that warning by message and `tests/conftest.py` imports OpenMM with it ignored, so the flag is safe for the suite but not for a bare `import openmm` of your own.
+
+**Running part of the suite.** Every test carries markers for the area of the code that its file is about, so `pytest -m poses_frame` or `pytest -m "not gpu and (poses or preflight)"` runs a part of it, and `python scripts/pytest_for_diff.py` runs the tests that the changed files can affect. [`docs/testing.md`](docs/testing.md) lists the areas. The full suite (`pytest -m "not gpu"`) is the gate before a pull request and before a signed release.
 
 ---
 
