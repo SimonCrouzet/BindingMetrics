@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from binding_metrics.predictors import of3
+from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.of3 import OpenFold3Parser
 from binding_metrics.predictors.registry import PARSERS, get_parser
 from tests.predictors import contract, synth, synth_of3
@@ -185,6 +186,120 @@ class TestSeedDirectories:
         refs = OpenFold3Parser().list_samples(tmp_path, NAME)
         assert [(r.seed_index, r.sample) for r in refs] == [(1, 1), (1, 2), (2, 1)]
         assert refs[0].ranking_score == pytest.approx(0.82)
+
+
+class TestListSamples:
+    """``list_samples`` reads the aggregated confidence files only."""
+
+    def _three_seeds(self, tmp_path):
+        # seed_index 1, 2, 3 are the seed values 9, 10, 11; two samples in each, with the
+        # score of each sample made different so that a mix-up of the files shows
+        for seed_index in (1, 2, 3):
+            for sample in (1, 2):
+                synth_of3.write_prediction(
+                    tmp_path,
+                    NAME,
+                    synth.synthetic_complex(),
+                    seed_index=seed_index,
+                    sample=sample,
+                )
+                seed = synth_of3.seed_value(seed_index)
+                path = _seed_dir(tmp_path, seed) / (
+                    f"{NAME}_seed_{seed}_sample_{sample}_confidences_aggregated.json"
+                )
+                summary = json.loads(path.read_text(encoding="utf-8"))
+                summary["sample_ranking_score"] = round(0.1 * seed_index + 0.01 * sample, 3)
+                path.write_text(json.dumps(summary), encoding="utf-8")
+        return tmp_path
+
+    @staticmethod
+    def _fallback(root):
+        # the default of the base class: every sample is parsed
+        return PredictionParser.list_samples(OpenFold3Parser(), root, NAME)
+
+    @staticmethod
+    def _as_tuples(refs):
+        return [(r.seed_index, r.sample, r.ranking_score) for r in refs]
+
+    def test_it_gives_the_samples_of_the_three_seeds_with_their_scores(self, tmp_path):
+        refs = OpenFold3Parser().list_samples(self._three_seeds(tmp_path), NAME)
+        assert [(r.seed_index, r.sample) for r in refs] == [
+            (1, 1),
+            (1, 2),
+            (2, 1),
+            (2, 2),
+            (3, 1),
+            (3, 2),
+        ]
+        assert [r.ranking_score for r in refs] == pytest.approx(
+            [0.11, 0.12, 0.21, 0.22, 0.31, 0.32]
+        )
+
+    def test_it_gives_what_the_default_gives_for_seeds_9_10_and_11(self, tmp_path):
+        root = self._three_seeds(tmp_path)
+        assert sorted(p.name for p in (root / NAME).iterdir()) == ["seed_10", "seed_11", "seed_9"]
+        assert self._as_tuples(OpenFold3Parser().list_samples(root, NAME)) == self._as_tuples(
+            self._fallback(root)
+        )
+
+    def test_it_gives_what_the_default_gives_for_the_unranked_samples(self, tmp_path):
+        root = self._three_seeds(tmp_path)
+        # a sample whose aggregated file has no ranking score, and one that has no aggregated
+        # file at all: both are unranked (NaN) in the parsed record
+        no_key = _seed_dir(root, 9) / f"{NAME}_seed_9_sample_2_confidences_aggregated.json"
+        summary = json.loads(no_key.read_text(encoding="utf-8"))
+        del summary["sample_ranking_score"]
+        no_key.write_text(json.dumps(summary), encoding="utf-8")
+        (_seed_dir(root, 11) / f"{NAME}_seed_11_sample_1_confidences_aggregated.json").unlink()
+
+        refs = OpenFold3Parser().list_samples(root, NAME)
+        fallback = self._fallback(root)
+        assert [(r.seed_index, r.sample) for r in refs] == [
+            (r.seed_index, r.sample) for r in fallback
+        ]
+        scores = np.array([r.ranking_score for r in refs])
+        np.testing.assert_array_equal(scores, [r.ranking_score for r in fallback])
+        assert np.isnan(scores[[1, 4]]).all() and np.isfinite(scores[[0, 2, 3, 5]]).all()
+
+    def test_it_does_not_parse_the_samples(self, tmp_path, monkeypatch):
+        root = self._three_seeds(tmp_path)
+        expected = self._as_tuples(self._fallback(root))
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("list_samples parsed a sample")
+
+        monkeypatch.setattr(OpenFold3Parser, "parse", refuse)
+        monkeypatch.setattr(of3, "parse_full_confidences", refuse)
+        monkeypatch.setattr(of3, "_run_provenance", refuse)
+        monkeypatch.setattr(of3, "_template_extras", refuse)
+        assert self._as_tuples(OpenFold3Parser().list_samples(root, NAME)) == expected
+
+    def test_it_does_not_open_the_full_confidence_files(self, tmp_path):
+        root = self._three_seeds(tmp_path)
+        for seed in (9, 10, 11):
+            for path in _seed_dir(root, seed).glob("*_confidences.json"):
+                path.write_text("not json", encoding="utf-8")
+        assert len(OpenFold3Parser().list_samples(root, NAME)) == 6
+        with pytest.raises(ValueError):  # load reads them
+            OpenFold3Parser().load(root, NAME)
+
+    def test_a_corrupt_aggregated_file_raises_as_load_does(self, tmp_path):
+        root = self._three_seeds(tmp_path)
+        path = _seed_dir(root, 10) / f"{NAME}_seed_10_sample_1_confidences_aggregated.json"
+        path.write_text("{", encoding="utf-8")
+        with pytest.raises(ValueError):
+            OpenFold3Parser().list_samples(root, NAME)
+
+    def test_an_empty_or_absent_directory_has_no_samples(self, tmp_path):
+        parser = OpenFold3Parser()
+        assert parser.list_samples(tmp_path, NAME) == []
+        assert parser.list_samples(tmp_path / "nowhere", NAME) == []
+
+    def test_the_count_is_bounded(self, tmp_path, monkeypatch):
+        root = self._three_seeds(tmp_path)
+        monkeypatch.setattr(of3, "_MAX_SAMPLES", 4)
+        refs = OpenFold3Parser().list_samples(root, NAME)
+        assert [(r.seed_index, r.sample) for r in refs] == [(1, 1), (1, 2), (2, 1), (2, 2)]
 
 
 class TestParse:

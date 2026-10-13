@@ -100,7 +100,12 @@ import numpy as np
 from binding_metrics.capabilities import Capabilities, check_openfold3_residues
 from binding_metrics.predictors._renamed import deprecated_name_getattr
 from binding_metrics.predictors.base import PredictionParser
-from binding_metrics.predictors.record import PredictedPose, PredictionFiles, TokenLayout
+from binding_metrics.predictors.record import (
+    PredictedPose,
+    PredictionFiles,
+    SampleRef,
+    TokenLayout,
+)
 
 #: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
 __getattr__ = deprecated_name_getattr(__name__)
@@ -108,6 +113,9 @@ __getattr__ = deprecated_name_getattr(__name__)
 logger = logging.getLogger(__name__)
 
 _NAN = float("nan")
+
+#: Bound on the samples ``list_samples`` returns, as in the base class.
+_MAX_SAMPLES = 1000
 
 #: Residue names that OpenFold3 tokenises as one token per residue: ``STANDARD_RESIDUES_3`` of
 #: ``openfold3/core/data/resources/residues.py`` (v0.5.0, line 96): the 20 amino acids and UNK,
@@ -507,6 +515,37 @@ class OpenFold3Parser(PredictionParser):
         if located is not None and located.parent.name.startswith("seed_"):
             record.extras["seed_value"] = located.parent.name[len("seed_") :]
         return record
+
+    def list_samples(self, prediction_dir: str | Path, name: str) -> list[SampleRef]:
+        """The samples present, in seed order and sample order, with ``sample_ranking_score``.
+
+        Only the ``*_confidences_aggregated.json`` files are read, one small file per sample.
+        The default implementation parses every sample, which also reads the full confidence
+        file (``pae`` and ``pde`` as text, a matrix of tokens by tokens each) and the run's
+        configuration and template files. A sample whose aggregated file is missing has a NaN
+        ranking score, as in the parsed record; the arrays are not opened, so a corrupt full
+        confidence file is found by ``load`` and not here.
+        """
+        directory = Path(prediction_dir)
+        refs: list[SampleRef] = []
+        seed_index = 0
+        while len(refs) < _MAX_SAMPLES:
+            seed_index += 1
+            sample = 0
+            found_in_seed = False
+            while len(refs) < _MAX_SAMPLES:
+                sample += 1
+                files = self.find_files(directory, name, seed_index=seed_index, sample=sample)
+                if not files.has_output():
+                    break
+                found_in_seed = True
+                score = _NAN
+                if files.scores is not None:
+                    score = parse_aggregated_confidences(files.scores)["sample_ranking_score"]
+                refs.append(SampleRef(seed_index, sample, score))
+            if not found_in_seed:
+                break
+        return refs
 
     def complete(self, record: PredictedPose) -> PredictedPose:
         """Attach the token layout, which needs the structure file.
