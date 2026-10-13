@@ -628,12 +628,14 @@ class Boltz2Parser(PredictionParser):
     # The inputs Boltz-2 2.2.1 can be given, from its source and documentation (checked against
     # the clone on 2026-09-30; tests/test_pre_boltz2_limits.py re-reads it when the clone is at
     # hand). No closure is refused: `cyclic: true` wraps a chain head-to-tail
-    # (boltz/data/parse/schema.py) and the `bond` constraint takes any two atoms of the input, which
-    # the featuriser reads as a cyclic period when it joins the ends of a chain
-    # (boltz/data/feature/featurizerv2.py), so a disulfide or a lactam between canonical residues
-    # can be given. Not declared because nothing shows it: a limit on the residue classes (a
-    # modified residue is a CCD code in `modifications`; D-amino acids and N-methyl are not
-    # mentioned), and on the binder size (no maximum is stated).
+    # (boltz/data/parse/schema.py) and the `bond` constraint takes any two atoms of the input
+    # (`atom_idx_map`), so a disulfide or a lactam between canonical residues can be given. A bond
+    # between the first and the last residue also sets the cyclic period, but only for the first
+    # chain of the input, because featurizerv2.py compares residue indices counted over the whole
+    # structure with 0; Boltz2Runner writes the receptor first, so it relies on `cyclic: true`.
+    # Not declared because nothing shows it: a limit on the residue classes (a modified residue is
+    # a CCD code in `modifications`; D-amino acids and N-methyl are not mentioned), and on the
+    # binder size (no maximum is stated).
     # Modes (v2.2.1 source and documentation, checked against the clone on 2026-10-01): all four
     # are declared. predict is the plain input; refold and score need a template per chain, which
     # `templates` takes with `chain_id` (docs/prediction.md, Templates); an unforced template

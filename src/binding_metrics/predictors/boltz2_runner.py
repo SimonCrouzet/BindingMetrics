@@ -225,6 +225,36 @@ template without ``force`` did not carry the pose (one seed, three decoys). This
 that Boltz-2 very likely saw in training and three seeds: nothing follows for a design, another
 complex or another version. The table is in ``docs/metrics.md``, "Observed behaviour".
 
+What was measured about the bonds and the embeddings. On 2026-10-13, Boltz-2 v2.2.1 on one
+machine, mode ``predict`` (sequences only), single sequence, ``--no_kernels``, one diffusion sample,
+seeds 42 to 44, through the store and the adapter. Boltz-2's own ``parse_yaml`` (CPU) accepted the
+block for 3P8F chain I, 1CWA chain C and 1XY4 chain A and put each bond on the intended residues
+and atoms. Distance of the closure atoms in the prediction, without the bond constraint -> with
+``closure_bonds="auto"`` (mean of three seeds, angstrom; the value in the input structure in
+brackets):
+
+* 3P8F chain I with ``cyclic: true`` (what ``binder_cyclic="auto"`` writes for a ring): SG-SG
+  2.03 -> 1.90 (2.04), head-to-tail C-N 1.33 -> 1.33 (1.44). 1CWA chain C: C-N 1.30 -> 1.30
+  (1.33). Both closed without the bond already.
+* Without ``cyclic: true`` (``binder_cyclic=False``), so that the bond is the only closure: C-N
+  6.65 -> 1.77 on 3P8F (6.3 to 7.0 without), 7.78 -> 1.40 on 1CWA (6.0 to 9.3 without).
+* 1XY4 (disulfide and lactam; a chain of 1YCR added as receptor, no template): lactam NZ-CD 5.09
+  (3.5 to 6.2) -> 2.15 (1.9 to 2.4; the input has 1.89, an amide bond is 1.33), SG-SG 2.03 -> 1.81.
+* Sequences the model cannot have seen, the same atoms in a made-up input: SFTI-1 with nine
+  residues replaced (disulfide and ring) without ``cyclic: true``: SG-SG 13.4 -> 1.75, C-N 20.7 ->
+  1.37, binder pLDDT 82 -> 57; a p53 peptide with two cysteines (explicit bond, no ring):
+  SG-SG 18.1 -> 1.84, ipTM 0.92 -> 0.78 (0.57 to 0.92), binder pLDDT 90 -> 61. One seed gave
+  SG-SG 1.46, shorter than a disulfide.
+
+So the constraint moved a closure that the model did not make by itself in every run (12 of 12
+for the disulfide and the ring, 3 of 3 for the lactam, which came within 1.9 to 2.4 and not to
+the bond length) and changed little where it already did (a 0.1 to 0.2 shorter SG-SG); it can
+over-close, and the confidence of the prediction falls with it. Three complexes that the model has
+very probably seen, two made-up sequences, three seeds each: no accuracy of the model is claimed.
+With ``write_embeddings=True`` on 1YCR (98 tokens) the run wrote ``embeddings_<name>.npz`` with
+``s`` of shape (1, 98, 384) and ``z`` of shape (1, 98, 98, 128), float32, 4.6 MB compressed;
+the run without the flag wrote no such file, and both runs gave the same ipTM (0.943).
+
 Boltz-2 licence: MIT; no weights or model code are read or shipped here.
 """
 
