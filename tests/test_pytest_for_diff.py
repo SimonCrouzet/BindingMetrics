@@ -68,6 +68,10 @@ BASE_FILES = {
     "src/binding_metrics/poses/report.py": "from binding_metrics.poses import frame\n",
     "src/binding_metrics/cli/__init__.py": "def add_flag(): ...\n",
     "src/binding_metrics/cli/run.py": "from binding_metrics.core import system\n",
+    "src/binding_metrics/chain/__init__.py": "",
+    "src/binding_metrics/chain/a.py": "def a(): ...\n",
+    "src/binding_metrics/chain/b.py": "def b():\n    from binding_metrics.chain import a\n",
+    "src/binding_metrics/chain/c.py": "def c():\n    from binding_metrics.chain import b\n",
     "src/binding_metrics/metrics/__init__.py": "",
     "src/binding_metrics/metrics/geometry.py": "def ramachandran(): ...\n",
     "src/binding_metrics/metrics/sasa.py": "def sasa(): ...\n",
@@ -85,6 +89,8 @@ BASE_FILES = {
     "tests/test_run.py": "from binding_metrics.cli.run import main\n",
     "tests/test_prep.py": "from binding_metrics.core.system import prep\n",
     "tests/test_uses_support.py": "from tests.support import frame\n",
+    "tests/test_chain_b.py": "from binding_metrics.chain import b\n",
+    "tests/test_chain_c.py": "from binding_metrics.chain import c\n",
     "tests/test_flags.py": "from binding_metrics.cli import add_flag\n",
     "tests/test_registry_use.py": "from binding_metrics.metrics.registry import load\n",
     "tests/test_sasa.py": "from binding_metrics.metrics.sasa import sasa\n",
@@ -118,7 +124,7 @@ def selection(script, repo, *args, include_slow=False, pytest_args=()):
     mode = "staged" if parsed.staged else "working-tree" if parsed.working_tree else "base"
     changed, _ = script.changed_files(repo, mode, parsed.base)
     project = script.load_areas().Project(repo)
-    plan = script.plan_for(project, changed)
+    plan = script.plan_for(project, changed, max_lazy=parsed.max_lazy)
     return changed, plan, script.build_commands(plan, include_slow, [*extra, *pytest_args])
 
 
@@ -253,6 +259,19 @@ def test_a_package_init_selects_the_importers_of_its_names_only(script, repo):
     _, plan, _ = selection(script, repo)
     chosen = set(plan.files) - set(script.GUARD_TESTS)
     assert chosen == {"tests/test_flags.py"}  # test_run imports cli.run, not the package
+
+
+def test_max_lazy_sets_how_many_imports_inside_functions_a_chain_may_contain(script, repo):
+    write(repo, {"src/binding_metrics/chain/a.py": "def a(): return 1\n"})
+
+    def chosen(*args):
+        plan = selection(script, repo, *args)[1]
+        return set(plan.files) - set(script.GUARD_TESTS)
+
+    # b imports a inside a function, c imports b inside a function: two such links
+    assert chosen() == {"tests/test_chain_b.py"}
+    assert chosen("--max-lazy", "0") == set()
+    assert chosen("--max-lazy", "2") == {"tests/test_chain_b.py", "tests/test_chain_c.py"}
 
 
 def test_a_changed_test_file_runs_itself_and_a_changed_helper_runs_its_users(script, repo):

@@ -651,7 +651,9 @@ class Project:
             self._dispatch = (named, loaders)
         return self._dispatch
 
-    def select_tests(self, seeds: Iterable[str]) -> dict[Path, str]:
+    def select_tests(
+        self, seeds: Iterable[str], max_lazy: int = MAX_LAZY_IMPORTS
+    ) -> dict[Path, str]:
         """Test files that a change to the ``seeds`` modules can affect, each with the reason.
 
         A test file is chosen when it imports a seed or a module that depends on one (see
@@ -660,7 +662,7 @@ class Project:
         the conftest fixtures it asks for.
         """
         seeds = set(seeds)
-        affected = self.affected_modules(seeds)
+        affected = self.affected_modules(seeds, max_lazy)
         named, loaders = self.dispatch_tables()
         loaded_by_name = sorted(seeds & named)
         chosen: dict[Path, str] = {}

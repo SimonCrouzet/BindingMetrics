@@ -140,7 +140,9 @@ class Plan:
         self.files.setdefault(test_file, []).append(reason)
 
 
-def plan_for(project, changed: list[str], guards: tuple[str, ...] = GUARD_TESTS) -> Plan:
+def plan_for(
+    project, changed: list[str], guards: tuple[str, ...] = GUARD_TESTS, max_lazy: int | None = None
+) -> Plan:
     """Map changed files to test files, with the project's own import scan."""
     plan = Plan()
     triggers = [name for name in changed if name in FAST_TIER_TRIGGERS]
@@ -168,8 +170,9 @@ def plan_for(project, changed: list[str], guards: tuple[str, ...] = GUARD_TESTS)
             plan.notes.append(f"{name}: {kind}; {len(users)} other test file(s) import it")
         elif name.startswith("src/binding_metrics/"):
             seeds = project.modules_of_source_file(name)
-            affected = project.affected_modules(seeds)
-            chosen = project.select_tests(seeds)
+            limit = {} if max_lazy is None else {"max_lazy": max_lazy}
+            affected = project.affected_modules(seeds, **limit)
+            chosen = project.select_tests(seeds, **limit)
             for test, reason in chosen.items():
                 plan.add(relative(test), reason)
             plan.notes.append(
@@ -239,6 +242,13 @@ def parse_arguments(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         action="store_true",
         help="uncommitted work (staged, unstaged, untracked) against HEAD",
     )
+    parser.add_argument(
+        "--max-lazy",
+        type=int,
+        metavar="N",
+        help="follow chains with at most N imports inside functions (default 1; 0 is narrower "
+        "and misses tests that reach the module through a function, 2 or more is wider)",
+    )
     parser.add_argument("--include-slow", action="store_true", help="also run tests marked slow")
     parser.add_argument("--explain", action="store_true", help="say why each test file was chosen")
     parser.add_argument("--dry-run", action="store_true", help="print the command, run nothing")
@@ -253,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     changed, how = changed_files(repo, mode, args.base)
 
     project = load_areas().Project(repo)
-    plan = plan_for(project, changed)
+    plan = plan_for(project, changed, max_lazy=args.max_lazy)
     commands = build_commands(plan, args.include_slow, pytest_args)
 
     print(f"{len(changed)} changed file(s): {how}")
