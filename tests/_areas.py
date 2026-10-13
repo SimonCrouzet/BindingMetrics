@@ -235,10 +235,6 @@ MAX_LAZY_IMPORTS = 1
 
 # A fine area tags a test file when it holds this share of the file's references to the package.
 PRIMARY_SHARE = 0.25
-# Areas of code that tests use on the way (constants, the structure loader of the metrics) and are
-# rarely about: they only tag a file whose references go nowhere else.
-INCIDENTAL_AREAS = frozenset({"package_support", "metrics_common"})
-
 _DOTTED = re.compile(rf"{PACKAGE}(\.[A-Za-z_]\w*)+(:\w+)?")
 _MARKDOWN_PATH = re.compile(r"[\w./-]*\.md")
 _CONSOLE_SCRIPT = re.compile(r"(binding-metrics-[\w-]+)(\s.*)?", re.DOTALL)
@@ -920,11 +916,10 @@ class Project:
         by_area: Counter = Counter()
         for module, count in self.usage_of(path).items():
             by_area[area_of_module(module) or "misc"] += count
-        about = Counter({a: n for a, n in by_area.items() if a not in INCIDENTAL_AREAS}) or by_area
-        total = sum(about.values())
+        total = sum(by_area.values())
         if total:
-            fine = {a for a, count in about.items() if count / total >= PRIMARY_SHARE}
-            fine.add(max(sorted(about), key=about.__getitem__))
+            fine = {a for a, count in by_area.items() if count / total >= PRIMARY_SHARE}
+            fine.add(max(sorted(by_area), key=by_area.__getitem__))
         else:
             fine = {area_of_module(m) or "misc" for m in modules}
         areas = fine | {coarse_of(a) for a in fine}
