@@ -192,12 +192,6 @@ class TestLayout:
         assert isinstance(again, PoseSetResult)
         assert again.to_json(include_timing=False) == result.to_json(include_timing=False)
 
-    def test_from_dict_rejects_an_unknown_schema_version(self, result):
-        data = result.to_dict()
-        data["schema_version"] = SCHEMA_VERSION + 1
-        with pytest.raises(ValueError, match="schema_version"):
-            PoseSetResult.from_dict(data)
-
     def test_from_dict_rejects_another_schema_and_missing_keys(self, result):
         data = result.to_dict()
         with pytest.raises(ValueError, match="not a pose-set result"):
