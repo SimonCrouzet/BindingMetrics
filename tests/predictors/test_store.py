@@ -1242,22 +1242,6 @@ class TestRunMissing:
 # ---------------------------------------------------------------------------- module facts
 
 
-def test_the_module_imports_only_the_standard_library():
-    code = textwrap.dedent(
-        """
-        import sys
-        import binding_metrics.predictors.store
-        heavy = ("numpy", "scipy", "biotite", "torch", "openmm", "openfold3", "gemmi")
-        print(sorted(m for m in sys.modules if m.split(".")[0] in heavy))
-        """
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, encoding="utf-8", timeout=120
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "[]"
-
-
 def test_the_errors_share_one_base_class():
     assert issubclass(PredictionFailedError, PredictionStoreError)
     assert issubclass(PredictionUnavailableError, PredictionStoreError)

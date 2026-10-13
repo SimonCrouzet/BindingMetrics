@@ -1080,23 +1080,3 @@ def test_the_new_modules_import_nothing_heavy():
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.split("\n")[:2] == ["[]", "[]"]
-
-
-def test_importing_the_module_imports_only_the_standard_library():
-    code = textwrap.dedent(
-        """
-        import sys
-        import binding_metrics.predictors.runners
-        heavy = ("numpy", "scipy", "biotite", "torch", "openmm", "openfold3", "gemmi")
-        print(sorted(m for m in sys.modules if m.split(".")[0] in heavy))
-        """
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        encoding="utf-8",
-        timeout=120,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "[]"
