@@ -37,6 +37,8 @@ _EXPORTS = {
     "PredictionFailedError": "binding_metrics.predictors.store",
     "PredictionUnavailableError": "binding_metrics.predictors.store",
     "PredictionSession": "binding_metrics.predictors.session",
+    "receptor_forced": "binding_metrics.predictors.session",
+    "receptor_templated": "binding_metrics.predictors.session",
     "PARSERS": "binding_metrics.predictors.registry",
     "ParserSpec": "binding_metrics.predictors.registry",
     "get_parser": "binding_metrics.predictors.registry",
@@ -77,7 +79,11 @@ if TYPE_CHECKING:
         register_parser,
     )
     from binding_metrics.predictors.runners import PredictionRunner
-    from binding_metrics.predictors.session import PredictionSession
+    from binding_metrics.predictors.session import (
+        PredictionSession,
+        receptor_forced,
+        receptor_templated,
+    )
     from binding_metrics.predictors.store import (
         PredictionFailedError,
         PredictionRequest,
@@ -106,5 +112,7 @@ __all__ = [
     "StoredPrediction",
     "TokenLayout",
     "get_parser",
+    "receptor_forced",
+    "receptor_templated",
     "register_parser",
 ]

@@ -21,6 +21,9 @@ numpy when they are used)::
                 -> StoredPrediction
         .stats() -> dict[str, int]
 
+    receptor_forced(request) -> Optional[bool]      # was the receptor pinned by a forced template
+    receptor_templated(request) -> Optional[bool]   # was the receptor given as a template
+
 What a pipeline calls, in this order: build the requests (``OpenFold3Runner.make_request``),
 ``prefetch`` them all when a batch of samples is about to be processed (one batched model run
 for the missing ones), and ``record`` for every metric that needs the prediction. Parse-only
@@ -40,6 +43,26 @@ is that name when a second request with another name but the same content hits t
 model ran once for both). Adopted outputs belong to a name: two samples with one input file each
 get their own record. The session memory tells requests apart by key and name. The returned
 record is shared between callers: treat it as read-only.
+
+How the prediction was requested. ``record`` adds the facts of the request to
+``record.provenance`` (JSON scalars; other keys that the record carries are kept)::
+
+    backend              the model (``request.model``)
+    mode                 ``request.mode``
+    receptor_forced      ``receptor_forced(request)``: the receptor was pinned by a forced template
+    receptor_templated   ``receptor_templated(request)``: the receptor was given as a template
+    seed                 the seed value of the sample (None when it cannot be told)
+    seed_index, sample   the 1-based positions of the sample
+    msa_policy, msa_receptor, msa_binder
+                         only when the request names an MSA policy or a receptor MSA
+    request_key          ``request.key()``
+    model_version        ``request.model_version``, else the version the runner reported
+    request_name         ``request.name``
+
+``seed`` is the number the model sampled with. The adapters that read it from the output
+directory (OpenFold3, Protenix) put it in ``extras["seed_value"]``, and that is what is used; for
+the others it is the ``seed_index``-th smallest seed of the request, because every adapter counts
+seeds in the numeric order of their values.
 
 ``stats()`` counts, since the session was made (all integers, ready for a JSON result)::
 
@@ -66,7 +89,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Mapping as _MappingABC
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Optional
 
 from binding_metrics.predictors.store import (
     STATUS_ADOPTED,
@@ -102,6 +125,113 @@ _Ident = tuple[str, str]
 
 def _ident(request: PredictionRequest) -> _Ident:
     return (request.key(), request.name)
+
+
+# ---------------------------------------------------------------------- what the request says
+
+#: The models whose request vocabulary this module can read: the parser names of the four
+#: adapters. Any other model gets ``None`` for the facts below, because nothing says what it does.
+_KNOWN_MODELS = frozenset({"af2", "boltz2", "of3", "protenix"})
+
+#: The models whose runner writes a forced template (Boltz-2: ``force: true`` with a threshold).
+#: The other three cannot pin the receptor: OpenFold3 templates carry one chain's fold,
+#: Protenix takes templates as alignments, ColabFold has no per-chain template route.
+_FORCING_MODELS = frozenset({"boltz2"})
+
+#: Modes are compared as strings, so a mode that the vocabulary (``store.MODES``) gains later
+#: is read here without a change to this table.
+_LOCK_MODES = frozenset({"refold-lock", "score-lock"})
+_TEMPLATED_MODES = frozenset({"refold", "score", "refold-lock", "score-lock"})
+_MODES_WITH_A_FACT = _TEMPLATED_MODES | {"predict"}
+
+
+def receptor_forced(request: PredictionRequest) -> Optional[bool]:
+    """Whether the receptor was pinned to the input by a forced template; derived, not stored.
+
+    True for the modes ``refold-lock`` and ``score-lock`` of a model whose runner forces
+    templates (Boltz-2), False for every other mode of the four known models (``af2``,
+    ``boltz2``, ``of3``, ``protenix``), including a lock mode of a model that cannot force, and
+    None for any other model or a mode this function does not know. It reads ``request.model``
+    and ``request.mode`` only, so it adds nothing to the request key.
+    """
+    model, mode = getattr(request, "model", None), getattr(request, "mode", None)
+    if model not in _KNOWN_MODELS or mode not in _MODES_WITH_A_FACT:
+        return None
+    return model in _FORCING_MODELS and mode in _LOCK_MODES
+
+
+def receptor_templated(request: PredictionRequest) -> Optional[bool]:
+    """Whether the receptor was given to the model as a template (forced or not).
+
+    True for ``refold``, ``score``, ``refold-lock`` and ``score-lock``, False for ``predict``,
+    None for a model other than the four known ones or a mode this function does not know. An
+    OpenFold3 ``refold`` pose therefore reads ``receptor_forced=False, receptor_templated=True``.
+    """
+    model, mode = getattr(request, "model", None), getattr(request, "mode", None)
+    if model not in _KNOWN_MODELS or mode not in _MODES_WITH_A_FACT:
+        return None
+    return mode in _TEMPLATED_MODES
+
+
+def _seed_value(request: PredictionRequest, record: PredictedPose) -> Optional[int]:
+    """The seed a sample was made with: the output's own, else the request's by position.
+
+    OpenFold3 and Protenix name the seed in the output directory and the adapter reports it in
+    ``extras["seed_value"]``; that is the truth even for seeds the model generated or an
+    adopted output. Otherwise the adapters count seed directories in the numeric order of the
+    seed values, so ``seed_index`` selects from the sorted seeds of the request (a Boltz-2
+    request has one).
+    """
+    reported = record.extras.get("seed_value")
+    if reported is not None and str(reported).isdecimal():
+        return int(reported)
+    seeds = sorted(set(request.seeds))
+    if 1 <= record.seed_index <= len(seeds):
+        return seeds[record.seed_index - 1]
+    return None
+
+
+def _msa_facts(request: PredictionRequest) -> dict[str, Any]:
+    """The MSA the request asked for, as flat provenance keys; empty when it asked for none.
+
+    Read from ``options["msa_policy"]`` (present only when it is not ``"default"``),
+    ``options["receptor_msa"] == "single"`` and ``extra_files["receptor_msa"]``, the key names
+    of the MSA request. The receptor is the first 12 hex digits of the file's content hash, or
+    ``"single"``, or None; the binder is always single-sequence. The values are scalars because
+    ``PredictedPose.validate`` accepts nothing else in ``provenance``.
+    """
+    options = request.options
+    file_hash = request.content_hashes.get("receptor_msa")
+    single = options.get("receptor_msa") == "single"
+    if "msa_policy" not in options and file_hash is None and not single:
+        return {}
+    return {
+        "msa_policy": options.get("msa_policy", "default"),
+        "msa_receptor": file_hash[:12] if file_hash is not None else ("single" if single else None),
+        "msa_binder": "single",
+    }
+
+
+def _request_facts(
+    request: PredictionRequest, entry: StoredPrediction, record: PredictedPose
+) -> dict[str, Any]:
+    """The facts of ``request`` for ``record.provenance`` (see the module docstring)."""
+    facts: dict[str, Any] = {
+        "backend": request.model,
+        "mode": request.mode,
+        "receptor_forced": receptor_forced(request),
+        "receptor_templated": receptor_templated(request),
+        "seed": _seed_value(request, record),
+        "seed_index": record.seed_index,
+        "sample": record.sample,
+    }
+    facts.update(_msa_facts(request))
+    facts.update(
+        request_key=request.key(),
+        model_version=request.model_version or entry.runner_version,
+        request_name=request.name,
+    )
+    return facts
 
 
 class PredictionSession:
@@ -179,7 +309,9 @@ class PredictionSession:
         The record has been through ``PredictionParser.complete`` of its model, so a consumer
         gets the token layout and chain names that need the structure. A request with custom
         weights puts ``request.weights.to_dict()`` (path, kind, sha256, size, n_files) in
-        ``record.extras["weights"]``. This is the one place the pipeline and
+        ``record.extras["weights"]``. ``record.provenance`` gets the facts of the request
+        (``backend``, ``mode``, ``receptor_forced``, ``seed``, ``request_key``, ...; see the
+        module docstring). This is the one place the pipeline and
         ``binding-metrics-prediction`` read records from.
 
         Args:
@@ -213,6 +345,7 @@ class PredictionSession:
                     # what the run was started with; an adapter may add what the model reports
                     # (OpenFold3: inference_ckpt_path and inference_ckpt_name)
                     record.extras["weights"] = request.weights.to_dict()
+                record.provenance.update(_request_facts(request, entry, record))
                 with self._guard:
                     self._records[memo_key] = record
                     self._counts["parsed"] += 1
