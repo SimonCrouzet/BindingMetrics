@@ -36,21 +36,22 @@ def test_new_fields_come_after_the_existing_ones():
 
 
 @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-def test_alias_names_are_the_role_names_or_none(spec):
-    assert spec.binder_chain_arg in (None, "binder_chain")
-    assert spec.target_chain_arg in (None, "target_chain")
-
-
-@pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-def test_alias_fields_follow_the_roles_of_the_spec(spec):
-    """Declared only for a role the metric has; the index-based trajectory metrics have none."""
+def test_the_alias_fields_are_well_formed(spec):
+    """One case per metric. An alias is the role name or None, and is declared only for a role
+    the metric has; the index-based trajectory metrics have none."""
+    problems = []
+    if spec.binder_chain_arg not in (None, "binder_chain"):
+        problems.append(f"binder_chain_arg is {spec.binder_chain_arg!r}")
+    if spec.target_chain_arg not in (None, "target_chain"):
+        problems.append(f"target_chain_arg is {spec.target_chain_arg!r}")
     # ``openfold`` and ``prediction`` are registered with chain_mode "none" (they parse a
     # directory) but their functions take optional binder and receptor chains.
     takes_chains_despite_mode = spec.name in ("openfold", "prediction")
-    if spec.binder_chain_arg:
-        assert _has_binder_role(spec) or takes_chains_despite_mode, spec.name
-    if spec.target_chain_arg:
-        assert _has_target_role(spec) or takes_chains_despite_mode, spec.name
+    if spec.binder_chain_arg and not (_has_binder_role(spec) or takes_chains_despite_mode):
+        problems.append("binder_chain_arg is declared but the spec has no binder role")
+    if spec.target_chain_arg and not (_has_target_role(spec) or takes_chains_despite_mode):
+        problems.append("target_chain_arg is declared but the spec has no target role")
+    assert not problems, f"{spec.name}: " + "; ".join(problems)
 
 
 @pytest.mark.parametrize("name", ["interface", "coulomb", "delta_sasa_static"])
