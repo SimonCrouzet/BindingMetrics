@@ -263,11 +263,21 @@ class TestBatch:
 
 
 class TestDocs:
-    def test_the_limitation_paragraph_names_the_flag_of_the_pipeline(self):
+    def test_the_limitation_paragraph_names_the_flags_the_commands_have(self, monkeypatch):
         from pathlib import Path
+
+        from tests.test_feat_c_docs import _capture_parser
 
         text = (Path(__file__).parent.parent / "docs" / "metrics.md").read_text(encoding="utf-8")
         start = text.index("**the MSA server and the templates (issue #68")
         section = text[start : text.index("\n\n", start)]
-        assert "`--openfold-no-msa-server`" in section and "`--no-msa-server`" in section
-        assert "lowers accuracy for a natural receptor" in section
+        for module in ("binding_metrics.cli.run", "binding_metrics.cli.batch"):
+            options = _capture_parser(module, monkeypatch)._option_string_actions
+            assert "--openfold-no-msa-server" in options, module
+        assert "`--openfold-no-msa-server`" in section
+        # binding-metrics-openfold has the flag on the subcommands that run OpenFold3
+        parser = _capture_parser("binding_metrics.metrics.openfold", monkeypatch)
+        (subparsers,) = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+        for name in ("run", "refold", "score"):
+            assert "--no-msa-server" in subparsers.choices[name]._option_string_actions, name
+        assert "`--no-msa-server`" in section
