@@ -101,7 +101,7 @@ AREA_OF_MODULE = {
     "metrics.prediction": "predictors_base",  # it reads what the adapters return
     # of3: the OpenFold3 route has dozens of test files of its own, with docs and cyclic-peptide
     # cases that a change elsewhere in metrics does not reach.
-    "metrics.openfold": "of3_run",
+    "metrics.openfold": "of3_metrics",  # its confidence metrics, interface PAE and entry points
     "metrics._openfold_run": "of3_run",
     "predictors.of3_runner": "of3_run",
     "metrics._openfold_templates": "of3_templates",  # template modes and the command-line flags
@@ -192,7 +192,8 @@ AREA_DESCRIPTIONS = {
     "metrics_registry": "the metric registry, its metadata and its documentation",
     "metrics_sasa": "buried and static solvent-accessible surface area",
     "of3_adapter": "the OpenFold3 output adapter (predictors/of3.py)",
-    "of3_run": "running OpenFold3 and reading its result (metrics/openfold.py, the runner)",
+    "of3_metrics": "OpenFold3 confidence metrics, interface PAE and entry points (openfold.py)",
+    "of3_run": "building the OpenFold3 query and running it (metrics/_openfold_run.py, the runner)",
     "of3_templates": "OpenFold3 template modes and their command-line flags",
     "poses_agreement": "agreement between poses, aggregation and symmetry",
     "poses_descriptors": "reference-site descriptors and the reference (poses/descriptors.py)",

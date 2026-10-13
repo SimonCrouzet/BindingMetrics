@@ -8,7 +8,7 @@ The full suite takes about twenty minutes, too long to wait for after an edit to
 | `core` | System preparation, force fields, simulation, GAFF, cyclic and non-standard residues | `core_cyclic`, `core_gaff`, `core_residues`, `core_system` |
 | `io` | Reading and writing structures (load_structure, save_cif, chain detection) | none |
 | `metrics` | The static and MD metrics and their registry | `metrics_common`, `metrics_comparison`, `metrics_energy`, `metrics_evobind`, `metrics_geometry`, `metrics_interface`, `metrics_receptor`, `metrics_registry`, `metrics_sasa` |
-| `of3` | The OpenFold3 route: its run, templates, flags, adapter and runner | `of3_adapter`, `of3_run`, `of3_templates` |
+| `of3` | The OpenFold3 route: its run, templates, flags, adapter and runner | `of3_adapter`, `of3_metrics`, `of3_run`, `of3_templates` |
 | `package` | The package root, constants, logging setup and provenance | `package_exports`, `package_support` |
 | `poses` | The pose layer (kinds, reference, scoring, pose-set reports) and the testing package | `poses_agreement`, `poses_descriptors`, `poses_frame`, `poses_pose`, `poses_score` |
 | `predictors` | Model adapters, runners, the prediction store and session (OpenFold3 aside) | `predictors_af2`, `predictors_base`, `predictors_boltz2`, `predictors_protenix`, `predictors_store` |

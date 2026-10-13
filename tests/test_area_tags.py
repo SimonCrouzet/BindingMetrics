@@ -264,9 +264,9 @@ def with_coarse(*areas):
         ("from binding_metrics import compute_ramachandran\n", with_coarse("metrics_geometry")),
         (
             "from binding_metrics.metrics import compute_openfold_metrics\n",
-            with_coarse("of3_run"),
+            with_coarse("of3_metrics"),
         ),
-        ("from binding_metrics.metrics import openfold\n", with_coarse("of3_run")),
+        ("from binding_metrics.metrics import openfold\n", with_coarse("of3_metrics")),
         # an import inside a function counts
         (
             "def test_x():\n    from binding_metrics.io.structures import load_structure\n",
