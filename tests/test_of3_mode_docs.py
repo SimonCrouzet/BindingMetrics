@@ -5,21 +5,23 @@ own template structures (the template CIFs here are single-chain files), and Ope
 ``_embed_feats`` applies the same-chain mask to the validity indicators of the template pair
 features. So ``score`` does not hand OpenFold3 the pose of the input. The text used to say that
 both chains were given as templates "so that OF3 evaluates the known conformation", and that an
-adversary run in score mode agrees with the design "partly by construction". These tests keep
-that wording out and check what the text now says about the result keys: the binder RMSD against
-the input, in the receptor frame, is measured in both modes, next to ``delta_com_angstrom``.
+adversary run in score mode agrees with the design "partly by construction". The tests keep that
+wording out and check the facts the text names: the result keys, the options and the arguments.
+The binder RMSD against the input, in the receptor frame, is measured in both modes, next to
+``delta_com_angstrom`` (``TestTheClaimsAboutTheResultKeys`` runs it).
 """
 
 import argparse
-import importlib
+import inspect
 import math
-import sys
+import re
 from pathlib import Path
 
 import pytest
 
-from binding_metrics.cli import OPENFOLD_MODE_HELP
+from binding_metrics.cli import OPENFOLD_MODE_HELP, OPENFOLD_TEMPLATE_CHOICES
 from binding_metrics.cli.run import run_pipeline
+from tests.test_feat_c_docs import _capture_parser
 from tests.test_feat_c_support import (
     EXAMPLE_1YCR,
     PEPTIDE_CHAIN,
@@ -29,16 +31,32 @@ from tests.test_feat_c_support import (
 
 ROOT = Path(__file__).parent.parent
 
-#: Phrases that stated the old reading of the modes.
-STALE = (
-    "both chains as templates",
-    "known conformation",
-    "partly by construction",
-    "templated on the design pose",
-    "templated on the input pose",
-    "receptor fixed as template",
-    "fixed as template",
-)
+# Wording that a real run, or a reading of the OpenFold3 source, disproved. Add a row when a text
+# is found to carry such a claim; do not add a row for a rewording. Scanned in README.md,
+# docs/metrics.md and every file of src/.
+BANNED = {
+    # The old reading of the modes: the template does not carry the pose of the input.
+    "both chains as templates": "a template carries one chain's fold and no cross-chain geometry",
+    "known conformation": "OpenFold3 places the binder itself in score mode",
+    "partly by construction": "the adversary run in score mode is not told the pose",
+    "templated on the design pose": "the templates are single-chain files of the input",
+    "templated on the input pose": "the templates are single-chain files of the input",
+    "receptor fixed as template": "the receptor is one template among the chains, not fixed",
+    "fixed as template": "same: no template fixes the pose",
+    # The result keys are measured in both modes (TestTheClaimsAboutTheResultKeys).
+    "refold` mode only": "binder_ca_rmsd and delta_com_angstrom are given in score and refold",
+    "NaN in `score`": "binder_ca_rmsd is a number in score mode",
+    # What the template embedder does (read from the source of v0.5.0, not run): only the
+    # validity indicators of the template pair features are masked.
+    "every template feature": "the mask applies to the validity indicators only",
+    "all template features": "the mask applies to the validity indicators only",
+    "restricts the pair masks": "the mask applies to the validity indicators only",
+}
+
+# The result keys that the mode help and the modes paragraph name must be keys of the block that a
+# run writes (test_the_predictor_step_measures_both_keys_in_both_modes).
+RESULT_KEY = re.compile(r"\b[a-z]+(?:_[a-z]+)+\b")
+BACKTICKED_KEY = re.compile(r"`([a-z]+(?:_[a-z]+)+)`")
 
 
 def _texts():
@@ -47,98 +65,78 @@ def _texts():
     return [(path, path.read_text(encoding="utf-8")) for path in files]
 
 
-@pytest.mark.parametrize("phrase", STALE)
-def test_the_old_wording_is_gone_from_the_source_and_the_docs(phrase):
-    found = [str(path.relative_to(ROOT)) for path, text in _texts() if phrase in text]
-    assert not found, f"{phrase!r} is still in {found}"
+def _paragraph(marker: str) -> str:
+    text = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
+    start = text.index(marker)
+    return text[start : text.index("\n\n", start)]
+
+
+def _openfold_subcommands(monkeypatch) -> dict:
+    parser = _capture_parser("binding_metrics.metrics.openfold", monkeypatch)
+    (subparsers,) = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    return subparsers.choices
+
+
+def test_the_wording_a_real_run_disproved_is_gone_from_the_source_and_the_docs():
+    texts = _texts()
+    found = {
+        f"{phrase!r} ({reason})": [
+            str(path.relative_to(ROOT)) for path, text in texts if phrase in text
+        ]
+        for phrase, reason in BANNED.items()
+    }
+    assert not {key: paths for key, paths in found.items() if paths}
 
 
 @pytest.mark.parametrize("module", ["binding_metrics.cli.run", "binding_metrics.cli.batch"])
 def test_the_mode_help_of_both_commands_is_the_shared_text(module, monkeypatch):
-    holder = {}
-
-    def stop(self, *args, **kwargs):
-        holder["parser"] = self
-        raise SystemExit
-
-    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", stop)
-    monkeypatch.setattr(sys, "argv", ["prog"])
-    with pytest.raises(SystemExit):
-        importlib.import_module(module).main()
-    action = next(a for a in holder["parser"]._actions if "--openfold-mode" in a.option_strings)
+    parser = _capture_parser(module, monkeypatch)
+    action = next(a for a in parser._actions if "--openfold-mode" in a.option_strings)
     assert action.help == OPENFOLD_MODE_HELP
-    for stated in ("its own structure", "places the binder itself", "delta_com_angstrom"):
-        assert stated in OPENFOLD_MODE_HELP
-    assert "only the receptor is templated" in OPENFOLD_MODE_HELP
 
 
-def test_the_docs_name_the_keys_that_measure_the_pose():
-    text = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
-    section = text[text.index("**the two modes.**") :]
-    section = section[: section.index("\n\n")]
-    assert "`delta_com_angstrom`" in section and "`binder_ca_rmsd`" in section
-    assert "given in both modes by `binder_ca_rmsd`" in section
-    assert "refold` mode only" not in section and "NaN in `score`" not in section
+def test_the_template_and_server_options_the_docs_name_exist_with_the_documented_values(
+    monkeypatch,
+):
+    section = _paragraph("**template mode (`template_mode`")
+    assert f"`--openfold-templates {{{','.join(OPENFOLD_TEMPLATE_CHOICES)}}}`" in section
+    for module in ("binding_metrics.cli.run", "binding_metrics.cli.batch"):
+        options = _capture_parser(module, monkeypatch)._option_string_actions
+        templates = options["--openfold-templates"]
+        assert tuple(templates.choices) == OPENFOLD_TEMPLATE_CHOICES
+        assert templates.default == OPENFOLD_TEMPLATE_CHOICES[0], "the paragraph says structure"
+        assert "--openfold-no-msa-server" in options
+        assert "--prediction-templates" not in options, (
+            f"{module}: the paragraph says there is none"
+        )
+    subcommands = _openfold_subcommands(monkeypatch)
+    for name in ("prepare-query", "prepare-scoring-query", "refold", "score"):
+        assert "--openfold-templates" in subcommands[name]._option_string_actions, name
+    for name in ("run", "refold", "score"):
+        assert "--no-msa-server" in subcommands[name]._option_string_actions, name
 
 
-def test_the_docs_state_exactly_what_the_template_embedder_does():
-    """Only the validity indicators are masked; the distogram and unit-vector tensors are not."""
-    text = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
-    section = text[text.index("**the two modes.**") :]
-    section = section[: section.index("\n\n")]
-    assert "validity indicators of the template pair features" in section
-    assert "each query chain gets its own template structures" in section
-    assert "not multiplied by that mask" in section
-    for overstated in (
-        "every template feature",
-        "all template features",
-        "restricts the pair masks",
+def test_the_arguments_the_docs_name_are_parameters_of_the_functions():
+    from binding_metrics.cli.batch import run_batch
+    from binding_metrics.metrics import openfold
+
+    section = _paragraph("**template mode (`template_mode`")
+    for name in (
+        "prepare_refolding_query",
+        "prepare_scoring_query",
+        "run_openfold_scoring",
+        "run_openfold_refolding",
+        "run_openfold_batched",
     ):
-        assert overstated not in section
-
-
-def test_the_docs_give_the_measured_msa_server_effect_and_the_default_that_avoids_it():
-    text = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
-    start = text.index("**the MSA server and the templates (issue #68")
-    section = text[start : text.index("\n\n", start)]
-    assert "#68" in section and "measured on one complex" in section
-    # the default route is not affected by the server's overwrite, and `alignment` reproduces
-    # the old behaviour
-    assert "does not overwrite `template_cif_paths`" in section
-    assert "The default template route, `structure`" in section
-    assert "`--openfold-templates alignment`, which reproduces the earlier default" in section
-    # what the run showed with `alignment`: no template at all, with the numbers of one complex
-    assert "has no template at all" in section
-    assert "135 template hits" in section and "70 for the 13-residue binder" in section
-    assert "1.62 A" in section and "1.57 A" in section and "1.12 A" in section
-    # the other way to keep the template with `alignment`
-    assert "`use_msa_server=False`" in section and "`--no-msa-server`" in section
-    assert "`--openfold-no-msa-server`" in section
-    # the keys of the default requests changed once
-    assert "changed once when `structure` became the default" in section
-    # not tried is said
-    assert "Not tried" in section and "fetch_missing_structures: true" in section
-
-
-def test_the_template_mode_paragraph_gives_the_default_and_the_commands_that_were_run():
-    text = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
-    start = text.index(
-        "**template mode (`template_mode`, `--openfold-templates {structure,alignment}`).**"
-    )
-    section = text[start : text.index("\n\n", start)]
-    assert "`structure` (the default)" in section and "OpenFold3 0.4.2 or later" in section
-    assert "`alignment` gives each templated chain an A3M self-alignment" in section
-    assert "`--openfold-templates alignment` with another `--predictor` is a usage error" in section
-    # the default run through the command line, with its numbers
-    for stated in (
-        "both chains `used` with `source: structure`",
-        "binder 1.58 A, ipTM 0.865, 106 s",
-        "`replaced_by_msa_server`",
-        "1.62 A, ipTM 0.847, 91 s",
-        "1CWA with `--openfold-no-msa-server`, both chains used, ipTM 0.970, binder 0.39 A, 89 s",
-        "`binding-metrics-batch --predictor of3 --openfold-no-msa-server`",
-    ):
-        assert stated in section, stated
+        assert f"`{name}`" in section, name
+        parameters = inspect.signature(getattr(openfold, name)).parameters
+        assert "template_mode" in parameters, name
+        assert parameters["template_mode"].default == OPENFOLD_TEMPLATE_CHOICES[0], name
+        if name.startswith("run_openfold"):
+            assert "use_msa_server" in parameters, name
+    for function in (run_pipeline, run_batch):
+        parameters = inspect.signature(function).parameters
+        assert {"openfold_templates", "openfold_use_msa_server"} <= set(parameters), function
 
 
 def _displaced_binder_run():
@@ -186,6 +184,13 @@ class TestTheClaimsAboutTheResultKeys:
         block = self._run(tmp_path, predictor="of3", openfold_mode=mode)["prediction"]
         assert math.isfinite(block["delta_com_angstrom"])
         assert block["binder_ca_rmsd"] == pytest.approx(0.0, abs=1e-2)
+        paragraph = _paragraph("**the two modes.**")
+        for name, named in (
+            ("the mode help", set(RESULT_KEY.findall(OPENFOLD_MODE_HELP))),
+            ("the modes paragraph", set(BACKTICKED_KEY.findall(paragraph))),
+        ):
+            assert {"binder_ca_rmsd", "delta_com_angstrom"} <= named, name
+            assert named <= set(block), f"{name} names {sorted(named - set(block))}, not keys"
 
     @pytest.mark.parametrize("mode", ["score", "refold"])
     def test_a_displaced_binder_is_seen_in_both_modes(self, tmp_path, monkeypatch, mode):
@@ -240,21 +245,3 @@ class TestTheClaimsAboutTheResultKeys:
 
         for model in sorted(PARSERS):
             assert reference_for(model, EXAMPLE_1YCR) == EXAMPLE_1YCR
-
-
-def test_the_docs_list_the_behaviours_of_openfold3_the_toolkit_works_around():
-    text = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
-    start = text.index("**Known OpenFold3 0.5.0 behaviours the toolkit works around.**")
-    section = text[start : text.index("\n### ", start)]
-    assert section.count("\n- ") == 6
-    for fact in (
-        "template_entry_chain_ids: []",
-        "overwrites `template_alignment_file_path`",
-        "not `template_cif_paths`",
-        "splits every header row on `_` into exactly two parts",
-        "`MSASettings.max_seq_counts`",
-        "keyed by the sequence hash and the hash of the A3M content only",
-        "does not record a seed that OpenFold3 generated",
-        "leaves no `logs/predict_err_rank<N>.log`",
-    ):
-        assert fact in section, fact
