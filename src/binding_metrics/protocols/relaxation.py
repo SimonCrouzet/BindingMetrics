@@ -616,7 +616,13 @@ class ImplicitRelaxation(Relaxer):
         return result
 
     def _import_openmm(self):
-        if self._openmm_imported:
+        """Bind the module-level ``openmm``, ``app``, ``unit`` and ``PDBxFile`` on first use.
+
+        Every method that uses one of the four names calls this first. The names belong to
+        the module, so the per-instance flag alone is not enough: an instance that was
+        pickled after use reaches a fresh process with the flag set and the names unbound.
+        """
+        if self._openmm_imported and "openmm" in globals():
             return
         global openmm, app, unit, PDBxFile
         try:
@@ -994,6 +1000,7 @@ class ImplicitRelaxation(Relaxer):
         Returns:
             Force index in the system
         """
+        self._import_openmm()
         restraint = openmm.CustomExternalForce("0.5 * k * ((x-x0)^2 + (y-y0)^2 + (z-z0)^2)")
         restraint.addGlobalParameter(
             "k",
@@ -1122,6 +1129,8 @@ class ImplicitRelaxation(Relaxer):
                 (default ``CYCLIC_WARMUP_PS``).
         """
         import math
+
+        self._import_openmm()
 
         # Collect backbone φ/ψ atom quads for each residue in the peptide chain
         phi_quads = []
