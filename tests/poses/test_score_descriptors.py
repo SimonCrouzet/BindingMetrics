@@ -447,7 +447,7 @@ class TestReturnType:
             {"group_by": ()},
             {"representative": "confidence"},
             {"aggregate": ["mean"]},
-            {"n_workers": 2},
+            pytest.param({"n_workers": 2}, marks=pytest.mark.slow),
             {"keep_tmp": False, "metrics": ["hbonds"]},
         ],
     )

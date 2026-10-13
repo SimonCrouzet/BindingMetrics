@@ -231,6 +231,7 @@ class TestStartMethods:
             )
         assert (info.value.pose_id, info.value.stage) == ("backend_a-s2", "stub_fails")
 
+    @pytest.mark.slow
     def test_a_pool_of_one_worker_or_one_pose_runs_in_this_process(
         self, monkeypatch, synthetic, serial
     ):
@@ -325,6 +326,7 @@ class TestPickling:
         options = score_module.PoseSetOptions(agreement={"cluster_cutoffs_angstrom": [0.5]})
         assert pickle.loads(pickle.dumps(options)) == options
 
+    @pytest.mark.slow
     def test_an_outcome_and_a_result_pickle(self, synthetic, reference, serial):
         ctx_items = []
 

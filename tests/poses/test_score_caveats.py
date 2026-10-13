@@ -231,6 +231,7 @@ class TestNothingBreaks:
         again = score_pose_set(list(reversed(stripped)), "B", "A", options=HEAVY)
         assert again.to_json(include_timing=False) == caveat_result.to_json(include_timing=False)
 
+    @pytest.mark.slow
     def test_a_pool_gives_the_same_result(self, stripped, caveat_result):
         pooled = score_pose_set(stripped, "B", "A", options=HEAVY, n_workers=2)
         assert pooled["representatives"] == caveat_result["representatives"]

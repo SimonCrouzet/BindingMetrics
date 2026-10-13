@@ -53,6 +53,7 @@ def renumbered_poses(synthetic):
 
 
 class TestExplicitReference:
+    @pytest.mark.slow
     def test_a_pose_renumbered_from_1_is_paired_by_sequence(self, renumbered_poses, reference):
         result = score_pose_set(renumbered_poses, "B", "A", reference=reference)
         assert result["references"]["implicit"] is False
@@ -66,6 +67,7 @@ class TestExplicitReference:
             assert set(frame["region_rmsd_angstrom"]) == {"all", "site", "epitope"}
             assert frame["region_n_paired"]["epitope"] == 22
 
+    @pytest.mark.slow
     def test_the_agreement_does_not_depend_on_the_reference_or_the_numbering(
         self, synthetic, renumbered_poses, reference
     ):
@@ -323,6 +325,7 @@ def three_poses(path, binder):
 
 
 class TestRealComplexes:
+    @pytest.mark.slow
     @pytest.mark.parametrize(
         "path, binder, target, closures, classes",
         [

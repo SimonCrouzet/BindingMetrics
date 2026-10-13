@@ -140,6 +140,7 @@ class TestSkip:
         summary = mixed.summary()
         assert sentences[0] in summary and named in summary
 
+    @pytest.mark.slow
     def test_the_parameters_record_the_source_and_change_the_input_key(self, predicted, mixed):
         assert mixed["parameters"]["design"] == {
             "source": "boltzgen",
