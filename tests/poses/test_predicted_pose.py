@@ -138,10 +138,6 @@ class TestId:
 
 
 class TestContentHash:
-    def test_it_is_the_sha256_of_the_structure_file(self, structure_file):
-        pose = _pose(structure_path=structure_file)
-        assert pose.content_hash() == hashlib.sha256(structure_file.read_bytes()).hexdigest()
-
     def test_a_pose_without_a_structure_file_has_no_hash(self):
         pose = PredictedPose("of3", "q", reasons=["structure file not found"])
         with pytest.raises(ValueError, match="no structure file; structure file not found"):

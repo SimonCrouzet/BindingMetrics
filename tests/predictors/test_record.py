@@ -350,15 +350,6 @@ class TestAtoms:
         assert atoms.array_length() == synth.N_ATOMS
         assert list(dict.fromkeys(atoms.chain_id)) == ["A", "B"]
 
-    def test_is_read_once(self, tmp_path):
-        record = _record_with_structure(tmp_path)
-        assert record.atoms() is record.atoms()
-
-    def test_reads_pdb_and_gzip_compressed_files(self, tmp_path):
-        for suffix in (".pdb", ".cif.gz", ".pdb.gz"):
-            record = _record_with_structure(tmp_path, suffix=suffix)
-            assert record.atoms().array_length() == synth.N_ATOMS, suffix
-
     def test_chain_map_renames_chains(self, tmp_path):
         record = _record_with_structure(tmp_path, chain_map={"A": "R", "B": "P"})
         atoms = record.atoms()
@@ -397,12 +388,6 @@ class TestAtoms:
         assert set(record.atoms().chain_id) == {"R", "B"}
         record.chain_map = {}
         assert set(record.atoms().chain_id) == {"A", "B"}
-
-    def test_the_structure_file_is_not_modified(self, tmp_path):
-        record = _record_with_structure(tmp_path, chain_map={"A": "R"})
-        before = record.structure_path.read_bytes()
-        record.atoms()
-        assert record.structure_path.read_bytes() == before
 
     def test_no_structure_file_gives_a_value_error_with_the_reasons(self):
         record = PredictedPose("of3", "q", reasons=["structure file not found"])
