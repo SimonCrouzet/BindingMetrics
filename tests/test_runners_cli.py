@@ -129,6 +129,7 @@ class TestOneRun:
         assert block["delta_com_angstrom"] == pytest.approx(0.0, abs=1e-3)
         assert "evobind_error" not in block and "adversarial_error" not in block
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("model", MODELS)
     def test_the_binder_is_measured_against_the_input_pose(self, tmp_path, monkeypatch, model):
         ModelStub(model, tmp_path, monkeypatch)
@@ -217,6 +218,7 @@ class TestAModelThatIsNotInstalled:
 
 
 class TestTheModeOfARun:
+    @pytest.mark.slow
     @pytest.mark.parametrize("model", MODELS)
     def test_every_mode_the_runner_runs_runs_through_the_stub(self, tmp_path, monkeypatch, model):
         stub = ModelStub(model, tmp_path, monkeypatch)
@@ -386,6 +388,7 @@ class TestTheGenericSettings:
         else:
             assert "use_msa_server" not in call["kwargs"]
 
+    @pytest.mark.slow
     def test_the_server_option_changes_the_request_key(self, tmp_path, monkeypatch):
         keys = set()
         for model in MODELS:
@@ -562,6 +565,7 @@ class TestTheTwoSpellings:
         kwargs = stub.calls[-1]["kwargs"]
         assert kwargs["binder_cyclic"] is True and kwargs["use_msa_server"] is False
 
+    @pytest.mark.slow
     def test_both_spellings_with_one_value_are_one_setting(self, tmp_path, monkeypatch):
         stub = ModelStub("of3", tmp_path, monkeypatch)
         pipeline(
@@ -748,6 +752,7 @@ class TestTheCommandLine:
             captured["openfold_cyclic"] == "auto" and captured["openfold_conda_env"] == "openfold3"
         )
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("model", MODELS)
     def test_the_command_runs_the_model_and_writes_the_results(
         self, monkeypatch, tmp_path, model, capsys
@@ -830,6 +835,7 @@ class TestInABatch:
             self.batch_of(samples, tmp_path / "out", predictor=model, prediction_mode=mode)
         assert stub.starts == 0 and not (tmp_path / "out").exists()
 
+    @pytest.mark.slow
     def test_the_generic_settings_reach_the_batched_runs(self, tmp_path, samples, monkeypatch):
         stub = ModelStub("boltz2", tmp_path, monkeypatch, names=list(self.NAMES))
         self.batch_of(

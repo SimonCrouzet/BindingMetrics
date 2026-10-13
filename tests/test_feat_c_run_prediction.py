@@ -227,6 +227,7 @@ class TestProvenance:
 
 
 class TestFailure:
+    @pytest.mark.slow
     def test_a_failed_run_is_recorded_and_the_other_steps_go_on(self, tmp_path, monkeypatch):
         stub = StubOpenFold(monkeypatch, error=RuntimeError("GPU out of memory"))
         results = pipeline(tmp_path, metrics=frozenset({"openfold", "geometry"}), predictor="of3")

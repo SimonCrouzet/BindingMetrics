@@ -290,6 +290,7 @@ class TestPredictorPath:
             in (block["reason"])
         )
 
+    @pytest.mark.slow
     def test_the_request_key_follows_the_choice(self, tmp_path, monkeypatch):
         StubOpenFold(monkeypatch)
         store = tmp_path / "shared"

@@ -7,6 +7,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 DATA = Path(__file__).resolve().parent.parent / "data" / "example_bicyclic_sfti1_3P8F.cif"
 HEAVY = ("openmm", "simtk", "torch", "biotite", "numpy", "scipy", "gemmi", "mdtraj", "pdbfixer")
 
@@ -64,6 +66,7 @@ def test_a_pre_flight_check_of_registry_metrics_and_registered_predictors_stays_
     assert out.strip() == "[]"
 
 
+@pytest.mark.slow
 def test_profiling_a_structure_needs_biotite_but_never_openmm():
     out = _run(
         f"""

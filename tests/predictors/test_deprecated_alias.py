@@ -118,6 +118,7 @@ class TestTheOldNameIsTheSameClass:
 class TestOurOwnCodeUsesTheNewName:
     """A fresh interpreter imports and uses the predictors package with the warning an error."""
 
+    @pytest.mark.slow
     def test_a_representative_import_and_use_raises_no_deprecation_warning(self, tmp_path):
         script = textwrap.dedent(
             f"""
