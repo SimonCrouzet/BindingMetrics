@@ -66,7 +66,9 @@ all = [
 ]
 # pandas is read by binding-metrics-energy (CSV), markdown by the HTML summary.
 report = ["pandas>=1.5", "markdown>=3.4"]
-dev    = ["pytest>=7.0", "ruff==0.15.21"]  # keep equal to ci.yml and .pre-commit-config.yaml
+# pytest-xdist runs the tests on several processes (`pytest -n 4`, docs/testing.md); a plain
+# `pytest` works without it.
+dev    = ["pytest>=7.0", "pytest-xdist>=3.0", "ruff==0.15.21"]  # keep equal to ci.yml and .pre-commit-config.yaml
 
 [project.scripts]
 binding-metrics-check-env = "binding_metrics.cli.check_env:main"
