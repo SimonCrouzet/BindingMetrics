@@ -1435,6 +1435,7 @@ class TestTheSourceBehindIt:
         [
             "--out_dir", "--model", "--diffusion_samples", "--seed", "--output_format",
             "--write_full_pae", "--write_full_pde", "--use_msa_server", "--checkpoint",
+            "--write_embeddings",
         ],
     )  # fmt: skip
     def test_every_flag_the_runner_sets_is_a_flag_of_boltz_predict(self, boltz_source, flag):
@@ -1501,3 +1502,9 @@ class TestTheSourceBehindIt:
             in featurizer
         )
         assert 'idx_chain == connection["chain_1"] == connection["chain_2"]' in featurizer
+
+    def test_the_embeddings_are_one_file_per_input_beside_the_structures(self, boltz_source):
+        writer = boltz_source["writer"]
+        assert 'if self.write_embeddings and "s" in prediction and "z" in prediction:' in writer
+        assert 'struct_dir\n                    / f"embeddings_{record.id}.npz"' in writer
+        assert "np.savez_compressed(path, s=s, z=z)" in writer

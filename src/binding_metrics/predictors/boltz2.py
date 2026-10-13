@@ -15,6 +15,7 @@ without a reason; the points that they did not settle are listed under TO VERIFY
         plddt_{stem}_model_{r}.npz    key plddt  (n_tokens,)             0-1
         pae_{stem}_model_{r}.npz      key pae    (n_tokens, n_tokens)    angstrom
         pde_{stem}_model_{r}.npz      key pde    (n_tokens, n_tokens)    angstrom
+        embeddings_{stem}.npz         keys s, z  (with --write_embeddings only; once per input)
         affinity_{stem}.json                                 not read
 
 * ``r`` counts from 0 and is the rank by ``confidence_score`` (``writer.py:73-79,159``): sample
@@ -24,6 +25,14 @@ without a reason; the points that they did not settle are listed under TO VERIFY
   directory, so the adapter also looks in ``boltz_results_*/predictions/{name}``. It looks in
   ``prediction_dir`` itself, in ``prediction_dir/{name}``, in ``prediction_dir/predictions/{name}``
   and then in those ``boltz_results_*`` folders, and takes the first that holds the sample.
+* ``--write_embeddings`` makes the writer save ``s`` and ``z`` (the trunk's single and pair
+  representations) in ``embeddings_{stem}.npz`` next to the structures, once per input and not per
+  sample (``writer.py:249-257``). The adapter registers the file as ``PredictionFiles.extra
+  ["embeddings"]`` for every sample that exists, and ``parse`` puts its path in
+  ``extras["embeddings_path"]``; the path is found when the files are located, from the directory
+  they are in, so it follows the store's rename. The arrays are never read here, and a missing file
+  adds no reason: whether embeddings were asked for is a fact of the request, which the session
+  knows.
 * One ``boltz predict`` run has one seed (``--seed``, ``main.py:919``), so there is no seed
   dimension: ``seed_index`` must be 1, another seed is another output directory.
 * PAE and PDE are written whenever the confidence head ran: ``predict_step`` adds ``pde``
@@ -685,16 +694,24 @@ class Boltz2Parser(PredictionParser):
         """
         root = Path(prediction_dir)
         found: dict = {}
+        where = root
         if seed_index == 1 and sample >= 1:
             for directory in _candidate_directories(root, name):
                 found = _sample_files(directory, name, sample - 1) if directory.is_dir() else {}
                 if found:
+                    where = directory
                     break
+        extra = {role: found[role] for role in _ARRAY_ROLES if role in found}
+        # one file per input, so only a sample that exists gets it: a sample number past the last
+        # one must still find nothing (``list_samples`` stops at the first sample without files)
+        embeddings = where / f"embeddings_{name}.npz"
+        if found and embeddings.is_file():
+            extra["embeddings"] = embeddings
         return PredictionFiles(
             directory=root,
             structure=found.get("structure"),
             scores=found.get("scores"),
-            extra={role: found[role] for role in _ARRAY_ROLES if role in found},
+            extra=extra,
         )
 
     def list_samples(self, prediction_dir: str | Path, name: str) -> list[SampleRef]:
@@ -745,6 +762,8 @@ class Boltz2Parser(PredictionParser):
 
         stem = f"{name}_model_{sample - 1}"
         record.extras["model_rank"] = sample - 1
+        if "embeddings" in files.extra:
+            record.extras["embeddings_path"] = str(files.extra["embeddings"])
         if files.scores is None:
             record.reasons.append(f"confidence summary confidence_{stem}.json not found")
         for role in _ARRAY_ROLES:

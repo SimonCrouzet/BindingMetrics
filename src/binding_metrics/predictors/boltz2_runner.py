@@ -24,7 +24,8 @@ is read)::
             lock_threshold_angstrom: Optional[float] = None,
             weights: Optional[str | Path | WeightsRef] = None,
             extra_args: Sequence[str] = (),
-            closure_bonds: str | Sequence[Mapping] = "none") -> PredictionRequest
+            closure_bonds: str | Sequence[Mapping] = "none",
+            write_embeddings: bool = False) -> PredictionRequest
         .prepare(request, work_dir) -> Path          # <work_dir>/input/<name>.yaml
         .run(request, work_dir) -> Path   # <work_dir>/boltz_results_<name>/predictions/<name>
         .is_available() -> bool
@@ -123,6 +124,14 @@ the key as they were.
 ``options["closure_bonds"]`` holds the list that is written (an ``"auto"`` request is resolved
 when the request is made) and is absent when that list is empty, so two requests that write the
 same bonds share a key and a request without the option keeps its key.
+
+Embeddings. ``write_embeddings=True`` passes ``--write_embeddings``: Boltz-2 then writes
+``embeddings_<name>.npz`` (arrays ``s`` and ``z``, the single and pair representations of the
+trunk) next to the structures, once per input and not per sample (``writer.py:249-257``).
+``Boltz2Parser`` registers the file and puts its path in ``extras["embeddings_path"]``; nothing
+here loads the arrays. The flag is in ``options["write_embeddings"]`` only when True, so a
+request without it keeps its key, and a stored entry made without it is not a hit for a request
+that asks for the embeddings.
 
 MSA. ``use_msa_server`` (default True) passes ``--use_msa_server``: the sequences are sent to the
 ColabFold server. False writes ``msa: empty`` on each entity, the single-sequence mode of the
@@ -252,6 +261,7 @@ _DEFAULT_USE_MSA_SERVER = True
 _DEFAULT_ON_UNMAPPABLE = "error"
 _DEFAULT_BINDER_CYCLIC = "auto"
 _DEFAULT_CLOSURE_BONDS = "none"
+_DEFAULT_WRITE_EMBEDDINGS = False
 
 #: The closure families written as ``bond`` constraints (``closure_bonds="auto"``).
 _CLOSURE_BOND_FAMILIES = ("head_to_tail", "disulfide", "lactam")
@@ -274,6 +284,7 @@ _OWNED_FLAGS = (
     "--write_full_pde",
     "--use_msa_server",
     "--checkpoint",
+    "--write_embeddings",
 )
 
 #: The three-letter name a template CIF gives each query letter (the parent residue).
@@ -1008,6 +1019,12 @@ def _check_extra_args(extra_args: Sequence[str]) -> list[str]:
     return arguments
 
 
+def _check_write_embeddings(value: object) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"write_embeddings must be True or False, got {value!r}")
+    return value
+
+
 def _check_threshold(value: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"lock_threshold_angstrom must be a number, got {value!r}")
@@ -1080,6 +1097,7 @@ class Boltz2Runner(PredictionRunner):
         weights: Optional[str | Path | WeightsRef] = None,
         extra_args: Sequence[str] = (),
         closure_bonds: str | Sequence[Mapping] = _DEFAULT_CLOSURE_BONDS,
+        write_embeddings: bool = _DEFAULT_WRITE_EMBEDDINGS,
     ) -> PredictionRequest:
         """The store request of one Boltz-2 run, with every setting that changes the output.
 
@@ -1120,6 +1138,8 @@ class Boltz2Runner(PredictionRunner):
                 the request; a list of ``{"atom1": [chain, position, atom], "atom2": [...]}``
                 (positions from 1 in the sequence sent) is written as given. See the module
                 docstring.
+            write_embeddings: Pass ``--write_embeddings``; the run then leaves
+                ``embeddings_<name>.npz`` beside the structures. Part of the key only when True.
 
         Raises:
             ValueError: An unknown mode, a missing or equal chain role, a name that is not a plain
@@ -1129,7 +1149,8 @@ class Boltz2Runner(PredictionRunner):
                 bond of the wrong shape; with ``"auto"`` also what ``prepare`` raises about the
                 binder chain and its closures (an unreadable structure, a missing chain, a
                 residue Boltz-2 cannot take, a closure that cannot be placed).
-            TypeError: ``closure_bonds`` is neither a string nor a list.
+            TypeError: ``closure_bonds`` is neither a string nor a list, or ``write_embeddings``
+                is not a bool.
             OSError: The input file cannot be read.
         """
         if mode not in RUN_MODES:
@@ -1171,6 +1192,7 @@ class Boltz2Runner(PredictionRunner):
                 )
             seed = values[0]
         arguments = _check_extra_args(extra_args)
+        _check_write_embeddings(write_embeddings)
         bonds = _closure_bond_option(closure_bonds)
         if bonds == "auto":
             structure = _read_structure(Path(input_path))
@@ -1188,6 +1210,8 @@ class Boltz2Runner(PredictionRunner):
         }
         if bonds and bonds != "none":  # a new field joins the key only when it is not the default
             options["closure_bonds"] = bonds
+        if write_embeddings:
+            options["write_embeddings"] = True
 
         return PredictionRequest(
             self.name,
@@ -1284,6 +1308,7 @@ class Boltz2Runner(PredictionRunner):
         options = request.options
         _check_extra_args(options.get("extra_args", ()))
         _closure_bond_option(options.get("closure_bonds", _DEFAULT_CLOSURE_BONDS))
+        _check_write_embeddings(options.get("write_embeddings", _DEFAULT_WRITE_EMBEDDINGS))
         if request.mode == "score-lock":
             _check_threshold(options.get("lock_threshold_angstrom"))
         self.check_weights(request)
@@ -1312,6 +1337,8 @@ class Boltz2Runner(PredictionRunner):
         ]
         if options.get("use_msa_server", _DEFAULT_USE_MSA_SERVER):
             command.append("--use_msa_server")
+        if options.get("write_embeddings", _DEFAULT_WRITE_EMBEDDINGS):
+            command.append("--write_embeddings")
         if request.weights is not None:
             command += ["--checkpoint", str(request.weights.path)]
         command += [str(argument) for argument in options.get("extra_args", ())]

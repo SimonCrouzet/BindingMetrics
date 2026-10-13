@@ -463,19 +463,17 @@ class TestFindFiles:
         _write(tmp_path)
         assert Boltz2Parser().find_files(tmp_path, NAME).structure.suffix == ".cif"
 
-    def test_the_affinity_and_embedding_files_are_not_part_of_a_sample(self, tmp_path):
+    def test_the_affinity_files_are_not_part_of_a_sample_and_the_embeddings_are_an_extra(
+        self, tmp_path
+    ):
         _write(tmp_path)
         leaf = _leaf(tmp_path)
         (leaf / f"affinity_{NAME}.json").write_text("{}", encoding="utf-8")
         np.savez(leaf / f"pre_affinity_{NAME}.npz", coords=np.zeros(3))
         np.savez(leaf / f"embeddings_{NAME}.npz", s=np.zeros(3))
-        assert set(Boltz2Parser().find_files(tmp_path, NAME).found()) == {
-            "structure",
-            "scores",
-            "plddt",
-            "pae",
-            "pde",
-        }
+        files = Boltz2Parser().find_files(tmp_path, NAME)
+        assert set(files.found()) == {"structure", "scores", "plddt", "pae", "pde", "embeddings"}
+        assert files.extra["embeddings"] == leaf / f"embeddings_{NAME}.npz"
 
     def test_list_samples_gives_the_confidence_scores_without_reading_the_arrays(self, tmp_path):
         for sample, score in ((1, 0.91), (2, 0.85)):
