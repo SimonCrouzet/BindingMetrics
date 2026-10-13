@@ -42,14 +42,18 @@ to choose the tests for a diff with the same table and the same scan as the mark
 from __future__ import annotations
 
 import ast
+import copy
+import heapq
 import os
 import re
 import sys
+import textwrap
 import tomllib
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 PACKAGE = "binding_metrics"
 TESTS_DIR = Path(__file__).resolve().parent
@@ -225,6 +229,10 @@ COARSE_AREAS = tuple(sorted({coarse_of(a) for a in FINE_AREAS}))
 CODE_AREAS = tuple(sorted(set(FINE_AREAS) | set(COARSE_AREAS)))
 ALL_AREAS = CODE_AREAS + SPECIAL_AREAS
 
+# A chain of imports counts for a change when at most this many of its links are imports inside a
+# function (see ``Project.affected_modules``).
+MAX_LAZY_IMPORTS = 1
+
 # A fine area tags a test file when it holds this share of the file's references to the package.
 PRIMARY_SHARE = 0.25
 # Areas of code that tests use on the way (constants, the structure loader of the metrics) and are
@@ -258,6 +266,7 @@ class FileScan:
     names: frozenset[str]  # argument names and strings: candidates for fixture names
     reads_docs: bool
     usage: Mapping[str, int]  # module -> how many times the file refers to it
+    through: frozenset[str]  # packages whose lazy attribute lookup the file goes through
 
 
 def _is_type_checking(test: ast.expr) -> bool:
@@ -294,6 +303,28 @@ def _called_name(call: ast.Call) -> str:
     return func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
 
 
+class Closure(NamedTuple):
+    """What a test file uses: package modules, the files that use them, and lazy lookups."""
+
+    modules: frozenset[str]
+    files: frozenset[Path]
+    through: frozenset[str]
+
+
+class _FunctionBodies(ast.NodeTransformer):
+    """Replaces the body of every function by ``pass``, so that what is left runs on import."""
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        node.body = [ast.Pass()]
+        return node
+
+    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+
+def _drop_function_bodies(tree: ast.AST) -> ast.AST:
+    return _FunctionBodies().visit(copy.deepcopy(tree))
+
+
 def _parse(path: Path) -> ast.Module | None:
     """Parse a Python file; None when it cannot be read or parsed (pytest reports that itself)."""
     try:
@@ -325,14 +356,16 @@ class Project:
         self._scans: dict[Path, FileScan] = {}
         self._exports: dict[str, dict[str, str]] = {}
         self._texts: dict[Path, str] = {}
-        self._closures: dict[Path, tuple[frozenset[str], frozenset[Path]]] = {}
+        self._closures: dict[Path, Closure] = {}
         self._modules: frozenset[str] | None = None
         self._packages: frozenset[str] = frozenset()
         self._first_level: list[str] = []
         self._test_python: frozenset[Path] | None = None
-        self._graph: dict[str, frozenset[str]] | None = None
+        self._edges: dict[str, dict[str, int]] | None = None
+        self._dispatch: tuple[set[str], set[str]] | None = None
         self._fixtures: dict[str, frozenset[str]] | None = None
         self._scripts: dict[str, str] | None = None
+        self._scripts_dir: frozenset[str] | None = None
 
     # ------------------------------------------------------------------ the package
 
@@ -423,7 +456,12 @@ class Project:
         return found
 
     def package_imports(
-        self, tree: ast.AST, current_module: str | None = None, *, strings: str = "all"
+        self,
+        tree: ast.AST,
+        current_module: str | None = None,
+        *,
+        strings: str = "all",
+        through: set[str] | None = None,
     ) -> tuple[set[str], list[ast.ImportFrom]]:
         """Package modules a tree imports, and its imports that are not of the package.
 
@@ -431,7 +469,9 @@ class Project:
         test file a relative import is a helper, so the caller leaves it None and gets the
         ``ImportFrom`` node back in the second item. ``strings`` says which strings also count
         when they are a dotted module path or a console-script name: ``"all"`` of them, only those
-        that are the argument of an ``import_module`` call (``"calls"``), or ``"none"``.
+        that are the argument of an ``import_module`` call (``"calls"``), or ``"none"``. A name
+        that a package re-exports lazily goes through the package's ``__getattr__`` (PEP 562):
+        the package joins ``through`` when that set is given, and the modules otherwise.
         """
         modules: set[str] = set()
         others: list[ast.ImportFrom] = []
@@ -453,6 +493,10 @@ class Project:
                     others.append(node)
                     continue
                 modules |= self.resolve_from_import(base, [a.name for a in node.names])
+                # a lazily re-exported name goes through the package's __getattr__ (PEP 562)
+                package = self._deepest_module(base)
+                if any(a.name in self.exports_of(package) for a in node.names):
+                    (modules if through is None else through).add(package)
             elif strings == "all" and isinstance(node, ast.Constant):
                 modules |= self._modules_named_by(node.value)
             elif strings == "calls" and isinstance(node, ast.Call):
@@ -490,6 +534,19 @@ class Project:
         scripts = self.console_scripts()
         return {scripts[named.group(1)]} if named and named.group(1) in scripts else set()
 
+    @staticmethod
+    def _parse_snippet(text: str) -> ast.Module | None:
+        try:
+            return ast.parse(textwrap.dedent(text))
+        except (SyntaxError, ValueError):
+            return None
+
+    def _script_names(self) -> frozenset[str]:
+        if self._scripts_dir is None:
+            folder = self.root / "scripts"
+            self._scripts_dir = frozenset(os.listdir(folder)) if folder.is_dir() else frozenset()
+        return self._scripts_dir
+
     def console_scripts(self) -> dict[str, str]:
         """Console-script name -> module (``binding-metrics-run`` -> ``cli.run``)."""
         if self._scripts is None:
@@ -507,43 +564,124 @@ class Project:
 
     # ------------------------------------------------------- the dependencies inside src
 
-    def source_graph(self) -> dict[str, frozenset[str]]:
-        """Module -> modules it depends on when it runs, from its imports (lazy ones included).
+    def import_edges(self) -> dict[str, dict[str, int]]:
+        """Module -> {module it imports: 0 for an import at the top of a file, 1 inside a function}.
 
-        Importing ``a.b.c`` also imports ``a.b``, ``a`` and the root, so a module depends on the
-        parent packages of everything it imports. ``if TYPE_CHECKING:`` imports are left out. A
-        string counts only as the argument of ``import_module``: the ``import_path="pkg.mod:func"``
-        strings of the metric registry and the ``_EXPORTS`` tables name modules that load on first
-        use, and following them would make every metric a dependency of the whole CLI.
+        ``if TYPE_CHECKING:`` imports are left out. A string counts only as the argument of
+        ``import_module``: the ``import_path="pkg.mod:func"`` strings of the metric registry and
+        the ``_EXPORTS`` tables name modules that load on first use, and following them would make
+        every metric a dependency of the whole CLI (``select_tests`` handles them as dispatch).
+        Importing ``a.b.c`` also runs ``a.b`` and ``a``, which is not an edge: a change to the
+        ``__init__`` of a package concerns the importers of its names, not those of its children.
         """
-        if self._graph is None:
-            graph = {}
+        if self._edges is None:
+            edges: dict[str, dict[str, int]] = {}
             for module in self.module_names():
                 tree = _parse(self._path_of_module(module))
-                imported = self.package_imports(tree, module, strings="calls")[0] if tree else set()
-                depends = set(imported)
-                for name in imported:
-                    parts = name.split(".") if name else []
-                    depends |= {".".join(parts[:end]) for end in range(len(parts))}
-                depends.discard(module)
-                graph[module] = frozenset(depends)
-            self._graph = graph
-        return self._graph
+                if tree is None:
+                    edges[module] = {}
+                    continue
+                everywhere = self.package_imports(tree, module, strings="calls")[0]
+                at_the_top = self.package_imports(
+                    _drop_function_bodies(tree), module, strings="calls"
+                )[0]
+                edges[module] = {m: 0 if m in at_the_top else 1 for m in everywhere - {module}}
+            self._edges = edges
+        return self._edges
+
+    def affected_modules(
+        self, seeds: Iterable[str], max_lazy: int = MAX_LAZY_IMPORTS
+    ) -> dict[str, tuple[int, str | None]]:
+        """The seeds and every module that depends on one, each with its distance and next hop.
+
+        A module depends on what it imports. A dependency reached through more than ``max_lazy``
+        imports inside functions is dropped: such an import runs only when its function is called,
+        and a second one in a chain almost never leads to a test that runs the seed (see the
+        figures in docs/testing.md). The next hop is the module one step closer to a seed (None
+        for a seed), so that a chain ``a -> b -> seed`` can be read back.
+        """
+        importers: dict[str, list[tuple[str, int]]] = {}
+        for module, dependencies in self.import_edges().items():
+            for dependency, lazy in dependencies.items():
+                importers.setdefault(dependency, []).append((module, lazy))
+        found: dict[str, tuple[int, str | None]] = {}
+        best: dict[str, tuple[int, int]] = {}  # module -> (lazy imports, hops) of the best chain
+        queue = [(0, 0, module, None) for module in sorted(set(seeds))]
+        heapq.heapify(queue)
+        while queue:
+            lazy, hops, module, previous = heapq.heappop(queue)
+            if module in found:
+                continue
+            found[module] = (hops, previous)
+            best[module] = (lazy, hops)
+            for importer, is_lazy in sorted(importers.get(module, ())):
+                if importer not in found and lazy + is_lazy <= max_lazy:
+                    heapq.heappush(queue, (lazy + is_lazy, hops + 1, importer, module))
+        return found
 
     def dependents_closure(self, seeds: Iterable[str]) -> set[str]:
         """The seeds and every module that depends on one of them, directly or not."""
-        reverse: dict[str, set[str]] = {}
-        for module, dependencies in self.source_graph().items():
-            for dependency in dependencies:
-                reverse.setdefault(dependency, set()).add(module)
-        closure, stack = set(), list(seeds)
-        while stack:
-            module = stack.pop()
-            if module in closure:
-                continue
-            closure.add(module)
-            stack.extend(reverse.get(module, ()))
-        return closure
+        return set(self.affected_modules(seeds))
+
+    def dispatch_tables(self) -> tuple[set[str], set[str]]:
+        """(modules named by ``"pkg.mod:name"`` strings, modules that import a module by variable).
+
+        The first are loaded by name from a table (the metric registry, the parsers, the runners);
+        the second hold the code that does it. A test that imports a loader can run any entry of
+        a table, whichever module it sits in, which no import statement shows.
+        """
+        if self._dispatch is None:
+            named: set[str] = set()
+            loaders: set[str] = set()
+            for module in self.module_names():
+                tree = _parse(self._path_of_module(module))
+                holds_table = loads_by_variable = False
+                for node in ast.walk(tree) if tree else []:
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                        if _DOTTED.fullmatch(node.value) and ":" in node.value:
+                            holds_table = True
+                            named.add(
+                                self._deepest_module(node.value[len(PACKAGE) + 1 :].split(":")[0])
+                            )
+                    elif isinstance(node, ast.Call) and _called_name(node) in (
+                        "import_module",
+                        "__import__",
+                    ):
+                        loads_by_variable |= bool(node.args) and not isinstance(
+                            node.args[0], ast.Constant
+                        )
+                if holds_table and loads_by_variable:
+                    loaders.add(module)
+            self._dispatch = (named, loaders)
+        return self._dispatch
+
+    def select_tests(self, seeds: Iterable[str]) -> dict[Path, str]:
+        """Test files that a change to the ``seeds`` modules can affect, each with the reason.
+
+        A test file is chosen when it imports a seed or a module that depends on one (see
+        ``affected_modules``), and, for a seed that a table loads by name, when it imports a
+        module that does the loading. Imports are those of ``closure``: the file, its helpers and
+        the conftest fixtures it asks for.
+        """
+        seeds = set(seeds)
+        affected = self.affected_modules(seeds)
+        named, loaders = self.dispatch_tables()
+        loaded_by_name = sorted(seeds & named)
+        chosen: dict[Path, str] = {}
+        for test in self.test_files():
+            closure = self.closure(test)
+            modules = closure.modules | closure.through
+            hits = modules & affected.keys()
+            if hits:
+                first = min(hits, key=lambda m: (affected[m][0], m))
+                chain = [first]
+                while affected[chain[-1]][1] is not None:
+                    chain.append(affected[chain[-1]][1])
+                chosen[test] = "imports " + " -> ".join(m or "binding_metrics" for m in chain)
+            elif loaded_by_name and modules & loaders:
+                loader = sorted(modules & loaders)[0]
+                chosen[test] = f"imports {loader}, which loads {loaded_by_name[0]} by name"
+        return chosen
 
     def modules_of_source_file(self, relative_path: str) -> set[str]:
         """Modules a change to a file below ``src/binding_metrics`` can affect (before dependents).
@@ -609,8 +747,9 @@ class Project:
             names: set[str] = set()
             reads_docs = False
             usage: Mapping[str, int] = {}
+            through: set[str] = set()
             if tree is not None:
-                modules, others = self.package_imports(tree)
+                modules, others = self.package_imports(tree, through=through)
                 usage = self.module_usage(tree)
                 for node in others:
                     helpers |= self._helper_files(path, node)
@@ -620,6 +759,21 @@ class Project:
                     elif isinstance(node, ast.Constant) and isinstance(node.value, str):
                         names.add(node.value)
                         reads_docs |= bool(_MARKDOWN_PATH.fullmatch(node.value))
+                        if node.value == "pyproject.toml":
+                            # a test that reads the console scripts runs through all of them
+                            modules = modules | set(self.console_scripts().values())
+                        elif node.value.endswith(".py") and node.value in self._script_names():
+                            # a test that runs a script of scripts/ uses what the script imports
+                            helpers.add(self.root / "scripts" / node.value)
+                        elif (
+                            PACKAGE in node.value and "import" in node.value and "\n" in node.value
+                        ):
+                            # a test that runs code given as a string (python -c) uses its imports
+                            snippet = self._parse_snippet(node.value)
+                            if snippet:
+                                modules = (
+                                    modules | self.package_imports(snippet, through=through)[0]
+                                )
                     else:
                         reads_docs |= _names_docs_folder(node)
             self._scans[path] = FileScan(
@@ -628,6 +782,7 @@ class Project:
                 frozenset(names),
                 reads_docs,
                 usage,
+                frozenset(through),
             )
         return self._scans[path]
 
@@ -640,6 +795,9 @@ class Project:
         nothing, which is what separates a test about a module from one that only needs it.
         """
         aliases: dict[str, str] = {}
+        names: list[ast.Name] = []
+        attributes: list[ast.Attribute] = []
+        strings: list[object] = []
         for node in walk_runtime(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -656,25 +814,27 @@ class Project:
                         if alias.name != "*":
                             (module,) = self.resolve_from_import(base, [alias.name])
                             aliases[alias.asname or alias.name] = module
-        counts: Counter = Counter()
-        in_chain: set[int] = set()
-        for node in walk_runtime(tree):
-            if isinstance(node, ast.Attribute) and id(node) not in in_chain:
-                chain, inner = [], node
-                while isinstance(inner, ast.Attribute):
-                    chain.append(inner.attr)
-                    in_chain.add(id(inner.value))
-                    inner = inner.value
-                if isinstance(inner, ast.Name) and inner.id == PACKAGE:
-                    counts[self._deepest_module(".".join(reversed(chain)))] += 1
-            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                if node.id in aliases and id(node) not in in_chain:
-                    counts[aliases[node.id]] += 1
-                elif node.id in aliases:
-                    counts[aliases[node.id]] += 1
+            elif isinstance(node, ast.Name):
+                names.append(node)
+            elif isinstance(node, ast.Attribute):
+                attributes.append(node)
             elif isinstance(node, ast.Constant):
-                for module in self._modules_named_by(node.value):
-                    counts[module] += 1
+                strings.append(node.value)
+        counts: Counter = Counter(
+            aliases[n.id] for n in names if isinstance(n.ctx, ast.Load) and n.id in aliases
+        )
+        inside_a_chain = {id(a.value) for a in attributes}
+        for node in attributes:
+            if id(node) in inside_a_chain:
+                continue
+            chain, inner = [], node
+            while isinstance(inner, ast.Attribute):
+                chain.append(inner.attr)
+                inner = inner.value
+            if isinstance(inner, ast.Name) and inner.id == PACKAGE:
+                counts[self._deepest_module(".".join(reversed(chain)))] += 1
+        for value in strings:
+            counts.update(self._modules_named_by(value))
         return counts
 
     def _module_files(self, base: Path) -> set[Path]:
@@ -713,12 +873,13 @@ class Project:
                 found |= self._helper_module(importer, f"{node.module}.{alias.name}")
         return found
 
-    def closure(self, path: Path) -> tuple[frozenset[str], frozenset[Path]]:
+    def closure(self, path: Path) -> Closure:
         """Package modules a test file uses, and the files (itself and its helpers) behind them."""
         path = Path(os.path.abspath(path))
         if path not in self._closures:
             fixtures = self.fixture_modules()
             modules: set[str] = set()
+            through: set[str] = set()
             seen: set[Path] = set()
             stack = [path]
             while stack:
@@ -728,15 +889,16 @@ class Project:
                 seen.add(current)
                 scan = self.scan(current)
                 modules |= scan.modules
+                through |= scan.through
                 for fixture in scan.names & fixtures.keys():
                     modules |= fixtures[fixture]
                 stack.extend(scan.helpers)
-            self._closures[path] = (frozenset(modules), frozenset(seen))
+            self._closures[path] = Closure(frozenset(modules), frozenset(seen), frozenset(through))
         return self._closures[path]
 
     def usage_of(self, path: Path) -> Counter:
         """Module -> references, over a test file, its helpers and the fixtures it asks for."""
-        modules, files = self.closure(path)
+        modules, files, _ = self.closure(path)
         counts: Counter = Counter()
         fixtures = self.fixture_modules()
         for file in files:
@@ -754,7 +916,7 @@ class Project:
         to nothing by name (it only imports) takes the areas of all its imports. The coarse area
         of each fine one comes with it, then ``docs`` and ``golden`` where they apply.
         """
-        modules, files = self.closure(path)
+        modules, files, _ = self.closure(path)
         by_area: Counter = Counter()
         for module, count in self.usage_of(path).items():
             by_area[area_of_module(module) or "misc"] += count

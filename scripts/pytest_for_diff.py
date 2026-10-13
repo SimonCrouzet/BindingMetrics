@@ -2,23 +2,27 @@
 """Run the tests that a diff can affect, instead of the whole suite.
 
 The full non-GPU suite takes about twenty minutes, and most changes reach a small part of it.
-Every test carries area markers (``pytest -m poses``; see ``tests/_areas.py``), and this script
-turns a list of changed files into the areas to run:
+This script turns a list of changed files into the test files to run:
 
-- a file of ``src/binding_metrics`` stands for its module and for every module that imports it,
-  directly or not; the areas of these modules are run;
+- a file of ``src/binding_metrics`` stands for its module. The tests chosen are those whose
+  file, test helpers and fixtures import that module or a module that imports it, directly or
+  not (the chain is printed by ``--explain``). A module that a table loads by name (a metric
+  of the registry, a model adapter) also selects the tests that import the code doing the
+  loading, since no import statement shows that they can run it. A package ``__init__`` selects
+  only the importers of its names, not the importers of its children;
 - a changed test file runs itself, and so do the test files that import it as a helper;
-- a Markdown file (README, CHANGELOG, docs/) runs the ``docs`` area;
+- a Markdown file (README, CHANGELOG, docs/) runs the tests that read documentation;
 - ``pyproject.toml``, ``tests/conftest.py`` and ``tests/_areas.py`` can change what every test
   does, so the fast tier (everything except ``gpu`` and ``slow``) runs;
 - any other file runs the test files whose text names it (``Dockerfile``, ``environment.yml``);
 - the guard tests in ``GUARD_TESTS`` always run, because they catch breakage that crosses areas.
 
-The table of areas and the scan of imports are those of the markers, imported from
-``tests/_areas.py``, so the script and ``tests/conftest.py`` cannot disagree. Nothing from the
-package is imported. The selection follows ``import`` statements and ``import_module("...")``
-calls; a module that another one only names in data (the ``import_path`` strings of the metric
-registry) is not a dependency, so a change in how a metric is called deserves ``-m cli`` as well.
+The scan of imports is the one that tags the tests (``tests/_areas.py``), imported from there so
+that the script and ``tests/conftest.py`` cannot disagree; nothing from the package is imported.
+Measured against the lines that each test executed (docs/testing.md gives the figures), the
+selection finds about 99 % of the test files that run any line of a module. It cannot be narrow
+for the modules that most of the code depends on (``io/structures.py``, ``metrics/_common.py``,
+``utils.py``): a change there selects most of the suite, which is correct.
 
 Usage::
 
@@ -26,11 +30,12 @@ Usage::
     python scripts/pytest_for_diff.py --working-tree   # uncommitted work vs HEAD
     python scripts/pytest_for_diff.py --staged         # what is staged
     python scripts/pytest_for_diff.py --base HEAD~3    # work since a commit or branch
-    python scripts/pytest_for_diff.py --dry-run        # print the commands and run nothing
+    python scripts/pytest_for_diff.py --explain        # say why each test file was chosen
+    python scripts/pytest_for_diff.py --dry-run        # print the command and run nothing
     python scripts/pytest_for_diff.py -- -x -q         # arguments after -- go to pytest
 
 ``gpu`` tests never run here and ``slow`` ones only with ``--include-slow``. The full suite
-remains the gate before a pull request and a signed release.
+is the gate before a pull request and a signed release.
 """
 
 from __future__ import annotations
@@ -127,22 +132,22 @@ def changed_files(repo: Path, mode: str, base: str | None) -> tuple[list[str], s
 class Plan:
     """What to run for a set of changed files."""
 
-    areas: set[str] = field(default_factory=set)
     everything: bool = False
-    files: list[str] = field(default_factory=list)
-    notes: list[str] = field(default_factory=list)
+    files: dict[str, list[str]] = field(default_factory=dict)  # test file -> why it runs
+    notes: list[str] = field(default_factory=list)  # one line per changed file
+
+    def add(self, test_file: str, reason: str) -> None:
+        self.files.setdefault(test_file, []).append(reason)
 
 
 def plan_for(project, changed: list[str], guards: tuple[str, ...] = GUARD_TESTS) -> Plan:
-    """Map changed files to areas and test files, with the project's own table and scan."""
+    """Map changed files to test files, with the project's own import scan."""
     plan = Plan()
     triggers = [name for name in changed if name in FAST_TIER_TRIGGERS]
     if triggers:  # the fast tier includes every other selection
         plan.everything = True
         plan.notes = [f"{name}: can change every test, so the fast tier runs" for name in triggers]
         return plan
-
-    files: set[str] = set()
 
     def relative(path: Path) -> str:
         return path.relative_to(project.root).as_posix()
@@ -153,62 +158,57 @@ def plan_for(project, changed: list[str], guards: tuple[str, ...] = GUARD_TESTS)
             if not path.exists():
                 plan.notes.append(f"{name}: deleted")
                 continue
-            if Path(name).name.startswith("test_"):
-                files.add(name)
+            is_test = Path(name).name.startswith("test_")
+            if is_test:
+                plan.add(name, f"{name} changed")
             users = [relative(t) for t in project.tests_using(path)]
-            files.update(users)
-            kind = "a test file" if Path(name).name.startswith("test_") else "a test helper"
+            for user in users:
+                plan.add(user, f"imports the changed {name}")
+            kind = "a test file" if is_test else "a test helper"
             plan.notes.append(f"{name}: {kind}; {len(users)} other test file(s) import it")
         elif name.startswith("src/binding_metrics/"):
             seeds = project.modules_of_source_file(name)
-            affected = project.dependents_closure(seeds)
-            areas = project.areas_of_modules(affected)
-            plan.areas |= areas
+            affected = project.affected_modules(seeds)
+            chosen = project.select_tests(seeds)
+            for test, reason in chosen.items():
+                plan.add(relative(test), reason)
             plan.notes.append(
-                f"{name}: {len(seeds)} module(s) and {len(affected) - len(seeds)} that import "
-                f"them -> {', '.join(sorted(areas))}"
+                f"{name}: {', '.join(sorted(m or 'binding_metrics' for m in seeds)[:3])}"
+                f"{' ...' if len(seeds) > 3 else ''}; {len(affected) - len(seeds)} module(s) "
+                f"depend on it; {len(chosen)} test file(s)"
             )
         elif name.endswith(".md"):
-            plan.areas.add("docs")
-            plan.notes.append(f"{name}: documentation -> docs")
+            readers = [
+                relative(t) for t in project.test_files() if "docs" in project.areas_of_test_file(t)
+            ]
+            for reader in readers:
+                plan.add(reader, f"reads documentation ({name} changed)")
+            plan.notes.append(f"{name}: documentation; {len(readers)} test file(s) read it")
         else:
             mentioning = [relative(t) for t in project.tests_mentioning(Path(name).name)]
+            for test in mentioning:
+                plan.add(test, f"names {Path(name).name}")
             if mentioning:
-                files.update(mentioning)
                 plan.notes.append(f"{name}: named in {len(mentioning)} test file(s)")
             else:
                 plan.notes.append(f"{name}: no test refers to it, nothing to run")
 
     for guard in guards:
         if (project.root / guard).exists():
-            files.add(guard)
+            plan.add(guard, "guard test")
         else:
             plan.notes.append(f"{guard}: guard test is missing from this checkout")
-
-    # A file whose tests already carry a selected area runs with that area.
-    plan.files = sorted(
-        f for f in files if not project.areas_of_test_file(project.root / f) & plan.areas
-    )
+    plan.files = dict(sorted(plan.files.items()))
     return plan
 
 
 def build_commands(plan: Plan, include_slow: bool, pytest_args: list[str]) -> list[list[str]]:
-    """The pytest command lines: one for the areas (or the fast tier), one for loose files.
-
-    A marker expression filters file arguments too, so the files that are not covered by a
-    selected area cannot share a command with it.
-    """
+    """The pytest command line: the fast tier over ``tests``, or the chosen test files."""
     tier = "not gpu" if include_slow else "not gpu and not slow"
-    base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
-    commands = []
+    command = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-m", tier]
     if plan.everything:
-        commands.append([*base, "-m", tier, "tests", *pytest_args])
-    elif plan.areas:
-        expression = f"{tier} and ({' or '.join(sorted(plan.areas))})"
-        commands.append([*base, "-m", expression, "tests", *pytest_args])
-    if plan.files:
-        commands.append([*base, "-m", tier, *plan.files, *pytest_args])
-    return commands
+        return [[*command, "tests", *pytest_args]]
+    return [[*command, *plan.files, *pytest_args]] if plan.files else []
 
 
 def run(commands: list[list[str]], repo: Path) -> int:
@@ -240,7 +240,8 @@ def parse_arguments(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         help="uncommitted work (staged, unstaged, untracked) against HEAD",
     )
     parser.add_argument("--include-slow", action="store_true", help="also run tests marked slow")
-    parser.add_argument("--dry-run", action="store_true", help="print the commands, run nothing")
+    parser.add_argument("--explain", action="store_true", help="say why each test file was chosen")
+    parser.add_argument("--dry-run", action="store_true", help="print the command, run nothing")
     parser.add_argument("--repo", type=Path, default=SCRIPT_REPO, help=argparse.SUPPRESS)
     return parser.parse_args(own), pytest_args
 
@@ -258,12 +259,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{len(changed)} changed file(s): {how}")
     for note in plan.notes:
         print(f"  {note}")
-    if plan.everything:
-        print("selection: the fast tier")
-    else:
-        print(f"selection: areas {', '.join(sorted(plan.areas)) or '(none)'}")
-    if plan.files:
-        print(f"           and {len(plan.files)} test file(s) outside them")
+    print(
+        "selection: the fast tier"
+        if plan.everything
+        else f"selection: {len(plan.files)} test file(s)"
+    )
+    if args.explain:
+        for test_file, reasons in plan.files.items():
+            print(
+                f"  {test_file}: {reasons[0]}"
+                + (f" (+{len(reasons) - 1} more)" if reasons[1:] else "")
+            )
     if args.dry_run:
         for command in commands:
             print(shlex.join(command))

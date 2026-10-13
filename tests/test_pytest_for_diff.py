@@ -66,8 +66,18 @@ BASE_FILES = {
     "src/binding_metrics/poses/__init__.py": "",
     "src/binding_metrics/poses/frame.py": "def frame(): ...\n",
     "src/binding_metrics/poses/report.py": "from binding_metrics.poses import frame\n",
-    "src/binding_metrics/cli/__init__.py": "",
+    "src/binding_metrics/cli/__init__.py": "def add_flag(): ...\n",
     "src/binding_metrics/cli/run.py": "from binding_metrics.core import system\n",
+    "src/binding_metrics/metrics/__init__.py": "",
+    "src/binding_metrics/metrics/geometry.py": "def ramachandran(): ...\n",
+    "src/binding_metrics/metrics/sasa.py": "def sasa(): ...\n",
+    "src/binding_metrics/metrics/registry.py": """
+        import importlib
+        PATHS = ["binding_metrics.metrics.geometry:ramachandran"]
+        def load(path):
+            module, name = path.split(":")
+            return getattr(importlib.import_module(module), name)
+        """,
     "tests/__init__.py": "",
     "tests/conftest.py": "",
     "tests/support.py": "from binding_metrics.poses.frame import frame\n",
@@ -75,6 +85,9 @@ BASE_FILES = {
     "tests/test_run.py": "from binding_metrics.cli.run import main\n",
     "tests/test_prep.py": "from binding_metrics.core.system import prep\n",
     "tests/test_uses_support.py": "from tests.support import frame\n",
+    "tests/test_flags.py": "from binding_metrics.cli import add_flag\n",
+    "tests/test_registry_use.py": "from binding_metrics.metrics.registry import load\n",
+    "tests/test_sasa.py": "from binding_metrics.metrics.sasa import sasa\n",
     "tests/test_guide.py": 'from pathlib import Path\nGUIDE = Path("docs") / "guide.md"\n',
     "tests/test_docker.py": 'TEXT = open("Dockerfile").read()\n',
     "docs/guide.md": "Guide\n",
@@ -183,60 +196,81 @@ def test_staged_and_working_tree_and_explicit_base(script, repo):
     ]
 
 
-def test_a_source_file_runs_the_areas_of_the_modules_that_import_it(script, repo):
+def test_a_source_file_runs_the_tests_of_the_modules_that_import_it(script, repo):
     write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
     changed, plan, commands = selection(script, repo)
 
     assert changed == ["src/binding_metrics/poses/frame.py"]
-    assert plan.areas == {"poses_frame", "poses_score"}
     assert not plan.everything
-    assert commands[0][:5] == [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
-    assert commands[0][5:] == [
+    chosen = set(plan.files) - set(script.GUARD_TESTS)
+    # test_frame imports the module, test_uses_support imports a helper that does
+    assert chosen == {"tests/test_frame.py", "tests/test_uses_support.py"}
+    assert len(commands) == 1
+    assert commands[0][:7] == [
+        sys.executable,
         "-m",
-        "not gpu and not slow and (poses_frame or poses_score)",
-        "tests",
+        "pytest",
+        "-p",
+        "no:cacheprovider",
+        "-m",
+        "not gpu and not slow",
     ]
+    assert commands[0][7:] == list(plan.files)
 
 
-def test_a_change_in_a_base_module_reaches_the_areas_that_import_it(script, repo):
+def test_a_change_in_a_base_module_reaches_the_modules_that_import_it(script, repo):
     write(repo, {"src/binding_metrics/core/system.py": "def prep(): return 1\n"})
-    _, plan, commands = selection(script, repo)
-
-    assert plan.areas == {"core_system", "cli_run"}
-    assert commands[0][6] == "not gpu and not slow and (cli_run or core_system)"
-
-
-def test_the_guard_tests_always_run_and_are_not_repeated_when_an_area_covers_them(script, repo):
-    write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
-    _, plan, commands = selection(script, repo)
-
-    assert plan.files == sorted(script.GUARD_TESTS)  # none of them imports a poses module
-    assert commands[1][5:] == ["-m", "not gpu and not slow", *sorted(script.GUARD_TESTS)]
-    # a guard that an area covers runs inside the area's command, not twice
-    write(repo, {script.GUARD_TESTS[0]: "from binding_metrics.poses.frame import frame\n"})
     _, plan, _ = selection(script, repo)
-    assert script.GUARD_TESTS[0] not in plan.files
+
+    chosen = set(plan.files) - set(script.GUARD_TESTS)
+    assert chosen == {"tests/test_prep.py", "tests/test_run.py"}  # test_run goes through cli.run
+    assert plan.files["tests/test_run.py"] == ["imports cli.run -> core.system"]
+
+
+def test_the_guard_tests_always_run(script, repo):
+    write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
+    _, plan, _ = selection(script, repo)
+    assert set(script.GUARD_TESTS) <= set(plan.files)
+    assert all(plan.files[guard] == ["guard test"] for guard in script.GUARD_TESTS)
+
+
+def test_a_module_loaded_by_name_selects_the_tests_that_import_the_loader(script, repo):
+    write(repo, {"src/binding_metrics/metrics/geometry.py": "def ramachandran(): return 1\n"})
+    _, plan, _ = selection(script, repo)
+    chosen = set(plan.files) - set(script.GUARD_TESTS)
+    assert chosen == {"tests/test_registry_use.py"}
+    assert "loads metrics.geometry by name" in plan.files["tests/test_registry_use.py"][0]
+
+    # a module that no table names is not reached through the loader
+    commit(repo)
+    write(repo, {"src/binding_metrics/metrics/sasa.py": "def sasa(): return 1\n"})
+    _, plan, _ = selection(script, repo, "--working-tree")
+    assert set(plan.files) - set(script.GUARD_TESTS) == {"tests/test_sasa.py"}
+
+
+def test_a_package_init_selects_the_importers_of_its_names_only(script, repo):
+    write(repo, {"src/binding_metrics/cli/__init__.py": "def add_flag(): return 1\n"})
+    _, plan, _ = selection(script, repo)
+    chosen = set(plan.files) - set(script.GUARD_TESTS)
+    assert chosen == {"tests/test_flags.py"}  # test_run imports cli.run, not the package
 
 
 def test_a_changed_test_file_runs_itself_and_a_changed_helper_runs_its_users(script, repo):
     write(repo, {"tests/test_run.py": "from binding_metrics.cli.run import main\nX = 1\n"})
     _, plan, _ = selection(script, repo, "--working-tree")
-    assert "tests/test_run.py" in plan.files
-    assert plan.areas == set()
+    assert set(plan.files) - set(script.GUARD_TESTS) == {"tests/test_run.py"}
 
     commit(repo)
     write(repo, {"tests/support.py": "from binding_metrics.poses.frame import frame\nY = 1\n"})
     _, plan, _ = selection(script, repo, "--working-tree")
-    assert "tests/test_uses_support.py" in plan.files
+    assert set(plan.files) - set(script.GUARD_TESTS) == {"tests/test_uses_support.py"}
     assert "tests/support.py" not in plan.files  # a helper has no tests of its own
 
 
-def test_a_markdown_file_runs_the_docs_area(script, repo):
+def test_a_markdown_file_runs_the_tests_that_read_documentation(script, repo):
     write(repo, {"README.md": "Readme 2\n", "docs/guide.md": "Guide 2\n"})
-    _, plan, commands = selection(script, repo)
-
-    assert plan.areas == {"docs"}
-    assert commands[0][6] == "not gpu and not slow and (docs)"
+    _, plan, _ = selection(script, repo)
+    assert set(plan.files) - set(script.GUARD_TESTS) == {"tests/test_guide.py"}
 
 
 def test_pyproject_or_conftest_runs_the_fast_tier(script, repo):
@@ -254,8 +288,7 @@ def test_pyproject_or_conftest_runs_the_fast_tier(script, repo):
 def test_include_slow_keeps_the_slow_tests_and_gpu_stays_out(script, repo):
     write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
     _, _, commands = selection(script, repo, include_slow=True)
-    assert commands[0][6] == "not gpu and (poses_frame or poses_score)"
-    assert commands[1][6] == "not gpu"
+    assert commands[0][5:7] == ["-m", "not gpu"]
 
 
 def test_another_file_runs_the_tests_that_name_it(script, repo):
@@ -270,14 +303,23 @@ def test_another_file_runs_the_tests_that_name_it(script, repo):
     assert any("environment.yml: no test refers to it" in note for note in plan.notes)
 
 
-def test_pytest_arguments_after_the_double_dash_reach_every_command(script, repo):
+def test_pytest_arguments_after_the_double_dash_reach_the_command(script, repo):
     write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
     _, _, commands = selection(script, repo, "--", "-x", "-q")
-    assert len(commands) == 2
-    assert all(command[-2:] == ["-x", "-q"] for command in commands)
+    assert commands[0][-2:] == ["-x", "-q"]
 
 
-def test_a_dry_run_prints_the_commands_and_runs_nothing(script, repo, capsys, monkeypatch):
+def test_explain_says_why_each_test_file_runs(script, repo, capsys):
+    write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
+    assert script.main(["--repo", str(repo), "--dry-run", "--explain"]) == 0
+    out = capsys.readouterr().out
+    assert "tests/test_frame.py: imports poses.frame" in out
+    assert "tests/test_registry.py: guard test" in out
+    printed = [shlex.split(line) for line in out.splitlines() if line.startswith(sys.executable)]
+    assert printed and "tests/test_frame.py" in printed[0]
+
+
+def test_a_dry_run_prints_the_command_and_runs_nothing(script, repo, capsys, monkeypatch):
     calls = []
     real_run = subprocess.run
 
@@ -291,20 +333,15 @@ def test_a_dry_run_prints_the_commands_and_runs_nothing(script, repo, capsys, mo
     assert script.main(["--repo", str(repo), "--dry-run", "--", "-q"]) == 0
     out = capsys.readouterr().out
     printed = [shlex.split(line) for line in out.splitlines() if line.startswith(sys.executable)]
-    assert printed[0][5:8] == [
-        "-m",
-        "not gpu and not slow and (poses_frame or poses_score)",
-        "tests",
-    ]
-    assert printed[1][-1] == "-q"
+    assert len(printed) == 1 and printed[0][-1] == "-q"
     assert "src/binding_metrics/poses/frame.py" in out
     assert not [c for c in calls if c[0] != "git"]
 
 
-def test_the_exit_code_is_the_first_failure_and_no_tests_selected_is_not_one(
-    script, repo, monkeypatch
+@pytest.mark.parametrize(("pytest_code", "expected"), [(5, 0), (1, 1), (0, 0)])
+def test_the_exit_code_is_pytests_and_no_tests_selected_is_not_a_failure(
+    script, repo, monkeypatch, pytest_code, expected
 ):
-    codes = iter([5, 1])
     commands = []
     real_run = subprocess.run
 
@@ -312,11 +349,11 @@ def test_the_exit_code_is_the_first_failure_and_no_tests_selected_is_not_one(
         if command[0] == "git":
             return real_run(command, *args, **kwargs)
         commands.append((command, kwargs.get("cwd")))
-        return subprocess.CompletedProcess(command, next(codes))
+        return subprocess.CompletedProcess(command, pytest_code)
 
     monkeypatch.setattr(script.subprocess, "run", fake_run)
     write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
 
-    assert script.main(["--repo", str(repo)]) == 1
-    assert len(commands) == 2  # the second command runs although the first selected nothing
-    assert all(Path(cwd).resolve() == repo.resolve() for _, cwd in commands)
+    assert script.main(["--repo", str(repo)]) == expected
+    assert len(commands) == 1
+    assert Path(commands[0][1]).resolve() == repo.resolve()

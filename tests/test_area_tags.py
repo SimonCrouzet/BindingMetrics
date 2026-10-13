@@ -138,7 +138,7 @@ def test_the_table_has_no_row_for_a_module_that_is_gone():
         ("tests/test_pre_capabilities.py", {"preflight_capabilities", "preflight"}),
         ("tests/test_feat_c_docs.py", {"docs"}),
         ("tests/poses/test_golden_pose_set.py", {"poses", "golden"}),
-        ("tests/test_s1_encoding.py", {"misc"}),
+        ("tests/test_w3b_dependabot.py", {"misc"}),
     ],
 )
 def test_known_files_carry_the_expected_areas(test_file, expected):
@@ -190,7 +190,10 @@ PACKAGE_FILES = {
     "src/binding_metrics/metrics/geometry.py": "from binding_metrics.io import structures\n",
     "src/binding_metrics/metrics/openfold.py": "def compute_openfold_metrics(): ...\n",
     "src/binding_metrics/metrics/registry.py": """
+        import importlib
         SPEC = "binding_metrics.metrics.geometry:compute_ramachandran"
+        def load(spec):
+            return importlib.import_module(spec.split(":")[0])
         """,
     "src/binding_metrics/metrics/loader.py": """
         import importlib
@@ -199,12 +202,13 @@ PACKAGE_FILES = {
     "src/binding_metrics/poses/__init__.py": "",
     "src/binding_metrics/poses/frame.py": "def frame(): ...\n",
     "src/binding_metrics/poses/report.py": "from . import frame\n",
-    "src/binding_metrics/cli/__init__.py": "",
+    "src/binding_metrics/cli/__init__.py": "def add_flag(): ...\n",
     "src/binding_metrics/cli/run.py": """
         from binding_metrics.core import system
         from binding_metrics.metrics import registry
         """,
     "src/binding_metrics/newthing.py": "VALUE = 1\n",
+    "scripts/tool.py": "from binding_metrics.core import system\n",
     "pyproject.toml": """
         [project.scripts]
         binding-metrics-run = "binding_metrics.cli.run:main"
@@ -340,6 +344,95 @@ def test_the_area_with_most_references_always_counts(project):
 def test_a_relative_helper_in_a_subpackage_is_followed(project):
     source = "from .helpers import something\n"
     assert areas_of_source(project, source, directory="tests/poses") == with_coarse("poses_pose")
+
+
+@pytest.fixture
+def fresh(tmp_path):
+    """The same small project, for a test that adds test files and reads them all back."""
+    for name, text in PACKAGE_FILES.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(text).lstrip("\n"), encoding="utf-8")
+    return _areas.Project(tmp_path)
+
+
+def chosen_for(project, *seeds, **files):
+    """Write the test files given as name=source, and say which ones a change to seeds selects."""
+    for name, source in files.items():
+        (project.root / "tests" / f"test_{name}.py").write_text(source, encoding="utf-8")
+    return {
+        path.name.removeprefix("test_").removesuffix(".py"): reason
+        for path, reason in project.select_tests(seeds).items()
+    }
+
+
+def test_a_test_is_chosen_for_a_module_it_imports_or_depends_on(fresh):
+    chosen = chosen_for(
+        fresh,
+        "core.system",
+        direct="import binding_metrics.core.system\n",
+        through="from binding_metrics.cli.run import main\n",
+        unrelated="from binding_metrics.poses.frame import frame\n",
+        nothing="import json\n",
+    )
+    assert chosen == {
+        "direct": "imports core.system",
+        "through": "imports cli.run -> core.system",
+    }
+
+
+def test_a_module_that_a_table_loads_by_name_selects_the_importers_of_the_loader(fresh):
+    files = {
+        "loader": "from binding_metrics.metrics import registry\n",
+        "other": "from binding_metrics.poses.frame import frame\n",
+    }
+    chosen = chosen_for(fresh, "metrics.geometry", **files)
+    assert chosen == {"loader": "imports metrics.registry, which loads metrics.geometry by name"}
+    # a module that no table names has no such tests
+    assert chosen_for(fresh, "poses.frame") == {"other": "imports poses.frame"}
+
+
+def test_the_names_of_a_package_init_are_not_the_children_of_the_package(fresh):
+    chosen = chosen_for(
+        fresh,
+        "cli",
+        flag="from binding_metrics.cli import add_flag\n",
+        child="from binding_metrics.cli.run import main\n",
+    )
+    assert chosen == {"flag": "imports cli"}
+
+
+def test_a_test_that_reads_the_console_scripts_uses_every_script_module(fresh):
+    source = 'import tomllib\nSCRIPTS = tomllib.load(open("pyproject.toml", "rb"))\n'
+    assert chosen_for(fresh, "cli.run", reader=source) == {"reader": "imports cli.run"}
+
+
+def test_a_test_that_runs_a_script_or_code_in_a_string_uses_what_they_import(fresh):
+    script = 'import subprocess\nRUN = ["python", "tool.py"]\n'
+    snippet = 'CODE = """\nimport binding_metrics.core.system\nprint(1)\n"""\n'
+    chosen = chosen_for(fresh, "core.system", script=script, snippet=snippet)
+    assert chosen == {"script": "imports core.system", "snippet": "imports core.system"}
+
+
+def test_a_second_import_inside_a_function_does_not_extend_the_chain(fresh):
+    package = fresh.package_dir
+    (package / "lazy_a.py").write_text(
+        "def use():\n    from binding_metrics.core import system\n", encoding="utf-8"
+    )
+    (package / "lazy_b.py").write_text(
+        "def use():\n    from binding_metrics import lazy_a\n", encoding="utf-8"
+    )
+    (package / "eager_c.py").write_text("from binding_metrics import lazy_b\n", encoding="utf-8")
+    fresh._modules = None  # the module list is read once: read it again
+    reached = fresh.affected_modules({"core.system"})
+    assert "lazy_a" in reached  # one import inside a function: the function may be called
+    assert "lazy_b" not in reached and "eager_c" not in reached  # a second one is dropped
+    assert "lazy_b" in fresh.affected_modules({"core.system"}, max_lazy=2)
+
+
+def test_the_chain_of_a_dependent_is_read_back_to_the_seed(fresh):
+    chain = fresh.affected_modules({"core.system"})
+    assert chain == {"core.system": (0, None), "cli.run": (1, "core.system")}
 
 
 def test_dependents_of_a_module_are_those_that_import_it(project):
