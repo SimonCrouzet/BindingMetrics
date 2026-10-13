@@ -52,6 +52,7 @@ def _assert_same(a: dict, b: dict, keys) -> None:
         assert a[key] == pytest.approx(b[key], rel=1e-6, abs=1e-9), key
 
 
+@pytest.mark.slow
 class TestHeteroOnCyclosporin:
     def test_sc_ignore_on_raw_equals_dry(self, cwa_dry):
         raw = compute_shape_complementarity(CWA, hetero="ignore")
@@ -221,6 +222,7 @@ class TestHeteroCli:
         main()
         return capsys.readouterr().out
 
+    @pytest.mark.slow
     def test_void_flag_switches_the_policy(self, monkeypatch, capsys):
         ignore = self._run(monkeypatch, capsys, "--input", CWA, "--metric", "void")
         keep = self._run(
@@ -232,6 +234,7 @@ class TestHeteroCli:
         assert ignore == explicit
         assert ignore != keep
 
+    @pytest.mark.slow
     def test_sc_flag_switches_the_policy(self, monkeypatch, capsys):
         ignore = self._run(monkeypatch, capsys, "--input", CWA, "--metric", "sc")
         keep = self._run(monkeypatch, capsys, "--input", CWA, "--metric", "sc", "--hetero", "keep")

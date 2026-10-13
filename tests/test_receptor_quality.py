@@ -345,6 +345,7 @@ class TestClashscoreCovalentAndHbondPairs:
         # C...O radii sum 3.22 A: 2.7 A overlaps by 0.52 A; only N/O pairs are H-bond candidates
         assert rq._clashscore(_pair(2.7, elements=("C", "O")))["n_clashes"] == 1
 
+    @pytest.mark.slow
     def test_vectorised_count_matches_the_pair_loop_when_exemptions_are_off(self):
         rng = np.random.default_rng(3)
         xyz = rng.uniform(0.0, 10.0, size=(300, 3))
@@ -637,6 +638,7 @@ class TestReceptorEnergySeeding:
 
         assert rq.DEFAULT_RANDOM_SEED == DEFAULT_RANDOM_SEED
 
+    @pytest.mark.slow
     def test_repeated_calls_give_identical_energy(self):
         pytest.importorskip("openmm")
         atoms = _helix(6)
@@ -647,6 +649,7 @@ class TestReceptorEnergySeeding:
         assert first["energy_kJ_mol"] == pytest.approx(second["energy_kJ_mol"], rel=1e-6)
         assert first["n_atoms_with_h"] == second["n_atoms_with_h"]
 
+    @pytest.mark.slow
     def test_explicit_seed_is_repeatable_and_leaves_the_global_rng_alone(self):
         import random
 

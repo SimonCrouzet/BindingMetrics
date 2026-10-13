@@ -238,6 +238,7 @@ class TestOmegaPlanarity:
 class TestShapeComplementarity:
     """Tests for compute_shape_complementarity."""
 
+    @pytest.mark.slow
     def test_returns_expected_keys(self):
         """Result dict should have all required keys."""
         _skip_if_no_biotite()
@@ -260,6 +261,7 @@ class TestShapeComplementarity:
         }
         assert expected.issubset(set(result.keys()))
 
+    @pytest.mark.slow
     def test_sc_is_finite_on_real_example(self):
         """The real complex must yield a finite Sc, not a silent NaN.
 
@@ -283,6 +285,7 @@ class TestShapeComplementarity:
         assert result["n_surface_dots_A"] > 0
         assert result["n_surface_dots_B"] > 0
 
+    @pytest.mark.slow
     def test_sc_value_in_range(self):
         """Sc score should be in [-1, 1]."""
         _skip_if_no_biotite()
@@ -297,6 +300,7 @@ class TestShapeComplementarity:
         if not np.isnan(result["sc"]):
             assert -1.0 <= result["sc"] <= 1.0
 
+    @pytest.mark.slow
     def test_sc_is_mean_of_directional(self):
         """Sc should equal mean of sc_A_to_B and sc_B_to_A."""
         _skip_if_no_biotite()
@@ -312,6 +316,7 @@ class TestShapeComplementarity:
             expected_sc = (result["sc_A_to_B"] + result["sc_B_to_A"]) / 2.0
             assert result["sc"] == pytest.approx(expected_sc, abs=1e-6)
 
+    @pytest.mark.slow
     def test_surface_dots_positive(self):
         """Should generate surface dots for interface atoms."""
         _skip_if_no_biotite()
@@ -327,6 +332,7 @@ class TestShapeComplementarity:
             assert result["n_surface_dots_A"] > 0
             assert result["n_surface_dots_B"] > 0
 
+    @pytest.mark.slow
     def test_per_dot_scores_are_arrays(self):
         """per_dot_scores_A and _B should be numpy arrays."""
         _skip_if_no_biotite()
@@ -354,6 +360,7 @@ class TestShapeComplementarity:
 
         assert np.isnan(result["sc"])
 
+    @pytest.mark.slow
     def test_auto_chain_detection(self):
         """Auto-detection should give same result as explicit chains."""
         _skip_if_no_biotite()
@@ -381,8 +388,10 @@ class TestShapeComplementarity:
     @pytest.mark.parametrize(
         "tokens,lo,hi",
         [
-            (("1YCR",), 0.50, 0.80),  # p53 peptide - MDM2 (linear peptide)
-            (("3P8F",), 0.55, 0.85),  # SFTI-1 bicyclic peptide
+            pytest.param(
+                ("1YCR",), 0.50, 0.80, marks=pytest.mark.slow
+            ),  # p53 peptide - MDM2 (linear peptide)
+            pytest.param(("3P8F",), 0.55, 0.85, marks=pytest.mark.slow),  # SFTI-1 bicyclic peptide
             (("1CWA",), 0.55, 0.85),  # cyclosporin (ncAA macrocycle)
         ],
     )

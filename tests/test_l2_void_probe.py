@@ -96,6 +96,7 @@ def results_by_probe(cavity):
     return {p: _void(path, probe_radius=p) for p in (0.0, 0.5, 1.4, 2.0, 3.0, 6.0)}
 
 
+@pytest.mark.slow
 class TestSyntheticCavity:
     @pytest.mark.parametrize("probe", [0.0, 1.4, 2.0])
     def test_volume_matches_brute_force_reference(self, cavity, results_by_probe, probe):
@@ -135,6 +136,7 @@ class TestSyntheticCavity:
 
 
 class TestCavityNeedsBothChains:
+    @pytest.mark.slow
     def test_cavity_walled_by_one_chain_is_not_an_interface_void(self, tmp_path):
         """The same hole inside chain A, with chain B a small cap on the outside, is not counted.
 
@@ -164,6 +166,7 @@ def by_probe():
     return {p: compute_buried_void_volume(P53_MDM2, probe_radius=p) for p in (0.5, 1.4, 3.0)}
 
 
+@pytest.mark.slow
 class TestRealComplex:
     """1YCR (p53 peptide bound to MDM2); the old probe-free value was 0.25 A^3 for every probe."""
 
