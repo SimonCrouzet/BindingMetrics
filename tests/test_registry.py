@@ -164,9 +164,8 @@ class TestTheCoreMetricsAreRegistered:
 class TestEveryMetricLoads:
     """Effective check: EVERY registered import_path must resolve to a callable.
 
-    The spot-checks above only cover a hand-picked subset, and
     ``test_all_import_paths_have_colon`` only checks the *string* shape. A new
-    metric with a typo'd module/function (or a renamed function) would pass both
+    metric with a typo'd module/function (or a renamed function) would pass it
     yet blow up the first time a runner calls ``spec.load()``. Iterating over the
     whole registry closes that gap so import_path drift can't slip through.
     """
@@ -180,20 +179,26 @@ class TestEveryMetricLoads:
         assert callable(fn), f"{spec.name}: import_path did not resolve to a callable"
 
     @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_path_arg_exists_in_signature(self, spec):
-        """The declared ``path_arg`` must be a real parameter of the resolved callable.
+    def test_declared_names_are_parameters_of_the_function(self, spec):
+        """Every argument name the spec declares is a parameter of the function it loads.
 
-        A generic runner feeds the primary input to every metric via
-        ``spec.call(**{spec.path_arg: ...})``. If ``path_arg`` names a parameter
-        the target callable does not accept, that call raises ``TypeError`` at
-        runtime — the declared-vs-effective gap the registry claims to be the
-        single source of truth against.
+        A generic runner feeds the primary input to every metric through
+        ``spec.call(**{spec.path_arg: ...})`` and adds the chain and secondary-path
+        keywords the spec names. A name that the function does not accept raises
+        ``TypeError`` at runtime: the declared-versus-effective gap that the registry
+        claims to close. One case per metric lists every name that is wrong.
 
-        This covers *every* spec, including class-based / wrapper specs that
-        ``test_declared_kwargs_exist_in_signature`` skips. It regression-guards
-        the ``md_implicit`` bug where the spec declared ``path_arg="input_path"``
-        while pointing at ``ImplicitRelaxation`` — whose ``__init__`` only takes
-        ``config`` — so the declared path kwarg was not a real parameter.
+        * ``path_arg`` is checked for every spec, class-based ones included. It
+          regression-guards the ``md_implicit`` bug where the spec declared
+          ``path_arg="input_path"`` for ``ImplicitRelaxation``, whose ``__init__`` only
+          takes ``config``.
+        * ``secondary_path_arg``, ``chain_arg``, ``peptide_chain_arg``,
+          ``receptor_chain_arg``, ``binder_chain_arg`` and ``target_chain_arg`` are checked
+          for functions only (a class is constructed, not called by keyword), and the five
+          that the runner forwards must also bind to the signature.
+        * ``binder_chain_arg`` and ``target_chain_arg`` must be parameters by name, even
+          for a function that takes ``**kwargs``; and a function that takes ``binder_chain``
+          or ``target_chain`` must have a spec that declares it.
         """
         try:
             obj = spec.load()
@@ -202,53 +207,42 @@ class TestEveryMetricLoads:
 
         params = inspect.signature(obj).parameters
         has_var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-        assert has_var_kw or spec.path_arg in params, (
-            f"{spec.name}: registry declares path_arg {spec.path_arg!r} but "
-            f"{spec.import_path} has no such parameter"
-        )
+        problems = []
+        if not (has_var_kw or spec.path_arg in params):
+            problems.append(f"path_arg {spec.path_arg!r} is not a parameter")
+        for role in ("binder_chain_arg", "target_chain_arg"):
+            alias = getattr(spec, role)
+            if alias and alias not in params:
+                problems.append(f"{role} {alias!r} is not a parameter")
 
-    @pytest.mark.parametrize(
-        "spec",
-        [m for m in METRICS if m.chain_mode != "none" or m.secondary_path_arg],
-        ids=lambda s: s.name,
-    )
-    def test_declared_kwargs_exist_in_signature(self, spec):
-        """Declared chain/path kwargs must be real parameters of the target fn.
+        if not inspect.isclass(obj):
+            forwarded = {
+                role: getattr(spec, role)
+                for role in (
+                    "path_arg",
+                    "secondary_path_arg",
+                    "chain_arg",
+                    "peptide_chain_arg",
+                    "receptor_chain_arg",
+                )
+                if getattr(spec, role)
+            }
+            for role, arg in forwarded.items():
+                if role != "path_arg" and not (has_var_kw or arg in params):
+                    problems.append(f"{role} {arg!r} is not a parameter")
+            try:
+                # bind_partial: required parameters that the spec does not declare (a pLDDT
+                # array, a query name) are the caller's business; unknown names are the
+                # registry's bug.
+                inspect.signature(obj).bind_partial(**{arg: object() for arg in forwarded.values()})
+            except TypeError as e:
+                problems.append(f"the declared names do not bind to the signature: {e}")
+            if "binder_chain" in params and spec.binder_chain_arg != "binder_chain":
+                problems.append("the function takes binder_chain but binder_chain_arg is not set")
+            if "target_chain" in params and spec.target_chain_arg != "target_chain":
+                problems.append("the function takes target_chain but target_chain_arg is not set")
 
-        The registry advertises kwarg names (peptide_chain_arg, receptor_chain_arg,
-        chain_arg, binder_chain_arg, target_chain_arg, secondary_path_arg) that a generic
-        runner forwards to the metric via ``spec.call(**kwargs)``. If a function renames
-        one of those parameters,
-        the string in the registry silently drifts and the call raises TypeError at
-        runtime — exactly the declared-vs-effective gap. Class-based specs (e.g.
-        md_implicit → ImplicitRelaxation) are constructed differently and skipped.
-        """
-        try:
-            obj = spec.load()
-        except ImportError as e:
-            pytest.skip(f"{spec.name}: optional dependency not installed — {e}")
-        if inspect.isclass(obj):
-            pytest.skip(f"{spec.name}: class-based spec, not called by kwarg")
-
-        params = inspect.signature(obj).parameters
-        has_var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-        declared = [
-            a
-            for a in (
-                spec.secondary_path_arg,
-                spec.chain_arg,
-                spec.peptide_chain_arg,
-                spec.receptor_chain_arg,
-                spec.binder_chain_arg,
-                spec.target_chain_arg,
-            )
-            if a
-        ]
-        for arg in declared:
-            assert has_var_kw or arg in params, (
-                f"{spec.name}: registry declares kwarg {arg!r} but "
-                f"{spec.import_path} has no such parameter"
-            )
+        assert not problems, f"{spec.name} ({spec.import_path}): " + "; ".join(problems)
 
 
 class TestStaticStructureSpecs:

@@ -1,6 +1,5 @@
 """``binder_chain_arg`` and ``target_chain_arg`` on the registry specs."""
 
-import inspect
 from pathlib import Path
 
 import pytest
@@ -40,38 +39,6 @@ def test_new_fields_come_after_the_existing_ones():
 def test_alias_names_are_the_role_names_or_none(spec):
     assert spec.binder_chain_arg in (None, "binder_chain")
     assert spec.target_chain_arg in (None, "target_chain")
-
-
-@pytest.mark.parametrize(
-    "spec",
-    [s for s in METRICS if s.binder_chain_arg or s.target_chain_arg],
-    ids=lambda s: s.name,
-)
-def test_declared_aliases_are_parameters_of_the_function(spec):
-    try:
-        function = spec.load()
-    except ImportError as exc:
-        pytest.skip(f"{spec.name}: optional dependency not installed: {exc}")
-    params = inspect.signature(function).parameters
-    for alias in (spec.binder_chain_arg, spec.target_chain_arg):
-        if alias:
-            assert alias in params, f"{spec.name}: {spec.import_path} has no {alias!r} parameter"
-
-
-@pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-def test_every_alias_a_function_accepts_is_declared(spec):
-    """No function takes ``binder_chain``/``target_chain`` without its spec saying so."""
-    try:
-        function = spec.load()
-    except ImportError as exc:
-        pytest.skip(f"{spec.name}: optional dependency not installed: {exc}")
-    if inspect.isclass(function):
-        pytest.skip("class-based spec")
-    params = inspect.signature(function).parameters
-    if "binder_chain" in params:
-        assert spec.binder_chain_arg == "binder_chain", spec.name
-    if "target_chain" in params:
-        assert spec.target_chain_arg == "target_chain", spec.name
 
 
 @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)

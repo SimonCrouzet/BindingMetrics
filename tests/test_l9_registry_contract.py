@@ -456,29 +456,3 @@ class TestCallSemantics:
         )
         with pytest.raises(TypeError):
             spec.call(not_a_parameter=1)
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_declared_kwargs_bind_to_the_function_signature(self, spec):
-        """The kwargs a runner builds from the spec fields bind without a TypeError."""
-        import inspect
-
-        try:
-            fn = spec.load()
-        except ImportError as e:
-            pytest.skip(f"{spec.name}: optional dependency not installed — {e}")
-        if inspect.isclass(fn):
-            pytest.skip(f"{spec.name}: class")
-        kwargs = {
-            n: object()
-            for n in (
-                spec.path_arg,
-                spec.secondary_path_arg,
-                spec.chain_arg,
-                spec.peptide_chain_arg,
-                spec.receptor_chain_arg,
-            )
-            if n
-        }
-        # bind_partial: required parameters the spec does not declare (a pLDDT array,
-        # a query name) are the caller's business; unknown names are the registry's bug.
-        inspect.signature(fn).bind_partial(**kwargs)
