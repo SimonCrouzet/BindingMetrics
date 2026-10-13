@@ -422,6 +422,7 @@ class TestVariants:
 
 
 class TestParallel:
+    @pytest.mark.slow
     def test_a_pool_gives_the_same_descriptors_and_table(self, synthetic, reference, result):
         pooled = score_pose_set(
             synthetic.poses, "B", "A", reference=reference, residue_table=True, n_workers=2

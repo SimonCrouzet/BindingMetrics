@@ -326,7 +326,9 @@ class TestRealComplexes:
     @pytest.mark.parametrize(
         "path, binder, target, closures, classes",
         [
-            (SFTI, "I", "A", {"head_to_tail", "disulfide"}, {"canonical"}),
+            pytest.param(
+                SFTI, "I", "A", {"head_to_tail", "disulfide"}, {"canonical"}, marks=pytest.mark.slow
+            ),
             (
                 CYCLOSPORIN,
                 "C",

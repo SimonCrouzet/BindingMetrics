@@ -276,6 +276,7 @@ class TestTheArguments:
             row["id"]: row["independent_of_design"] for row in mixed["poses"]
         }
 
+    @pytest.mark.slow
     def test_the_workers_skip_the_same_poses(self, predicted, mixed):
         pooled = score(predicted.values(), design_source="BoltzGen", n_workers=2)
         assert pooled["input_key"] == mixed["input_key"]

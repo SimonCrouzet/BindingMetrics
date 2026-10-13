@@ -121,6 +121,7 @@ def test_importing_the_pose_layer_and_the_fixtures_needs_none_of_them_and_does_n
     assert out["attempts"] == []
 
 
+@pytest.mark.slow
 def test_a_pose_set_call_with_every_static_metric_a_reference_and_the_writers_works(tmp_path):
     out = run_blocked(
         f"""
@@ -180,6 +181,7 @@ def test_a_pose_set_call_with_every_static_metric_a_reference_and_the_writers_wo
     assert (tmp_path / "report.json").stat().st_size > 0
 
 
+@pytest.mark.slow
 def test_a_metric_that_needs_openmm_says_so_and_leaves_the_rest_of_the_result_intact():
     out = run_blocked(
         """

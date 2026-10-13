@@ -551,6 +551,7 @@ class TestOptions:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestDeterminism:
     def test_any_order_of_the_input_gives_the_same_text(self, synthetic, result):
         reference = result.to_json(include_timing=False)
@@ -852,6 +853,7 @@ class TestOnErrorRaise:
         with pytest.raises(PoseScoringError, match="'0_corrupt'"):
             score_pose_set(poses, "B", "A", on_error="raise")
 
+    @pytest.mark.slow
     def test_a_pool_raises_the_first_failure_in_id_order(self, synthetic, stubs):
         with pytest.raises(PoseScoringError, match="'backend_a-s2'"):
             score_pose_set(
@@ -1267,6 +1269,7 @@ class TestImports:
         )
         assert out == "[]"
 
+    @pytest.mark.slow
     def test_static_metrics_run_without_openmm_mdtraj_simtk_and_pdbfixer(self):
         out = self._run(
             """

@@ -83,6 +83,7 @@ def serial(synthetic, reference):
 
 
 class TestStartMethods:
+    @pytest.mark.slow
     def test_the_default_is_spawn_and_it_is_recorded_with_the_run(
         self, monkeypatch, synthetic, reference, serial
     ):
@@ -99,6 +100,7 @@ class TestStartMethods:
         assert comparable(pooled) == comparable(serial)
 
     # the platform default is fork on Linux, and a threaded parent makes it warn on Python 3.12
+    @pytest.mark.slow
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
     def test_none_is_the_platform_default_and_the_recorded_name_is_that_method(
         self, monkeypatch, synthetic, reference, serial
@@ -116,6 +118,7 @@ class TestStartMethods:
         assert pooled["provenance"]["run"]["start_method"] == default
         assert comparable(pooled) == comparable(serial)
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("method", ["spawn", "forkserver"])
     def test_spawn_and_forkserver_give_the_serial_result(
         self, synthetic, reference, serial, method
@@ -136,6 +139,7 @@ class TestStartMethods:
         assert pooled.to_json(include_timing=False).count('"status": "failed"') == 0
 
     # a threaded parent (pytest has threads) makes the fork of Python 3.12 warn
+    @pytest.mark.slow
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
     def test_fork_runs_where_the_platform_has_it_and_gives_the_serial_result(
         self, synthetic, reference, serial
@@ -154,6 +158,7 @@ class TestStartMethods:
         assert comparable(pooled) == comparable(serial)
         assert pooled["provenance"]["run"]["start_method"] == "fork"
 
+    @pytest.mark.slow
     def test_the_method_is_not_part_of_the_inputs_or_of_the_parameters(
         self, synthetic, reference, serial
     ):
@@ -191,6 +196,7 @@ class TestStartMethods:
         # one worker never starts a pool, so the method is not needed
         score_pose_set(synthetic.poses[:2], "B", "A", n_workers=1, start_method="fork")
 
+    @pytest.mark.slow
     def test_spawn_gives_the_serial_result_of_a_set_with_failures(
         self, synthetic, reference, tmp_path
     ):
@@ -202,6 +208,7 @@ class TestStartMethods:
         assert pooled.row("zz_corrupt")["status"] == "failed"
         assert comparable(pooled) == comparable(again)
 
+    @pytest.mark.slow
     def test_spawn_runs_predicted_poses(self, tmp_path):
         poses = build_predicted_poses(tmp_path)
         reference = Reference(YCR, "A", "B")
@@ -211,6 +218,7 @@ class TestStartMethods:
         assert comparable(pooled) == comparable(serial)
         assert pooled["poses"][0]["prediction"]["binder_avg_plddt"] > 60
 
+    @pytest.mark.slow
     def test_spawn_raises_the_first_failure_in_id_order(self, synthetic, stub):
         with pytest.raises(PoseScoringError, match="'backend_a-s2'.*stub failure") as info:
             score_pose_set(
@@ -259,6 +267,7 @@ class TestPickling:
         )
         return seen, result
 
+    @pytest.mark.slow
     def test_the_context_and_the_poses_the_workers_receive_pickle(self, captured):
         seen, _ = captured
         ctx = pickle.loads(pickle.dumps(seen["ctx"]))
@@ -275,6 +284,7 @@ class TestPickling:
         poses = pickle.loads(pickle.dumps(seen["items"]))
         assert [pose.id for _, pose in poses] == [pose.id for _, pose in seen["items"]]
 
+    @pytest.mark.slow
     def test_the_specs_in_the_context_keep_their_declared_limits(self, captured):
         seen, _ = captured
         plans = pickle.loads(pickle.dumps(seen["ctx"])).plans
@@ -284,6 +294,7 @@ class TestPickling:
         assert spec.capabilities == METRICS_BY_NAME["delta_sasa_static"].capabilities
         assert spec.capabilities is not None and spec.capabilities.needs == {"receptor_chain"}
 
+    @pytest.mark.slow
     def test_an_unavailable_pool_falls_back_to_the_serial_result(self, captured, synthetic):
         _, result = captured
         assert [row["status"] for row in result["poses"]] == ["ok"] * 6
@@ -338,6 +349,7 @@ def _broken_initializer(ctx):
     raise RuntimeError("this worker cannot start")
 
 
+@pytest.mark.slow
 class TestPoolThatCannotStart:
     def test_an_executor_that_cannot_be_made_gives_a_warning_and_the_serial_result(
         self, monkeypatch, caplog, synthetic, serial, reference
