@@ -126,7 +126,7 @@ class TestTheReport:
         result.stdout.fnmatch_lines(
             [
                 "*untagged slow tests*",
-                "*2 tests took 2 s or more and carry none of slow, integration, openfold, gpu*",
+                "*2 tests took 2 s or more without any of slow, integration, openfold, gpu*",
             ]
         )
         assert not any("--strict-slow" in line for line in result.outlines)

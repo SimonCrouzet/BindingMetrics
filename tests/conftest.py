@@ -112,10 +112,11 @@ class _SlowGuard:
             return
         terminalreporter.section("untagged slow tests")
         count = len(self.untagged)
+        noun, pronoun = ("test", "it") if count == 1 else ("tests", "them")
         terminalreporter.write_line(
-            f"{count} {'test' if count == 1 else 'tests'} took {self.threshold_seconds:g} s or "
-            f"more and carry none of {', '.join(SPEED_MARKERS)}, so the everyday run does not "
-            "leave them out. scripts/tag_slow_tests.py tags a list of node ids."
+            f"{count} {noun} took {self.threshold_seconds:g} s or more without any of "
+            f"{', '.join(SPEED_MARKERS)}, so the everyday run does not leave {pronoun} out. "
+            "scripts/tag_slow_tests.py tags a list of node ids."
         )
         for nodeid, seconds in sorted(self.untagged.items(), key=lambda item: -item[1]):
             terminalreporter.write_line(f"{seconds:8.2f} s  {nodeid}")
