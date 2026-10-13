@@ -25,7 +25,9 @@ is read)::
             weights: Optional[str | Path | WeightsRef] = None,
             extra_args: Sequence[str] = (),
             closure_bonds: str | Sequence[Mapping] = "none",
-            write_embeddings: bool = False) -> PredictionRequest
+            write_embeddings: bool = False,
+            msa_policy: str = "default",
+            receptor_msa: Optional[str | Path] = None) -> PredictionRequest
         .prepare(request, work_dir) -> Path          # <work_dir>/input/<name>.yaml
         .run(request, work_dir) -> Path   # <work_dir>/boltz_results_<name>/predictions/<name>
         .is_available() -> bool
@@ -140,6 +142,28 @@ that asks for the embeddings.
 MSA. ``use_msa_server`` (default True) passes ``--use_msa_server``: the sequences are sent to the
 ColabFold server. False writes ``msa: empty`` on each entity, the single-sequence mode of the
 documentation, which Boltz-2 itself calls suboptimal.
+
+Receptor MSA and the policy that forbids the server. ``receptor_msa`` is the path of the
+receptor's alignment (``.a3m`` or ``.csv``, the two formats Boltz-2 reads; the first sequence is
+the query and must be the receptor sequence sent) or the word ``"single"``; ``msa_policy`` is
+``"default"`` or ``"forbid-server"`` (``binding_metrics.predictors._msa`` holds the rules, shared
+with the other runners). A file is copied to ``<work_dir>/input/msa/receptor.<ext>`` and the YAML
+gives that copy to the receptor entity (``msa: "<path>"``). The binder entity is written
+``msa: "empty"`` whenever the receptor has a file or ``"single"``: Boltz-2 refuses a custom MSA
+next to an automatic one in one input (``schema.py:1311``), and an alignment of 4 to 12 residues
+is of no use. Boltz-2 reads chains with one sequence as one entity with one MSA
+(``schema.py:1118``), so a receptor and a binder with the same sequence are refused when a file is
+given. Under ``forbid-server`` ``use_msa_server`` must be False, the receptor needs a file or
+``"single"``, and the command never carries ``--use_msa_server``: ``prepare`` and ``run`` check
+the request again (a request built by hand) and refuse the command line they built if it holds a
+server flag, before a file is written or a process starts. Boltz-2 raises "Missing MSA's in
+input and --use_msa_server flag not set" for an entity without an ``msa`` when the flag is
+absent (``main.py:581``), so no entity can reach the server without it. The key:
+``options["msa_policy"]`` only when it is ``"forbid-server"``, ``options["receptor_msa"] =
+"single"`` only when asked, ``extra_files["receptor_msa"]`` (hashed by content, not by path) only
+when a file is given; a request without these keeps its key. With a file and
+``use_msa_server=True`` (default policy) the flag is on the command but moot: every entity has an
+``msa``, so nothing is generated.
 
 Seeds and samples. ``boltz predict`` takes one ``--seed`` and writes no seed dimension, which
 the adapter mirrors (``seed_index`` must be 1), so a request has exactly one seed (default 42)
@@ -265,6 +289,7 @@ Boltz-2 licence: MIT; no weights or model code are read or shipped here.
 from __future__ import annotations
 
 import codecs
+import csv
 import dataclasses
 import logging
 import math
@@ -278,6 +303,15 @@ from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence, Union
 
 from binding_metrics.capabilities import LOCK_MODES
 from binding_metrics.predictors._closures import find_closures, place_closures
+from binding_metrics.predictors._msa import (
+    DEFAULT_MSA_POLICY,
+    FORBID_SERVER,
+    RECEPTOR_MSA_ROLE,
+    SINGLE_SEQUENCE,
+    assert_no_server_flag,
+    check_msa_of_request,
+    check_msa_request,
+)
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.store import PredictionRequest
 from binding_metrics.predictors.weights import WeightsRef
@@ -297,6 +331,12 @@ _DEFAULT_ON_UNMAPPABLE = "error"
 _DEFAULT_BINDER_CYCLIC = "auto"
 _DEFAULT_CLOSURE_BONDS = "none"
 _DEFAULT_WRITE_EMBEDDINGS = False
+
+#: The alignment formats Boltz-2 reads (``main.py:640-656`` compares the suffix as written).
+_MSA_SUFFIXES = (".a3m", ".csv")
+
+#: Letters of an alignment's query that stand for "any residue": they match whatever was sent.
+_MSA_WILDCARDS = frozenset("XU")
 
 #: The closure families written as ``bond`` constraints (``closure_bonds="auto"``).
 _CLOSURE_BOND_FAMILIES = ("head_to_tail", "disulfide", "lactam")
@@ -602,6 +642,11 @@ class _Plan:
     templates: tuple[_Template, ...]
     structure: Any  # the gemmi.Structure the sequences and the templates come from
     bonds: tuple[_Bond, ...] = ()  # the ``bond`` constraints, in the order they are written
+    #: How the entities get their MSA: ``"default"`` (the server, or ``empty`` without it),
+    #: ``"given"`` (the receptor reads ``msa_file``, the binder is ``empty``) or ``"single"``
+    #: (both ``empty``).
+    msa: str = "default"
+    msa_file: Optional[Path] = None  # the caller's file, for ``"given"``
 
 
 def _quoted(text: str) -> str:
@@ -621,16 +666,28 @@ def _yaml_float(value: float) -> str:
     return text + "0" if text.endswith(".") else text
 
 
-def _yaml_text(plan: _Plan, template_paths: dict[str, Path], *, use_msa_server: bool) -> str:
-    """The Boltz-2 input YAML of ``plan`` (the schema is in ``docs/prediction.md`` of Boltz-2)."""
+def _yaml_text(
+    plan: _Plan,
+    template_paths: dict[str, Path],
+    *,
+    use_msa_server: bool,
+    msa_path: Optional[Path] = None,
+) -> str:
+    """The Boltz-2 input YAML of ``plan`` (the schema is in ``docs/prediction.md`` of Boltz-2).
+
+    ``msa_path`` is the staged alignment of the receptor, required when ``plan.msa`` is
+    ``"given"``. The receptor is the first chain of the plan.
+    """
     lines = ["version: 1", "sequences:"]
-    for chain in plan.chains:
+    for index, chain in enumerate(plan.chains):
         lines += [
             "  - protein:",
             f"      id: {_quoted(chain.chain_id)}",
             f"      sequence: {_quoted(chain.sequence)}",
         ]
-        if not use_msa_server:
+        if plan.msa == "given" and index == 0:
+            lines.append(f"      msa: {_quoted(str(msa_path))}")
+        elif plan.msa != "default" or not use_msa_server:
             lines.append('      msa: "empty"')
         if chain.modifications:
             lines.append("      modifications:")
@@ -920,6 +977,92 @@ def _require_chains(
             )
 
 
+def _msa_suffix(path: Path) -> str:
+    """The lower-case suffix of a receptor alignment, ``.a3m`` or ``.csv``.
+
+    Boltz-2 compares the suffix of the file it reads as written (``main.py``), so the staged copy
+    is named in lower case whatever the caller's file is called.
+
+    Raises:
+        ValueError: The file is neither an a3m nor a csv.
+    """
+    suffix = Path(path).suffix.lower()
+    if suffix not in _MSA_SUFFIXES:
+        raise ValueError(
+            f"receptor_msa {Path(path).name} must be a .a3m or .csv file, the two formats "
+            "Boltz-2 reads (it fails on any other suffix after printing the error and exits 0)"
+        )
+    return suffix
+
+
+def _msa_query(path: Path) -> str:
+    """The first sequence of an alignment file: the row Boltz-2 reads as the query.
+
+    A3m: the first line that is not empty, a ``#`` comment or a ``>`` header (Boltz-2 reads one
+    sequence per line). Csv: the ``sequence`` column of the first row.
+
+    Raises:
+        ValueError: The file holds no sequence, or a csv has no ``sequence`` column.
+    """
+    with open(path, encoding="utf-8", errors="replace", newline="") as handle:
+        if path.suffix.lower() == ".csv":
+            rows = csv.reader(handle)
+            header = next(rows, [])
+            if "sequence" not in header:
+                raise ValueError(
+                    f"receptor_msa {path.name} has no 'sequence' column (Boltz-2 expects the "
+                    "columns 'key' and 'sequence')"
+                )
+            first = next(rows, None)
+            query = first[header.index("sequence")].strip() if first else ""
+        else:
+            query = ""
+            for line in handle:
+                line = line.strip()
+                if line and not line.startswith(("#", ">")):
+                    query = line
+                    break
+    if not query:
+        raise ValueError(f"receptor_msa {path.name} holds no sequence")
+    return query
+
+
+def _check_msa_of_chains(path: Path, receptor: _Chain, binder: _Chain) -> None:
+    """Refuse an alignment that is not the receptor's, or a binder that would share it.
+
+    Boltz-2 reads the first row of an MSA as the query of the entity, with one row position per
+    token, and checks neither (a wrong alignment gives wrong features, silently). The first
+    sequence is compared with the receptor sequence sent: same length, same letters, an ``X`` or
+    ``U`` on either side matching anything. Lower-case letters are insertions and are not counted.
+    A binder with the receptor's sequence would be the same entity, with the same MSA.
+
+    Raises:
+        ValueError: The first sequence is not the receptor sequence, or the binder has it.
+    """
+    if binder.sequence == receptor.sequence:
+        raise ValueError(
+            f"receptor chain '{receptor.chain_id}' and binder chain '{binder.chain_id}' have the "
+            "same sequence. Boltz-2 reads chains with one sequence as one entity with one MSA, so "
+            "a receptor MSA would be the binder's too, and the binder would not be "
+            "single-sequence; receptor_msa cannot be given for this input"
+        )
+    query = "".join(c for c in _msa_query(Path(path)) if not c.islower())
+    sent = receptor.sequence
+    if len(query) != len(sent):
+        raise ValueError(
+            f"receptor_msa {Path(path).name}: its first sequence has {len(query)} residues and is "
+            f"not the receptor sequence sent for chain '{receptor.chain_id}' ({len(sent)} "
+            "residues); Boltz-2 reads the first row of an MSA as the query of the entity"
+        )
+    for position, (found, wanted) in enumerate(zip(query.upper(), sent), start=1):
+        if found != wanted and not ({found, wanted} & _MSA_WILDCARDS):
+            raise ValueError(
+                f"receptor_msa {Path(path).name}: its first sequence differs from the receptor "
+                f"at position {position} ('{found}' in the file, '{wanted}' in the receptor "
+                f"sequence sent for chain '{receptor.chain_id}')"
+            )
+
+
 def _plan(request: PredictionRequest) -> _Plan:
     """Read the structure of ``request`` and decide the entities and the templates.
 
@@ -959,7 +1102,22 @@ def _plan(request: PredictionRequest) -> _Plan:
     if closure_bonds == "auto":
         closure_bonds = _closure_bond_entries(structure, Path(request.input_path), binder)
     bonds = () if closure_bonds == "none" else _planned_bonds(closure_bonds, chains)
-    return _Plan(chains=chains, templates=templates, structure=structure, bonds=bonds)
+
+    msa, msa_file = "default", request.extra_files.get(RECEPTOR_MSA_ROLE)
+    if msa_file is not None:
+        msa, msa_file = "given", Path(msa_file)
+        _msa_suffix(msa_file)
+        _check_msa_of_chains(msa_file, receptor, binder)
+    elif options.get(RECEPTOR_MSA_ROLE) == SINGLE_SEQUENCE:
+        msa = "single"
+    return _Plan(
+        chains=chains,
+        templates=templates,
+        structure=structure,
+        bonds=bonds,
+        msa=msa,
+        msa_file=msa_file,
+    )
 
 
 def _decide_cyclic(input_path: Path, binder_chain: str, binder_cyclic: Union[bool, str]) -> bool:
@@ -1136,6 +1294,8 @@ class Boltz2Runner(PredictionRunner):
         extra_args: Sequence[str] = (),
         closure_bonds: str | Sequence[Mapping] = _DEFAULT_CLOSURE_BONDS,
         write_embeddings: bool = _DEFAULT_WRITE_EMBEDDINGS,
+        msa_policy: str = DEFAULT_MSA_POLICY,
+        receptor_msa: Optional[str | Path] = None,
     ) -> PredictionRequest:
         """The store request of one Boltz-2 run, with every setting that changes the output.
 
@@ -1179,18 +1339,29 @@ class Boltz2Runner(PredictionRunner):
                 docstring.
             write_embeddings: Pass ``--write_embeddings``; the run then leaves
                 ``embeddings_<name>.npz`` beside the structures. Part of the key only when True.
+            msa_policy: ``"default"`` or ``"forbid-server"``; the second needs
+                ``use_msa_server=False`` and a ``receptor_msa``, and keeps ``--use_msa_server``
+                off the command. In the key only when it forbids.
+            receptor_msa: None, the word ``"single"`` (the receptor is predicted from its own
+                sequence) or the path of the receptor's alignment, an ``.a3m`` or ``.csv`` whose
+                first sequence is the receptor sequence. The binder is single-sequence in both
+                cases. A file is identified by its content in the key, not by its path.
 
         Raises:
             ValueError: An unknown mode, a missing or equal chain role, a name that is not a plain
                 file name, more or fewer than one seed, a choice outside its values, a threshold
                 outside the lock modes or not positive, ``extra_args`` that repeat a flag of
                 the runner, a ``closure_bonds`` string other than ``"none"`` and ``"auto"`` or a
-                bond of the wrong shape; with ``"auto"`` also what ``prepare`` raises about the
-                binder chain and its closures (an unreadable structure, a missing chain, a
-                residue Boltz-2 cannot take, a closure that cannot be placed).
+                bond of the wrong shape; a policy that forbids the server with the server on or
+                without a ``receptor_msa``; an alignment that is not an a3m or csv, whose first
+                sequence is not the receptor's, or a receptor with the binder's sequence; with
+                ``"auto"`` also what ``prepare`` raises about the binder chain and its closures
+                (an unreadable structure, a missing chain, a residue Boltz-2 cannot take, a
+                closure that cannot be placed).
             TypeError: ``closure_bonds`` is neither a string nor a list, or ``write_embeddings``
                 is not a bool.
             OSError: The input file cannot be read.
+            FileNotFoundError: ``receptor_msa`` is a path that is not a file.
         """
         if mode not in RUN_MODES:
             raise ValueError(f"mode must be one of {RUN_MODES}, got {mode!r}")
@@ -1233,6 +1404,26 @@ class Boltz2Runner(PredictionRunner):
             seed = values[0]
         arguments = _check_extra_args(extra_args)
         _check_write_embeddings(write_embeddings)
+        fragments = check_msa_request(
+            self.name,
+            use_msa_server=bool(use_msa_server),
+            msa_policy=msa_policy,
+            receptor_msa=receptor_msa,
+            supports_given_msa=True,
+            supports_single=True,
+        )
+        given = fragments.extra_files.get(RECEPTOR_MSA_ROLE)
+        if given is not None:
+            _msa_suffix(given)
+            structure = _read_structure(Path(input_path))
+            _require_chains(structure, input_path, receptor=receptor_chain, binder=binder_chain)
+            chains = [
+                _read_chain(
+                    structure, chain_id, on_unmappable_residue=on_unmappable_residue, cyclic=False
+                )
+                for chain_id in (receptor_chain, binder_chain)
+            ]
+            _check_msa_of_chains(given, *chains)
         bonds = _closure_bond_option(closure_bonds)
         if bonds == "auto":
             structure = _read_structure(Path(input_path))
@@ -1252,6 +1443,7 @@ class Boltz2Runner(PredictionRunner):
             options["closure_bonds"] = bonds
         if write_embeddings:
             options["write_embeddings"] = True
+        options.update(fragments.options)  # the MSA fields are absent at their defaults too
 
         return PredictionRequest(
             self.name,
@@ -1265,6 +1457,7 @@ class Boltz2Runner(PredictionRunner):
             num_samples=num_samples,
             model_version=self.version() or "",
             options=options,
+            extra_files=fragments.extra_files,
         )
 
     # ------------------------------------------------------------------ running
@@ -1279,6 +1472,16 @@ class Boltz2Runner(PredictionRunner):
         self._check_request(request)
         plan = _plan(request)
         input_dir = Path(work_dir).absolute() / "input"
+        yaml_path = input_dir / f"{request.name}.yaml"
+        # the command of the run is a function of the request alone: refuse a server flag now
+        self._assert_no_server_flag(
+            request, self._command(request, yaml_path, Path(work_dir).absolute())
+        )
+        staged_msa = (
+            input_dir / "msa" / f"receptor{_msa_suffix(plan.msa_file)}"
+            if plan.msa == "given"
+            else None
+        )
         template_paths = {
             template.stem: input_dir / "templates" / f"{template.stem}.cif"
             for template in plan.templates
@@ -1292,6 +1495,7 @@ class Boltz2Runner(PredictionRunner):
             plan,
             template_paths,
             use_msa_server=bool(request.options.get("use_msa_server", _DEFAULT_USE_MSA_SERVER)),
+            msa_path=staged_msa,
         )
 
         input_dir.mkdir(parents=True, exist_ok=True)
@@ -1299,7 +1503,9 @@ class Boltz2Runner(PredictionRunner):
             (input_dir / "templates").mkdir(exist_ok=True)
         for stem, structure in structures.items():
             structure.make_mmcif_document().write_file(str(template_paths[stem]))
-        yaml_path = input_dir / f"{request.name}.yaml"
+        if staged_msa is not None:
+            staged_msa.parent.mkdir(exist_ok=True)
+            shutil.copyfile(plan.msa_file, staged_msa)
         yaml_path.write_text(text, encoding="utf-8")
         return yaml_path
 
@@ -1326,7 +1532,9 @@ class Boltz2Runner(PredictionRunner):
                 "boltz not found on PATH. Install Boltz-2 here, or pass conda_env='boltz' "
                 "(or whichever environment has it)."
             )
-        tail = _run_boltz_command(self._command(request, yaml_path, work_dir))
+        command = self._command(request, yaml_path, work_dir)
+        self._assert_no_server_flag(request, command)  # the last check before the process starts
+        tail = _run_boltz_command(command)
         predictions = work_dir / f"boltz_results_{request.name}" / "predictions" / request.name
         self._require_output(request, predictions, tail)
         return predictions
@@ -1349,11 +1557,17 @@ class Boltz2Runner(PredictionRunner):
         _check_extra_args(options.get("extra_args", ()))
         _closure_bond_option(options.get("closure_bonds", _DEFAULT_CLOSURE_BONDS))
         _check_write_embeddings(options.get("write_embeddings", _DEFAULT_WRITE_EMBEDDINGS))
+        check_msa_of_request(self.name, request, supports_given_msa=True, supports_single=True)
         if request.mode in LOCK_MODES:
             _check_threshold(options.get("lock_threshold_angstrom"))
         self.check_weights(request)
         if request.weights is not None and not request.weights.path.is_file():
             raise FileNotFoundError(f"the Boltz-2 weights {request.weights.path} do not exist")
+
+    def _assert_no_server_flag(self, request: PredictionRequest, command: Sequence[str]) -> None:
+        """Refuse ``command`` when the request forbids the server and it holds a server flag."""
+        if request.options.get("msa_policy", DEFAULT_MSA_POLICY) == FORBID_SERVER:
+            assert_no_server_flag(command, self.name)
 
     def _command(self, request: PredictionRequest, yaml_path: Path, work_dir: Path) -> list[str]:
         """The command line of the run (behind ``conda run`` when an environment is set)."""
