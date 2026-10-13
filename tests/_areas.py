@@ -1,23 +1,34 @@
-"""Areas of the code that each test exercises, derived from the imports of its file.
+"""Areas of the code that each test file is about, derived from what it imports and uses.
 
 The suite has thousands of tests and takes 20 minutes, so a change to one module should not
-mean running all of them. Every test is therefore tagged with one pytest marker per *area* (for
-instance ``poses`` or ``cli``), and ``pytest -m poses`` runs the tests that touch that area.
-The tag is derived, never written by hand: the source of the test file is parsed with ``ast``
-(nothing is executed) and each ``binding_metrics`` module it imports is mapped to an area by
-``AREA_OF_MODULE``. A test file carries the union of the areas of its imports.
+mean running all of them. Every test is therefore tagged with pytest markers, one per *area* of
+the code the test file is about (``poses_frame``, ``cli_run``), and ``pytest -m poses_frame``
+runs those tests. The tags are derived, never written by hand: the source of the test file is
+parsed with ``ast`` (nothing is executed) and each ``binding_metrics`` module it refers to is
+mapped to a fine area by ``AREA_OF_MODULE``.
 
-What counts as an import of the package, in the file itself or in the test helpers it imports:
+An area is named ``<coarse>_<family>``. The coarse area, the part before the first underscore,
+is a second marker on every test of the family, so ``pytest -m metrics`` runs all of the metrics
+and ``pytest -m metrics_geometry`` one family. An area without a family (``io``) is its own
+coarse area.
 
-- ``import binding_metrics.x``, ``from binding_metrics.x import y``, ``from binding_metrics import
-  x`` and a name re-exported by a package ``__init__`` (``from binding_metrics import
-  compute_ramachandran`` resolves to ``binding_metrics.metrics.geometry`` through ``_EXPORTS``);
+What counts as a reference to the package, in the file itself or in the test helpers it imports:
+
+- a name imported with ``from binding_metrics.x import y``, ``from binding_metrics import x`` or
+  ``import binding_metrics.x as x``, including a name that a package re-exports lazily
+  (``from binding_metrics import compute_ramachandran`` resolves to
+  ``binding_metrics.metrics.geometry`` through ``_EXPORTS``), and a dotted chain from
+  ``binding_metrics`` in the code;
 - the same inside a function or a fixture, since the whole tree is walked;
 - a string that is a dotted module path (``"binding_metrics.core.system.prep_structure"`` given to
   ``monkeypatch.setattr`` or ``python -m``), and a console-script name of ``pyproject.toml``;
 - a test helper (``from tests.predictors.synth import X``, ``from .support import Y``), whose own
-  imports are added;
+  references are added;
 - a fixture of ``tests/conftest.py`` that the file requests, with the imports of the fixture body.
+
+A test file takes the fine areas that hold at least ``PRIMARY_SHARE`` of its references, and the
+one with the most whatever its share, so a CLI test that also builds a structure is about the
+CLI. The markers say what a test is about; the tests that a change can break are a wider set.
 
 ``docs``, ``golden`` and ``misc`` are not modules of the package. ``docs`` marks a test that reads
 a Markdown file, ``golden`` one that uses stored reference output, and ``misc`` one that imports
@@ -35,7 +46,8 @@ import os
 import re
 import sys
 import tomllib
-from collections.abc import Iterable, Iterator
+from collections import Counter
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,71 +55,181 @@ PACKAGE = "binding_metrics"
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
 
-# First-level module (or a dotted prefix that refines one) -> area. The longest prefix wins, so
-# ``"metrics.openfold"`` overrides ``"metrics"`` for that one file. Every first-level module of
-# the package needs its own row: tests/test_area_tags.py fails, and says where to add the row,
-# when a new module has none. A refinement may only point at a module that exists.
+# Module (or a dotted prefix) -> fine area. The longest prefix wins, so ``"metrics.geometry"``
+# overrides ``"metrics"`` for that file. A fine area is named ``<coarse>_<family>``; the part
+# before the first underscore is its coarse area, and a test file carries both markers, so
+# ``pytest -m metrics`` runs every metrics family and ``pytest -m metrics_geometry`` one of them.
+# An area with no family (``io``) is its own coarse area. Every first-level module of the package
+# needs its own row: tests/test_area_tags.py fails, and says where to add the row, when a new
+# module has none. A row may only name a module that exists.
 AREA_OF_MODULE = {
-    # core: what turns a structure into an OpenMM system (preparation, force fields, GAFF and
-    # phosphorylated residues, cyclic and non-standard residues, simulation). Its tests need
-    # OpenMM and GAFF tools and are the slow ones, so they are worth a run of their own.
-    "core": "core",
-    # io: reading and writing structures. Almost every other module imports it, so it is its own
-    # area to make "only the I/O tests" a possible run.
+    # core: what turns a structure into an OpenMM system. The slowest tests of the suite sit here.
+    "core": "core_system",  # system preparation, the force field set-up and the simulation
+    "core.system": "core_system",
+    "core.simulation": "core_system",
+    "core.forcefields": "core_system",
+    "core.gaff_ncaa": "core_gaff",  # parameters of non-standard residues and phosphates
+    "core.phosaa": "core_gaff",
+    "core.cyclic": "core_cyclic",  # head-to-tail, disulfide, lactam and staple closures
+    "core.residues": "core_residues",  # residue name tables, D-amino acids, N-methylation
+    "core.nonstandard": "core_residues",
+    # io: reading and writing structures. Almost every other module imports it.
     "io": "io",
-    # metrics: the static and MD metrics, their registry and the confidence metrics of a
-    # prediction. The largest area of the suite.
-    "metrics": "metrics",
-    # of3: the OpenFold3 route. Its run, templates and flags (metrics/openfold.py, _openfold_*)
-    # and its adapter and runner (predictors/of3*.py) have dozens of test files of their own, with
-    # docs and cyclic-peptide cases that a change elsewhere in metrics does not reach.
-    "metrics.openfold": "of3",
-    "metrics._openfold_cli": "of3",
-    "metrics._openfold_run": "of3",
-    "metrics._openfold_templates": "of3",
-    "predictors.of3": "of3",
-    "predictors.of3_runner": "of3",
-    # predictors: model adapters, runners, the run-once prediction store and session.
-    "predictors": "predictors",
-    # poses: the pose layer (kinds, reference, frame, scoring, pose-set reports). The `testing`
-    # package only builds synthetic pose sets, so it follows it.
-    "poses": "poses",
-    "testing": "poses",
-    # protocols: relaxation, preparation, solvation, structural QC and the report.
-    "protocols": "protocols",
-    # cli: the binding-metrics-run, -batch and -check-env entry points and their shared flags.
-    "cli": "cli",
+    # metrics: one area per family of metrics, so that a change to the SASA code does not run the
+    # electrostatics tests. The registry and the shared helpers are hubs: most metric tests
+    # import them, and their areas are large.
+    "metrics": "metrics_common",
+    "metrics._common": "metrics_common",
+    "metrics.interface": "metrics_interface",  # interface residues and polar contacts
+    "metrics.contacts": "metrics_interface",
+    "metrics.polar_contacts": "metrics_interface",
+    "metrics.sasa": "metrics_sasa",
+    "metrics.energy": "metrics_energy",  # interaction energy and the Coulomb term
+    "metrics.mlff_energy": "metrics_energy",
+    "metrics.electrostatics": "metrics_energy",
+    "metrics.geometry": "metrics_geometry",
+    "metrics.comparison": "metrics_comparison",  # RMSD against a reference, DockQ
+    "metrics.rmsd": "metrics_comparison",
+    "metrics.dockq": "metrics_comparison",
+    "metrics.evobind": "metrics_evobind",
+    "metrics.receptor_quality": "metrics_receptor",
+    "metrics.registry": "metrics_registry",
+    "metrics.prediction": "predictors_base",  # it reads what the adapters return
+    # of3: the OpenFold3 route has dozens of test files of its own, with docs and cyclic-peptide
+    # cases that a change elsewhere in metrics does not reach.
+    "metrics.openfold": "of3_run",
+    "metrics._openfold_run": "of3_run",
+    "predictors.of3_runner": "of3_run",
+    "metrics._openfold_templates": "of3_templates",  # template modes and the command-line flags
+    "metrics._openfold_cli": "of3_templates",
+    "predictors.of3": "of3_adapter",
+    # predictors: one area per model adapter, one for the store and runners, one for the contract.
+    "predictors": "predictors_base",
+    "predictors.af2": "predictors_af2",
+    "predictors.af2_runner": "predictors_af2",
+    "predictors.boltz2": "predictors_boltz2",
+    "predictors.boltz2_runner": "predictors_boltz2",
+    "predictors.protenix": "predictors_protenix",
+    "predictors.protenix_runner": "predictors_protenix",
+    "predictors.store": "predictors_store",  # the run-once store, session, manifest and runners
+    "predictors.session": "predictors_store",
+    "predictors.manifest": "predictors_store",
+    "predictors.runners": "predictors_store",
+    "predictors.weights": "predictors_store",
+    "predictors._closures": "predictors_store",
+    "predictors._msa": "predictors_store",
+    # poses: the pose layer, split along its stages. The `testing` package only builds synthetic
+    # pose sets, so it follows the pose kinds.
+    "poses": "poses_pose",
+    "poses.pose": "poses_pose",
+    "poses.docked": "poses_pose",
+    "poses.experimental": "poses_pose",
+    "testing": "poses_pose",
+    "poses.frame": "poses_frame",
+    "poses.agreement": "poses_agreement",
+    "poses.aggregate": "poses_agreement",
+    "poses.symmetry": "poses_agreement",
+    "poses.descriptors": "poses_descriptors",
+    "poses.reference": "poses_descriptors",
+    "poses.score": "poses_score",
+    "poses.report": "poses_score",
+    "poses.reconcile": "poses_score",
+    # protocols: relaxation with preparation and solvation, structural QC, the report.
+    "protocols": "protocols_relaxation",
+    "protocols.qc": "protocols_qc",
+    "protocols.report": "protocols_report",
+    "protocols.plots": "protocols_report",
+    # cli: one area per command, and one for the shared flags and the environment check.
+    "cli": "cli_env",
+    "cli.run": "cli_run",
+    "cli.batch": "cli_batch",
+    "cli.prediction": "cli_prediction",
     # preflight: what a model or metric accepts, and the check of an input against it, before
     # anything runs. Both modules sit at the top of the package, outside any subpackage.
-    "capabilities": "preflight",
-    "preflight_cli": "preflight",
-    # package: the root __init__ (lazy exports, version), the constants importable without OpenMM,
-    # the logging setup and the provenance of result files. Small, used by everything.
-    "__init__": "package",
-    "_constants": "package",
-    "utils": "package",
-    "provenance": "package",
+    "capabilities": "preflight_capabilities",
+    "preflight_cli": "preflight_cli",
+    # package: the root __init__ (lazy exports, version), then the constants importable without
+    # OpenMM, the logging setup and the provenance of result files.
+    "__init__": "package_exports",
+    "_constants": "package_support",
+    "utils": "package_support",
+    "provenance": "package_support",
 }
 
 # One line per area, copied into the ``markers`` list of pyproject.toml as "<area>: <line>".
 AREA_DESCRIPTIONS = {
+    # coarse areas
+    "cli": "all command-line entry points: run, batch, check-env and the shared flags",
     "core": "system preparation, force fields, simulation, GAFF, cyclic and non-standard residues",
     "io": "reading and writing structures (load_structure, save_cif, chain detection)",
-    "metrics": "the static and MD metrics, their registry and the prediction confidence metrics",
-    "of3": "the OpenFold3 route: metrics/openfold.py with its helpers, the of3 adapter and runner",
-    "predictors": "model adapters, runners, the prediction store and session (OpenFold3 aside)",
-    "poses": "the pose layer (kinds, reference, scoring, pose-set reports) and the testing package",
-    "protocols": "relaxation, preparation, solvation, structural QC and the report",
-    "cli": "the binding-metrics-run, -batch and -check-env entry points and their flags",
-    "preflight": "what a model or metric accepts and the check of an input before a run",
+    "metrics": "the static and MD metrics and their registry",
+    "of3": "the OpenFold3 route: its run, templates, flags, adapter and runner",
     "package": "the package root, constants, logging setup and provenance",
+    "poses": "the pose layer (kinds, reference, scoring, pose-set reports) and the testing package",
+    "predictors": "model adapters, runners, the prediction store and session (OpenFold3 aside)",
+    "preflight": "what a model or metric accepts and the check of an input before a run",
+    "protocols": "relaxation, preparation, solvation, structural QC and the report",
+    # fine areas
+    "cli_batch": "binding-metrics-batch (cli/batch.py)",
+    "cli_env": "the shared command-line flags and binding-metrics-check-env (cli/__init__.py)",
+    "cli_prediction": "the --predictor step of run and batch (cli/prediction.py)",
+    "cli_run": "binding-metrics-run and the pipeline behind it (cli/run.py)",
+    "core_cyclic": "head-to-tail, disulfide, lactam and staple closures (core/cyclic.py)",
+    "core_gaff": "GAFF2 parameters of non-standard residues and phospho-residues",
+    "core_residues": "residue name tables, D-amino acids, N-methylated residues",
+    "core_system": "system preparation, force-field set-up and simulation (core/system.py)",
+    "metrics_common": "helpers shared by the metrics: structure loader, chain aliases, OpenMM",
+    "metrics_comparison": "RMSD against a reference and DockQ",
+    "metrics_energy": "interaction energy, the Coulomb term and the MLFF energy",
+    "metrics_evobind": "the EvoBind score and its adversarial check",
+    "metrics_geometry": "Ramachandran, omega planarity, shape complementarity, void volume",
+    "metrics_interface": "interface residues, contacts, hydrogen bonds and salt bridges",
+    "metrics_receptor": "receptor quality and receptor drift",
+    "metrics_registry": "the metric registry, its metadata and its documentation",
+    "metrics_sasa": "buried and static solvent-accessible surface area",
+    "of3_adapter": "the OpenFold3 output adapter (predictors/of3.py)",
+    "of3_run": "running OpenFold3 and reading its result (metrics/openfold.py, the runner)",
+    "of3_templates": "OpenFold3 template modes and their command-line flags",
+    "poses_agreement": "agreement between poses, aggregation and symmetry",
+    "poses_descriptors": "reference-site descriptors and the reference (poses/descriptors.py)",
+    "poses_frame": "the common frame of a pose set (poses/frame.py)",
+    "poses_pose": "the pose kinds and the synthetic pose sets",
+    "poses_score": "scoring a pose set, its report and the reconciliation of two back-ends",
+    "predictors_af2": "the AlphaFold2 and ColabFold adapter and runner",
+    "predictors_base": "the adapter contract: base class, registry, record, confidence helpers",
+    "predictors_boltz2": "the Boltz-2 adapter and runner",
+    "predictors_protenix": "the Protenix adapter and runner",
+    "predictors_store": "the run-once store, session, manifest, runners and weights",
+    "preflight_capabilities": "the declared limits of steps and models and the pre-flight check",
+    "preflight_cli": "the pre-flight check of the command-line pipeline (preflight_cli.py)",
+    "protocols_qc": "structural QC of relaxed structures",
+    "protocols_relaxation": "relaxation, preparation and solvation protocols",
+    "protocols_report": "the report and its plots",
+    "package_exports": "lazy exports and the version of the package root",
+    "package_support": "constants, logging setup and provenance of result files",
+    # not modules of the package
     "docs": "the text of docs/, README.md and CHANGELOG.md, checked against the code",
     "golden": "comparisons with stored reference output (tests/golden, OpenFold3 golden files)",
     "misc": "tests that import nothing from the package",
 }
 SPECIAL_AREAS = ("docs", "golden", "misc")
-CODE_AREAS = tuple(sorted(set(AREA_OF_MODULE.values())))
+
+
+def coarse_of(area: str) -> str:
+    """The coarse area of a fine one: the part before the first underscore."""
+    return area.split("_")[0]
+
+
+FINE_AREAS = tuple(sorted(set(AREA_OF_MODULE.values())))
+COARSE_AREAS = tuple(sorted({coarse_of(a) for a in FINE_AREAS}))
+CODE_AREAS = tuple(sorted(set(FINE_AREAS) | set(COARSE_AREAS)))
 ALL_AREAS = CODE_AREAS + SPECIAL_AREAS
+
+# A fine area tags a test file when it holds this share of the file's references to the package.
+PRIMARY_SHARE = 0.25
+# Areas of code that tests use on the way (constants, the structure loader of the metrics) and are
+# rarely about: they only tag a file whose references go nowhere else.
+INCIDENTAL_AREAS = frozenset({"package_support", "metrics_common"})
 
 _DOTTED = re.compile(rf"{PACKAGE}(\.[A-Za-z_]\w*)+(:\w+)?")
 _MARKDOWN_PATH = re.compile(r"[\w./-]*\.md")
@@ -135,6 +257,7 @@ class FileScan:
     helpers: frozenset[Path]  # test helper files it imports
     names: frozenset[str]  # argument names and strings: candidates for fixture names
     reads_docs: bool
+    usage: Mapping[str, int]  # module -> how many times the file refers to it
 
 
 def _is_type_checking(test: ast.expr) -> bool:
@@ -485,8 +608,10 @@ class Project:
             helpers: set[Path] = set()
             names: set[str] = set()
             reads_docs = False
+            usage: Mapping[str, int] = {}
             if tree is not None:
                 modules, others = self.package_imports(tree)
+                usage = self.module_usage(tree)
                 for node in others:
                     helpers |= self._helper_files(path, node)
                 for node in ast.walk(tree):
@@ -498,9 +623,59 @@ class Project:
                     else:
                         reads_docs |= _names_docs_folder(node)
             self._scans[path] = FileScan(
-                frozenset(modules), frozenset(helpers), frozenset(names), reads_docs
+                frozenset(modules),
+                frozenset(helpers),
+                frozenset(names),
+                reads_docs,
+                usage,
             )
         return self._scans[path]
+
+    def module_usage(self, tree: ast.AST) -> Counter:
+        """How often a file refers to each module of the package.
+
+        A reference is a use of a name that the file imported from the module (the name itself, or
+        the module bound by ``from binding_metrics.metrics import geometry``), a dotted chain from
+        ``binding_metrics`` or a string that names the module. Imports that are never used count
+        nothing, which is what separates a test about a module from one that only needs it.
+        """
+        aliases: dict[str, str] = {}
+        for node in walk_runtime(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.asname and (
+                        alias.name == PACKAGE or alias.name.startswith(PACKAGE + ".")
+                    ):
+                        aliases[alias.asname] = self._deepest_module(
+                            alias.name[len(PACKAGE) :].lstrip(".")
+                        )
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                if node.module == PACKAGE or node.module.startswith(PACKAGE + "."):
+                    base = node.module[len(PACKAGE) :].lstrip(".")
+                    for alias in node.names:
+                        if alias.name != "*":
+                            (module,) = self.resolve_from_import(base, [alias.name])
+                            aliases[alias.asname or alias.name] = module
+        counts: Counter = Counter()
+        in_chain: set[int] = set()
+        for node in walk_runtime(tree):
+            if isinstance(node, ast.Attribute) and id(node) not in in_chain:
+                chain, inner = [], node
+                while isinstance(inner, ast.Attribute):
+                    chain.append(inner.attr)
+                    in_chain.add(id(inner.value))
+                    inner = inner.value
+                if isinstance(inner, ast.Name) and inner.id == PACKAGE:
+                    counts[self._deepest_module(".".join(reversed(chain)))] += 1
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                if node.id in aliases and id(node) not in in_chain:
+                    counts[aliases[node.id]] += 1
+                elif node.id in aliases:
+                    counts[aliases[node.id]] += 1
+            elif isinstance(node, ast.Constant):
+                for module in self._modules_named_by(node.value):
+                    counts[module] += 1
+        return counts
 
     def _module_files(self, base: Path) -> set[Path]:
         """Files of the tests folder that ``base`` names as a module: ``base.py`` or a package."""
@@ -559,10 +734,38 @@ class Project:
             self._closures[path] = (frozenset(modules), frozenset(seen))
         return self._closures[path]
 
-    def areas_of_test_file(self, path: Path) -> frozenset[str]:
-        """The areas a test file exercises: always at least one."""
+    def usage_of(self, path: Path) -> Counter:
+        """Module -> references, over a test file, its helpers and the fixtures it asks for."""
         modules, files = self.closure(path)
-        areas = {area_of_module(m) or "misc" for m in modules}
+        counts: Counter = Counter()
+        fixtures = self.fixture_modules()
+        for file in files:
+            scan = self.scan(file)
+            counts.update(scan.usage)
+            for fixture in scan.names & fixtures.keys():
+                counts.update(dict.fromkeys(fixtures[fixture], 1))
+        return counts
+
+    def areas_of_test_file(self, path: Path) -> frozenset[str]:
+        """What a test file is about: its markers, always at least one.
+
+        The fine areas are those that hold at least ``PRIMARY_SHARE`` of the file's references to
+        the package, and the one with the most references whatever its share; a file that refers
+        to nothing by name (it only imports) takes the areas of all its imports. The coarse area
+        of each fine one comes with it, then ``docs`` and ``golden`` where they apply.
+        """
+        modules, files = self.closure(path)
+        by_area: Counter = Counter()
+        for module, count in self.usage_of(path).items():
+            by_area[area_of_module(module) or "misc"] += count
+        about = Counter({a: n for a, n in by_area.items() if a not in INCIDENTAL_AREAS}) or by_area
+        total = sum(about.values())
+        if total:
+            fine = {a for a, count in about.items() if count / total >= PRIMARY_SHARE}
+            fine.add(max(sorted(about), key=about.__getitem__))
+        else:
+            fine = {area_of_module(m) or "misc" for m in modules}
+        areas = fine | {coarse_of(a) for a in fine}
         if self.scan(path).reads_docs:
             areas.add("docs")
         if any(self.tests_dir / "golden" in f.parents or "golden" in f.stem for f in files):

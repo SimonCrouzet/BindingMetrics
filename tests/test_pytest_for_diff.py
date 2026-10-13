@@ -188,18 +188,22 @@ def test_a_source_file_runs_the_areas_of_the_modules_that_import_it(script, repo
     changed, plan, commands = selection(script, repo)
 
     assert changed == ["src/binding_metrics/poses/frame.py"]
-    assert plan.areas == {"poses"}
+    assert plan.areas == {"poses_frame", "poses_score"}
     assert not plan.everything
     assert commands[0][:5] == [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
-    assert commands[0][5:] == ["-m", "not gpu and not slow and (poses)", "tests"]
+    assert commands[0][5:] == [
+        "-m",
+        "not gpu and not slow and (poses_frame or poses_score)",
+        "tests",
+    ]
 
 
 def test_a_change_in_a_base_module_reaches_the_areas_that_import_it(script, repo):
     write(repo, {"src/binding_metrics/core/system.py": "def prep(): return 1\n"})
     _, plan, commands = selection(script, repo)
 
-    assert plan.areas == {"core", "cli"}
-    assert commands[0][6] == "not gpu and not slow and (cli or core)"
+    assert plan.areas == {"core_system", "cli_run"}
+    assert commands[0][6] == "not gpu and not slow and (cli_run or core_system)"
 
 
 def test_the_guard_tests_always_run_and_are_not_repeated_when_an_area_covers_them(script, repo):
@@ -250,7 +254,7 @@ def test_pyproject_or_conftest_runs_the_fast_tier(script, repo):
 def test_include_slow_keeps_the_slow_tests_and_gpu_stays_out(script, repo):
     write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
     _, _, commands = selection(script, repo, include_slow=True)
-    assert commands[0][6] == "not gpu and (poses)"
+    assert commands[0][6] == "not gpu and (poses_frame or poses_score)"
     assert commands[1][6] == "not gpu"
 
 
@@ -287,7 +291,11 @@ def test_a_dry_run_prints_the_commands_and_runs_nothing(script, repo, capsys, mo
     assert script.main(["--repo", str(repo), "--dry-run", "--", "-q"]) == 0
     out = capsys.readouterr().out
     printed = [shlex.split(line) for line in out.splitlines() if line.startswith(sys.executable)]
-    assert printed[0][5:8] == ["-m", "not gpu and not slow and (poses)", "tests"]
+    assert printed[0][5:8] == [
+        "-m",
+        "not gpu and not slow and (poses_frame or poses_score)",
+        "tests",
+    ]
     assert printed[1][-1] == "-q"
     assert "src/binding_metrics/poses/frame.py" in out
     assert not [c for c in calls if c[0] != "git"]

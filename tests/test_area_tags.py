@@ -1,10 +1,11 @@
 """Every test carries area markers, and the table that derives them stays complete.
 
-``tests/conftest.py`` adds one marker per area of the code a test file exercises, from the
-imports of that file (``tests/_areas.py``), so that ``pytest -m poses`` runs one part of the
-suite. The checks here keep that partition honest: no test without an area, every marker
-registered in ``pyproject.toml`` (``--strict-markers`` needs it), a row in the table for each
-module of the package, and a scan that reads the imports the way the module docstring says.
+``tests/conftest.py`` adds a fine and a coarse marker for each area of the code a test file is
+about, from the imports and the names it uses (``tests/_areas.py``), so that ``pytest -m
+poses_frame`` runs one part of the suite and ``-m poses`` a larger one. The checks here keep that
+partition honest: no test without an area, every marker registered in ``pyproject.toml``
+(``--strict-markers`` needs it), a row in the table for each module of the package, and a scan
+that reads the imports the way the module docstring says.
 """
 
 import itertools
@@ -76,15 +77,37 @@ def test_pyproject_registers_every_area_and_keeps_the_earlier_markers():
 
 def test_every_area_is_described():
     assert set(_areas.AREA_DESCRIPTIONS) == set(_areas.ALL_AREAS)
-    assert set(_areas.AREA_OF_MODULE.values()) | set(_areas.SPECIAL_AREAS) == set(_areas.ALL_AREAS)
+    fine = set(_areas.AREA_OF_MODULE.values())
+    assert fine | {_areas.coarse_of(a) for a in fine} | set(_areas.SPECIAL_AREAS) == set(
+        _areas.ALL_AREAS
+    )
     assert all(text and text == text.strip() for text in _areas.AREA_DESCRIPTIONS.values())
+
+
+def test_a_fine_area_is_named_after_its_coarse_area():
+    for area in _areas.FINE_AREAS:
+        coarse = _areas.coarse_of(area)
+        assert coarse in _areas.AREA_DESCRIPTIONS, f"{area}: no coarse area {coarse!r}"
+        assert area == coarse or area.startswith(coarse + "_")
+    assert 30 <= len(_areas.FINE_AREAS) <= 50, "keep the fine areas few enough to remember"
+
+
+def test_every_test_file_carries_the_coarse_area_of_each_fine_one():
+    project = _areas.DEFAULT_PROJECT
+    for path in project.test_files():
+        areas = project.areas_of_test_file(path)
+        fine = areas & set(_areas.FINE_AREAS)
+        assert {_areas.coarse_of(a) for a in fine} <= areas, path
 
 
 def test_the_testing_doc_lists_every_area_with_its_description():
     text = (REPO / "docs" / "testing.md").read_text(encoding="utf-8")
-    for area, description in _areas.AREA_DESCRIPTIONS.items():
+    for area in _areas.COARSE_AREAS + _areas.SPECIAL_AREAS:
+        description = _areas.AREA_DESCRIPTIONS[area]
         row = f"| `{area}` | {description[0].upper()}{description[1:]} |"
-        assert row in text, f"docs/testing.md needs the table row {row}"
+        assert row in text, f"docs/testing.md needs the table row {row} ..."
+    for area in _areas.FINE_AREAS:
+        assert f"`{area}`" in text, f"docs/testing.md does not list the area {area}"
 
 
 def test_the_table_covers_every_first_level_module_of_the_package():
@@ -107,11 +130,12 @@ def test_the_table_has_no_row_for_a_module_that_is_gone():
 @pytest.mark.parametrize(
     ("test_file", "expected"),
     [
-        ("tests/poses/test_frame.py", {"poses"}),
-        ("tests/test_w3a_cli_help.py", {"cli"}),
-        ("tests/test_registry.py", {"metrics"}),
-        ("tests/test_of3_runner.py", {"of3"}),
-        ("tests/test_pre_capabilities.py", {"preflight"}),
+        ("tests/poses/test_frame.py", {"poses_frame", "poses"}),
+        ("tests/test_l7_cli_args.py", {"cli_env", "cli"}),
+        ("tests/test_run.py", {"cli_run", "cli"}),
+        ("tests/test_registry.py", {"metrics_registry", "metrics"}),
+        ("tests/test_of3_runner.py", {"of3_run", "of3"}),
+        ("tests/test_pre_capabilities.py", {"preflight_capabilities", "preflight"}),
         ("tests/test_feat_c_docs.py", {"docs"}),
         ("tests/poses/test_golden_pose_set.py", {"poses", "golden"}),
         ("tests/test_s1_encoding.py", {"misc"}),
@@ -140,6 +164,7 @@ def test_the_marker_selects_the_partition_from_the_command_line():
         return {line.split("::")[0] for line in done.stdout.splitlines() if "::" in line}
 
     assert collected("poses") == {files[0]}
+    assert collected("poses_frame") == {files[0]}
     assert collected("cli or docs") == {files[1]}
 
 
@@ -218,42 +243,53 @@ def areas_of_source(project, source, directory="tests"):
     return set(project.areas_of_test_file(path))
 
 
+def with_coarse(*areas):
+    """The fine areas given and their coarse areas, which come with them."""
+    return set(areas) | {_areas.coarse_of(area) for area in areas}
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
-        ("import binding_metrics.core.system\n", {"core"}),
-        ("import binding_metrics.core.system as system\n", {"core"}),
-        ("from binding_metrics.poses.frame import frame\n", {"poses"}),
-        ("from binding_metrics import poses\n", {"poses"}),
-        ("from binding_metrics.metrics import geometry\n", {"metrics"}),
+        ("import binding_metrics.core.system\n", with_coarse("core_system")),
+        ("import binding_metrics.core.system as system\n", with_coarse("core_system")),
+        ("from binding_metrics.poses.frame import frame\n", with_coarse("poses_frame")),
+        ("from binding_metrics import poses\n", with_coarse("poses_pose")),
+        ("from binding_metrics.metrics import geometry\n", with_coarse("metrics_geometry")),
         # a name that the package re-exports lazily belongs to the module that defines it
-        ("from binding_metrics import compute_ramachandran\n", {"metrics"}),
-        ("from binding_metrics.metrics import compute_openfold_metrics\n", {"of3"}),
-        ("from binding_metrics.metrics import openfold\n", {"of3"}),
+        ("from binding_metrics import compute_ramachandran\n", with_coarse("metrics_geometry")),
+        (
+            "from binding_metrics.metrics import compute_openfold_metrics\n",
+            with_coarse("of3_run"),
+        ),
+        ("from binding_metrics.metrics import openfold\n", with_coarse("of3_run")),
         # an import inside a function counts
-        ("def test_x():\n    from binding_metrics.io.structures import load_structure\n", {"io"}),
-        # the union over several imports
+        (
+            "def test_x():\n    from binding_metrics.io.structures import load_structure\n",
+            with_coarse("io"),
+        ),
+        # the union over several imports, none of them used more than the other
         (
             "import binding_metrics.core.system\nimport binding_metrics.poses.frame\n",
-            {"core", "poses"},
+            with_coarse("core_system", "poses_frame"),
         ),
         # a dotted path in a string, as monkeypatch.setattr and python -m take it
-        ('PATH = "binding_metrics.core.system.prep_structure"\n', {"core"}),
-        ('ARGS = ["-m", "binding_metrics.cli.run"]\n', {"cli"}),
-        ('ARGS = ["binding-metrics-run", "--help"]\n', {"cli"}),
-        ('COMMAND = "binding-metrics-run --help"\n', {"cli"}),
+        ('PATH = "binding_metrics.core.system.prep_structure"\n', with_coarse("core_system")),
+        ('ARGS = ["-m", "binding_metrics.cli.run"]\n', with_coarse("cli_run")),
+        ('ARGS = ["binding-metrics-run", "--help"]\n', with_coarse("cli_run")),
+        ('COMMAND = "binding-metrics-run --help"\n', with_coarse("cli_run")),
         # test helpers, absolute and relative, bring their own imports
-        ("from tests.support import frame\n", {"poses"}),
-        ("from tests import support\n", {"poses"}),
+        ("from tests.support import frame\n", with_coarse("poses_frame")),
+        ("from tests import support\n", with_coarse("poses_frame")),
         # a fixture of conftest.py brings the imports of its body
-        ("def test_x(prepped):\n    pass\n", {"core"}),
+        ("def test_x(prepped):\n    pass\n", with_coarse("core_system")),
         # an import that only a type checker reads is not a use
         (
             "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n"
             "    from binding_metrics.cli import run\n",
             {"misc"},
         ),
-        ("import binding_metrics\n", {"package"}),
+        ("import binding_metrics\n", with_coarse("package_exports")),
         # a module without a row in the table is still tagged, as misc
         ("import binding_metrics.newthing\n", {"misc"}),
         ("import json\n\ndef test_x():\n    assert json\n", {"misc"}),
@@ -267,7 +303,7 @@ def areas_of_source(project, source, directory="tests"):
         ("from tests.golden import cases\n", {"golden"}),
         (
             "from tests.golden import cases\nimport binding_metrics.io.structures\n",
-            {"golden", "io"},
+            with_coarse("io") | {"golden"},
         ),
     ],
 )
@@ -275,9 +311,35 @@ def test_the_scan_reads_imports_the_way_the_docstring_says(project, source, expe
     assert areas_of_source(project, source) == expected
 
 
+USES_FOUR_TO_ONE = """
+from binding_metrics.core.system import prep_structure
+from binding_metrics.poses.frame import frame
+
+def test_x():
+    prep_structure(); prep_structure(); prep_structure(); prep_structure()
+    frame()
+"""
+USES_THREE_TO_ONE = USES_FOUR_TO_ONE.replace("prep_structure(); ", "", 1)
+
+
+def test_a_file_is_about_the_areas_that_hold_a_quarter_of_its_references(project):
+    # one use in five is an incidental one: the test is about the system, not about the frame
+    assert areas_of_source(project, USES_FOUR_TO_ONE) == with_coarse("core_system")
+    # one use in four is not
+    assert areas_of_source(project, USES_THREE_TO_ONE) == with_coarse("core_system", "poses_frame")
+
+
+def test_the_area_with_most_references_always_counts(project):
+    source = "from binding_metrics.core.system import prep_structure\n" + "\n".join(
+        f"from binding_metrics.metrics import geometry as g{i}" for i in range(1)
+    )
+    source += "\nfor _ in range(2):\n    prep_structure()\n    prep_structure()\n"
+    assert with_coarse("core_system") <= areas_of_source(project, source)
+
+
 def test_a_relative_helper_in_a_subpackage_is_followed(project):
     source = "from .helpers import something\n"
-    assert areas_of_source(project, source, directory="tests/poses") == {"poses"}
+    assert areas_of_source(project, source, directory="tests/poses") == with_coarse("poses_pose")
 
 
 def test_dependents_of_a_module_are_those_that_import_it(project):
@@ -301,4 +363,8 @@ def test_a_source_file_maps_to_its_module_and_data_to_its_package(project):
         "core",
         "core.system",
     }
-    assert project.areas_of_modules(["core.system", "newthing", ""]) == {"core", "misc", "package"}
+    assert project.areas_of_modules(["core.system", "newthing", ""]) == {
+        "core_system",
+        "misc",
+        "package_exports",
+    }
