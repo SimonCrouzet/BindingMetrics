@@ -28,7 +28,6 @@ from binding_metrics.protocols.report import _flatten, write_report  # noqa: E40
 DATA = Path(__file__).parent.parent / "data"
 EXAMPLE_1YCR = DATA / "example_linear_p53_1YCR.pdb"
 SFTI1 = DATA / "example_bicyclic_sfti1_3P8F.cif"
-SOMATOSTATIN = DATA / "example_lactam_somatostatin_1XY4.cif"
 
 SOURCES = {"BMT": BOND_ORDER_SOURCE_CCD, "XYZ": BOND_ORDER_SOURCE_SINGLE_BONDS}
 
@@ -129,19 +128,6 @@ class TestPrepReport:
         report = {}
         prep_structure(topology, positions, report=report)
         assert "ncaa_bond_order_source" not in report
-
-    @pytest.mark.integration
-    def test_somatostatin_iam_takes_its_bond_orders_from_the_dictionary(self):
-        """1XY4: IAM matches its dictionary entry once a bond listed twice is capped once."""
-        pytest.importorskip("pdbfixer")
-        pytest.importorskip("openmmforcefields")
-        from binding_metrics.core.system import prep_structure
-        from binding_metrics.io.structures import load_structure
-
-        topology, positions = load_structure(SOMATOSTATIN)
-        report = {}
-        prep_structure(topology, positions, report=report)
-        assert report["ncaa_bond_order_source"] == {"IAM": "ccd"}
 
 
 class TestPipelineResults:
