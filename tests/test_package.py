@@ -1,16 +1,49 @@
 """Tests for package-level imports and exports."""
 
+import importlib
+
+import pytest
 from conftest import BEST_PLATFORM
+
+# (module, attribute, must be callable): the names a user imports first. An attribute of None
+# means the module itself. The class and submodule entries only have to import; the functions
+# must also be callable.
+_IMPORTS = [
+    ("binding_metrics", None, False),
+    ("binding_metrics", "MDSimulation", False),
+    ("binding_metrics", "ForceFieldConfig", False),
+    ("binding_metrics", "PeptideBindingProtocol", False),
+    ("binding_metrics", "run_simulation", True),
+    ("binding_metrics", "get_forcefield", True),
+    ("binding_metrics", "prepare_system", True),
+    ("binding_metrics.core", None, False),
+    ("binding_metrics.protocols", None, False),
+    ("binding_metrics.metrics", None, False),
+    ("binding_metrics.io", None, False),
+    ("binding_metrics.metrics", "calculate_buried_sasa", True),
+    ("binding_metrics.metrics", "calculate_contacts", True),
+    ("binding_metrics.metrics", "calculate_interaction_energy", True),
+    ("binding_metrics.metrics", "calculate_rmsd", True),
+    ("binding_metrics.io", "load_complex", True),
+    ("binding_metrics.io", "get_chain_atom_indices", True),
+]
 
 
 class TestPackageImports:
     """Test that all public API is importable."""
 
-    def test_import_main_package(self):
-        """Should be able to import binding_metrics."""
-        import binding_metrics
-
-        assert binding_metrics is not None
+    @pytest.mark.parametrize(
+        ("module", "attribute", "must_be_callable"),
+        _IMPORTS,
+        ids=[f"{m}:{a}" if a else m for m, a, _ in _IMPORTS],
+    )
+    def test_the_name_imports(self, module, attribute, must_be_callable):
+        imported = importlib.import_module(module)
+        if attribute is not None:
+            imported = getattr(imported, attribute)
+        assert imported is not None
+        if must_be_callable:
+            assert callable(imported)
 
     def test_version_exists(self):
         """Package should have __version__."""
@@ -26,48 +59,12 @@ class TestPackageImports:
         config = SimulationConfig()
         assert config.temperature == 300.0
 
-    def test_import_md_simulation(self):
-        """MDSimulation should be importable from main package."""
-        from binding_metrics import MDSimulation
-
-        assert MDSimulation is not None
-
-    def test_import_run_simulation(self):
-        """run_simulation should be importable from main package."""
-        from binding_metrics import run_simulation
-
-        assert callable(run_simulation)
-
-    def test_import_forcefield_config(self):
-        """ForceFieldConfig should be importable from main package."""
-        from binding_metrics import ForceFieldConfig
-
-        assert ForceFieldConfig is not None
-
-    def test_import_get_forcefield(self):
-        """get_forcefield should be importable from main package."""
-        from binding_metrics import get_forcefield
-
-        assert callable(get_forcefield)
-
-    def test_import_prepare_system(self):
-        """prepare_system should be importable from main package."""
-        from binding_metrics import prepare_system
-
-        assert callable(prepare_system)
-
     def test_import_protocol_results(self):
         """ProtocolResults should be importable from main package."""
         from binding_metrics import ProtocolResults
 
         results = ProtocolResults()
         assert results.sasa_buried_mean == 0.0
-
-    def test_import_peptide_binding_protocol(self):
-        """PeptideBindingProtocol should be importable from main package."""
-        from binding_metrics import PeptideBindingProtocol
-
-        assert PeptideBindingProtocol is not None
 
     def test_all_exports(self):
         """__all__ should contain expected exports."""
@@ -137,70 +134,6 @@ class TestPackageImports:
                 f"__all__ lists {name!r} but it is not bound on the package"
             )
             assert getattr(binding_metrics, name) is not None
-
-
-class TestSubmoduleImports:
-    """Test that submodules are importable."""
-
-    def test_import_core_module(self):
-        """Core module should be importable."""
-        from binding_metrics import core
-
-        assert core is not None
-
-    def test_import_protocols_module(self):
-        """Protocols module should be importable."""
-        from binding_metrics import protocols
-
-        assert protocols is not None
-
-    def test_import_metrics_module(self):
-        """Metrics module should be importable."""
-        from binding_metrics import metrics
-
-        assert metrics is not None
-
-    def test_import_io_module(self):
-        """IO module should be importable."""
-        from binding_metrics import io
-
-        assert io is not None
-
-    def test_import_sasa_function(self):
-        """SASA function should be importable from metrics."""
-        from binding_metrics.metrics import calculate_buried_sasa
-
-        assert callable(calculate_buried_sasa)
-
-    def test_import_contacts_function(self):
-        """Contacts function should be importable from metrics."""
-        from binding_metrics.metrics import calculate_contacts
-
-        assert callable(calculate_contacts)
-
-    def test_import_energy_function(self):
-        """Energy function should be importable from metrics."""
-        from binding_metrics.metrics import calculate_interaction_energy
-
-        assert callable(calculate_interaction_energy)
-
-    def test_import_rmsd_function(self):
-        """RMSD function should be importable from metrics."""
-        from binding_metrics.metrics import calculate_rmsd
-
-        assert callable(calculate_rmsd)
-
-    def test_import_load_complex(self):
-        """load_complex should be importable from io."""
-        from binding_metrics.io import load_complex
-
-        assert callable(load_complex)
-
-    def test_import_get_chain_atom_indices(self):
-        """get_chain_atom_indices should be importable from io."""
-        from binding_metrics.io import get_chain_atom_indices
-
-        assert callable(get_chain_atom_indices)
 
 
 class TestTypicalUsage:
