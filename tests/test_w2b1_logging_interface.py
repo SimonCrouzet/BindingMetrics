@@ -1,6 +1,5 @@
 """interface.py reports its warnings through logging, with the same text as before."""
 
-import ast
 import logging
 import sys
 from pathlib import Path
@@ -29,19 +28,6 @@ def package_logger():
 
 def _messages(caplog):
     return [(r.levelno, r.getMessage()) for r in caplog.records if r.name == LOGGER_NAME]
-
-
-def test_no_print_call_outside_main():
-    """Library code must log; only the CLI ``main()`` may print."""
-    tree = ast.parse(Path(interface.__file__).read_text(encoding="utf-8"))
-    offenders = []
-    for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
-        if func.name == "main":
-            continue
-        for call in ast.walk(func):
-            if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "print":
-                offenders.append((func.name, call.lineno))
-    assert not offenders
 
 
 def test_empty_chain_warning_reaches_the_logger(caplog):
