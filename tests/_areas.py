@@ -101,9 +101,9 @@ AREA_DESCRIPTIONS = {
     "cli": "the binding-metrics-run, -batch and -check-env entry points and their flags",
     "preflight": "what a model or metric accepts and the check of an input before a run",
     "package": "the package root, constants, logging setup and provenance",
-    "docs": "reads docs/, README.md or CHANGELOG.md to check the text against the code",
-    "golden": "compares with stored reference output (tests/golden, OpenFold3 golden files)",
-    "misc": "imports nothing from the package",
+    "docs": "the text of docs/, README.md and CHANGELOG.md, checked against the code",
+    "golden": "comparisons with stored reference output (tests/golden, OpenFold3 golden files)",
+    "misc": "tests that import nothing from the package",
 }
 SPECIAL_AREAS = ("docs", "golden", "misc")
 CODE_AREAS = tuple(sorted(set(AREA_OF_MODULE.values())))

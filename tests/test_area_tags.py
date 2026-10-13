@@ -80,6 +80,13 @@ def test_every_area_is_described():
     assert all(text and text == text.strip() for text in _areas.AREA_DESCRIPTIONS.values())
 
 
+def test_the_testing_doc_lists_every_area_with_its_description():
+    text = (REPO / "docs" / "testing.md").read_text(encoding="utf-8")
+    for area, description in _areas.AREA_DESCRIPTIONS.items():
+        row = f"| `{area}` | {description[0].upper()}{description[1:]} |"
+        assert row in text, f"docs/testing.md needs the table row {row}"
+
+
 def test_the_table_covers_every_first_level_module_of_the_package():
     project = _areas.DEFAULT_PROJECT
     missing = [
