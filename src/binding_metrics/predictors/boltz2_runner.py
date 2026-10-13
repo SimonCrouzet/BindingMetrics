@@ -237,7 +237,7 @@ brackets):
   2.03 -> 1.90 (2.04), head-to-tail C-N 1.33 -> 1.33 (1.44). 1CWA chain C: C-N 1.30 -> 1.30
   (1.33). Both closed without the bond already.
 * Without ``cyclic: true`` (``binder_cyclic=False``), so that the bond is the only closure: C-N
-  6.65 -> 1.77 on 3P8F (6.3 to 7.0 without), 7.78 -> 1.40 on 1CWA (6.0 to 9.3 without).
+  6.68 -> 1.77 on 3P8F (6.3 to 7.0 without), 7.78 -> 1.40 on 1CWA (6.0 to 9.3 without).
 * 1XY4 (disulfide and lactam; a chain of 1YCR added as receptor, no template): lactam NZ-CD 5.09
   (3.5 to 6.2) -> 2.15 (1.9 to 2.4; the input has 1.89, an amide bond is 1.33), SG-SG 2.03 -> 1.81.
 * Sequences the model cannot have seen, the same atoms in a made-up input: SFTI-1 with nine
