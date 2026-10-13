@@ -14,7 +14,6 @@ pytest.importorskip("openmm")
 gemmi = pytest.importorskip("gemmi")
 
 from binding_metrics.io.structures import load_structure, save_cif  # noqa: E402
-from binding_metrics.metrics.comparison import compute_structure_rmsd  # noqa: E402
 
 DATA = Path(__file__).parent.parent / "data"
 SFTI = DATA / "example_bicyclic_sfti1_3P8F.cif"
@@ -204,13 +203,6 @@ class TestTrypsin:
 
         assert len(polymer(SFTI)) == 255
         assert polymer(saved_trypsin) == polymer(SFTI)
-
-    def test_structure_rmsd_against_the_saved_copy_is_zero(self, saved_trypsin):
-        result = compute_structure_rmsd(SFTI, saved_trypsin, design_chain="I")
-        for name in ("rmsd", "bb_rmsd", "rmsd_design", "bb_rmsd_design"):
-            assert result[name] is not None
-            assert result[name] < 1e-2, name  # the saved coordinates have 4 decimals
-        assert "reason" not in result
 
     def test_reload_gives_the_same_residue_ids(self, saved_trypsin):
         def ids(path):

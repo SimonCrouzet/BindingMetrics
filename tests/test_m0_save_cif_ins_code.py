@@ -125,7 +125,10 @@ class TestTrypsinWithInsertionCodes:
         assert any(r[2] for r in after)  # the insertion codes are written back
 
     def test_structure_rmsd_against_the_saved_copy_is_zero(self, saved_trypsin):
-        """Before the fix: 16.8 A for the full complex, 17.3 A for the backbone."""
+        """Before the fix: 16.8 A for the full complex, 17.3 A for the backbone.
+
+        The same round trip of 3P8F also carries the returning chains of #131.
+        """
         result = compute_structure_rmsd(SFTI, saved_trypsin, design_chain="I")
         for name in ("rmsd", "bb_rmsd", "rmsd_design", "bb_rmsd_design"):
             assert result[name] is not None
