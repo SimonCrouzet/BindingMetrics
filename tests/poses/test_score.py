@@ -12,6 +12,7 @@ import pytest
 
 from binding_metrics.capabilities import IncompatibleInputError
 from binding_metrics.metrics.registry import METRICS_BY_NAME, MetricSpec
+from binding_metrics.poses.aggregate import RESERVED_GROUP_KEYS
 from binding_metrics.poses.docked import DockedPose
 from binding_metrics.poses.score import (
     RESERVED_ROW_NAMES,
@@ -415,8 +416,9 @@ class TestSyntheticSet:
         assert result["agreement"]["groups"] is None
         assert result["agreement"]["medoids"]["per_group"] == {}
 
-    def test_a_backend_called_all_is_refused_before_any_work(self, synthetic):
-        pose = DockedPose.from_atoms(synthetic.poses[0].atoms(), id="x", backend="all")
+    @pytest.mark.parametrize("backend", RESERVED_GROUP_KEYS)
+    def test_a_backend_with_a_reserved_name_is_refused_before_any_work(self, synthetic, backend):
+        pose = DockedPose.from_atoms(synthetic.poses[0].atoms(), id="x", backend=backend)
         with pytest.raises(ValueError, match="reserved"):
             score_pose_set([pose], "B", "A")
 

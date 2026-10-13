@@ -188,11 +188,6 @@ class TestNothingBreaks:
         assert list(caveat_result["aggregates"]) == ["backend_a", "all"]
         assert list(caveat_result["agreement"]["medoids"]["per_group"]) == ["backend_a"]
 
-    def test_a_back_end_called_caveats_is_refused_before_any_work(self, synthetic):
-        pose = DockedPose.from_atoms(synthetic.poses[0].atoms(), id="x", backend="caveats")
-        with pytest.raises(ValueError, match="reserved"):
-            score_pose_set([pose], "B", "A")
-
     def test_the_heavy_metrics_run_on_the_chosen_poses_and_not_on_the_caveat(
         self, stripped, heavy_stub
     ):
