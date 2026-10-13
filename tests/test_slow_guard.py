@@ -164,6 +164,7 @@ class TestStrict:
 
 
 class TestWithXdist:
+    @pytest.mark.slow
     def test_the_durations_of_the_workers_reach_the_guard(self, pytester):
         pytest.importorskip("xdist")
         pytester.makeini(INI)
