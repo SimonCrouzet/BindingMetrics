@@ -41,7 +41,9 @@ Values
   ``pairwise_iptm`` (``{"A-B": x}``, upper triangle only, read as ``chain_pair_iptm``),
   ``pairwise_actifptm`` and ``actifptm``; ColabFold 1.6.3 adds ``ipsae``, ``pdockq`` and
   ``pdockq2`` dictionaries keyed ``"A-B"`` for a complex. The last five go to ``record.extras``
-  under their own names.
+  under their own names. ``extras["seed_value"]`` is the ``seed_SSS`` of the file name without its
+  padding, as a string (the form OpenFold3 and Protenix use); AlphaFold2 and bare-structure
+  samples name no seed.
 * AlphaFold2 result pickle: ``plddt`` (per residue, 0-100), ``predicted_aligned_error`` (residues by
   residues, angstrom), ``max_predicted_aligned_error``, ``ptm``, ``iptm`` (multimer only) and
   ``ranking_confidence``. A pickle runs code when it is loaded, so the file is read by an
@@ -937,6 +939,11 @@ def _apply_layout_details(
         rank = re.search(r"_rank_(\d+)", files.scores.name)
         if rank:
             record.extras["colabfold_rank"] = int(rank[1])
+    if layout == "colabfold" and (files.scores or files.structure) is not None:
+        # the seed is only in the file name; the session reads it from here, never guesses it
+        seed = re.search(r"_seed_(\d+)\.", (files.scores or files.structure).name)
+        if seed:
+            record.extras["seed_value"] = str(int(seed[1]))  # the file name pads to 3 digits
     if layout == "alphafold":
         prediction_id = _prediction_id(files)
         record.extras["prediction_id"] = prediction_id

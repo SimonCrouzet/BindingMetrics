@@ -66,9 +66,12 @@ How the prediction was requested. ``record`` adds the facts of the request to
     request_name         ``request.name``
 
 ``seed`` is the number the model sampled with. The adapters that read it from the output
-directory (OpenFold3, Protenix) put it in ``extras["seed_value"]``, and that is what is used; for
-the others it is the ``seed_index``-th smallest seed of the request, because every adapter counts
-seeds in the numeric order of their values.
+(OpenFold3 and Protenix from the ``seed_<value>`` directory, ColabFold from the ``seed_<value>``
+of the file name) put it in ``extras["seed_value"]``, and that is what is used. For the others
+(Boltz-2 has one seed per request) it is ``request.seeds[seed_index - 1]``, but only when the
+request's seeds are strictly increasing, because every adapter counts seeds in the numeric order
+of their values. Otherwise ``seed`` is None and ``record.reasons`` says "seed value unknown": a
+seed attributed wrongly is worse than an absent one.
 
 ``stats()`` counts, since the session was made (all integers, ready for a JSON result)::
 
@@ -179,22 +182,27 @@ def receptor_templated(request: PredictionRequest) -> Optional[bool]:
     return mode in _TEMPLATED_MODES
 
 
-def _seed_value(request: PredictionRequest, record: PredictedPose) -> Optional[int]:
-    """The seed a sample was made with: the output's own, else the request's by position.
+def _seed_value(request: PredictionRequest, record: PredictedPose) -> tuple[Optional[int], str]:
+    """The seed a sample was made with, and why it is unknown (empty when it is known).
 
-    OpenFold3 and Protenix name the seed in the output directory and the adapter reports it in
-    ``extras["seed_value"]``; that is the truth even for seeds the model generated or an
-    adopted output. Otherwise the adapters count seed directories in the numeric order of the
-    seed values, so ``seed_index`` selects from the sorted seeds of the request (a Boltz-2
-    request has one).
+    The output's own seed comes first: OpenFold3, Protenix and ColabFold name it in the
+    directory or file name and the adapter reports it in ``extras["seed_value"]``, which is
+    right even for seeds the model generated or outputs adopted from elsewhere. Without it the
+    request's seeds can be used only when they are strictly increasing: the adapters count seeds
+    in the numeric order of their values, so the ``seed_index``-th seed of a request in another
+    order is not the sample's. A seed attributed wrongly is worse than none, so otherwise the
+    seed is None and the second item says why.
     """
     reported = record.extras.get("seed_value")
     if reported is not None and str(reported).isdecimal():
-        return int(reported)
-    seeds = sorted(set(request.seeds))
-    if 1 <= record.seed_index <= len(seeds):
-        return seeds[record.seed_index - 1]
-    return None
+        return int(reported), ""
+    seeds = tuple(request.seeds)
+    start = "seed value unknown: the adapter does not report it and "
+    if any(later <= earlier for earlier, later in zip(seeds, seeds[1:])):
+        return None, start + "the request seeds are not sorted"
+    if not 1 <= record.seed_index <= len(seeds):
+        return None, start + f"the request has no seed at position {record.seed_index}"
+    return seeds[record.seed_index - 1], ""
 
 
 def _msa_facts(request: PredictionRequest) -> dict[str, Any]:
@@ -219,7 +227,7 @@ def _msa_facts(request: PredictionRequest) -> dict[str, Any]:
 
 
 def _request_facts(
-    request: PredictionRequest, entry: StoredPrediction, record: PredictedPose
+    request: PredictionRequest, entry: StoredPrediction, record: PredictedPose, seed: Optional[int]
 ) -> dict[str, Any]:
     """The facts of ``request`` for ``record.provenance`` (see the module docstring)."""
     facts: dict[str, Any] = {
@@ -227,7 +235,7 @@ def _request_facts(
         "mode": request.mode,
         "receptor_forced": receptor_forced(request),
         "receptor_templated": receptor_templated(request),
-        "seed": _seed_value(request, record),
+        "seed": seed,
         "seed_index": record.seed_index,
         "sample": record.sample,
     }
@@ -483,7 +491,10 @@ class PredictionSession:
                     # what the run was started with; an adapter may add what the model reports
                     # (OpenFold3: inference_ckpt_path and inference_ckpt_name)
                     record.extras["weights"] = request.weights.to_dict()
-                record.provenance.update(_request_facts(request, entry, record))
+                seed, seed_problem = _seed_value(request, record)
+                if seed_problem:
+                    record.reasons.append(seed_problem)
+                record.provenance.update(_request_facts(request, entry, record, seed))
                 with self._guard:
                     self._records[memo_key] = record
                     self._counts["parsed"] += 1

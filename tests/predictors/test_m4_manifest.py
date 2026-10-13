@@ -27,7 +27,8 @@ from binding_metrics.predictors.store import (
     PredictionUnavailableError,
     file_sha256,
 )
-from tests.predictors import synth_af2, synth_boltz2, synth_of3, synth_protenix
+from tests.predictors import synth_af2, synth_boltz2, synth_of3, synth_protenix, synth_stub
+from tests.predictors.synth_stub import StubParser
 from tests.predictors.test_m4_provenance import SynthRunner, make_request, truth_for
 
 
@@ -307,6 +308,44 @@ class TestTheRows:
             assert row["seed"] == pose.provenance["seed"]
             assert row["model_version"] == pose.provenance["model_version"]
             assert row["request_key"] == pose.provenance["request_key"]
+
+
+class TestAnUnknownSeed:
+    def _session(self, store):
+        return PredictionSession(store, [SynthRunner("stub", synth_stub)], {"stub": StubParser()})
+
+    def test_the_rows_of_a_request_with_unsorted_seeds_have_no_seed(self, store):
+        session = self._session(store)
+        request = make_request("stub", seeds=(8, 3), num_samples=2)
+        session.entry(request)
+        rows = manifest(session, request)
+        assert [(r["seed"], r["seed_index"], r["sample"]) for r in rows] == [
+            (None, 1, 1),
+            (None, 1, 2),
+            (None, 2, 1),
+            (None, 2, 2),
+        ]
+        assert all(r["status"] == "done" and r["reason"] is None for r in rows)
+        assert json.loads(json.dumps(rows)) == rows
+
+    def test_sorted_seeds_give_their_values(self, store):
+        session = self._session(store)
+        request = make_request("stub", seeds=(3, 8), num_samples=1)
+        session.entry(request)
+        assert [r["seed"] for r in manifest(session, request)] == [3, 8]
+
+    def test_a_row_without_a_seed_follows_the_rows_that_have_one(self, store):
+        session = self._session(store)
+        known = make_request("stub", name="a", seeds=(5,), num_samples=1)
+        unknown = make_request("stub", name="b", seeds=(9, 2), num_samples=1)
+        for request in (known, unknown):
+            session.entry(request)
+        rows = manifest(session, [unknown, known])
+        assert [(r["request_name"], r["seed"]) for r in rows] == [
+            ("a", 5),
+            ("b", None),
+            ("b", None),
+        ]
 
 
 class TestFailedAndMissingRequests:

@@ -24,7 +24,15 @@ from binding_metrics.predictors.store import (
     PredictionStore,
     file_sha256,
 )
-from tests.predictors import synth, synth_af2, synth_boltz2, synth_of3, synth_protenix
+from tests.predictors import (
+    synth,
+    synth_af2,
+    synth_boltz2,
+    synth_of3,
+    synth_protenix,
+    synth_stub,
+)
+from tests.predictors.synth_stub import StubParser
 
 SEQUENCES = {"A": "ACDEFGH", "B": "KLM"}
 
@@ -212,7 +220,17 @@ class TestProvenanceOfTheFourModels:
         assert pose.provenance["receptor_templated"] is False
 
 
+def stub_session(store, runner):
+    """A session on the made-up ``stub`` model, whose adapter reports no seed value."""
+    return PredictionSession(store, [runner], {"stub": StubParser()})
+
+
+UNSORTED = "the adapter does not report it and the request seeds are not sorted"
+
+
 class TestTheSeedValue:
+    """The seed is the output's when the adapter reports it, else from sorted request seeds."""
+
     def test_openfold3_seeds_9_10_11_are_values_not_strings_to_sort(self, store):
         session = make_session(store, SynthRunner("of3", synth_of3))
         request = make_request("of3", seeds=(9, 10, 11))
@@ -227,27 +245,127 @@ class TestTheSeedValue:
         seeds = [session.record(request, seed_index=i).provenance["seed"] for i in (1, 2, 3)]
         assert seeds == [9, 10, 11]
 
+    def test_openfold3_seeds_42_7_11_are_read_from_the_directories(self, store, monkeypatch):
+        """seed_7, seed_11 and seed_42 are positions 1, 2 and 3; the request says 42, 7, 11."""
+        monkeypatch.setattr(synth_of3, "seed_value", lambda seed_index: (7, 11, 42)[seed_index - 1])
+        session = make_session(store, SynthRunner("of3", synth_of3))
+        request = make_request("of3", seeds=(42, 7, 11), num_samples=1)
+        poses = [session.record(request, seed_index=i) for i in (1, 2, 3)]
+        assert [pose.provenance["seed"] for pose in poses] == [7, 11, 42]
+        assert [pose.extras["seed_value"] for pose in poses] == ["7", "11", "42"]
+        assert all("seed value unknown" not in " ".join(pose.reasons) for pose in poses)
+
+    def test_protenix_reports_its_seed_directories(self, store):
+        session = make_session(store, SynthRunner("protenix", synth_protenix))
+        request = make_request("protenix", seeds=(10, 9))
+        assert [session.record(request, seed_index=i).provenance["seed"] for i in (1, 2)] == [9, 10]
+
+    def test_colabfold_reports_the_seed_of_its_file_names(self, store):
+        session = make_session(store, SynthRunner("af2", synth_af2))
+        request = make_request("af2", seeds=(100, 99))
+        poses = [session.record(request, seed_index=i) for i in (1, 2)]
+        assert [pose.provenance["seed"] for pose in poses] == [99, 100]
+        assert [pose.extras["seed_value"] for pose in poses] == ["99", "100"]
+
     def test_a_request_with_no_seed_takes_the_value_from_the_output(self, store):
         """OpenFold3 generates the seeds when ``num_model_seeds`` is asked: the request has none."""
         session = make_session(store, SynthRunner("of3", synth_of3, positions=2))
         request = make_request("of3", seeds=(), num_samples=1)
         assert session.record(request, seed_index=2).provenance["seed"] == 10
 
-    def test_a_model_that_names_no_seed_takes_it_from_the_sorted_request(self, store):
-        session = make_session(store, SynthRunner("af2", synth_af2))
-        request = make_request("af2", seeds=(100, 99))
-        assert session.record(request, seed_index=1).provenance["seed"] == 99
-        assert session.record(request, seed_index=2).provenance["seed"] == 100
-
-    def test_a_seed_that_cannot_be_told_is_none(self, store):
-        session = make_session(store, SynthRunner("af2", synth_af2, positions=2))
-        request = make_request("af2", seeds=(99,))
-        assert session.record(request, seed_index=2).provenance["seed"] is None
+    def test_the_seed_of_the_output_wins_over_the_request(self, store):
+        session = make_session(store, SynthRunner("of3", synth_of3))
+        pose = session.record(make_request("of3", seeds=(1,), num_samples=1))
+        assert pose.provenance["seed"] == 9
 
     def test_the_single_seed_of_a_boltz2_request(self, store):
         session = make_session(store, SynthRunner("boltz2", synth_boltz2))
         request = make_request("boltz2", mode="score", seeds=(44,))
-        assert session.record(request).provenance["seed"] == 44
+        pose = session.record(request)
+        assert pose.provenance["seed"] == 44
+        assert not any("seed value unknown" in reason for reason in pose.reasons)
+
+    def test_an_adapter_without_a_seed_value_uses_sorted_request_seeds(self, store):
+        session = stub_session(store, SynthRunner("stub", synth_stub))
+        request = make_request("stub", seeds=(3, 8, 20), num_samples=1)
+        poses = [session.record(request, seed_index=i) for i in (1, 2, 3)]
+        assert [pose.provenance["seed"] for pose in poses] == [3, 8, 20]
+        assert not any("seed value unknown" in reason for pose in poses for reason in pose.reasons)
+
+    @pytest.mark.parametrize("seeds", [(20, 3, 8), (3, 20, 8), (3, 3, 8)])
+    def test_unsorted_request_seeds_give_no_seed_and_say_why(self, store, seeds):
+        """Position 1 of the output is not the first seed asked for: do not guess."""
+        session = stub_session(store, SynthRunner("stub", synth_stub))
+        request = make_request("stub", seeds=seeds, num_samples=1)
+        for seed_index in (1, 2, 3):
+            pose = session.record(request, seed_index=seed_index)
+            assert pose.provenance["seed"] is None
+            assert f"seed value unknown: {UNSORTED}" in pose.reasons
+            assert pose.provenance["seed_index"] == seed_index  # the rest is still recorded
+
+    def test_a_position_beyond_the_request_seeds_gives_no_seed_and_says_why(self, store):
+        session = stub_session(store, SynthRunner("stub", synth_stub, positions=2))
+        request = make_request("stub", seeds=(3,), num_samples=1)
+        assert session.record(request, seed_index=1).provenance["seed"] == 3
+        pose = session.record(request, seed_index=2)
+        assert pose.provenance["seed"] is None
+        assert (
+            "seed value unknown: the adapter does not report it and the request has no seed "
+            "at position 2"
+        ) in pose.reasons
+
+    def test_a_request_without_seeds_and_an_adapter_without_seed_value_gives_none(self, store):
+        session = stub_session(store, SynthRunner("stub", synth_stub))
+        pose = session.record(make_request("stub", seeds=(), num_samples=1))
+        assert pose.provenance["seed"] is None
+        assert any(reason.startswith("seed value unknown") for reason in pose.reasons)
+
+    def test_the_reason_is_added_once_per_record(self, store):
+        session = stub_session(store, SynthRunner("stub", synth_stub))
+        request = make_request("stub", seeds=(8, 3), num_samples=1)
+        first = session.record(request)
+        again = session.record(request)
+        assert again is first
+        assert sum(r.startswith("seed value unknown") for r in first.reasons) == 1
+
+    def test_the_other_facts_do_not_depend_on_the_seed(self, store):
+        session = stub_session(store, SynthRunner("stub", synth_stub))
+        request = make_request("stub", seeds=(8, 3), num_samples=1)
+        pose = session.record(request)
+        assert pose.provenance["backend"] == "stub"
+        assert pose.provenance["request_key"] == request.key()
+        assert pose.provenance["receptor_forced"] is None  # an unknown model
+        pose.validate()
+
+
+class TestTheAdaptersThatReportTheSeed:
+    def test_openfold3_protenix_and_colabfold_set_seed_value_and_the_others_do_not(self, tmp_path):
+        from binding_metrics.predictors.registry import get_parser
+
+        truth = truth_for()
+        found = {}
+        for model, writer in (
+            ("of3", synth_of3),
+            ("protenix", synth_protenix),
+            ("af2", synth_af2),
+            ("boltz2", synth_boltz2),
+        ):
+            folder = tmp_path / model
+            folder.mkdir()
+            # the second seed position alone on disk, so it is the first one the adapter finds
+            writer.write_prediction(
+                folder, "design", truth, seed_index=1 if model == "boltz2" else 2
+            )
+            found[model] = get_parser(model).load(folder, "design").extras.get("seed_value")
+        assert found == {"of3": "10", "protenix": "10", "af2": "100", "boltz2": None}
+
+    def test_an_alphafold2_layout_names_no_seed(self, tmp_path):
+        from binding_metrics.predictors.registry import get_parser
+
+        synth_af2.write_alphafold(tmp_path, truth_for())
+        record = get_parser("af2").load(tmp_path, "design")
+        assert record.extras["layout"] == "alphafold"
+        assert "seed_value" not in record.extras
 
 
 class TestTheModelVersion:

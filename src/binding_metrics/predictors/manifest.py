@@ -30,7 +30,8 @@ Columns (every row has all of them; ``None`` where a value does not apply)::
                     (the stored run failed) or "missing" (nothing is stored for the request)
     reason          why the run failed, as stored; a sentence for a request with nothing stored
                     or an output without a sample; None otherwise
-    seed            the seed value the sample was made with (an integer; ``provenance["seed"]``)
+    seed            the seed value the sample was made with (an integer, ``provenance["seed"]``);
+                    None when it is unknown: the pose's ``reasons`` say why
     seed_index      1-based position of the seed in the model's natural order of outputs
     sample          1-based position of the sample inside its seed
     ranking_score   the model's own score of the sample (None when it has none)
@@ -47,9 +48,9 @@ wrote them. A row for a request without a sample (failed, missing, or an output 
 has seed, seed_index, sample and the sample's columns at None.
 
 Order. Rows are sorted by ``(backend, seed, sample)``; a row without a seed follows those with
-one. Rows that share the triple (two requests of one model with the same seed) are ordered by
-request name, request key and seed index, so the order depends on the content of the requests
-and nothing else. A request given twice makes one set of rows.
+one, in the order of seed index and sample. Rows that share the triple (two requests of one model
+with the same seed) are ordered by request name, request key and seed index, so the order depends
+on the content of the requests and nothing else. A request given twice makes one set of rows.
 
 Ranks. A sample's rank is its position inside its seed when the samples are sorted by the
 model's score, highest first, with ties in the model's natural order. Boltz-2, Protenix and
@@ -256,14 +257,16 @@ def _finite(value: Any) -> Optional[float]:
 
 
 def _sort_key(row: dict[str, Any]) -> tuple:
-    seed, sample = row["seed"], row["sample"]
+    seed, sample, seed_index = row["seed"], row["sample"], row["seed_index"]
     return (
         row["backend"],
         seed is None,
         0 if seed is None else seed,
+        # samples of an unknown seed keep the model's seed order; known seeds sort by value
+        0 if seed is not None or seed_index is None else seed_index,
         sample is None,
         0 if sample is None else sample,
         row["request_name"],
         row["request_key"],
-        0 if row["seed_index"] is None else row["seed_index"],
+        0 if seed_index is None else seed_index,
     )
