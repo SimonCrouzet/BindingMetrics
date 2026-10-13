@@ -23,7 +23,8 @@ is read)::
             binder_cyclic: bool | str = "auto",
             lock_threshold_angstrom: Optional[float] = None,
             weights: Optional[str | Path | WeightsRef] = None,
-            extra_args: Sequence[str] = ()) -> PredictionRequest
+            extra_args: Sequence[str] = (),
+            closure_bonds: str | Sequence[Mapping] = "none") -> PredictionRequest
         .prepare(request, work_dir) -> Path          # <work_dir>/input/<name>.yaml
         .run(request, work_dir) -> Path   # <work_dir>/boltz_results_<name>/predictions/<name>
         .is_available() -> bool
@@ -92,7 +93,36 @@ Cyclic binder. ``binder_cyclic`` is ``"auto"``, True or False, with the meaning 
 OpenFold3: True writes ``cyclic: true`` on the binder entity, False never does, ``"auto"``
 writes it when the binder has a head-to-tail bond (``capabilities.detect_closures``). Boltz-2
 turns the flag into a cyclic period of the chain length for the relative positions; it does not
-enforce the closure bond. Disulfide, lactam and staple closures are not written.
+enforce the closure bond. ``closure_bonds`` (below) writes the bonds themselves.
+
+Closure bonds. ``closure_bonds`` is ``"none"`` (default), ``"auto"`` or a list of bonds, and is
+written as the ``constraints`` of the YAML::
+
+    constraints:
+      - bond:
+          atom1: ["I", 3, "SG"]       # chain, 1-based position in the sequence sent, atom
+          atom2: ["I", 11, "SG"]
+
+``"auto"`` writes one ``bond`` for each closure that ``capabilities.detect_closures`` finds on
+the binder of the input, of the families ``head_to_tail`` (C of the last residue to N of the
+first), ``disulfide`` (SG to SG) and ``lactam`` (the amide of a side chain or of a terminus).
+A staple or another cross-link is not written and a warning names it: Boltz-2 documents the
+constraint for CCD ligands and canonical residues only. The position of a closure end is found
+by ``predictors/_closures.py``, the mapping that the Protenix runner uses, so a modified residue
+in the chain does not shift it, and a closure that cannot be placed raises ``ValueError`` before
+any file is written. A list is written as given, each item ``{"atom1": [chain, position, atom],
+"atom2": [...]}``; a shape error or a chain or position the input lacks raises ``ValueError``.
+A bond is an input feature of the trunk (``token_bonds``, ``boltz2.py:426``). Boltz-2 reads a
+bond between the first and the last residue of a chain as a cyclic period too, but it compares
+the residue indices of the whole structure with 0 (``featurizerv2.py:1027-1050``), so only for the
+first chain of the YAML; the receptor comes first here, and the period of the binder comes from
+``cyclic: true``. ``ConnectionsPotential`` skips a bond inside one chain (``featurizerv2.py:2023``),
+so the source shows nothing that holds the distance of a disulfide or a lactam. Whether the
+feature moves the prediction is a measurement and not a promise. ``"none"`` keeps the YAML and
+the key as they were.
+``options["closure_bonds"]`` holds the list that is written (an ``"auto"`` request is resolved
+when the request is made) and is absent when that list is empty, so two requests that write the
+same bonds share a key and a request without the option keeps its key.
 
 MSA. ``use_msa_server`` (default True) passes ``--use_msa_server``: the sequences are sent to the
 ColabFold server. False writes ``msa: empty`` on each entity, the single-sequence mode of the
@@ -201,8 +231,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence, Union
 
+from binding_metrics.predictors._closures import find_closures, place_closures
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.store import PredictionRequest
 from binding_metrics.predictors.weights import WeightsRef
@@ -220,6 +251,10 @@ _DEFAULT_NUM_SAMPLES = 5
 _DEFAULT_USE_MSA_SERVER = True
 _DEFAULT_ON_UNMAPPABLE = "error"
 _DEFAULT_BINDER_CYCLIC = "auto"
+_DEFAULT_CLOSURE_BONDS = "none"
+
+#: The closure families written as ``bond`` constraints (``closure_bonds="auto"``).
+_CLOSURE_BOND_FAMILIES = ("head_to_tail", "disulfide", "lactam")
 
 #: Threshold of the forced template in mode ``score-lock``, in angstrom. Boltz-2 gives no default
 #: (it raises when ``force`` has none), so this is the choice of this package.
@@ -509,6 +544,10 @@ class _Template:
     threshold: Optional[float] = None
 
 
+#: One ``bond`` constraint: two ``(chain ID, 1-based position, atom name)``.
+_Bond = tuple[tuple[str, int, str], tuple[str, int, str]]
+
+
 @dataclasses.dataclass(frozen=True)
 class _Plan:
     """Everything the input files hold, read from the structure before anything is written."""
@@ -516,6 +555,7 @@ class _Plan:
     chains: tuple[_Chain, ...]  # receptor first, then binder
     templates: tuple[_Template, ...]
     structure: Any  # the gemmi.Structure the sequences and the templates come from
+    bonds: tuple[_Bond, ...] = ()  # the ``bond`` constraints, in the order they are written
 
 
 def _quoted(text: str) -> str:
@@ -552,6 +592,14 @@ def _yaml_text(plan: _Plan, template_paths: dict[str, Path], *, use_msa_server: 
                 lines += [f"        - position: {position}", f"          ccd: {_quoted(ccd)}"]
         if chain.cyclic:
             lines.append("      cyclic: true")
+    if plan.bonds:
+        lines.append("constraints:")
+        for bond in plan.bonds:
+            lines.append("  - bond:")
+            for number, (chain_id, position, atom) in enumerate(bond, start=1):
+                lines.append(
+                    f"      atom{number}: [{_quoted(chain_id)}, {position}, {_quoted(atom)}]"
+                )
     if plan.templates:
         lines.append("templates:")
         for template in plan.templates:
@@ -683,6 +731,149 @@ def _check_entities(chains: Sequence[_Chain]) -> None:
                 )
 
 
+def _closure_bond_option(value: Any) -> Union[str, list[dict[str, list]]]:
+    """``closure_bonds`` as ``"none"``, ``"auto"`` or a list of bonds in canonical form.
+
+    A bond is ``{"atom1": [chain, position, atom], "atom2": [chain, position, atom]}``: the chain
+    a non-empty string, the position an integer from 1 (the place in the sequence sent), the atom
+    a non-empty string. The list is rebuilt, so the key does not depend on the caller's types.
+
+    Raises:
+        TypeError: A string, a mapping or a non-sequence where a list of bonds is expected.
+        ValueError: An unknown string, or a bond that does not have the shape above.
+    """
+    if isinstance(value, str):
+        if value not in ("none", "auto"):
+            raise ValueError(
+                f"closure_bonds must be 'none', 'auto' or a list of bonds, got {value!r}"
+            )
+        return value
+    if isinstance(value, (bytes, Mapping)) or not isinstance(value, Sequence):
+        raise TypeError(
+            f"closure_bonds must be 'none', 'auto' or a list of bonds, got {type(value).__name__}"
+        )
+    bonds = []
+    for number, bond in enumerate(value, start=1):
+        shape = 'each bond is {"atom1": [chain, position, atom], "atom2": [chain, position, atom]}'
+        if not isinstance(bond, Mapping) or set(bond) != {"atom1", "atom2"}:
+            raise ValueError(f"closure_bonds item {number} is {bond!r}; {shape}")
+        entry = {}
+        for key in ("atom1", "atom2"):
+            end = bond[key]
+            if isinstance(end, (str, bytes, Mapping)) or not isinstance(end, Sequence):
+                raise ValueError(f"closure_bonds item {number}, {key} is {end!r}; {shape}")
+            if len(end) != 3:
+                raise ValueError(f"closure_bonds item {number}, {key} is {list(end)!r}; {shape}")
+            chain_id, position, atom = end
+            if not (isinstance(chain_id, str) and chain_id):
+                raise ValueError(
+                    f"closure_bonds item {number}, {key}: the chain {chain_id!r} is not a name"
+                )
+            if isinstance(position, bool) or not isinstance(position, int) or position < 1:
+                raise ValueError(
+                    f"closure_bonds item {number}, {key}: the position {position!r} is not an "
+                    "integer from 1 (the place of the residue in the sequence sent)"
+                )
+            if not (isinstance(atom, str) and atom):
+                raise ValueError(
+                    f"closure_bonds item {number}, {key}: the atom {atom!r} is not a name"
+                )
+            entry[key] = [chain_id, position, atom]
+        if entry["atom1"] == entry["atom2"]:
+            raise ValueError(
+                f"closure_bonds item {number} joins an atom to itself: {entry['atom1']}"
+            )
+        bonds.append(entry)
+    return bonds
+
+
+def _closure_bond_entries(
+    structure: "gemmi.Structure", input_path: Path, binder: _Chain
+) -> list[dict[str, list]]:
+    """The ``bond`` constraints of the closures that ``detect_closures`` finds on ``binder``.
+
+    The closure ends are placed in the sequence sent for the binder by ``place_closures``, the
+    mapping that the Protenix runner uses. A closure outside the families of
+    ``_CLOSURE_BOND_FAMILIES`` is not written and a warning names it.
+
+    Raises:
+        ValueError: The closures cannot be searched or a closure cannot be placed.
+    """
+    chain = next(chain for chain in structure[0] if chain.name == binder.chain_id)
+    residues = [(chain[index].name, chain[index].seqid.num) for index in binder.residue_indices]
+    way_out = "Pass closure_bonds='none' to write no bond"
+    closures = find_closures(
+        input_path,
+        binder.chain_id,
+        fallback_advice="pass closure_bonds='none' to write no bond, or give the bonds as a list",
+    )
+    placed, not_written = place_closures(
+        closures, residues, binder.chain_id, families=_CLOSURE_BOND_FAMILIES, way_out=way_out
+    )
+    if not_written:
+        logger.warning(
+            "Chain %s: %s not written as a bond constraint, which Boltz-2 documents for CCD "
+            "ligands and canonical residues only (docs/prediction.md, Constraints); the binder "
+            "is predicted without it.",
+            binder.chain_id,
+            "; ".join(not_written),
+        )
+    entries = [
+        {
+            "atom1": [binder.chain_id, bond.position1, bond.atom1],
+            "atom2": [binder.chain_id, bond.position2, bond.atom2],
+        }
+        for bond in placed
+    ]
+    if entries:
+        logger.info("Chain %s: %d closure bond(s) written.", binder.chain_id, len(entries))
+    return entries
+
+
+def _planned_bonds(
+    entries: Sequence[Mapping[str, Sequence]], chains: Sequence[_Chain]
+) -> tuple[_Bond, ...]:
+    """The ``entries`` of ``closure_bonds`` as bonds, each end checked against the input.
+
+    Raises:
+        ValueError: An end names a chain that is not the receptor or the binder, or a position
+            past the end of that chain's sequence.
+    """
+    length = {chain.chain_id: len(chain.sequence) for chain in chains}
+    bonds = []
+    for number, entry in enumerate(entries, start=1):
+        ends = []
+        for key in ("atom1", "atom2"):
+            chain_id, position, atom = entry[key]
+            if chain_id not in length:
+                raise ValueError(
+                    f"closure_bonds item {number}, {key}: chain {chain_id!r} is not the receptor "
+                    f"or the binder (the chains sent are {', '.join(map(repr, length))})"
+                )
+            if position > length[chain_id]:
+                raise ValueError(
+                    f"closure_bonds item {number}, {key}: position {position} is past the end "
+                    f"of chain {chain_id!r}, which has {length[chain_id]} residues in the "
+                    "sequence sent"
+                )
+            ends.append((chain_id, int(position), str(atom)))
+        bonds.append((ends[0], ends[1]))
+    return tuple(bonds)
+
+
+def _require_chains(
+    structure: "gemmi.Structure", input_path: Path, *, receptor: str, binder: str
+) -> None:
+    """Raise ``ValueError`` when the first model of ``structure`` lacks either chain."""
+    chain_ids = [chain.name for chain in structure[0]]
+    for role, chain_id in (("receptor", receptor), ("binder", binder)):
+        if chain_id not in chain_ids:
+            raise ValueError(
+                f"{role} chain '{chain_id}' not found in {input_path} "
+                f"(chains in its first model: {', '.join(chain_ids) or 'none'})"
+            )
+
+
 def _plan(request: PredictionRequest) -> _Plan:
     """Read the structure of ``request`` and decide the entities and the templates.
 
@@ -691,13 +882,7 @@ def _plan(request: PredictionRequest) -> _Plan:
     options = request.options
     structure = _read_structure(Path(request.input_path))
     receptor_id, binder_id = request.receptor_chain, request.binder_chain
-    chain_ids = [chain.name for chain in structure[0]]
-    for role, chain_id in (("receptor", receptor_id), ("binder", binder_id)):
-        if chain_id not in chain_ids:
-            raise ValueError(
-                f"{role} chain '{chain_id}' not found in {request.input_path} "
-                f"(chains in its first model: {', '.join(chain_ids) or 'none'})"
-            )
+    _require_chains(structure, request.input_path, receptor=receptor_id, binder=binder_id)
 
     unmappable = options.get("on_unmappable_residue", _DEFAULT_ON_UNMAPPABLE)
     cyclic = _decide_cyclic(
@@ -720,7 +905,12 @@ def _plan(request: PredictionRequest) -> _Plan:
         templates = (_Template("lock", (receptor_id, binder_id), force=True, threshold=threshold),)
     else:
         raise ValueError(f"the boltz2 runner has no input for mode {request.mode!r}")
-    return _Plan(chains=chains, templates=templates, structure=structure)
+
+    closure_bonds = _closure_bond_option(options.get("closure_bonds", _DEFAULT_CLOSURE_BONDS))
+    if closure_bonds == "auto":
+        closure_bonds = _closure_bond_entries(structure, Path(request.input_path), binder)
+    bonds = () if closure_bonds == "none" else _planned_bonds(closure_bonds, chains)
+    return _Plan(chains=chains, templates=templates, structure=structure, bonds=bonds)
 
 
 def _decide_cyclic(input_path: Path, binder_chain: str, binder_cyclic: Union[bool, str]) -> bool:
@@ -889,6 +1079,7 @@ class Boltz2Runner(PredictionRunner):
         lock_threshold_angstrom: Optional[float] = None,
         weights: Optional[str | Path | WeightsRef] = None,
         extra_args: Sequence[str] = (),
+        closure_bonds: str | Sequence[Mapping] = _DEFAULT_CLOSURE_BONDS,
     ) -> PredictionRequest:
         """The store request of one Boltz-2 run, with every setting that changes the output.
 
@@ -923,12 +1114,22 @@ class Boltz2Runner(PredictionRunner):
             extra_args: Command-line arguments passed to ``boltz predict`` verbatim. They may
                 not repeat a flag that the runner sets (``--seed``, ``--diffusion_samples``,
                 ``--checkpoint``, ``--use_msa_server`` ...).
+            closure_bonds: ``"none"`` (default) writes no ``constraints``; ``"auto"`` writes a
+                ``bond`` for each head-to-tail, disulfide and lactam closure that
+                ``detect_closures`` finds on the binder of the input, found here and stored in
+                the request; a list of ``{"atom1": [chain, position, atom], "atom2": [...]}``
+                (positions from 1 in the sequence sent) is written as given. See the module
+                docstring.
 
         Raises:
             ValueError: An unknown mode, a missing or equal chain role, a name that is not a plain
                 file name, more or fewer than one seed, a choice outside its values, a threshold
-                outside ``score-lock`` or not positive, or ``extra_args`` that repeat a flag of
-                the runner.
+                outside ``score-lock`` or not positive, ``extra_args`` that repeat a flag of
+                the runner, a ``closure_bonds`` string other than ``"none"`` and ``"auto"`` or a
+                bond of the wrong shape; with ``"auto"`` also what ``prepare`` raises about the
+                binder chain and its closures (an unreadable structure, a missing chain, a
+                residue Boltz-2 cannot take, a closure that cannot be placed).
+            TypeError: ``closure_bonds`` is neither a string nor a list.
             OSError: The input file cannot be read.
         """
         if mode not in RUN_MODES:
@@ -970,6 +1171,23 @@ class Boltz2Runner(PredictionRunner):
                 )
             seed = values[0]
         arguments = _check_extra_args(extra_args)
+        bonds = _closure_bond_option(closure_bonds)
+        if bonds == "auto":
+            structure = _read_structure(Path(input_path))
+            _require_chains(structure, input_path, receptor=receptor_chain, binder=binder_chain)
+            binder = _read_chain(
+                structure, binder_chain, on_unmappable_residue=on_unmappable_residue, cyclic=False
+            )
+            bonds = _closure_bond_entries(structure, Path(input_path), binder)
+        options = {
+            "use_msa_server": bool(use_msa_server),
+            "binder_cyclic": binder_cyclic,
+            "on_unmappable_residue": on_unmappable_residue,
+            "lock_threshold_angstrom": threshold,
+            "extra_args": arguments,
+        }
+        if bonds and bonds != "none":  # a new field joins the key only when it is not the default
+            options["closure_bonds"] = bonds
 
         return PredictionRequest(
             self.name,
@@ -982,13 +1200,7 @@ class Boltz2Runner(PredictionRunner):
             seeds=(seed,),
             num_samples=num_samples,
             model_version=self.version() or "",
-            options={
-                "use_msa_server": bool(use_msa_server),
-                "binder_cyclic": binder_cyclic,
-                "on_unmappable_residue": on_unmappable_residue,
-                "lock_threshold_angstrom": threshold,
-                "extra_args": arguments,
-            },
+            options=options,
         )
 
     # ------------------------------------------------------------------ running
@@ -1071,6 +1283,7 @@ class Boltz2Runner(PredictionRunner):
         _check_name(request.name)
         options = request.options
         _check_extra_args(options.get("extra_args", ()))
+        _closure_bond_option(options.get("closure_bonds", _DEFAULT_CLOSURE_BONDS))
         if request.mode == "score-lock":
             _check_threshold(options.get("lock_threshold_angstrom"))
         self.check_weights(request)

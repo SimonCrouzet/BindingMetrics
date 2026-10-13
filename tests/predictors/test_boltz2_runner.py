@@ -1423,6 +1423,7 @@ def boltz_source():
         "const": model_source_text("boltz", "src/boltz/data/const.py"),
         "writer": model_source_text("boltz", "src/boltz/data/write/writer.py"),
         "boltz2": model_source_text("boltz", "src/boltz/model/models/boltz2.py"),
+        "featurizer": model_source_text("boltz", "src/boltz/data/feature/featurizerv2.py"),
     }
 
 
@@ -1486,3 +1487,17 @@ class TestTheSourceBehindIt:
     def test_a_batch_out_of_memory_is_skipped_with_a_warning(self, boltz_source):
         assert "ran out of memory, skipping batch" in boltz_source["boltz2"]
         assert 'if prediction["exception"]:' in boltz_source["writer"]
+
+    def test_a_bond_constraint_names_its_atoms_by_chain_position_and_atom(self, boltz_source):
+        schema = boltz_source["schema"]
+        assert 'c1, r1, a1 = tuple(constraint["bond"]["atom1"])' in schema
+        assert "c1, r1, a1 = atom_idx_map[(c1, r1 - 1, a1)]  # 1-indexed" in schema
+        assert "- bond:\n            atom1: [A, 1, CA]\n            atom2: [A, 2, N]" in schema
+
+    def test_a_bond_inside_one_chain_is_no_connection_for_the_potential(self, boltz_source):
+        featurizer = boltz_source["featurizer"]
+        assert (
+            'if connection["chain_1"] == connection["chain_2"]:\n                continue'
+            in featurizer
+        )
+        assert 'idx_chain == connection["chain_1"] == connection["chain_2"]' in featurizer
