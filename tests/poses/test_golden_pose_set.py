@@ -389,6 +389,7 @@ class TestRegenerationScript:
         completed = self.run_cli("--write", "--case", "nope")
         assert completed.returncode == 2 and "invalid choice" in completed.stderr
 
+    @pytest.mark.slow
     def test_write_builds_a_file_that_agrees_with_the_committed_one(self, tmp_path):
         completed = self.run_cli(
             "--write", "--golden-dir", str(tmp_path), "--case", "descriptors_1ycr"

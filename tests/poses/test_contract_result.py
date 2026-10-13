@@ -311,6 +311,7 @@ class TestPinnedLayout:
             "preflight",
         )
 
+    @pytest.mark.slow
     def test_a_design_source_adds_one_block_to_parameters_and_to_preflight_and_nothing_else(
         self, synthetic, result
     ):
@@ -607,6 +608,7 @@ class TestPinnedLayout:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestDeterminism:
     def test_the_same_input_twice_gives_identical_dictionaries_and_json_bytes(self):
         first = score(make_synthetic_poses(seeds=(1, 2)))
@@ -671,6 +673,7 @@ def renamed(synthetic, names):
     ]
 
 
+@pytest.mark.slow
 class TestOrderIndependence:
     def test_every_order_of_the_poses_gives_the_same_aggregates_and_agreement(
         self, synthetic, result
@@ -746,6 +749,7 @@ def tree(directory):
 
 
 class TestNoSideEffects:
+    @pytest.mark.slow
     def test_a_full_call_in_an_empty_working_directory_creates_nothing_there(
         self, synthetic, tmp_path, monkeypatch
     ):
@@ -809,6 +813,7 @@ class TestNoSideEffects:
         ]
         assert made["provenance"]["run"]["tmp_dir"] == str(tmp_path)
 
+    @pytest.mark.slow
     def test_the_input_files_and_their_directory_are_not_touched(self, synthetic, tmp_path):
         inputs = tmp_path / "inputs"
         paths = synthetic.write(inputs)
@@ -856,6 +861,7 @@ def same_snapshot(before, after):
 
 
 class TestNoMutation:
+    @pytest.mark.slow
     def test_the_poses_the_reference_and_every_argument_come_back_unchanged(self, synthetic):
         poses = list(synthetic.poses)
         reference = reference_of(synthetic)
@@ -910,6 +916,7 @@ class TestNoMutation:
         score_pose_set(poses, "B", "A", metrics=["delta_sasa_static"])
         assert before == [(pose.id, pose.structure_path, dict(pose.provenance)) for pose in poses]
 
+    @pytest.mark.slow
     def test_changing_the_result_does_not_change_the_poses_or_the_next_result(
         self, synthetic, result
     ):
@@ -927,6 +934,7 @@ class TestNoMutation:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestInputKey:
     def test_it_does_not_depend_on_the_package_version_or_how_the_call_was_run(
         self, synthetic, result, tmp_path, monkeypatch

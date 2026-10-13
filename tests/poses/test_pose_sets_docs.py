@@ -238,6 +238,7 @@ def synthetic_result():
     return score_pose_set(synthetic.poses, metrics=["interface"])
 
 
+@pytest.mark.slow
 def test_the_worked_examples_print_what_the_page_shows():
     examples = _examples(_section("## A worked example"))
     assert len(examples) == 2
@@ -252,6 +253,7 @@ def test_the_markdown_summary_opens_as_the_page_shows(synthetic_result):
     assert "\n".join(synthetic_result.summary().splitlines()[: len(shown.splitlines())]) == shown
 
 
+@pytest.mark.slow
 def test_the_engine_side_example_runs_and_prints_what_the_page_shows(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     ((code, shown),) = _examples(_section("## Using it from the engine side"))
@@ -259,6 +261,7 @@ def test_the_engine_side_example_runs_and_prints_what_the_page_shows(tmp_path, m
     assert (tmp_path / "results" / "design_0042.json").is_file()
 
 
+@pytest.mark.slow
 def test_the_pose_that_lost_its_peptide_is_a_failed_row_in_the_count():
     from binding_metrics.testing import make_synthetic_poses
 
