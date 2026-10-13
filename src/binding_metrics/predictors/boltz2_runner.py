@@ -1200,18 +1200,36 @@ def _check_name(name: str) -> None:
         )
 
 
+def _option_name(argument: str) -> str:
+    """The name of the option an argument spells, with ``-`` and ``_`` read alike.
+
+    ``--use_msa_server``, ``--use-msa-server`` and ``--use-msa-server=1`` all give
+    ``--use_msa_server``; an argument that is not an option (a value, a single-dash word) is
+    returned as it is.
+    """
+    name = argument.split("=", 1)[0]
+    return "--" + name[2:].replace("-", "_") if name.startswith("--") else name
+
+
 def _check_extra_args(extra_args: Sequence[str]) -> list[str]:
-    """``extra_args`` as strings; raises when one repeats a flag that the runner sets."""
+    """``extra_args`` as strings; raises when one repeats a flag that the runner sets.
+
+    The flags are compared by name with ``-`` and ``_`` alike, and in both forms (``--seed=3``
+    and ``--seed 3``). The installed Boltz-2 (click) accepts the underscore spelling of its own
+    options and fails on the hyphen one ("No such option") after the request was stored, so the
+    hyphen spelling is refused here as the owned flag it repeats, before anything is written.
+    """
     if isinstance(extra_args, (str, bytes)):
         raise TypeError("extra_args must be a sequence of strings, not a string")
     arguments = [str(argument) for argument in extra_args]
     for argument in arguments:
-        for flag in _OWNED_FLAGS:
-            if argument == flag or argument.startswith(flag + "="):
-                raise ValueError(
-                    f"extra_args repeats {flag}, which the runner sets from the request; "
-                    "change the request instead, or the key would not describe the run"
-                )
+        flag = _option_name(argument)
+        if flag in _OWNED_FLAGS:
+            written = "" if argument.split("=", 1)[0] == flag else f" (written {argument!r})"
+            raise ValueError(
+                f"extra_args repeats {flag}{written}, which the runner sets from the request; "
+                "change the request instead, or the key would not describe the run"
+            )
     return arguments
 
 

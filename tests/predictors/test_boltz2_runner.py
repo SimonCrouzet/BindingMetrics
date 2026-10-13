@@ -33,6 +33,7 @@ from binding_metrics.predictors.session import PredictionSession  # noqa: E402
 from binding_metrics.predictors.store import (  # noqa: E402
     MODES,
     PredictionFailedError,
+    PredictionRequest,
     PredictionStore,
 )
 from tests.predictors import synth, synth_boltz2  # noqa: E402
@@ -216,6 +217,74 @@ class TestTheRequest:
         assert Boltz2Runner.name == Boltz2Parser.name == "boltz2"
         assert issubclass(Boltz2Runner, PredictionRunner)
         assert Boltz2Runner().supports_batch(make_request()) is False
+
+
+class TestExtraArgsThatRepeatAnOwnedFlag:
+    """The flags the runner sets from the request cannot come back through ``extra_args``.
+
+    The installed Boltz-2 (click) reads ``--use_msa_server`` and fails on ``--use-msa-server`` with
+    "No such option" after the request was stored, so both spellings are refused here, in both
+    forms (``--x=v`` and ``--x v``): a smuggled spelling would run something else under the key of
+    the request.
+    """
+
+    @pytest.mark.parametrize("flag", boltz2_runner._OWNED_FLAGS)
+    @pytest.mark.parametrize("spelling", ["underscore", "hyphen"])
+    @pytest.mark.parametrize("form", ["equals", "separate"])
+    def test_every_owned_flag_is_refused_in_every_spelling_and_form(self, flag, spelling, form):
+        written = flag if spelling == "underscore" else flag.replace("_", "-")
+        extra = [f"{written}=1"] if form == "equals" else [written, "1"]
+        with pytest.raises(ValueError, match=f"extra_args repeats {flag}"):
+            make_request(extra_args=extra)
+
+    def test_the_message_says_how_the_argument_was_written(self):
+        with pytest.raises(
+            ValueError, match=r"repeats --use_msa_server \(written '--use-msa-server'\)"
+        ):
+            make_request(extra_args=["--use-msa-server"])
+        with pytest.raises(ValueError) as caught:
+            make_request(extra_args=["--use_msa_server"])
+        assert "written" not in str(caught.value)
+
+    def test_the_flags_the_runner_sets_are_the_ones_of_the_command_and_the_installed_boltz(self):
+        assert set(boltz2_runner._OWNED_FLAGS) == {
+            "--out_dir", "--model", "--diffusion_samples", "--seed", "--output_format",
+            "--write_full_pae", "--write_full_pde", "--use_msa_server", "--checkpoint",
+            "--write_embeddings",
+        }  # fmt: skip
+
+    @pytest.mark.parametrize("step", ["prepare", "run"])
+    def test_a_request_made_by_hand_with_the_hyphen_spelling_is_refused_before_anything(
+        self, tmp_path, step
+    ):
+        request = PredictionRequest(
+            "boltz2",
+            "ycr",
+            mode="predict",
+            input_path=YCR,
+            binder_chain="B",
+            receptor_chain="A",
+            options={"use_msa_server": False, "extra_args": ["--use-msa-server"]},
+        )
+        with pytest.raises(ValueError, match="repeats --use_msa_server"):
+            getattr(Boltz2Runner(), step)(request, tmp_path / "work")
+        assert not (tmp_path / "work").exists()
+
+    def test_under_the_policy_that_forbids_the_server_the_hyphen_spelling_cannot_bring_it_back(
+        self,
+    ):
+        for extra in (["--use-msa-server"], ["--use-msa-server=true"], ["--use_msa_server"]):
+            with pytest.raises(ValueError, match="repeats --use_msa_server"):
+                make_request(use_msa_server=False, msa_policy="forbid-server",
+                             receptor_msa="single", extra_args=extra)  # fmt: skip
+
+    def test_the_other_options_of_boltz_are_passed_on_in_the_spelling_they_were_written(self):
+        extra = ["--recycling_steps", "5", "--preprocessing-threads", "2", "--no_kernels", "-x"]
+        assert make_request(extra_args=extra).options["extra_args"] == extra
+
+    def test_a_longer_name_that_starts_like_an_owned_flag_is_not_one(self):
+        extra = ["--seed_offset=1", "--model-card", "--checkpoint_dir", "--out", "--use_msa"]
+        assert make_request(extra_args=extra).options["extra_args"] == extra
 
 
 # ---------------------------------------------------------------------------- the YAML
