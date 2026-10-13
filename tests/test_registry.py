@@ -132,58 +132,33 @@ class TestGetMetric:
         assert "Available" in str(exc_info.value)
 
 
-class TestMetricSpecLoad:
-    """Verify import_path strings resolve to callables when deps are present."""
+class TestTheCoreMetricsAreRegistered:
+    """The metrics that every report and runner relies on keep their registry entry.
 
-    def _try_load(self, spec: MetricSpec):
-        """Attempt to load the metric; skip if dependency is missing."""
-        try:
-            fn = spec.load()
-            assert callable(fn), f"{spec.name}: load() did not return a callable"
-        except ImportError as e:
-            pytest.skip(f"{spec.name}: optional dependency not installed — {e}")
+    Whether each entry's ``import_path`` resolves is checked for the whole registry by
+    ``TestEveryMetricLoads.test_import_path_resolves_to_callable``.
+    """
 
-    def test_load_interface(self):
-        self._try_load(get_metric("interface"))
+    _CORE = (
+        "interface",
+        "coulomb",
+        "ramachandran",
+        "omega",
+        "shape_complementarity",
+        "void_volume",
+        "structure_rmsd",
+        "rmsd",
+        "rmsf",
+        "receptor_drift",
+        "buried_sasa",
+        "contacts",
+        "openfold",
+        "dockq",
+    )
 
-    def test_load_coulomb(self):
-        self._try_load(get_metric("coulomb"))
-
-    def test_load_ramachandran(self):
-        self._try_load(get_metric("ramachandran"))
-
-    def test_load_omega(self):
-        self._try_load(get_metric("omega"))
-
-    def test_load_shape_complementarity(self):
-        self._try_load(get_metric("shape_complementarity"))
-
-    def test_load_void_volume(self):
-        self._try_load(get_metric("void_volume"))
-
-    def test_load_structure_rmsd(self):
-        self._try_load(get_metric("structure_rmsd"))
-
-    def test_load_rmsd(self):
-        self._try_load(get_metric("rmsd"))
-
-    def test_load_rmsf(self):
-        self._try_load(get_metric("rmsf"))
-
-    def test_load_receptor_drift(self):
-        self._try_load(get_metric("receptor_drift"))
-
-    def test_load_buried_sasa(self):
-        self._try_load(get_metric("buried_sasa"))
-
-    def test_load_contacts(self):
-        self._try_load(get_metric("contacts"))
-
-    def test_load_openfold(self):
-        self._try_load(get_metric("openfold"))
-
-    def test_load_dockq(self):
-        self._try_load(get_metric("dockq"))
+    def test_each_core_metric_has_an_entry(self):
+        missing = [name for name in self._CORE if name not in METRICS_BY_NAME]
+        assert not missing, f"missing from the registry: {missing}"
 
 
 class TestEveryMetricLoads:
