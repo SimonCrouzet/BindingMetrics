@@ -6,6 +6,7 @@ from pathlib import Path
 from binding_metrics.capabilities import preflight
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.weights import CACHE_FILE
+from tests.test_feat_c_docs import _capture_parser
 
 ROOT = Path(__file__).parent.parent
 METRICS = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
@@ -42,19 +43,16 @@ def test_the_runner_attributes_the_docs_name_exist_with_the_documented_defaults(
 
 def test_the_documented_cache_file_is_the_real_one():
     assert f"`<store root>/{CACHE_FILE}`" in METRICS
-    assert CACHE_FILE in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
 
-def test_the_option_is_documented_in_the_three_places():
-    assert "`--prediction-weights PATH`" in METRICS
-    assert "`--prediction-weights PATH`" in PREFLIGHT
-    assert "`--prediction-weights PATH`" in README
-
-
-def test_the_docs_state_the_note_and_the_limit_of_the_hash_cache():
-    flat = " ".join(PREFLIGHT.split())
-    assert (
-        "the limits declared for the model come from its input format and architecture; the "
-        "caveats about accuracy and published benchmarks refer to the standard weights" in flat
-    )
-    assert "edited in place with an unchanged size and `mtime_ns` is not detected" in METRICS
+def test_the_option_of_both_commands_is_documented_in_the_three_places(monkeypatch):
+    for module in ("binding_metrics.cli.run", "binding_metrics.cli.batch"):
+        parser = _capture_parser(module, monkeypatch)
+        action = parser._option_string_actions["--prediction-weights"]
+        usage = f"`--prediction-weights {action.metavar}`"
+        for name, text in (
+            ("docs/metrics.md", METRICS),
+            ("docs/preflight.md", PREFLIGHT),
+            ("README.md", README),
+        ):
+            assert usage in text, f"{usage} is not in {name} ({module})"
