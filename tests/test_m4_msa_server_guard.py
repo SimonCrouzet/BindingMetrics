@@ -342,18 +342,27 @@ class TestNoRunnerLetsExtraArgumentsSwitchTheServerOn:
                     getattr(runner_class(), step)(by_hand, tmp_path / f"{step}-{'-'.join(extra)}")
         assert _tools_are_not_probed_and_never_start == []
 
-    @pytest.mark.parametrize("model", ["boltz2", "of3"])
-    def test_the_guard_and_not_the_argument_check_stops_the_hyphen_spelling(self, model, tmp_path):
-        """The hyphen spelling reaches the command of Boltz-2 and OpenFold3; the guard stops it."""
-        build, runner_class = RUNNERS[model]
-        extra = ["--use-msa-server=true"]
-        if model == "boltz2":
-            request = build(extra_args=extra)  # the argument check of the runner lets it by
-            with pytest.raises(ValueError, match="would make the model use an MSA server"):
-                runner_class().prepare(request, tmp_path / "work")
-        else:
-            with pytest.raises(ValueError, match="would make the model use an MSA server"):
-                build(extra_args=extra)
+    def test_the_guard_and_not_the_argument_check_stops_the_hyphen_spelling_for_openfold3(self):
+        """The hyphen spelling reaches the command of OpenFold3; the guard stops it."""
+        build, _ = RUNNERS["of3"]
+        with pytest.raises(ValueError, match="would make the model use an MSA server"):
+            build(extra_args=["--use-msa-server=true"])
+
+    @pytest.mark.parametrize("extra", [["--use-msa-server=true"], ["--use-msa-server"]])
+    def test_the_argument_check_of_boltz2_refuses_the_hyphen_spelling_as_an_owned_flag(
+        self, extra, tmp_path
+    ):
+        """The installed Boltz-2 reads the underscore spelling only, so the check names the flag."""
+        build, runner_class = RUNNERS["boltz2"]
+        with pytest.raises(
+            ValueError, match=r"repeats --use_msa_server \(written '--use-msa-server"
+        ):
+            build(extra_args=extra)
+        by_hand = dataclasses.replace(build(), options={**build().options, "extra_args": extra})
+        for step in ("prepare", "run"):
+            with pytest.raises(ValueError, match="repeats --use_msa_server"):
+                getattr(runner_class(), step)(by_hand, tmp_path / step)
+            assert not (tmp_path / step).exists()
 
 
 class TestTheGuardGetsTheFinalCommand:

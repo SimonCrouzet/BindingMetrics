@@ -92,7 +92,7 @@ class TestTheRegistry:
     def test_the_modes_each_runner_runs(self):
         assert {model: sorted(prediction.runner_modes(model)) for model in MODELS} == {
             "af2": ["predict"],
-            "boltz2": ["predict", "refold", "score", "score-lock"],
+            "boltz2": ["predict", "refold", "refold-lock", "score", "score-lock"],
             "of3": ["refold", "score"],
             "protenix": ["predict"],
         }
