@@ -229,6 +229,7 @@ def _sites_without_encoding(directory: Path, root: Path = ROOT) -> list:
     return found
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("tree", SCANNED_TREES)
 def test_text_io_names_its_encoding(tree):
     """No source, test, script or benchmark opens a text file with the locale's encoding."""

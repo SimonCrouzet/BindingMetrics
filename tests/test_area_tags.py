@@ -148,6 +148,7 @@ def test_known_files_carry_the_expected_areas(test_file, expected):
         assert areas == {"misc"}
 
 
+@pytest.mark.slow
 def test_the_marker_selects_the_partition_from_the_command_line():
     files = ["tests/poses/test_frame.py", "tests/test_l7_cli_args.py"]
     command = [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"]

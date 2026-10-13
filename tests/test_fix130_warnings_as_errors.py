@@ -54,6 +54,7 @@ def _write_case(tmp_path, body: str) -> Path:
     return path
 
 
+@pytest.mark.slow
 class TestAPackageDeprecationFailsTheTest:
     def test_the_old_name_used_from_a_package_module_is_an_error(self, tmp_path):
         case = _write_case(
@@ -130,6 +131,7 @@ class TestOpenMMImportUnderWarningsAsErrors:
     def _needs_openmm(self):
         pytest.importorskip("openmm")
 
+    @pytest.mark.slow
     def test_the_ini_filter_lets_a_test_module_import_openmm(self, tmp_path):
         case = _write_case(
             tmp_path,

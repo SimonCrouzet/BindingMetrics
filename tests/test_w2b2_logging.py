@@ -217,6 +217,7 @@ def _relaxer(**overrides):
     return ImplicitRelaxation(RelaxationConfig(**settings))
 
 
+@pytest.mark.slow
 class TestSetupSystemLogging:
     """The linear-peptide path of ``_setup_system`` (1YCR, no GPU needed)."""
 

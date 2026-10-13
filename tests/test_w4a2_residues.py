@@ -221,6 +221,7 @@ class TestMetalElements:
 class TestPrepStructureClassification:
     """``prep_structure`` sorts residues with the shared standard, metal and water sets."""
 
+    @pytest.mark.slow
     def test_waters_are_removed_a_metal_is_kept_and_a_ligand_is_stripped(self, example_pdb_path):
         pytest.importorskip("pdbfixer")
         from openmm import Vec3, app, unit

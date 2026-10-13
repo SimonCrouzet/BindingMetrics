@@ -285,6 +285,7 @@ class TestLogToFile:
 
 
 class TestRunAsModule:
+    @pytest.mark.slow
     def test_python_dash_m_shows_the_progress_lines(self, tmp_path):
         """``python -m binding_metrics.cli.run`` runs the file as ``__main__``."""
         import subprocess
@@ -515,6 +516,7 @@ class TestBatchedOpenFoldMessages:
 
 
 class TestBatchAsModule:
+    @pytest.mark.slow
     def test_python_dash_m_writes_the_per_sample_log(self, tmp_path):
         """``python -m binding_metrics.cli.batch`` runs the file as ``__main__``."""
         import shutil
