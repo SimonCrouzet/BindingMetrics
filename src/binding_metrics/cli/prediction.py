@@ -19,10 +19,10 @@ What the step does for one sample, in order::
 
 ``results["prediction"]`` holds the keys of ``summarize_prediction`` (with ``model``), the EvoBind
 keys merged as the OpenFold step merges them, ``mode`` (how the model was used: ``predict``,
-``refold``, ``score`` or ``score-lock``; None for an output whose making is not stated),
-``weights`` (the weights of the run, see ``weights_description``) and ``cache``: the counters
-of ``PredictionSession.stats()`` and ``request_key``, the name of the store entry. A prediction
-that failed, or that cannot be run here, gives
+``refold``, ``score``, ``score-lock`` or ``refold-lock``; None for an output whose making is not
+stated), ``weights`` (the weights of the run, see ``weights_description``) and ``cache``: the
+counters of ``PredictionSession.stats()`` and ``request_key``, the name of the store entry. A
+prediction that failed, or that cannot be run here, gives
 ``{"model": ..., "mode": ..., "error": <reason>, "cache": ...}``; the sample goes on with its
 other steps.
 
@@ -66,7 +66,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple, Optional, Sequence
 
-from binding_metrics.capabilities import MODES
+from binding_metrics.capabilities import LOCK_MODES, MODES
 from binding_metrics.cli import (
     DEFAULT_OPENFOLD_TEMPLATES,
     OPENFOLD_CYCLIC_CHOICES,
@@ -147,10 +147,12 @@ def add_prediction_args(parser: argparse.ArgumentParser, *, batch: bool = False)
         help=(
             "How the model is used for the complex: predict (sequences only), refold (receptor "
             "templated, binder predicted freely), score (every chain templated on its own, the "
-            "pose not given: re-docking) or score-lock (score, with the pose pinned to the input). "
-            "It is checked against what the model supports and, for a run from here, against "
-            "what its runner can do (of3: refold, score; boltz2: all four; af2 and protenix: "
-            "predict), before anything runs, and recorded. Default: the runner's own mode, "
+            "pose not given: re-docking), score-lock (score, with the pose pinned to the input) "
+            "or refold-lock (refold, with the receptor pinned to the input by a forced template, "
+            "the binder free). It is checked against what the model supports and, for a run "
+            "from here, against what its runner can do (of3: refold, score; boltz2: predict, "
+            "refold, score, score-lock; af2 and protenix: predict), before anything runs, and "
+            "recorded. Default: the runner's own mode, "
             "that is for --predictor of3 the value of --openfold-mode (score), score for "
             "boltz2 and predict for af2 and protenix; for an output read with --prediction-dir, "
             "not stated and not checked. Needs --predictor."
@@ -220,11 +222,11 @@ def add_prediction_args(parser: argparse.ArgumentParser, *, batch: bool = False)
         default=None,
         metavar="ANGSTROM",
         help=(
-            "Only for --prediction-mode score-lock: how far, in angstrom, a residue may move "
-            "from the pinned template before the model pulls it back (the threshold of the "
-            "forced template of Boltz-2). Default: 2.0, the choice of the Boltz-2 runner (Boltz-2 "
-            "documents none). A runner or a mode that does not use it refuses it. Needs "
-            "--predictor."
+            "Only for --prediction-mode score-lock or refold-lock: how far, in angstrom, a "
+            "residue may move from the pinned template before the model pulls it back (the "
+            "threshold of the forced template of Boltz-2). Default: 2.0, the choice of the "
+            "Boltz-2 runner (Boltz-2 documents none). A runner or a mode that does not use it "
+            "refuses it. Needs --predictor."
         ),
     )
     group.add_argument(
@@ -415,10 +417,11 @@ def check_prediction_args(parser: argparse.ArgumentParser, args: argparse.Namesp
     without ``--predictor``, when ``--predictor`` names a model that has no runner and no
     ``--prediction-dir`` is given, or when a setting is not one the model's runner has (a mode it
     does not run, ``--prediction-cyclic on`` for ColabFold, ``--prediction-lock-threshold``
-    outside ``score-lock``, an ``--openfold-*`` option for a model other than OpenFold3, or the
-    two spellings of one setting with different values; see ``resolve_prediction_options``). Ends
-    with exit code 1 and a message when ``--prediction-dir`` is not an existing directory, or
-    when ``--prediction-weights`` does not exist or is not the kind the model's runner takes.
+    outside ``score-lock`` and ``refold-lock``, an ``--openfold-*`` option for a model other than
+    OpenFold3, or the two spellings of one setting with different values; see
+    ``resolve_prediction_options``). Ends with exit code 1 and a message when
+    ``--prediction-dir`` is not an existing directory, or when ``--prediction-weights`` does not
+    exist or is not the kind the model's runner takes.
     ``--prediction-weights`` with ``--prediction-dir`` is a usage error: the weights of an output
     you made are whatever produced it.
     """
@@ -579,7 +582,7 @@ class PredictionOptions(NamedTuple):
     ``mode`` is the mode the run has (None for an output read with ``--prediction-dir`` whose
     mode is not given); ``cyclic`` is ``"auto"``, True or False; ``use_msa_server`` a bool;
     ``conda_env`` the environment of the runner (None: the current one); ``lock_threshold`` the
-    threshold of ``score-lock`` in angstrom, None for the runner's own.
+    threshold of the lock modes in angstrom, None for the runner's own.
     """
 
     mode: Optional[str]
@@ -626,7 +629,7 @@ def resolve_prediction_options(
     * a setting is passed on only when the keyword is in the runner's ``make_request``:
       ``binder_cyclic`` other than ``auto``, ``use_msa_server`` False and
       ``lock_threshold_angstrom`` are refused for a runner that has not; the lock threshold
-      also needs the mode ``score-lock``.
+      also needs a lock mode (``score-lock`` or ``refold-lock``).
 
     Returns:
         The merged settings; for the OpenFold3 step or an adopted output they are the
@@ -719,10 +722,11 @@ def resolve_prediction_options(
     if prediction_lock_threshold is not None:
         if not takes_setting(runner, "lock_threshold_angstrom"):
             raise ValueError(unsupported_setting_message(predictor, "lock_threshold_angstrom"))
-        if mode != "score-lock":
+        if mode not in LOCK_MODES:
             raise ValueError(
-                f"--prediction-lock-threshold is the threshold of the mode score-lock, and the "
-                f"run is in mode {mode}; add --prediction-mode score-lock"
+                "--prediction-lock-threshold is the threshold of the mode score-lock or "
+                f"refold-lock, and the run is in mode {mode}; add --prediction-mode score-lock "
+                "or --prediction-mode refold-lock"
             )
     return PredictionOptions(mode, cyclic, use_msa_server, conda_env, prediction_lock_threshold)
 
@@ -1067,7 +1071,8 @@ def reference_for(predictor: str, input_path: Path) -> Optional[Path]:
     input than in ``refold``, and in ``predict`` the model has seen neither chain.
     ``delta_com_angstrom`` of the EvoBind adversarial check is the displacement of the binder
     centre of mass between the same two poses. ``score-lock`` pins the pose, so the number then
-    measures how well the pin held.
+    measures how well the pin held; ``refold-lock`` pins the receptor and leaves the binder free,
+    so the number reads as in ``refold``.
 
     When the receptor frame cannot be built (a chain missing from the prediction under the input's
     ID, or another number of C-alpha atoms) ``binder_ca_rmsd`` stays NaN and the reason of the
@@ -1442,8 +1447,8 @@ def run_single_prediction(
     ``block["weights"]`` and ``provenance["prediction_weights"]``; ignored for an adopted output.
     ``openfold_cyclic``, ``openfold_use_msa_server`` and ``openfold_conda_env`` are the settings
     of the run: the pipelines have merged them with the ``--prediction-*`` spelling
-    (``resolve_prediction_options``). ``prediction_lock_threshold`` is the threshold of
-    ``score-lock`` in angstrom (None: the runner's own). ``openfold_templates`` is how OpenFold3 is
+    (``resolve_prediction_options``). ``prediction_lock_threshold`` is the threshold of the lock
+    modes in angstrom (None: the runner's own). ``openfold_templates`` is how OpenFold3 is
     given its templates (``"structure"``, the default, or ``"alignment"``; ``"alignment"`` is
     refused for a runner without a ``template_mode`` setting). The runner's ``output_chain_map``
     names the chains of its prediction, unless ``prediction_binder_chain`` or

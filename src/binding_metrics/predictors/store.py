@@ -7,7 +7,7 @@ request, across metrics, batch workers, processes and restarts of the pipeline.
 Public names and signatures (the module imports the standard library only)::
 
     KEY_FORMAT = 1
-    MODES = ("predict", "score", "refold")
+    MODES = ("predict", "score", "refold", "score-lock", "refold-lock")
     STATUS_DONE = "done"; STATUS_FAILED = "failed"; STATUS_ADOPTED = "adopted"
 
     file_sha256(path) -> str
@@ -141,10 +141,11 @@ KEY_FORMAT = 1
 #: Values of ``PredictionRequest.mode``: a prediction from the model's own input (``predict``), a
 #: prediction of an existing complex with each chain given its own structure as a template
 #: (``score``), one with the binder folded from its sequence next to a receptor given as
-#: template (``refold``), and a ``score`` with the relative pose of the chains pinned to the
-#: input by a forced template or constraints (``score-lock``). The same words are the vocabulary of
-#: ``binding_metrics.capabilities.MODES``, which says which model supports which.
-MODES: tuple[str, ...] = ("predict", "score", "refold", "score-lock")
+#: template (``refold``), a ``score`` with the relative pose of the chains pinned to the input by
+#: a forced template or constraints (``score-lock``), and a ``refold`` with the receptor pinned
+#: by a forced template and the binder left free (``refold-lock``). The same words are the
+#: vocabulary of ``binding_metrics.capabilities.MODES``, which says which model supports which.
+MODES: tuple[str, ...] = ("predict", "score", "refold", "score-lock", "refold-lock")
 
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"

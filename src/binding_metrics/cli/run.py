@@ -439,10 +439,11 @@ def run_pipeline(
             text of the plan under ``preflight["plan"]``) and does nothing else, whatever the
             policy.
         prediction_mode: How the model is used for the complex: ``predict``, ``refold``,
-            ``score`` or ``score-lock`` (keyword-only; ``--prediction-mode``). It is checked against
-            what the model supports in the pre-flight check, and for a run from here against what
-            its runner runs (``supported_modes``: of3 ``refold`` and ``score``, boltz2 all four,
-            af2 and protenix ``predict``; another one raises ``ValueError``), and recorded as
+            ``score``, ``score-lock`` or ``refold-lock`` (keyword-only; ``--prediction-mode``). It
+            is checked against what the model supports in the pre-flight check, and for a run from
+            here against what its runner runs (``supported_modes``: of3 ``refold`` and ``score``,
+            boltz2 ``predict``, ``refold``, ``score`` and ``score-lock``, af2 and protenix
+            ``predict``; another one raises ``ValueError``), and recorded as
             ``mode`` in ``results["prediction"]`` and ``results["preflight"]``. None takes
             ``openfold_mode`` for OpenFold3 run from here, the ``default_mode`` of the runner for
             another model (boltz2 ``score``, af2 and protenix ``predict``), and is "not known, not
@@ -466,13 +467,14 @@ def run_pipeline(
             ``"auto"`` (the default when None), ``True`` (``"on"``) or ``False`` (``"off"``);
             ``prediction_use_msa_server`` False runs without an MSA server; ``prediction_conda_env``
             is the environment that has the model (None: its executable on PATH);
-            ``prediction_lock_threshold`` is the threshold of ``score-lock`` in angstrom (None: the
-            runner's own, 2.0 for Boltz-2). For ``predictor="of3"`` they are the settings of
-            ``openfold_cyclic``, ``openfold_use_msa_server`` and ``openfold_conda_env``: both
+            ``prediction_lock_threshold`` is the threshold of the lock modes (``score-lock``,
+            ``refold-lock``) in angstrom (None: the runner's own, 2.0 for Boltz-2). For
+            ``predictor="of3"`` they are the settings of ``openfold_cyclic``,
+            ``openfold_use_msa_server`` and ``openfold_conda_env``: both
             spellings with different values raise ``ValueError``; for another model the
             ``openfold_*`` ones other than their defaults raise it, naming the ``prediction_*`` one.
             A setting that the runner of the model has no keyword for (``prediction_cyclic`` for
-            ColabFold, the lock threshold outside ``score-lock``) raises it too, and so does a
+            ColabFold, the lock threshold outside the lock modes) raises it too, and so does a
             mode the runner does not run. They are refused with ``prediction_dir``: the model is
             not run.
         preflight_model: For a caller that runs the model step itself after this call (the

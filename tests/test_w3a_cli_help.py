@@ -26,6 +26,9 @@ is recorded the same way. When the runners of ColabFold, Boltz-2 and Protenix we
 ``--prediction-mode`` help says what each runner can do and what its default is, and four options
 were added to both commands and are recorded here: ``--prediction-cyclic``,
 ``--prediction-no-msa-server``, ``--prediction-conda-env`` and ``--prediction-lock-threshold``.
+The fifth mode ``refold-lock`` (refold with the receptor pinned by a forced template) then joined
+the choices of ``--prediction-mode``, whose help lists the modes of the Boltz-2 runner one by
+one, and the help of ``--prediction-lock-threshold`` names both lock modes.
 The help of ``--openfold-cyclic`` and ``--prediction-cyclic`` then gained the rule that ``auto``
 leaves a head-to-tail binder with modified residues linear, and the one-complex measurement
 behind it. Two options of the pre-flight group were added to both commands and are recorded the
@@ -344,18 +347,20 @@ GOLDEN = {
             "--prediction-mode": (
                 "Prediction",
                 None,
-                ["predict", "refold", "score", "score-lock"],
+                ["predict", "refold", "score", "score-lock", "refold-lock"],
                 None,
                 False,
                 "None",
-                "How the model is used for the complex: predict (sequences "
-                "only), refold (receptor templated, binder predicted "
-                "freely), score (every chain templated on its own, the pose"
-                " not given: re-docking) or score-lock (score, with the "
-                "pose pinned to the input). It is checked against what the "
-                "model supports and, for a run from here, against what its "
-                "runner can do (of3: refold, score; boltz2: all four; af2 "
-                "and protenix: predict), before anything runs, and "
+                "How the model is used for the complex: predict (sequences only), "
+                "refold (receptor templated, binder predicted freely), score "
+                "(every chain templated on its own, the pose not given: "
+                "re-docking), score-lock (score, with the pose pinned to the "
+                "input) or refold-lock (refold, with the receptor pinned to the "
+                "input by a forced template, the binder free). It is checked "
+                "against what the model supports and, for a run from here, "
+                "against what its runner can do (of3: refold, score; boltz2: "
+                "predict, refold, score, score-lock; af2 and protenix: "
+                "predict), before anything runs, and "
                 "recorded. Default: the runner's own mode, that is for "
                 "--predictor of3 the value of --openfold-mode (score), "
                 "score for boltz2 and predict for af2 and protenix; for an "
@@ -420,12 +425,12 @@ GOLDEN = {
                 None,
                 False,
                 "None",
-                "Only for --prediction-mode score-lock: how far, in "
-                "angstrom, a residue may move from the pinned template "
-                "before the model pulls it back (the threshold of the "
-                "forced template of Boltz-2). Default: 2.0, the choice of "
-                "the Boltz-2 runner (Boltz-2 documents none). A runner or a"
-                " mode that does not use it refuses it. Needs --predictor.",
+                "Only for --prediction-mode score-lock or refold-lock: how "
+                "far, in angstrom, a residue may move from the pinned "
+                "template before the model pulls it back (the threshold of "
+                "the forced template of Boltz-2). Default: 2.0, the choice "
+                "of the Boltz-2 runner (Boltz-2 documents none). A runner or "
+                "a mode that does not use it refuses it. Needs --predictor.",
             ),
             "--prediction-weights": (
                 "Prediction",
@@ -807,18 +812,20 @@ GOLDEN = {
             "--prediction-mode": (
                 "Prediction",
                 None,
-                ["predict", "refold", "score", "score-lock"],
+                ["predict", "refold", "score", "score-lock", "refold-lock"],
                 None,
                 False,
                 "None",
-                "How the model is used for the complex: predict (sequences "
-                "only), refold (receptor templated, binder predicted "
-                "freely), score (every chain templated on its own, the pose"
-                " not given: re-docking) or score-lock (score, with the "
-                "pose pinned to the input). It is checked against what the "
-                "model supports and, for a run from here, against what its "
-                "runner can do (of3: refold, score; boltz2: all four; af2 "
-                "and protenix: predict), before anything runs, and "
+                "How the model is used for the complex: predict (sequences only), "
+                "refold (receptor templated, binder predicted freely), score "
+                "(every chain templated on its own, the pose not given: "
+                "re-docking), score-lock (score, with the pose pinned to the "
+                "input) or refold-lock (refold, with the receptor pinned to the "
+                "input by a forced template, the binder free). It is checked "
+                "against what the model supports and, for a run from here, "
+                "against what its runner can do (of3: refold, score; boltz2: "
+                "predict, refold, score, score-lock; af2 and protenix: "
+                "predict), before anything runs, and "
                 "recorded. Default: the runner's own mode, that is for "
                 "--predictor of3 the value of --openfold-mode (score), "
                 "score for boltz2 and predict for af2 and protenix; for an "
@@ -883,12 +890,12 @@ GOLDEN = {
                 None,
                 False,
                 "None",
-                "Only for --prediction-mode score-lock: how far, in "
-                "angstrom, a residue may move from the pinned template "
-                "before the model pulls it back (the threshold of the "
-                "forced template of Boltz-2). Default: 2.0, the choice of "
-                "the Boltz-2 runner (Boltz-2 documents none). A runner or a"
-                " mode that does not use it refuses it. Needs --predictor.",
+                "Only for --prediction-mode score-lock or refold-lock: how "
+                "far, in angstrom, a residue may move from the pinned "
+                "template before the model pulls it back (the threshold of "
+                "the forced template of Boltz-2). Default: 2.0, the choice "
+                "of the Boltz-2 runner (Boltz-2 documents none). A runner or "
+                "a mode that does not use it refuses it. Needs --predictor.",
             ),
             "--prediction-weights": (
                 "Prediction",

@@ -1094,9 +1094,10 @@ def run_batch(
             it does not stop the batch. Under ``"skip"`` the incompatible steps of a sample are
             recorded as skipped with their reason and the rest runs.
         prediction_mode: How the model is used for the complex (``--prediction-mode``): ``predict``,
-            ``refold``, ``score`` or ``score-lock``. It is checked against what the model supports
-            in the pre-flight check of every sample, for a run from here against what the runner
-            of the model runs (``ValueError`` for another mode), and recorded as
+            ``refold``, ``score``, ``score-lock`` or ``refold-lock``. It is checked against what
+            the model supports in the pre-flight check of every sample, for a run from here
+            against what the runner of the model runs (``ValueError`` for another mode), and
+            recorded as
             ``prediction_mode``. None takes ``openfold_mode`` for OpenFold3 run from here, the
             ``default_mode`` of the runner for another model (boltz2 ``score``, af2 and protenix
             ``predict``) and is "not known, not checked" for outputs read from

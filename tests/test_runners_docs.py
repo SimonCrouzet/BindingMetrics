@@ -111,7 +111,7 @@ class TestTheRunnerTable:
         for model in MODELS:
             modes = prediction.runner_modes(model)
             if modes == set(MODES):
-                assert f"{model}: all four" in text
+                assert f"{model}: all five" in text
             elif model in ("of3", "boltz2", "af2"):
                 assert f"{model}: {', '.join(sorted(modes))}" in text or f"{model} and" in text
         assert "af2 and protenix: predict" in text

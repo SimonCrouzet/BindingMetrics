@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from binding_metrics.capabilities import Capabilities, preflight, profile_input
+from binding_metrics.capabilities import MODES, Capabilities, preflight, profile_input
 from binding_metrics.predictors.registry import PARSERS
 from tests.test_pre_structures import model_source_text
 
@@ -38,9 +38,11 @@ class TestTheDeclaration:
         assert isinstance(self.caps, Capabilities)
         assert self.caps.version == "2.2.1"
 
-    def test_it_limits_nothing(self):
-        assert self.caps.is_unconstrained
+    def test_it_limits_no_input_and_leaves_out_only_the_mode_it_builds_no_input_for(self):
+        assert self.caps.constrained_fields() == ("modes",)
+        assert self.caps.modes == frozenset(MODES) - {"refold-lock"}
         assert self.caps.closures == frozenset()  # head-to-tail is not the only closure it takes
+        assert self.caps.binder_types == self.caps.residue_classes == frozenset()
 
     def test_the_one_caveat_is_about_a_staple_and_cites_the_documentation(self):
         assert sorted(self.caps.caveats) == ["closures:staple", "modes:score-lock"]

@@ -637,6 +637,14 @@ class Boltz2Parser(PredictionParser):
     # larger than the threshold. It is a guidance term, so score-lock is a caveat and not a promise.
     capabilities = Capabilities(
         modes={"predict", "refold", "score", "score-lock"},
+        reasons={
+            "modes": (
+                "The Boltz-2 runner of this package writes the inputs of 'predict', 'refold', "
+                "'score' and 'score-lock', and has none for 'refold-lock' (a forced template on "
+                "the receptor alone, the binder left free). Use 'refold' (the receptor is "
+                "templated without force) or 'score-lock' (both chains pinned)."
+            ),
+        },
         caveats={
             "modes:score-lock": (
                 "Boltz-2 pins the pose through a template with `force: true` and a `threshold` "

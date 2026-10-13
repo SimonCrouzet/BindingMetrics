@@ -98,6 +98,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Optional, Sequence, Union
 
+from binding_metrics.capabilities import LOCK_MODES
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.store import PredictionRequest
 from binding_metrics.predictors.weights import WeightsRef
@@ -118,16 +119,16 @@ _ON_UNMAPPABLE_CHOICES = ("error", "x")
 _RUN_FILES = ("experiment_config.json", "inference_query_set.json", "template_accounting.json")
 
 
-def _lock_message() -> str:
-    """Why OpenFold3 cannot run mode ``score-lock``: the reason its capabilities declare.
+def _lock_message(mode: str = "score-lock") -> str:
+    """Why OpenFold3 cannot run the lock mode ``mode``: the reason its capabilities declare.
 
     The pre-flight check refuses such a request first; this is the stop for a caller that did
     not run it.
     """
     from binding_metrics.predictors.of3 import OpenFold3Parser
 
-    return "OpenFold3 cannot run mode 'score-lock'. " + OpenFold3Parser.capabilities.reason_for(
-        "modes", "score-lock"
+    return f"OpenFold3 cannot run mode '{mode}'. " + OpenFold3Parser.capabilities.reason_for(
+        "modes", mode
     )
 
 
@@ -154,8 +155,9 @@ class OpenFold3Runner(PredictionRunner):
     supports_custom_weights = True
     weights_kind = "file"
     #: For a complex structure: ``score`` and ``refold``. Mode ``predict`` takes a query file that
-    #: the caller wrote, and ``score-lock`` cannot be run (see ``make_request``). ``score`` is the
-    #: default of the OpenFold3 step (``--openfold-mode``): every chain is given its own structure.
+    #: the caller wrote, and ``score-lock`` and ``refold-lock`` cannot be run (see
+    #: ``make_request``). ``score`` is the default of the OpenFold3 step (``--openfold-mode``):
+    #: every chain is given its own structure.
     supported_modes = frozenset({"score", "refold"})
     default_mode = "score"
 
@@ -236,8 +238,9 @@ class OpenFold3Runner(PredictionRunner):
                 (``predict``).
             name: Query name; the output files are named after it.
             binder_chain, receptor_chain: Chain roles; required for ``score`` and ``refold``.
-            mode: ``"score"``, ``"refold"`` or ``"predict"``; ``"score-lock"`` raises, OpenFold3
-                cannot pin the pose of the chains (``OpenFold3Parser.capabilities``).
+            mode: ``"score"``, ``"refold"`` or ``"predict"``; ``"score-lock"`` and
+                ``"refold-lock"`` raise, OpenFold3 cannot pin the pose of the chains or force a
+                template (``OpenFold3Parser.capabilities``).
             seeds: Seed values OpenFold3 samples with; None takes the toolkit's default
                 (``[42]``), or none when ``num_model_seeds`` is given. Cannot be combined with
                 ``num_model_seeds``.
@@ -271,18 +274,18 @@ class OpenFold3Runner(PredictionRunner):
                 templates.
 
         Raises:
-            ValueError: Mode ``score-lock``, a missing chain role, an unknown mode or choice, a
-                template file with ``predict``, both ``seeds`` and ``num_model_seeds``, a
-                ``binder_cyclic`` that is not ``True``, ``False`` or ``"auto"``, or a value other
-                than the default with ``predict``, a ``template_mode`` that is not
-                ``"structure"`` or ``"alignment"`` (or is ``"alignment"`` with ``predict``), or
-                both ``weights`` and ``inference_ckpt_path``.
+            ValueError: Mode ``score-lock`` or ``refold-lock``, a missing chain role, an unknown
+                mode or choice, a template file with ``predict``, both ``seeds`` and
+                ``num_model_seeds``, a ``binder_cyclic`` that is not ``True``, ``False`` or
+                ``"auto"``, or a value other than the default with ``predict``, a
+                ``template_mode`` that is not ``"structure"`` or ``"alignment"`` (or is
+                ``"alignment"`` with ``predict``), or both ``weights`` and ``inference_ckpt_path``.
             FileNotFoundError: ``weights`` does not exist.
         """
         if weights is not None and inference_ckpt_path is not None:
             raise ValueError("give weights or inference_ckpt_path, not both")
-        if mode == "score-lock":
-            raise ValueError(_lock_message())
+        if mode in LOCK_MODES:
+            raise ValueError(_lock_message(mode))
         if mode in ("score", "refold") and not (binder_chain and receptor_chain):
             raise ValueError(f"mode '{mode}' needs binder_chain and receptor_chain")
         if mode == "predict" and template_cif_path is not None:
@@ -506,8 +509,8 @@ class OpenFold3Runner(PredictionRunner):
     # ------------------------------------------------------------------ arguments
 
     def _check_request(self, request: PredictionRequest) -> None:
-        if request.mode == "score-lock":
-            raise ValueError(_lock_message())
+        if request.mode in LOCK_MODES:
+            raise ValueError(_lock_message(request.mode))
         if request.model != self.name:
             raise ValueError(f"the of3 runner cannot run a '{request.model}' request")
         if request.input_path is None:

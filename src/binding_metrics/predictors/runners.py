@@ -74,8 +74,9 @@ Contract, checked for the stub runners of ``tests/predictors/test_runners.py``:
 * Modes. ``supported_modes`` is the set of modes (``binding_metrics.predictors.store.MODES``) the
   runner can run when ``request.input_path`` is a complex structure, which is what the command
   line gives it: ``predict`` (the model folds the sequences), ``refold`` (the receptor is given
-  as template), ``score`` (every chain is given its own structure as template) and ``score-lock``
-  (``score`` with the pose pinned). The default is ``{"predict"}``, the one mode that needs
+  as template), ``score`` (every chain is given its own structure as template), ``score-lock``
+  (``score`` with the pose pinned) and ``refold-lock`` (``refold`` with the receptor pinned by a
+  forced template and the binder free). The default is ``{"predict"}``, the one mode that needs
   nothing but sequences. ``default_mode`` is the mode used when the caller names none and must
   be in ``supported_modes``; None (the default) means the default of the ``mode`` parameter of
   the runner's ``make_request``. A request for a mode outside ``supported_modes`` raises
