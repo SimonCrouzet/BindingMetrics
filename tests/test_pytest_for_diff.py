@@ -211,7 +211,7 @@ def test_a_source_file_runs_the_tests_of_the_modules_that_import_it(script, repo
     chosen = set(plan.files) - set(script.GUARD_TESTS)
     # test_frame imports the module, test_uses_support imports a helper that does
     assert chosen == {"tests/test_frame.py", "tests/test_uses_support.py"}
-    assert len(commands) == 1
+    assert len(commands) == 2  # the second one is the slow tests of the guard files
     assert commands[0][:7] == [
         sys.executable,
         "-m",
@@ -296,8 +296,9 @@ def test_pyproject_or_conftest_runs_the_fast_tier(script, repo):
     write(repo, {"pyproject.toml": "[project]\nname = 'y'\n"})
     _, plan, commands = selection(script, repo)
     assert plan.everything
-    assert len(commands) == 1
+    assert len(commands) == 2
     assert commands[0][5:] == ["-m", "not gpu and not slow", "tests"]
+    assert commands[1][5:] == ["-m", "not gpu and slow", *script.GUARD_TESTS]
 
     commit(repo)
     write(repo, {"tests/conftest.py": "X = 1\n"})
@@ -307,7 +308,55 @@ def test_pyproject_or_conftest_runs_the_fast_tier(script, repo):
 def test_include_slow_keeps_the_slow_tests_and_gpu_stays_out(script, repo):
     write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
     _, _, commands = selection(script, repo, include_slow=True)
+    assert len(commands) == 1
     assert commands[0][5:7] == ["-m", "not gpu"]
+
+
+def test_the_slow_tests_of_the_guard_files_run_in_a_command_of_their_own(script, repo):
+    write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
+    _, plan, commands = selection(script, repo)
+    guards = [name for name, why in plan.files.items() if "guard test" in why]
+    assert guards == sorted(script.GUARD_TESTS)
+    assert len(commands) == 2
+    assert commands[1][5:] == ["-m", "not gpu and slow", *guards]
+    assert set(guards) <= set(commands[0][7:])
+
+
+def test_a_change_of_the_configuration_also_runs_the_slow_tests_of_the_guard_files(script, repo):
+    write(repo, {"pyproject.toml": "[project]\nname = 'y'\n"})
+    _, plan, commands = selection(script, repo)
+    assert plan.everything and sorted(plan.files) == sorted(script.GUARD_TESTS)
+    assert commands[1][5:] == ["-m", "not gpu and slow", *plan.files]
+
+
+def test_the_guard_tests_marked_slow_run_and_the_other_slow_tests_do_not(script, repo):
+    """Both commands are run for real, on a project whose guard and whose chosen test are slow."""
+    body = """
+        import pathlib
+
+        import pytest
+
+        LOG = pathlib.Path(__file__).parent / "ran.log"
+
+
+        def test_fast_{name}():
+            LOG.open("a").write("fast_{name}\\n")
+
+
+        @pytest.mark.slow
+        def test_slow_{name}():
+            LOG.open("a").write("slow_{name}\\n")
+    """
+    write(
+        repo,
+        {
+            "tests/test_registry.py": body.format(name="guard"),
+            "tests/test_frame.py": body.format(name="chosen"),
+        },
+    )
+    assert script.main(["--repo", str(repo)]) == 0
+    ran = (repo / "tests" / "ran.log").read_text(encoding="utf-8").split()
+    assert sorted(ran) == ["fast_chosen", "fast_guard", "slow_guard"]
 
 
 def test_another_file_runs_the_tests_that_name_it(script, repo):
@@ -325,7 +374,7 @@ def test_another_file_runs_the_tests_that_name_it(script, repo):
 def test_pytest_arguments_after_the_double_dash_reach_the_command(script, repo):
     write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
     _, _, commands = selection(script, repo, "--", "-x", "-q")
-    assert commands[0][-2:] == ["-x", "-q"]
+    assert [command[-2:] for command in commands] == [["-x", "-q"]] * 2
 
 
 def test_explain_says_why_each_test_file_runs(script, repo, capsys):
@@ -352,7 +401,7 @@ def test_a_dry_run_prints_the_command_and_runs_nothing(script, repo, capsys, mon
     assert script.main(["--repo", str(repo), "--dry-run", "--", "-q"]) == 0
     out = capsys.readouterr().out
     printed = [shlex.split(line) for line in out.splitlines() if line.startswith(sys.executable)]
-    assert len(printed) == 1 and printed[0][-1] == "-q"
+    assert len(printed) == 2 and [command[-1] for command in printed] == ["-q", "-q"]
     assert "src/binding_metrics/poses/frame.py" in out
     assert not [c for c in calls if c[0] != "git"]
 
@@ -374,5 +423,5 @@ def test_the_exit_code_is_pytests_and_no_tests_selected_is_not_a_failure(
     write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
 
     assert script.main(["--repo", str(repo)]) == expected
-    assert len(commands) == 1
-    assert Path(commands[0][1]).resolve() == repo.resolve()
+    assert len(commands) == 2
+    assert {Path(cwd).resolve() for _, cwd in commands} == {repo.resolve()}

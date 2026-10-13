@@ -34,8 +34,9 @@ Usage::
     python scripts/pytest_for_diff.py --dry-run        # print the command and run nothing
     python scripts/pytest_for_diff.py -- -x -q         # arguments after -- go to pytest
 
-``gpu`` tests never run here and ``slow`` ones only with ``--include-slow``. The full suite
-is the gate before a pull request and a signed release.
+``gpu`` tests never run here and ``slow`` ones only with ``--include-slow``, except the
+``slow`` tests of the guard files, which run in a second command so that a guard test is never
+left out by the tier. The full suite is the gate before a pull request and a signed release.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ SCRIPT_REPO = Path(__file__).resolve().parent.parent
 
 # Cheap tests that run on every diff, whatever changed. Each one fails on a breakage that a
 # change in one area can cause in another (about half a minute together, without GPU).
+GUARD_REASON = "guard test"
 GUARD_TESTS = (
     "tests/test_s1_encoding.py",  # every source file is UTF-8 and free of mojibake
     "tests/test_registry.py",  # the metric registry: names, paths, metadata of each metric
@@ -149,6 +151,7 @@ def plan_for(
     if triggers:  # the fast tier includes every other selection
         plan.everything = True
         plan.notes = [f"{name}: can change every test, so the fast tier runs" for name in triggers]
+        add_guards(plan, project, guards)
         return plan
 
     def relative(path: Path) -> str:
@@ -196,22 +199,37 @@ def plan_for(
             else:
                 plan.notes.append(f"{name}: no test refers to it, nothing to run")
 
-    for guard in guards:
-        if (project.root / guard).exists():
-            plan.add(guard, "guard test")
-        else:
-            plan.notes.append(f"{guard}: guard test is missing from this checkout")
+    add_guards(plan, project, guards)
     plan.files = dict(sorted(plan.files.items()))
     return plan
 
 
+def add_guards(plan: Plan, project, guards: tuple[str, ...]) -> None:
+    """Put the guard tests that exist in this checkout into the plan."""
+    for guard in guards:
+        if (project.root / guard).exists():
+            plan.add(guard, GUARD_REASON)
+        else:
+            plan.notes.append(f"{guard}: guard test is missing from this checkout")
+
+
 def build_commands(plan: Plan, include_slow: bool, pytest_args: list[str]) -> list[list[str]]:
-    """The pytest command line: the fast tier over ``tests``, or the chosen test files."""
+    """The pytest command lines: the fast tier over ``tests`` or the chosen test files.
+
+    Without ``include_slow`` a second command runs the ``slow`` tests of the guard files, since a
+    guard test has to run whatever the tier leaves out (pytest applies ``-m`` to a test chosen by
+    its file or node id as well). It selects no test, which is not a failure, when there is none.
+    """
+    base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-m"]
     tier = "not gpu" if include_slow else "not gpu and not slow"
-    command = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-m", tier]
     if plan.everything:
-        return [[*command, "tests", *pytest_args]]
-    return [[*command, *plan.files, *pytest_args]] if plan.files else []
+        commands = [[*base, tier, "tests", *pytest_args]]
+    else:
+        commands = [[*base, tier, *plan.files, *pytest_args]] if plan.files else []
+    guards = [name for name, why in plan.files.items() if GUARD_REASON in why]
+    if guards and not include_slow:
+        commands.append([*base, "not gpu and slow", *guards, *pytest_args])
+    return commands
 
 
 def run(commands: list[list[str]], repo: Path) -> int:
