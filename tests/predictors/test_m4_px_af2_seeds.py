@@ -234,6 +234,60 @@ class TestColabFoldGroupsConsecutiveSeeds:
                 runner._check_request(request)
 
 
+class TestColabFoldRefusesSeedsThatAreNotIntegers:
+    """``make_request`` used ``int(seed)``, which turned 0.7 into 0 and True into 1."""
+
+    @pytest.mark.parametrize(
+        "seeds, shown",
+        [
+            ([0.7, 1.2], "0.7"),
+            ([True, 2], "True"),
+            (["1", "2"], "'1'"),
+            ([0, 1.5], "1.5"),
+            ([1.0], "1.0"),
+            ([None], "None"),
+        ],
+    )
+    def test_the_values_the_bug_report_lists_are_refused_and_named(self, seeds, shown):
+        with pytest.raises(ValueError) as caught:
+            ColabFoldRunner().make_request(P53, seeds=seeds, **ROLES)
+        assert str(caught.value) == f"seeds must be integers, got {shown}"
+
+    @pytest.mark.parametrize("seeds", [[0.7, 1.2], [True, 2], ["1", "2"], [0, 1.5]])
+    def test_protenix_says_the_same_for_the_same_list(self, seeds):
+        with pytest.raises(ValueError) as protenix:
+            ProtenixRunner().make_request(P53, seeds=seeds, **ROLES)
+        with pytest.raises(ValueError) as colabfold:
+            ColabFoldRunner().make_request(P53, seeds=seeds, **ROLES)
+        assert str(colabfold.value) == str(protenix.value)
+
+    @pytest.mark.parametrize("seeds", ["12", b"12"])
+    def test_a_string_is_not_a_list_of_digits(self, seeds):
+        with pytest.raises(ValueError, match="not a string"):
+            ColabFoldRunner().make_request(P53, seeds=seeds, **ROLES)
+
+    def test_make_requests_refuses_the_same_lists_before_the_runner_is_asked(self):
+        for seeds in ([0.7, 1.2], [True, 2], ["1", "2"]):
+            with pytest.raises(ValueError, match="seeds must be integers"):
+                ColabFoldRunner().make_requests(P53, seeds=seeds, **ROLES)
+
+    def test_integers_numpy_integers_and_a_tuple_still_work(self):
+        import numpy as np
+
+        runner = ColabFoldRunner()
+        assert runner.make_request(P53, seeds=[1, 0], **ROLES).seeds == (0, 1)
+        assert runner.make_request(P53, seeds=(np.int64(2), np.int32(3)), **ROLES).seeds == (2, 3)
+        assert runner.make_request(P53, seeds=np.arange(3), **ROLES).seeds == (0, 1, 2)
+        assert runner.make_request(P53, seeds=None, **ROLES).seeds == (0,)
+
+    def test_the_key_of_a_request_with_integer_seeds_is_unchanged(self):
+        runner = ColabFoldRunner()
+        assert (
+            runner.make_request(P53, seeds=[0, 1], num_samples=2, **ROLES).key()
+            == "415fb60014dcd6f0ed90e7bd1505126a34409d5ddd98fe205a0d646a86f938d1"
+        )
+
+
 # ---------------------------------------------------------------------------- records, manifest
 
 

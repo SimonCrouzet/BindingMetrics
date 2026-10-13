@@ -106,13 +106,14 @@ Settings that change the output
 * ``seeds``: ColabFold runs ``range(random_seed, random_seed + num_seeds)`` (line 451), so the
   seeds are consecutive integers from 0 up and the command line is ``--random-seed first
   --num-seeds count``. ``None`` gives ``(0,)``, the defaults of both flags (lines 1932, 1939).
-  Another list raises ``ValueError``. ``make_requests(input_path, seeds=[...], ...)`` therefore
-  gives one request when the seeds are ascending and consecutive (``[0, 1, 2]``, ``[5, 6]``) and
-  one request per seed otherwise (``[0, 2]``, ``[2, 1]``); a request that carries one seed is named
-  ``<name>_s<seed>``. ``seed_dimension`` stays False because a list is one request in the first
-  case only, and ``_group_seeds`` is the rule. The seed of each sample is the ``seed_<S>`` of its
-  file name (``colabfold/batch.py`` line 383, ``seed:03d``), which the adapter reports as
-  ``extras["seed_value"]``.
+  Another list raises ``ValueError``, and so does a value that is not an integer (a float, a
+  boolean or a string is refused, not truncated). ``make_requests(input_path, seeds=[...], ...)``
+  therefore gives one request when the seeds are ascending and consecutive (``[0, 1, 2]``,
+  ``[5, 6]``) and one request per seed otherwise (``[0, 2]``, ``[2, 1]``); a request that carries
+  one seed is named ``<name>_s<seed>``. ``seed_dimension`` stays False because a list is one
+  request in the first case only, and ``_group_seeds`` is the rule. The seed of each sample is
+  the ``seed_<S>`` of its file name (``colabfold/batch.py`` line 383, ``seed:03d``), which the
+  adapter reports as ``extras["seed_value"]``.
 * ``num_samples`` is the number of structures per seed: ``--num-models`` (1 to 5, default 5,
   line 1945). The early-stop threshold ``--stop-at-score`` keeps its default of 100, which no
   ranking confidence exceeds, so every model runs.
@@ -212,6 +213,7 @@ import codecs
 import importlib
 import importlib.metadata
 import logging
+import operator
 import os
 import re
 import shlex
@@ -337,6 +339,25 @@ def _mode_message(mode: str) -> str:
 def _run_module() -> Any:
     """The module with the query builder; imported here so that the package stays light."""
     return importlib.import_module("binding_metrics.metrics._openfold_run")
+
+
+def _integer_seeds(seeds: Sequence[int]) -> list[int]:
+    """``seeds`` as integers, refusing what is not one (a float would be truncated by ``int``).
+
+    The same texts as ``ProtenixRunner`` and ``make_requests``: a string, a boolean, a float or
+    anything without ``__index__`` raises ``ValueError``; numpy integers are accepted.
+    """
+    if isinstance(seeds, (str, bytes)):
+        raise ValueError("seeds must be a sequence of integers, not a string")
+    values: list[int] = []
+    for seed in seeds:
+        if isinstance(seed, bool):
+            raise ValueError(f"seeds must be integers, got {seed!r}")
+        try:
+            values.append(operator.index(seed))
+        except TypeError:
+            raise ValueError(f"seeds must be integers, got {seed!r}") from None
+    return values
 
 
 def _forbids_server(request: PredictionRequest) -> bool:
@@ -727,7 +748,7 @@ class ColabFoldRunner(PredictionRunner):
             receptor_chain=receptor_chain,
             sequences=sequences,
             weights=weights,
-            seeds=(_DEFAULT_SEED,) if seeds is None else tuple(sorted(int(s) for s in seeds)),
+            seeds=(_DEFAULT_SEED,) if seeds is None else tuple(sorted(_integer_seeds(seeds))),
             num_samples=num_samples,
             model_version=self.version() or "",
             options={
