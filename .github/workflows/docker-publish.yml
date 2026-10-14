@@ -6,7 +6,9 @@ name: Build and Push Docker Image
 # because ci.yml runs on that commit at the same time and its result is not
 # known when this workflow starts. `latest` comes from the metadata action's
 # default flavor (latest=auto), which adds it only for a stable version tag,
-# that is, only after the verification.
+# that is, only after the verification. Only the base image takes it: the full
+# image sets latest=false, because both steps would otherwise push `latest` and
+# the full image, built second, would replace the base one.
 on:
   push:
     branches:
@@ -55,6 +57,8 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: simoncrouzet/binding-metrics
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=full,enable={{is_default_branch}}
             type=semver,pattern={{version}},suffix=-full

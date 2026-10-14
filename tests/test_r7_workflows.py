@@ -7,6 +7,7 @@ without a runner.
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -459,3 +460,21 @@ class TestCleanInstallSmoke:
         )
         result, _ = self._run_scripts_step(tmp_path, workspace, [])
         assert result.returncode != 0
+
+
+class TestLatestTagIsTheBaseImage:
+    def test_only_the_base_image_can_take_latest(self):
+        steps = _workflow("docker-publish.yml")["jobs"]["docker"]["steps"]
+        metadata = {
+            step["id"]: step["with"].get("flavor", "")
+            for step in steps
+            if step.get("uses", "").startswith("docker/metadata-action")
+        }
+        can_take_latest = []
+        for step in steps:
+            if not step.get("uses", "").startswith("docker/build-push-action"):
+                continue
+            meta_id = re.search(r"steps\.([\w-]+)\.outputs\.tags", step["with"]["tags"]).group(1)
+            if "latest=false" not in metadata[meta_id]:
+                can_take_latest.append(step["with"]["target"])
+        assert can_take_latest == ["base"]
