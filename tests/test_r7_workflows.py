@@ -87,7 +87,7 @@ def _run_script(step: dict, tmp_path: Path, env: dict, cwd: Path) -> subprocess.
         cwd=cwd,
         env=full_env,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
 
