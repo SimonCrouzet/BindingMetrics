@@ -31,7 +31,7 @@ from typing import Optional
 
 import numpy as np
 
-from binding_metrics._constants import DEFAULT_RANDOM_SEED
+from binding_metrics._constants import DEFAULT_DEVICE, DEFAULT_PH, DEFAULT_RANDOM_SEED
 from binding_metrics.metrics._common import (
     ChainAliasAction,
     import_biotite,
@@ -854,7 +854,7 @@ def _molprobity_score(
 def _receptor_energy(
     chain_atoms,
     solvent_model: str = "obc2",
-    device: str = "cuda",
+    device: str = DEFAULT_DEVICE,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
     """Compute absolute AMBER ff14SB potential energy for a receptor chain.
@@ -920,14 +920,14 @@ def _receptor_energy(
                 fixer.removeHeterogens(keepWater=False)
                 fixer.findMissingAtoms()
                 fixer.addMissingAtoms(seed=random_seed)
-                # Same call as PDBFixer.addMissingHydrogens(7.4), with the platform pinned.
+                # Same call as PDBFixer.addMissingHydrogens(DEFAULT_PH), with the platform pinned.
                 mod = Modeller(fixer.topology, fixer.positions)
-                mod.addHydrogens(pH=7.4, platform=placement_platform)
+                mod.addHydrogens(pH=DEFAULT_PH, platform=placement_platform)
             else:
                 pdb = PDBFile(str(tmp_path))
                 ff_tmp = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
                 mod = Modeller(pdb.topology, pdb.positions)
-                mod.addHydrogens(ff_tmp, pH=7.4, platform=placement_platform)
+                mod.addHydrogens(ff_tmp, pH=DEFAULT_PH, platform=placement_platform)
         topology, positions = mod.topology, mod.positions
 
         ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
@@ -1072,7 +1072,7 @@ def compute_receptor_quality(
     receptor_chain: Optional[str] = None,
     clash_cutoff: float = 0.4,
     solvent_model: str = "obc2",
-    device: str = "cuda",
+    device: str = DEFAULT_DEVICE,
     *,
     exclude_bonded: bool = True,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
@@ -1322,7 +1322,7 @@ def main():
         "--clash-cutoff", type=float, default=0.4, help="VDW overlap threshold in Å (default 0.4)"
     )
     parser.add_argument("--solvent-model", choices=["obc2", "gbn2"], default="obc2")
-    parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
+    parser.add_argument("--device", choices=["cuda", "cpu"], default=DEFAULT_DEVICE)
     parser.add_argument(
         "--output",
         "-o",

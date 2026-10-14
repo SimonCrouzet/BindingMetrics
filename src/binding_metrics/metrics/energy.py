@@ -37,7 +37,12 @@ except ImportError:
 
 # OpenMM is imported inside the functions that use it, so this module can be
 # imported (and its CLI parser built) on installs without OpenMM.
-from binding_metrics._constants import COULOMB_KJ_NM_MOL_E2, DEFAULT_RANDOM_SEED
+from binding_metrics._constants import (
+    COULOMB_KJ_NM_MOL_E2,
+    DEFAULT_DEVICE,
+    DEFAULT_PH,
+    DEFAULT_RANDOM_SEED,
+)
 from binding_metrics.core.residues import BACKBONE_HEAVY_ATOM_NAMES, CYSTEINE_NAMES, residue_label
 from binding_metrics.metrics._common import ChainAliasAction, require_openmm, resolve_chain_role
 from binding_metrics.utils import configure_logging
@@ -311,7 +316,7 @@ def _create_implicit_system(
     positions,
     solvent_model: str = "obc2",
     peptide_chain: Optional[str] = None,
-    ph: float = 7.4,
+    ph: float = DEFAULT_PH,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ):
     """Create an OpenMM implicit-solvent system after adding hydrogens.
@@ -572,7 +577,7 @@ def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None, ncaa
     )
 
 
-def _get_platform(device: str = "cuda"):
+def _get_platform(device: str = DEFAULT_DEVICE):
     """Get the best available OpenMM platform.
 
     Returns:
@@ -593,7 +598,7 @@ def _get_platform(device: str = "cuda"):
 
 
 def _evaluate_potential_energy(
-    system, topology, positions, device: str = "cuda", min_iterations: int = 0
+    system, topology, positions, device: str = DEFAULT_DEVICE, min_iterations: int = 0
 ) -> float:
     """Evaluate the potential energy of a system at the given positions.
 
@@ -752,10 +757,10 @@ def compute_interaction_energy(
     peptide_chain: Optional[str] = None,
     receptor_chain: Optional[str] = None,
     solvent_model: str = "obc2",
-    device: str = "cuda",
+    device: str = DEFAULT_DEVICE,
     sample_id: Optional[str] = None,
     modes: tuple = ("raw", "relaxed", "after_md"),
-    ph: float = 7.4,
+    ph: float = DEFAULT_PH,
     relaxed_min_steps_restrained: int = 500,
     relaxed_min_steps_full: int = 2000,
     after_md_duration_ps: float = 10.0,
@@ -1155,7 +1160,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--receptor-chain", "--target-chain", action=ChainAliasAction, type=str, default=None
     )
     parser.add_argument("--solvent-model", choices=["obc2", "gbn2"], default="obc2")
-    parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
+    parser.add_argument("--device", choices=["cuda", "cpu"], default=DEFAULT_DEVICE)
     parser.add_argument(
         "--modes",
         nargs="+",
@@ -1171,8 +1176,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ph",
         type=float,
-        default=7.4,
-        help="pH used to choose protonation states when hydrogens are added (default: 7.4)",
+        default=DEFAULT_PH,
+        help=(
+            f"pH used to choose protonation states when hydrogens are added (default: {DEFAULT_PH})"
+        ),
     )
     parser.add_argument(
         "--random-seed",
