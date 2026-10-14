@@ -728,6 +728,62 @@ def _add_hydrogens_cyclic(
     return modeller.topology, modeller.positions
 
 
+def _rename_d_residues_to_l(topology) -> list:
+    """Rename the D-amino-acid residues of ``topology`` to their L templates, in place.
+
+    ``Modeller.addHydrogens`` places hydrogens by residue name and its definitions have no
+    D-amino acid (DAL, DPN, ...), so the linear route of :func:`prep_structure` gave such
+    residues no hydrogen. The cyclic route renames them (``core.nonstandard``, DAL to ALA)
+    and so does this, with the same table. The hydrogens are placed from the heavy-atom
+    geometry, which is the D geometry whatever the name, and the force field of the short
+    minimization has no energy term that tells L from D at the alpha carbon.
+
+    A residue read under its D name never got the bonds of its L template
+    (``createStandardBonds`` knows the L names only), which ``addHydrogens`` needs to find
+    the neighbours of a parent atom, so they are added.
+
+    Returns:
+        ``[(residue index, D name), ...]`` for :func:`_restore_d_residue_names`.
+    """
+    from binding_metrics.core.nonstandard import D_AA_MAP, _add_standard_intraresidue_bonds
+
+    renamed = []
+    for residue in topology.residues():
+        l_name = D_AA_MAP.get(residue.name)
+        if l_name is None:
+            continue
+        renamed.append((residue.index, residue.name))
+        residue.name = l_name
+        _add_standard_intraresidue_bonds(topology, residue)
+    return renamed
+
+
+def _restore_d_residue_names(topology, renamed: list) -> None:
+    """Give the residues listed by :func:`_rename_d_residues_to_l` their D names back.
+
+    ``addHydrogens`` adds hydrogens to residues and no residue, so the indices still fit; it
+    may rename a residue to a protonation variant of its L name (HIS to HIE), which is
+    accepted. Anything else means the topology was edited in between, and the residue keeps
+    its name with a warning.
+    """
+    from binding_metrics.core.nonstandard import _PATCHED_NAME_VARIANTS, D_AA_MAP
+
+    residues = list(topology.residues())
+    for index, d_name in renamed:
+        l_name = D_AA_MAP[d_name]
+        allowed = {l_name} | _PATCHED_NAME_VARIANTS.get(l_name, frozenset())
+        if index >= len(residues) or residues[index].name not in allowed:
+            log.warning(
+                "Residue index %d: expected %s, found %s; the name %s was not restored.",
+                index,
+                l_name,
+                "no residue" if index >= len(residues) else residues[index].name,
+                d_name,
+            )
+            continue
+        residues[index].name = d_name
+
+
 def _hydrogen_placement_platform():
     """The Reference platform: double-precision, single-threaded, deterministic.
 
@@ -1096,9 +1152,12 @@ def prep_structure(
         # Inline of PDBFixer.addMissingHydrogens so we can pin the H-placement
         # minimization to the deterministic Reference platform (the method itself
         # exposes no platform argument).
+        d_residues = _rename_d_residues_to_l(fixer.topology)
         _h_modeller = Modeller(fixer.topology, fixer.positions)
         with deterministic_hydrogen_placement(random_seed), phosaa.hydrogen_definitions():
             _h_modeller.addHydrogens(pH=ph, platform=_hydrogen_placement_platform())
+        # The topology that leaves prep keeps the input names, as in the cyclic route.
+        _restore_d_residue_names(_h_modeller.topology, d_residues)
         result_topo, result_pos = _h_modeller.topology, _h_modeller.positions
 
     # addHydrogens jitters new H randomly and relaxes them with the heavy atoms
