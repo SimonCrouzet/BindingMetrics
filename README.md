@@ -767,7 +767,7 @@ A value that could not be computed keeps its NaN, 0 or None, and its dict gains 
 
 ## Logging
 
-Library code logs through `logging` and never configures it on import. The command-line tools call `binding_metrics.utils.configure_logging()`, which sends records up to WARNING to stdout and ERROR and above to stderr, as the bare message. `binding-metrics-prep` and `-solvate` send warnings to stderr as well, so that their JSON summary is alone on stdout. `--log-file PATH` redirects both streams of a command to a file. `binding-metrics-batch` writes one log per sample, `<output-dir>/<sample>/<sample>.log`, unless `--log-file` names one file shared by all samples.
+Library code logs through `logging` and never configures it on import. The command-line tools call `binding_metrics.utils.configure_logging()`, which sends records up to WARNING to stdout and ERROR and above to stderr, as the bare message. `binding-metrics-prep` and `-solvate` send warnings to stderr as well, so that their JSON summary is alone on stdout. `--log-file PATH` redirects both streams of a command to a file. `binding-metrics-batch` writes one log per sample, `<output-dir>/<sample>/<sample>.log`, unless `--log-file` names one file shared by all samples. A console that cannot encode a character the tools print (`LC_ALL=C`, `PYTHONIOENCODING=ascii`) shows a `?` in its place and raises no `UnicodeEncodeError`: `configure_logging` sets the error handler of a standard output that is not UTF-8 to `replace`, and a standard error keeps Python's backslash escape. A `--log-file` is always UTF-8.
 
 In a script, call `configure_logging()` for the same behaviour, or attach handlers to the `binding_metrics` logger yourself:
 

@@ -222,6 +222,8 @@ E_int = E_complex − E_peptide − E_receptor, with AMBER ff14SB and implicit s
 
 Keys of modes that were not requested are absent. A mode that failed is `None`. `num_contacts` and `num_close_contacts` count the atoms present in the file, hydrogens included when the file has them, and do not depend on the modes.
 
+`binding-metrics-run` (and `-batch`) add `warnings` to the result: a list with one sentence, also logged as a warning, when `raw` is among the modes, the relaxation was skipped or failed so that the energy reads the prepared structure, and preparation rebuilt at least one heavy atom (`prep["n_missing_atoms_rebuilt"]`; hydrogens are not counted). PDBFixer places a missing atom from a template without looking at its neighbours, so overlaps between the chains can dominate the raw value: 1YCR with the side chain of TYR100 deleted has 8 rebuilt atoms and a raw E_int of +33664.7 kJ/mol against −296.1 relaxed; the deposited structure, with one rebuilt atom (the terminal oxygen), has −16.0 against −332.4. The energies are the same with and without the sentence, and a run whose relaxation succeeded gets none.
+
 **modes**
 
 | mode | protocol |
@@ -249,6 +251,8 @@ binding-metrics-energy --input-dir designs/ --glob-pattern "*.cif" --modes relax
 ```
 
 The CLI computes all three modes when `--modes` is omitted. Further flags: `--solvent-model {obc2,gbn2}`, `--relaxed-min-steps-restrained`, `--relaxed-min-steps-full`, `--after-md-duration-ps`, `--after-md-timestep-fs`, `--after-md-temperature-k`, `--ph`, `--random-seed INT|none`, `--binder-chain`, `--target-chain`.
+
+The command exits with status 1 when no sample produced an energy; if only some failed it exits 0 and logs a warning that names them.
 
 ### Reserved interface: MLFF interaction energy
 
@@ -1133,7 +1137,7 @@ binding-metrics-receptor-quality --input receptor.pdb --output quality.csv    # 
 | `chains` | result of `detect_chains_from_file`: chain IDs, label IDs, residue counts |
 | `prep` | what preparation changed, or `{"skipped": True}` / `{"error": ...}` |
 | `relax` | relaxation result (below), or `{"skipped": True}` |
-| `energy` | result of §5 |
+| `energy` | result of §5; `warnings` as described there |
 | `interface`, `geometry`, `electrostatics` | results of §2 to §8; `geometry` holds `ramachandran`, `omega` and `shape_complementarity` |
 | `dockq`, `openfold` | results of §10 and §12 (with the EvoBind keys merged into `openfold`) |
 | `prediction` | only with `--predictor` / `predictor=`: the prediction of any model with an adapter, its EvoBind keys and the store counters (§12, "Pipeline"); `openfold` is then `{"skipped": True}` |
