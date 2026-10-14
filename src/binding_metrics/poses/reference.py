@@ -1,27 +1,27 @@
 """``Reference``: the structure that a set of poses is placed on and measured against.
 
-A reference is an analysis role, not a kind of pose: a crystal structure, a receptor that a
-model was forced to keep, or a docked complex can all play it. It names
+A reference is a role that a crystal structure, a receptor that a model was forced to keep or
+a docked complex can play. It names
 
 * the receptor chain, and optionally the binder chain (the peptide of the reference complex),
 * an optional ``residue_map`` that pairs the residues of a pose with the residues of the
   reference,
-* NAMED residue sets in the numbering of the reference (an epitope, hotspots, a pocket),
-* NAMED partners: other structures that are already placed in the frame of the reference
-  (a known binder on the same receptor).
+* named residue sets in the numbering of the reference (an epitope, hotspots, a pocket),
+* named partners: other structures already placed in the frame of the reference (a known
+  binder on the same receptor).
 
-The reference structure is given as a path, a biotite ``AtomArray`` or a ``Pose``; it is
-stored as a pose (a bare path or array becomes an ``ExperimentalPose``), so its content hash
-comes from the pose machinery. Nothing is read until ``atoms()`` or ``validate()`` is called.
+The structure is a path, a biotite ``AtomArray`` or a ``Pose``, stored as a pose (a bare path
+or array becomes an ``ExperimentalPose``). Nothing is read until ``atoms()`` or ``validate()``
+is called.
 
-A residue is identified by a ``ResidueKey``, ``(chain, number, insertion code)``, as
-``load_structure`` reads the author numbering: ``52`` and ``52A`` are two residues.
+A residue is identified by a ``ResidueKey``, ``(chain, number, insertion code)``, in the author
+numbering that ``load_structure`` reads: ``52`` and ``52A`` are two residues.
 
-Several variants of the reference can be given to one call as a mapping
-``{variant_name: Reference}``; ``normalize_references`` turns either form into that mapping.
+A call takes one ``Reference`` or several variants as ``{variant_name: Reference}``;
+``normalize_references`` turns either form into that mapping.
 
-Importing this module imports numpy and the standard library (and the pose modules, which add
-nothing else); biotite is imported when a structure is read.
+Importing this module imports numpy, the standard library and the pose modules; biotite is
+imported when a structure is read.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ _LABEL_PATTERN = re.compile(r"^(?P<chain>[^:\s]+):(?P<number>-?\d+)(?P<icode>[A-
 class ResidueKey:
     """The identity of one residue: chain, residue number and insertion code.
 
-    Author numbering, as ``load_structure`` reads it, so ``ResidueKey("A", 52, "")`` and
+    Author numbering, as ``load_structure`` reads it: ``ResidueKey("A", 52, "")`` and
     ``ResidueKey("A", 52, "A")`` are different residues. Keys are hashable and sort by chain,
     number and insertion code. ``ResidueKey.coerce`` also reads ``("A", 52)``,
     ``("A", 52, "B")`` and the labels ``"A:52"`` and ``"A:52B"``.
@@ -288,9 +288,8 @@ def _chain_list(chains: Any) -> Optional[tuple[str, ...]]:
 class Partner:
     """A named partner that is already placed in the frame of the reference.
 
-    A known binder on the same receptor, for instance. It is not moved: the descriptors that
-    use it read its coordinates as they are. ``eq=False``: like a pose, a partner compares by
-    identity; ``content_hash()`` tells two partners with the same structure apart from others.
+    A known binder on the same receptor, for instance. It is not moved: the descriptors read
+    its coordinates as they are. A partner compares by identity (``eq=False``, as a pose does).
 
     Attributes:
         structure: A path (mmCIF or PDB), a biotite ``AtomArray`` of one model, or a ``Pose``.
@@ -398,8 +397,7 @@ _MAPPING_FIELDS = ("residue_map", "residue_sets", "partners")
 class Reference:
     """The structure that poses are placed on and measured against (see the module docstring).
 
-    The reference compares by identity (as poses do); ``content_hash()`` tells two references
-    with the same content apart from others. Its mappings are read-only views.
+    The reference compares by identity (as poses do). Its mappings are read-only views.
 
     Attributes:
         structure: The reference receptor, and the reference peptide when ``binder_chain`` is
@@ -595,9 +593,8 @@ class Reference:
         """SHA-256 hex digest of everything that changes a number computed against the reference.
 
         The structure (the pose's content hash and its chain renaming), the chains, the residue
-        map, the residue sets and the partners (each by its own hash). The ``name`` is not in
-        it: a variant keeps its content under another name. Independent of the order in which
-        the sets, partners and map entries were given.
+        map, the residue sets and the partners (each by its own hash). Not the ``name``.
+        Independent of the order in which the sets, partners and map entries were given.
         """
         return _sha256_of(
             {
@@ -618,11 +615,10 @@ class Reference:
     def frame_key(self, frame_residues: Optional[str] = None) -> tuple:
         """What decides the superposition: variants with equal keys share one superposition.
 
-        The structure (hash and chain renaming), the receptor chain, the residue map (a
-        different pairing is a different frame), and, when the fit is restricted to a named
-        residue set, that set's residues. The binder chain, the other sets and the partners do
-        not change the frame. ``frame_residues="site"`` adds the binder chain, which defines
-        the site.
+        The structure (hash and chain renaming), the receptor chain, the residue map, and, when
+        the fit is restricted to a named residue set, that set's residues. The binder chain,
+        the other sets and the partners do not change the frame, except that
+        ``frame_residues="site"`` adds the binder chain, which defines the site.
 
         Raises:
             ValueError: If ``frame_residues`` is neither ``"site"`` (which needs a binder
@@ -654,10 +650,10 @@ class Reference:
     # ------------------------------------------------------------------ serialisation
 
     def to_dict(self) -> dict:
-        """JSON-ready form: a structure that is a file is recorded by path and hash, an
-        in-memory one by hash only; keys are ``[chain, number, icode]`` lists.
+        """JSON-ready form, deterministic (names and keys sorted).
 
-        The result is deterministic: names and keys are sorted.
+        A structure that is a file is recorded by path and hash, an in-memory one by hash only;
+        residue keys are ``[chain, number, icode]`` lists.
         """
         return {
             "schema": REFERENCE_SCHEMA,
@@ -742,10 +738,10 @@ class Reference:
     # ------------------------------------------------------------------ pickling
 
     def __getstate__(self) -> dict:
-        """The state for pickle and deepcopy: the read-only mapping views as plain dicts.
+        """The state for pickle and deepcopy: the mapping views as plain dicts.
 
-        ``MappingProxyType`` cannot be pickled, and a worker process needs the reference. The
-        cache that ``prepare_reference`` keeps is left out: it is rebuilt from the structure.
+        ``MappingProxyType`` cannot be pickled and worker processes need the reference. The
+        cache of ``prepare_reference`` is left out and rebuilt from the structure.
         """
         state = {key: value for key, value in self.__dict__.items() if key != "_prepared_cache"}
         for name in _MAPPING_FIELDS:
@@ -788,10 +784,10 @@ def _missing_line(what: str, missing: list, members: Collection) -> str:
 def normalize_references(reference: Any) -> dict[str, Reference]:
     """The references of a call as ``{variant_name: Reference}``.
 
-    A call takes ``None`` (no reference, an empty dict), one ``Reference`` (the variant name is
-    its ``name``, ``"reference"`` by default) or a mapping ``{variant_name: Reference}``. In a
-    mapping the key is the variant name: a reference with another ``name`` is replaced by a
-    copy that has the key as its name.
+    Takes ``None`` (an empty dict), one ``Reference`` (the variant name is its ``name``,
+    ``"reference"`` by default) or a mapping ``{variant_name: Reference}``. In a mapping the key
+    is the variant name: a reference with another ``name`` is replaced by a copy named by the
+    key.
 
     Raises:
         TypeError: If ``reference`` is none of these, or a mapping value is not a ``Reference``.
@@ -826,8 +822,8 @@ def group_by_frame(
     """Group variants that share one superposition (equal ``Reference.frame_key``).
 
     The groups are in the order of their first variant, and each group lists its variants in
-    the order of ``references``; the first group's first variant is the first variant of the
-    call, which defines the frame in which the registry metrics run.
+    the order of ``references``. The first variant of the first group defines the frame of the
+    registry metrics.
     """
     groups: dict[tuple, list[str]] = {}
     for name, reference in references.items():
