@@ -730,14 +730,15 @@ class ImplicitRelaxation(Relaxer):
             topology, positions = modeller.topology, modeller.positions
             copy_author_chain_ids(loaded_topology, topology)
 
-        # OpenMM bonds each residue to the next by name, whatever the distance, so a
-        # chain break is closed by the minimisation. Say so; the run is unchanged.
+        # OpenMM bonds each residue to the next by name, whatever the distance, which
+        # would make the minimisation close a chain break. The system is built without
+        # that bond (create_system_respecting_chain_breaks); say so here, once.
         from binding_metrics.core.system import find_chain_breaks
 
         for gap in find_chain_breaks(topology, positions):
             logger.warning(
                 "  Chain break in chain %s: residues %s and %s are %.2f A apart (C to N); "
-                "the two are bonded and the minimisation pulls them together.",
+                "the two are not bonded, and the minimisation does not close the gap.",
                 gap["chain"],
                 gap["residue_before"],
                 gap["residue_after"],
@@ -968,8 +969,13 @@ class ImplicitRelaxation(Relaxer):
                     bond_info = user_bond_info
 
         # --- Create system ---
-        system = ff.createSystem(
+        from binding_metrics.core.system import create_system_respecting_chain_breaks
+
+        system, topology = create_system_respecting_chain_breaks(
+            ff,
             topology,
+            positions,
+            warn=False,  # the break was reported above
             nonbondedMethod=app.NoCutoff,
             constraints=app.HBonds,
         )

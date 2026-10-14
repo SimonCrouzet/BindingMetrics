@@ -353,15 +353,16 @@ def find_chain_breaks(topology, positions) -> list:
     """Find consecutive residues of one chain that are too far apart to be bonded.
 
     OpenMM bonds every residue to the next one in the chain by name
-    (``createStandardBonds``), whatever the distance, and so does the relaxation,
-    which then closes the gap by stretching the two ends together. A chain break
-    caused by an unresolved loop or a segment that a model placed elsewhere thus
-    disappears from the result without a message. This lists them: residues i and
+    (``createStandardBonds``), whatever the distance, and a system built from such a
+    topology closes the gap by stretching the two ends together. A chain break
+    caused by an unresolved loop or a segment that a model placed elsewhere would thus
+    disappear from the result without a message. This lists them: residues i and
     i+1 of a chain (amino acids or capping groups, waters and ligands in between
     skipped) whose C(i) and N(i+1) atoms are more than
     ``_PEPTIDE_BOND_MAX_ANGSTROM`` (2.0 A, against 1.33 A for an amide bond) apart.
     A pair where either atom is missing or sits at the origin as a placeholder cannot
-    be judged and is not listed.
+    be judged and is not listed. :func:`create_system_respecting_chain_breaks` leaves
+    such a pair unbonded.
 
     Returns:
         A list with one dict per break: ``chain`` (the author chain ID of a topology read
@@ -380,6 +381,117 @@ def find_chain_breaks(topology, positions) -> list:
         }
         for chain, before, after, distance in _chain_breaks(topology, positions)
     ]
+
+
+def _topology_without_bonds(topology, dropped_pairs: set):
+    """Copy of ``topology`` without the bonds whose atom indices are in ``dropped_pairs``.
+
+    ``dropped_pairs`` holds ``frozenset({index, index})`` entries. Atoms, residues and
+    chains keep their order, IDs and indices, so positions fit the copy, and so do the
+    author chain IDs that :func:`binding_metrics.io.structures.author_chain_ids` reads.
+    """
+    copy = Topology()
+    copy.setPeriodicBoxVectors(topology.getPeriodicBoxVectors())
+    new_atoms: dict = {}
+    for chain in topology.chains():
+        new_chain = copy.addChain(chain.id)
+        for residue in chain.residues():
+            new_residue = copy.addResidue(
+                residue.name, new_chain, residue.id, residue.insertionCode
+            )
+            for atom in residue.atoms():
+                charge = getattr(atom, "formalCharge", None)  # absent before OpenMM 8.1
+                extra = {} if charge is None else {"formalCharge": charge}
+                new_atoms[atom.index] = copy.addAtom(
+                    atom.name, atom.element, new_residue, atom.id, **extra
+                )
+    for bond in topology.bonds():
+        if frozenset((bond.atom1.index, bond.atom2.index)) not in dropped_pairs:
+            copy.addBond(
+                new_atoms[bond.atom1.index], new_atoms[bond.atom2.index], bond.type, bond.order
+            )
+    copy_author_chain_ids(topology, copy)
+    return copy
+
+
+def _templates_of_bonded_topology(forcefield, topology, unbonded) -> dict:
+    """``{residue of unbonded: name of the template its residue matches in topology}``.
+
+    ``ignoreExternalBonds=True`` makes templates that differ only by an external bond
+    match the same residue: a cysteine in a disulfide bond fits CYM as well as CYX, and
+    OpenMM then refuses to choose. Every residue is therefore tied to the template that
+    it matches in ``topology``, bond across the break included, where the match is the
+    one ``createSystem`` has always made. Empty when a residue has no template yet (one
+    that a template generator will write), and OpenMM then chooses for all of them.
+    """
+    try:
+        templates = forcefield.getMatchingTemplates(topology)
+    except ValueError:
+        return {}
+    return {new: old.name for new, old in zip(unbonded.residues(), templates)}
+
+
+def create_system_respecting_chain_breaks(
+    forcefield, topology, positions, *, warn: bool = True, **create_system_kwargs
+) -> tuple:
+    """Build the ``System`` of ``topology`` without a bond across a chain break.
+
+    OpenMM bonds each residue to the next one of its chain by name, whatever the
+    distance, so ``forcefield.createSystem(topology)`` closes the gap of an unresolved
+    loop: the minimisation pulls the two ends together (3.95 A to 1.34 A for three
+    residues missing from 1YCR) and the residues next to the gap can come out with an
+    inverted C-alpha. For an input with a break (:func:`find_chain_breaks`) this builds
+    the system from a copy of the topology without the C-N bond across each break, and
+    matches the residues to their templates with ``ignoreExternalBonds=True``, which
+    the missing partner of the two ends needs; every residue keeps the template that it
+    has in the bonded topology (see :func:`_templates_of_bonded_topology`). Each end keeps
+    the template of an internal residue (amide N-H and C=O, the charges of an internal
+    residue): an approximation that reaches no further than the two residues beside the
+    gap. The two ends then interact as any two non-bonded atoms, with no exclusion.
+
+    An input without a break goes to ``createSystem`` unchanged, with the same
+    topology object, so OpenMM keeps checking the bonds of every residue and the
+    system is the one that ``createSystem`` gives.
+
+    Args:
+        forcefield: OpenMM ``ForceField`` with every template the topology needs.
+        topology: OpenMM ``Topology``, with hydrogens when the force field needs them.
+        positions: Positions of the atoms (a ``Quantity``); they decide what a break is.
+        warn: Log each break at warning level; ``False`` logs at info level, for a
+            caller that builds many systems from one structure and has said it already.
+        **create_system_kwargs: Passed to ``forcefield.createSystem``.
+
+    Returns:
+        ``(system, topology)``. The topology is the argument when there is no break
+        and the copy without the bonds across the breaks otherwise; use it with the
+        system (a structural QC that reads its bonds must not find a bond that the
+        system does not have).
+    """
+    breaks = list(_chain_breaks(topology, positions))
+    if not breaks:
+        return forcefield.createSystem(topology, **create_system_kwargs), topology
+
+    author_ids = author_chain_ids(topology)
+    dropped_pairs = set()
+    for chain, before, after, distance in breaks:
+        c_index = next(a.index for a in before.atoms() if a.name == "C")
+        n_index = next(a.index for a in after.atoms() if a.name == "N")
+        dropped_pairs.add(frozenset((c_index, n_index)))
+        log.log(
+            logging.WARNING if warn else logging.INFO,
+            "Chain break in chain %s: residues %s and %s are %.2f A apart (C to N); "
+            "the two are not bonded in the system.",
+            author_ids[chain.index],
+            residue_number(before),
+            residue_number(after),
+            distance,
+        )
+    unbonded = _topology_without_bonds(topology, dropped_pairs)
+    create_system_kwargs["ignoreExternalBonds"] = True
+    create_system_kwargs["residueTemplates"] = _templates_of_bonded_topology(
+        forcefield, topology, unbonded
+    )
+    return forcefield.createSystem(unbonded, **create_system_kwargs), unbonded
 
 
 #: ``detected_by`` of a ``find_missing_residues`` entry that the sequence records of the
@@ -948,7 +1060,8 @@ def prep_structure(
               and N atoms are more than 2.0 A apart in the input, each as ``{"chain",
               "residue_before", "residue_after", "c_n_distance_angstrom"}`` (see
               :func:`find_chain_breaks`). Prep leaves them as they are; the
-              relaxation bonds the two residues anyway.
+              relaxation and the energy steps leave the two residues unbonded
+              (:func:`create_system_respecting_chain_breaks`).
             * ``ncaa_bond_order_source`` (dict[str, str]): for a cyclic peptide
               with non-canonical residues that needed a GAFF template, the
               source of each residue's bond orders, ``"ccd"`` (Chemical
@@ -993,7 +1106,7 @@ def prep_structure(
     for gap in chain_breaks:
         log.warning(
             "Chain break in chain %s: residues %s and %s are %.2f A apart (C to N). "
-            "Relaxation bonds them, which closes the gap by pulling the two segments together.",
+            "The relaxation and the energy steps leave the two residues unbonded.",
             gap["chain"],
             gap["residue_before"],
             gap["residue_after"],

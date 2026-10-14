@@ -877,7 +877,10 @@ def _receptor_energy(
 
     try:
         openmm, unit, ForceField, Modeller, PDBFile, Simulation = _import_openmm()
-        from binding_metrics.core.system import deterministic_hydrogen_placement
+        from binding_metrics.core.system import (
+            create_system_respecting_chain_breaks,
+            deterministic_hydrogen_placement,
+        )
     except ImportError as e:
         return {**_nan, "error": str(e)}
 
@@ -931,8 +934,12 @@ def _receptor_energy(
         topology, positions = mod.topology, mod.positions
 
         ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
-        system = ff.createSystem(
+        # A gap in the chain (an unresolved loop) is left unbonded: bonded by name, its two
+        # ends sit far from the bond length and add thousands of kJ/mol of stretch energy.
+        system, topology = create_system_respecting_chain_breaks(
+            ff,
             topology,
+            positions,
             nonbondedMethod=openmm.app.NoCutoff,
             constraints=openmm.app.HBonds,
         )

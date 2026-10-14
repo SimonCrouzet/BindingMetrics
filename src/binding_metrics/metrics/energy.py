@@ -431,12 +431,16 @@ def _create_implicit_system(
 
     modeller.positions = repair_ca_hydrogen_chirality(modeller.topology, modeller.positions)
 
-    system = ff.createSystem(
+    from binding_metrics.core.system import create_system_respecting_chain_breaks
+
+    system, topology = create_system_respecting_chain_breaks(
+        ff,
         modeller.topology,
+        modeller.positions,
         nonbondedMethod=openmm.app.NoCutoff,
         constraints=openmm.app.HBonds,
     )
-    return system, modeller.topology, modeller.positions, bond_info, extra_xmls
+    return system, topology, modeller.positions, bond_info, extra_xmls
 
 
 def _repair_orphaned_cys(
@@ -544,13 +548,20 @@ def _repair_orphaned_cys(
     return new_topo, new_pos
 
 
-def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None, ncaa_xmls=None):
+def _build_subsystem(
+    topology, solvent_model: str = "obc2", bond_info=None, ncaa_xmls=None, positions=None
+):
     """Build an implicit-solvent system for a topology that already has hydrogens.
 
     Same force field as ``_create_implicit_system``, without hydrogen addition.
     ``bond_info`` (lactam / cyclic closure templates) and ``ncaa_xmls`` (GAFF2
     residue templates) are the values returned by ``_create_implicit_system``;
     a subsystem that contains none of those residues can omit them.
+
+    ``positions`` (a Quantity) lets the build see a chain break of the subsystem and
+    leave its two sides unbonded, as ``_create_implicit_system`` does for the complex
+    (see ``core.system.create_system_respecting_chain_breaks``). Without positions the
+    topology is built as it is.
     """
     import openmm
     from openmm.app import ForceField
@@ -569,11 +580,23 @@ def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None, ncaa
 
         for xml_str in ncaa_xmls:
             _load_ffxml(ff, xml_str)
-    return ff.createSystem(
+    if positions is None:
+        return ff.createSystem(
+            topology,
+            nonbondedMethod=openmm.app.NoCutoff,
+            constraints=openmm.app.HBonds,
+        )
+    from binding_metrics.core.system import create_system_respecting_chain_breaks
+
+    system, _ = create_system_respecting_chain_breaks(
+        ff,
         topology,
+        positions,
+        warn=False,  # `_create_implicit_system` reported the break
         nonbondedMethod=openmm.app.NoCutoff,
         constraints=openmm.app.HBonds,
     )
+    return system
 
 
 def _get_platform(device: str = DEFAULT_DEVICE):
@@ -715,12 +738,14 @@ def _evaluate_subsystem_energies(
 
         pep_topo, pep_pos = _extract_chain(topo_h, positions, peptide_chain)
         pep_topo, pep_pos = _repair_orphaned_cys(pep_topo, pep_pos, solvent_model)
-        sys_p = _build_subsystem(pep_topo, solvent_model, bond_info=bond_info, ncaa_xmls=ncaa_xmls)
+        sys_p = _build_subsystem(
+            pep_topo, solvent_model, bond_info=bond_info, ncaa_xmls=ncaa_xmls, positions=pep_pos
+        )
         e_p = _evaluate_potential_energy(sys_p, pep_topo, pep_pos, device)
 
         rec_topo, rec_pos = _extract_chain(topo_h, positions, receptor_chain)
         rec_topo, rec_pos = _repair_orphaned_cys(rec_topo, rec_pos, solvent_model)
-        sys_r = _build_subsystem(rec_topo, solvent_model, ncaa_xmls=ncaa_xmls)
+        sys_r = _build_subsystem(rec_topo, solvent_model, ncaa_xmls=ncaa_xmls, positions=rec_pos)
         e_r = _evaluate_potential_energy(sys_r, rec_topo, rec_pos, device)
 
         if not (np.isfinite(e_p) and np.isfinite(e_r)):
