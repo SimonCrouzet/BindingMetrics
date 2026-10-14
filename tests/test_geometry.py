@@ -465,11 +465,11 @@ class TestShapeComplementarity:
         pf.write(str(slabs))
         result = compute_shape_complementarity(slabs, peptide_chain="A", receptor_chain="B")
 
-        if not np.isnan(result["sc"]):
-            assert result["sc"] > 0.7, (
-                f"Complementary facing slabs scored Sc={result['sc']:.3f}; "
-                "sign convention or normals are wrong"
-            )
+        assert np.isfinite(result["sc"]), result.get("reason")
+        assert result["sc"] > 0.7, (
+            f"Complementary facing slabs scored Sc={result['sc']:.3f}; "
+            "sign convention or normals are wrong"
+        )
 
     def test_fibonacci_sphere(self):
         """Fibonacci sphere points should be unit vectors."""
