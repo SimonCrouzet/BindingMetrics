@@ -1,13 +1,12 @@
 """Per-group aggregates of per-pose rows, and the representative pose of each group.
 
-The rows are the dictionaries of a pose-set result (one per pose, registry metric blocks at
+The rows are the dictionaries of a pose-set result: one per pose, registry metric blocks at
 the top level next to ``id``, ``status``, ``provenance``, ``native``, ``reason`` and
-``reasons``). Two jobs, both pure Python plus numpy:
+``reasons``. Pure Python plus numpy.
 
 * ``aggregate_poses`` summarises every numeric key of every block over the poses of each
-  group (the back-end by default) and over all poses, and always says how many poses gave
-  a value: ``n_ok`` next to ``n_total``. A failed pose counts in ``n_total`` and never in
-  ``n_ok``, so a mean over the survivors is never shown as a mean over the set.
+  group (the back-end by default) and over all poses. ``n_ok`` counts the poses with a value
+  and ``n_total`` the poses counted; a failed pose counts in ``n_total`` only.
 * ``select_representatives`` names one pose per group and one overall: the medoid of a
   distance matrix, the pose with the best native score, or the choice of a function.
 
@@ -16,24 +15,23 @@ Which values are valid
 A value of key ``K`` in the block ``B`` of a pose is valid when all of these hold:
 
 1. the row is not ``"status": "failed"``;
-2. no dictionary on the path to ``K`` carries a ``reason`` (a non-empty string); with
-   ``reason_policy="exclude"`` (the default) a dictionary-level ``reason`` excludes every
-   value under it, because the toolkit's convention is a sentinel plus a ``reason`` and some
-   metrics set it when only one step failed, so the keys it covers are not known. The row
-   keeps its values. ``reason_policy="keep"`` keeps them and lists the reasons under
+2. no dictionary on the path to ``K`` carries a ``reason`` (a non-empty string). With
+   ``reason_policy="exclude"`` (default) such a ``reason`` excludes every value under it,
+   because a metric may set it when one step failed and the keys it covers are not known.
+   The row keeps its values. ``reason_policy="keep"`` keeps them and lists the reasons under
    ``caveats``;
 3. the value is a finite number: not ``None``, NaN, infinite, a bool or a string.
 
 Keys come from the numeric leaves (int or float, not bool) of the rows that did not fail;
 strings, bools and lists never make a key, and ``exclude_blocks`` keeps whole blocks out
 (``provenance``, ``residue_table`` ... by default). A pose counts in ``n_total`` of a key
-when it failed, or its block is in the row, or the row's ``reasons`` names the block (a
-metric that raised). A pose that has none of these was not asked for that metric (a heavy
-metric run on the representatives only) and is not counted. Values are sorted before any
-statistic is computed, so permuting the rows changes no digit.
+when it failed, its block is in the row, or the row's ``reasons`` names the block (a metric
+that raised). A pose with none of these was not asked for that metric (a heavy metric run on
+the representatives only) and is not counted. Values are sorted before any statistic is
+computed, so permuting the rows changes no digit.
 
-Importing this module imports numpy, the standard library and ``binding_metrics.poses.agreement``
-(numpy, the standard library and the residue tables; no structure library).
+Imports: numpy, the standard library and ``binding_metrics.poses.agreement``; no structure
+library.
 """
 
 from __future__ import annotations
@@ -78,9 +76,8 @@ RESERVED_GROUP_KEYS = ("all", "rule", "reasons", "caveats")
 
 REASON_POLICIES = ("exclude", "keep")
 
-#: Two scores closer than this (relative, plus a tiny absolute floor) are tied, so that the
-#: float rounding of analytically equal scores does not decide a choice by native score. The
-#: tie of a medoid is the one of ``agreement.medoid``.
+#: Native scores within this relative (plus absolute) tolerance tie, so float rounding cannot
+#: decide a choice. The tie of a medoid is the one of ``agreement.medoid``.
 TIE_REL_TOLERANCE = 1e-9
 TIE_ABS_TOLERANCE = 1e-12
 
@@ -94,10 +91,9 @@ class Aggregator(Protocol):
     """A statistic: a function from the valid values of a group to one number.
 
     It receives a list of finite Python floats in ascending order and returns a float, or
-    None when it cannot say. An exception it raises becomes ``None`` with the exception as
-    the reason; a result that is not a finite number becomes ``None`` with a reason. A
-    function may set a ``min_values`` attribute (default 1): with fewer values it is not
-    called and the reason is "needs at least N values".
+    None. An exception it raises, or a result that is not a finite number, becomes ``None``
+    with a reason. A ``min_values`` attribute (default 1) sets the fewest values it is called
+    with; below that the reason is "needs at least N values".
     """
 
     def __call__(self, values: Sequence[float]) -> Optional[float]: ...
@@ -215,7 +211,7 @@ def _apply(
         return None, f"needs at least {needed} values"
     try:
         result = function(list(values))
-    except Exception as exc:  # noqa: BLE001 - a user aggregator may raise anything; the failure is recorded as the reason and logged
+    except Exception as exc:  # noqa: BLE001 - a user aggregator may raise anything
         logger.warning("aggregator failed on %d values: %s: %s", n_ok, type(exc).__name__, exc)
         return None, f"{type(exc).__name__}: {exc}"
     if result is None:
@@ -274,7 +270,7 @@ def aggregate_values(
         "reasons": {text: count}, "caveats": {}, "statistic_reasons": {statistic: text}}``.
         ``n_total`` is ``len(values)``, ``complete`` is ``n_ok == n_total``. With fewer than
         ``min_n_ok`` valid values every statistic is None with a reason; ``std`` needs two
-        values whatever ``min_n_ok`` is. Keys are in the order of ``statistics``, then the
+        values whatever ``min_n_ok`` is. Keys follow the order of ``statistics``, then the
         entries above.
 
     Raises:
@@ -456,7 +452,7 @@ def aggregate_poses(
             the ``"all"`` group only. Group keys are written as ``group_key`` does.
         statistics: Names from ``STATISTICS`` or a mapping ``{name: aggregator}``.
         min_n_ok: A key with fewer valid values yields None for every statistic and a
-            reason. The default 1 reports a mean over a single survivor, with ``n_ok`` and
+            reason. With the default 1 a single valid value gives its mean, with ``n_ok`` and
             ``complete`` next to it and ``std`` None ("needs at least 2 values").
         reason_policy: ``"exclude"`` (default) drops every value under a dictionary that
             has a ``reason``; ``"keep"`` keeps them and counts the reasons under ``caveats``.
@@ -466,15 +462,15 @@ def aggregate_poses(
     Returns:
         ``{group: {key path: entry}}``: groups in sorted order and ``"all"`` last, key paths
         sorted (``"interface.delta_sasa"``, ``"native.iptm"``, ``"frame.n_paired"``). An
-        entry is the dictionary of ``aggregate_values`` plus ``n_ok``, ``n_total``,
-        ``complete``, ``reasons`` (``{text: count}`` of the poses without a valid value),
-        ``caveats`` and ``statistic_reasons``. A key a group was not asked for (see the
-        module docstring) is absent from that group.
+        entry is the dictionary of ``aggregate_values``: the statistics, ``n_ok``,
+        ``n_total``, ``complete``, ``reasons`` (``{text: count}`` of the poses without a
+        valid value), ``caveats`` and ``statistic_reasons``. A key a group was not asked for
+        (see the module docstring) is absent from that group.
 
     Raises:
         ValueError: For an unknown statistic or policy, ``min_n_ok`` below 1, a row that is
             not a mapping, or a group key that is reserved (``"all"``, ``"rule"``,
-            ``"reasons"``). The check happens before any value is read.
+            ``"reasons"``, ``"caveats"``). The checks run before any value is read.
     """
     aggregators = resolve_statistics(statistics)
     min_n_ok = _check_min_n_ok(min_n_ok)
@@ -662,7 +658,7 @@ def rank_by(key: Callable[[Mapping[str, Any]], float], *, largest: bool = False)
         for row in rows:
             try:
                 number, _ = _classify(key(row))
-            except Exception as exc:  # noqa: BLE001 - a user key function may raise anything; the row is skipped and the failure logged
+            except Exception as exc:  # noqa: BLE001 - a user key function may raise anything
                 logger.debug(
                     "rank_by key failed on %r: %s: %s", row.get("id"), type(exc).__name__, exc
                 )
@@ -710,22 +706,20 @@ def select_representatives(
 
     Rules:
 
-    * ``"medoid"`` (default): ``agreement.medoid`` on the poses of the group, the one rule
-      for both modules. A pose is a candidate only when its row has no undefined distance to
-      another pose of the group; the medoid is the candidate with the smallest mean distance
-      to the others, a tie within ``agreement.TIE_TOLERANCE_ANGSTROM`` going to the lowest id.
-      When no pose has a complete row the mean runs over each pose's defined distances and
-      the group has a ``caveats`` entry that says so. Needs ``distances``; a group of one pose
-      is represented by it.
-    * ``"confidence"``: the pose with the best ``native[confidence_key]`` in its group,
-      "best" being the largest for ``ranking_score``, ``iptm``, ``ptm`` and ``avg_plddt``
-      and the smallest for ``gpde``, ``has_clash`` and ``disorder`` (``native_score_direction``);
-      another name needs ``confidence_direction``. A model's own scores are not comparable
-      across models, so with more than one group the overall representative is None with a
-      reason: give a callable or use the medoid for it.
-    * a callable ``rule(rows_of_group, distances) -> pose id``: it receives the rows of
-      the group that did not fail, sorted by id, and the ``PoseDistances`` (or None). It
-      must return the id of one of them; ``rank_by`` makes one from a key function.
+    * ``"medoid"`` (default): ``agreement.medoid`` on the poses of the group. A pose is a
+      candidate only when its row has no undefined distance to another pose of the group;
+      the medoid is the candidate with the smallest mean distance to the others, a tie within
+      ``agreement.TIE_TOLERANCE_ANGSTROM`` going to the lowest id. When no pose has a
+      complete row the mean runs over each pose's defined distances and the group has a
+      ``caveats`` entry. Needs ``distances``; a group of one pose is represented by it.
+    * ``"confidence"``: the pose with the best ``native[confidence_key]`` in its group.
+      "Best" is the largest for ``ranking_score``, ``iptm``, ``ptm`` and ``avg_plddt`` and
+      the smallest for ``gpde``, ``has_clash`` and ``disorder`` (``native_score_direction``);
+      another name needs ``confidence_direction``. Native scores are not comparable across
+      models, so with more than one group the overall representative is None with a reason.
+    * a callable ``rule(rows_of_group, distances) -> pose id``: it receives the rows of the
+      group that did not fail, sorted by id, and the ``PoseDistances`` (or None), and must
+      return the id of one of them. ``rank_by`` makes one from a key function.
 
     A pose with ``"status": "failed"`` is never a candidate. Ties go to the lowest id in
     string order (native scores within ``TIE_REL_TOLERANCE`` tie), so the answer does not
@@ -794,7 +788,7 @@ def select_representatives(
 def _call_rule(rule, members, distances) -> tuple[Optional[str], Optional[str]]:
     try:
         pose_id = rule(list(members), distances)
-    except Exception as exc:  # noqa: BLE001 - a user rule may raise anything; the failure is recorded as the reason and logged
+    except Exception as exc:  # noqa: BLE001 - a user rule may raise anything
         logger.warning("representative rule failed: %s: %s", type(exc).__name__, exc)
         return None, f"{type(exc).__name__}: {exc}"
     if pose_id is None:
