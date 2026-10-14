@@ -466,12 +466,15 @@ class TestSimulationPlatform:
         import openmm
         from openmm import Platform
 
+        from binding_metrics.core import _platform
+
         def only_cpu(name):
             if name != "CPU":
                 raise openmm.OpenMMException(f"There is no registered Platform called {name}")
             return "cpu-platform"
 
         monkeypatch.setattr(Platform, "getPlatformByName", only_cpu)
+        monkeypatch.setattr(_platform, "_create_probe_context", lambda platform: None)
 
         assert self._simulation()._get_platform() == "cpu-platform"
 
@@ -479,12 +482,15 @@ class TestSimulationPlatform:
         import openmm
         from openmm import Platform
 
+        from binding_metrics.core import _platform
+
         def only_reference(name):
             if name != "Reference":
                 raise openmm.OpenMMException(f"There is no registered Platform called {name}")
             return "reference-platform"
 
         monkeypatch.setattr(Platform, "getPlatformByName", only_reference)
+        monkeypatch.setattr(_platform, "_create_probe_context", lambda platform: None)
 
         assert self._simulation()._get_platform() == "reference-platform"
 
