@@ -9,7 +9,8 @@ For one pose and one ``Reference`` the stage
    C-alpha RMSD of named regions in the final frame.
 
 ``place_in_reference_frame`` applies the transform to the atoms of the pose;
-``renumber_to_reference`` gives the paired receptor residues the numbers of the reference.
+``renumber_to_reference`` gives the paired receptor residues the numbers of the reference, and
+the binder residues too when ``pair_binder_residues`` paired them with the reference binder.
 Nothing here modifies its input.
 
 Pairing (first success wins; the method used is reported)
@@ -82,7 +83,7 @@ from __future__ import annotations
 import functools
 import logging
 import math
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Sequence
 
@@ -135,8 +136,9 @@ class FrameOptions:
         alignment_matrix: Name of the biotite substitution matrix of the sequence alignment.
         alignment_gap_penalty: ``(open, extend)``, both negative or zero integers.
         renumber_receptor: Read by the scoring stage: write the structure of the registry
-            metrics with the reference numbers on the paired receptor residues (see
-            ``renumber_to_reference``).
+            metrics with the reference numbers on the paired receptor residues and, when the
+            reference has a binder chain that pairs with the binder of the pose, on the binder
+            residues (see ``renumber_to_reference`` and ``pair_binder_residues``).
         metrics_frame: Read by the scoring stage: ``"reference"`` computes path-based metrics
             on the transformed pose, ``"original"`` on the pose's own file.
     """
@@ -803,16 +805,18 @@ def _normalise_map(residue_map: Optional[Mapping]) -> dict:
 
 @dataclass(frozen=True, eq=False)
 class PreparedReference:
-    """A reference read once: its receptor residue table and its binding site.
+    """A reference read once: its receptor residue table, its binding site and its binder table.
 
     Build with ``prepare_reference``; ``superpose_receptor`` accepts it in place of the
     ``Reference`` so that the reference structure is read once for a whole set of poses.
+    ``binder_table`` is None when the reference has no binder chain.
     """
 
     reference: Reference
     table: _ReceptorTable
     site: Optional[tuple]
     site_cutoff_angstrom: float
+    binder_table: Optional[_ReceptorTable] = None
 
 
 def prepare_reference(
@@ -844,10 +848,11 @@ def prepare_reference(
     reference.validate()
     atoms = _single_model(reference.atoms(), "the reference structure")
     table = _build_table(atoms, reference.receptor_chain)
-    site = None
+    site = binder_table = None
     if reference.binder_chain is not None:
         site = _site_keys(atoms, table, reference.binder_chain, cutoff)
-    prepared = PreparedReference(reference, table, site, cutoff)
+        binder_table = _build_table(atoms, reference.binder_chain)
+    prepared = PreparedReference(reference, table, site, cutoff, binder_table)
     cache[cutoff] = (structure_hash, prepared)
     return prepared
 
@@ -1179,6 +1184,82 @@ def _pair_pose(pose, prepared: PreparedReference, receptor_chain, residue_map, o
     return table, _pair_tables(table, prepared.table, mapping, options)
 
 
+def _empty_table(chain: str) -> _ReceptorTable:
+    return _ReceptorTable(
+        chain=chain,
+        keys=(),
+        names=(),
+        atom_indices=(),
+        ca=np.zeros((0, 3)),
+        backbone=(),
+        n_nonfinite=0,
+        duplicate_keys=frozenset(),
+    )
+
+
+def pair_binder_residues(
+    pose,
+    reference,
+    *,
+    binder_chain: str,
+    options: Any = None,
+) -> ResiduePairing:
+    """Pair the binder residues of a pose with those of the binder chain of the reference.
+
+    The pairing says which numbers ``renumber_to_reference`` gives the binder. The two chains
+    must have the same number of polymer residues and every residue must pair, by number and
+    name where the numbers agree and otherwise by the sequence alignment of the module
+    docstring (``FrameOptions.alignment_*``; the identity and fraction limits of the receptor
+    do not apply, a complete pairing has an identity of 1). A ``residue_map`` does not apply:
+    its reference side is the receptor. ``reason`` says why the binder cannot be renumbered.
+
+    Args:
+        pose: A ``Pose`` or a biotite ``AtomArray`` of one model.
+        reference: A ``Reference`` or a ``PreparedReference``; it needs a ``binder_chain``.
+        binder_chain: The binder chain of the pose (user chain ID).
+        options: ``FrameOptions``, a mapping of options, or None for the defaults.
+
+    Raises:
+        ValueError: For an invalid option or reference, or when the pose has more than one model.
+    """
+    options = _as_options(options)
+    prepared = _prepare(reference, options)
+    atoms = _single_model(pose.atoms() if isinstance(pose, Pose) else pose, "the pose")
+    table = _build_table(atoms, binder_chain)
+    reference_table = prepared.binder_table
+    if reference_table is None:
+        return _make_pairing(
+            None, (), table, _empty_table(""), reason="the reference has no binder chain"
+        )
+    own, theirs = binder_chain, reference_table.chain
+    if len(table) == 0:
+        reason = f"the pose has no polymer residue in the binder chain '{own}'"
+    elif len(table) != len(reference_table):
+        reason = (
+            f"the pose binder chain '{own}' has {len(table)} polymer residues and the reference "
+            f"binder chain '{theirs}' has {len(reference_table)}"
+        )
+    elif table.duplicate_keys:
+        reason = (
+            f"residue {sorted(table.duplicate_keys)[0].label} occurs twice in the pose binder "
+            f"chain '{own}'"
+        )
+    else:
+        # the receptor limits (identity, fraction of the reference) do not apply: below, every
+        # residue has to pair, and a pairing by names of a different peptide fails that
+        auto = replace(options, pairing="auto", min_sequence_identity=0.0, min_frame_fraction=0.0)
+        pairing = _pair_tables(table, reference_table, None, auto)
+        if pairing.reason is None and pairing.n_paired != len(table):
+            reason = (
+                f"only {pairing.n_paired} of the {len(table)} residues of the pose binder chain "
+                f"'{own}' pair with the reference binder chain '{theirs}' "
+                f"(pairing by {pairing.method})"
+            )
+            return ResiduePairing(**{**_shallow(pairing), "reason": reason})
+        return pairing
+    return _make_pairing(None, (), table, reference_table, reason=reason)
+
+
 def _prepare(reference, options: FrameOptions) -> PreparedReference:
     if isinstance(reference, PreparedReference):
         if reference.site_cutoff_angstrom == float(options.site_cutoff_angstrom):
@@ -1375,23 +1456,70 @@ def place_in_reference_frame(structure, frame) -> Any:
     return placed
 
 
+def _renumber_chain(
+    atoms,
+    chain: str,
+    targets: Mapping,
+    first_free: int,
+    new_numbers: np.ndarray,
+    new_icodes: np.ndarray,
+) -> None:
+    """Write the new numbers of the residues of ``chain`` into ``new_numbers``/``new_icodes``.
+
+    A residue whose key is in ``targets`` takes the number and insertion code of its value; any
+    other residue (unpaired, ligand, water) takes the next unused number from ``first_free``,
+    in file order, with no insertion code.
+    """
+    has_icode = "ins_code" in atoms.get_annotation_categories()
+    chain_atoms = np.flatnonzero(np.asarray(atoms.chain_id) == chain)
+    numbers = np.asarray(atoms.res_id)[chain_atoms]
+    icodes = np.asarray(atoms.ins_code)[chain_atoms] if has_icode else np.full(len(chain_atoms), "")
+    names = np.asarray(atoms.res_name)[chain_atoms]
+    boundary = np.ones(len(chain_atoms), dtype=bool)
+    boundary[1:] = (
+        (numbers[1:] != numbers[:-1]) | (icodes[1:] != icodes[:-1]) | (names[1:] != names[:-1])
+    )
+    starts = np.flatnonzero(boundary)
+    stops = np.append(starts[1:], len(chain_atoms))
+    next_free = first_free
+    for start, stop in zip(starts, stops):
+        target = targets.get(ResidueKey(chain, int(numbers[start]), str(icodes[start])))
+        rows = chain_atoms[start:stop]
+        if target is None:
+            number, icode = next_free, ""
+            next_free += 1
+        else:
+            number, icode = target.number, target.icode
+        new_numbers[rows] = number
+        new_icodes[rows] = icode
+
+
 def renumber_to_reference(
-    structure, frame: FrameResult, reference, *, receptor_chain: Optional[str] = None
+    structure,
+    frame: FrameResult,
+    reference,
+    *,
+    receptor_chain: Optional[str] = None,
+    binder_pairing: Optional[ResiduePairing] = None,
 ):
-    """A copy of the atoms with the reference numbers on the paired receptor residues.
+    """A copy of the atoms with the reference numbers on the paired residues.
 
     Makes labels such as ``interface_residues_receptor`` share one numbering across poses.
     Residues of the receptor chain that are not paired (unpaired polymer residues, ligands,
     waters) get unused numbers above the highest residue number of the reference receptor
-    chain, one per residue in file order, with no insertion code. Other chains keep their
-    numbers. Coordinates are unchanged (apply ``place_in_reference_frame`` separately); the
-    input is never modified.
+    chain, one per residue in file order, with no insertion code. The binder chain keeps its
+    numbers unless ``binder_pairing`` is given; other chains keep their numbers. Coordinates
+    are unchanged (apply ``place_in_reference_frame`` separately); the input is never modified.
 
     Args:
         structure: A ``Pose`` or an ``AtomArray`` of one model.
         frame: The ``FrameResult`` of this pose (it carries the pairs).
         reference: The ``Reference`` or ``PreparedReference`` the frame was computed against.
         receptor_chain: The receptor chain of the pose; default the reference's.
+        binder_pairing: The ``pair_binder_residues`` result for this pose. When it is ok, the
+            binder chain is renumbered as the receptor chain is, with the numbers of the
+            reference binder chain and unused numbers above its highest for the residues
+            that are not paired. A pairing with a ``reason`` leaves the binder as it is.
 
     Raises:
         ValueError: If the frame failed.
@@ -1408,36 +1536,21 @@ def renumber_to_reference(
     table = _build_table(atoms, chain)
     unique_pose_keys = {key for key in table.keys if key not in table.duplicate_keys}
     new_key = {p: r for p, r in frame.pairs if p in unique_pose_keys}
-    chain_atoms = np.flatnonzero(np.asarray(atoms.chain_id) == chain)
-    numbers = np.asarray(atoms.res_id)[chain_atoms]
-    has_icode = "ins_code" in atoms.get_annotation_categories()
-    icodes = np.asarray(atoms.ins_code)[chain_atoms] if has_icode else np.full(len(chain_atoms), "")
-    names = np.asarray(atoms.res_name)[chain_atoms]
-    boundary = np.ones(len(chain_atoms), dtype=bool)
-    boundary[1:] = (
-        (numbers[1:] != numbers[:-1]) | (icodes[1:] != icodes[:-1]) | (names[1:] != names[:-1])
-    )
-    starts = np.flatnonzero(boundary)
-    stops = np.append(starts[1:], len(chain_atoms))
-    highest = max((key.number for key in prepared.table.keys), default=0)
-    next_free = highest + 1
     renumbered = atoms.copy()
     new_numbers = np.asarray(renumbered.res_id).copy()
+    has_icode = "ins_code" in atoms.get_annotation_categories()
     new_icodes = (
         np.asarray(renumbered.ins_code).copy()
         if has_icode
         else np.full(renumbered.array_length(), "", dtype="U1")
     )
-    for start, stop in zip(starts, stops):
-        target = new_key.get(ResidueKey(chain, int(numbers[start]), str(icodes[start])))
-        rows = chain_atoms[start:stop]
-        if target is None:
-            number, icode = next_free, ""
-            next_free += 1
-        else:
-            number, icode = target.number, target.icode
-        new_numbers[rows] = number
-        new_icodes[rows] = icode
+    highest = max((key.number for key in prepared.table.keys), default=0)
+    _renumber_chain(atoms, chain, new_key, highest + 1, new_numbers, new_icodes)
+    if binder_pairing is not None and binder_pairing.ok and prepared.binder_table is not None:
+        binder = binder_pairing.pose_keys[0].chain
+        binder_key = dict(zip(binder_pairing.pose_keys, binder_pairing.reference_keys))
+        highest = max((key.number for key in prepared.binder_table.keys), default=0)
+        _renumber_chain(atoms, binder, binder_key, highest + 1, new_numbers, new_icodes)
     if not has_icode:
         renumbered.add_annotation("ins_code", dtype="U1")
         new_icodes = np.full(renumbered.array_length(), "", dtype="U1")
@@ -1456,6 +1569,7 @@ __all__ = [
     "is_degenerate",
     "kabsch_transform",
     "one_letter_code",
+    "pair_binder_residues",
     "pair_residues",
     "place_in_reference_frame",
     "prepare_reference",

@@ -19,7 +19,9 @@ A value of key ``K`` in the block ``B`` of a pose is valid when all of these hol
    ``reason_policy="exclude"`` (default) such a ``reason`` excludes every value under it,
    because a metric may set it when one step failed and the keys it covers are not known.
    The row keeps its values. ``reason_policy="keep"`` keeps them and lists the reasons under
-   ``caveats``;
+   ``caveats``. The ``reason`` at the top of a block named in ``partial_blocks`` is the
+   exception: such a metric sets None for each value it could not compute, so the others stay
+   valid and the None values carry the reason;
 3. the value is a finite number: not ``None``, NaN, infinite, a bool or a string.
 
 Keys come from the numeric leaves (int or float, not bool) of the rows that did not fail;
@@ -356,6 +358,7 @@ class _RowView:
     reason_nodes: dict[str, str]  # dotted path of a dictionary with a reason -> the reason
     blocks: set[str]
     stage_reasons: dict[str, str]
+    partial_reasons: dict[str, str]  # partial block -> the reason at its top
 
     def covering_reason(self, path: str) -> Optional[str]:
         """The reason of the outermost dictionary on the way to ``path``, if there is one."""
@@ -393,7 +396,9 @@ def _walk(
         _walk(child, f"{path}.{key}", block, view, covered)
 
 
-def _view_of(row: Mapping[str, Any], exclude_blocks: Sequence[str]) -> _RowView:
+def _view_of(
+    row: Mapping[str, Any], exclude_blocks: Sequence[str], partial_blocks: Sequence[str] = ()
+) -> _RowView:
     failed = row.get("status") == "failed"
     stage_reasons = row.get("reasons")
     stage_reasons = stage_reasons if isinstance(stage_reasons, Mapping) else {}
@@ -405,11 +410,15 @@ def _view_of(row: Mapping[str, Any], exclude_blocks: Sequence[str]) -> _RowView:
         stage_reasons={
             str(stage): text for stage, text in stage_reasons.items() if isinstance(text, str)
         },
+        partial_reasons={},
     )
     for name, value in row.items():
         if name in exclude_blocks:
             continue
         view.blocks.add(str(name))
+        if name in partial_blocks and isinstance(value, Mapping) and _reason_of(value):
+            view.partial_reasons[str(name)] = _reason_of(value)
+            value = {key: child for key, child in value.items() if key != "reason"}
         _walk(value, str(name), str(name), view, covered=False)
     return view
 
@@ -424,7 +433,7 @@ def _outcome(view: _RowView, path: str, block: str, reason_policy: str):
     if path in view.leaves:
         number, why = _classify(view.leaves[path][1])
         if number is None:
-            return None, why, None
+            return None, view.partial_reasons.get(block, why), None
         return number, None, covering
     if block in view.blocks:
         return None, "no value for this key", None
@@ -442,6 +451,7 @@ def aggregate_poses(
     reason_policy: str = "exclude",
     exclude_blocks: Sequence[str] = DEFAULT_EXCLUDED_BLOCKS,
     keys: Optional[Sequence[str]] = None,
+    partial_blocks: Sequence[str] = (),
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Aggregate every numeric key of the rows per group and over all poses.
 
@@ -458,6 +468,11 @@ def aggregate_poses(
             has a ``reason``; ``"keep"`` keeps them and counts the reasons under ``caveats``.
         exclude_blocks: Top-level row names that are not aggregated.
         keys: Dotted key paths to report even when no pose has a number there.
+        partial_blocks: Names of blocks whose top-level ``reason`` only names the values the
+            metric could not compute, which it sets to None (``structure_rmsd``). Under
+            ``reason_policy="exclude"`` the other values of such a block stay valid, and a
+            None value counts with that reason; a ``reason`` deeper in the block still
+            excludes the values under it.
 
     Returns:
         ``{group: {key path: entry}}``: groups in sorted order and ``"all"`` last, key paths
@@ -477,7 +492,7 @@ def aggregate_poses(
     reason_policy = _check_reason_policy(reason_policy)
     rows = _check_rows(rows)
     groups = _group_members(rows, _check_group_by(group_by))
-    views = [_view_of(row, exclude_blocks) for row in rows]
+    views = [_view_of(row, exclude_blocks, partial_blocks) for row in rows]
 
     block_of: dict[str, str] = {}
     for view in views:

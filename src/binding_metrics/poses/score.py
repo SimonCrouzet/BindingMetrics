@@ -29,7 +29,11 @@ result says so), so the agreement block is always in one frame. The registry met
 transformed structure, written as mmCIF to a per-call directory (``tmp_dir``, never the current
 directory), one file per pose, removed on exit. ``FrameOptions.metrics_frame="original"`` runs
 them on the pose's own file instead. A metric of the ``atom_array`` input type receives the
-transformed array.
+transformed array. With ``FrameOptions.renumber_receptor`` (default) the paired receptor residues
+carry the numbers of the reference, and so do the binder residues when the reference has a
+binder chain with as many polymer residues that all pair with those of the pose binder
+(``pair_binder_residues``). A binder that does not pair keeps its numbers, and the row says why
+under ``binder_numbering`` when a metric compares the pose with the reference structure.
 
 Which metrics run on which poses. A metric whose ``cost_class`` is ``static`` or ``model`` runs
 on every pose. One that is ``structural`` or ``md``, or that declares no class, is heavy:
@@ -56,13 +60,14 @@ residue.
 could not be placed on the reference (nothing else is attempted; ``reason`` says why),
 ``"partial"`` when a metric raised, was skipped, reported a failure or reported a ``reason``,
 else ``"ok"``. ``reasons`` maps the stage (``load``, ``chains``, ``frame``, ``profile``,
-``agreement``) or the metric name to a sentence; a metric that raised has no block and its
-sentence is ``"<ExceptionType>: <message>"``. A metric that reports its own failure or skip in
-its result (see ``_result_status``) keeps its block and the sentence is the metric's own text;
-a block that holds no result gets that text as its ``reason`` too, so the aggregates drop its
-fields. A failed pose counts in ``n_total`` of the aggregates and never in ``n_ok``. No value is
-NaN unless a registry metric returned it; ``nonfinite_fields`` lists the paths of those.
-``independent_of_design`` is None unless ``design_source`` is given (see the argument).
+``binder_numbering``, ``agreement``) or the metric name to a sentence; a metric that raised has
+no block and its sentence is ``"<ExceptionType>: <message>"``. A metric that reports its own
+failure or skip in its result (see ``_result_status``) keeps its block and the sentence is the
+metric's own text; a block that holds no result gets that text as its ``reason`` too, so the
+aggregates drop its fields. A failed pose counts in ``n_total`` of the aggregates and never in
+``n_ok``. No value is NaN unless a registry metric returned it; ``nonfinite_fields`` lists the
+paths of those. ``independent_of_design`` is None unless ``design_source`` is given (see the
+argument).
 
 The design origin. Checks that need a model independent of the designer
 (``INDEPENDENCE_DEPENDENT_CHECKS`` of ``binding_metrics.capabilities``, today
@@ -162,6 +167,7 @@ from binding_metrics.poses.descriptors import (
 from binding_metrics.poses.frame import (
     FrameOptions,
     FrameResult,
+    pair_binder_residues,
     place_in_reference_frame,
     prepare_reference,
     renumber_to_reference,
@@ -255,6 +261,9 @@ _POSE_AS_SECOND_STRUCTURE_REASON = (
     "so the poses must be predicted poses with per-atom pLDDT and a receptor chain is required. "
     "Give predicted poses (PredictedPose), or leave '{name}' out of the metric list."
 )
+#: Metrics whose ``reason`` names the values they could not compute, which they leave None:
+#: the aggregates keep the other values of the block (``aggregate_poses``, ``partial_blocks``).
+_PARTIAL_BLOCKS = ("structure_rmsd",)
 _STRUCTURE_SUFFIXES = (".cif", ".mmcif", ".pdb")
 _LIGHT_COST_CLASSES = ("static", "model")
 
@@ -1416,6 +1425,25 @@ def _run_plans(
                 return
 
 
+def _pair_binder(atoms: Any, reference: Reference, ctx: _Context, outcome: _Outcome):
+    """The pairing that gives the binder the numbers of the reference binder, or None.
+
+    None when the reference has no binder chain. A binder that cannot be paired keeps its
+    numbers, and the row says why under ``binder_numbering`` when a metric reads the reference
+    structure next to the pose (``structure_rmsd``), the case where the numbers have to agree.
+    """
+    if reference.binder_chain is None:
+        return None
+    pairing = pair_binder_residues(
+        atoms, reference, binder_chain=ctx.binder_chain, options=ctx.options.frame
+    )
+    if pairing.ok:
+        return pairing
+    if ctx.reference_path is not None:
+        _note(outcome, "binder_numbering", f"the binder keeps its numbers: {pairing.reason}")
+    return None
+
+
 def _pose_stage(pose: Pose, index: int, ctx: _Context) -> _Outcome:
     """Stage 3 for one pose: read, profile, place on the references, run the light metrics."""
     started = time.perf_counter()
@@ -1496,7 +1524,11 @@ def _score_pose(pose: Pose, ctx: _Context, outcome: _Outcome) -> None:
     try:
         placed_source = (
             renumber_to_reference(
-                atoms, first_frame, first_reference, receptor_chain=ctx.target_chain
+                atoms,
+                first_frame,
+                first_reference,
+                receptor_chain=ctx.target_chain,
+                binder_pairing=_pair_binder(atoms, first_reference, ctx, outcome),
             )
             if ctx.options.frame.renumber_receptor
             else atoms
@@ -2488,6 +2520,7 @@ def score_pose_set(
         statistics=aggregators,
         min_n_ok=options.aggregation.min_n_ok,
         reason_policy=options.aggregation.reason_policy,
+        partial_blocks=_PARTIAL_BLOCKS,
     )
     stage_seconds["aggregates"] = time.perf_counter() - stage_started
 
