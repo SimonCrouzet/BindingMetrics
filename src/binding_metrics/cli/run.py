@@ -208,6 +208,22 @@ def _warn(msg: str) -> None:
     logger.warning("  [warning] %s", msg)
 
 
+def _raw_energy_note(n_rebuilt: int) -> str:
+    """The sentence for a raw interaction energy of a structure PDBFixer rebuilt atoms of.
+
+    PDBFixer places a missing heavy atom from a template without checking its neighbours.
+    Overlaps between the two chains then dominate the raw energy: 1YCR with one interface
+    side chain rebuilt (8 atoms) goes from -16 to +33 665 kJ/mol, and relaxing brings it back
+    to about -300.
+    """
+    plural = "" if n_rebuilt == 1 else "s"
+    return (
+        f"raw interaction energy of the prepared structure, in which PDBFixer rebuilt "
+        f"{n_rebuilt} heavy atom{plural} without checking for clashes: overlaps can dominate "
+        "the raw value; use the relaxed mode for an energy that means something"
+    )
+
+
 def _check_preflight_options(
     binder_type: str,
     on_incompatible: str,
@@ -543,6 +559,11 @@ def run_pipeline(
         ``dropped_protein_chains`` the protein chains, other than the peptide and
         the receptor, that the relaxation removed.
 
+        ``energy`` gets ``warnings``, a list of sentences, when ``raw`` is among the
+        ``energy_modes``, the energy reads the prepared structure (the relaxation was skipped
+        or failed) and preparation rebuilt heavy atoms; the sentence gives their number and
+        the same text is logged as a warning. The energies are not changed.
+
         ``preflight`` holds the decision of the pre-flight check: ``status`` (``ok``,
         ``warn``, ``skipped``, ``not_checked``), ``reason``, ``policy``, the steps left out
         under ``--on-incompatible skip`` and the full report. A step that was left out is
@@ -829,6 +850,13 @@ def run_pipeline(
                 random_seed=random_seed,
             )
             results["energy"] = energy
+            # The raw mode reads the structure as it is. When the relaxation was skipped or
+            # failed, that is the prepared file, and the atoms PDBFixer rebuilt may overlap.
+            n_rebuilt = results["prep"].get("n_missing_atoms_rebuilt", 0)
+            if "raw" in energy_modes and relaxed_path == prepped_path != input_path and n_rebuilt:
+                note = _raw_energy_note(n_rebuilt)
+                energy["warnings"] = [*energy.get("warnings", []), note]
+                _warn(note)
         except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["energy"]
             _warn(f"Energy computation failed: {e}")
             traceback.print_exc()
