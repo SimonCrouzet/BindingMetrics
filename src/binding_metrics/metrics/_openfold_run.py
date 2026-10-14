@@ -261,11 +261,7 @@ def _binder_is_head_to_tail(structure_path: str | Path, binder_chain: str) -> bo
 #: Text appended to the warning for ``binder_cyclic=True`` on a binder of modified residues.
 _MODIFIED_RESIDUE_OBSERVATION = (
     "OpenFold3 wraps the relative positions of the chain by its token count and gives every atom "
-    "of a modified residue a token of its own, so the wrap does not follow the ring. On one "
-    "complex (1CWA, cyclosporin A, OpenFold3 0.5.0, no MSA, three seeds) the flag lowered ipTM "
-    "from 0.91-0.92 to 0.78-0.81 and raised the binder C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A; "
-    "on a binder of standard residues (SFTI-1, 3P8F, one seed) it closed the ring (C-N 7.40 A "
-    "without the flag, 1.38 A with it, 1.44 A in the input)"
+    "of a modified residue a token of its own, so the wrap does not follow the ring"
 )
 
 

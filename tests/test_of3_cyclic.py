@@ -170,7 +170,7 @@ class TestAuto:
 
 
 class TestModifiedResiduesLeaveTheBinderLinear:
-    """Measured once: with the flag the cyclosporin got worse (see decide_binder_cyclic)."""
+    """``auto`` leaves a binder with modified residues linear (see decide_binder_cyclic)."""
 
     @pytest.mark.parametrize("build", [_refold, _score])
     def test_auto_writes_no_flag_for_cyclosporin(self, tmp_path, build):
@@ -179,7 +179,7 @@ class TestModifiedResiduesLeaveTheBinderLinear:
         # the modified residues are still sent, as before
         assert chains["C"]["non_canonical_residues"]["1"] == "DAL"
 
-    def test_the_decision_says_why_and_states_the_measurement_as_one_complex(self, set_version):
+    def test_the_decision_says_why(self, set_version):
         set_version("0.5.0")
         decision = openfold.decide_binder_cyclic(CYCLOSPORIN, "C")
         assert decision.cyclic is False
@@ -188,15 +188,10 @@ class TestModifiedResiduesLeaveTheBinderLinear:
             "ABA, BMT, DAL, MLE, MVA, SAR",
             "linear chain",
             "token of its own",
-            "one complex",
-            "0.91-0.92 to 0.78-0.81",
-            "0.5-0.7 A to 3.0-4.8 A",
-            "SFTI-1",
-            "7.40 A",
-            "1.38 A",
             "--openfold-cyclic on",
         ):
             assert stated in decision.reason
+        assert "ipTM" not in decision.reason and "RMSD" not in decision.reason
 
     def test_the_log_warns_with_the_reason(self, tmp_path, caplog):
         with caplog.at_level(logging.WARNING, logger=LOGGER):
@@ -221,7 +216,7 @@ class TestModifiedResiduesLeaveTheBinderLinear:
         assert chains["C"]["cyclic"] is True
         (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert "binder_cyclic=True writes 'cyclic: true' on chain C" in warning.getMessage()
-        assert "DAL" in warning.getMessage() and "one complex" in warning.getMessage()
+        assert "DAL" in warning.getMessage() and "token of its own" in warning.getMessage()
 
     def test_true_for_a_standard_binder_does_not_warn(self, tmp_path, caplog):
         with caplog.at_level(logging.WARNING, logger=LOGGER):
@@ -657,16 +652,9 @@ class TestCommandLine:
         assert "--openfold-cyclic {auto,on,off}" in text
         for stated in ("head-to-tail", "does not enforce the closure bond", "example query"):
             assert stated in text
-        # the rule and what it rests on, stated as one complex each
-        for stated in (
-            "standard residues only",
-            "modified residue its own token",
-            "one complex",
-            "0.91-0.92 to 0.78-0.81",
-            "0.5-0.7 A to 3.0-4.8 A",
-            "7.40 A without it, 1.38 A with it",
-        ):
+        for stated in ("standard residues only", "modified residue its own token"):
             assert stated in text
+        assert "1CWA" not in text and "SFTI-1" not in text
         assert "no accuracy benchmark for cyclic peptides" in text.replace("published no", "no")
 
     def test_a_bad_choice_is_a_usage_error(self, tmp_path, monkeypatch, capsys):
