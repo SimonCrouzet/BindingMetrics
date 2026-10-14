@@ -1,67 +1,56 @@
 """Automatic GAFF2 parameterisation of backbone-embedded non-canonical amino acids.
 
-Motivation
-----------
 ``openmmforcefields.GAFFTemplateGenerator`` cannot parameterise a residue whose
-backbone N/C carry peptide (external) bonds: its ``_match_residue`` only matches a
-topology residue to a GAFF small-molecule template when *every* atom's
-``number_of_external_bonds`` equals the template's (always 0).  A backbone residue's
-N and C always have external bonds, so GAFF-via-openmmforcefields can never match
-them.
+backbone N/C carry peptide (external) bonds: its ``_match_residue`` matches a
+topology residue to a GAFF small-molecule template only when every atom's
+``number_of_external_bonds`` equals the template's (always 0). This module
+generates a full OpenMM ``ForceField`` residue template with ``<ExternalBond>``
+tags instead, the automatic analogue of the curated templates in
+:mod:`binding_metrics.core.nonstandard` and :mod:`binding_metrics.core.cyclic`.
+OpenMM's native template matcher understands ``<ExternalBond>``.
 
-This module works around that by generating a full OpenMM ``ForceField`` residue
-template that carries ``<ExternalBond>`` tags (the automatic analogue of the curated
-NMe / lactam templates in :mod:`binding_metrics.core.nonstandard` and
-:mod:`binding_metrics.core.cyclic`).  OpenMM's *native* template matcher understands
-``<ExternalBond>``, so such a residue matches and ``createSystem`` succeeds.
+Per non-canonical residue the generator:
 
 Per non-canonical residue the generator:
 
 1. Builds an RDKit heavy-atom molecule from the residue's intra-residue topology
-   bonds, adding a carbon *cap* atom at each external bond (a bond with exactly one
-   endpoint inside the residue — backbone N/C and any cyclic-closure atom),
-   positioned at the external partner's coordinate.  Where the residue has a peptide
+   bonds, adding a carbon cap atom at each external bond (a bond with exactly one
+   endpoint inside the residue: backbone N/C and any cyclic-closure atom),
+   positioned at the external partner's coordinate. Where the residue has a peptide
    backbone (atoms N, CA, C, O) and the external bond is a peptide bond, the cap is
-   then completed to the acetyl (ACE) or N-methylamide (NME) group, so that the
-   backbone is an amide when the charges are computed (see :func:`_cap_backbone_as_amide`).
+   completed to the acetyl (ACE) or N-methylamide (NME) group
+   (:func:`_cap_backbone_as_amide`).
 2. Takes bond orders from the wwPDB Chemical Component Dictionary (bundled with
-   biotite, so no network access) by residue and atom name, neutralises the
-   ionisable groups, sanitises and adds explicit H. The RDKit molecule has no
-   hydrogens, so bond orders cannot be recovered from its connectivity or its
-   geometry: valence-based perception (``rdDetermineBonds``) leaves every bond
-   single there and would turn an alkene into an alkane. A residue that is not in
-   the dictionary, or whose atoms disagree with its entry, falls back to that
-   single-bond graph and is reported (``NcaaTemplateList.bond_order_source_by_residue``).
+   biotite, no network access) by residue and atom name, neutralises the ionisable
+   groups, sanitises and adds explicit H. Valence-based perception
+   (``rdDetermineBonds``) cannot recover bond orders from a molecule without
+   hydrogens: every bond stays single. A residue that is not in the dictionary, or
+   whose atoms disagree with its entry, falls back to that single-bond graph and is
+   reported (``NcaaTemplateList.bond_order_source_by_residue``).
 3. Runs ``GAFFTemplateGenerator.generate_residue_template`` to obtain GAFF atom
-   types, bonded parameters and AM1-BCC charges.
+   types and bonded parameters, with AM1-BCC charges (see ``_am1bcc_charges``).
 4. Rewrites the ``<Residue>`` block: renames it to the real residue name, gives the
    residue heavy atoms their topology names, drops the cap atoms (and any H bonded
    only to a cap), adds an ``<ExternalBond>`` for every capped residue atom, and
    spreads the charge of the removed caps evenly over the kept atoms so that the
-   template has exactly the integer charge of the residue
-   (:func:`_charges_with_integer_total`).
+   template has the integer charge of the residue (:func:`_charges_with_integer_total`).
 5. Injects the residue's kept hydrogens into the OpenMM topology (rebuilding it) so
    the topology residue matches the generated template. A residue that already carries
    exactly those hydrogens, as in a structure this route has relaxed, keeps its own.
 
-The GAFF force blocks (``<AtomTypes>``/``<HarmonicBondForce>``/…) are kept unchanged.
-
-GAFF2 is a *general* small-molecule force field — this is a pragmatic approximation
-for exotic building blocks (e.g. BMT/ABA in cyclosporin A), not a substitute for
-purpose-built RESP-fitted parameters.  Residues already covered by curated templates
-(NMG/NMA/MVA/MLE, the ASPL/GLUL/LYSL lactams, CYX) are skipped here.
+The GAFF force blocks (``<AtomTypes>``/``<HarmonicBondForce>``/...) are kept unchanged.
+Residues covered by curated templates (NMG/NMA/MVA/MLE, the ASPL/GLUL/LYSL lactams,
+CYX) are skipped.
 
 Charge scheme
 -------------
-The AM1-BCC charges are computed on a capped molecule, and a backbone N next to a
-methyl carbon is an amine, not the amide nitrogen of a peptide (ALA: N -0.79 e against
--0.42 e in ff14SB).  The caps of a residue with an N-CA-C=O backbone are therefore ACE
-and NME where the external bond is a peptide bond, the capping on which the ff94
-charges of the amino acids were fitted; a side-chain link (disulfide, staple, lactam)
-and a residue without that backbone keep the methyl cap (see
-:data:`CHARGE_SCHEME_VERSION` for the history).  The cap atoms are dropped from the
-template and their charge is spread evenly over the kept atoms.  Each template's scheme
-is reported in ``NcaaTemplateList.charge_scheme_by_residue``.
+The caps of a residue with an N-CA-C=O backbone are ACE and NME where the external
+bond is a peptide bond (the capping on which the ff94 charges of the amino acids were
+fitted); a side-chain link (disulfide, staple, lactam) and a residue without that
+backbone keep the methyl cap (:data:`CHARGE_SCHEME_VERSION` numbers the versions).
+The cap atoms are dropped from the template and their charge is spread evenly over the
+kept atoms. Each template's scheme is reported in
+``NcaaTemplateList.charge_scheme_by_residue``.
 
 References
 ----------
@@ -110,20 +99,17 @@ from binding_metrics.core.residues import (
 
 logger = logging.getLogger(__name__)
 
-# Residue names handled by ff14SB directly or by curated XML templates elsewhere.
-# Anything NOT in this set (and with >1 heavy atom, non-metal) is treated as an
-# exotic NCAA and parameterised with GAFF2.
+# Residue names handled by ff14SB or by curated XML templates elsewhere. Any other
+# residue with more than one heavy atom that is not a metal is parameterised with GAFF2.
 GAFF_SKIP_RESIDUES = frozenset(
-    # Canonical amino acids + protonation variants (CYM included)
+    # Canonical amino acids and protonation variants (CYM included)
     STANDARD_AMINO_ACIDS
     | AMBER_STANDARD_VARIANTS
     # Curated non-standard templates (nonstandard.py / cyclic.py)
     | N_METHYLATED_RESIDUES
     | LACTAM_TEMPLATE_RESIDUES
-    # Phosphorylated residues — handled by core.phosaa (AMBER phosaa
-    # params). GAFF perceives these at neutral charge and would protonate
-    # the phosphate to net 0, destroying the −2 charge; they MUST skip
-    # the GAFF path.
+    # Phosphorylated residues: core.phosaa parameterises them. GAFF perceives a residue
+    # at neutral charge and would build the phosphate net 0.
     | PHOSPHO_RESIDUES
     | {"S1P", "T1P", "Y1P", "H1D", "H2D", "H1E", "H2E"}
     | FORCE_FIELD_CAP_NAMES
@@ -165,8 +151,8 @@ BOND_ORDER_SOURCE_SINGLE_BONDS = "single_bonds"
 
 #: Version of the recipe that turns a residue into template charges: the caps of the molecule
 #: whose AM1-BCC charges are computed, and the spreading of the cap charge over the kept
-#: atoms. Whatever stores a template or its charges (a cache, a result file) has to carry it,
-#: because a template of another version has other charges for the same residue and seed.
+#: atoms. Whatever stores a template or its charges (a cache, a result file) has to carry it:
+#: a template of another version has other charges for the same residue and seed.
 #: Version 1 capped every external bond with a methyl carbon; version 2 completes the caps of
 #: peptide bonds to ACE and NME and makes the integer total of the template exact.
 CHARGE_SCHEME_VERSION = 2
@@ -254,14 +240,14 @@ def _ccd_bond_orders(mol, atom_names: dict, res_name: str):
 
     The dictionary entry is used only if it describes the same molecule: every atom
     name must exist with the same element, and the bonds between named atoms must
-    be the same set. That guards against a residue code reused for a different
-    compound (``UNL``, or a code chosen by a design tool).
+    be the same set (a residue code can be reused for another compound, such as
+    ``UNL``).
 
-    The dictionary lists ionisable groups in their deposited protonation state.
-    They are neutralised (:class:`rdkit.Chem.MolStandardize.rdMolStandardize.Uncharger`)
-    so the template keeps the neutral convention of the generator, where
-    :func:`_neutral_ionizable_groups` reports the groups that ionise at pH 7.4. What
-    cannot be neutralised (quaternary ammonium, nitro) keeps its charge.
+    The dictionary lists ionisable groups in their deposited protonation state. They are
+    neutralised (:class:`rdkit.Chem.MolStandardize.rdMolStandardize.Uncharger`), the
+    neutral convention of the generator; :func:`_neutral_ionizable_groups` reports the
+    groups that ionise at pH 7.4. What cannot be neutralised (quaternary ammonium,
+    nitro) keeps its charge.
 
     Returns ``(mol, "")`` on success, or ``(None, reason)``.
     """
@@ -355,15 +341,15 @@ def _perceive_bond_orders(mol):
 #: Groups that are charged at pH 7.4 but that template generation perceives in
 #: their neutral form (bond-order perception runs at total charge 0). Each entry is
 #: (label, SMARTS with the ionisable heavy atom first, net charge at pH 7.4). The
-#: charges are the textbook majority state; phosphate monoesters are taken as -2
-#: (as in the AMBER phosaa residues, see :mod:`binding_metrics.core.phosaa`).
+#: charges are the majority state; phosphate monoesters are taken as -2 (as in the
+#: AMBER phosaa residues, see :mod:`binding_metrics.core.phosaa`).
 #: Order matters: a group claims its atoms, so the two-OH phosphate is matched
 #: before the one-OH pattern and guanidine before primary amine.
 #:
 #: The patterns describe the neutral group with its real bond orders (C(=O)OH,
 #: C(=NH)(NH2)2). A residue built with single bonds only (see
 #: ``BOND_ORDER_SOURCE_SINGLE_BONDS``) has C(OH)2 and C(NH2)3 instead, which none of
-#: them match; that residue is reported by its own warning.
+#: them match; it is reported by its own warning.
 _GUANIDINE_NITROGEN = "N+0;!$(N-[#6]=O);!$(N-a);!$(N-C#N)"
 _IONIZABLE_GROUPS = (
     ("phosphate (two acidic OH)", "[#15](=[OX1])([OX2H1])([OX2H1])[#8]", -2),
@@ -425,10 +411,9 @@ def _build_capped_molecule(res, topology, pos_A):
     from rdkit.Geometry import Point3D
 
     heavy = _heavy_atoms(res)
-    # Residue-boundary test uses ALL residue atoms (incl. any existing H) so a
-    # H–heavy bond in an already-protonated residue is NOT mistaken for an
-    # external bond. Inter-residue bonds are always heavy–heavy (peptide C–N,
-    # disulfide, cyclic closure), so caps are only ever added at heavy atoms.
+    # The boundary test uses all residue atoms, hydrogens included, so an H-heavy bond in a
+    # protonated residue is not taken for an external bond. Inter-residue bonds are
+    # heavy-heavy (peptide C-N, disulfide, cyclic closure).
     res_atom_indices = {a.index for a in res.atoms()}
 
     rw = Chem.RWMol()
@@ -454,13 +439,13 @@ def _build_capped_molecule(res, topology, pos_A):
         a1, a2 = bond.atom1, bond.atom2
         in1, in2 = a1.index in res_atom_indices, a2.index in res_atom_indices
         if in1 == in2:
-            continue  # both inside or both outside the residue
+            continue
         inner = a1 if in1 else a2
         outer = a2 if in1 else a1
         if inner.index not in rd_idx:
-            continue  # boundary atom is not a heavy atom we model (defensive)
-        # PDBFixer can list one bond twice (the 1XY4 IAM-THR peptide bond). A
-        # second cap on the same atom gave the backbone C a valence of 5.
+            continue
+        # PDBFixer can list one bond twice (1XY4 IAM-THR peptide bond); a second cap on
+        # the same atom gives the backbone C a valence of 5.
         if (inner.index, outer.index) in capped_pairs:
             continue
         capped_pairs.add((inner.index, outer.index))
@@ -507,9 +492,8 @@ def _cap_atom_position(p_inner, p_cap, bond_length: float, side: float) -> tuple
 def _cap_backbone_as_amide(mol, rd_res_names: dict, cap_indices: set, cap_partner: dict):
     """Complete the carbon caps of the peptide bonds to ACE and NME.
 
-    A residue whose backbone N sits next to a methyl carbon is an amine in the AM1-BCC
-    calculation and gets the N charge of one: -0.79 e on ALA against -0.42 e in ff14SB.
-    ACE (``CH3-C(=O)-`` on the N) and NME (``-NH-CH3`` on the C) are the groups on which the
+    With a methyl cap the backbone N is an amine in the AM1-BCC calculation. ACE
+    (``CH3-C(=O)-`` on the N) and NME (``-NH-CH3`` on the C) are the groups on which the
     amino-acid charges of ff94 were fitted, so the backbone atoms are peptide atoms.
 
     ``mol`` is the hydrogen-free, sanitised molecule of :func:`_perceive_residue_bond_orders`
@@ -591,12 +575,7 @@ def _charges_with_integer_total(charges: dict, total_charge: int) -> dict:
 
     The difference between the sum of ``charges`` (``{atom index: e}``) and ``total_charge``
     is the charge of the atoms that were dropped, the caps. It is spread evenly over the
-    atoms. A rule that favours some atoms (the backbone, the amide group, the side chain,
-    or a share proportional to |q|) moved the RMS deviation from the ff14SB charges of
-    ALA, SER, LEU, PHE, ASP and LYS by 0.002 e at most (mean 0.0906 to 0.0920 e), so none
-    of them is better founded than an even share. With ACE and NME caps the share is
-    0.001 to 0.006 e per atom for those six residues, against 0.012 to 0.025 e with
-    methyl caps.
+    atoms.
 
     The force-field XML stores six decimals, so the charges are rounded to 1e-6 e here, the
     last digit going to the atoms with the largest rounding remainder, and the sum of the
@@ -613,7 +592,7 @@ def _charges_with_integer_total(charges: dict, total_charge: int) -> dict:
 
 
 def _hydrogen_names(keep_h, rd_res_names) -> dict:
-    """Assign PDB-ish unique names to kept hydrogens: parent 'CB' → 'HB', 'HB2'…"""
+    """Assign unique names to kept hydrogens: parent 'CB' gives 'HB', 'HB2', ..."""
     names: dict = {}
     per_parent: dict = {}
     for h_idx, parent in keep_h:
@@ -622,7 +601,6 @@ def _hydrogen_names(keep_h, rd_res_names) -> dict:
         per_parent[parent] = per_parent.get(parent, 0) + 1
         k = per_parent[parent]
         names[h_idx] = f"H{stem}" if k == 1 else f"H{stem}{k}"
-    # Enforce global uniqueness against each other.
     seen: dict = {}
     for h_idx in list(names):
         nm = names[h_idx]
@@ -634,20 +612,18 @@ def _hydrogen_names(keep_h, rd_res_names) -> dict:
     return names
 
 
-# Protein-backbone atom names whose GAFF types we override with ff14SB types.
+# Backbone atom names whose GAFF types are replaced by ff14SB types.
 _BACKBONE_HEAVY = BACKBONE_HEAVY_ATOM_NAMES
-# Map an external-partner atom name to its ff14SB atom *class*, so a junction that
-# crosses into the neighbouring residue (peptide C(i)–N(i+1), head-to-tail closure)
-# is keyed to amber classes on both sides.  Extendable for exotic linkages.
+# External-partner atom name -> ff14SB atom class, so a junction into the neighbouring
+# residue (peptide C(i)-N(i+1), head-to-tail closure) is keyed to amber classes on both sides.
 _PARTNER_CLASS = {"C": "C", "N": "N", "CA": "CX", "O": "O", "SG": "S"}
 
 
 def _amber_backbone_types(ff) -> Optional[dict]:
-    """Read the canonical ff14SB backbone ``<Type>`` names/classes from ALA.
+    """Read the ff14SB backbone type and class names from a loaded standard residue template.
 
-    Returns ``{atom_name: (type_name, class_name)}`` for N, H, CA, HA, C, O by
-    parsing a loaded standard amino-acid residue template (rather than hardcoding
-    the ff14SB type strings), or ``None`` if no template is available.
+    Returns ``{atom_name: (type_name, class_name)}`` for N, H, CA, HA, C, O, or ``None``
+    if no template is available.
     """
     template = None
     for name in ("ALA", "LEU", "VAL", "SER"):
@@ -665,7 +641,6 @@ def _amber_backbone_types(ff) -> Optional[dict]:
         atype = ff._atomTypes.get(t)
         cls = atype.atomClass if atype is not None else None
         result[nm] = (t, cls)
-    # Require the full protein backbone set for a usable retyping.
     if not _BACKBONE_HEAVY <= set(result) or "H" not in result or "HA" not in result:
         return None
     return result
@@ -720,12 +695,12 @@ def _lookup_gaff_proper(propers, classes):
 
 #: sqm keywords that ``antechamber -c bcc`` writes for AM1-BCC (AmberTools 24), without
 #: ``qmcharge``, which antechamber adds from ``-nc``. ``-ek`` replaces the whole set, so
-#: the defaults are repeated here and only ``diag_routine`` is added.
+#: the defaults are repeated and ``diag_routine`` is added.
 _SQM_AM1BCC_KEYWORDS = "qm_theory='AM1', grms_tol=0.0005, scfconv=1.d-10, ndiis_attempts=700"
 
 #: ``diag_routine=1`` selects sqm's own diagonaliser. With the default (0) sqm times
 #: seven diagonalisation routines at start-up and keeps the fastest, so the routine, and
-#: with it the rounding of every SCF step, depends on the load of the machine.
+#: the rounding of every SCF step, depends on the load of the machine.
 _SQM_DIAG_ROUTINE_INTERNAL = 1
 
 #: RDKit's ETKDG prune threshold (Å) that the OpenFF toolkit uses for the AM1-BCC conformer.
@@ -735,8 +710,7 @@ _AM1BCC_CONFORMER_RMS_CUTOFF_ANGSTROM = 0.25
 def _run_antechamber(args: list, workdir: str) -> None:
     """Run ``antechamber`` in ``workdir`` on one thread; raise ``RuntimeError`` on failure.
 
-    sqm spreads a 40-atom molecule over every core the BLAS library offers and gains
-    nothing: one thread takes as long, without the busy-waiting of the others.
+    One thread: sqm gains nothing from more cores on a molecule of this size.
     """
     import shutil
     import subprocess
@@ -773,15 +747,13 @@ def _am1bcc_charges(molecule, random_seed: Optional[int] = DEFAULT_RANDOM_SEED) 
 
     * The conformer is embedded with ``random_seed`` (the toolkit fixes it at 1, which is
       the default here, so the default conformer is the toolkit's). ``None`` draws a new
-      conformer per call. AM1-BCC charges depend on the conformer: those of MeBmt differ by
-      up to 0.037 e between seeds 1 and 2, so keep the seed fixed to compare runs. The
-      stereochemistry of the embedded conformer is that of ``molecule``; a molecule without
-      stereochemistry gets a random stereoisomer for each seed.
+      conformer per call. AM1-BCC charges depend on the conformer, so keep the seed fixed
+      to compare runs. The stereochemistry of the embedded conformer is that of
+      ``molecule``; a molecule without stereochemistry gets a random stereoisomer for each
+      seed.
     * sqm's diagonaliser is fixed (see ``_SQM_DIAG_ROUTINE_INTERNAL``). With the toolkit
-      call sqm chose it by timing, and one of the choices ended the AM1 minimisation of a
-      flexible molecule in another geometry: the AM1-BCC charges of MeBmt (cyclosporin A)
-      differed by up to 0.013 e from one build to the next (up to 9e-4 e in the template,
-      once the charge of the removed caps is spread over the residue).
+      call sqm chooses it by timing, and a different choice can end the AM1 minimisation
+      of a flexible molecule in another geometry, so the charges differ between builds.
 
     The charges are shifted evenly to sum to the total formal charge, as the toolkit does.
 
@@ -824,7 +796,7 @@ def _am1bcc_charges(molecule, random_seed: Optional[int] = DEFAULT_RANDOM_SEED) 
             + ["-ek", sqm_keywords],
             workdir,
         )
-        # Second call only reads the charges out of the mol2 file.
+        # The second call reads the charges out of the mol2 file.
         _run_antechamber(
             ["-dr", "n", "-i", "charged.mol2", "-fi", "mol2", "-o", "charges2.mol2"]
             + ["-fo", "mol2", "-c", "wc", "-cf", "charges.txt", "-pf", "yes"],
@@ -844,9 +816,8 @@ def _am1bcc_charges(molecule, random_seed: Optional[int] = DEFAULT_RANDOM_SEED) 
 def _assign_am1bcc_charges(molecules, random_seed: Optional[int] = DEFAULT_RANDOM_SEED) -> None:
     """Set :func:`_am1bcc_charges` on every OpenFF molecule that has no partial charges yet.
 
-    ``GAFFTemplateGenerator`` keeps charges that are already on a molecule, so calling this
-    before the generator is built keeps its own AM1-BCC call, and the sqm timing that makes
-    it irreproducible, out of the template.
+    ``GAFFTemplateGenerator`` keeps charges that are already on a molecule, so its own
+    AM1-BCC call (with the sqm timing, see :func:`_am1bcc_charges`) does not run.
     """
     from openff.units import Quantity, unit
 
@@ -868,13 +839,13 @@ def _generate_residue_template(
 ):
     """Build one hybrid amber-backbone / GAFF-sidechain ExternalBond template.
 
-    The protein backbone atoms (N, H, CA, HA, C, O) are typed with standard
-    ff14SB protein atom types so every inter-residue junction (the peptide C–N
-    bond, its angles and the ω/φ/ψ torsions) matches ff14SB natively; the
-    sidechain keeps its GAFF2 types.  The boundary terms that straddle the two
-    (the CA–CB bond, N-methyl N–C bond, and every angle/torsion mixing an amber
-    backbone class with a GAFF sidechain class) are emitted explicitly with the
-    GAFF force constants so nothing is silently dropped by ``createSystem``.
+    The backbone atoms (N, H, CA, HA, C, O) take standard ff14SB atom types so every
+    inter-residue junction (the peptide C-N bond, its angles and the omega/phi/psi
+    torsions) matches ff14SB; the side chain keeps its GAFF2 types. The boundary terms
+    that straddle the two (the CA-CB bond, the N-methyl N-C bond, and every angle or
+    torsion mixing an amber backbone class with a GAFF side-chain class) are emitted
+    explicitly with the GAFF force constants, because ``createSystem`` omits a term that
+    matches no parameter.
 
     Returns ``(ffxml_string, h_inject, neutral_groups, single_bond_reason, cap_scheme)``
     where ``h_inject`` is a list of ``(h_name, parent_atom_name, position_nm_ndarray)``
@@ -907,13 +878,12 @@ def _generate_residue_template(
     )
     mh = Chem.AddHs(mol, addCoords=True)
     hconf = mh.GetConformer()
-    # Read the stereocentres and the E/Z double bonds from the geometry. The graph carries no
-    # stereochemistry, and without it the conformer that sqm minimises is a random
-    # stereoisomer: MeBmt (1CWA) was embedded as a diastereomer with a Z double bond.
+    # Stereocentres and E/Z double bonds come from the geometry: the graph carries none, and
+    # without them the conformer that sqm minimises is a random stereoisomer.
     Chem.AssignStereochemistryFrom3D(mh)
     neutral_groups = _neutral_ionizable_groups(mh, rd_res_names, cap_indices)
 
-    # Classify hydrogens: keep those bonded to a residue heavy atom; drop cap-H.
+    # Keep the hydrogens bonded to a residue heavy atom; drop the cap hydrogens.
     keep_h: list = []
     drop_h: set = set()
     for atom in mh.GetAtoms():
@@ -926,9 +896,8 @@ def _generate_residue_template(
             keep_h.append((atom.GetIdx(), nbrs[0]))
 
     off = Molecule.from_rdkit(mh, allow_undefined_stereo=True, hydrogens_are_explicit=True)
-    # Charges from here, not from GAFFTemplateGenerator: its own AM1-BCC call lets sqm pick
-    # the diagonaliser by timing (see _am1bcc_charges). The generator keeps charges that are
-    # already set on the molecule and only adds the GAFF2 types and bonded parameters.
+    # Charges are set here (see _am1bcc_charges); the generator keeps charges already on the
+    # molecule and adds the GAFF2 types and bonded parameters.
     _assign_am1bcc_charges([off], random_seed)
     gaff = GAFFTemplateGenerator(molecules=[off], forcefield=gaff_version)
     ffxml = gaff.generate_residue_template(off)
@@ -939,15 +908,13 @@ def _generate_residue_template(
         return None
     tatoms = resel.findall("Atom")
     if len(tatoms) != mh.GetNumAtoms():
-        # Template atom order must equal the RDKit atom order for the index map.
+        # The index map needs the template atom order to equal the RDKit atom order.
         return None
 
-    # --- Identify backbone atoms and drop spurious backbone-carbonyl hydrogens ---
-    # With bond orders from the dictionary the backbone C=O is a carbonyl and none
-    # of this fires. On the single-bond fallback the backbone carbonyl is an sp3
-    # alcohol and gets a spurious H on C and an -OH on O. Those hydrogens have no
-    # place on a real peptide carbonyl: drop them and let the amber C/O types (and
-    # the ff14SB C–O bond + carbonyl improper) describe it.
+    # Backbone atoms, and spurious backbone-carbonyl hydrogens. With dictionary bond orders
+    # none are found. On the single-bond fallback the backbone carbonyl is an sp3 alcohol
+    # with an H on C and on O; those hydrogens are dropped and the amber C/O types (and the
+    # ff14SB C-O bond and carbonyl improper) describe the carbonyl.
     retype = backbone_amber or {}
     bb_heavy = {j for j, nm in rd_res_names.items() if nm in _BACKBONE_HEAVY and nm in retype}
     amide_h: set = set()
@@ -965,7 +932,6 @@ def _generate_residue_template(
             spurious_h.add(h_idx)
     keep_h = [(h, p) for (h, p) in keep_h if h not in spurious_h]
 
-    # Name every template atom by its RDKit index.
     h_names = _hydrogen_names(keep_h, rd_res_names)
     new_name: dict = {}
     for j, nm in rd_res_names.items():
@@ -976,7 +942,7 @@ def _generate_residue_template(
     dropped = set(cap_indices) | drop_h | spurious_h
     keep_idx = [i for i in range(len(tatoms)) if i not in dropped]
 
-    # --- New atom type per kept atom: amber for backbone, GAFF for sidechain ---
+    # Atom type per kept atom: amber for the backbone, GAFF for the side chain.
     orig_class = {i: tatoms[i].get("type") for i in range(len(tatoms))}
     new_type: dict = {}
     new_class: dict = {}
@@ -996,8 +962,8 @@ def _generate_residue_template(
             new_type[i] = orig_class[i]
             new_class[i] = orig_class[i]
             is_amber[i] = False
-    # Cap atoms stand in for the real neighbouring-residue atom: give them the
-    # partner's ff14SB class so every junction term is keyed to amber on that side.
+    # A cap atom stands in for the neighbouring-residue atom: it takes that atom's ff14SB
+    # class so every junction term is keyed to amber on that side.
     for cap in cap_indices:
         pc = _PARTNER_CLASS.get(cap_partner.get(cap))
         if pc is not None:
@@ -1008,13 +974,13 @@ def _generate_residue_template(
             is_amber[cap] = False
     changed = {i: new_class[i] != orig_class[i] for i in new_class}
 
-    # The residue keeps the formal charge of the capped molecule (the caps are neutral). The
+    # The residue keeps the formal charge of the capped molecule (the caps are neutral); the
     # charge of the dropped cap, cap-H and spurious-H atoms is spread over the kept atoms.
     kept_charge = _charges_with_integer_total(
         {i: float(tatoms[i].get("charge")) for i in keep_idx}, Chem.GetFormalCharge(mh)
     )
 
-    # --- Rewrite the <Residue> block with the mixed types ---
+    # Rewrite the <Residue> block with the mixed types.
     for el in list(resel):
         resel.remove(el)
     for i in keep_idx:
@@ -1034,7 +1000,7 @@ def _generate_residue_template(
         eb.set("atomName", nm)
     resel.set("name", res.name)
 
-    # --- Emit explicit boundary parameters (amber-class ⟷ GAFF-class terms) ---
+    # Explicit boundary parameters for the terms that mix an amber and a GAFF class.
     _inject_boundary_terms(
         root, mh, keep_set, cap_indices, orig_class, new_class, is_amber, changed
     )
@@ -1053,16 +1019,13 @@ def _generate_residue_template(
 def _inject_boundary_terms(
     root, mh, keep_set, cap_indices, orig_class, new_class, is_amber, changed
 ):
-    """Add explicit Bond/Angle/Proper entries for every backbone↔sidechain term.
+    """Add explicit Bond/Angle/Proper entries for every backbone-side chain term.
 
-    After retyping the backbone to amber and keeping the sidechain on GAFF, any
-    bonded term that mixes an amber protein class with a GAFF class matches
-    neither ff14SB nor the GAFF template and would be *silently omitted* by
-    ``createSystem``.  We therefore re-key the GAFF force constant for each such
-    term to the new mixed classes.  Terms that are purely amber (handled by
-    ff14SB, incl. its wildcard backbone torsions) or purely GAFF sidechain
-    (already in the template) are left untouched — injecting them would
-    double-count.
+    A bonded term that mixes an amber protein class with a GAFF class matches neither
+    ff14SB nor the GAFF template, and ``createSystem`` omits it. The GAFF force constant
+    of each such term is re-keyed to the new mixed classes. Terms that are purely amber
+    (ff14SB, including its wildcard backbone torsions) or purely GAFF side chain (already
+    in the template) are left alone; adding them would count them twice.
 
     Rules per term:
         bond  (i, j):        skip if both amber (ff14SB) or neither changed
@@ -1194,9 +1157,9 @@ def _load_ffxml(ff, ffxml_string: str) -> None:
 def _rebuild_topology_with_injected_h(topology, pos_nm, h_by_res: dict):
     """Return a new (topology, positions) with the given H injected per residue.
 
-    Existing hydrogens on the injected residues are dropped first (so repeated
-    passes stay consistent); every other atom is copied unchanged.  ``h_by_res``
-    maps ``res.index`` → list of ``(h_name, parent_name, pos_nm)``.
+    Existing hydrogens on the injected residues are dropped first; every other atom is
+    copied unchanged. ``h_by_res`` maps ``res.index`` to a list of
+    ``(h_name, parent_name, pos_nm)``.
     """
     from openmm import unit
     from openmm.app import Topology
@@ -1279,16 +1242,14 @@ class NcaaTemplateList(list):
             charge 0, so this is 0 unless the perceived graph carries formal
             charges.
         neutral_ionizable_groups: ``{residue name: [group label, ...]}`` for
-            residues that carry a side-chain group charged at pH 7.4 (carboxylic
-            acid, phosphate, sulfate, primary amine, guanidine) yet were
-            parameterised in the neutral form. Residues without such a group are
-            absent.
+            residues with a side-chain group charged at pH 7.4 (carboxylic acid,
+            phosphate, sulfate, primary amine, guanidine) that was parameterised
+            neutral. Residues without such a group are absent.
         bond_order_source_by_residue: ``{residue name: "ccd" or "single_bonds"}``.
-            ``"ccd"`` means the bond orders come from the Chemical Component
-            Dictionary. ``"single_bonds"`` means the residue was not found there
-            (or disagrees with its entry) and was built with every bond single, so
-            its unsaturation, aromaticity and hydrogen count are unreliable; a
-            warning is logged for each of those.
+            ``"ccd"``: the bond orders come from the Chemical Component Dictionary.
+            ``"single_bonds"``: the residue was not found there (or disagrees with
+            its entry) and was built with every bond single, so its unsaturation,
+            aromaticity and hydrogen count are unreliable; a warning is logged.
         charge_scheme_by_residue: ``{residue name: "<kind>-v<version>"}``, how the
             capped molecule of the template ended at its external bonds and the
             version of the charge scheme (:data:`CHARGE_SCHEME_VERSION`).
@@ -1315,11 +1276,11 @@ def parameterize_ncaa_residues(
     verbose: bool = True,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ):
-    """Generate + load GAFF ExternalBond templates for exotic NCAA residues.
+    """Generate and load GAFF ExternalBond templates for exotic NCAA residues.
 
-    Must run AFTER the D-amino-acid / N-methyl rename, ``patch_cyclic_topology``
+    Must run after the D-amino-acid / N-methyl rename, ``patch_cyclic_topology``
     (which reconstructs intra-residue bonds and adds closure bonds) and
-    ``rename_disulfide_cys_to_cyx``; and BEFORE ``addHydrogens`` / ``createSystem``.
+    ``rename_disulfide_cys_to_cyx``, and before ``addHydrogens`` / ``createSystem``.
 
     For every residue not covered by ff14SB or a curated template, a residue
     template with ``<ExternalBond>`` tags is generated from the topology geometry,
@@ -1338,9 +1299,9 @@ def parameterize_ncaa_residues(
             of the template step, through the module logger.
         random_seed: Seed of the conformer that the AM1-BCC charge calculation
             starts from. The same residue graph and seed give the same template in
-            every process and at every pipeline step; the default matches the
-            conformer the OpenFF toolkit has always used. ``None`` draws a new
-            conformer per call, so the charges can differ between calls.
+            every process and at every pipeline step; the default is the OpenFF
+            toolkit's seed. ``None`` draws a new conformer per call, so the charges
+            can differ between calls.
 
     Returns:
         ``(topology, positions, ncaa_ffxmls)`` — the (possibly rebuilt) topology
@@ -1370,8 +1331,7 @@ def parameterize_ncaa_residues(
     pos_A = _pos_to_angstrom(positions)
     pos_nm = pos_A / 10.0
 
-    # Canonical ff14SB backbone types (read from a standard residue template, not
-    # hardcoded) used to retype the NCAA protein backbone so junctions match ff14SB.
+    # ff14SB backbone types, read from a standard residue template, retype the NCAA backbone.
     backbone_amber = _amber_backbone_types(ff)
     if backbone_amber is None and verbose:
         logger.warning(
@@ -1455,8 +1415,8 @@ def parameterize_ncaa_residues(
                         _describe_cap_scheme(scheme[0]),
                     )
         elif h_names != expected_h.get(res.name):
-            # A second instance perceived differently — reuse the first template
-            # but warn; createSystem will surface a mismatch if truly incompatible.
+            # A second instance perceived differently: the first template is reused;
+            # createSystem reports a mismatch if they are incompatible.
             if verbose:
                 logger.warning(
                     "  [warning] '%s' instance differs from first "
