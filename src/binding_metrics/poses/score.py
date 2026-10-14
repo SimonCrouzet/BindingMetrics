@@ -1,11 +1,11 @@
 """Score a set of poses of one construct: ``score_pose_set`` and its result, ``PoseSetResult``.
 
-One call takes the poses (a pose is one structure of the complex with the record of where it
-came from, see ``binding_metrics.poses.pose``), places each of them in the frame of one
-reference receptor, measures each with the registry metrics that were asked for, measures how
-much the poses agree with each other, summarises each group of poses (the back-end by
-default) and names one representative pose per group. The result is one nested dictionary.
-Nothing here says "good" or "bad": thresholds are options with documented defaults.
+``score_pose_set`` takes the poses (a pose is one structure of the complex with the record of
+its origin, see ``binding_metrics.poses.pose``), places each in the frame of one reference
+receptor, measures each with the requested registry metrics, measures how much the poses agree
+with each other, summarises each group of poses (the back-end by default) and names one
+representative pose per group. The result is one nested dictionary. Thresholds are options with
+documented defaults; the layer does not label a pose good or bad.
 
 Stages
 ------
@@ -13,8 +13,8 @@ Stages
    unknown option or choice, a repeated pose id, a metric name that is also a reserved row name
    (``ValueError``, ``KeyError``, ``TypeError``).
 2. The first pose that can be read (in id order) gives the chains (``binder_chain`` and
-   ``target_chain`` are detected from it when they are not given), the implicit reference (when
-   no ``reference`` is given, see below) and the profile that the pre-flight check reads.
+   ``target_chain`` are detected from it when not given), the implicit reference (when no
+   ``reference`` is given) and the profile that the pre-flight check reads.
 3. Per pose, in parallel when ``n_workers > 1``: read the structure, profile the binder, place
    the pose on the receptor of each reference variant (``frame``), write the structure that the
    path-based metrics read, and run the light metrics.
@@ -24,20 +24,20 @@ Stages
 6. Aggregates per group and over all poses, assembly of the result.
 
 The common frame. The poses are placed on the receptor of the first variant of ``reference``;
-without a reference the pose with the lowest id that can be read plays that role (the result
-says so under ``references``), so the agreement block is always in one frame. The registry
-metrics are computed on the transformed structure, written to a temporary mmCIF file in a
-per-call directory (``tmp_dir``, never the current directory), one file per pose, and removed
-on exit. ``FrameOptions.metrics_frame="original"`` runs them on the pose's own file instead.
-A metric of the ``atom_array`` input type receives the transformed array itself.
+without a reference, the readable pose with the lowest id plays that role (``references`` in the
+result says so), so the agreement block is always in one frame. The registry metrics run on the
+transformed structure, written as mmCIF to a per-call directory (``tmp_dir``, never the current
+directory), one file per pose, removed on exit. ``FrameOptions.metrics_frame="original"`` runs
+them on the pose's own file instead. A metric of the ``atom_array`` input type receives the
+transformed array.
 
 Which metrics run on which poses. A metric whose ``cost_class`` is ``static`` or ``model`` runs
-on every pose. One that is ``structural`` or ``md``, or that declares no class, is heavy: with
-``heavy="representative"`` (default) it runs on the representatives only, ``"all"`` runs it on
-every pose and ``"skip"`` leaves it out. A pose that was not asked for a metric has no block
-for it and no entry in ``reasons``, so the aggregate of a heavy metric counts only the poses
-that were asked. The registry name ``prediction`` is served from the pose itself (a
-``PredictedPose``); the metrics that read a trajectory or a prediction directory are refused.
+on every pose. One that is ``structural`` or ``md``, or that declares no class, is heavy:
+``heavy="representative"`` (default) runs it on the representatives only, ``"all"`` on every
+pose, ``"skip"`` not at all. A pose that was not asked for a metric has no block for it and no
+entry in ``reasons``, so the aggregate of a heavy metric counts only the poses that were asked.
+The registry name ``prediction`` is served from the pose itself (a ``PredictedPose``); the
+metrics that read a trajectory or a prediction directory are refused.
 
 The row of a pose
 -----------------
@@ -47,35 +47,35 @@ that names its program, unless the pose sets them), ``native`` (what the tool th
 reported), ``status``, ``reason``, ``reasons``, ``independent_of_design``, ``profile``,
 ``frame``, then one block per requested registry metric exactly as the function returned it
 (numpy values become lists and numbers), then ``descriptors`` and ``residue_table`` when the
-reference asks for them: ``descriptors[variant] = {"sets": {set name: block}, "partners":
+reference asks for them. ``descriptors[variant] = {"sets": {set name: block}, "partners":
 {partner name: block}}`` for each reference variant that has residue sets or partners
-(``binding_metrics.poses.descriptors``), and with ``residue_table=True`` the interface residue
-by residue. ``status`` is ``"failed"`` when the structure could
-not be read, a chain is missing or the pose could not be placed on the reference (nothing else
-is attempted, ``reason`` says why), ``"partial"`` when a metric raised, was skipped or reported
-a ``reason``, else ``"ok"``. ``reasons`` maps the stage (``load``, ``chains``, ``frame``,
-``profile``, ``agreement``) or the metric name to a sentence; a metric that raised has no block
-and its sentence is ``"<ExceptionType>: <message>"``. A pose that failed counts in ``n_total`` of
-the aggregates and never in ``n_ok``. No value is NaN unless a registry metric returned it; the
-paths of those NaN are in ``nonfinite_fields``. ``independent_of_design`` is None unless
-``design_source`` names the pipeline that made the design (see below): then it is False for a
-pose whose back-end is a model that pipeline ran itself and True for any other back-end (None
-when the pose names none).
+(``binding_metrics.poses.descriptors``); ``residue_table=True`` adds the interface residue by
+residue.
 
-The design origin. A check that asks whether a model other than the designer agrees with the
-design (``INDEPENDENCE_DEPENDENT_CHECKS`` of ``binding_metrics.capabilities``, today
-``evobind_adversarial``) means little for the pose of the model that made the design.
+``status`` is ``"failed"`` when the structure could not be read, a chain is missing or the pose
+could not be placed on the reference (nothing else is attempted; ``reason`` says why),
+``"partial"`` when a metric raised, was skipped or reported a ``reason``, else ``"ok"``.
+``reasons`` maps the stage (``load``, ``chains``, ``frame``, ``profile``, ``agreement``) or the
+metric name to a sentence; a metric that raised has no block and its sentence is
+``"<ExceptionType>: <message>"``. A failed pose counts in ``n_total`` of the aggregates and never
+in ``n_ok``. No value is NaN unless a registry metric returned it; ``nonfinite_fields`` lists
+the paths of those. ``independent_of_design`` is None unless ``design_source`` is given (see the
+argument).
+
+The design origin. Checks that need a model independent of the designer
+(``INDEPENDENCE_DEPENDENT_CHECKS`` of ``binding_metrics.capabilities``, today
+``evobind_adversarial``) are not meaningful on the poses of the model that made the design.
 ``design_source`` (``"boltzgen"``, ``"bindcraft"``, ``"colabdesign"`` or the registry names of
 the models the design ran) and ``design_policy`` apply the rule of the pre-flight check to the
 back-ends of the poses: with ``"skip"`` (default) the check is not run on the poses of such a
 back-end, the pose records why in ``reasons``, and a warning names the check and the back-end;
 ``"warn"`` runs it and warns; ``"error"`` raises ``IncompatibleInputError`` before a pose is
-scored. The labels and the rule hold whatever ``preflight`` says, and the layer never drops a
-pose for its origin.
+scored. The labels and the rule hold whatever ``preflight`` says; the layer never drops a pose
+for its origin.
 
-Determinism. No random numbers are used. Rows are sorted by id, so the order of ``poses`` does
-not change the result, and ``n_workers`` does not change a value. ``timing`` and ``provenance``
-describe the run and are not part of ``input_key``, the SHA-256 of the inputs and parameters.
+Determinism. No random numbers are used. Rows are sorted by id, so the order of ``poses`` and
+the value of ``n_workers`` do not change the result. ``timing`` and ``provenance`` describe the
+run and are not part of ``input_key``, the SHA-256 of the inputs and parameters.
 ``to_json(include_timing=False)`` is byte-identical for the same inputs.
 
 Errors. ``on_error="record"`` (default) turns a pose that cannot be loaded or placed, and a
@@ -85,7 +85,7 @@ the original exception when there is one, and does not process the poses after i
 that returns a ``reason`` is not an exception in either mode. A refused pre-flight check
 raises ``IncompatibleInputError`` before any pose is scored.
 
-Importing this module imports numpy and the standard library and the pose modules; biotite is
+Importing this module imports numpy, the standard library and the pose modules; biotite is
 imported when a structure is read.
 """
 
@@ -238,11 +238,10 @@ _REFUSED_INPUT_TYPES = {
 }
 _FILE_INPUT_TYPES = ("static_structure", "md_simulation", "predicted_structure")
 
-#: Registry metrics that compare the design with a second structure and whose second structure,
-#: in a pose set, is the pose: the reference is the design. The value is the keyword that takes the
-#: per-atom pLDDT of the second structure. The registry slots are ``path_arg`` for the design
-#: and ``secondary_path_arg`` for the second structure, so the layer fills them the other way
-#: round from the way it fills them for ``structure_rmsd`` and ``dockq``.
+#: Registry metrics that compare the design with a second structure, which in a pose set is the
+#: pose (the reference is the design). The value is the keyword that takes the per-atom pLDDT of
+#: the pose. ``path_arg`` takes the design and ``secondary_path_arg`` the pose, the reverse of
+#: ``structure_rmsd`` and ``dockq``.
 _POSE_IS_SECOND_STRUCTURE = {"evobind_adversarial": "afm_plddt_per_atom"}
 
 _POSE_AS_SECOND_STRUCTURE_REASON = (
@@ -288,12 +287,12 @@ def _from_mapping(cls, data: Mapping[str, Any], what: str):
 
 @dataclass(frozen=True)
 class AgreementOptions:
-    """The choices and thresholds of the agreement stage (design section 4), with defaults.
+    """The choices and thresholds of the agreement stage, with defaults.
 
     Attributes:
         kind: The atom set of the matrix that feeds the clusters and the medoids: ``"ca"``,
-            ``"backbone"`` or ``"heavy"``. All three matrices are reported. The positional spread
-            is always of the alpha carbons.
+            ``"backbone"`` or ``"heavy"``. All three matrices are reported. The positional
+            spread is always of the alpha carbons.
         cluster_cutoffs_angstrom: One clustering per cutoff, complete linkage.
         linkage: ``"complete"``, the only linkage (kept as a field so the result records it).
         symmetry: ``"standard"`` matches the interchangeable side-chain atoms in the labelling
@@ -301,10 +300,10 @@ class AgreementOptions:
         cyclic_shift: ``"off"`` or ``"auto"``, whether a head-to-tail ring has a free origin.
         residue_pairing: ``"auto"``, ``"key"`` or ``"position"``: how the binder residues of
             two poses are paired.
-        expected_closures: The ring-closure families that the poses should have (``"head_to_tail"``,
-            ``"disulfide"``, ...), an empty tuple for a linear binder, or None for the families
-            that most poses have (a tie goes to the smaller sorted tuple). Each row's
-            ``profile.closures_as_expected`` compares with it.
+        expected_closures: The ring-closure families that the poses should have
+            (``"head_to_tail"``, ``"disulfide"``, ...), an empty tuple for a linear binder, or
+            None for the families that most poses have (a tie goes to the smaller sorted tuple).
+            Each row's ``profile.closures_as_expected`` compares with it.
         exclude_closure_mismatch: Give a pair of poses with different closure families no value.
         contact_cutoff_angstrom: Heavy-atom distance of a contact and of the interface used
             for the Jaccard overlap.
@@ -396,7 +395,7 @@ class AgreementOptions:
 
 @dataclass(frozen=True)
 class AggregationOptions:
-    """The choices of the aggregation stage (design section 5).
+    """The choices of the aggregation stage.
 
     Attributes:
         min_n_ok: A key with fewer valid values yields None for every statistic and a reason.
@@ -426,7 +425,7 @@ class AggregationOptions:
 
 @dataclass(frozen=True)
 class RepresentativeOptions:
-    """The native score that the ``"confidence"`` rule ranks by (design section 6).
+    """The native score that the ``"confidence"`` rule ranks by.
 
     Attributes:
         confidence_key: The name in ``native``; default the model's own ranking score.
@@ -453,7 +452,7 @@ class RepresentativeOptions:
 
 @dataclass(frozen=True)
 class DescriptorOptions:
-    """The thresholds of the reference-site descriptors (design section 8), with defaults.
+    """The thresholds of the reference-site descriptors, with defaults.
 
     Attributes:
         interface_threshold_angstrom2: Smallest buried area of a residue that puts it in the
@@ -535,7 +534,7 @@ _OPTION_GROUPS = {
 
 @dataclass(frozen=True)
 class PoseSetOptions:
-    """Every threshold of a pose-set call, in one frozen object with the defaults of the design.
+    """Every threshold of a pose-set call, in one frozen object with defaults.
 
     Attributes:
         frame: ``FrameOptions`` (pairing, fit atoms, refusal limits, ``renumber_receptor``,
@@ -669,15 +668,13 @@ def _canonical_json(payload: Any) -> str:
 class PoseSetResult(dict):
     """The result of ``score_pose_set``: one nested dictionary, JSON-serialisable.
 
-    It is a ``dict`` with the keys ``RESULT_KEYS`` (the layout is in the module docstring),
-    so ``result["poses"]``, ``json.dumps(result)`` and ``copy.deepcopy`` work as they do for
-    a dictionary. The methods read it and never change it.
-
-    ``to_dict()`` is a plain-dictionary copy, ``to_json()`` the canonical JSON text,
-    ``from_dict()`` the inverse (it rejects a ``schema_version`` it does not know) and
-    ``to_flat_rows()`` one flat row of scalar columns per pose, ``summary()`` a Markdown text.
-    ``write_pose_report`` in ``binding_metrics.poses.report`` writes JSON, CSV, Markdown and
-    HTML.
+    It is a ``dict`` with the keys ``RESULT_KEYS`` (the row layout is in the module docstring),
+    so ``result["poses"]``, ``json.dumps(result)`` and ``copy.deepcopy`` work as for a
+    dictionary. The methods read it and never change it. ``to_dict()`` is a plain-dictionary
+    copy, ``to_json()`` the canonical JSON text, ``from_dict()`` the inverse (it rejects a
+    ``schema_version`` it does not know), ``to_flat_rows()`` one flat row of scalar columns per
+    pose and ``summary()`` a Markdown text. ``write_pose_report`` in
+    ``binding_metrics.poses.report`` writes JSON, CSV, Markdown and HTML.
     """
 
     @property
@@ -714,13 +711,13 @@ class PoseSetResult(dict):
     def to_json(self, *, indent: Optional[int] = 2, include_timing: bool = True) -> str:
         """The result as JSON text, keys in the order of the result.
 
-        ``NaN`` and ``Infinity`` tokens are kept for the values that a registry metric
-        returned as such (``nonfinite_fields`` lists them); Python's ``json`` reads them back.
+        ``NaN`` and ``Infinity`` tokens are kept for the values that a registry metric returned
+        as such (``nonfinite_fields`` lists them); Python's ``json`` reads them back.
 
         Args:
             indent: Spaces per level; None writes one line.
-            include_timing: False leaves the ``timing`` block out, which makes the text
-                identical for the same inputs whatever the machine load.
+            include_timing: False leaves the ``timing`` block out, so the text is identical for
+                the same inputs.
         """
         data = self.to_dict()
         if not include_timing:
@@ -764,17 +761,16 @@ class PoseSetResult(dict):
 
         Keys of nested dictionaries are joined with ``.`` (``interface.delta_sasa``,
         ``native.iptm``, ``frame.receptor_rmsd_angstrom``). A list of scalars, or of lists of
-        scalars, with at most ``max_list_items`` items in all is written one column per item,
-        ``frame.transform.translation[0]``, ``frame.transform.rotation[1][2]``. A longer list
-        and a list that holds dictionaries (``residue_table``, a per-atom array) is left out:
-        it stays in the JSON. Every row has every column, in one fixed order (``id``,
-        ``kind``, ``status``, ``reason``, ``content_hash``, then the other columns in the
-        order they first occur), with None where a pose has no value.
+        scalars, with at most ``max_list_items`` items in all gets one column per item
+        (``frame.transform.translation[0]``, ``frame.transform.rotation[1][2]``). A longer list
+        and a list that holds dictionaries (``residue_table``, a per-atom array) is left out; it
+        stays in the JSON. Every row has every column, in one fixed order (``id``, ``kind``,
+        ``status``, ``reason``, ``content_hash``, then the other columns in the order they first
+        occur), with None where a pose has no value.
 
-        A key is never changed or escaped, so a key that contains a dot, such as the clash
-        cutoff ``"2.2"`` of the partner descriptors, gives the column
-        ``...clash_atoms.2.2``. The column names of the numeric values are exactly the key
-        paths of ``aggregates``, which join keys the same way.
+        Keys are never changed or escaped: the clash cutoff ``"2.2"`` of the partner
+        descriptors gives the column ``...clash_atoms.2.2``. The column names of the numeric
+        values are the key paths of ``aggregates``, which join keys the same way.
         """
         if not isinstance(max_list_items, int) or max_list_items < 0:
             raise ValueError(f"max_list_items must be a non-negative integer, got {max_list_items}")
@@ -1044,8 +1040,8 @@ class _Context:
     """What every worker needs, built once in the parent and sent to each worker once.
 
     Everything in it pickles, because a worker may be started by ``spawn``. ``design_skips`` is
-    ``{back-end: {check: reason}}`` for the checks that rest on independence and that the design
-    origin leaves out of the poses of that back-end.
+    ``{back-end: {check: reason}}`` for the independence-dependent checks that the design origin
+    leaves out of the poses of that back-end.
     """
 
     binder_chain: str
@@ -1190,9 +1186,8 @@ def _own_file(pose: Pose) -> Optional[str]:
 def _write_structure(atoms: Any, path: Path) -> None:
     """Write an ``AtomArray`` as mmCIF with biotite, in UTF-8.
 
-    The array gets a zero ``charge`` annotation when it has none, so that the loader of the
-    interface metrics finds the formal-charge column and does not warn about it. biotite sets
-    that charge to 0 anyway.
+    Adds a zero ``charge`` annotation when the array has none, so that the loader of the
+    interface metrics finds the formal-charge column and does not warn; biotite writes 0 anyway.
     """
     import io
 
@@ -1333,7 +1328,7 @@ def _run_plans(
         except _NotApplicableError as note:
             row["reasons"][name] = str(note)
             continue
-        except Exception as exc:  # noqa: BLE001 - a metric may raise anything; the sentence goes into the row's reasons and the failure is logged
+        except Exception as exc:  # noqa: BLE001 - recorded in the row and logged
             text = _describe(exc)
             logger.warning("metric %s failed on pose %s: %s", name, pose.id, text)
             _note(outcome, name, text, exc)
@@ -1365,12 +1360,12 @@ def _score_pose(pose: Pose, ctx: _Context, outcome: _Outcome) -> None:
     row = outcome.row
     try:
         atoms = pose.atoms()
-    except Exception as exc:  # noqa: BLE001 - a structure file can fail in any parser; the row records the reason
+    except Exception as exc:  # noqa: BLE001 - any parser error is recorded in the row
         _fail(outcome, "load", _describe(exc), exc)
         return
     try:
         row["native"] = _plain(pose.native_scores())
-    except Exception as exc:  # noqa: BLE001 - a custom pose may raise anything; the row records the reason
+    except Exception as exc:  # noqa: BLE001 - a custom pose may raise anything; recorded in the row
         _note(outcome, "native", _describe(exc), exc)
 
     chains = {str(chain) for chain in np.unique(atoms.chain_id)}
@@ -1388,7 +1383,7 @@ def _score_pose(pose: Pose, ctx: _Context, outcome: _Outcome) -> None:
         return
     try:
         row["profile"] = _profile_block(profile_input(atoms, ctx.binder_chain, ctx.target_chain))
-    except Exception as exc:  # noqa: BLE001 - profiling reads the whole structure; the row records the reason
+    except Exception as exc:  # noqa: BLE001 - recorded in the row
         _note(outcome, "profile", _describe(exc), exc)
     if ctx.raise_mode and outcome.failure is not None:
         return
@@ -1404,7 +1399,7 @@ def _score_pose(pose: Pose, ctx: _Context, outcome: _Outcome) -> None:
                 residue_map=ctx.residue_maps.get(pose.id),
                 options=ctx.options.frame,
             )
-        except Exception as exc:  # noqa: BLE001 - a pose-specific input problem; the row records the reason
+        except Exception as exc:  # noqa: BLE001 - recorded in the row
             text = _describe(exc)
             frames[name] = {"status": "failed", "reason": text}
             if position == 0:
@@ -1433,7 +1428,7 @@ def _score_pose(pose: Pose, ctx: _Context, outcome: _Outcome) -> None:
             else atoms
         )
         outcome.metrics_atoms = place_in_reference_frame(placed_source, first_frame)
-    except Exception as exc:  # noqa: BLE001 - placing reads the pose's atoms; the row records the reason
+    except Exception as exc:  # noqa: BLE001 - recorded in the row
         _fail(outcome, "frame", _describe(exc), exc)
         return
 
@@ -1447,15 +1442,15 @@ def _score_pose(pose: Pose, ctx: _Context, outcome: _Outcome) -> None:
 
 
 def _run_descriptors(outcome: _Outcome, atoms: Any, frames: Mapping[str, Any], ctx: _Context):
-    """The reference-site descriptors of one pose, per reference variant (design section 8).
+    """The reference-site descriptors of one pose, per reference variant.
 
     Each variant that has residue sets or partners gets ``descriptors[variant] = {"sets": ...,
     "partners": ...}``, measured on the pose placed in the frame of that variant; variants that
     share a receptor (equal ``frame_key``) share the placed atoms and the buried areas.
     ``residue_table`` is the per-residue interface table of the first variant. The descriptor
-    functions take the atoms with the numbering the frame stage read, so the renumbered copy of
-    the metrics is not used here. A block that has no value keeps its ``reason`` and is
-    recorded in ``reasons`` as ``descriptors.<variant>.sets.<set>`` (or ``.partners.<partner>``).
+    functions take the atoms with the numbering the frame stage read, not the renumbered copy of
+    the metrics. A block with no value keeps its ``reason``, recorded in ``reasons`` as
+    ``descriptors.<variant>.sets.<set>`` (or ``.partners.<partner>``).
     """
     options = ctx.options.descriptors
     first_name = next(iter(ctx.variants))
@@ -1527,7 +1522,7 @@ def _run_descriptors(outcome: _Outcome, atoms: Any, frames: Mapping[str, Any], c
                 if reference.partners
                 else {}
             )
-        except Exception as exc:  # noqa: BLE001 - the descriptors read the whole pose; the row records the reason
+        except Exception as exc:  # noqa: BLE001 - recorded in the row
             _note(outcome, f"descriptors.{name}", _describe(exc), exc)
             continue
         blocks[name] = {"sets": _plain(sets), "partners": _plain(partners)}
@@ -1551,7 +1546,7 @@ def _run_descriptors(outcome: _Outcome, atoms: Any, frames: Mapping[str, Any], c
             areas=areas,
             **common,
         )
-    except Exception as exc:  # noqa: BLE001 - the table reads the whole pose; the row records the reason
+    except Exception as exc:  # noqa: BLE001 - recorded in the row
         _note(outcome, "residue_table", _describe(exc), exc)
         return
     row["residue_table"] = _plain(table)
@@ -1576,9 +1571,9 @@ def _pool_task(index: int, pose: Pose) -> _Outcome:
 def _pool_context(start_method: Optional[str] = None):
     """The multiprocessing context of the worker pool.
 
-    ``start_method`` is ``"spawn"``, ``"forkserver"`` or ``"fork"``, or None for the start
-    method of the platform (``fork`` on Linux up to Python 3.13, ``spawn`` on macOS and Windows,
-    ``forkserver`` from Python 3.14 on Linux).
+    ``start_method`` is ``"spawn"``, ``"forkserver"`` or ``"fork"``, or None for the platform
+    default (``fork`` on Linux up to Python 3.13, ``forkserver`` from 3.14, ``spawn`` on macOS
+    and Windows).
     """
     return multiprocessing.get_context(start_method)
 
@@ -1641,8 +1636,8 @@ def _score_in_pool(
     Raises:
         _PoolUnavailableError: If the pool or its first worker could not be started: the
             executor cannot be made, a process cannot be created, or the pool breaks before any
-            pose came back. A pool that breaks after poses came back is a crash of a worker, not
-            a start problem, and its ``BrokenProcessPool`` propagates.
+            pose came back. A pool that breaks after poses came back is a worker crash and its
+            ``BrokenProcessPool`` propagates.
         PoseScoringError: With ``on_error="raise"``, at the first failing pose.
     """
     broken = concurrent.futures.process.BrokenProcessPool
@@ -1690,12 +1685,11 @@ def _score_poses(
 ) -> list[_Outcome]:
     """Stage 3 over all poses, in id order; a pool of processes when ``n_workers > 1``.
 
-    The workers are started with ``start_method`` (``"spawn"``, ``"forkserver"``, ``"fork"``, or
-    None for the platform default); the context and the poses are pickled to them, and the
-    outcomes (the rows and the placed atoms) are pickled back. With ``on_error="raise"`` the
-    first failing pose (in id order) raises and the poses after it are dropped. When no worker
-    can be started, a warning is logged and the poses that have no outcome yet are scored one
-    after the other.
+    The workers are started with ``start_method``; the context and the poses are pickled to
+    them, and the outcomes (the rows and the placed atoms) are pickled back. With
+    ``on_error="raise"`` the first failing pose (in id order) raises and the poses after it are
+    dropped. When no worker can be started, a warning is logged and the poses that have no
+    outcome yet are scored one after the other.
     """
     outcomes: list[_Outcome] = []
     if n_workers > 1 and len(items) > 1:
@@ -1757,7 +1751,7 @@ def _scan_first_pose(
     for pose_id, pose in poses:
         try:
             atoms = pose.atoms()
-        except Exception as exc:  # noqa: BLE001 - a structure file can fail in any parser; recorded in the row later
+        except Exception as exc:  # noqa: BLE001 - any parser error is recorded in the row later
             failed(pose_id, "load", _describe(exc), exc)
             continue
         binder, target = binder_chain, target_chain
@@ -1781,7 +1775,7 @@ def _scan_first_pose(
             continue
         try:
             profile = profile_input(atoms, binder, target)
-        except Exception as exc:  # noqa: BLE001 - profiling reads the whole structure; recorded in the row later
+        except Exception as exc:  # noqa: BLE001 - recorded in the row later
             failed(pose_id, "profile", _describe(exc), exc)
             continue
         detected = {"binder_chain": binder_chain is None, "target_chain": target_chain is None}
@@ -1805,11 +1799,11 @@ def _preflight(
     Returns the report as a dictionary (None when ``mode`` is ``"off"``), the plans with the
     metrics that the check left out (policy ``"skip"``) marked as skipped, and the warnings of
     the report. A refused input raises ``IncompatibleInputError``. The design origin
-    (``design_source``, ``design_policy``, the ``backends`` of the poses) is part of the check
-    whatever ``mode`` says: with ``"off"`` the limits of the metrics are not read and only that
-    rule is applied. A check that rests on independence is left out of the whole set only when
-    every back-end is a model the design ran; otherwise it stays, and the poses of such a
-    back-end skip it one by one (``_Context.design_skips``).
+    (``design_source``, ``design_policy``, the ``backends`` of the poses) is checked whatever
+    ``mode`` says: with ``"off"`` the limits of the metrics are not read and only that rule is
+    applied. An independence-dependent check is left out of the whole set only when every
+    back-end is a model the design ran; otherwise the poses of such a back-end skip it one by one
+    (``_Context.design_skips``).
     """
     from binding_metrics.capabilities import Capabilities, preflight
 
@@ -1821,7 +1815,7 @@ def _preflight(
     if first_kind == "predicted":
         provided.add("predicted_structure")
     checked = [plan.name for plan in plans if plan.scope != "none"]
-    # a pose set reads the check the other way round from the pipeline, so its refusal says so
+    # in a pose set the pose is the second structure, so the refusal message differs
     with_limits = [
         SimpleNamespace(
             name=name,
@@ -1876,8 +1870,8 @@ def _design_skips(design: Any, plans: Sequence[_MetricPlan]) -> dict[str, dict[s
     """``{back-end: {check: reason}}`` for the checks that run on some back-ends and not others.
 
     Only under the policy ``skip``, for a design whose models are known, and only for a check
-    that the pre-flight check left in the set (it is left out of the set when every back-end is
-    circular). The reason is the fact that ``preflight`` reports as a violation.
+    that the pre-flight check left in the set (it leaves a check out when every back-end shares
+    the design's model). The reason is the fact that ``preflight`` reports as a violation.
     """
     if design.policy != "skip" or not design.origin.known:
         return {}
@@ -2129,7 +2123,7 @@ def score_pose_set(
 ) -> PoseSetResult:
     """Score the poses of one construct: frame, metrics, agreement, aggregates, representatives.
 
-    The module docstring describes the stages, the row of a pose and the error semantics.
+    The module docstring describes the stages, the row of a pose and the error handling.
 
     Args:
         poses: The poses (``DockedPose``, ``ExperimentalPose``, ``PredictedPose``) with unique
@@ -2144,8 +2138,8 @@ def score_pose_set(
             (``structure_rmsd``, ``dockq``, ``evobind_adversarial``) needs ``reference``. For
             ``evobind_adversarial`` the reference is the design and each pose is the second
             structure, weighted by its per-atom pLDDT, so the poses must be ``PredictedPose``
-            objects (the pre-flight check refuses other poses; with ``"warn"`` the score of such
-            a pose is None, with a ``reason``).
+            objects (the pre-flight check refuses other poses; with ``"warn"`` their score is
+            None, with a ``reason``).
         reference: A ``Reference``, or ``{variant name: Reference}``, that the poses are placed
             on and measured against. The first variant defines the frame of the metrics and of
             the agreement. None uses the first readable pose (lowest id) as the reference.
@@ -2157,16 +2151,16 @@ def score_pose_set(
             default. ``()`` gives the group ``"all"`` only.
         representative: ``"medoid"`` (default), ``"confidence"`` (the best native score of
             ``options.representative``) or a callable ``(rows_of_group, PoseDistances) -> id``.
-        heavy: Where the heavy metrics (``cost_class`` ``structural`` and ``md``, or none
-            declared) run: ``"representative"`` (default), ``"all"`` or ``"skip"``.
+        heavy: ``"representative"`` (default), ``"all"`` or ``"skip"``: where the heavy metrics
+            run (see the module docstring).
         metric_kwargs: ``{metric name: {keyword: value}}``, passed on as they are.
         preflight: ``"error"`` (default) refuses an input that a requested metric cannot take
             (``IncompatibleInputError``) before any pose is scored; ``"skip"`` leaves those
             metrics out and lists them; ``"warn"`` logs and runs; ``"off"`` does not check.
         on_error: ``"record"`` (default) or ``"raise"``, see the module docstring.
-        n_workers: Processes for the per-pose stage; 1 runs in this process. A pool that cannot
-            start gives a logged warning and the poses are scored in this process. The metrics
-            that need a GPU never run in a worker.
+        n_workers: Processes for the per-pose stage; 1 runs in this process. If the pool cannot
+            start, a warning is logged and the poses are scored in this process. Metrics that
+            need a GPU never run in a worker.
         tmp_dir: An existing directory for the temporary structure files (default the system
             temporary directory); a directory ``bm_poseset_*`` is made in it and removed on exit.
         keep_tmp: Leave that directory in place (its path is in ``provenance["temp_dir"]``).
@@ -2178,24 +2172,21 @@ def score_pose_set(
         residue_maps: ``{pose id: {pose ResidueKey: reference ResidueKey}}`` that replace the
             residue map of the reference for those poses.
         start_method: How the worker processes of ``n_workers > 1`` are started: ``"spawn"``
-            (default: a fresh interpreter, safe with threads and GPU libraries, needs the usual
-            ``if __name__ == "__main__":`` guard in a script), ``"forkserver"``, ``"fork"`` (the
-            fastest start, but ``fork`` of a multi-threaded process is deprecated since Python
-            3.12 and can deadlock), or None for the platform default. The method is not part of
-            the result's values: it is recorded in ``provenance["run"]`` and not in ``input_key``.
+            (default; a fresh interpreter, safe with threads and GPU libraries, needs the usual
+            ``if __name__ == "__main__":`` guard in a script), ``"forkserver"``, ``"fork"``
+            (deprecated for multi-threaded processes since Python 3.12, can deadlock), or None
+            for the platform default. Recorded in ``provenance["run"]``, not in ``input_key``.
         design_source: The pipeline that made the designed binder: ``"boltzgen"``, ``"bindcraft"``
             or ``"colabdesign"`` in any case (``capabilities.DESIGN_SOURCE_PREDICTORS``), or the
             registry names of the models it ran itself, ``("boltz2",)``. A pose whose
             ``provenance["backend"]`` is one of those models gets ``independent_of_design`` False,
-            any other pose with a back-end True; None, a name that is not in the table (it
-            warns and never blocks) and a pose without a back-end give None. Recorded in
+            any other pose with a back-end True. None, a name that is not in the table (it warns
+            and never blocks) and a pose without a back-end give None. Recorded in
             ``parameters["design"]`` and so in ``input_key``.
-        design_policy: What to do with a check that rests on independence
-            (``capabilities.INDEPENDENCE_DEPENDENT_CHECKS``, today ``evobind_adversarial``) on the
-            poses of such a back-end. ``"skip"`` (default) does not run it there, records the
-            reason in the ``reasons`` of the pose and warns in ``result["warnings"]``; ``"warn"``
-            runs it and warns; ``"error"`` raises ``IncompatibleInputError`` before a pose is
-            scored. ``preflight`` does not change this rule, not even ``"off"``.
+        design_policy: ``"skip"`` (default), ``"warn"`` or ``"error"``: what to do with an
+            independence-dependent check (``capabilities.INDEPENDENCE_DEPENDENT_CHECKS``) on the
+            poses of such a back-end (see the module docstring). ``"skip"`` also warns in
+            ``result["warnings"]``.
 
     Returns:
         A ``PoseSetResult``; its type never depends on an argument.
@@ -2606,7 +2597,7 @@ def _run_agreement(
         return block, None, {}
     try:
         return _agreement_stage(options, scan.binder_chain, scan.target_chain, group_by, outcomes)
-    except Exception as exc:  # noqa: BLE001 - the agreement stage reads every pose; the failure is logged and recorded in the block
+    except Exception as exc:  # noqa: BLE001 - logged and recorded in the agreement block
         if raise_mode:
             raise
         logger.warning("agreement stage failed: %s", _describe(exc))
@@ -2728,8 +2719,7 @@ def _medoid_caveats(
     """``[(group, sentence)]`` of the medoids chosen with a caveat, once per group and sentence.
 
     Read from ``agreement["medoids"]`` (the overall medoid is the group ``"all"``) and from
-    ``representatives["caveats"]``; both come from ``agreement.medoid`` and say the same thing
-    when they cover the same poses.
+    ``representatives["caveats"]``; both come from ``agreement.medoid``.
     """
     found: list[tuple[str, str]] = []
     medoids = agreement.get("medoids") or {}
