@@ -58,12 +58,11 @@ def _warn(msg: str) -> None:
 def _report_openfold_readiness(python_cmd: list[str], where: str) -> bool:
     """Say which openfold3 version is installed and whether its default checkpoint is on disk.
 
-    Importing ``openfold3`` says little: since 0.5.0 it refuses to run without the OpenBind-0
-    checkpoint (``of3-ob-2025-06-30-174k.pt``), and Preview2 weights of a 0.4.x install do not
-    load into it. ``python_cmd`` starts the interpreter of the installation, for the version;
-    the checkpoint folder is read from ``$OPENFOLD_CACHE`` (default ``~/.openfold3``), which a
-    ``conda run`` of the same user shares. Returns False when openfold3 >= 0.5 has no default
-    checkpoint to load, since every run would stop there.
+    openfold3 0.5.0 and later refuse to run without the OpenBind-0 checkpoint
+    (``of3-ob-2025-06-30-174k.pt``), and Preview2 weights of a 0.4.x install do not load into it.
+    ``python_cmd`` starts the interpreter of the installation, for the version; the checkpoint
+    folder is read from ``$OPENFOLD_CACHE`` (default ``~/.openfold3``), which a ``conda run`` of
+    the same user shares. Returns False when openfold3 >= 0.5 has no default checkpoint to load.
     """
     from binding_metrics.metrics import _openfold_run as run
 
