@@ -1,142 +1,112 @@
 """Pose agreement: how much the peptides of a pose set agree with each other.
 
-The functions here take poses that are ALREADY in one common frame (the receptors are
-superposed, which is the job of the frame stage) and compare the peptides in that frame. The
-peptide is never refitted: the RMSD measures displacement and conformation together, which is
-the quantity that says whether two models put the peptide in the same place. ``refit=True``
-adds a superposition of the peptide on the atoms it measures and gives the shape RMSD, which
-separates conformation from position.
+The functions take poses that are already in one common frame (the frame stage superposes the
+receptors) and compare the peptides in that frame. The peptide is not refitted, so the RMSD
+measures displacement and conformation together. ``refit=True`` first superposes the peptide on
+the atoms it measures and gives the shape RMSD.
 
-Input. A pose is ``(pose_id, atoms)``: a biotite ``AtomArray`` in the common frame and the
-chain ID of the binder, which is the same for every pose (use the chain IDs of the user, after
-any chain renaming). A set is a mapping ``{pose_id: atoms}`` or a sequence of pairs. Poses are
-sorted by id, so the order of the input never changes an output. Nothing here imports biotite:
-the arrays are read through their annotations and ``coord`` only.
+Input. A pose is ``(pose_id, atoms)``: a biotite ``AtomArray`` in the common frame, with the
+binder chain ID, the same for every pose (the user's chain IDs, after any chain renaming). A
+set is a mapping ``{pose_id: atoms}`` or a sequence of pairs. Poses are sorted by id, so the
+input order never changes an output. biotite is not imported here: the arrays are read through
+their annotations and ``coord``.
 
 Atom sets (``kind``).
 
 * ``"ca"``: the alpha carbon of each residue.
 * ``"backbone"``: N, CA, C and O of each residue; OXT is not part of it.
-* ``"heavy"``: every non-hydrogen atom of the binder residues. Atoms are matched by residue and
-  atom name; with ``symmetry="standard"`` the interchangeable atoms of
+* ``"heavy"``: every non-hydrogen atom of the binder residues, matched by residue and atom
+  name. With ``symmetry="standard"`` the interchangeable atoms of
   ``binding_metrics.poses.symmetry`` (side-chain pairs and the free C-terminal carboxylate)
   are matched in the labelling with the smallest RMSD.
 
-Water residues and hydrogens are never part of the binder, even when they carry the binder's
-chain ID (an author-numbered file lists the waters of a chain under its ID). Atoms with the same
-residue and atom name twice (alternate locations) count once: the first one.
+Water residues and hydrogens are never part of the binder, even when they carry its chain ID
+(an author-numbered file lists the waters of a chain under its ID). Atoms with the same residue
+and atom name (alternate locations) count once: the first.
 
-Residue correspondence between two poses (``residue_pairing``). A residue is identified by its
-``ResidueKey`` (``binding_metrics.poses.reference``): chain ID, residue number and insertion
-code, so ``52`` and ``52A`` are two residues. Every residue key that this module returns (the
-binder residues, the contacts, the interface, the positional spread) is a ``ResidueKey``.
+Residue correspondence (``residue_pairing``). A residue is identified by its ``ResidueKey``
+(``binding_metrics.poses.reference``): chain ID, residue number and insertion code, so ``52``
+and ``52A`` are two residues. Every residue key this module returns is a ``ResidueKey``.
 
 * ``"key"``: residues with the same key are paired; a residue present in one pose only is
   dropped.
-* ``"position"``: the i-th residue of one chain is paired with the i-th of the other, whatever
-  the numbers; the two chains need the same number of residues.
-* ``"auto"`` (default): ``"key"`` when the keys of one pose are all in the other pose (equal
-  numbering, or one pose lacks some residues), otherwise ``"position"`` when the lengths are
-  equal. A numbering that is shifted between the poses is therefore read by position, and two
-  poses that each lack residues the other has are refused with a reason, since neither
-  correspondence can be trusted.
+* ``"position"``: the i-th residue of one chain with the i-th of the other, whatever the
+  numbers; the chains need the same number of residues.
+* ``"auto"`` (default): ``"key"`` when the keys of one pose are all in the other pose, otherwise
+  ``"position"`` when the lengths are equal. A shifted numbering is read by position; two poses
+  that each lack residues the other has are refused with a reason.
 
-Residues that are paired must be the same amino acid: the names are compared after the AMBER
-and CHARMM protonation variants and the D-amino acid codes are mapped to their L parent
-(HID is His, DAL is Ala), so a model that flips a D-residue to L is measured and not refused,
-while Leu against N-methyl-Leu (MLE), or any other change of the sequence, is refused.
+Paired residues must be the same amino acid. The names are compared after AMBER and CHARMM
+protonation variants and D-amino acid codes are mapped to their L parent (HID is His, DAL is
+Ala), so a D-residue flipped to L is measured; Leu against N-methyl-Leu (MLE), or any other
+change of the sequence, is refused.
 
 Missing residues and atoms. Residues and atoms present in one pose only are dropped from that
-pair. The share of atoms kept is ``n_shared / max(n_a, n_b)``, with ``n_a`` and ``n_b`` the
-atoms of the chosen set in each binder; below ``min_shared_atom_fraction`` (default 0.8) the
-pair has no value and a reason. The same rule serves the three kinds: for ``"ca"`` it is a
-share of residues. A pose whose binder cannot be read, or whose sequence differs, has no value
-in any of its pairs and says why; the other pairs are computed.
+pair. The share kept is ``n_shared / max(n_a, n_b)``, with ``n_a`` and ``n_b`` the atoms of the
+chosen set in each binder (residues for ``"ca"``); below ``min_shared_atom_fraction`` (default
+0.8) the pair has no value and a reason. A pose whose binder cannot be read, or whose sequence
+differs, has no value in any of its pairs and says why; the other pairs are computed.
 
 RMSD. For the matched atoms ``i = 1..m``, ``sqrt(sum_i |x_a,i - x_b,i|^2 / m)`` in angstrom, an
-average over atoms (not over residues). The matrix is symmetric with a zero diagonal. Because
-the symmetric-atom choice is a minimum, a heavy-atom RMSD with ``symmetry="standard"`` need not
-obey the triangle inequality.
+average over atoms. The matrix is symmetric with a zero diagonal. The symmetric-atom choice is a
+minimum, so a heavy-atom RMSD with ``symmetry="standard"`` need not obey the triangle
+inequality.
 
-What "cyclic-aware" means here, and what it does not mean.
+Cyclic-aware comparison.
 
 The code does these things.
 
-1. No terminus is assumed. Every binder residue takes part; none is trimmed by position, and
-   the residue pairing treats the first and the last residue of the file like any other. A free
-   C-terminal OXT is compared in the ``"heavy"`` set only when both poses have it and is never
-   required. The one place where the end of the chain matters is the free carboxylate: with
-   ``symmetry="standard"`` and ``kind="heavy"``, O and OXT of the last residue of the binder are
-   a swappable pair when both binders are linear (neither is closed head to tail) and both
-   poses carry O and OXT on it; a pose without OXT, or a ring, leaves O as named. The
-   ``"backbone"`` set has O and not OXT, so there O is compared as named.
+1. No terminus is assumed. Every binder residue takes part, none is trimmed by position, and
+   the first and the last residue are paired like any other. A free C-terminal OXT is compared
+   in the ``"heavy"`` set only when both poses have it, and is never required. With
+   ``symmetry="standard"`` and ``kind="heavy"``, O and OXT of the last residue are a swappable
+   pair when both binders are linear (neither is closed head to tail) and both poses carry
+   both atoms; otherwise O is compared as named, as in ``"backbone"`` (which has O and not
+   OXT).
 2. Closure atoms are ordinary atoms. The atoms that close a ring (C of the last residue and N
-   of the first for a head-to-tail amide, SG of a disulfide, the side-chain atoms of a lactam or
-   a staple) belong to the sets like every other atom: C and N are in ``"backbone"``, the
-   side-chain atoms in ``"heavy"``. Nothing is added or removed because of a closure.
+   of the first for a head-to-tail amide, SG of a disulfide, the side-chain atoms of a lactam
+   or a staple) belong to the sets like any other: C and N to ``"backbone"``, the side-chain
+   atoms to ``"heavy"``. Nothing is added or removed because of a closure.
 3. A head-to-tail ring has no chain break. The correspondence is one-to-one by key or position
    and never looks at which residue follows which, so the bond between the last and the first
    residue is neither required nor missed.
 4. The origin of a ring can be left free (``cyclic_shift="auto"``, opt-in). For two poses that
-   are both closed head-to-tail (C of the last residue within 2.0 angstrom of N of the first,
-   the amide threshold of ``capabilities.detect_closures``), have the same number of residues
-   and the same residue names under the shift, the pair value is the smallest over all the
-   cyclic shifts ``s`` of the pairing "residue i with residue (i + s) mod n"; a tie goes to the
+   are both closed head to tail (C of the last residue within 2.0 angstrom of N of the first,
+   the amide threshold of ``capabilities.detect_closures``), with the same number of residues
+   and the same residue names under the shift, the pair value is the smallest over the cyclic
+   shifts ``s`` of the pairing "residue i with residue (i + s) mod n"; a tie goes to the
    smallest shift. A pose that is not closed, or a pair without a shift that keeps the residue
    names, falls back to the ordinary pairing. ``shift`` is recorded per pair.
 5. Closure families can be compared. ``closure_families`` (or the helper
-   ``binder_closure_families``) names the ring-closure families of each pose, and a pair
-   carries ``closure_mismatch`` when the two sets differ; ``exclude_closure_mismatch=True``
-   gives such pairs no value.
+   ``binder_closure_families``) names the ring-closure families of each pose; a pair carries
+   ``closure_mismatch`` when the two sets differ, and ``exclude_closure_mismatch=True`` gives
+   such pairs no value.
 
 The code does not do these things: it does not detect closures itself, apart from the distance
 test of item 4; it does not judge whether a ring is well formed or closed; it does not try the
 reversed direction of a ring (the mirror sequence); it applies no weight to closure atoms; and
 the cyclic shift is not used by the positional spread or by the contact maps.
 
-Statistics of a set. Every statistic takes a ``PairMatrix`` (or atoms) and says what it needs.
+Statistics of a set, each documented on its function: ``pair_statistics`` (minimum, mean and
+maximum inside and between groups), ``complete_linkage_clusters``, ``medoid`` and ``medoids``,
+``jaccard_matrix`` with ``interface_jaccard`` and ``contact_map_jaccard``, and
+``positional_spread``. ``aggregate.select_representatives`` calls ``medoid``, so the two cannot
+differ.
 
-* ``pair_statistics``: minimum, mean and maximum over the pairs inside each group and between
-  groups; needs one pair.
-* ``complete_linkage_clusters``: agglomerative clustering with complete linkage, implemented
-  here. Start with one cluster per pose, ordered by pose id; at each step merge the two clusters
-  with the smallest linkage distance (the largest distance between a member of one and a member
-  of the other); stop when that distance exceeds the cutoff, a distance within the tolerance of
-  the cutoff counting as within it. Ties go to the pair of clusters with the smallest
-  ``(rank of the lowest member of the first cluster, rank of the lowest member of the second)``,
-  the rank being the position in the sorted ids. Cluster labels run from 0 and follow
-  ``(-size, rank of the lowest member)``. Per cutoff: the number of clusters, the sizes, the
-  fraction of poses in the largest cluster, the label of each pose and, when groups are given,
-  the clusters that mix groups. An undefined distance counts as infinite, so those two poses
-  never share a cluster. The linkage is complete and fixed (``CLUSTER_LINKAGE``); the cutoffs
-  default to ``DEFAULT_CLUSTER_CUTOFFS_ANGSTROM``. Needs two poses.
-* ``medoid`` and ``medoids``: the pose with the smallest mean distance to the other poses
-  (the smallest sum when every pair has a distance, which orders the poses the same way); a
-  tie, within ``TIE_TOLERANCE_ANGSTROM`` of the means, goes to the lowest pose id. A pose is a
-  candidate only when its row has no undefined distance. When no pose has a complete row the
-  medoid is chosen by the mean over each pose's defined distances (a pose with none is left
-  out) and the result carries a ``caveat``. One pose is its own medoid, with no distance.
-  ``medoids`` gives the overall one, one per group and the RMSD between the medoids of two
-  groups. ``select_representatives`` of ``aggregate`` calls ``medoid``, so the two cannot differ.
-* ``jaccard_matrix`` (and ``interface_jaccard``, ``contact_map_jaccard``): the Jaccard index
-  ``|A & B| / |A | B|`` of two sets; two empty sets give no value, with a reason. The interface
-  and contact sets come from the caller (``heavy_atom_contacts`` and ``interface_residues``
-  build them from atoms with a plain distance rule: a residue is in the interface, and a residue
-  pair is in contact, when two of their heavy atoms are closer than ``contact_cutoff_angstrom``,
-  default 5.0, the contact distance of the CAPRI fraction of native contacts). Binder residues
-  are named by their 1-based position in the binder chain, receptor residues by their key; the
-  numbers of the receptor residues must already be those of one numbering for all poses.
-* ``positional_spread``: for each binder position, the root mean square distance of the alpha
-  carbons of the poses from their mean position, ``sqrt(mean_i |x_i - mean(x)|^2)`` in angstrom
-  (divisor n, the population form, like the RMSF of the toolkit), and the mean of that over the
-  positions. The poses are in the common frame, so no further superposition is applied; it
-  describes the poses given and does not estimate a population spread. A position needs two
-  poses with an alpha carbon.
+Clustering. Complete linkage, implemented here. Start with one cluster per pose, ordered by
+pose id; at each step merge the two clusters with the smallest linkage distance (the largest
+distance between a member of one and a member of the other); stop when that distance exceeds
+the cutoff (a distance within the tolerance of the cutoff counts as within it). Ties go to the
+pair of clusters with the smallest ``(rank of the lowest member of the first cluster, rank of
+the lowest member of the second)``, the rank being the position in the sorted ids. Labels run
+from 0 and follow ``(-size, rank of the lowest member)``. An undefined distance counts as
+infinite, so those two poses never share a cluster. The linkage is fixed
+(``CLUSTER_LINKAGE``); the cutoffs default to ``DEFAULT_CLUSTER_CUTOFFS_ANGSTROM``.
 
-Cannot compute. A quantity that cannot be computed is None with a reason, never NaN: in the
-dictionaries of ``to_dict`` and in the results of the statistics. The one place where NaN
-appears is ``PairMatrix.values``, which is the numeric array of the matrix; NaN there marks an
-undefined pair, and ``PairMatrix.reasons`` says why.
+Cannot compute. A quantity that cannot be computed is None with a reason, never NaN, in the
+dictionaries of ``to_dict`` and in the results of the statistics. NaN appears only in
+``PairMatrix.values``, the numeric array of the matrix, where it marks an undefined pair;
+``PairMatrix.reasons`` says why.
 
 Ties. Two distances closer than ``TIE_TOLERANCE_ANGSTROM`` (1e-9 angstrom) are equal wherever a
 rule breaks a tie, so that rounding differences (2.3 - 2.0 against 0.3) do not decide.
@@ -184,13 +154,12 @@ DEFAULT_MIN_SHARED_ATOM_FRACTION = 0.8
 #: Two distances closer than this are equal in every tie rule (angstrom).
 TIE_TOLERANCE_ANGSTROM = 1e-9
 #: C-N distance below which a binder counts as closed head-to-tail: the amide threshold of
-#: ``capabilities.detect_closures`` (a stretched closure bond of a predicted model still counts).
+#: ``capabilities.detect_closures``.
 HEAD_TO_TAIL_CUTOFF_ANGSTROM = 2.0
 
 #: The linkage of ``complete_linkage_clusters``; it is not a parameter.
 CLUSTER_LINKAGE = "complete"
-#: Cutoffs (angstrom) of the clustering when the caller gives none: the scale of the seed spread
-#: of one model and of the gap between two models for a peptide of about a dozen residues.
+#: Cutoffs (angstrom) of the clustering when the caller gives none.
 DEFAULT_CLUSTER_CUTOFFS_ANGSTROM = (1.0, 2.0)
 #: Heavy-atom distance (angstrom) below which two residues are in contact.
 DEFAULT_CONTACT_CUTOFF_ANGSTROM = 5.0
@@ -502,9 +471,8 @@ def _rmsd_of_matched(a: np.ndarray, b: np.ndarray, groups, refit: bool):
         return math.sqrt(_sum_squares(a, b) / n_atoms), 0, None
     if n_atoms < 3:
         return None, 0, f"a fit needs at least 3 atoms, {n_atoms} are shared"
-    # Alternating minimisation: fit, choose the labelling in the fitted frame, fit again. Each
-    # step keeps or lowers the sum of squares, so it stops; the choice inside a step is the
-    # deterministic one of ``best_labelling``.
+    # Alternating minimisation: fit, choose the labelling in the fitted frame, fit again. The
+    # sum of squares never rises, so the loop stops.
     order = np.arange(n_atoms, dtype=np.intp)
     fitted = _fit_onto(a, b)
     cost = _sum_squares(a, fitted)
@@ -1000,12 +968,12 @@ def medoid(matrix: PairMatrix) -> dict[str, Any]:
 
     A pose is a candidate only when its row has no undefined distance to another pose of the
     matrix (take a ``subset`` first to leave a pose out). The medoid is the candidate with the
-    smallest mean distance to the others; this is the smallest sum too, because every
-    candidate has the same number of distances. A tie, within ``TIE_TOLERANCE_ANGSTROM`` of
-    the means, goes to the lowest pose id.
+    smallest mean distance to the others, which is also the smallest sum, since every candidate
+    has the same number of distances. A tie, within ``TIE_TOLERANCE_ANGSTROM`` of the means,
+    goes to the lowest pose id.
 
     When no pose has a complete row, the means run over each pose's defined distances, a pose
-    with none is left out, and the result has a ``caveat`` that says so.
+    with none is left out, and the result has a ``caveat``.
 
     Returns:
         ``{"pose_id", "sum_distance_angstrom", "mean_distance_angstrom", "tied_with",
@@ -1159,11 +1127,11 @@ def _merge_sequence(distances: np.ndarray) -> list[tuple[float, list[int], list[
     """Every complete-linkage merge of the poses, in order: ``(height, first, second)``.
 
     Poses are the rows of ``distances`` (rank = row number). The clusters stay in a list ordered
-    by their lowest member, so the first pair of the row-major scan of the upper triangle among
-    the tied smallest linkage distances is the one with the smallest ``(rank of the lowest member
-    of the first cluster, rank of the lowest member of the second)``. The merged cluster keeps the
-    place of the first one, which keeps the order. The sequence does not depend on a cutoff: a
-    cutoff only decides how many merges are applied.
+    by their lowest member and the merged cluster keeps the place of the first one, so the first
+    pair of the row-major scan of the upper triangle among the tied smallest linkage distances
+    has the smallest ``(rank of the lowest member of the first cluster, rank of the lowest
+    member of the second)``. The sequence does not depend on a cutoff, which only decides how
+    many merges are applied.
     """
     linkage = np.where(np.isnan(distances), np.inf, distances).astype(np.float64)
     np.fill_diagonal(linkage, np.inf)
@@ -1209,9 +1177,8 @@ def complete_linkage_clusters(
 ) -> list[ClusterResult]:
     """Cluster the poses of a distance matrix by complete linkage, once per cutoff.
 
-    The module docstring gives the rule and the tie rule. The result is deterministic and does
-    not depend on the order in which the poses were given. Poses within a cluster are all within
-    the cutoff of each other (the cutoff is the largest allowed distance inside a cluster).
+    The module docstring gives the rule and the tie rule. The result does not depend on the
+    order of the poses. The cutoff is the largest distance allowed inside a cluster.
 
     Args:
         matrix: A distance matrix (``PairwiseRmsd`` for example).
@@ -1368,8 +1335,8 @@ def contact_map_jaccard(contacts_by_pose: Mapping[str, Collection]) -> PairMatri
     """Jaccard index of the contact maps of the poses.
 
     A contact map is the set of residue pairs ``(binder position, receptor residue key)`` that
-    have two heavy atoms closer than the contact cutoff (``heavy_atom_contacts``). Two poses
-    with the same contacts score 1; a pair of two empty maps has no value.
+    have two heavy atoms closer than the contact cutoff (``heavy_atom_contacts``). A pair of
+    two empty maps has no value.
     """
     return jaccard_matrix(
         contacts_by_pose, name="contact_map_jaccard", empty_reason="both contact maps empty"
@@ -1395,8 +1362,7 @@ def heavy_atom_contacts(
         cutoff_angstrom: Contact distance, default 5.0 (the heavy-atom contact distance of the
             CAPRI fraction of native contacts); a pair at exactly the cutoff is not in contact.
         key_factory: Builds the receptor residue key from ``(chain ID, number, insertion
-            code)``; the default is ``ResidueKey``, a callable of the same three arguments
-            (a tuple-making function, a named tuple) gives another key type.
+            code)``; default ``ResidueKey``, or any callable of the same three arguments.
 
     Returns:
         A frozenset of ``(binder position, receptor key)``, the position being the 1-based index
@@ -1455,11 +1421,10 @@ def interface_residues(
 ) -> InterfaceResidues:
     """The residues of the binder and of the receptor that touch the other partner.
 
-    A simple distance rule, not the buried-area definition of the interface metrics: a residue
-    is in the interface when one of its heavy atoms is closer than ``cutoff_angstrom`` (default
-    5.0) to a heavy atom of the other partner. Computing the interface by another rule and
-    passing it as ``InterfaceResidues`` is the caller's choice. The arguments are those of
-    ``heavy_atom_contacts``.
+    Distance rule: a residue is in the interface when one of its heavy atoms is closer than
+    ``cutoff_angstrom`` (default 5.0) to a heavy atom of the other partner. The interface
+    metrics use buried area; an interface from another rule can be passed as
+    ``InterfaceResidues``. The arguments are those of ``heavy_atom_contacts``.
     """
     contacts = heavy_atom_contacts(
         atoms,
@@ -1561,12 +1526,10 @@ def positional_spread(
 
     For each residue of the reference pose that has an alpha carbon, ``spread = sqrt(mean_i
     |x_i - mean(x)|^2)`` over the poses that have an alpha carbon at the paired residue (divisor
-    n). The poses are taken as they are in the common frame. The residues of the other poses
-    are paired with those of the reference pose by ``residue_pairing`` (see the module
-    docstring); a pose that cannot be paired is listed in ``excluded``. The cyclic shift is not
-    applied: a ring with another origin is excluded or paired by position.
-
-    Call it once per group (for example per back-end) for the spread inside a group.
+    n). The residues of the other poses are paired with those of the reference pose by
+    ``residue_pairing`` (see the module docstring); a pose that cannot be paired is listed in
+    ``excluded``. The cyclic shift is not applied: a ring with another origin is excluded or
+    paired by position. Call it once per group for the spread inside a group.
 
     Args:
         poses: ``{pose_id: atoms}`` or ``(pose_id, atoms)`` pairs, in the common frame.
