@@ -90,17 +90,14 @@ class PeptideBindingProtocol(BaseProtocol):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load and prepare system
         self._pdb = load_complex(self.pdb_path)
         forcefield = get_forcefield(self.forcefield_name)
         modeller = prepare_system(self._pdb, forcefield=forcefield)
 
-        # Save solvated topology for analysis
         self._topology_path = output_dir / "solvated.pdb"
         with open(self._topology_path, "w", encoding="utf-8") as topology_file:
             PDBFile.writeFile(modeller.topology, modeller.positions, topology_file)
 
-        # Set up simulation
         self._simulation = MDSimulation(modeller, forcefield, self.simulation_config)
         self._simulation.setup()
 
@@ -110,7 +107,6 @@ class PeptideBindingProtocol(BaseProtocol):
         if equilibrate:
             self._simulation.equilibrate()
 
-        # Run production
         self._trajectory_path = self._simulation.run(output_dir)
 
         return self._trajectory_path
@@ -140,11 +136,9 @@ class PeptideBindingProtocol(BaseProtocol):
             # Use original PDB if no solvated topology
             topology_path = self.pdb_path
 
-        # Get atom indices for ligand and receptor
         ligand_indices = get_chain_atom_indices(topology_path, [self.ligand_chain])
         receptor_indices = get_chain_atom_indices(topology_path, self.receptor_chains)
 
-        # Calculate metrics
         buried_sasa_nm2 = calculate_buried_sasa(
             traj_path,
             topology_path,
@@ -178,7 +172,6 @@ class PeptideBindingProtocol(BaseProtocol):
         )
         _require_frames(rmsd)
 
-        # Compile results
         self._results = ProtocolResults(
             sasa_buried=buried_sasa,
             sasa_buried_mean=float(np.mean(buried_sasa)),
