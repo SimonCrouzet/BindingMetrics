@@ -25,12 +25,15 @@ A value of key ``K`` in the block ``B`` of a pose is valid when all of these hol
 3. the value is a finite number: not ``None``, NaN, infinite, a bool or a string.
 
 Keys come from the numeric leaves (int or float, not bool) of the rows that did not fail;
-strings, bools and lists never make a key, and ``exclude_blocks`` keeps whole blocks out
-(``provenance``, ``residue_table`` ... by default). A pose counts in ``n_total`` of a key
-when it failed, its block is in the row, or the row's ``reasons`` names the block (a metric
-that raised). A pose with none of these was not asked for that metric (a heavy metric run on
-the representatives only) and is not counted. Values are sorted before any statistic is
-computed, so permuting the rows changes no digit.
+strings, bools and lists never make a key, ``exclude_blocks`` keeps whole blocks out
+(``provenance``, ``residue_table`` ... by default) and ``exclude_keys`` single keys (the identity
+of a prediction, ``prediction.seed``, ``prediction.sample``, ``prediction.n_atoms``,
+``prediction.seed_value``, which names a pose and measures nothing). A pose counts in
+``n_total`` of a key when it failed, its block is in the row, or the row's ``reasons`` names
+the block (a metric that raised). A pose with none of these was not asked for that metric (a
+heavy metric run on the representatives only) and is not counted. A key that no pose of a
+group has (a score that only one back-end writes) is not listed for that group. Values are
+sorted before any statistic is computed, so permuting the rows changes no digit.
 
 Imports: numpy, the standard library and ``binding_metrics.poses.agreement``; no structure
 library.
@@ -70,6 +73,15 @@ DEFAULT_EXCLUDED_BLOCKS = (
     "residue_table",
 )
 
+#: Fields that name a prediction and measure nothing: the sample, its seed and its size.
+IDENTITY_FIELDS = ("seed", "sample", "n_atoms", "seed_value")
+
+#: Key paths that are never aggregated by default: the identity fields of the ``prediction``
+#: block and of the ``native`` scores.
+DEFAULT_EXCLUDED_KEYS = tuple(
+    f"{block}.{field}" for block in ("prediction", "native") for field in IDENTITY_FIELDS
+)
+
 #: Names of the entries that every aggregate carries next to the statistics.
 ENTRY_KEYS = ("n_ok", "n_total", "complete", "reasons", "caveats", "statistic_reasons")
 
@@ -84,6 +96,8 @@ TIE_REL_TOLERANCE = 1e-9
 TIE_ABS_TOLERANCE = 1e-12
 
 _NOT_ASKED = object()
+_ABSENT = object()
+_NO_VALUE = "no value for this key"
 
 
 # ---------------------------------------------------------------------- statistics
@@ -424,7 +438,10 @@ def _view_of(
 
 
 def _outcome(view: _RowView, path: str, block: str, reason_policy: str):
-    """``(number, None, caveat)``, ``(None, reason, None)``, or ``_NOT_ASKED``."""
+    """``(number, None, caveat)``, ``(None, reason, None)``, ``_ABSENT`` or ``_NOT_ASKED``.
+
+    ``_ABSENT``: the row has the block and not the key.
+    """
     if view.failed_reason is not None:
         return None, view.failed_reason, None
     covering = view.covering_reason(path)
@@ -436,10 +453,15 @@ def _outcome(view: _RowView, path: str, block: str, reason_policy: str):
             return None, view.partial_reasons.get(block, why), None
         return number, None, covering
     if block in view.blocks:
-        return None, "no value for this key", None
+        return _ABSENT
     if block in view.stage_reasons:
         return None, view.stage_reasons[block], None
     return _NOT_ASKED
+
+
+def _is_under(path: str, prefixes: Sequence[str]) -> bool:
+    """True when ``path`` is one of the dotted ``prefixes`` or lies under one."""
+    return any(path == prefix or path.startswith(prefix + ".") for prefix in prefixes)
 
 
 def aggregate_poses(
@@ -452,6 +474,7 @@ def aggregate_poses(
     exclude_blocks: Sequence[str] = DEFAULT_EXCLUDED_BLOCKS,
     keys: Optional[Sequence[str]] = None,
     partial_blocks: Sequence[str] = (),
+    exclude_keys: Sequence[str] = DEFAULT_EXCLUDED_KEYS,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Aggregate every numeric key of the rows per group and over all poses.
 
@@ -473,6 +496,9 @@ def aggregate_poses(
             ``reason_policy="exclude"`` the other values of such a block stay valid, and a
             None value counts with that reason; a ``reason`` deeper in the block still
             excludes the values under it.
+        exclude_keys: Dotted key paths (and the keys under them) that are not aggregated; the
+            default leaves out the identity of a prediction (``prediction.seed`` and the other
+            ``IDENTITY_FIELDS``, in ``prediction`` and ``native``). ``()`` aggregates them.
 
     Returns:
         ``{group: {key path: entry}}``: groups in sorted order and ``"all"`` last, key paths
@@ -480,7 +506,8 @@ def aggregate_poses(
         entry is the dictionary of ``aggregate_values``: the statistics, ``n_ok``,
         ``n_total``, ``complete``, ``reasons`` (``{text: count}`` of the poses without a
         valid value), ``caveats`` and ``statistic_reasons``. A key a group was not asked for
-        (see the module docstring) is absent from that group.
+        (see the module docstring), or that no pose of the group has, is absent from that group
+        (unless it is in ``keys``).
 
     Raises:
         ValueError: For an unknown statistic or policy, ``min_n_ok`` below 1, a row that is
@@ -501,9 +528,10 @@ def aggregate_poses(
         for path, (block, value) in view.leaves.items():
             if _is_numeric(value):
                 block_of.setdefault(path, block)
-    for path in keys or ():
+    requested = set(keys or ())
+    for path in requested:
         block_of.setdefault(path, path.split(".", 1)[0])
-    paths = sorted(block_of)
+    paths = sorted(path for path in block_of if not _is_under(path, exclude_keys))
 
     aggregates: dict[str, dict[str, dict[str, Any]]] = {}
     for group, positions in groups.items():
@@ -512,9 +540,13 @@ def aggregate_poses(
             valid: list[float] = []
             missing: list[str] = []
             caveats: list[str] = []
+            absent = 0
             for position in positions:
                 outcome = _outcome(views[position], path, block_of[path], reason_policy)
                 if outcome is _NOT_ASKED:
+                    continue
+                if outcome is _ABSENT:
+                    absent += 1
                     continue
                 number, reason, caveat = outcome
                 if number is None:
@@ -523,6 +555,8 @@ def aggregate_poses(
                     valid.append(number)
                     if caveat is not None:
                         caveats.append(caveat)
+            if absent and (valid or missing or path in requested):
+                missing += [_NO_VALUE] * absent
             if valid or missing:
                 entries[path] = _summarise(valid, missing, caveats, aggregators, min_n_ok)
         aggregates[group] = entries
