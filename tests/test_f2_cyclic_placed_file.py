@@ -44,6 +44,7 @@ def _place(path, tmp_path, **options):
         metrics=options.pop("metrics", ["interface"]),
         reference=reference,
         keep_tmp=True,
+        tmp_dir=tmp_path,
         **options,
     )
 

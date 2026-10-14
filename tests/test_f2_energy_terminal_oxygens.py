@@ -119,6 +119,7 @@ class TestPoseSet:
             heavy="all",
             metric_kwargs={ENERGY: CPU},
             keep_tmp=True,
+            tmp_dir=tmp_path,
         )
 
         placed = Path(result["provenance"]["temp_dir"]) / "pose_0000.cif"
