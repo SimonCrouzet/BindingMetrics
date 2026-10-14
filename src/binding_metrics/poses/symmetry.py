@@ -1,48 +1,38 @@
 """Symmetric atoms of amino-acid side chains, for heavy-atom RMSD between poses.
 
-Two atoms that the chemistry cannot tell apart carry names that a structure-prediction model,
-a docking tool or a crystallographer assigns arbitrarily (OD1 and OD2 of an aspartate, CD1 and
-CD2 of a leucine or of a phenyl ring). A heavy-atom RMSD that matches atoms by name then adds a
-difference that is a labelling choice and not a geometric one. ``SYMMETRIC_ATOM_GROUPS`` lists,
-for each residue, the atoms whose names may be exchanged; the RMSD code of
-``binding_metrics.poses.agreement`` compares each residue under every exchange and keeps the one
-with the smallest sum of squared distances.
+Some atoms are indistinguishable by chemistry, and prediction models, docking tools and
+crystallographers name them arbitrarily (OD1 and OD2 of Asp, CD1 and CD2 of Leu or of a phenyl
+ring). ``SYMMETRIC_ATOM_GROUPS`` lists, per residue, the atoms whose names may be exchanged. The
+RMSD code of ``binding_metrics.poses.agreement`` compares each residue under every exchange and
+keeps the one with the smallest sum of squared distances.
 
-Source of the table. The residues and atom names are those of the Chemical Component
-Dictionary (wwPDB), whose atom naming every residue template of this package follows. Each
-entry is an automorphism of the heavy-atom bond graph of the residue (the exchange leaves every
-bond and every element in place), which is what makes the two labellings the same molecule; a
-test checks that for every entry against the bond table of the bundled Chemical Component
-Dictionary of biotite. The chemistry behind each entry:
+Source of the table. Residues and atom names follow the Chemical Component Dictionary (wwPDB).
+Each entry is an automorphism of the heavy-atom bond graph of the residue; a test checks this
+against the bond table of the Chemical Component Dictionary bundled with biotite. Entries:
 
-* Asp OD1/OD2 and Glu OE1/OE2: the two carboxylate oxygens are equivalent by resonance.
-* Arg NH1/NH2: the two terminal nitrogens of the guanidinium group are equivalent by resonance.
-* Leu CD1/CD2 and Val CG1/CG2: the two methyl carbons of an isopropyl group.
-* Phe and Tyr: the ring turns by 180 degrees about the CB-CG-CZ axis, which exchanges CD1 with
-  CD2 and CE1 with CE2 together; the two exchanges form one group, because swapping only one
-  pair would break the ring. The hydroxyl oxygen of Tyr lies on the axis and stays put.
-* Sep, Tpo and Ptr: the three non-bridging phosphate oxygens O1P, O2P and O3P are equivalent
-  (all six permutations).
+* Asp OD1/OD2 and Glu OE1/OE2: the carboxylate oxygens, equivalent by resonance.
+* Arg NH1/NH2: the terminal nitrogens of the guanidinium group, equivalent by resonance.
+* Leu CD1/CD2 and Val CG1/CG2: the methyl carbons of an isopropyl group.
+* Phe and Tyr: the ring turns by 180 degrees about the CB-CG-CZ axis, which exchanges CD1/CD2
+  and CE1/CE2 together (one group, since swapping one pair would break the ring). The Tyr
+  hydroxyl oxygen lies on the axis. Ptr has this group too.
+* Sep, Tpo and Ptr: the non-bridging phosphate oxygens O1P, O2P and O3P (all six permutations).
 
-* The free C-terminal carboxylate: O and OXT of the last residue of a linear chain are
-  equivalent by resonance, whatever the residue. The rule depends on the position in the chain
-  and not on the residue type, so it is not in ``SYMMETRIC_ATOM_GROUPS``: the group is
-  ``C_TERMINAL_CARBOXYLATE`` and ``binding_metrics.poses.agreement`` applies it per pair of
-  poses, for the last residue of both binders, when both binders are linear (not closed head to
-  tail) and both poses carry O and OXT on it. Only the ``"heavy"`` set can use it: the
-  ``"backbone"`` set holds O and not OXT, so there O is compared as named.
+The free C-terminal carboxylate: O and OXT of the last residue of a linear chain are equivalent
+by resonance, whatever the residue. The group depends on the position in the chain, so it is
+``C_TERMINAL_CARBOXYLATE`` and not an entry of ``SYMMETRIC_ATOM_GROUPS``.
+``binding_metrics.poses.agreement`` applies it per pair of poses, to the last residue of both
+binders, when both binders are linear (not closed head to tail) and both poses carry O and OXT
+there. Only the ``"heavy"`` atom set uses it; the ``"backbone"`` set holds O and not OXT.
 
-Not in the table: Asn, Gln and His (the two end atoms are different elements or
-differently bonded, so a swap is not a relabelling); an atom of such a residue is compared as
-named.
+Not in the table: Asn, Gln and His (the two end atoms differ in element or bonding).
 
-Which residues are covered. D-amino acids (``D_AA_MAP``), the AMBER and CHARMM protonation
-variants (``VARIANT_TO_PARENT_RESIDUE``) and the N-methylated residues (``N_METHYL_PARENT``)
-use the entry of their L parent: MVA as Val, MLE as Leu, SAR/NMG as Gly, NMA/MAA as Ala. A
-residue that has no entry and is not known to lack symmetric atoms (any other non-canonical
-residue: BMT, ABA, the lactam templates, a stapling residue, ...) is "unknown": its atoms are
-compared as named, which can only overestimate the RMSD, and ``symmetry_status`` says so, so
-that the callers list it in their output.
+Coverage. D-amino acids (``D_AA_MAP``), AMBER and CHARMM protonation variants
+(``VARIANT_TO_PARENT_RESIDUE``) and N-methylated residues (``N_METHYL_PARENT``) use the entry of
+their L parent: MVA as Val, MLE as Leu, SAR/NMG as Gly, NMA/MAA as Ala. A residue with no entry
+that is not known to lack symmetric atoms (BMT, ABA, the lactam templates, a stapling residue,
+any other non-canonical residue) has status "unknown": its atoms are compared as named, which
+can only overestimate the RMSD, and ``symmetry_status`` reports it so that callers list it.
 """
 
 from __future__ import annotations
@@ -196,11 +186,10 @@ def best_labelling(
 ) -> np.ndarray:
     """The row order of ``coord_b`` that puts every group in its best labelling.
 
-    For each group the sum of squared distances to ``coord_a`` is computed for the identity
-    labelling and for each alternative, and the labelling with the smallest sum is kept; the
-    first one wins a tie, so the identity wins a tie and the choice is deterministic. Each group
-    contributes to the total sum of squares independently of the others, so the choice per group
-    gives the labelling with the smallest RMSD of all combinations.
+    For each group, the sum of squared distances to ``coord_a`` is computed for the identity
+    labelling and for each alternative; the smallest sum wins and the identity wins a tie, so the
+    choice is deterministic. Groups contribute independently to the total sum of squares, so the
+    per-group choice gives the smallest RMSD over all combinations.
 
     Args:
         coord_a: Coordinates of the first pose, shape (n, 3).
