@@ -1,10 +1,9 @@
 """Structural QC for relaxed structures.
 
-A minimization can report ``success=True`` with a finite energy while having
-blown up the geometry: exploded coordinates, fused atoms, an inverted
-stereocentre, NaNs. :func:`check_relaxed_structure` runs seven checks on a
-structure before and after relaxation so that a normal-looking result is not
-mistaken for a sound one:
+A minimization can report ``success=True`` with a finite energy and still leave
+exploded coordinates, fused atoms, an inverted stereocentre or NaNs.
+:func:`check_relaxed_structure` runs seven checks on a structure before and after
+relaxation:
 
 1. ``energy``: finite, inside a sane range, and not higher than before
    minimization.
@@ -27,10 +26,10 @@ atoms are paired by residue key and atom name.
 The ``bond_lengths`` check takes its bond list from the topology, never from
 the geometry: a snapshot built from an OpenMM topology carries the topology
 bonds, and one built from a file carries the bonds of the residue templates in
-the wwPDB Chemical Component Dictionary (through biotite). Perceiving bonds
-from the input distances would count every clash between atoms that PDBFixer
-rebuilt as a bond, and a relaxation that resolves the clash would then look
-like a stretched bond. The bonds are measured in the relaxed structure only.
+the wwPDB Chemical Component Dictionary (through biotite). Bonds perceived from
+the input distances would count a clash between atoms that PDBFixer rebuilt as
+a bond, and a relaxation that resolves the clash would then look like a
+stretched bond. The bonds are measured in the relaxed structure only.
 
 Return schema of every ``check_*`` function::
 
@@ -52,32 +51,19 @@ and of :func:`check_relaxed_structure`::
         "warnings": [{"key": str, "value": int, "limit": str, "detail": str}],
     }
 
-A warning is a finding that none of the seven checks can make and that the result may still
-deserve a look. It is advisory like the checks, and it never changes ``passed``. Two keys
-exist (:func:`chain_break_warnings`): ``chain_break_closed``, a break of the input that the
-result has bonded, and ``ca_ca_distance``, two bonded consecutive residues whose C-alphas
-are not 2.5 to 4.2 A apart. A minimisation that closes a gap leaves an ordinary geometry
-(three missing residues: the C-alpha pair goes from 5.7 to 3.9 A, and a 20 A gap ends at
-3.9 A as well), which is why the first one compares the result with the input.
+A warning is a finding that none of the seven checks can make. It is advisory
+like the checks and never changes ``passed``. Two keys exist
+(:func:`chain_break_warnings`): ``chain_break_closed``, a break of the input that
+the result has bonded, and ``ca_ca_distance``, two bonded consecutive residues
+whose C-alphas are not 2.5 to 4.2 A apart. A minimisation that closes a gap
+leaves an ordinary geometry, so ``chain_break_closed`` compares the result with
+the input.
 
-Measured values on the bundled examples (short minimizations on CUDA)::
-
-                 energy(min)   energy(pre)   heavy RMSD   min inter-res dist
-    1YCR        -14460 kJ/mol  +5082         0.409 A      1.330 A
-    3P8F        -33108 kJ/mol -27312         0.293 A      1.329 A
-    cyclosporin -21515 kJ/mol   n/a          0.297 A      1.327 A
-
-                min bond   max bond   C-alpha centres   heavy atoms
-    1YCR        1.217 A    1.825 A     94          819
-    3P8F        1.217 A    2.050 A    225          1970
-    cyclosporin 1.219 A    1.822 A    152          1351
-
-The longest topology bonds are the methionine C-S bond (1.82 A) and disulfides
-(2.05 A), so the 2.5 A limit keeps a margin of 0.45 A over any real bond.
-
-The limits below are wide on purpose: each passes any genuinely relaxed
-structure and fails an exploded one. They can shift across GPU models and
-force-field versions, so do not tighten them to the numbers above.
+The limits below are wide: each passes a relaxed structure and fails an exploded
+one. The values of a relaxation vary with the GPU model and the force-field
+version, so the limits are not tightened to them. The longest bonds of a
+topology are the methionine C-S bond (1.82 A) and disulfides (2.05 A); the
+2.5 A bond limit leaves a margin of 0.45 A.
 """
 
 import logging
@@ -139,9 +125,7 @@ CHIRALITY_MIN_VOLUME_ANGSTROM3 = 0.5
 #: against 1.33 A for an amide bond), repeated here because that module needs OpenMM.
 CHAIN_BREAK_MIN_C_N_ANGSTROM = 2.0
 #: C-alpha to C-alpha distance of two bonded consecutive residues: 3.8 A across a trans peptide
-#: bond and 2.9 A across a cis one (the Ile-Pro bond of 3P8F: 2.85 A). The window keeps about
-#: 0.35 A on the cis side and 0.25 A beyond the longest of the bundled examples (3.96 A, a
-#: stapled residue of 3V3B).
+#: bond and 2.9 A across a cis one. The window leaves a margin on both sides.
 CA_CA_MIN_ANGSTROM = 2.5
 CA_CA_MAX_ANGSTROM = 4.2
 
