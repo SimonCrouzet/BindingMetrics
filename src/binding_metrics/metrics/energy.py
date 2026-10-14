@@ -37,7 +37,7 @@ except ImportError:
 
 # OpenMM is imported inside the functions that use it, so this module can be
 # imported (and its CLI parser built) on installs without OpenMM.
-from binding_metrics._constants import DEFAULT_RANDOM_SEED
+from binding_metrics._constants import COULOMB_KJ_NM_MOL_E2, DEFAULT_RANDOM_SEED
 from binding_metrics.core.residues import BACKBONE_HEAVY_ATOM_NAMES, CYSTEINE_NAMES, residue_label
 from binding_metrics.metrics._common import ChainAliasAction, require_openmm, resolve_chain_role
 from binding_metrics.utils import configure_logging
@@ -45,7 +45,7 @@ from binding_metrics.utils import configure_logging
 logger = logging.getLogger(__name__)
 
 # 1 / (4 pi eps0) in OpenMM units (kJ nm mol^-1 e^-2).
-_COULOMB_K_KJ_NM_MOL_E2 = 138.935456
+_COULOMB_K_KJ_NM_MOL_E2 = COULOMB_KJ_NM_MOL_E2
 # Ligand-receptor pairs closer than this (0.1 A) are skipped so that coincident
 # atoms cannot cause a division by zero.
 _MIN_PAIR_DISTANCE_NM = 0.01

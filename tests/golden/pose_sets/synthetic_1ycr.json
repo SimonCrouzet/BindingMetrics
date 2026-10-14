@@ -184,8 +184,8 @@
           ]
         },
         "coulomb": {
-          "coulomb_energy_kJ": -91.58912,
-          "coulomb_energy_kcal": -21.89032505,
+          "coulomb_energy_kJ": -91.58942127,
+          "coulomb_energy_kcal": -21.89039705,
           "n_charged_pairs": 16,
           "n_attractive": 6,
           "n_repulsive": 10,
@@ -327,8 +327,8 @@
           ]
         },
         "coulomb": {
-          "coulomb_energy_kJ": -99.9221227,
-          "coulomb_energy_kcal": -23.88196049,
+          "coulomb_energy_kJ": -99.92245137,
+          "coulomb_energy_kcal": -23.88203905,
           "n_charged_pairs": 18,
           "n_attractive": 7,
           "n_repulsive": 11,
@@ -470,8 +470,8 @@
           ]
         },
         "coulomb": {
-          "coulomb_energy_kJ": -94.09583219,
-          "coulomb_energy_kcal": -22.48944364,
+          "coulomb_energy_kJ": -94.0961417,
+          "coulomb_energy_kcal": -22.48951761,
           "n_charged_pairs": 19,
           "n_attractive": 7,
           "n_repulsive": 12,
@@ -623,8 +623,8 @@
           ]
         },
         "coulomb": {
-          "coulomb_energy_kJ": -94.97812536,
-          "coulomb_energy_kcal": -22.70031677,
+          "coulomb_energy_kJ": -94.97843777,
+          "coulomb_energy_kcal": -22.70039144,
           "n_charged_pairs": 19,
           "n_attractive": 7,
           "n_repulsive": 12,
@@ -776,8 +776,8 @@
           ]
         },
         "coulomb": {
-          "coulomb_energy_kJ": -100.9867969,
-          "coulomb_energy_kcal": -24.13642372,
+          "coulomb_energy_kJ": -100.987129,
+          "coulomb_energy_kcal": -24.13650312,
           "n_charged_pairs": 18,
           "n_attractive": 7,
           "n_repulsive": 11,
@@ -929,8 +929,8 @@
           ]
         },
         "coulomb": {
-          "coulomb_energy_kJ": -96.75340061,
-          "coulomb_energy_kcal": -23.12461774,
+          "coulomb_energy_kJ": -96.75371886,
+          "coulomb_energy_kcal": -23.1246938,
           "n_charged_pairs": 18,
           "n_attractive": 7,
           "n_repulsive": 11,
@@ -1348,8 +1348,8 @@
     },
     "aggregates": {
       "backend_a": {
-        "coulomb.coulomb_energy_kJ": {"mean": -95.20235829, "std": 4.275281688, "min": -99.9221227, "max": -91.58912, "median": -94.09583219, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
-        "coulomb.coulomb_energy_kcal": {"mean": -22.75390973, "std": 1.021816847, "min": -23.88196049, "max": -21.89032505, "median": -22.48944364, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.coulomb_energy_kJ": {"mean": -95.20267144, "std": 4.27529575, "min": -99.92245137, "max": -91.58942127, "median": -94.0961417, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.coulomb_energy_kcal": {"mean": -22.75398457, "std": 1.021820208, "min": -23.88203905, "max": -21.89039705, "median": -22.48951761, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
         "coulomb.n_attractive": {"mean": 6.666666667, "std": 0.5773502692, "min": 6.0, "max": 7.0, "median": 7.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
         "coulomb.n_charged_pairs": {"mean": 17.66666667, "std": 1.527525232, "min": 16.0, "max": 19.0, "median": 18.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
         "coulomb.n_ionisable_residues_seen": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
@@ -1418,8 +1418,8 @@
         "omega.omega_outlier_fraction": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}}
       },
       "backend_b": {
-        "coulomb.coulomb_energy_kJ": {"mean": -97.57277428, "std": 3.086999061, "min": -100.9867969, "max": -94.97812536, "median": -96.75340061, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
-        "coulomb.coulomb_energy_kcal": {"mean": -23.32045274, "std": 0.737810483, "min": -24.13642372, "max": -22.70031677, "median": -23.12461774, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.coulomb_energy_kJ": {"mean": -97.57309522, "std": 3.087009215, "min": -100.987129, "max": -94.97843777, "median": -96.75371886, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.coulomb_energy_kcal": {"mean": -23.32052945, "std": 0.7378129099, "min": -24.13650312, "max": -22.70039144, "median": -23.1246938, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
         "coulomb.n_attractive": {"mean": 7.0, "std": 0.0, "min": 7.0, "max": 7.0, "median": 7.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
         "coulomb.n_charged_pairs": {"mean": 18.33333333, "std": 0.5773502692, "min": 18.0, "max": 19.0, "median": 18.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
         "coulomb.n_ionisable_residues_seen": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
@@ -1488,8 +1488,8 @@
         "omega.omega_outlier_fraction": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 3, "n_total": 3, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}}
       },
       "all": {
-        "coulomb.coulomb_energy_kJ": {"mean": -96.38756629, "std": 3.578924456, "min": -100.9867969, "max": -91.58912, "median": -95.86576298, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
-        "coulomb.coulomb_energy_kcal": {"mean": -23.03718123, "std": 0.8553834742, "min": -24.13642372, "max": -21.89032505, "median": -22.91246725, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.coulomb_energy_kJ": {"mean": -96.38788333, "std": 3.578936228, "min": -100.987129, "max": -91.58942127, "median": -95.86607832, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "coulomb.coulomb_energy_kcal": {"mean": -23.03725701, "std": 0.8553862878, "min": -24.13650312, "max": -21.89039705, "median": -22.91254262, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
         "coulomb.n_attractive": {"mean": 6.833333333, "std": 0.4082482905, "min": 6.0, "max": 7.0, "median": 7.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
         "coulomb.n_charged_pairs": {"mean": 18.0, "std": 1.095445115, "min": 16.0, "max": 19.0, "median": 18.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
         "coulomb.n_ionisable_residues_seen": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 6, "n_total": 6, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},

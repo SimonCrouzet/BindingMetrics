@@ -21,6 +21,7 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics._constants import COULOMB_KJ_ANG_MOL_E2
 from binding_metrics.core.residues import IONISATION_MODELLED_RESIDUES
 from binding_metrics.metrics._common import (
     KJ_TO_KCAL,
@@ -56,9 +57,9 @@ _FORMAL_CHARGES: dict[tuple[str, str], float] = {
 # _FORMAL_CHARGES does not know; it is counted in ``n_residues_unrecognised``.
 _RECOGNISED_RESIDUES = IONISATION_MODELLED_RESIDUES
 
-# Coulomb constant: e²/(4πε₀) × N_A = 1389.35 kJ·Å/mol·e²
-# Assumes distances in Ångströms; returns energy in kJ/mol.
-_COULOMB_KJ_ANG_MOL: float = 1389.35
+# Coulomb constant e²/(4πε₀) × N_A in kJ·Å/(mol·e²), shared with the energy and
+# salt-bridge modules. Assumes distances in Ångströms; returns energy in kJ/mol.
+_COULOMB_KJ_ANG_MOL: float = COULOMB_KJ_ANG_MOL_E2
 _KJ_TO_KCAL: float = KJ_TO_KCAL
 
 

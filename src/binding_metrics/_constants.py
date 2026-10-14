@@ -21,3 +21,16 @@ DEFAULT_MD_DURATION_PS = 200.0
 
 #: Default interval in ps between saved MD frames in the relaxation protocol.
 DEFAULT_MD_SAVE_INTERVAL_PS = 10.0
+
+#: Coulomb constant e^2 N_A / (4 pi eps0) in kJ A / (mol e^2) (CODATA 2018 gives
+#: 1389.354576). The one value of the package: the Coulomb metric, the salt-bridge
+#: score and the pair sums of the interaction energy all derive from it.
+COULOMB_KJ_ANG_MOL_E2 = 1389.35457
+
+_KJ_PER_KCAL = 4.184  # thermochemical calorie, exact by definition
+
+#: The same constant in kcal A / (mol e^2).
+COULOMB_KCAL_ANG_MOL_E2 = COULOMB_KJ_ANG_MOL_E2 / _KJ_PER_KCAL
+
+#: The same constant in kJ nm / (mol e^2), the unit of OpenMM.
+COULOMB_KJ_NM_MOL_E2 = COULOMB_KJ_ANG_MOL_E2 / 10.0

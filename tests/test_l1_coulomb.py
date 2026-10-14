@@ -162,7 +162,7 @@ class TestCoverageCounters:
 
     def test_bundled_p53_mdm2_energy_is_unchanged(self):
         result = compute_coulomb_cross_chain(DATA / "example_linear_p53_1YCR.pdb")
-        assert result["coulomb_energy_kJ"] == pytest.approx(-91.58911325183033, rel=1e-9)
+        assert result["coulomb_energy_kJ"] == pytest.approx(-91.58941451662866, rel=1e-9)
         assert result["n_charged_pairs"] == 16
         assert result["n_residues_unrecognised"] == 0
         assert result["n_ionisable_residues_seen"] > 0

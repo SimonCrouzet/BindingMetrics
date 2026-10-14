@@ -23,10 +23,11 @@ from typing import Literal, Optional
 
 import numpy as np
 
+from binding_metrics._constants import COULOMB_KCAL_ANG_MOL_E2
 from binding_metrics.metrics._common import import_biotite, resolve_chain_role
 
 # e²/(4π ε0) in kcal·Å/(mol·e²)
-_COULOMB_K = 332.0637133
+_COULOMB_K = COULOMB_KCAL_ANG_MOL_E2
 
 # Effective interior dielectric (Krissinel & Henrick 2007). Matches
 # ``compute_coulomb_cross_chain`` so the two metrics are comparable.
@@ -331,8 +332,11 @@ def compute_saltbridges(
 
     Energy per residue pair (Coulomb at ε=4, closest atom-pair distance):
 
-        E_pair = (q_pos * q_neg) * 332.06 / (ε * r_min)
+        E_pair = k * (q_pos * q_neg) / (ε * r_min)
                = -83.02 / r_min  kcal/mol  (unit charges)
+
+    with k = e²/(4π ε0) in kcal·Å/(mol·e²), the constant that
+    ``binding_metrics._constants`` shares with the electrostatics metric.
 
     A bidentate bridge naturally scores stronger because r_min is the
     shorter of the two contacts. Like the H-bond energy, this is a
