@@ -1,12 +1,11 @@
 """Cross-model reconciliation: how far two back-ends agree on the same constructs.
 
-Pure functions on the plain dictionaries of the pose-set layer, in Python and numpy (no
-pandas, no scipy). They read the aggregates of ``poses.aggregate`` and the per-pose rows of a
-pose-set result, report numbers, and never judge them: a threshold is an argument, and the
-engine decides what a gap or a correlation means.
+Pure functions on the plain dictionaries of the pose-set layer (numpy, no pandas or scipy).
+They read the aggregates of ``poses.aggregate`` and the per-pose rows of a pose-set result and
+report numbers; thresholds are arguments.
 
-* ``gap_between_backends``: the difference of two back-ends' means per aggregated key, and
-  the same difference in units of the spread over seeds.
+* ``gap_between_backends``: the difference of two back-ends' means per aggregated key, raw and
+  in units of the spread over seeds.
 * ``consensus_interface`` and ``compare_consensus_interfaces``: the residues that most poses
   of a back-end hold in the interface, and the Jaccard index of two back-ends' consensus sets.
 * ``rank_agreement``: Spearman's rho or Kendall's tau between two back-ends' values of a
@@ -14,11 +13,11 @@ engine decides what a gap or a correlation means.
 * ``hotspot_consistency``: whether the peptide positions that an alanine scan finds sensitive
   are the positions a pose buries and holds in the interface.
 
-A value that cannot be computed is None with a reason, never NaN. A reason is a short sentence
-under the name of the field it explains (``reasons["standardised_gap"]``); the dictionary is
-empty when every field was computed. Missing data is not an error: a back-end that is absent
-from the aggregates (a set with a single model) gives None with a reason. A malformed argument
-raises ``ValueError`` before any value is computed.
+A value that cannot be computed is None, never NaN, with a sentence under the name of the
+field in ``reasons`` (``reasons["standardised_gap"]``); ``reasons`` is empty when every field
+was computed. A back-end absent from the aggregates (a set with a single model) gives None
+with a reason, not an error. A malformed argument raises ``ValueError`` before any value is
+computed.
 
 Importing this module imports numpy and the standard library only.
 """
@@ -189,18 +188,15 @@ def gap_between_backends(
 ) -> dict[str, dict[str, Any]]:
     """The gap between two back-ends on every aggregated key, raw and in units of the spread.
 
-    ``gap = mean_a - mean_b``: a positive gap means back-end ``a`` has the larger mean, and the
-    sign follows the order of ``backend_a`` and ``backend_b`` in the call.
+    ``gap = mean_a - mean_b``; the sign follows the order of ``backend_a`` and ``backend_b``.
 
-    ``standardised_gap = gap / s_pooled`` with the standard deviation pooled over the seeds of
-    the two back-ends (the denominator of Cohen's d),
+    ``standardised_gap = gap / s_pooled``, the denominator of Cohen's d (*Statistical Power
+    Analysis for the Behavioral Sciences*, 2nd ed., 1988):
     ``s_pooled = sqrt(((n_a - 1) s_a^2 + (n_b - 1) s_b^2) / (n_a + n_b - 2))``, where ``s_a``
     and ``s_b`` are the sample standard deviations (ddof = 1) of the back-ends' valid values
     and ``n_a``, ``n_b`` their counts. It needs ``n_a >= 2``, ``n_b >= 2`` and
-    ``s_pooled > 0``. With three seeds per back-end the pooled value has 4 degrees of freedom
-    and is unstable, so ``scale`` can also be a mapping with a scale of the caller's choosing
-    for each key, for instance the spread of the same key over constructs. Cohen, *Statistical
-    Power Analysis for the Behavioral Sciences*, 2nd ed., 1988.
+    ``s_pooled > 0``. ``scale`` can also be a mapping with one scale per key, for instance the
+    spread of the same key over constructs.
 
     Args:
         aggregates: The output of ``aggregate_poses``, ``{group: {key path: entry}}``. The
@@ -408,14 +404,14 @@ def consensus_interface(
     """The interface residues shared by at least ``min_fraction`` of a back-end's valid poses.
 
     The interface of a pose is read from the ``residue_table`` of its row (one dictionary per
-    residue; the columns used are ``role``, ``in_interface``, ``binder_index`` and, for a
-    receptor residue, ``reference_chain``, ``reference_number`` and ``reference_icode``). The
-    receptor is compared in the numbering of the reference, so a residue the pose cannot map
-    to the reference is left out and counted in ``n_unmapped_receptor``; the peptide is
-    compared by position. A pose is valid when its row has not ``"status": "failed"`` and has
-    a ``residue_table``; the other poses are counted in ``skipped`` and do not vote. A residue
-    is in the consensus when ``count / n_poses >= min_fraction``, so a residue held by exactly
-    half of the poses is in the default consensus of an even number of poses.
+    residue; columns used: ``role``, ``in_interface``, ``binder_index`` and, for a receptor
+    residue, ``reference_chain``, ``reference_number``, ``reference_icode``). The receptor is
+    compared in the numbering of the reference; a residue the pose cannot map to it is left
+    out and counted in ``n_unmapped_receptor``. The peptide is compared by position. A pose
+    is valid when its row is not ``"status": "failed"`` and has a ``residue_table``; the others
+    are counted in ``skipped`` and do not vote. A residue is in the consensus when
+    ``count / n_poses >= min_fraction`` (a residue held by exactly half of the poses is in the
+    default consensus).
 
     Args:
         rows: Per-pose rows of a pose-set result, with ``provenance["backend"]``.
@@ -524,16 +520,15 @@ def compare_consensus_interfaces(
         consensus_a: The consensus of the first back-end (``consensus_interface``).
         consensus_b: The consensus of the second.
         limit: Optional number in [0, 1]. When given, the result also carries
-            ``below_limit``, True when ``jaccard < limit``. The function never says "differs"
-            on its own: the engine picks the limit.
+            ``below_limit``, True when ``jaccard < limit``.
 
     Returns:
         ``{"backend_a", "backend_b", "jaccard", "jaccard_binder", "jaccard_receptor",
         "only_a": {"binder": [positions], "receptor": [ResidueKey]}, "only_b": {...},
         "reasons": {field: sentence}}`` plus ``"below_limit"`` with a ``limit``. The lists are
-        sorted (use ``ResidueKey.label`` or ``to_list()`` for text). A Jaccard of two empty
-        sets is None ("both ... are empty"). When a back-end has no valid pose every field is
-        None with that reason, because an empty consensus would read as "no interface".
+        sorted (``ResidueKey.label`` or ``to_list()`` for text). A Jaccard of two empty sets is
+        None ("both ... are empty"). When a back-end has no valid pose every field is None
+        with that reason, so that an empty consensus does not read as "no interface".
 
     Raises:
         ValueError: If an argument is not a ``ConsensusInterface`` or ``limit`` is not a
@@ -616,10 +611,9 @@ def _rank_correlation(
 ) -> tuple[Optional[float], Optional[str]]:
     """``(coefficient, None)`` or ``(None, why)`` for two equally long lists of numbers.
 
-    Spearman's rho is the Pearson correlation of the midranks (the definition with ties).
-    Kendall's tau-b is ``sum_{i<j} sign(dx) sign(dy) / sqrt(P_x P_y)``, with ``P_x`` the number
-    of pairs not tied in ``x`` and ``P_y`` the same for ``y``. Either is undefined when one
-    list is constant.
+    Spearman's rho is the Pearson correlation of the midranks. Kendall's tau-b is
+    ``sum_{i<j} sign(dx) sign(dy) / sqrt(P_x P_y)``, with ``P_x`` the number of pairs not tied
+    in ``x`` and ``P_y`` the same for ``y``. Either is undefined when one list is constant.
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -653,9 +647,8 @@ def rank_agreement(
     """Do two back-ends order the constructs of a population the same way?
 
     For each metric, the rank correlation between the values of ``backend_a`` and
-    ``backend_b`` over the constructs that have a valid value for both. Spearman's rho uses
-    midranks for ties and is the Pearson correlation of the ranks; Kendall's tau is tau-b,
-    which corrects for ties in either list. Both are implemented here (no scipy) and match
+    ``backend_b`` over the constructs that have a valid value for both. Spearman's rho is the
+    Pearson correlation of the midranks; Kendall's tau is tau-b. Both match
     ``scipy.stats.spearmanr`` and ``kendalltau``. Only exact ties count as ties.
 
     Args:
@@ -788,8 +781,7 @@ def _valid_values(rows: Mapping, constructs: Sequence, metric: str) -> dict[Any,
 
 # ---------------------------------------------------------------------- hotspot consistency
 
-#: Default size of the set of most sensitive positions. A choice, not a benchmark: the engine
-#: sets it in its own configuration.
+#: Default size of the set of most sensitive positions.
 DEFAULT_TOP_M = 3
 
 #: Positions needed for a rank correlation between buried area and sensitivity.
@@ -873,22 +865,20 @@ def hotspot_consistency(
     table of that pose (``buried_area_angstrom2`` and ``in_interface`` of the binder lines):
 
     * ``spearman_area_vs_sensitivity``: Spearman's rho between the buried area and the
-      sensitivity over the positions that have both. A positive value means that the more
-      sensitive positions are the more buried ones.
+      sensitivity over the positions that have both.
     * ``top_in_interface_fraction``: the fraction of the ``top_m`` most sensitive positions
       that are in the interface.
 
-    Larger sensitivity means more important; a scan that scores the other way (a loss of
-    affinity written as a negative number, say) is passed with the sign changed. Positions are
-    the 1-based positions in the binder chain, as ``binder_index``. Only positions with a
-    finite sensitivity and a finite buried area are used; the others are counted, never
-    guessed.
+    A larger sensitivity means a more important position; pass a scan that scores the other
+    way with the sign changed. Positions are 1-based positions in the binder chain, as
+    ``binder_index``. Only positions with a finite sensitivity and a finite buried area are
+    used; the others are counted.
 
     Tie rule at the cut: every position whose sensitivity is at least that of the
     ``top_m``-th most sensitive position is in the top set, so the set has more than
     ``top_m`` members when a tie straddles the cut, and the fraction is taken over the whole
-    set. The result does not depend on the order of the table or of the mapping. When all
-    sensitivities tie, the top set is every position.
+    set. When all sensitivities tie, the top set is every position. The result does not
+    depend on the order of the table or of the mapping.
 
     Args:
         sensitivities: ``{binder position: sensitivity}``. None and non-finite values are
@@ -908,8 +898,8 @@ def hotspot_consistency(
         empty when both numbers were computed). The Spearman value needs ``n_positions >= 3``
         and a spread in both lists; the fraction needs ``n_positions >= top_m``. When the
         fraction is None, ``n_top``, ``n_top_in_interface`` and ``top_positions`` are None.
-        Put the dictionary in a row (``row["hotspots"]``) and ``aggregate_poses`` summarises
-        its numbers over poses like any other block.
+        Stored in a row (``row["hotspots"]``), the numbers are summarised by
+        ``aggregate_poses`` like any other block.
 
     Raises:
         ValueError: If ``sensitivities`` is not a mapping with positive integer keys and
