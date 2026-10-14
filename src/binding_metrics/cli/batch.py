@@ -63,10 +63,10 @@ Workers are OS processes (ProcessPoolExecutor), not threads:
   * The main process writes the aggregated CSV once, after all workers have finished.
 
 Note on GPU parallelism:
-    Each worker process initialises its own CUDA context. Running N workers
-    on a single GPU will divide VRAM by N and is likely to cause
-    out-of-memory errors. Use --device cpu when --workers > 1 unless you
-    have dedicated GPUs (one per worker).
+    CUDA is the default device. Each worker process initialises its own CUDA
+    context, so N workers on a single GPU divide its VRAM by N and can run out
+    of memory. Use one worker per GPU, or --device cpu when several workers
+    must share one GPU.
 """
 
 import argparse
@@ -1531,7 +1531,8 @@ def main():
         type=int,
         default=1,
         help="Number of parallel worker processes (default: 1). "
-        "Use --device cpu when workers > 1 on a single GPU.",
+        "Each worker opens its own CUDA context: use one worker per GPU, "
+        "or --device cpu when workers share a GPU.",
     )
     parser.add_argument(
         "--glob",

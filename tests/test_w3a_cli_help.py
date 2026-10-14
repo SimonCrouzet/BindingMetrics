@@ -584,8 +584,9 @@ GOLDEN = {
                 None,
                 False,
                 "1",
-                "Number of parallel worker processes (default: 1). Use "
-                "--device cpu when workers > 1 on a single GPU.",
+                "Number of parallel worker processes (default: 1). Each "
+                "worker opens its own CUDA context: use one worker per GPU, "
+                "or --device cpu when workers share a GPU.",
             ),
             "--glob": (
                 "options",
