@@ -12,8 +12,8 @@ This script turns a list of changed files into the test files to run:
   only the importers of its names, not the importers of its children;
 - a changed test file runs itself, and so do the test files that import it as a helper;
 - a Markdown file (README, CHANGELOG, docs/) runs the tests that read documentation;
-- ``pyproject.toml``, ``tests/conftest.py`` and ``tests/_areas.py`` can change what every test
-  does, so the fast tier (everything except ``gpu`` and ``slow``) runs;
+- ``pyproject.toml``, ``tests/conftest.py``, ``tests/_tiers.py`` and ``tests/_areas.py`` can
+  change what every test does, so the whole of ``tests`` runs;
 - any other file runs the test files whose text names it (``Dockerfile``, ``environment.yml``);
 - the guard tests in ``GUARD_TESTS`` always run, because they catch breakage that crosses areas.
 
@@ -34,9 +34,10 @@ Usage::
     python scripts/pytest_for_diff.py --dry-run        # print the command and run nothing
     python scripts/pytest_for_diff.py -- -x -q         # arguments after -- go to pytest
 
-``gpu`` tests never run here and ``slow`` ones only with ``--include-slow``, except the
-``slow`` tests of the guard files, which run in a second command so that a guard test is never
-left out by the tier. The full suite is the gate before a pull request and a signed release.
+The chosen tests run in the fast tier (``tests/_tiers.py``) and ``--full`` adds the ``slow``,
+``integration`` and ``openfold`` tests; ``gpu`` tests never run here. The guard files are named
+in a command without a tier, so every test of them runs and a guard test is never left out. The
+full suite (``pytest --full``) is the gate before a pull request and a signed release.
 """
 
 from __future__ import annotations
@@ -62,8 +63,8 @@ GUARD_TESTS = (
     "tests/test_area_tags.py",  # every test has an area, every module has a row in the table
 )
 
-# A change here can alter how every test is collected or run: run the fast tier.
-FAST_TIER_TRIGGERS = ("pyproject.toml", "tests/conftest.py", "tests/_areas.py")
+# A change here can alter how every test is collected or run: every test file runs.
+WHOLE_SUITE_TRIGGERS = ("pyproject.toml", "tests/conftest.py", "tests/_tiers.py", "tests/_areas.py")
 
 
 def load_areas():
@@ -147,10 +148,10 @@ def plan_for(
 ) -> Plan:
     """Map changed files to test files, with the project's own import scan."""
     plan = Plan()
-    triggers = [name for name in changed if name in FAST_TIER_TRIGGERS]
-    if triggers:  # the fast tier includes every other selection
+    triggers = [name for name in changed if name in WHOLE_SUITE_TRIGGERS]
+    if triggers:  # the whole suite includes every other selection
         plan.everything = True
-        plan.notes = [f"{name}: can change every test, so the fast tier runs" for name in triggers]
+        plan.notes = [f"{name}: can change every test, so all test files run" for name in triggers]
         add_guards(plan, project, guards)
         return plan
 
@@ -213,22 +214,28 @@ def add_guards(plan: Plan, project, guards: tuple[str, ...]) -> None:
             plan.notes.append(f"{guard}: guard test is missing from this checkout")
 
 
-def build_commands(plan: Plan, include_slow: bool, pytest_args: list[str]) -> list[list[str]]:
-    """The pytest command lines: the fast tier over ``tests`` or the chosen test files.
+def build_commands(plan: Plan, full: bool, pytest_args: list[str]) -> list[list[str]]:
+    """The pytest command lines for a plan.
 
-    Without ``include_slow`` a second command runs the ``slow`` tests of the guard files, since a
-    guard test has to run whatever the tier leaves out (pytest applies ``-m`` to a test chosen by
-    its file or node id as well). It selects no test, which is not a failure, when there is none.
+    The chosen test files run in the fast tier, or with ``full`` in every tier but GPU. Pytest
+    runs a file named on its command line whatever its tier, so ``--tier-named`` puts the tier back
+    on them. The guard files are the exception, since a guard test has to run whatever the tier
+    leaves out: they are named in a command without a tier, and are left out of the first so that
+    none of their tests runs twice. The plan for the whole suite names the guard files in front of
+    ``tests``: the files run whole and the directory obeys the tier, in one command because pytest
+    collects a file once.
     """
-    base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-m"]
-    tier = "not gpu" if include_slow else "not gpu and not slow"
-    if plan.everything:
-        commands = [[*base, tier, "tests", *pytest_args]]
-    else:
-        commands = [[*base, tier, *plan.files, *pytest_args]] if plan.files else []
+    base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
+    tier = ["--full"] if full else []
     guards = [name for name, why in plan.files.items() if GUARD_REASON in why]
-    if guards and not include_slow:
-        commands.append([*base, "not gpu and slow", *guards, *pytest_args])
+    if plan.everything:
+        return [[*base, *tier, *guards, "tests", *pytest_args]]
+    commands = []
+    chosen = [name for name in plan.files if name not in guards]
+    if chosen:
+        commands.append([*base, *tier, "--tier-named", *chosen, *pytest_args])
+    if guards:
+        commands.append([*base, *guards, *pytest_args])
     return commands
 
 
@@ -267,7 +274,14 @@ def parse_arguments(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         help="follow chains with at most N imports inside functions (default 1; 0 is narrower "
         "and misses tests that reach the module through a function, 2 or more is wider)",
     )
-    parser.add_argument("--include-slow", action="store_true", help="also run tests marked slow")
+    parser.add_argument(
+        "--full",
+        "--include-slow",
+        dest="full",
+        action="store_true",
+        help="run the tests that the fast tier leaves out too (slow, integration, openfold); "
+        "gpu tests never run. --include-slow is the earlier name",
+    )
     parser.add_argument("--explain", action="store_true", help="say why each test file was chosen")
     parser.add_argument("--dry-run", action="store_true", help="print the command, run nothing")
     parser.add_argument("--repo", type=Path, default=SCRIPT_REPO, help=argparse.SUPPRESS)
@@ -282,15 +296,16 @@ def main(argv: list[str] | None = None) -> int:
 
     project = load_areas().Project(repo)
     plan = plan_for(project, changed, max_lazy=args.max_lazy)
-    commands = build_commands(plan, args.include_slow, pytest_args)
+    commands = build_commands(plan, args.full, pytest_args)
 
     print(f"{len(changed)} changed file(s): {how}")
     for note in plan.notes:
         print(f"  {note}")
+    tier = "the full tier" if args.full else "the fast tier"
     print(
-        "selection: the fast tier"
+        f"selection: all test files, {tier}"
         if plan.everything
-        else f"selection: {len(plan.files)} test file(s)"
+        else f"selection: {len(plan.files)} test file(s), {tier}"
     )
     if args.explain:
         for test_file, reasons in plan.files.items():

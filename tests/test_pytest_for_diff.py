@@ -2,8 +2,9 @@
 
 Each case builds a small git repository in a temporary directory (a package with a few
 modules, tests that import them, a README and a Dockerfile), changes some files and checks the
-selection and the pytest command lines. Pytest itself is never run: the commands are only
-printed, or handed to a fake ``subprocess.run``.
+selection and the pytest command lines. Pytest is not run, the commands are only printed or
+handed to a fake ``subprocess.run``, except in the cases that say they run it for real: those
+use a conftest that loads the tier options of ``tests/conftest.py``.
 """
 
 import importlib.util
@@ -19,6 +20,18 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "pytest_for_diff.py"
+# the conftest of the small repository: the tier options of this repository's conftest
+TIER_CONFTEST = f"""
+import importlib.util
+
+_spec = importlib.util.spec_from_file_location(
+    "repo_tests_conftest", r"{REPO / "tests" / "conftest.py"}"
+)
+_repo = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_repo)
+pytest_addoption = _repo.pytest_addoption
+pytest_configure = _repo.pytest_configure
+"""
 GIT_ENVIRONMENT = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
@@ -83,7 +96,7 @@ BASE_FILES = {
             return getattr(importlib.import_module(module), name)
         """,
     "tests/__init__.py": "",
-    "tests/conftest.py": "",
+    "tests/conftest.py": TIER_CONFTEST,
     "tests/support.py": "from binding_metrics.poses.frame import frame\n",
     "tests/test_frame.py": "from binding_metrics.poses.frame import frame\n",
     "tests/test_run.py": "from binding_metrics.cli.run import main\n",
@@ -118,14 +131,17 @@ def repo(tmp_path, script):
     return root
 
 
-def selection(script, repo, *args, include_slow=False, pytest_args=()):
+def selection(script, repo, *args, pytest_args=()):
     """Plan and commands for the changes of ``repo``, as ``main`` computes them."""
     parsed, extra = script.parse_arguments(["--repo", str(repo), *args])
     mode = "staged" if parsed.staged else "working-tree" if parsed.working_tree else "base"
     changed, _ = script.changed_files(repo, mode, parsed.base)
     project = script.load_areas().Project(repo)
     plan = script.plan_for(project, changed, max_lazy=parsed.max_lazy)
-    return changed, plan, script.build_commands(plan, include_slow, [*extra, *pytest_args])
+    return changed, plan, script.build_commands(plan, parsed.full, [*extra, *pytest_args])
+
+
+PYTEST = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
 
 
 def test_the_guard_tests_exist_in_this_repository(script):
@@ -211,17 +227,11 @@ def test_a_source_file_runs_the_tests_of_the_modules_that_import_it(script, repo
     chosen = set(plan.files) - set(script.GUARD_TESTS)
     # test_frame imports the module, test_uses_support imports a helper that does
     assert chosen == {"tests/test_frame.py", "tests/test_uses_support.py"}
-    assert len(commands) == 2  # the second one is the slow tests of the guard files
-    assert commands[0][:7] == [
-        sys.executable,
-        "-m",
-        "pytest",
-        "-p",
-        "no:cacheprovider",
-        "-m",
-        "not gpu and not slow",
+    # the chosen files in the fast tier, then the guard files, which run whole
+    assert commands == [
+        [*PYTEST, "--tier-named", "tests/test_frame.py", "tests/test_uses_support.py"],
+        [*PYTEST, *sorted(script.GUARD_TESTS)],
     ]
-    assert commands[0][7:] == list(plan.files)
 
 
 def test_a_change_in_a_base_module_reaches_the_modules_that_import_it(script, repo):
@@ -292,45 +302,71 @@ def test_a_markdown_file_runs_the_tests_that_read_documentation(script, repo):
     assert set(plan.files) - set(script.GUARD_TESTS) == {"tests/test_guide.py"}
 
 
-def test_pyproject_or_conftest_runs_the_fast_tier(script, repo):
+@pytest.mark.parametrize(
+    "changed",
+    ["pyproject.toml", "tests/conftest.py", "tests/_tiers.py", "tests/_areas.py"],
+)
+def test_a_file_that_changes_every_test_runs_the_whole_suite(script, repo, changed):
+    write(repo, {changed: "# changed\n"})
+    _, plan, commands = selection(script, repo)
+    assert plan.everything and sorted(plan.files) == sorted(script.GUARD_TESTS)
+    # the guard files are named in front of the directory: they run whole, the directory obeys
+    # the tier, and pytest collects a file once
+    assert commands == [[*PYTEST, *plan.files, "tests"]]
+
+
+def test_full_adds_the_tests_of_the_other_tiers_and_gpu_stays_out(script, repo):
+    write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
+    _, _, fast = selection(script, repo)
+    for flag in ("--full", "--include-slow"):
+        _, _, commands = selection(script, repo, flag)
+        assert commands[0] == [*PYTEST, "--full", *fast[0][5:]]  # the tier stays on the files
+        assert commands[1:] == fast[1:]  # the guard files run whole either way
     write(repo, {"pyproject.toml": "[project]\nname = 'y'\n"})
-    _, plan, commands = selection(script, repo)
-    assert plan.everything
-    assert len(commands) == 2
-    assert commands[0][5:] == ["-m", "not gpu and not slow", "tests"]
-    assert commands[1][5:] == ["-m", "not gpu and slow", *script.GUARD_TESTS]
-
-    commit(repo)
-    write(repo, {"tests/conftest.py": "X = 1\n"})
-    assert selection(script, repo, "--working-tree")[1].everything
+    _, _, commands = selection(script, repo, "--full")
+    assert commands == [[*PYTEST, "--full", *script.GUARD_TESTS, "tests"]]
 
 
-def test_include_slow_keeps_the_slow_tests_and_gpu_stays_out(script, repo):
+def test_no_command_has_a_marker_expression(script, repo):
+    """The tier is chosen by options, so a dry run reads without quotes or negations."""
     write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
-    _, _, commands = selection(script, repo, include_slow=True)
-    assert len(commands) == 1
-    assert commands[0][5:7] == ["-m", "not gpu"]
+    for args in ([], ["--full"]):
+        _, _, commands = selection(script, repo, *args)
+        for command in commands:
+            assert command.count("-m") == 1  # the one of python -m pytest, no marker expression
+            assert all(" " not in part for part in command)
+    write(repo, {"pyproject.toml": "[project]\nname = 'y'\n"})
+    assert all(" " not in part for part in selection(script, repo)[2][0])
 
 
-def test_the_slow_tests_of_the_guard_files_run_in_a_command_of_their_own(script, repo):
+def test_the_guard_files_run_in_a_command_of_their_own_without_a_tier(script, repo):
     write(repo, {"src/binding_metrics/poses/frame.py": "def frame(): return 1\n"})
-    _, plan, commands = selection(script, repo)
+    _, plan, commands = selection(script, repo, "--full")
     guards = [name for name, why in plan.files.items() if "guard test" in why]
     assert guards == sorted(script.GUARD_TESTS)
     assert len(commands) == 2
-    assert commands[1][5:] == ["-m", "not gpu and slow", *guards]
-    assert set(guards) <= set(commands[0][7:])
+    assert commands[1] == [*PYTEST, *guards]  # no tier option: every test of them runs
+    assert not set(guards) & set(commands[0])  # and none runs twice
 
 
-def test_a_change_of_the_configuration_also_runs_the_slow_tests_of_the_guard_files(script, repo):
-    write(repo, {"pyproject.toml": "[project]\nname = 'y'\n"})
+def test_a_guard_file_that_is_chosen_for_another_reason_runs_once_and_whole(script, repo):
+    write(repo, {"src/binding_metrics/metrics/registry.py": "PATHS = []\n"})
     _, plan, commands = selection(script, repo)
-    assert plan.everything and sorted(plan.files) == sorted(script.GUARD_TESTS)
-    assert commands[1][5:] == ["-m", "not gpu and slow", *plan.files]
+    assert plan.files["tests/test_registry.py"][0] == "guard test"
+    assert "tests/test_registry.py" in plan.files
+    assert [c for c in commands if "tests/test_registry.py" in c] == [commands[-1]]
 
 
-def test_the_guard_tests_marked_slow_run_and_the_other_slow_tests_do_not(script, repo):
-    """Both commands are run for real, on a project whose guard and whose chosen test are slow."""
+def test_no_guard_test_needs_a_gpu(script):
+    """The guard files run with no tier, so a gpu test among them would run on a CUDA machine."""
+    for guard in script.GUARD_TESTS:
+        text = (REPO / guard).read_text(encoding="utf-8")
+        assert "requires_cuda" not in text and "mark.gpu" not in text, guard
+
+
+@pytest.mark.slow
+def test_the_chosen_files_run_in_the_fast_tier_and_the_guard_files_run_whole(script, repo):
+    """The commands are run for real, on a project whose guard and whose chosen test are slow."""
     body = """
         import pathlib
 
@@ -354,9 +390,44 @@ def test_the_guard_tests_marked_slow_run_and_the_other_slow_tests_do_not(script,
             "tests/test_frame.py": body.format(name="chosen"),
         },
     )
+    log = repo / "tests" / "ran.log"
     assert script.main(["--repo", str(repo)]) == 0
-    ran = (repo / "tests" / "ran.log").read_text(encoding="utf-8").split()
-    assert sorted(ran) == ["fast_chosen", "fast_guard", "slow_guard"]
+    assert sorted(log.read_text(encoding="utf-8").split()) == [
+        "fast_chosen",
+        "fast_guard",
+        "slow_guard",
+    ]
+
+    log.unlink()
+    assert script.main(["--repo", str(repo), "--full"]) == 0
+    assert sorted(log.read_text(encoding="utf-8").split()) == [
+        "fast_chosen",
+        "fast_guard",
+        "slow_chosen",
+        "slow_guard",
+    ]
+
+    # a change of the configuration: the directory in the fast tier, each guard test once. The
+    # tests that import the modules of the small package cannot run here, so they are left out.
+    log.unlink()
+    for name in (
+        "run",
+        "prep",
+        "uses_support",
+        "chain_b",
+        "chain_c",
+        "flags",
+        "registry_use",
+        "sasa",
+    ):
+        (repo / "tests" / f"test_{name}.py").unlink()
+    write(repo, {"pyproject.toml": "[project]\nname = 'y'\n"})
+    assert script.main(["--repo", str(repo)]) == 0
+    assert sorted(log.read_text(encoding="utf-8").split()) == [
+        "fast_chosen",
+        "fast_guard",
+        "slow_guard",
+    ]
 
 
 def test_another_file_runs_the_tests_that_name_it(script, repo):
