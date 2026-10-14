@@ -283,8 +283,12 @@ def _restore_package_logging():
                 lg.removeHandler(handler)
 
 
+# The bundled example structures, located from this file and not from the working directory:
+# a test that builds the path as Path("data/...") skips when pytest runs from another directory.
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
 # Path to real example PDB for integration tests
-EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+EXAMPLE_PDB_PATH = DATA_DIR / "example_linear_p53_1YCR.pdb"
 
 
 @pytest.fixture

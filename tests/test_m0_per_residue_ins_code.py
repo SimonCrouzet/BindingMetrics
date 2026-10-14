@@ -9,13 +9,14 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import DATA_DIR
 
 from binding_metrics.protocols.report import _md_interface
 
 HAS_BIOTITE = importlib.util.find_spec("biotite") is not None
 requires_biotite = pytest.mark.skipif(not HAS_BIOTITE, reason="biotite not installed")
 
-EXAMPLE_PDB = Path("data/example_linear_p53_1YCR.pdb")
+EXAMPLE_PDB = DATA_DIR / "example_linear_p53_1YCR.pdb"
 
 # One alanine: (atom name, element, offset from the CA in Angstrom).
 _ALANINE = [

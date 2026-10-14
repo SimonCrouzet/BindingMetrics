@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import DATA_DIR
 
 # ---------------------------------------------------------------------------
 # Helpers: synthetic OpenFold3 output fixtures
@@ -1203,7 +1204,7 @@ class TestWriteRunnerYaml:
 # Real-world integration tests using data/example_linear_p53_1YCR.pdb
 # ---------------------------------------------------------------------------
 
-EXAMPLE_PDB = Path("data/example_linear_p53_1YCR.pdb")
+EXAMPLE_PDB = DATA_DIR / "example_linear_p53_1YCR.pdb"
 requires_example_pdb = pytest.mark.skipif(
     not EXAMPLE_PDB.exists(), reason="data/example_linear_p53_1YCR.pdb not found"
 )

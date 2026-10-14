@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import DATA_DIR
 
 from binding_metrics.metrics.comparison import (
     _get_coords,
@@ -17,8 +18,8 @@ HAS_GEMMI = importlib.util.find_spec("gemmi") is not None
 
 requires_gemmi = pytest.mark.skipif(not HAS_GEMMI, reason="gemmi not installed")
 
-EXAMPLE_CIF = Path("data/example_linear_p53_1YCR.pdb")
-EXAMPLE_CIF2 = Path("data/example_bicyclic_sfti1_3P8F.cif")
+EXAMPLE_CIF = DATA_DIR / "example_linear_p53_1YCR.pdb"
+EXAMPLE_CIF2 = DATA_DIR / "example_bicyclic_sfti1_3P8F.cif"
 
 
 def _pdb_lines(chains: dict[str, np.ndarray]) -> list[str]:
