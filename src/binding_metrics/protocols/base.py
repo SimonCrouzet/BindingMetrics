@@ -1,6 +1,7 @@
 """Base protocol class for binding metrics evaluation."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,22 @@ class ProtocolResults:
         )
 
 
+def _check_partner_chains(ligand_chain: str, receptor_chains: Sequence[str]) -> None:
+    """Raise ``ValueError`` for an empty partner or a chain that both partners name."""
+    if not ligand_chain:
+        raise ValueError("ligand_chain is empty: give the chain ID of the ligand")
+    if not receptor_chains:
+        raise ValueError("receptor_chains is empty: give the chain IDs of the receptor")
+    receptors = list(receptor_chains)
+    if any(not chain_id for chain_id in receptors):
+        raise ValueError(f"receptor_chains {receptors} holds an empty chain ID")
+    if ligand_chain in receptors:
+        raise ValueError(
+            f"ligand_chain {ligand_chain!r} is also in receptor_chains {receptors}: "
+            "the ligand and the receptor must be different chains"
+        )
+
+
 class BaseProtocol(ABC):
     """Abstract base class for binding evaluation protocols.
 
@@ -81,7 +98,12 @@ class BaseProtocol(ABC):
             pdb_path: Path to the input PDB file (pre-docked complex)
             ligand_chain: Chain ID of the ligand
             receptor_chains: List of chain IDs for the receptor
+
+        Raises:
+            ValueError: If the ligand or the receptor names no chain, or a chain ID is in
+                both.
         """
+        _check_partner_chains(ligand_chain, receptor_chains)
         self.pdb_path = Path(pdb_path)
         self.ligand_chain = ligand_chain
         self.receptor_chains = receptor_chains
