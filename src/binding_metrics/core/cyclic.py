@@ -31,9 +31,8 @@ Lactam residue templates (ASPL, GLUL, LYSL) carry approximate charges taken
 from the ASN/GLN ff14SB analogs. For production MD or free-energy work, supply
 RESP charges as custom XML via custom_bond_handler.
 
-Usage (via RelaxationConfig):
-    >>> config = RelaxationConfig(is_cyclic=True)
-    >>> relaxer = ImplicitRelaxation(config)
+Usage (the closures are detected from the structure; there is no cyclic flag):
+    >>> relaxer = ImplicitRelaxation(RelaxationConfig())
     >>> result = relaxer.run(Path("cyclic_peptide_complex.cif"), Path("out/"))
 """
 
