@@ -539,6 +539,10 @@ def _md_energy(energy: dict | None, for_html: bool = False) -> str:
             for_html,
         )
     )
+    if energy.get("error_message"):
+        # one mode failed and the table shows another: say which, so a missing value is not read
+        # as a mode that was never asked for
+        lines.append(f"\n⚠️ **A mode failed:** {_text(energy['error_message'], for_html)}")
     return "\n".join(lines) + "\n"
 
 
