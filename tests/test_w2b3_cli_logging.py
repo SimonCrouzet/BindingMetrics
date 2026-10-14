@@ -555,6 +555,7 @@ class TestCheckEnvMain:
         from binding_metrics.cli import check_env
 
         monkeypatch.setattr(check_env, "CHECKS", checks)
+        monkeypatch.setattr(sys, "argv", ["binding-metrics-check-env"])
         with pytest.raises(SystemExit) as exc:
             check_env.main()
         return exc.value.code
