@@ -44,8 +44,7 @@ def _get_coords(
     coords = []
     keys = []
 
-    # First model only, like every other loader: concatenating the models of
-    # an NMR/ensemble file would build one point set with duplicated keys.
+    # First model only: the models of an NMR/ensemble file would give duplicated keys.
     models = [structure[0]] if len(structure) > 0 else []
     for model in models:
         for chain in model:
@@ -70,9 +69,8 @@ def _get_coords(
 def _kabsch_rmsd(coords1: np.ndarray, coords2: np.ndarray) -> float:
     """Compute Kabsch-aligned RMSD between two coordinate sets (Kabsch, 1976).
 
-    The optimal proper rotation is found by SVD of the covariance matrix; a
-    reflection is never allowed (the determinant correction flips the last
-    singular direction).
+    The rotation is found by SVD of the covariance matrix; the determinant
+    correction excludes reflections.
 
     Args:
         coords1: Reference coordinates, shape (N, 3)
@@ -105,10 +103,8 @@ def _matched_rmsd(
 ) -> Optional[float]:
     """Compute RMSD after matching atoms by (chain, res_num, atom_name, ins_code).
 
-    Only the atoms whose key occurs in both structures are used, whatever
-    the atom counts. The key lists are compared first: identical lists
-    already pair the atoms one-to-one in order, so the coordinates go to
-    Kabsch unchanged.
+    Only atoms whose key occurs in both structures are used. Identical key
+    lists pair the atoms one-to-one in order and go to Kabsch unchanged.
 
     Args:
         coords1, keys1: Coordinates and keys for structure 1
@@ -120,8 +116,8 @@ def _matched_rmsd(
     if len(coords1) == 0 or len(coords2) == 0:
         return None
 
-    # Equal counts are not enough to pair by position: the same atoms in
-    # another order, or renumbered residues, have equal counts too.
+    # Equal counts do not imply equal pairing: reordered atoms or renumbered
+    # residues have equal counts too.
     if keys1 == keys2:
         return _kabsch_rmsd(coords1, coords2)
 
@@ -129,10 +125,9 @@ def _matched_rmsd(
     if not common:
         return None
 
-    # Group atom indices by key so that keys appearing with different
-    # multiplicities in the two structures (e.g. altlocs, duplicated keys)
-    # are paired one-to-one up to the smaller count. This guarantees the two
-    # selected index lists have equal length, which Kabsch requires.
+    # Keys with different multiplicities in the two structures (altlocs,
+    # duplicated keys) are paired one-to-one up to the smaller count, so both
+    # index lists have the equal length Kabsch requires.
     pos1: dict = {}
     for i, k in enumerate(keys1):
         if k in common:
@@ -187,8 +182,9 @@ def compute_structure_rmsd(
     Args:
         initial_path: Path to the first (reference) structure
         processed_path: Path to the second (target) structure
-        design_chain: Chain ID of the designed/peptide region. Auto-detected
-            as the smallest protein chain if None.
+        design_chain: Chain ID of the designed/peptide region. If None, the
+            chain with the fewest non-water residues in the first model of
+            the initial structure.
         binder_chain: Alias of ``design_chain`` (same meaning); giving both
             with different IDs raises ``ValueError``.
 
@@ -213,8 +209,8 @@ def compute_structure_rmsd(
     initial_st = gemmi.read_structure(str(initial_path))
     processed_st = gemmi.read_structure(str(processed_path))
 
-    # The smallest chain with any non-water residue is taken as the design
-    # chain, so a one-residue ligand chain would win: pass design_chain then.
+    # Smallest chain with a non-water residue; a one-residue ligand chain would win,
+    # so pass design_chain then.
     if design_chain is None:
         chain_sizes = []
         if len(initial_st) > 0:
