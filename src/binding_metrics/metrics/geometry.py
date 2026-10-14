@@ -1294,7 +1294,14 @@ def main():
     # Sc parameters
     parser.add_argument("--n-dots", type=int, default=150, help="Surface dots per atom for Sc")
     parser.add_argument(
-        "--interface-cutoff", type=float, default=6.0, help="Interface atom pre-selection cutoff Å"
+        "--interface-cutoff",
+        type=float,
+        default=None,
+        help=(
+            "Distance in Å within which an atom counts as interface for Sc (pre-selection) and "
+            "void (box). A value applies to both; without it each metric keeps its own default "
+            "(Sc 6.0, void 5.0)"
+        ),
     )
     parser.add_argument(
         "--buried-cutoff", type=float, default=2.4, help="Buried-patch dot cutoff Å for Sc"
@@ -1326,6 +1333,11 @@ def main():
 
     from binding_metrics.cli import log_to_file
 
+    # None leaves the choice to each metric: Sc defaults to 6.0 A and the void to 5.0 A.
+    cutoff_kwargs = (
+        {} if args.interface_cutoff is None else {"interface_cutoff": args.interface_cutoff}
+    )
+
     with log_to_file(args.log_file):
         print(f"Computing '{args.metric}' metrics for: {args.input}")
 
@@ -1353,11 +1365,11 @@ def main():
                 peptide_chain=args.peptide_chain,
                 receptor_chain=args.receptor_chain,
                 n_dots=args.n_dots,
-                interface_cutoff=args.interface_cutoff,
                 buried_cutoff=args.buried_cutoff,
                 normal_radius=args.normal_radius,
                 weight=args.weight,
                 hetero=args.hetero,
+                **cutoff_kwargs,
             )
             scalar_keys = ["sc", "sc_A_to_B", "sc_B_to_A", "n_surface_dots_A", "n_surface_dots_B"]
         else:  # void
@@ -1367,8 +1379,8 @@ def main():
                 receptor_chain=args.receptor_chain,
                 grid_spacing=args.grid_spacing,
                 probe_radius=args.probe_radius,
-                interface_cutoff=args.interface_cutoff,
                 hetero=args.hetero,
+                **cutoff_kwargs,
             )
             scalar_keys = [
                 "void_volume_A3",
