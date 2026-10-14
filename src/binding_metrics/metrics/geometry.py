@@ -144,6 +144,10 @@ _BONDI_VDW_RADII: dict[str, float] = {
     "I": 1.98,
 }
 
+# Deuterium is hydrogen for a radius, as in the rest of the package, where the elements H and D
+# are the hydrogens.
+_BONDI_VDW_RADII["D"] = _BONDI_VDW_RADII["H"]
+
 # Radius of an element the table does not list (metal ions, for instance), in Å.
 _DEFAULT_VDW_RADIUS = 1.80
 
@@ -151,6 +155,24 @@ _DEFAULT_VDW_RADIUS = 1.80
 def _get_vdw(element: str) -> float:
     """Bondi radius in Å of an element symbol, `_DEFAULT_VDW_RADIUS` when the table lacks it."""
     return _BONDI_VDW_RADII.get(element.strip().upper(), _DEFAULT_VDW_RADIUS)
+
+
+def _atom_radii(atoms) -> np.ndarray:
+    """Bondi radius in Å of each atom of an array.
+
+    The element column decides. Only where it is empty does the atom name: a name that
+    starts with H is a hydrogen, the rule of ``poses.agreement._hydrogen_mask`` and
+    ``io.structures``. A name that starts with D is not read as deuterium, as in those two
+    (a D prefix is ambiguous without the element), and an atom with neither element nor
+    hydrogen name gets `_DEFAULT_VDW_RADIUS`.
+    """
+    elements = np.char.upper(np.char.strip(atoms.element.astype(str)))
+    names = np.char.upper(np.char.strip(atoms.atom_name.astype(str)))
+    symbols = np.where((elements == "") & np.char.startswith(names, "H"), "H", elements)
+    radii = np.empty(len(symbols), dtype=float)
+    for symbol in np.unique(symbols):
+        radii[symbols == symbol] = _get_vdw(str(symbol))
+    return radii
 
 
 # ---------------------------------------------------------------------------
@@ -732,7 +754,7 @@ def _build_surface_dots(
     all_normals = []
 
     same_coords = all_same_chain_atoms.coord  # (n_same, 3)
-    same_vdw = np.array([_get_vdw(str(a.element).strip()) for a in all_same_chain_atoms])
+    same_vdw = _atom_radii(all_same_chain_atoms)
     if len(same_coords) == 0 or len(opposite_atoms) == 0:
         return np.zeros((0, 3)), np.zeros((0, 3))
 
@@ -740,8 +762,7 @@ def _build_surface_dots(
     opp_tree = cKDTree(opposite_atoms.coord)
     max_same_vdw = float(same_vdw.max())
 
-    for atom_a in interface_atoms:
-        vdw_a = _get_vdw(str(atom_a.element).strip())
+    for atom_a, vdw_a in zip(interface_atoms, _atom_radii(interface_atoms)):
         center = atom_a.coord  # (3,)
         dots = center + vdw_a * unit_sphere  # (n_dots, 3)
 
@@ -1228,7 +1249,7 @@ def compute_buried_void_volume(
 
     def _occluders(chain_atoms):
         """Atoms of the chain whose (probe-inflated) sphere can reach into the grid."""
-        radii = np.array([_get_vdw(str(a.element).strip()) for a in chain_atoms])
+        radii = _atom_radii(chain_atoms)
         reach = radii + probe_radius
         near = np.all(
             (chain_atoms.coord >= grid_min - reach[:, None])
