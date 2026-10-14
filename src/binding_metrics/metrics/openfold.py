@@ -28,10 +28,10 @@ References:
   The OpenFold3 Team (2026) OpenFold3, v0.5.0 (OpenBind-0 weights). Software,
   doi:10.5281/zenodo.22042719, github.com/aqlaboratory/openfold-3
   Abramson et al. (2024) Accurate structure prediction of biomolecular
-  interactions with AlphaFold 3. Nature 630:493-500. Defines the outputs parsed
-  here (pLDDT, PAE, PDE, pTM, ipTM) and the tokenisation that the interface
-  PDE/PAE slicing relies on: one token per standard residue, one per heavy atom
-  for ligands and modified residues.
+  interactions with AlphaFold 3. Nature 630:493-500. Defines the parsed outputs
+  (pLDDT, PAE, PDE, pTM, ipTM) and the tokenisation used for the interface
+  PDE/PAE slices: one token per standard residue, one per heavy atom for
+  ligands and modified residues.
 
 Usage (Python API):
     from binding_metrics import compute_openfold_metrics
@@ -232,12 +232,11 @@ def compute_interface_pae(
 
     OpenFold3 makes one token of each residue of the standard set and one of each heavy
     atom of any other residue (a modified residue, a ligand), so the matrix can have more
-    rows than the structure has residues (1CWA: 240 for 176). The token layout is built from
-    the structure the way ``OpenFold3Parser.complete`` does it, which cuts the binder block at
-    the chain boundaries of the tokens; the matrix of 1CWA gives its interface PAE. A layout
-    that cannot be shown to fit the matrix (another token count, chains that are not one run
-    of tokens) is not guessed: the matrix is then read as one token per residue and a size
-    that does not fit raises.
+    rows than the structure has residues. The token layout is built from the structure as
+    ``OpenFold3Parser.complete`` builds it, and the binder block is cut at the chain
+    boundaries of the tokens. When the layout cannot be shown to fit the matrix (another
+    token count, chains that are not one run of tokens), the matrix is read as one token per
+    residue, and a size that does not fit raises.
 
     Args:
         confidences_path: Path to ``*_confidences.json`` or ``.npz``.
@@ -317,8 +316,7 @@ def compute_openfold_metrics(
     Pass ``reference_structure_path`` together with ``binder_chain`` (and
     ``receptor_chain`` for receptor-frame alignment) to additionally compute
     the binder Cα RMSD between the OF3 prediction and a known reference
-    structure (e.g., crystal or MD-relaxed). This measures how faithfully OF3
-    recovers the bound binder conformation.
+    structure (e.g., crystal or MD-relaxed).
 
     Args:
         output_dir: Top-level OpenFold3 output directory.
@@ -565,7 +563,6 @@ def run_openfold(
             "Pass conda_env='openfold3' (or whichever env has OF3 installed)."
         )
 
-    # Resolve runner YAML: explicit path takes precedence over model_presets
     effective_yaml: Optional[Path] = None
     if runner_yaml is not None:
         # OpenFold3 finds the template CIFs only through the YAML's structure_directory, and
@@ -636,12 +633,10 @@ def run_openfold_scoring(
 ) -> Path:
     """Run OpenFold3 scoring of an existing complex structure (Mode 1).
 
-    Each chain is given its own structure from the complex as a template (the binder its
-    conformation, the receptor its conformation), and OF3 outputs confidence metrics for the
-    complex it predicts from them. Each chain has its own template and no cross-chain geometry is
-    supplied, so OF3 places the binder itself: its confidences describe its own pose, and
-    ``binder_ca_rmsd`` and ``delta_com_angstrom`` of the EvoBind adversarial check say how far
-    that pose is from the input pose (see :func:`prepare_scoring_query`; with the MSA server on
+    Each chain gets its own structure from the complex as a template. No cross-chain geometry
+    is supplied, so OF3 places the binder itself: the confidences describe that pose, and
+    ``binder_ca_rmsd`` and ``delta_com_angstrom`` of the EvoBind adversarial check give its
+    distance from the input pose (see :func:`prepare_scoring_query`; with the MSA server on
     and ``template_mode="alignment"`` the run has no template, issue #68).
     Use :func:`compute_openfold_metrics` with ``binder_chain`` and
     ``receptor_chain`` to extract per-chain scores after inference.
@@ -677,17 +672,15 @@ def run_openfold_scoring(
             it has a head-to-tail bond, is made of standard residues only and the installed
             OpenFold3 (in ``conda_env``) is 0.4.5 or later; ``True`` writes it whatever the
             structure says; ``False`` never. OpenFold3 wraps the relative positions of the chain
-            and does not enforce the closure bond, and with modified residues the flag made the
-            one complex tried worse; see :func:`prepare_refolding_query`.
+            and does not enforce the closure bond; see :func:`prepare_refolding_query`.
         template_mode: How the templates reach OpenFold3: ``"structure"`` (default; the template
             CIFs themselves, OpenFold3's CIF Direct Template Mode, which the ColabFold MSA server
             does not overwrite) or ``"alignment"`` (an A3M self-alignment per chain, which the
             server overwrites, so with the server on the run has no template). See
             :func:`prepare_refolding_query`.
         dummy_msa: Whether the query gives every chain a dummy MSA that holds only its sequence.
-            None (default) writes it when ``use_msa_server`` is False, which is the MSA-free run
-            that OpenFold3's input reference suggests (it discourages leaving the MSA input out);
-            with the server on it would be overwritten. True or False decides it. See
+            None (default) writes it when ``use_msa_server`` is False (with the server on it
+            would be overwritten). True or False decides it. See
             :func:`prepare_refolding_query`.
         receptor_msa_path: An A3M alignment of the receptor chain, given to OpenFold3 as the MSA
             of that chain (``colabfold_main.a3m`` in a folder of its own); the binder keeps the
@@ -819,17 +812,15 @@ def run_openfold_refolding(
             it has a head-to-tail bond, is made of standard residues only and the installed
             OpenFold3 (in ``conda_env``) is 0.4.5 or later; ``True`` writes it whatever the
             structure says; ``False`` never. OpenFold3 wraps the relative positions of the chain
-            and does not enforce the closure bond, and with modified residues the flag made the
-            one complex tried worse; see :func:`prepare_refolding_query`.
+            and does not enforce the closure bond; see :func:`prepare_refolding_query`.
         template_mode: How the templates reach OpenFold3: ``"structure"`` (default; the template
             CIFs themselves, OpenFold3's CIF Direct Template Mode, which the ColabFold MSA server
             does not overwrite) or ``"alignment"`` (an A3M self-alignment per chain, which the
             server overwrites, so with the server on the run has no template). See
             :func:`prepare_refolding_query`.
         dummy_msa: Whether the query gives every chain a dummy MSA that holds only its sequence.
-            None (default) writes it when ``use_msa_server`` is False, which is the MSA-free run
-            that OpenFold3's input reference suggests (it discourages leaving the MSA input out);
-            with the server on it would be overwritten. True or False decides it. See
+            None (default) writes it when ``use_msa_server`` is False (with the server on it
+            would be overwritten). True or False decides it. See
             :func:`prepare_refolding_query`.
         receptor_msa_path: An A3M alignment of the receptor chain, given to OpenFold3 as the MSA
             of that chain (``colabfold_main.a3m`` in a folder of its own); the binder keeps the
@@ -951,17 +942,15 @@ def run_openfold_batched(
             it has a head-to-tail bond, is made of standard residues only and the installed
             OpenFold3 (in ``conda_env``) is 0.4.5 or later; ``True`` writes it whatever the
             structure says; ``False`` never. OpenFold3 wraps the relative positions of the chain
-            and does not enforce the closure bond, and with modified residues the flag made the
-            one complex tried worse; see :func:`prepare_refolding_query`.
+            and does not enforce the closure bond; see :func:`prepare_refolding_query`.
         template_mode: How the templates reach OpenFold3: ``"structure"`` (default; the template
             CIFs themselves, OpenFold3's CIF Direct Template Mode, which the ColabFold MSA server
             does not overwrite) or ``"alignment"`` (an A3M self-alignment per chain, which the
             server overwrites, so with the server on the run has no template). See
             :func:`prepare_refolding_query`.
         dummy_msa: Whether the query gives every chain a dummy MSA that holds only its sequence.
-            None (default) writes it when ``use_msa_server`` is False, which is the MSA-free run
-            that OpenFold3's input reference suggests (it discourages leaving the MSA input out);
-            with the server on it would be overwritten. True or False decides it. See
+            None (default) writes it when ``use_msa_server`` is False (with the server on it
+            would be overwritten). True or False decides it. See
             :func:`prepare_refolding_query`.
         receptor_msa_path: One A3M alignment for the receptor chain of every sample, given to
             OpenFold3 as the MSA of that chain (a copy, ``colabfold_main.a3m``, in a folder per
