@@ -10,12 +10,16 @@ import pytest
 md = pytest.importorskip("mdtraj")
 
 # Cell lengths (nm) and angles (degrees). Every length is at least twice the largest separation
-# used below, in the triclinic cell too.
+# of the system it is used with, in the triclinic cell too.
 CELLS = {
     "orthorhombic": ((6.0, 6.5, 7.0), (90.0, 90.0, 90.0)),
     "triclinic": ((6.0, 6.5, 7.0), (80.0, 70.0, 75.0)),
+    # For the bundled protein complexes, which are about 4 nm across.
+    "orthorhombic_large": ((12.0, 12.5, 13.0), (90.0, 90.0, 90.0)),
+    "triclinic_large": ((12.0, 12.5, 13.0), (80.0, 70.0, 75.0)),
 }
-CELL_NAMES = sorted(CELLS)
+CELL_NAMES = ["orthorhombic", "triclinic"]
+LARGE_CELL_NAMES = ["orthorhombic_large", "triclinic_large"]
 # Integer combinations of the three cell vectors.
 LATTICE_COMBINATIONS = ((1, 0, 0), (0, -1, 0), (0, 0, 1), (1, -1, 1))
 
