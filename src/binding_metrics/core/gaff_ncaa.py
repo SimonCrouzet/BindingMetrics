@@ -774,7 +774,7 @@ def _am1bcc_charges(molecule, random_seed: Optional[int] = DEFAULT_RANDOM_SEED) 
     * The conformer is embedded with ``random_seed`` (the toolkit fixes it at 1, which is
       the default here, so the default conformer is the toolkit's). ``None`` draws a new
       conformer per call. AM1-BCC charges depend on the conformer: those of MeBmt differ by
-      up to 0.065 e between seeds 1 and 2, so keep the seed fixed to compare runs. The
+      up to 0.037 e between seeds 1 and 2, so keep the seed fixed to compare runs. The
       stereochemistry of the embedded conformer is that of ``molecule``; a molecule without
       stereochemistry gets a random stereoisomer for each seed.
     * sqm's diagonaliser is fixed (see ``_SQM_DIAG_ROUTINE_INTERNAL``). With the toolkit
