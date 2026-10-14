@@ -66,10 +66,13 @@ def image_complex(traj, ligand_indices, receptor_indices):
     The copy holds only the atoms of the two selections, in index order, and keeps the unit
     cell. When the trajectory has a cell, the molecules of the copy (connected components of the
     topology bonds) are made whole with mdtraj's ``image_molecules``; the molecules that hold a
-    receptor atom are the anchors and every other molecule is placed in the image whose centre
-    is nearest to the anchors. A ligand covalently bonded to the receptor is an anchor itself.
-    The result is deterministic and the given trajectory is not modified. Without a cell, or
-    with an empty selection, the atoms are returned as stored.
+    receptor atom are the anchors and every other molecule goes to the image that mdtraj
+    places next to them by the molecule centre. A ligand covalently bonded to the receptor is an
+    anchor itself. The result is deterministic and the given trajectory is not modified.
+    Without a cell, or with an empty selection, the atoms are returned as stored.
+
+    Limit: a molecule whose centre is more than half a cell edge from the anchors goes to the
+    image on the other side, and atoms that the topology does not bond are placed one by one.
 
     Args:
         traj: ``mdtraj.Trajectory``.
