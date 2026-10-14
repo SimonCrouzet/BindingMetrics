@@ -625,14 +625,15 @@ def _plain(value: Any) -> Any:
     """
     if value is None or isinstance(value, (bool, str)):
         return value
-    if isinstance(value, (int, float)):
-        return value
+    # numpy scalars first: np.float64 is a float subclass, and the result keeps exact Python types
     if isinstance(value, np.bool_):
         return bool(value)
     if isinstance(value, np.integer):
         return int(value)
     if isinstance(value, np.floating):
         return float(value)
+    if isinstance(value, (int, float)):
+        return value
     if isinstance(value, np.ndarray):
         return _plain(value.tolist())
     if isinstance(value, ResidueKey):
