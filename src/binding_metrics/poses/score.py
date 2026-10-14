@@ -114,6 +114,7 @@ import os
 import shutil
 import tempfile
 import time
+import warnings
 from collections import Counter
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -1291,10 +1292,75 @@ def _write_structure(atoms: Any, path: Path) -> None:
             atoms.add_annotation(name, dtype=dtype)
             getattr(atoms, name)[:] = value
     cif = pdbx.CIFFile()
-    pdbx.set_structure(cif, atoms)
+    with warnings.catch_warnings():
+        # the flag is what older biotite versions need to write the bond table; newer ones
+        # always write it and deprecate the flag
+        warnings.simplefilter("ignore", DeprecationWarning)
+        pdbx.set_structure(cif, atoms, include_bonds=atoms.bonds is not None)
     buffer = io.StringIO()
     cif.write(buffer)
     Path(path).write_text(buffer.getvalue(), encoding="utf-8")
+
+
+def _with_covalent_links(atoms: Any, binder_chain: str) -> Any:
+    """A copy of ``atoms`` whose bond table lists the links between residues, found by geometry.
+
+    The arrays of the pose layer have no bond table, so the mmCIF written from them has no
+    ``_struct_conn`` and a reader that bonds by residue name (OpenMM) can bond neither a
+    non-standard residue to its neighbours nor a ring closure. The table holds the bonds the
+    array has, the peptide link C(i)-N(i+1) of every two consecutive amino-acid residues of a
+    chain whose atoms are closer than the amide cut of ``detect_closures`` (2.0 A), and the
+    closure bonds that ``detect_closures`` finds in the binder chain (head-to-tail, disulfide,
+    lactam). ``_write_structure`` leaves the links between canonical residues out of the file.
+    """
+    import biotite.structure as struc
+
+    from binding_metrics.capabilities import _AMIDE_BOND_THRESHOLD_ANGSTROM, detect_closures
+
+    def first_atom(start: int, stop: int, name: str) -> Optional[int]:
+        hit = np.flatnonzero(atoms.atom_name[start:stop] == name)
+        return start + int(hit[0]) if hit.size else None
+
+    pairs: list[tuple[int, int]] = []
+    starts = struc.get_residue_starts(atoms)
+    stops = np.append(starts[1:], atoms.array_length())
+    previous: Optional[tuple[int, int]] = None  # (first atom of the residue, its C)
+    for start, stop in zip(starts, stops):
+        n_atom, c_atom = first_atom(start, stop, "N"), first_atom(start, stop, "C")
+        if n_atom is None or c_atom is None or first_atom(start, stop, "CA") is None:
+            previous = None  # not an amino-acid residue
+            continue
+        if previous is not None and atoms.chain_id[previous[0]] == atoms.chain_id[start]:
+            gap = np.linalg.norm(atoms.coord[previous[1]] - atoms.coord[n_atom])
+            if gap < _AMIDE_BOND_THRESHOLD_ANGSTROM:
+                pairs.append((previous[1], n_atom))
+        previous = (start, c_atom)
+
+    chain_atoms = atoms.chain_id == binder_chain
+    for closure in detect_closures(atoms, binder_chain):
+        ends = []
+        for end in (closure.end1, closure.end2):
+            hit = np.flatnonzero(
+                chain_atoms
+                & (atoms.res_id == end.residue_number)
+                & (atoms.res_name == end.residue_name)
+                & (atoms.atom_name == end.atom_name)
+            )
+            ends.append(int(hit[0]) if hit.size else None)
+        if None not in ends:
+            pairs.append((ends[0], ends[1]))
+
+    linked = atoms.copy()
+    new_bonds = (
+        struc.BondList(
+            atoms.array_length(), np.array([(i, j, int(struc.BondType.SINGLE)) for i, j in pairs])
+        )
+        if pairs
+        else None
+    )
+    if new_bonds is not None:
+        linked.bonds = new_bonds if atoms.bonds is None else atoms.bonds.merge(new_bonds)
+    return linked
 
 
 class _PoseFiles:
@@ -1321,7 +1387,7 @@ class _PoseFiles:
             raise RuntimeError("no temporary directory was prepared for the structure files")
         target = Path(self.ctx.tmp_root) / f"pose_{self.index:04d}.cif"
         if not target.exists():
-            _write_structure(atoms, target)
+            _write_structure(_with_covalent_links(atoms, self.ctx.binder_chain), target)
         return str(target)
 
     def atoms(self):
