@@ -1,14 +1,14 @@
 """Adapter for the output of AlphaFold2, AlphaFold-Multimer and ColabFold.
 
-Layouts checked on 2026-09-29 against ColabFold v1.6.3 (2026-09-14) and AlphaFold2 v2.3.2
-(2023-04-05) and main (c77e5d2), by reading their source (``colabfold/batch.py``,
-``colabfold/alphafold/extra_ptm.py``, ``run_alphafold.py``, ``alphafold/model/model.py``,
-``alphafold/model/confidence.py``, ``alphafold/common/protein.py``) and one real ColabFold
-multimer-v3 scores file, and on 2026-09-30 against the source of ColabFold 1.5.4 and
-alphafold-colabfold 2.3.6 (a fork of AlphaFold2 2.3) and of OpenMM 8.4. What the text marks
-"(1.5.4)" comes from that second reading. No model was run and no real AlphaFold2 result pickle
-was seen. What the source does not settle is listed under TO VERIFY at the end; the parser then
-refuses a file it does not know, with a message, and does not guess.
+Layouts read in the source of ColabFold v1.6.3 (2026-09-14), AlphaFold2 v2.3.2 (2023-04-05) and
+main (c77e5d2) (``colabfold/batch.py``, ``colabfold/alphafold/extra_ptm.py``,
+``run_alphafold.py``, ``alphafold/model/model.py``, ``alphafold/model/confidence.py``,
+``alphafold/common/protein.py``) and in one real ColabFold multimer-v3 scores file, and on
+2026-09-30 in the source of ColabFold 1.5.4, alphafold-colabfold 2.3.6 (a fork of AlphaFold2 2.3)
+and OpenMM 8.4; the text marked "(1.5.4)" comes from that second reading. No model was run and no
+real AlphaFold2 result pickle was seen. Points the source does not settle are listed under TO
+VERIFY at the end; the parser refuses a file it does not know, with a message, and does not
+guess.
 
 Files
 -----
@@ -969,12 +969,11 @@ class AlphaFold2Parser(PredictionParser):
     display_name = "AlphaFold2 / ColabFold"
     family = "af2"
 
-    # The inputs AlphaFold2 and ColabFold can be given, from the model code (AlphaFold commit
-    # c77e5d2, ColabFold 1.6.3, checked against the clones on 2026-09-30;
-    # tests/test_pre_af2_limits.py re-reads them when the clones are at hand). The input is a
-    # sequence of the 20 amino acids and X plus an MSA and templates, so neither a residue that is
-    # not one of the 20 nor a ring closure can be given. Not declared because nothing shows it: a
-    # limit on the binder size or on a binder of several chains (the multimer models take them).
+    # Limits of AlphaFold2 and ColabFold, from the model code (AlphaFold commit c77e5d2, ColabFold
+    # 1.6.3; tests/test_pre_af2_limits.py re-reads the clones when they are at hand). The input is
+    # a sequence of the 20 amino acids and X plus an MSA and templates, so neither another residue
+    # nor a ring closure can be given. No limit is declared on the binder size or on a binder of
+    # several chains (the multimer models take them).
     capabilities = Capabilities(
         closures={"none"},
         residue_classes={"canonical", "cap", "ligand"},
