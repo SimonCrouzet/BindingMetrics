@@ -1,9 +1,10 @@
 """Pair energies of a trajectory whose partners sit in different periodic images (#169).
 
-The pair energy of a trajectory with a unit cell uses minimum-image separations, so translating
-one partner by a lattice vector of an orthorhombic or a triclinic cell leaves it unchanged. The
-ion pair has an analytic Coulomb term, -k / d for charges +1 and -1. The contact count already
-used the minimum image; its tests guard that.
+With a unit cell the pair energy is taken on the complex made contiguous (molecules whole,
+ligand in the image next to the receptor) with raw distances, so translating one partner by a
+lattice vector of an orthorhombic or a triclinic cell leaves it unchanged, and so does a cell
+smaller than the complex. The ion pair has an analytic Coulomb term, -k / d for charges +1 and
+-1. The contact count already used the minimum image; its tests guard that.
 """
 
 import numpy as np
@@ -13,10 +14,15 @@ from _r2_periodic_support import (
     CELLS,
     ION_DISTANCE_NM,
     ION_PAIR_NM,
+    LIGAND,
+    RECEPTOR,
     carbon_pair_topology,
     frames_with_images,
     ion_topology,
     peptide_pair,
+    rigid_bodies_topology,
+    rigid_bodies_xyz,
+    trajectory_with_cell,
     write_dipeptide_pair,
     write_trajectory,
 )
@@ -128,7 +134,9 @@ class TestPairEnergy:
             -COULOMB_K_KJ_NM_MOL_E2 / far_nm, rel=1e-5
         )
 
-    def test_a_pair_beyond_half_a_box_length_takes_the_nearest_image(self, tmp_path):
+    def test_a_ligand_beyond_half_a_cell_from_the_receptor_takes_the_image_on_the_other_side(
+        self, tmp_path
+    ):
         from binding_metrics.metrics.energy import calculate_component_energies
 
         box_x_nm = CELLS["orthorhombic"][0][0]
@@ -141,6 +149,28 @@ class TestPairEnergy:
         assert energies["electrostatic"][0] == pytest.approx(
             -COULOMB_K_KJ_NM_MOL_E2 / (box_x_nm - separation_nm), rel=1e-5
         )
+
+    def test_pairs_farther_apart_than_half_a_cell_keep_the_whole_complex_energy(
+        self, tmp_path, pair_path
+    ):
+        from binding_metrics.metrics.energy import calculate_component_energies
+
+        topology, reference_xyz, ligand, receptor = peptide_pair(pair_path)
+        frames = frames_with_images(reference_xyz, ligand, "snug")
+        snug_dir, plain_dir = tmp_path / "snug", tmp_path / "plain"
+        snug_dir.mkdir()
+        plain_dir.mkdir()
+        dcd, _ = write_trajectory(snug_dir, topology, frames, "snug", pair_path)
+        plain_dcd, _ = write_trajectory(plain_dir, topology, frames[:1], None, pair_path)
+        half_cell_nm = CELLS["snug"][0][0] / 2
+        delta = reference_xyz[ligand][:, None, :] - reference_xyz[receptor][None, :, :]
+        assert np.linalg.norm(delta, axis=-1).max() > half_cell_nm
+
+        periodic = calculate_component_energies(dcd, pair_path, ligand, receptor)
+        plain = calculate_component_energies(plain_dcd, pair_path, ligand, receptor)
+
+        for key in ("electrostatic", "vdw", "total"):
+            assert periodic[key] == pytest.approx([plain[key][0]] * len(frames), rel=1e-4), key
 
     def test_trajectory_without_a_cell_uses_the_stored_separations(self, tmp_path):
         from binding_metrics.metrics.energy import calculate_component_energies
@@ -182,73 +212,56 @@ class TestContacts:
 # ---------------------------------------------------------------------------
 
 
-def random_two_selection_trajectory(cell: str, seed: int):
-    """One frame of 6 ligand and 9 receptor atoms scattered over a few cells, in a cell."""
-    rng = np.random.default_rng(seed)
-    n_ligand, n_receptor = 6, 9
-    topology = md.Topology()
-    for _ in range(n_ligand + n_receptor):
-        residue = topology.add_residue("ALA", topology.add_chain())
-        topology.add_atom("CA", md.element.carbon, residue)
-    xyz = rng.uniform(-5.0, 5.0, size=(1, n_ligand + n_receptor, 3)).astype(np.float32)
-    lengths, angles = CELLS[cell]
-    traj = md.Trajectory(
-        xyz, topology, unitcell_lengths=np.array([lengths]), unitcell_angles=np.array([angles])
-    )
-    return traj, list(range(n_ligand)), list(range(n_ligand, n_ligand + n_receptor))
+def rigid_bodies_trajectory(cell):
+    """Rigid-body frames; in a cell, frames 1 and later have the ligand a lattice vector away."""
+    if cell is None:
+        return md.Trajectory(rigid_bodies_xyz()[None].astype(np.float32), rigid_bodies_topology())
+    frames = frames_with_images(rigid_bodies_xyz(), LIGAND, cell)
+    return trajectory_with_cell(rigid_bodies_topology(), frames, cell)
 
 
-def brute_force_minimum_image_nm(traj, ligand, receptor) -> np.ndarray:
-    """Smallest distance over the 7 x 7 x 7 neighbouring cells, in float64."""
-    vectors = traj.unitcell_vectors[0].astype(float)
-    shifts = [
-        np.array((i, j, k)) @ vectors
-        for i in range(-3, 4)
-        for j in range(-3, 4)
-        for k in range(-3, 4)
-    ]
-    xyz = traj.xyz[0].astype(float)
-    out = np.empty((len(ligand), len(receptor)))
-    for a, lig_atom in enumerate(ligand):
-        for b, rec_atom in enumerate(receptor):
-            delta = xyz[lig_atom] - xyz[rec_atom]
-            out[a, b] = min(np.linalg.norm(delta + shift) for shift in shifts)
-    return out
-
-
-class TestMinimumImageDistances:
+class TestComplexDistances:
     def test_a_cell_is_detected_only_when_the_trajectory_has_one(self):
         from binding_metrics.metrics import _periodic
 
-        with_cell, _, _ = random_two_selection_trajectory("triclinic", 0)
-        without_cell = md.Trajectory(with_cell.xyz, with_cell.topology)
-
-        assert _periodic.has_unit_cell(with_cell)
-        assert not _periodic.has_unit_cell(without_cell)
+        assert _periodic.has_unit_cell(rigid_bodies_trajectory("triclinic"))
+        assert not _periodic.has_unit_cell(rigid_bodies_trajectory(None))
 
     @pytest.mark.parametrize("cell", CELL_NAMES)
-    @pytest.mark.parametrize("seed", [0, 1, 2])
-    def test_pair_distances_match_a_search_over_neighbouring_cells(self, cell, seed):
+    def test_every_frame_gives_the_distances_of_the_adjacent_image(self, cell):
         from binding_metrics.metrics import _periodic
 
-        traj, ligand, receptor = random_two_selection_trajectory(cell, seed)
+        traj = rigid_bodies_trajectory(cell)
 
-        distances = _periodic.ligand_receptor_distances_nm(traj, 0, ligand, receptor)
+        matrices = list(_periodic.ligand_receptor_distances_nm(traj, LIGAND, RECEPTOR))
 
-        assert distances.shape == (len(ligand), len(receptor))
-        np.testing.assert_allclose(
-            distances, brute_force_minimum_image_nm(traj, ligand, receptor), atol=2e-5
+        assert len(matrices) == traj.n_frames
+        assert matrices[0].shape == (len(LIGAND), len(RECEPTOR))
+        reference = rigid_bodies_xyz()
+        expected = np.linalg.norm(
+            reference[LIGAND][:, None, :] - reference[RECEPTOR][None, :, :], axis=-1
         )
+        for matrix in matrices:
+            np.testing.assert_allclose(matrix, expected, atol=2e-5)
 
-    def test_pair_distances_without_a_cell_are_the_plain_norm(self):
+    def test_distances_without_a_cell_are_the_plain_norm_of_the_stored_coordinates(self):
         from binding_metrics.metrics import _periodic
 
-        traj, ligand, receptor = random_two_selection_trajectory("orthorhombic", 3)
-        plain = md.Trajectory(traj.xyz, traj.topology)
+        traj = rigid_bodies_trajectory(None)
 
-        distances = _periodic.ligand_receptor_distances_nm(plain, 0, ligand, receptor)
+        (matrix,) = _periodic.ligand_receptor_distances_nm(traj, LIGAND, RECEPTOR)
 
-        expected = np.array(
-            [[np.linalg.norm(plain.xyz[0][i] - plain.xyz[0][j]) for j in receptor] for i in ligand]
-        )
-        np.testing.assert_array_equal(distances, expected)
+        xyz = traj.xyz[0]
+        expected = np.array([[np.linalg.norm(xyz[i] - xyz[j]) for j in RECEPTOR] for i in LIGAND])
+        np.testing.assert_array_equal(matrix, expected)
+
+    def test_distances_follow_the_order_of_the_index_lists(self):
+        from binding_metrics.metrics import _periodic
+
+        traj = rigid_bodies_trajectory("triclinic")
+        ligand, receptor = LIGAND[::-1], RECEPTOR[2:9][::-1]
+
+        (first, *_) = _periodic.ligand_receptor_distances_nm(traj, ligand, receptor)
+        (reference, *_) = _periodic.ligand_receptor_distances_nm(traj, LIGAND, RECEPTOR)
+
+        np.testing.assert_allclose(first, reference[::-1][:, 2:9][:, ::-1], atol=1e-6)

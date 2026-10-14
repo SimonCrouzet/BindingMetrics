@@ -4,7 +4,7 @@ Two families of functions:
 
 * ``calculate_interaction_energy`` / ``calculate_component_energies``: per-frame
   Coulomb + Lennard-Jones sums over ligand-receptor atom pairs of a trajectory
-  (vacuum, no cutoff; minimum-image separations when the trajectory stores a unit cell).
+  (vacuum, no cutoff; on the complex made contiguous when the trajectory stores a unit cell).
 * ``compute_interaction_energy`` (CLI: ``binding-metrics-energy``): end-state
   subsystem decomposition E_complex - E_peptide - E_receptor in implicit solvent
   for a single structure, evaluated at the input geometry (``raw``), after a
@@ -109,12 +109,13 @@ def calculate_interaction_energy(
     bonded through a covalent ligand-receptor link (for example an inter-chain
     disulfide) therefore contribute at full strength.
 
-    When the trajectory stores a unit cell (orthorhombic or triclinic), r_ij is the
-    minimum-image distance, so the energy does not depend on the periodic image in which
-    either partner was written; without a cell the stored coordinates are used. The sum is
-    a vacuum pair energy of the two selections, not the PME interaction energy of the
-    simulation, which sums the pair terms over all periodic images and adds the
-    reciprocal-space term.
+    When the trajectory stores a unit cell (orthorhombic or triclinic), the complex is first
+    made contiguous (``_periodic.image_complex``: molecules whole, ligand in the image next to
+    the receptor, known limit stated there) and r_ij is the plain distance in that image, so
+    the energy does not depend on the periodic image in which either partner was written;
+    without a cell the stored coordinates are used. The sum is a vacuum pair energy of the
+    two selections, not the PME interaction energy of the simulation, which sums the pair
+    terms over all periodic images and adds the reciprocal-space term.
 
     Args:
         trajectory_path: Path to trajectory file
@@ -167,11 +168,7 @@ def calculate_interaction_energy(
 
     interaction_energies = []
 
-    for frame_idx in range(traj.n_frames):
-        distances_nm = ligand_receptor_distances_nm(
-            traj, frame_idx, ligand_indices, receptor_indices
-        )
-
+    for distances_nm in ligand_receptor_distances_nm(traj, ligand_indices, receptor_indices):
         energy = 0.0
 
         for lig_position, lig_idx in enumerate(ligand_indices):
@@ -217,9 +214,9 @@ def calculate_component_energies(
 ) -> dict[str, np.ndarray]:
     """Calculate separated electrostatic and vdW interaction energies.
 
-    Same pair sum, force-field parameters, minimum-image separations for a trajectory
-    with a unit cell, and vacuum (not PME) caveat as ``calculate_interaction_energy``,
-    with the Coulomb and Lennard-Jones terms returned separately.
+    Same pair sum, force-field parameters, imaging of a trajectory with a unit cell and
+    vacuum (not PME) caveat as ``calculate_interaction_energy``, with the Coulomb and
+    Lennard-Jones terms returned separately.
 
     Args:
         trajectory_path: Path to trajectory file
@@ -274,10 +271,7 @@ def calculate_component_energies(
     coulomb_energies = []
     lj_energies = []
 
-    for frame_idx in range(traj.n_frames):
-        distances_nm = ligand_receptor_distances_nm(
-            traj, frame_idx, ligand_indices, receptor_indices
-        )
+    for distances_nm in ligand_receptor_distances_nm(traj, ligand_indices, receptor_indices):
         e_coulomb_total = 0.0
         e_lj_total = 0.0
 

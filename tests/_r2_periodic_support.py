@@ -14,6 +14,8 @@ md = pytest.importorskip("mdtraj")
 CELLS = {
     "orthorhombic": ((6.0, 6.5, 7.0), (90.0, 90.0, 90.0)),
     "triclinic": ((6.0, 6.5, 7.0), (80.0, 70.0, 75.0)),
+    # Smaller than the dipeptide pair: some pairs are farther apart than half an edge.
+    "snug": ((2.2, 2.2, 2.2), (90.0, 90.0, 90.0)),
     # For the bundled protein complexes, which are about 4 nm across.
     "orthorhombic_large": ((12.0, 12.5, 13.0), (90.0, 90.0, 90.0)),
     "triclinic_large": ((12.0, 12.5, 13.0), (80.0, 70.0, 75.0)),

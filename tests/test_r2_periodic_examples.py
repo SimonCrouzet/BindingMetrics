@@ -160,6 +160,61 @@ def test_energy_without_a_cell_is_the_independent_pair_sum(tmp_path, prepped_exa
     assert total[0] == pytest.approx(both, rel=1e-5)
 
 
+@pytest.fixture(scope="module")
+def cell_less_1ycr(tmp_path_factory, prepped_example_pdb):
+    """Prepared 1YCR as a cell-less one-frame DCD: topology, selections and its pair energies."""
+    pytest.importorskip("openmm")
+    from binding_metrics.metrics.energy import calculate_component_energies
+
+    reference = md.load(str(prepped_example_pdb))
+    chains = chain_atom_indices(reference.topology)
+    ligand, receptor = chains[1], chains[0]
+    dcd = tmp_path_factory.mktemp("r2_plain") / "plain.dcd"
+    md.Trajectory(reference.xyz, reference.topology).save_dcd(str(dcd))
+    energies = calculate_component_energies(dcd, prepped_example_pdb, ligand, receptor)
+    return reference, ligand, receptor, energies
+
+
+def test_energy_with_the_crystal_cell_of_1ycr_is_the_energy_without_a_cell(
+    tmp_path, prepped_example_pdb, cell_less_1ycr
+):
+    from binding_metrics.metrics.energy import calculate_component_energies
+
+    reference, ligand, receptor, plain = cell_less_1ycr
+    assert reference.unitcell_lengths is not None
+    dcd = tmp_path / "cell.dcd"
+    reference.save_dcd(str(dcd))
+
+    periodic = calculate_component_energies(dcd, prepped_example_pdb, ligand, receptor)
+
+    for key in ("electrostatic", "vdw", "total"):
+        assert periodic[key] == pytest.approx(plain[key], rel=1e-5), key
+
+
+def test_energy_in_a_box_padded_by_1_nm_is_the_whole_complex_energy(
+    tmp_path, prepped_example_pdb, cell_less_1ycr
+):
+    from binding_metrics.metrics.energy import calculate_component_energies
+
+    reference, ligand, receptor, plain = cell_less_1ycr
+    xyz = reference.xyz[0].astype(float)
+    edge_nm = (xyz.max(axis=0) - xyz.min(axis=0)).max() + 2.0
+    xyz = xyz - xyz.mean(axis=0) + edge_nm / 2
+    cube = md.Trajectory(
+        xyz[None].astype(np.float32),
+        reference.topology,
+        unitcell_lengths=np.full((1, 3), edge_nm),
+        unitcell_angles=np.full((1, 3), 90.0),
+    )
+    dcd = tmp_path / "cube.dcd"
+    cube.save_dcd(str(dcd))
+
+    periodic = calculate_component_energies(dcd, prepped_example_pdb, ligand, receptor)
+
+    for key in ("electrostatic", "vdw", "total"):
+        assert periodic[key] == pytest.approx(plain[key], rel=1e-5), key
+
+
 @pytest.mark.parametrize("cell", LARGE_CELL_NAMES)
 def test_energy_of_1ycr_does_not_depend_on_the_image_of_the_ligand(
     tmp_path, prepped_example_pdb, cell

@@ -2,20 +2,17 @@
 
 A trajectory that stores a unit cell is periodic. The MD engine keeps each molecule whole but
 may write the receptor and the binder in different images of the box, so a raw coordinate
-difference between them depends on the image. Two conventions cover the metrics:
+difference between them depends on the image. The pair energies, the SASA and the
+receptor-frame RMSD use one image of the complex: molecules are made whole and the ligand is
+placed in the image next to the receptor (``image_complex``), then plain distances and areas
+are taken. A pair farther apart than half a cell edge keeps its distance in the complex.
 
-* Pair separations, used by the pair energies, take the minimum image of each pair, for
-  orthorhombic and triclinic cells (``ligand_receptor_distances_nm``).
-* The SASA and the receptor-frame RMSD use one image of the complex: molecules are made whole
-  and the ligand is placed in the image next to the receptor (``image_complex``).
-
-A trajectory without unit-cell information is used as stored, with the same arithmetic as before
-this module existed. A crystallographic cell (``CRYST1``) counts as a unit cell.
+A trajectory without unit-cell information is used as stored. A crystallographic cell
+(``CRYST1``) counts as a unit cell.
 
 References:
-    Tuckerman, Statistical Mechanics: Theory and Molecular Simulation (Oxford, 2010), scheme
-        B.9: minimum image convention for triclinic cells, as implemented in mdtraj.
-    McGibbon et al., Biophys. J. 109, 1528 (2015): mdtraj.
+    McGibbon et al., Biophys. J. 109, 1528 (2015): mdtraj, whose ``image_molecules`` does the
+        imaging.
 """
 
 from __future__ import annotations
@@ -29,35 +26,28 @@ def has_unit_cell(traj) -> bool:
     return lengths is not None and bool(np.all(np.asarray(lengths) > 0))
 
 
-def ligand_receptor_distances_nm(
-    traj, frame_index: int, ligand_indices, receptor_indices
-) -> np.ndarray:
-    """Distances in nm between every ligand atom and every receptor atom of one frame.
+def ligand_receptor_distances_nm(traj, ligand_indices, receptor_indices):
+    """Yield, per frame, the distances in nm between every ligand atom and every receptor atom.
 
-    With a unit cell each distance is the minimum-image distance of the cell of that frame
-    (mdtraj's ``compute_distances(periodic=True)``). Without one it is the norm of the stored
-    coordinate difference.
+    With a unit cell, the complex is imaged first (``image_complex``) and the distances are
+    plain norms in that image; without one they are the norms of the stored coordinates.
 
     Args:
         traj: ``mdtraj.Trajectory``.
-        frame_index: Frame to measure.
         ligand_indices: Atom indices of the ligand.
         receptor_indices: Atom indices of the receptor.
 
-    Returns:
+    Yields:
         Float32 array of shape (n_ligand, n_receptor); element [i, j] pairs
         ``ligand_indices[i]`` with ``receptor_indices[j]``.
     """
     ligand = np.asarray(ligand_indices, dtype=np.int64)
     receptor = np.asarray(receptor_indices, dtype=np.int64)
-    if has_unit_cell(traj):
-        import mdtraj as md
-
-        pairs = np.stack(np.meshgrid(ligand, receptor, indexing="ij"), axis=-1).reshape(-1, 2)
-        distances = md.compute_distances(traj[frame_index], pairs, periodic=True)[0]
-        return distances.reshape(len(ligand), len(receptor))
-    xyz = traj.xyz[frame_index]
-    return np.linalg.norm(xyz[ligand][:, None, :] - xyz[receptor][None, :, :], axis=-1)
+    if len(ligand) and len(receptor) and has_unit_cell(traj):
+        traj, ligand, receptor = image_complex(traj, ligand, receptor)
+    for frame_index in range(traj.n_frames):
+        xyz = traj.xyz[frame_index]
+        yield np.linalg.norm(xyz[ligand][:, None, :] - xyz[receptor][None, :, :], axis=-1)
 
 
 def image_complex(traj, ligand_indices, receptor_indices):
