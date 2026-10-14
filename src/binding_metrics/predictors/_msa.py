@@ -1,10 +1,9 @@
 """The MSA policy of a prediction request: a receptor MSA that is given, and no MSA server.
 
 Every runner sends the sequences to a public MSA server unless it is told not to
-(``use_msa_server=True`` is the default of all four). A caller who cannot let a sequence leave the
-machine needs two things: a way to say so that no setting can undo, and a way to give the
-receptor's alignment instead. This module holds the pieces the runners share, so that they do not
-each decide what the policy means:
+(``use_msa_server=True`` is the default of all four). The policy ``forbid-server`` keeps the
+sequences on the machine, and the receptor's alignment is given as a file. This module holds the
+pieces the runners share:
 
 * ``check_msa_request`` applies the rules to the arguments of a runner's ``make_request`` and
   returns the pieces to add to the request. A runner calls it in ``make_request`` and passes on
@@ -19,13 +18,13 @@ The rules under ``msa_policy="forbid-server"``:
 1. ``use_msa_server`` must be false: the sequences would be sent to the server otherwise.
 2. The receptor needs an MSA source. ``receptor_msa`` is a path to the receptor's alignment, or
    the word ``"single"`` for a receptor that is to be predicted from its own sequence. None is
-   refused: a receptor without a source would be searched on the server by some models, and
-   silently left without an alignment by others.
+   refused: some models would search the server for a receptor without a source, and others
+   would run it without an alignment.
 3. The runner must be able to take what was asked: a runner that cannot take an alignment file
    (ColabFold) accepts ``"single"`` only.
 
-The peptide is single-sequence under the policy: no alignment is offered for the binder (an
-alignment of 4 to 12 residues is of no use), and every runner is told so in its own way.
+The binder (a short peptide) is single-sequence under the policy: no alignment is offered for
+it, and every runner is told so in its own way.
 
 What goes into the key of the request, so that a request without these fields keeps the key it
 had: ``options["msa_policy"]`` only when the policy is not ``"default"``,
