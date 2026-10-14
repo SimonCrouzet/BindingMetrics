@@ -355,7 +355,8 @@ class RelaxationResult:
             "checks"}`` from ``protocols.qc.check_relaxed_structure``), with the
             same schema under ``"md_final"`` when MD ran. Advisory.
         qc_passed: True when every QC check passed, False when one failed, None
-            when QC did not run
+            when QC did not run. The warnings of the QC (``qc["warnings"]``, for example
+            ``chain_break_closed``) never change it.
         ncaa_bond_order_source: Where the bond orders of each auto-parameterised
             non-canonical residue came from, ``{residue name: "ccd" or
             "single_bonds"}``. ``"single_bonds"`` marks a residue that is not in
@@ -419,6 +420,16 @@ class RelaxationResult:
         failed += [f"md_final:{name}" for name in (self.qc.get("md_final") or {}).get("failed", [])]
         return failed
 
+    def _qc_warning_keys(self) -> list:
+        """Keys of the QC warnings, ``md_final:`` prefixed for the MD frame."""
+        if not self.qc:
+            return []
+        keys = [w["key"] for w in self.qc.get("warnings", [])]
+        keys += [
+            f"md_final:{w['key']}" for w in (self.qc.get("md_final") or {}).get("warnings", [])
+        ]
+        return keys
+
     def _qc_check_rows(self) -> list:
         """One row per QC check (a list, so the CSV flattening leaves it out).
 
@@ -463,6 +474,7 @@ class RelaxationResult:
             "platform_fallback_reason": self.platform_fallback_reason,
             "qc_passed": self.qc_passed,
             "qc_failed_checks": ",".join(self._qc_failed_checks()),
+            "qc_warnings": ",".join(self._qc_warning_keys()),
             "qc_checks": self._qc_check_rows(),
             "ncaa_bond_order_source": dict(self.ncaa_bond_order_source),
             "dropped_protein_chains": list(self.dropped_protein_chains),
@@ -1261,7 +1273,13 @@ class ImplicitRelaxation(Relaxer):
         from binding_metrics.protocols.qc import AtomSnapshot, check_relaxed_structure
 
         if reference is None:
-            return {"passed": None, "failed": [], "checks": {}, "reason": "no reference snapshot"}
+            return {
+                "passed": None,
+                "failed": [],
+                "checks": {},
+                "warnings": [],
+                "reason": "no reference snapshot",
+            }
         try:
             return check_relaxed_structure(
                 reference, AtomSnapshot.from_topology(topology, positions), **kwargs
@@ -1272,6 +1290,7 @@ class ImplicitRelaxation(Relaxer):
                 "passed": None,
                 "failed": [],
                 "checks": {},
+                "warnings": [],
                 "reason": f"{type(exc).__name__}: {exc}",
             }
 

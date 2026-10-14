@@ -45,7 +45,20 @@ Return schema of every ``check_*`` function::
 
 and of :func:`check_relaxed_structure`::
 
-    {"passed": bool, "failed": [check names], "checks": {name: check dict}}
+    {
+        "passed": bool,
+        "failed": [check names],
+        "checks": {name: check dict},
+        "warnings": [{"key": str, "value": int, "limit": str, "detail": str}],
+    }
+
+A warning is a finding that none of the seven checks can make and that the result may still
+deserve a look. It is advisory like the checks, and it never changes ``passed``. Two keys
+exist (:func:`chain_break_warnings`): ``chain_break_closed``, a break of the input that the
+result has bonded, and ``ca_ca_distance``, two bonded consecutive residues whose C-alphas
+are not 2.5 to 4.2 A apart. A minimisation that closes a gap leaves an ordinary geometry
+(three missing residues: the C-alpha pair goes from 5.7 to 3.9 A, and a 20 A gap ends at
+3.9 A as well), which is why the first one compares the result with the input.
 
 Measured values on the bundled examples (short minimizations on CUDA)::
 
@@ -120,6 +133,21 @@ BOND_LENGTH_MAX_ANGSTROM = 2.5
 #: mixed-precision noise can tip, so a sign change counts as an inversion only
 #: when both volumes exceed this magnitude.
 CHIRALITY_MIN_VOLUME_ANGSTROM3 = 0.5
+
+#: Two consecutive residues of a chain are a chain break when the C of the first and the N of
+#: the second are farther apart than this: the limit of ``core.system.find_chain_breaks`` (2.0 A,
+#: against 1.33 A for an amide bond), repeated here because that module needs OpenMM.
+CHAIN_BREAK_MIN_C_N_ANGSTROM = 2.0
+#: C-alpha to C-alpha distance of two bonded consecutive residues: 3.8 A across a trans peptide
+#: bond and 2.9 A across a cis one (the Ile-Pro bond of 3P8F: 2.85 A). The window keeps about
+#: 0.35 A on the cis side and 0.25 A beyond the longest of the bundled examples (3.96 A, a
+#: stapled residue of 3V3B).
+CA_CA_MIN_ANGSTROM = 2.5
+CA_CA_MAX_ANGSTROM = 4.2
+
+#: Keys of the warnings of :func:`chain_break_warnings`.
+WARNING_CHAIN_BREAK_CLOSED = "chain_break_closed"
+WARNING_CA_CA_DISTANCE = "ca_ca_distance"
 
 #: Residue names excluded from the heavy-atom checks.
 WATER_NAMES = WATER_NAMES_WITH_H2O
@@ -707,6 +735,100 @@ def check_composition(before: Structure, after: Structure) -> dict:
     return _result(passed, n_a - n_b, limit, detail)
 
 
+# --- Warnings ---------------------------------------------------------------
+
+
+def _backbone_pairs(snapshot: AtomSnapshot) -> list:
+    """Consecutive residues of one chain as ``((key, rows), (key, rows))`` pairs.
+
+    ``rows`` maps ``"N"``, ``"CA"`` and ``"C"`` to the row of that heavy atom. A residue
+    without all three (a cap, a water, a ligand) is skipped, and the pair is made of the
+    residues on either side of it. Two residues of different chains never pair.
+    """
+    residues: dict = {}
+    for i in np.nonzero(snapshot.heavy_mask)[0]:
+        name = snapshot.atom_names[i]
+        if name in ("N", "CA", "C"):
+            residues.setdefault(snapshot.residue_keys[i], {})[name] = int(i)
+    complete = [(key, rows) for key, rows in residues.items() if len(rows) == 3]
+    return [(a, b) for a, b in zip(complete[:-1], complete[1:]) if a[0][0] == b[0][0]]
+
+
+def _distance(snapshot: AtomSnapshot, row_a: int, row_b: int) -> float:
+    return float(np.linalg.norm(snapshot.coords[row_a] - snapshot.coords[row_b]))
+
+
+def chain_break_warnings(before: AtomSnapshot, after: AtomSnapshot) -> list:
+    """Warnings about chain breaks and the C-alpha spacing of bonded residues.
+
+    ``chain_break_closed``: C of one residue and N of the next are more than
+    :data:`CHAIN_BREAK_MIN_C_N_ANGSTROM` apart in ``before`` (a chain break of the input)
+    and inside the covalent window of ``BOND_PERCEIVE_*_ANGSTROM`` in ``after``. The
+    relaxer bonded by name the two sides of a gap and the minimisation pulled them
+    together; the geometry that results is an ordinary one, so no other check sees it. A
+    break that stays open is the expected outcome and gives no warning.
+
+    ``ca_ca_distance``: two consecutive residues are bonded in ``after`` (C and N inside
+    the break limit) and the distance of their C-alpha atoms is outside
+    ``[CA_CA_MIN_ANGSTROM, CA_CA_MAX_ANGSTROM]``. A pair across a break is not judged, and
+    neither is a pair whose coordinates are not finite.
+
+    Returns:
+        A list of ``{"key", "value", "limit", "detail"}`` dicts, ``value`` being the number
+        of pairs; empty when nothing was found.
+    """
+    index_after = _heavy_atom_index(after)
+    closed = []
+    for (key_a, rows_a), (key_b, rows_b) in _backbone_pairs(before):
+        c_n_before = _distance(before, rows_a["C"], rows_b["N"])
+        row_c, row_n = index_after.get((key_a, "C")), index_after.get((key_b, "N"))
+        if not c_n_before > CHAIN_BREAK_MIN_C_N_ANGSTROM or row_c is None or row_n is None:
+            continue
+        c_n_after = _distance(after, row_c, row_n)
+        if BOND_PERCEIVE_MIN_ANGSTROM <= c_n_after <= BOND_PERCEIVE_MAX_ANGSTROM:
+            closed.append((c_n_before, c_n_after, key_a, key_b))
+
+    strained = []
+    for (key_a, rows_a), (key_b, rows_b) in _backbone_pairs(after):
+        if not _distance(after, rows_a["C"], rows_b["N"]) <= CHAIN_BREAK_MIN_C_N_ANGSTROM:
+            continue  # a break, or coordinates that cannot be judged
+        ca_ca = _distance(after, rows_a["CA"], rows_b["CA"])
+        if math.isfinite(ca_ca) and not CA_CA_MIN_ANGSTROM <= ca_ca <= CA_CA_MAX_ANGSTROM:
+            strained.append((ca_ca, key_a, key_b))
+
+    warnings = []
+    if closed:
+        c_n_before, c_n_after, key_a, key_b = max(closed)
+        warnings.append(
+            {
+                "key": WARNING_CHAIN_BREAK_CLOSED,
+                "value": len(closed),
+                "limit": f"a pair more than {CHAIN_BREAK_MIN_C_N_ANGSTROM:g} A apart (C to N) "
+                "in the input stays unbonded",
+                "detail": f"{len(closed)} chain break(s) of the input are bonded in the result, "
+                f"e.g. {_format_residue(key_a)} and {_format_residue(key_b)}: C-N "
+                f"{c_n_before:.2f} -> {c_n_after:.2f} A",
+            }
+        )
+    if strained:
+        ca_ca, key_a, key_b = max(
+            strained,
+            key=lambda item: max(CA_CA_MIN_ANGSTROM - item[0], item[0] - CA_CA_MAX_ANGSTROM),
+        )
+        warnings.append(
+            {
+                "key": WARNING_CA_CA_DISTANCE,
+                "value": len(strained),
+                "limit": f"C-alpha distance of bonded consecutive residues within "
+                f"[{CA_CA_MIN_ANGSTROM:g}, {CA_CA_MAX_ANGSTROM:g}] A",
+                "detail": f"{len(strained)} bonded pair(s) of consecutive residues outside the "
+                f"window, e.g. {_format_residue(key_a)} and {_format_residue(key_b)}: "
+                f"C-alpha distance {ca_ca:.2f} A",
+            }
+        )
+    return warnings
+
+
 # --- Entry point ------------------------------------------------------------
 
 
@@ -732,10 +854,11 @@ def check_relaxed_structure(
             away from its start.
 
     Returns:
-        ``{"passed": bool, "failed": [names], "checks": {name: check dict}}``.
-        ``passed`` is False if any evaluated check found a problem. See the
-        module docstring for the check schema. The result is advisory:
-        callers decide what to do with it.
+        ``{"passed": bool, "failed": [names], "checks": {name: check dict},
+        "warnings": [warning dict]}``. ``passed`` is False if any evaluated check found a
+        problem; the warnings (see :func:`chain_break_warnings`) never change it. See the
+        module docstring for the schemas. The result is advisory: callers decide what to
+        do with it.
     """
     snap_before, snap_after = _as_snapshot(before), _as_snapshot(after)
     checks = {"energy": check_energy(energy_kj_mol, energy_before_kj_mol)}
@@ -749,4 +872,7 @@ def check_relaxed_structure(
     failed = [name for name, check in checks.items() if not check["passed"]]
     for name in failed:
         logger.warning("structural QC: %s failed: %s", name, checks[name]["detail"])
-    return {"passed": not failed, "failed": failed, "checks": checks}
+    warnings = chain_break_warnings(snap_before, snap_after)
+    for warning in warnings:
+        logger.warning("structural QC: warning %s: %s", warning["key"], warning["detail"])
+    return {"passed": not failed, "failed": failed, "checks": checks, "warnings": warnings}
