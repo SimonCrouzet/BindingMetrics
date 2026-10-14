@@ -1,6 +1,6 @@
 # Poses
 
-A pose is one structure of a complex, classified by where it came from. A metric measures a structure, and the origin decides what else is known about it: a co-folding model reports confidences, a docking program reports its own scores, a deposition reports a resolution. The three kinds share one interface, so code that needs a structure and a name for it takes any of them. The poses of one construct, from several models, seeds or programs, are scored together by `score_pose_set`, which [`pose_sets.md`](pose_sets.md) describes.
+A pose is one structure of a complex, classified by its origin: a co-folding model reports confidences, a docking program its own scores, a deposition a resolution. The three kinds share one interface. The poses of one construct, from several models, seeds or programs, are scored together by `score_pose_set` ([`pose_sets.md`](pose_sets.md)).
 
 ```
 Pose                    abstract base class           binding_metrics.poses
@@ -18,7 +18,7 @@ Pose                    abstract base class           binding_metrics.poses
 | `kind` | Class attribute: `"predicted"`, `"docked"` or `"experimental"`. |
 | `id` | A stable string. The id the caller gave wins. Otherwise a predicted pose is `<model>:<name>:s<seed_index>:<sample>` (`of3:1ycr:s1:2`), and a docked or experimental pose is the file stem (the PDB ID, else `"docked"` or `"experimental"`, for a structure in memory) and the first 8 hex digits of `content_hash()`: `decoy_01-3f9a1c2e`. The default of a docked or experimental pose reads the file for its hash. |
 | `structure_path` | The structure file, or None for a structure in memory. |
-| `atoms()` | The structure as a biotite `AtomArray` with the chain IDs of `chain_map` applied; model 1 with author IDs, gzip-compressed files included, cached with the size and modification time of the file and read again when either changes (a pose is a view of the file as it is when read). Treat it as read-only. A structure in memory is returned as it is when `chain_map` is empty and as a renamed copy otherwise; the array that was given is never modified. |
+| `atoms()` | The structure as a biotite `AtomArray` with the chain IDs of `chain_map` applied; model 1 with author IDs, gzip-compressed files included, cached with the size and modification time of the file and read again when either changes. Treat it as read-only. A structure in memory is returned as it is when `chain_map` is empty and as a renamed copy otherwise; the array that was given is never modified. |
 | `chain_map` | Chain ID of the structure to the user's chain ID; empty means no renaming. A swap such as `{"A": "B", "B": "A"}` is applied at once. A map that names a chain the structure lacks, or that would merge two chains, raises `ValueError` when the structure is read. |
 | `provenance` | Free facts about the pose (a protocol, a run ID, the request `mode`): a dictionary of JSON scalars (`str`, `int`, `float`, `bool`, `None`; a NaN or infinite float is refused). |
 | `content_hash()` | SHA-256 of the bytes of the file for a path (a compressed file as stored), and of a canonical serialisation of the atoms for a structure in memory: chain ID, residue number, insertion code, residue name, atom name, element and the coordinates rounded to 0.001 Å as int64, in array order. The chain IDs are those of the source, before `chain_map`. A path and the same structure loaded into memory have different hashes. The hash of a path is cached with the size and modification time of the file and computed again when either changes. |
@@ -34,9 +34,9 @@ Pose                    abstract base class           binding_metrics.poses
 
 `DockedPose` and `ExperimentalPose` are frozen and, like `PredictedPose`, compare by identity (`content_hash()` tells whether two poses hold the same structure). The constructors copy the dictionaries they are given and check them: `TypeError` for a provenance value that is not a JSON scalar, a score that is neither a number nor None, or a `source` that is neither a path nor a single-model `AtomArray`; `ValueError` for an invalid `chain_map`, an infinite score (use None for a value that is missing) or a resolution that is not positive and finite. `from_file` raises `FileNotFoundError` for a path that is not a file; the file is read when `atoms()`, `content_hash()` or a default `id` asks.
 
-## Computed metrics are not stored on a pose
+## Computed metrics
 
-A pose holds what came with the structure and what the producing tool reported. A metric computed from it (buried area, an RMSD, an interface PAE) is a function of the pose, and its value lives in the result dictionary of that function. The same pose can then be measured again with other settings, and a computed value is never mistaken for one that the tool reported. In a pose-set result the two sit side by side in the row of a pose, the reported values under `native` and each computed block under the name of its metric ([`pose_sets.md`](pose_sets.md#the-result)).
+A pose holds what came with the structure and what the producing tool reported. A metric computed from it (buried area, an RMSD, an interface PAE) is a function of the pose, and its value lives in the result dictionary of that function. In a pose-set result the row of a pose holds the reported values under `native` and each computed block under the name of its metric ([`pose_sets.md`](pose_sets.md#the-result)).
 
 ```python
 from binding_metrics.poses import DockedPose, ExperimentalPose
