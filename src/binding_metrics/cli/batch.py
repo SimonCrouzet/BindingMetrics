@@ -4,6 +4,11 @@ Scans --input-dir for .cif / .pdb / .mmcif files, runs the full pipeline on each
 (optionally in parallel), and aggregates all results into a single CSV. Per-sample JSON reports
 and intermediate files are written to sub-directories inside --output-dir.
 
+The file stem is the sample ID: it names the sample's directory, report and log. Two inputs with
+the same stem (``a/sample.pdb`` and ``b/sample.pdb`` found by ``--glob``, or ``sample.pdb`` and
+``sample.cif``) end the run with a usage error (exit code 2) that lists every shared ID with its
+paths, before any directory is created or any sample runs.
+
 Usage:
     binding-metrics-batch \\
         --input-dir 04_analysis_inputs/refold_cif/ \\
@@ -184,6 +189,28 @@ def _build_reference_map(reference_dir: Path) -> dict[str, Path]:
         if p.is_file() and p.suffix.lower() in _STRUCTURE_SUFFIXES:
             refs.setdefault(p.stem, p)
     return refs
+
+
+def _check_unique_sample_ids(input_paths: Sequence[Path]) -> None:
+    """Raise ``ValueError`` when two inputs have the same sample ID, the file stem.
+
+    The ID names the output directory, the report, the log and the key of the prediction
+    store and of the prediction directory, so a shared stem (``a/sample.pdb`` and
+    ``b/sample.pdb``, or ``sample.pdb`` and ``sample.cif``) makes two samples write the same
+    files. The message lists every shared ID with all the paths that carry it.
+    """
+    paths_by_id: dict[str, list[Path]] = {}
+    for path in input_paths:
+        paths_by_id.setdefault(path.stem, []).append(path)
+    shared = {sid: paths for sid, paths in paths_by_id.items() if len(paths) > 1}
+    if not shared:
+        return
+    lines = ["Sample IDs (the file stems) must be unique; these belong to several inputs:"]
+    for sid, paths in shared.items():
+        lines.append(f"  {sid}")
+        lines.extend(f"    {path}" for path in paths)
+    lines.append("Rename the files that share a stem or run them as separate batches.")
+    raise ValueError("\n".join(lines))
 
 
 def _provenance_columns(provenance: dict) -> dict:
@@ -1028,7 +1055,8 @@ def run_batch(
 
     Args:
         paths: Structure files (CIF or PDB). The sample ID of each is its file
-            stem, so two paths with the same stem would share a directory.
+            stem, which must be unique in the batch: two paths with the same stem raise
+            ``ValueError`` before anything is created or run.
         output_dir: Directory for the per-sample sub-directories; created when missing.
         metrics: Names from ``KNOWN_METRICS``. ``openfold`` runs once for all
             samples after the others, as in the CLI, so the ``openfold_*`` columns
@@ -1152,7 +1180,8 @@ def run_batch(
         ... )
 
     Raises:
-        ValueError: ``n_workers`` below 1, an unknown ``on_error``, an unknown
+        ValueError: two paths with the same file stem (the message lists each shared ID with its
+            paths), ``n_workers`` below 1, an unknown ``on_error``, an unknown
             metric name, an ``on_unmappable_residue`` other than ``"error"`` or ``"x"``, a
             ``predictor`` that is not registered or has no runner and no ``prediction_dir``, or
             a chain given through both spellings with different IDs, or an ``openfold_cyclic``
@@ -1217,6 +1246,7 @@ def run_batch(
     design_origin(designed_with)  # TypeError for a value that is no source
 
     input_paths = [Path(p) for p in paths]
+    _check_unique_sample_ids(input_paths)
     output_dir = Path(output_dir)
     references = references or {}
     if references:
@@ -1681,9 +1711,6 @@ def main():
         sys.exit(1)
 
     output_dir: Path = args.output_dir or args.output_csv.parent
-    if not args.preflight_only:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ Collect inputs
     if args.glob:
@@ -1698,6 +1725,15 @@ def main():
     if not input_files:
         print(f"ERROR: no structure files found in {args.input_dir}", file=sys.stderr)
         sys.exit(1)
+    try:
+        _check_unique_sample_ids(input_files)
+    except ValueError as error:
+        parser.error(str(error))
+
+    # Directories are created only after the input list has passed the checks above.
+    if not args.preflight_only:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'#' * 60}")
     print("  binding-metrics-batch")
