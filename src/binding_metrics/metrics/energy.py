@@ -611,17 +611,15 @@ def _get_platform(device: str = DEFAULT_DEVICE):
     Returns:
         (platform, properties). CUDA uses "mixed" precision, which is not
         bit-for-bit reproducible between runs. Falls back to CPU when device is
-        not "cuda" or the CUDA platform is unavailable.
+        not "cuda" or no context can be created on the CUDA platform (the plugin
+        is not loaded, or it has no device or a mismatched driver).
     """
     import openmm
 
-    if device == "cuda":
-        try:
-            platform = openmm.Platform.getPlatformByName("CUDA")
-            return platform, {"CudaPrecision": "mixed"}
-        except openmm.OpenMMException:
-            # CUDA plugin not loaded: fall through to the CPU platform.
-            pass
+    from binding_metrics.core._platform import usable_platform
+
+    if device == "cuda" and usable_platform("CUDA"):
+        return openmm.Platform.getPlatformByName("CUDA"), {"CudaPrecision": "mixed"}
     return openmm.Platform.getPlatformByName("CPU"), {}
 
 

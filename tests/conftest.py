@@ -32,10 +32,13 @@ try:
     # the import is done with the warning ignored and the suite can run with warnings as errors.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
-        import openmm as _openmm
+        import openmm as _openmm  # noqa: F401 - imported here, under the filter above
 
-    _openmm.Platform.getPlatformByName("CUDA")
-    HAS_CUDA = True
+    from binding_metrics.core._platform import usable_platform
+
+    # A CUDA device is usable when a context can be created on the platform: the plugin
+    # registers the platform on a machine without a visible device too.
+    HAS_CUDA = usable_platform("CUDA")
 except Exception:  # noqa: BLE001 - probe: whatever the failure, there is no usable CUDA here
     HAS_CUDA = False
 

@@ -935,6 +935,7 @@ def _receptor_energy(
     """
     try:
         openmm, unit, ForceField, Modeller, PDBFile, Simulation = _import_openmm()
+        from binding_metrics.core._platform import usable_platform
         from binding_metrics.core.system import (
             add_terminal_oxygens,
             create_system_respecting_chain_breaks,
@@ -1011,12 +1012,9 @@ def _receptor_energy(
 
         platform = openmm.Platform.getPlatformByName("CPU")
         props = {}
-        if device == "cuda":
-            try:
-                platform = openmm.Platform.getPlatformByName("CUDA")
-                props = {"CudaPrecision": "mixed"}
-            except openmm.OpenMMException:
-                pass  # no CUDA platform registered: evaluate on the CPU platform
+        if device == "cuda" and usable_platform("CUDA"):
+            platform = openmm.Platform.getPlatformByName("CUDA")
+            props = {"CudaPrecision": "mixed"}
 
         integrator = openmm.VerletIntegrator(0.001 * unit.picoseconds)
         sim = Simulation(topology, system, integrator, platform, props)

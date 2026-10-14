@@ -17,6 +17,7 @@ from openmm.app import (
     StateDataReporter,
 )
 
+from binding_metrics.core._platform import select_platform
 from binding_metrics.core.forcefields import get_forcefield
 from binding_metrics.core.system import (
     DEFAULT_RANDOM_SEED,
@@ -141,15 +142,12 @@ class MDSimulation:
         self.simulation.context.setPositions(self.modeller.positions)
 
     def _get_platform(self) -> Platform:
-        """Get the compute platform based on configuration."""
-        if self.config.platform == "auto":
-            for name in ["CUDA", "OpenCL", "CPU"]:
-                try:
-                    return Platform.getPlatformByName(name)
-                except openmm.OpenMMException:  # platform not registered or not usable here
-                    continue
-            return Platform.getPlatformByName("Reference")
-        return Platform.getPlatformByName(self.config.platform)
+        """Get the compute platform based on configuration.
+
+        ``"auto"`` takes the first of CUDA, OpenCL, CPU and Reference on which a context can be
+        created. A named platform that cannot run raises an ``OpenMMException`` that names it.
+        """
+        return select_platform(self.config.platform)
 
     def minimize(self, max_iterations: int = 1000, tolerance: float = 10.0) -> None:
         """Perform energy minimization.
