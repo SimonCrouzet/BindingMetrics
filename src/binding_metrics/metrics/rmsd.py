@@ -14,6 +14,7 @@ from typing import Literal, Optional
 import numpy as np
 
 from binding_metrics.metrics._common import resolve_chain_role
+from binding_metrics.metrics._periodic import has_unit_cell, image_complex
 
 try:
     import mdtraj as md
@@ -163,6 +164,11 @@ def calculate_ligand_rmsd(
     RMSD (Mendez et al., 2003, Proteins 52, 51); it includes the rigid-body
     motion of the ligand relative to the receptor.
 
+    When the trajectory stores a unit cell (orthorhombic or triclinic), molecules are made
+    whole and the ligand is placed in the periodic image next to the receptor before the fit,
+    so a ligand written in another image does not add a lattice vector to its displacement;
+    without a cell the stored coordinates are used.
+
     Args:
         trajectory_path: Path to trajectory file
         topology_path: Path to topology file
@@ -182,6 +188,10 @@ def calculate_ligand_rmsd(
         )
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
+    if len(ligand_indices) and len(receptor_indices) and has_unit_cell(traj):
+        traj, ligand_indices, receptor_indices = image_complex(
+            traj, ligand_indices, receptor_indices
+        )
 
     traj.superpose(traj, frame=reference_frame, atom_indices=receptor_indices)
 
