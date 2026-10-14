@@ -245,7 +245,7 @@ class TestPeptideBindingProtocol:
 
         monkeypatch.setattr(peptide, "get_chain_atom_indices", lambda *a, **k: [0, 1])
         for name, values in (
-            ("calculate_buried_sasa", [100.0, 110.0]),
+            ("calculate_buried_sasa", [1.0, 1.1]),  # nm^2, the unit of the trajectory function
             ("calculate_contacts", [10.0, 12.0]),
             ("calculate_interaction_energy", [-50.0, -54.0]),
             ("calculate_rmsd", [0.1, 0.2]),
@@ -255,7 +255,7 @@ class TestPeptideBindingProtocol:
             pdb_path=sample_pdb_path, ligand_chain="B", receptor_chains=["A"]
         )
         results = protocol.analyze(trajectory_path=Path("ok.dcd"))
-        assert results.sasa_buried_mean == 105.0
+        assert results.sasa_buried_mean == pytest.approx(105.0)  # A^2: the protocol converts
         assert results.interaction_energy_mean == -52.0
 
     def test_multiple_receptor_chains(self, sample_pdb_path: Path):
