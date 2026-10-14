@@ -136,19 +136,17 @@ def _readd_custom_bonds(topology, custom_bonds: list):
 def _drop_duplicate_bonds(topology) -> tuple:
     """Return ``topology`` with every bond listed once, and the number of bonds dropped.
 
-    ``PDBFixer.addMissingAtoms`` builds the standard bonds of the rebuilt topology and
-    then adds again each bond of the old one that touches a residue the standard table
-    does not know, so the peptide bond on either side of a phosphoserine, an
-    N-methylated or any other non-standard residue comes out twice. OpenMM turns the
-    second copy into one more harmonic bond term, and the GAFF2 cap logic into a second
-    cap on the same carbon.
+    ``PDBFixer.addMissingAtoms`` lists twice each bond that touches a residue the
+    standard table does not know (the peptide bonds on either side of a
+    phosphoserine or an N-methylated residue). OpenMM turns the second copy into one
+    more harmonic bond term, and the GAFF2 cap logic into a second cap on the same
+    carbon.
 
     A bond is identified by its two atoms, in either order. The first listing is kept
-    with its type and order, and the others keep their relative order, so the result
-    does not depend on anything but the input. OpenMM has no call that removes a bond:
-    when there is a duplicate the topology is rebuilt through the public interface,
-    with the same chains, residues (numbers and insertion codes), atoms (indices and
-    IDs) and box. A topology without a duplicate is returned as it is.
+    with its type and order; the others keep their relative order. OpenMM has no call
+    that removes a bond, so a topology with a duplicate is rebuilt through the public
+    interface with the same chains, residues (numbers and insertion codes), atoms
+    (indices and IDs) and box. A topology without a duplicate is returned as it is.
     """
     seen: set = set()
     unique_bonds = []
@@ -353,15 +351,13 @@ def find_chain_breaks(topology, positions) -> list:
     """Find consecutive residues of one chain that are too far apart to be bonded.
 
     OpenMM bonds every residue to the next one in the chain by name
-    (``createStandardBonds``), whatever the distance, and a system built from such a
-    topology closes the gap by stretching the two ends together. A chain break
-    caused by an unresolved loop or a segment that a model placed elsewhere would thus
-    disappear from the result without a message. This lists them: residues i and
-    i+1 of a chain (amino acids or capping groups, waters and ligands in between
-    skipped) whose C(i) and N(i+1) atoms are more than
-    ``_PEPTIDE_BOND_MAX_ANGSTROM`` (2.0 A, against 1.33 A for an amide bond) apart.
-    A pair where either atom is missing or sits at the origin as a placeholder cannot
-    be judged and is not listed. :func:`create_system_respecting_chain_breaks` leaves
+    (``createStandardBonds``), whatever the distance, so a system built from such a
+    topology pulls the two ends of an unresolved loop together. This lists the breaks:
+    residues i and i+1 of a chain (amino acids or capping groups; waters and ligands
+    in between are skipped) whose C(i) and N(i+1) atoms are more than
+    ``_PEPTIDE_BOND_MAX_ANGSTROM`` (2.0 A; an amide bond is 1.33 A) apart. A pair
+    where either atom is missing or sits at the origin as a placeholder cannot be
+    judged and is not listed. :func:`create_system_respecting_chain_breaks` leaves
     such a pair unbonded.
 
     Returns:
@@ -437,21 +433,19 @@ def create_system_respecting_chain_breaks(
     """Build the ``System`` of ``topology`` without a bond across a chain break.
 
     OpenMM bonds each residue to the next one of its chain by name, whatever the
-    distance, so ``forcefield.createSystem(topology)`` closes the gap of an unresolved
-    loop: the minimisation pulls the two ends together (3.95 A to 1.34 A for three
-    residues missing from 1YCR) and the residues next to the gap can come out with an
+    distance, so ``forcefield.createSystem(topology)`` pulls the two ends of an
+    unresolved loop together, and the residues beside the gap can come out with an
     inverted C-alpha. For an input with a break (:func:`find_chain_breaks`) this builds
-    the system from a copy of the topology without the C-N bond across each break, and
-    matches the residues to their templates with ``ignoreExternalBonds=True``, which
-    the missing partner of the two ends needs; every residue keeps the template that it
-    has in the bonded topology (see :func:`_templates_of_bonded_topology`). Each end keeps
-    the template of an internal residue (amide N-H and C=O, the charges of an internal
-    residue): an approximation that reaches no further than the two residues beside the
-    gap. The two ends then interact as any two non-bonded atoms, with no exclusion.
+    the system from a copy of the topology without the C-N bond across each break, with
+    ``ignoreExternalBonds=True`` (the two ends lack their partner). Every residue keeps
+    the template it has in the bonded topology (see
+    :func:`_templates_of_bonded_topology`), so each end carries the template of an
+    internal residue (amide N-H and C=O, internal charges); the approximation reaches
+    only the two residues beside the gap. The two ends then interact as any two
+    non-bonded atoms, with no exclusion.
 
     An input without a break goes to ``createSystem`` unchanged, with the same
-    topology object, so OpenMM keeps checking the bonds of every residue and the
-    system is the one that ``createSystem`` gives.
+    topology object, so OpenMM keeps checking the bonds of every residue.
 
     Args:
         forcefield: OpenMM ``ForceField`` with every template the topology needs.
@@ -585,10 +579,9 @@ def _missing_from_records(chain, author_id: str, record) -> Optional[list]:
 def find_missing_residues(topology, positions) -> list:
     """List the residues a model is missing: unresolved loops and truncated chain ends.
 
-    Nothing is rebuilt. PDBFixer could do it from the sequence records of the input
-    file, but ``prep_structure`` hands it a topology rewritten as a CIF that has none,
-    and a rebuilt loop or tail would be invented coordinates that enter the interaction
-    energy, the shape complementarity and the surface areas. This only reports.
+    Nothing is rebuilt: invented coordinates for a loop or tail would enter the
+    interaction energy, the shape complementarity and the surface areas. This only
+    reports.
 
     Where ``io.structures.load_structure`` recorded the sequence of a chain (SEQRES of a
     PDB file, ``_entity_poly_seq`` of an mmCIF) the chain is compared with it: the
@@ -856,10 +849,10 @@ def _add_hydrogens_cyclic(
 
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
 
-    # Phosphorylated residues → AMBER phosaa params (net −2), not GAFF.
+    # Phosphorylated residues use the AMBER phosaa parameters (net -2), not GAFF.
     phosaa.register(ff)
 
-    # D-amino-acid / N-methyl rename first (e.g. DAL→ALA, SAR→NMG) so their
+    # D-amino-acid / N-methyl rename first (e.g. DAL->ALA, SAR->NMG) so their
     # standard/curated templates match; must precede patch_cyclic_topology.
     ns_info = _detect_nonstandard(topology, cyclic_chain)
     if not ns_info.is_empty:
@@ -970,13 +963,11 @@ def _hydrogen_placement_platform():
     """The Reference platform: double-precision, single-threaded, deterministic.
 
     ``addHydrogens`` runs a short energy minimization to settle the new
-    hydrogens. On a fast platform (CUDA/OpenCL) the reduction order is not
-    deterministic, so that minimization lands in a marginally different spot each
-    run — hydrogens on rotatable groups shift by up to ~0.25 Å, which is enough
-    to tip the downstream main minimization into a different basin and change the
-    reported energy by hundreds of kJ/mol. Running the tiny H minimization on the
-    Reference platform makes prep bit-reproducible regardless of installed
-    hardware; it is cheap (a few dozen steps on one small system).
+    hydrogens. On CUDA or OpenCL the reduction order is not deterministic, so the
+    minimization ends in a slightly different place on each run (hydrogens on
+    rotatable groups move). The Reference platform makes prep reproducible
+    whatever hardware is installed; the minimization is a few dozen steps on one
+    small system.
     """
     from openmm import Platform
 
@@ -989,17 +980,13 @@ def deterministic_hydrogen_placement(seed: Optional[int] = DEFAULT_RANDOM_SEED):
 
     ``Modeller.addHydrogens`` offsets every new hydrogen by
     ``0.05 nm * Vec3(random(), random(), random())`` drawn from Python's global
-    ``random`` module, which nobody seeds. Identical input therefore yields a
-    slightly different structure on every run, and hence a different minimum:
-    1YCR has been observed anywhere between about -14.0k and -14.6k kJ/mol
-    across runs. For a tool whose output is a QC *measurement*, that
-    irreproducibility is a defect in its own right.
+    ``random`` module, so identical input otherwise gives a slightly different
+    structure, and a different minimum, on every run.
 
-    Seeding fixes the placement so the same input gives the same answer. The
-    previous RNG state is restored on exit, so seeding here never perturbs
-    randomness elsewhere in the caller's process. Pass ``seed=None`` to leave
-    the global RNG untouched and get fresh randomness (opt-in via the configs'
-    ``random_seed``).
+    The seed is applied to that global RNG for the block and the previous state is
+    restored on exit, so randomness elsewhere in the caller's process is unaffected.
+    ``seed=None`` leaves the global RNG untouched (fresh randomness; opt-in via the
+    configs' ``random_seed``).
 
     The same block also seeds any other OpenMM ``Modeller`` step that draws from
     the global ``random`` module, notably the ion placement in
@@ -1023,23 +1010,19 @@ def repair_ca_hydrogen_chirality(topology, positions, verbose: bool = True):
     """Move Cα hydrogens that hydrogen addition placed on the wrong face.
 
     ``Modeller.addHydrogens`` seeds each new hydrogen at a 0.1 nm base vector
-    plus ``0.05 nm * Vec3(random(), random(), random())`` drawn from Python's
-    *unseeded* global ``random``, then relaxes the hydrogens with every heavy
-    atom frozen (``setParticleMass(i, 0)``). When the jitter pushes HA across
-    the N/CA/C plane, that frozen-heavy-atom relaxation cannot bring it back:
-    HA settles into the wrong-side minimum and prep emits a Cα whose HA and CB
-    share a face, which is chemically impossible.
+    plus ``0.05 nm * Vec3(random(), random(), random())`` from Python's global
+    ``random``, then relaxes the hydrogens with every heavy atom frozen
+    (``setParticleMass(i, 0)``). When the jitter pushes HA across the N/CA/C
+    plane, that relaxation cannot bring it back and the Cα ends with HA and CB on
+    the same face. A later minimization then inverts the stereocenter: the bad HA
+    carries most of the Cα angle strain, ``constraints=HBonds`` fixes the CA-HA
+    length, and ff14SB has no improper on Cα, so only CB can move through the plane.
 
-    Left alone, this silently inverts the stereocenter downstream: the bad HA
-    contributes almost all of the Cα's angle strain, ``constraints=HBonds``
-    fixes the CA-HA length so the minimizer cannot relieve it by moving HA, and
-    ff14SB has no improper on Cα — so the only path left is pushing CB through
-    the plane. Observed on roughly one prep in six of the 3P8F example.
-
-    For any tetrahedral Cα, CB and HA lie on opposite sides of the N/CA/C
-    plane. That holds for L- and D-amino acids alike, so this repair reads the
-    correct side off the actual CB position and is handedness-agnostic (safe for
-    D-residues). It is a no-op on correct structures.
+    For any tetrahedral Cα, CB and HA lie on opposite sides of the N/CA/C plane,
+    for L- and D-amino acids alike. The repair reads the correct side off the CB
+    position, so it does not depend on handedness. It is a no-op on correct
+    structures. HA is moved to the fourth tetrahedral vertex, ``_CA_HA_BOND_NM``
+    from Cα.
     """
     import numpy as np
     from openmm import Vec3, unit
@@ -1107,9 +1090,8 @@ def prep_structure(
               removed non-water heterogen (free ligands, additives, glycans). Here
               and in ``kept_nonstandard`` and ``chain_breaks``, X is the author chain
               ID of a topology read from an mmCIF (``load_structure`` records it; see
-              ``io.structures.author_chain_ids``), where OpenMM's own ID is the label
-              ID for a file with more label IDs than author IDs: the peptide of 1CWA
-              is chain C, not B.
+              ``io.structures.author_chain_ids``); OpenMM's own ID is the label ID
+              for a file with more label IDs than author IDs.
             * ``n_removed_waters`` (int): water molecules removed (0 when
               ``keep_water`` is True).
             * ``kept_nonstandard`` (list[str]): non-standard residues and metal
@@ -1138,10 +1120,10 @@ def prep_structure(
               Component Dictionary) or ``"single_bonds"`` (the residue is not in
               the dictionary or disagrees with it, so double bonds, aromatic
               rings and the hydrogen count are unreliable). Absent otherwise.
-            * ``ncaa_charge_scheme`` (dict[str, str]): for the same residues, how the
-              capped molecule of each template ended at its external bonds and the
-              version of the charge scheme, for example ``"ace-nme-caps-v2"``
-              (``gaff_ncaa.CHARGE_SCHEME_VERSION``). Absent otherwise.
+            * ``ncaa_charge_scheme`` (dict[str, str]): for the same residues,
+              ``"<cap kind>-v<version>"`` of each template, for example
+              ``"ace-nme-caps-v2"`` (``gaff_ncaa.CHARGE_SCHEME_VERSION``). Absent
+              otherwise.
 
             Behaviour is identical when ``report`` is None.
 
@@ -1219,10 +1201,8 @@ def prep_structure(
     #   • Everything else (free ligands, crystallographic additives, glycans
     #     in their own chain …)             → remove
     fixer.findMissingAtoms()
-    # Seeded: addMissingAtoms minimizes rebuilt atoms with a stochastic
-    # integrator, so an unseeded call makes prep irreproducible for any
-    # structure with missing side-chain atoms. addMissingAtoms(seed=None) leaves
-    # the integrator unseeded (fresh randomness), matching random_seed=None.
+    # addMissingAtoms minimizes rebuilt atoms with a stochastic integrator, so it is
+    # seeded; seed=None leaves it unseeded, matching random_seed=None.
     n_atoms_before_rebuild = fixer.topology.getNumAtoms()
     fixer.addMissingAtoms(seed=random_seed)
     n_atoms_rebuilt = fixer.topology.getNumAtoms() - n_atoms_before_rebuild
@@ -1323,10 +1303,9 @@ def prep_structure(
             chain.id = chain_id
 
     if custom_bonds:
-        # Use cyclic-aware H placement: patch_cyclic_topology (called inside)
-        # removes C-terminal OXT that PDBFixer added, adds the N-C closure bond,
-        # then uses cyclic FF templates for addHydrogens.  Do NOT restore bonds
-        # here — patch_cyclic_topology detects and adds the bond itself.
+        # Cyclic-aware H placement: patch_cyclic_topology (called inside) removes the
+        # C-terminal OXT that PDBFixer added and adds the N-C closure bond, then
+        # addHydrogens uses the cyclic templates. The bonds are not restored here.
         result_topo, result_pos = _add_hydrogens_cyclic(
             fixer.topology,
             fixer.positions,
@@ -1347,9 +1326,7 @@ def prep_structure(
         _restore_d_residue_names(_h_modeller.topology, d_residues)
         result_topo, result_pos = _h_modeller.topology, _h_modeller.positions
 
-    # addHydrogens jitters new H randomly and relaxes them with the heavy atoms
-    # frozen, which intermittently strands a Cα H on the wrong face; left in
-    # place it inverts the stereocenter during minimization.
+    # See repair_ca_hydrogen_chirality.
     result_pos = repair_ca_hydrogen_chirality(result_topo, result_pos)
 
     copy_author_chain_ids(topology, result_topo)
@@ -1469,14 +1446,15 @@ def get_system_info(modeller: Modeller) -> dict:
         modeller: Prepared Modeller object
 
     Returns:
-        Dictionary with system information
+        Dictionary with ``n_atoms``, ``n_residues``, ``n_chains``, ``n_waters``,
+        ``n_ions`` and ``box_size_nm`` (the diagonal of the box vectors in nm, or
+        None without a box).
     """
     topology = modeller.topology
     n_atoms = topology.getNumAtoms()
     n_residues = topology.getNumResidues()
     n_chains = topology.getNumChains()
 
-    # Count water molecules and ions
     n_waters = 0
     n_ions = 0
 
@@ -1486,7 +1464,6 @@ def get_system_info(modeller: Modeller) -> dict:
         elif residue.name in ION_NAMES_COMMON:
             n_ions += 1
 
-    # Get box vectors
     box_vectors = modeller.topology.getPeriodicBoxVectors()
     if box_vectors is not None:
         box_size = [v[i].value_in_unit(unit.nanometer) for i, v in enumerate(box_vectors)]
