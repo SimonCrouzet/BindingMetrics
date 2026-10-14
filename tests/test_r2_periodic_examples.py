@@ -15,6 +15,7 @@ from _r2_periodic_support import (
     chain_atom_indices,
     frames_with_images,
     lattice_offsets_nm,
+    pair_sum_reference_kj_mol,
     wrap_into_cell,
     write_trajectory,
 )
@@ -22,7 +23,6 @@ from conftest import DATA_DIR
 
 md = pytest.importorskip("mdtraj")
 
-from binding_metrics import _constants  # noqa: E402
 from binding_metrics.metrics.rmsd import calculate_ligand_rmsd  # noqa: E402
 from binding_metrics.metrics.sasa import calculate_buried_sasa  # noqa: E402
 
@@ -102,40 +102,6 @@ def test_sasa_with_the_crystal_cell_of_1ycr_is_the_area_without_a_cell(
     assert periodic == pytest.approx(plain, rel=SASA_RELATIVE_TOLERANCE)
 
 
-def pair_sum_reference_kj_mol(pdb_path, xyz_nm, ligand, receptor):
-    """Coulomb, Lennard-Jones and total of the ligand x receptor pair sum, in float64."""
-    import openmm
-    import openmm.unit as unit
-    from openmm.app import PDBFile
-
-    from binding_metrics.core.forcefields import get_forcefield
-
-    pdb = PDBFile(str(pdb_path))
-    system = get_forcefield("amber").createSystem(
-        pdb.topology, nonbondedMethod=openmm.app.NoCutoff, constraints=None
-    )
-    force = next(f for f in system.getForces() if isinstance(f, openmm.NonbondedForce))
-
-    def parameters(indices):
-        rows = [force.getParticleParameters(i) for i in indices]
-        return (
-            np.array([q.value_in_unit(unit.elementary_charge) for q, _, _ in rows]),
-            np.array([s.value_in_unit(unit.nanometer) for _, s, _ in rows]),
-            np.array([e.value_in_unit(unit.kilojoule_per_mole) for _, _, e in rows]),
-        )
-
-    q_l, s_l, e_l = parameters(ligand)
-    q_r, s_r, e_r = parameters(receptor)
-    delta = xyz_nm[ligand][:, None, :].astype(float) - xyz_nm[receptor][None, :, :].astype(float)
-    r = np.linalg.norm(delta, axis=-1)
-    coulomb = _constants.COULOMB_KJ_NM_MOL_E2 * q_l[:, None] * q_r[None, :] / r
-    sigma = (s_l[:, None] + s_r[None, :]) / 2
-    epsilon = np.sqrt(e_l[:, None] * e_r[None, :])
-    sr6 = (sigma / r) ** 6
-    lennard_jones = np.where((epsilon > 0) & (sigma > 0), 4 * epsilon * (sr6**2 - sr6), 0.0)
-    return coulomb.sum(), lennard_jones.sum(), (coulomb + lennard_jones).sum()
-
-
 def test_energy_without_a_cell_is_the_independent_pair_sum(tmp_path, prepped_example_pdb):
     pytest.importorskip("openmm")
     from binding_metrics.metrics.energy import (
@@ -148,16 +114,17 @@ def test_energy_without_a_cell_is_the_independent_pair_sum(tmp_path, prepped_exa
     ligand, receptor = chains[1], chains[0]
     dcd = tmp_path / "plain.dcd"
     md.Trajectory(reference.xyz, reference.topology).save_dcd(str(dcd))
+    stored_xyz = md.load(str(dcd), top=str(prepped_example_pdb)).xyz[0]
 
     components = calculate_component_energies(dcd, prepped_example_pdb, ligand, receptor)
     total = calculate_interaction_energy(dcd, prepped_example_pdb, ligand, receptor)
 
     coulomb, lennard_jones, both = pair_sum_reference_kj_mol(
-        prepped_example_pdb, np.float32(reference.xyz[0]), ligand, receptor
+        prepped_example_pdb, stored_xyz, ligand, receptor
     )
-    assert components["electrostatic"][0] == pytest.approx(coulomb, rel=1e-5)
-    assert components["vdw"][0] == pytest.approx(lennard_jones, rel=1e-5)
-    assert total[0] == pytest.approx(both, rel=1e-5)
+    assert components["electrostatic"][0] == pytest.approx(coulomb, rel=1e-9)
+    assert components["vdw"][0] == pytest.approx(lennard_jones, rel=1e-9)
+    assert total[0] == pytest.approx(both, rel=1e-9)
 
 
 @pytest.fixture(scope="module")

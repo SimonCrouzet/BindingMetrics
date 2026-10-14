@@ -19,6 +19,7 @@ from _r2_periodic_support import (
     carbon_pair_topology,
     frames_with_images,
     ion_topology,
+    pair_sum_reference_kj_mol,
     peptide_pair,
     rigid_bodies_topology,
     rigid_bodies_xyz,
@@ -38,6 +39,23 @@ COULOMB_K_KJ_NM_MOL_E2 = _constants.COULOMB_KJ_NM_MOL_E2
 @pytest.fixture
 def pair_path(tmp_path, sample_pdb_content):
     return write_dipeptide_pair(tmp_path / "pair.pdb", sample_pdb_content)
+
+
+@pytest.fixture
+def numpy2_promotion():
+    """Scalar promotion of NumPy 2: a Python float combined with a float32 scalar stays float32.
+
+    NumPy 1.x can switch to that rule; on NumPy 2 it is the rule already.
+    """
+    if not hasattr(np, "_set_promotion_state"):
+        yield
+        return
+    previous = np._get_promotion_state()
+    np._set_promotion_state("weak")
+    try:
+        yield
+    finally:
+        np._set_promotion_state(previous)
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +190,42 @@ class TestPairEnergy:
         for key in ("electrostatic", "vdw", "total"):
             assert periodic[key] == pytest.approx([plain[key][0]] * len(frames), rel=1e-4), key
 
+    def test_sums_of_a_float32_trajectory_are_the_float64_pair_sums(
+        self, tmp_path, pair_path, numpy2_promotion
+    ):
+        from binding_metrics.metrics.energy import (
+            calculate_component_energies,
+            calculate_interaction_energy,
+        )
+
+        topology, reference_xyz, ligand, receptor = peptide_pair(pair_path)
+        dcd, _ = write_trajectory(tmp_path, topology, [reference_xyz], None, pair_path)
+        stored_xyz = md.load(str(dcd), top=str(pair_path)).xyz[0]
+        assert stored_xyz.dtype == np.float32
+
+        components = calculate_component_energies(dcd, pair_path, ligand, receptor)
+        total = calculate_interaction_energy(dcd, pair_path, ligand, receptor)
+
+        coulomb, lennard_jones, both = pair_sum_reference_kj_mol(
+            pair_path, stored_xyz, ligand, receptor
+        )
+        assert components["electrostatic"].dtype == np.float64
+        assert total.dtype == np.float64
+        assert components["electrostatic"][0] == pytest.approx(coulomb, rel=1e-9)
+        assert components["vdw"][0] == pytest.approx(lennard_jones, rel=1e-9)
+        assert total[0] == pytest.approx(both, rel=1e-9)
+
+    @pytest.mark.parametrize("cell", CELL_NAMES)
+    def test_sums_in_a_cell_are_float64(self, tmp_path, pair_path, cell, numpy2_promotion):
+        from binding_metrics.metrics.energy import calculate_component_energies
+
+        topology, reference_xyz, ligand, receptor = peptide_pair(pair_path)
+        dcd, _ = write_trajectory(tmp_path, topology, [reference_xyz], cell, pair_path)
+
+        components = calculate_component_energies(dcd, pair_path, ligand, receptor)
+
+        assert {value.dtype for value in components.values()} == {np.dtype("float64")}
+
     def test_trajectory_without_a_cell_uses_the_stored_separations(self, tmp_path):
         from binding_metrics.metrics.energy import calculate_component_energies
 
@@ -244,16 +298,17 @@ class TestComplexDistances:
         for matrix in matrices:
             np.testing.assert_allclose(matrix, expected, atol=2e-5)
 
-    def test_distances_without_a_cell_are_the_plain_norm_of_the_stored_coordinates(self):
+    def test_distances_without_a_cell_are_the_float64_norm_of_the_stored_coordinates(self):
         from binding_metrics.metrics import _periodic
 
         traj = rigid_bodies_trajectory(None)
 
         (matrix,) = _periodic.ligand_receptor_distances_nm(traj, LIGAND, RECEPTOR)
 
-        xyz = traj.xyz[0]
+        xyz = traj.xyz[0].astype(np.float64)
         expected = np.array([[np.linalg.norm(xyz[i] - xyz[j]) for j in RECEPTOR] for i in LIGAND])
-        np.testing.assert_array_equal(matrix, expected)
+        assert matrix.dtype == np.float64
+        np.testing.assert_allclose(matrix, expected, rtol=1e-13)
 
     def test_distances_follow_the_order_of_the_index_lists(self):
         from binding_metrics.metrics import _periodic

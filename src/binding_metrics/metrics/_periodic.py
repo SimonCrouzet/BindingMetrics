@@ -38,15 +38,16 @@ def ligand_receptor_distances_nm(traj, ligand_indices, receptor_indices):
         receptor_indices: Atom indices of the receptor.
 
     Yields:
-        Float32 array of shape (n_ligand, n_receptor); element [i, j] pairs
-        ``ligand_indices[i]`` with ``receptor_indices[j]``.
+        Float64 array of shape (n_ligand, n_receptor); element [i, j] pairs
+        ``ligand_indices[i]`` with ``receptor_indices[j]``. The float32 coordinates are cast
+        before the differences, so the pair sums that use them are float64 on every NumPy.
     """
     ligand = np.asarray(ligand_indices, dtype=np.int64)
     receptor = np.asarray(receptor_indices, dtype=np.int64)
     if len(ligand) and len(receptor) and has_unit_cell(traj):
         traj, ligand, receptor = image_complex(traj, ligand, receptor)
     for frame_index in range(traj.n_frames):
-        xyz = traj.xyz[frame_index]
+        xyz = traj.xyz[frame_index].astype(np.float64)
         yield np.linalg.norm(xyz[ligand][:, None, :] - xyz[receptor][None, :, :], axis=-1)
 
 

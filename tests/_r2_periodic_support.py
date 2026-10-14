@@ -9,6 +9,8 @@ import pytest
 
 md = pytest.importorskip("mdtraj")
 
+from binding_metrics import _constants  # noqa: E402
+
 # Cell lengths (nm) and angles (degrees). Every length is at least twice the largest separation
 # of the system it is used with, in the triclinic cell too.
 CELLS = {
@@ -178,3 +180,37 @@ def trajectory_with_cell(topology, frames, cell: str):
         unitcell_lengths=np.tile(lengths, (len(frames), 1)),
         unitcell_angles=np.tile(angles, (len(frames), 1)),
     )
+
+
+def pair_sum_reference_kj_mol(pdb_path, xyz_nm, ligand, receptor):
+    """Coulomb, Lennard-Jones and total of the ligand x receptor pair sum, in float64."""
+    import openmm
+    import openmm.unit as unit
+    from openmm.app import PDBFile
+
+    from binding_metrics.core.forcefields import get_forcefield
+
+    pdb = PDBFile(str(pdb_path))
+    system = get_forcefield("amber").createSystem(
+        pdb.topology, nonbondedMethod=openmm.app.NoCutoff, constraints=None
+    )
+    force = next(f for f in system.getForces() if isinstance(f, openmm.NonbondedForce))
+
+    def parameters(indices):
+        rows = [force.getParticleParameters(i) for i in indices]
+        return (
+            np.array([q.value_in_unit(unit.elementary_charge) for q, _, _ in rows]),
+            np.array([s.value_in_unit(unit.nanometer) for _, s, _ in rows]),
+            np.array([e.value_in_unit(unit.kilojoule_per_mole) for _, _, e in rows]),
+        )
+
+    q_l, s_l, e_l = parameters(ligand)
+    q_r, s_r, e_r = parameters(receptor)
+    delta = xyz_nm[ligand][:, None, :].astype(float) - xyz_nm[receptor][None, :, :].astype(float)
+    r = np.linalg.norm(delta, axis=-1)
+    coulomb = _constants.COULOMB_KJ_NM_MOL_E2 * q_l[:, None] * q_r[None, :] / r
+    sigma = (s_l[:, None] + s_r[None, :]) / 2
+    epsilon = np.sqrt(e_l[:, None] * e_r[None, :])
+    sr6 = (sigma / r) ** 6
+    lennard_jones = np.where((epsilon > 0) & (sigma > 0), 4 * epsilon * (sr6**2 - sr6), 0.0)
+    return coulomb.sum(), lennard_jones.sum(), (coulomb + lennard_jones).sum()
