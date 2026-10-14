@@ -2,10 +2,9 @@
 
 ``ColabFoldRunner`` starts ``colabfold_batch`` (ColabFold, LocalColabFold) on one complex of two
 chains, a receptor and a binder, folded from their sequences (mode ``predict``), and returns the
-directory that ``binding_metrics.predictors.af2.AlphaFold2Parser`` loads. There is no technical
-reason that only OpenFold3 can be started from here; this runner follows the scheme of
-``OpenFold3Runner`` (a request with every setting that changes the output, a run in the work
-directory the store gives, a check that the model wrote its output).
+directory that ``binding_metrics.predictors.af2.AlphaFold2Parser`` loads. It follows the scheme
+of ``OpenFold3Runner``: a request with every setting that changes the output, a run in the work
+directory the store gives, and a check that the model wrote its output.
 
 Public names and signatures (the module imports the standard library and the runner ABC; gemmi
 is imported when a request is made, never before)::
@@ -33,17 +32,15 @@ is imported when a request is made, never before)::
         .version() -> Optional[str]
     class ColabFoldRunError(subprocess.CalledProcessError)
 
-What rests on reading the source, and what was run
---------------------------------------------------
-Nothing in this module was run against ColabFold: no ``colabfold_batch`` is installed where it
-was written, and the tests use a stub executable that writes synthetic output. Every statement
-about ColabFold below was read on 2026-10-01 in the source of ColabFold v1.6.3 (tag ``v1.6.3``,
-commit 84c27d9, 2026-09-14; the head of ``main`` at that date, efbf31c, holds one more notebook
-and the same ``colabfold`` package). Flags and defaults are those of ``colabfold/batch.py``
-(``main``, line numbers below are of that file unless another is named); the tests re-read them
-when ``BINDING_METRICS_MODEL_SOURCES`` points at a clone. Whether another release has the same
-flags was not checked. What the runner writes was read against the adapter (``af2.py``), not
-against a real output.
+Status
+------
+Not run against ColabFold: no ``colabfold_batch`` was installed where this was written, and the
+tests use a stub executable that writes synthetic output. The statements about ColabFold below
+come from the source of ColabFold v1.6.3 (tag ``v1.6.3``, commit 84c27d9, 2026-09-14), read on
+2026-10-01. Flags and defaults are those of ``colabfold/batch.py`` (``main``; line numbers below
+are of that file unless another is named); the tests re-read them when
+``BINDING_METRICS_MODEL_SOURCES`` points at a clone. Other releases were not checked. What the
+runner writes was read against the adapter (``af2.py``), not against a real output.
 
 Input and chains
 ----------------
@@ -65,8 +62,8 @@ other; that changes nothing for a receptor and a binder that differ, and for two
 chains the labels are interchangeable. The prediction therefore has chains ``A`` and ``B`` and a
 reader that wants the input's IDs on the atoms passes
 ``chain_map=ColabFoldRunner.output_chain_map(request)`` (``--prediction-target-chain A
---prediction-binder-chain B`` on the command line); for 1YCR, receptor ``A`` and binder ``B``, the
-map is the identity.
+--prediction-binder-chain B`` on the command line). The map is the identity for an input whose
+receptor is ``A`` and binder ``B``.
 
 AlphaFold2 takes the 20 amino acids and ``X`` (``AlphaFold2Parser.capabilities`` gives the
 reason). ``make_request`` raises ``ValueError`` before anything is written when a chain holds
@@ -84,22 +81,21 @@ refused, so a request never points at files that are not there.
 
 Modes
 -----
-Only ``predict`` runs. ``refold``, ``score`` and ``score-lock`` raise ``ValueError`` (from
-``make_request`` and from ``prepare`` and ``run`` of a request built by hand), because the source
-shows no way to give ColabFold a template per chain: ``--custom-template-path DIR`` (line 1869,
-used only with ``--templates``, line 1861) names one directory of PDB or mmCIF files for the whole
-job. ``mk_hhsearch_db`` (line 297) indexes every chain of every file in it as an HHsearch
-database entry ``<file stem>_<chain id>``, ``get_msa_and_templates`` gives that same directory to
-every distinct query sequence (line 742), and ``mk_template`` (line 162) lets HHsearch choose the
-hits for that sequence's alignment. Nothing in the input says which structure is the template of
-which chain, and nothing fixes the relative pose of the chains. ``--initial-guess`` (line 1972;
-``predict_structure`` stores the file's coordinates as ``all_atom_positions``, line 491) is the
-nearest option; whether the model uses those coordinates to start from a pose was not verified,
-and ``--templates`` without a custom directory searches the whole PDB, which can return the
-structure that is being scored. The documented route for these modes is to run ``colabfold_batch``
-yourself and read its output with ``--prediction-dir``. A model with templates in complexes also
-needs a multimer model type: ``generate_input_feature`` ignores templates for the other types
-(line 951).
+Only ``predict`` runs. ``refold``, ``score``, ``score-lock`` and ``refold-lock`` raise
+``ValueError`` (from ``make_request`` and from ``prepare`` and ``run`` of a request built by
+hand), because the source shows no way to give ColabFold a template per chain.
+``--custom-template-path DIR`` (line 1869, used only with ``--templates``, line 1861) names one
+directory of PDB or mmCIF files for the whole job: ``mk_hhsearch_db`` (line 297) indexes every
+chain of every file in it as an HHsearch database entry ``<file stem>_<chain id>``,
+``get_msa_and_templates`` gives that directory to every distinct query sequence (line 742), and
+``mk_template`` (line 162) lets HHsearch choose the hits. Nothing in the input says which
+structure is the template of which chain or fixes the relative pose of the chains.
+``--initial-guess`` (line 1972; ``predict_structure`` stores the file's coordinates as
+``all_atom_positions``, line 491) is the nearest option; whether the model starts from those
+coordinates was not verified. ``--templates`` without a custom directory searches the whole PDB,
+which can return the structure that is being scored. To use these modes, run ``colabfold_batch``
+separately and read its output with ``--prediction-dir``. Templates in complexes need a multimer
+model type: ``generate_input_feature`` ignores them for the other types (line 951).
 
 Settings that change the output
 -------------------------------
@@ -138,8 +134,8 @@ Settings that change the output
   the server), is refused. The key: ``options["msa_policy"]`` only when it is not ``"default"``
   and ``options["receptor_msa"] = "single"`` only when asked; a request without them keeps its
   key. ColabFold 1.5.4 documents that "using an A3M file as input overwrites" ``--msa-mode``; the
-  runner does not write a3m input, and whether an a3m job can hold a precomputed receptor
-  alignment with a single-sequence peptide was not checked.
+  runner does not write a3m input, and a precomputed receptor alignment with a single-sequence
+  peptide in an a3m job was not checked.
 * ``model_type``: ``--model-type``, ``alphafold2_multimer_v3`` by default, the model the adapter
   was written against. ``auto`` is not offered: for a complex it means the same
   (``set_model_type``, line 1731).
@@ -157,12 +153,11 @@ Settings that change the output
   put in it what the run reads and keep it unchanged. A run is refused (``ValueError``, before
   the process starts) unless ``<weights>/params/`` holds the marker file of the model type
   (``download_complexes_multimer_v3_finished.txt`` for ``alphafold2_multimer_v3``, and so on, see
-  ``_PARAMS_MARKERS``). The reason: ``main`` calls ``download_alphafold_params`` before the run
-  (line 2270), which, when that marker is missing, downloads the default parameters and extracts
-  them into ``<data>/params`` (``download.py:70-85``), over the files of the same name. Without
-  the check a directory of fine-tuned parameters could be overwritten by the default ones and the
-  prediction stored under the key of the custom weights. Create the marker (an empty file) once
-  the parameter files are in place.
+  ``_PARAMS_MARKERS``). When the marker is missing, ``main`` calls ``download_alphafold_params``
+  before the run (line 2270), which downloads the default parameters and extracts them into
+  ``<data>/params`` (``download.py:70-85``) over the files of the same name, so fine-tuned
+  parameters would be overwritten and the prediction stored under the key of the custom weights.
+  Create the marker (an empty file) once the parameter files are in place.
 * ``data_dir``: the older way to name the directory: ``--data`` with a path that is in the key
   (as ``inference_ckpt_path`` is for OpenFold3). ``None`` leaves the flag out and ColabFold uses
   its cache directory and downloads into it what is missing, which needs the network. A path that
