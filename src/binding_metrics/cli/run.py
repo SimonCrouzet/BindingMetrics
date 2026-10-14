@@ -554,7 +554,7 @@ def run_pipeline(
 
         ``prep`` records what preparation changed: ``removed_heterogens``,
         ``n_removed_waters``, ``kept_nonstandard``, ``n_missing_atoms_rebuilt``,
-        ``n_missing_residue_gaps`` and ``chain_breaks`` (see
+        ``n_missing_residue_gaps``, ``chain_breaks`` and ``missing_residues`` (see
         ``core.system.prep_structure``). ``relax`` lists under
         ``dropped_protein_chains`` the protein chains, other than the peptide and
         the receptor, that the relaxation removed.
