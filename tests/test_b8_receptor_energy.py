@@ -54,6 +54,7 @@ def _energy_without_pdbfixer(path, chain: str, dropped_atom: str = "-") -> dict:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=600,
     )
     return json.loads(run.stdout.strip().splitlines()[-1])
