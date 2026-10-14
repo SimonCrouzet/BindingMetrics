@@ -14,7 +14,7 @@ from typing import Literal, Optional
 import numpy as np
 
 from binding_metrics.metrics._common import resolve_chain_role
-from binding_metrics.metrics._periodic import has_unit_cell, image_complex
+from binding_metrics.metrics._periodic import has_unit_cell, image_complex, image_selection
 
 try:
     import mdtraj as md
@@ -53,6 +53,11 @@ def calculate_rmsd(
     on_empty: Literal["warn", "raise"] = "warn",
 ) -> np.ndarray:
     """Calculate RMSD relative to reference frame.
+
+    When the trajectory stores a unit cell (orthorhombic or triclinic), the selected molecules
+    are made whole and gathered around the largest one before the fit (see
+    ``_periodic.image_selection``), so a molecule written in another periodic image does not
+    change the RMSD; without a cell the stored coordinates are used.
 
     Args:
         trajectory_path: Path to trajectory file
@@ -96,7 +101,7 @@ def calculate_rmsd(
         )
         return np.zeros(traj.n_frames)
 
-    traj_subset = traj.atom_slice(atom_indices)
+    traj_subset = image_selection(traj, atom_indices)
 
     traj_subset.superpose(traj_subset, frame=reference_frame)
     rmsd = md.rmsd(traj_subset, traj_subset, frame=reference_frame)

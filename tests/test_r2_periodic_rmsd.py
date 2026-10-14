@@ -21,9 +21,9 @@ from _r2_periodic_support import (
     write_trajectory,
 )
 
-pytest.importorskip("mdtraj")
+md = pytest.importorskip("mdtraj")
 
-from binding_metrics.metrics.rmsd import calculate_ligand_rmsd  # noqa: E402
+from binding_metrics.metrics.rmsd import calculate_ligand_rmsd, calculate_rmsd  # noqa: E402
 
 
 @pytest.fixture
@@ -85,3 +85,58 @@ class TestLigandRmsd:
         result = calculate_ligand_rmsd(dcd, pdb, LIGAND, RECEPTOR)
 
         assert result["ligand_rmsd"][1] == pytest.approx(np.linalg.norm(shift_nm), abs=1e-3)
+
+
+class TestCombinedSelectionRmsd:
+    """``calculate_rmsd`` on a selection that holds both partners (PeptideBindingProtocol)."""
+
+    @pytest.mark.parametrize("cell", CELL_NAMES)
+    def test_ligand_in_another_image_does_not_change_the_rmsd(self, tmp_path, cell):
+        frames = frames_with_images(rigid_bodies_xyz(), moved_indices=LIGAND, cell=cell)
+        dcd, pdb = write_trajectory(tmp_path, rigid_bodies_topology(), frames, cell)
+
+        rmsd = calculate_rmsd(dcd, pdb, atom_indices=RECEPTOR + LIGAND)
+
+        np.testing.assert_allclose(rmsd, 0.0, atol=2e-3)
+
+    @pytest.mark.parametrize("cell", CELL_NAMES)
+    def test_bonded_molecules_cut_by_the_cell_faces_keep_their_rmsd(
+        self, tmp_path, pair_path, cell
+    ):
+        topology, reference_xyz, ligand, receptor = peptide_pair(pair_path)
+        centred = reference_xyz - reference_xyz.mean(axis=0)
+        displaced = centred.copy()
+        displaced[ligand] += np.array([0.0, 0.3, 0.0])
+        shifted = frames_with_images(centred, ligand, cell)[1]
+        frames = [centred, wrap_into_cell(centred, cell), shifted, wrap_into_cell(displaced, cell)]
+        dcd, pdb = write_trajectory(tmp_path, topology, frames, cell)
+
+        rmsd = calculate_rmsd(dcd, pdb, atom_indices=receptor + ligand)
+        default_selection = calculate_rmsd(dcd, pdb)
+
+        np.testing.assert_allclose(rmsd[:3], 0.0, atol=2e-3)
+        assert 0.05 < rmsd[3] < 0.3
+        np.testing.assert_allclose(default_selection, rmsd, atol=2e-3)
+
+    @pytest.mark.parametrize("cell", CELL_NAMES)
+    def test_selection_of_one_molecule_is_unchanged(self, tmp_path, pair_path, cell):
+        topology, reference_xyz, ligand, receptor = peptide_pair(pair_path)
+        frames = frames_with_images(reference_xyz, ligand, cell)
+        dcd, pdb = write_trajectory(tmp_path, topology, frames, cell)
+
+        rmsd = calculate_rmsd(dcd, pdb, atom_indices=receptor)
+
+        np.testing.assert_allclose(rmsd, 0.0, atol=2e-3)
+
+    def test_trajectory_without_a_cell_reports_the_stored_coordinates(self, tmp_path):
+        reference = rigid_bodies_xyz()
+        moved = reference.copy()
+        moved[LIGAND] += np.array([CELLS["orthorhombic"][0][0], 0.0, 0.0])
+        dcd, pdb = write_trajectory(tmp_path, rigid_bodies_topology(), [reference, moved], None)
+        traj = md.load(str(dcd), top=str(pdb))
+
+        rmsd = calculate_rmsd(dcd, pdb, atom_indices=RECEPTOR + LIGAND)
+
+        traj.superpose(traj, frame=0)
+        np.testing.assert_allclose(rmsd, md.rmsd(traj, traj, frame=0), atol=1e-6)
+        assert rmsd[1] > 1.0

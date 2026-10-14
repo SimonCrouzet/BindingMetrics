@@ -87,11 +87,43 @@ def image_complex(traj, ligand_indices, receptor_indices):
     for molecule in imaged.topology.find_molecules():
         holds_receptor = any(atom.index in receptor_atoms for atom in molecule)
         (anchors if holds_receptor else others).append(molecule)
+    _image_in_place(imaged, anchors, others)
+    return imaged, ligand, receptor
+
+
+def image_selection(traj, atom_indices):
+    """Copy of one selection with every molecule whole and the molecules gathered.
+
+    For a selection that is not split into receptor and ligand, such as the protein atoms of a
+    complex. The copy holds the selected atoms, in the order given. When the trajectory has a
+    cell, the largest molecule of the copy (the lowest first atom index among equals) is the
+    anchor and the other molecules go to the image next to it, with the rule and the limit of
+    ``image_complex``. Without a cell, or with an empty selection, the atoms are returned as
+    stored.
+
+    Args:
+        traj: ``mdtraj.Trajectory``.
+        atom_indices: Atom indices of the selection.
+
+    Returns:
+        New ``mdtraj.Trajectory``; the given trajectory is not modified.
+    """
+    imaged = traj.atom_slice(atom_indices)
+    if imaged.n_atoms == 0 or not has_unit_cell(imaged):
+        return imaged
+    molecules = imaged.topology.find_molecules()
+    anchor = max(molecules, key=lambda molecule: (len(molecule), -min(a.index for a in molecule)))
+    others = [molecule for molecule in molecules if molecule is not anchor]
+    _image_in_place(imaged, [anchor], others)
+    return imaged
+
+
+def _image_in_place(traj, anchors, others) -> None:
+    """Make the molecules whole and place ``others`` next to ``anchors``, in ``traj``."""
     # mdtraj fails on the empty bond list of a topology without bonds; nothing to make whole there.
-    imaged.image_molecules(
+    traj.image_molecules(
         inplace=True,
         anchor_molecules=anchors,
         other_molecules=others,
-        make_whole=imaged.topology.n_bonds > 0,
+        make_whole=traj.topology.n_bonds > 0,
     )
-    return imaged, ligand, receptor
