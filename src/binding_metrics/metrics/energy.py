@@ -801,14 +801,12 @@ def compute_interaction_energy(
     using AMBER ff14SB + implicit solvent (OBC2 or GBn2). System preparation
     (hydrogen addition) is performed once and shared across modes.
 
-    E_int is a single-trajectory end-state estimate in the spirit of MM-GBSA
-    (Kollman et al. 2000): the isolated peptide and receptor are evaluated at
-    their geometry in the complex, so it contains the force-field interaction
-    plus the change in generalized Born polar solvation and in the nonpolar
-    surface-area term, but no conformational reorganisation energy and no
-    entropy. Compare values between structures of the same system, not with
-    experimental binding free energies. The raw and relaxed values depend on
-    the added hydrogens and on the minimizer's stopping point.
+    E_int is a single-trajectory end-state estimate (Kollman et al. 2000): the
+    isolated peptide and receptor are evaluated at their geometry in the complex.
+    It contains the force-field interaction plus the change in generalized Born
+    polar solvation and in the nonpolar surface-area term, and no reorganisation
+    energy and no entropy. The raw and relaxed values depend on the added
+    hydrogens and on the minimizer's stopping point.
 
     Modes:
         raw:      Evaluate at the H-added input geometry. May return None for
@@ -908,17 +906,14 @@ def compute_interaction_energy(
 
     try:
         topology, positions = load_structure(input_path)
-        # No structure repair here: callers are expected to pass a clean structure
-        # (raw input goes through PDBFixer in the relaxation step; MD output is
-        # already fully prepared). Running PDBFixer here would mangle cyclic
-        # peptides by adding spurious terminus atoms (OXT, H2/H3) after losing
-        # the closure bond in the PDB round-trip.
+        # No structure repair here: callers pass a clean structure. PDBFixer would add
+        # spurious terminus atoms (OXT, H2/H3) to cyclic peptides, whose closure bond
+        # is lost in the PDB round-trip.
 
-        # A chain ID the caller gave is an author ID (the one every option and result of the
-        # package uses), or the ID of a chain of the topology: OpenMM names the chains of an
-        # mmCIF by their label IDs when the file has more label IDs than author IDs, so author
-        # ID C of 1CWA is chain B of the topology and chain C holds waters. The IDs that
-        # ``detect_chains`` finds are IDs of the topology and are not resolved again.
+        # A given chain ID is an author ID or a topology chain ID. OpenMM names the chains
+        # of an mmCIF by label IDs when the file has more label IDs than author IDs (author
+        # C of 1CWA is topology chain B). IDs from ``detect_chains`` are topology IDs and
+        # are not resolved again.
         peptide_chain = topology_chain_id(topology, peptide_chain)
         receptor_chain = topology_chain_id(topology, receptor_chain)
         if peptide_chain is None or receptor_chain is None:
