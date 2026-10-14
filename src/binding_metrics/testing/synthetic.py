@@ -43,16 +43,15 @@ files of ``SyntheticPoses.write`` keep the float32 values exactly; a PDB file wo
 Where the complex comes from
 ----------------------------
 By default the bundled copy of ``example_linear_p53_1YCR.pdb`` (PDB entry 1YCR, MDM2 bound to
-the p53 transactivation peptide). The package ships it as data in
-``binding_metrics/testing/data/``, declared in ``pyproject.toml``, and it is found through
-``importlib.resources``, so it is there in an installed wheel, an sdist install and an editable
-install. A source tree that lacks that copy falls back to the repository's ``data/`` directory;
-if neither exists ``FileNotFoundError`` names ``complex_path``. Pass ``complex_path`` to use any
-other two-chain structure. Only the atoms of the two chains are kept.
+the p53 transactivation peptide), shipped as package data in ``binding_metrics/testing/data/``
+and found through ``importlib.resources``. A source tree without that copy falls back to the
+repository's ``data/`` directory; if neither exists ``FileNotFoundError`` names
+``complex_path``. Pass ``complex_path`` to use any other two-chain structure. Only the atoms of
+the two chains are kept.
 
 Poses are ``DockedPose`` objects built from in-memory atoms, with ``backend`` and ``seed`` in
 their provenance (the group key of the pose-set aggregates) and a round-number
-``ranking_score`` as native score. Real model output never enters this module.
+``ranking_score`` as native score.
 
 Importing this module imports numpy and the standard library only; biotite is imported when
 the structure is read or written.

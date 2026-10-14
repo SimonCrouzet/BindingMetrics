@@ -39,16 +39,15 @@ def configure_logging(level: int = logging.INFO, *, warnings_to_stderr: bool = F
     """Send ``binding_metrics`` log records to the console, once, from a CLI entry point.
 
     Library code logs through ``logging.getLogger(__name__)`` and never prints;
-    a command-line ``main()`` calls this first so those records keep appearing
-    exactly where the former ``print`` calls put them: records up to WARNING on
-    stdout, ERROR and above on stderr, with the bare message and no prefix.
+    a command-line ``main()`` calls this first. Records up to WARNING go to
+    stdout, ERROR and above to stderr, as the bare message with no prefix.
     Calling it again only updates the level, so nested entry points are safe.
 
     It also makes the console tolerant of its encoding: messages and help texts hold
     an em dash, an arrow or an Angstrom sign, and a stdout that is not UTF-8
     (``LC_ALL=C``, ``PYTHONIOENCODING=ascii``) would raise ``UnicodeEncodeError`` on
     them, so such a stream writes ``?`` in place of a character it cannot encode.
-    Files are written as UTF-8 and are not affected.
+    Files are written as UTF-8.
 
     ``python -m binding_metrics.<module>`` runs the module as ``__main__``, so its
     ``getLogger(__name__)`` logger is named ``__main__`` and sits outside the
@@ -124,10 +123,9 @@ def backfill_auth_columns(cif_file) -> None:
     """Backfill auth_atom_id/auth_comp_id from label_* equivalents if absent.
 
     BoltzGen CIFs (produced by gemmi.make_mmcif_document) omit these auth_*
-    columns.  biotite.pdbx.get_structure falls back correctly to label_atom_id
-    and label_comp_id, but emits a noisy UserWarning for every atom.  Copying
-    the label columns under the auth names before calling get_structure silences
-    the warnings without hiding any real issue.
+    columns. biotite.pdbx.get_structure falls back to label_atom_id and
+    label_comp_id but emits a UserWarning for every atom; copying the label
+    columns under the auth names before the call avoids the warnings.
 
     A file without an ``atom_site`` category, without the ``label_*`` source
     columns, or with several data blocks is left unchanged (logged at debug level):
