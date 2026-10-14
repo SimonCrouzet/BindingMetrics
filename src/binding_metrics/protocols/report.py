@@ -235,8 +235,7 @@ def _flatten(results: dict) -> dict[str, Any]:
     """Return a flat {column: value} dict suitable for one CSV row.
 
     Scalars and the scalars inside nested dicts become columns named by their path. List
-    and numpy array fields are left out (they stay in the JSON), so a per-atom pLDDT
-    array of thousands of values never becomes a truncated text cell.
+    and numpy array fields are left out; they stay in the JSON.
     """
     flat: dict[str, Any] = {
         "sample_id": results.get("sample_id"),
@@ -260,8 +259,8 @@ def _flatten(results: dict) -> dict[str, Any]:
             if isinstance(v, dict):
                 _add(f"{prefix}_{k}", v)
             elif not isinstance(v, (list, np.ndarray)):
-                # An array cell would be ``str(array)``, cut to "[1. 2. 3. ... 8. 9.]" for
-                # more than 1000 values. Arrays stay in the JSON, like the list fields.
+                # ``str(array)`` is cut to "[1. 2. ... 9.]" beyond 1000 values: arrays stay
+                # in the JSON, like the list fields.
                 flat[f"{prefix}_{k}"] = v
 
     for section in (
@@ -302,11 +301,9 @@ def _flatten(results: dict) -> dict[str, Any]:
                     ):
                         flat[col] = f0.get(src)
         elif section == "geometry" and isinstance(sec_data, dict):
-            # rama/omega functions already prefix their own keys ("ramachandran_*",
-            # "omega_*"), so nesting them under {"ramachandran": ..., "omega": ...}
-            # and then flattening naively would produce "geometry_ramachandran_
-            # ramachandran_*".  Skip the intermediate sub-key and flatten each
-            # sub-dict directly under "geometry_".
+            # The rama/omega keys already carry their own prefix ("ramachandran_*",
+            # "omega_*"): flatten each sub-dict directly under "geometry_" to avoid
+            # "geometry_ramachandran_ramachandran_*".
             for sub in ("ramachandran", "omega", "shape_complementarity"):
                 sub_data = sec_data.get(sub) or {}
                 if sub_data.get("skipped"):
@@ -901,8 +898,8 @@ def _json_default(obj: Any) -> Any:
     """``json`` fallback for values the encoder does not know.
 
     numpy scalars and arrays become Python numbers and lists, so a float32 leaf
-    is written as a number and not as the string ``"1.5"``. A ``Path`` becomes
-    its string. Anything else keeps the previous behaviour of ``str(obj)``.
+    is written as a number, not as the string ``"1.5"``. Anything else, a ``Path``
+    included, is written as ``str(obj)``.
     """
     if isinstance(obj, np.generic):
         return obj.item()
