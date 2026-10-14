@@ -47,6 +47,7 @@ def test_the_values_of_the_array_are_written_as_they_are(tmp_path):
     assert np.allclose(site["occupancy"].as_array(float), 0.5)
 
 
+@pytest.mark.slow
 @requires_dockq
 def test_dockq_scores_every_pose_of_a_set_against_a_reference():
     synthetic = make_synthetic_poses()
