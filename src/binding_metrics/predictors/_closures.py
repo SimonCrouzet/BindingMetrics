@@ -4,15 +4,14 @@
 names each end by residue (name, number, and the index among the amino-acid residues of the
 chain, counted from 0) and atom. A runner that writes a bond between two residues needs the
 1-based position of each residue in the sequence it sends, and the atom names. The Protenix and
-Boltz-2 runners share that step here, so the two cannot place a closure differently.
+Boltz-2 runners share that step here.
 
 A residue is found by its name and its number, among the ``(name, number)`` pairs of the residues
-that were sent (the rule of ``metrics._openfold_run._extract_query_chain``, the same reader
-every runner uses for the sequence). The ``residue_index`` of an end is not used: it counts the
-residues by the detector's rule, the sequence by the query reader's, and a bond must point at a
-residue that was actually sent. A residue that is not among them, or is there twice (an insertion
-code, a repeated number), is an error and not a guess; the caller adds how to switch the closures
-off through ``way_out``.
+that were sent (the rule of ``metrics._openfold_run._extract_query_chain``, the reader every
+runner uses for the sequence). The ``residue_index`` of an end is not used: the detector and the
+query reader count residues by different rules, and a bond must point at a residue that was
+sent. A residue that is not among them, or is there twice (an insertion code, a repeated number),
+raises ``ValueError``; the caller adds how to switch the closures off through ``way_out``.
 
 Only the families a model documents are placed; the others come back as text for a warning.
 """
