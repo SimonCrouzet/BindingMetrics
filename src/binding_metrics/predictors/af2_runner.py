@@ -463,8 +463,7 @@ _KNOWN_FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
         ("Could not get MSA/templates", "MMseqs2 API"),
         "ColabFold could not build the alignment. With use_msa_server=True it asks the MSA "
         "server for it, which needs the network and a server that answers; "
-        "use_msa_server=False folds from the single sequence, with no server, and is much "
-        "less accurate.",
+        "use_msa_server=False folds from the single sequence, with no server.",
     ),
     (
         ("Error downloading files", "Downloading alphafold2", "storage.googleapis.com"),
