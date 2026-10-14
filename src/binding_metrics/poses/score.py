@@ -1266,17 +1266,23 @@ def _own_file(pose: Pose) -> Optional[str]:
 def _write_structure(atoms: Any, path: Path) -> None:
     """Write an ``AtomArray`` as mmCIF with biotite, in UTF-8.
 
-    Adds a zero ``charge`` annotation when the array has none, so that the loader of the
-    interface metrics finds the formal-charge column and does not warn; biotite writes 0 anyway.
+    Adds the annotations that the array lacks, as neutral values: ``charge`` 0, so that the
+    loader of the interface metrics finds the formal-charge column and does not warn, and
+    ``b_factor`` 0.0 and ``occupancy`` 1.0, which DockQ reads from the file.
     """
     import io
 
     from binding_metrics.metrics._common import import_biotite
 
     _, pdbx, _ = import_biotite("writing the structures that the metrics read")
-    if "charge" not in atoms.get_annotation_categories():
+    neutral = {"charge": (int, 0), "b_factor": (float, 0.0), "occupancy": (float, 1.0)}
+    missing = [name for name in neutral if name not in atoms.get_annotation_categories()]
+    if missing:
         atoms = atoms.copy()
-        atoms.add_annotation("charge", dtype=int)
+        for name in missing:
+            dtype, value = neutral[name]
+            atoms.add_annotation(name, dtype=dtype)
+            getattr(atoms, name)[:] = value
     cif = pdbx.CIFFile()
     pdbx.set_structure(cif, atoms)
     buffer = io.StringIO()
