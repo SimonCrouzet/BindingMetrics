@@ -1,49 +1,45 @@
 """Reference-site descriptors: where a pose sits relative to what is known about the target.
 
-The functions take the atoms of ONE pose that are already in the frame of the reference (the
-output of ``binding_metrics.poses.frame.place_in_reference_frame``), the ``FrameResult`` of that
-pose and the ``Reference`` it was placed on, and return plain dictionaries. Nothing here moves a
-structure, reads a file or judges a value: the thresholds are parameters with documented
-defaults, and a quantity that cannot be computed is ``None`` with a reason, never NaN.
+The functions take the atoms of ONE pose in the frame of the reference (the output of
+``binding_metrics.poses.frame.place_in_reference_frame``), the ``FrameResult`` of that pose and
+the ``Reference`` it was placed on, and return plain dictionaries. They move no structure, read
+no file and judge no value: thresholds are parameters with documented defaults, and a quantity
+that cannot be computed is ``None`` with a reason, never NaN.
 
-What the atoms must look like. Chains carry the user's chain IDs, and the receptor residues keep
-the numbering that the frame stage read: ``frame.pairs`` names each paired residue by its pose
-key ``(chain, number, insertion code)`` and the descriptors look the residues up by that key.
-Pass the transformed copy of the pose, not a copy renumbered to the reference
-(``renumber_to_reference``): the reference numbers are reached through ``frame.pairs``.
+Atoms. Chains carry the user's chain IDs and the receptor residues keep the numbering that the
+frame stage read: ``frame.pairs`` names each paired residue by its pose key ``(chain, number,
+insertion code)``, and the descriptors look residues up by that key. Pass the transformed copy
+of the pose, not a copy renumbered with ``renumber_to_reference``.
 
-The interface. A residue is in the interface when its buried area is at least
+Interface. A residue is in the interface when its buried area is at least
 ``interface_threshold_angstrom2`` (default 0.5, the ``interface_threshold`` of
 ``compute_interface_metrics``). The buried area of an atom is its solvent-accessible area
-(Shrake-Rupley, 960 points per atom, 1.4 angstrom probe, as in ``metrics.interface``) with the
-chain alone minus its area in the binder-receptor complex, clamped at zero; the buried area of a
-residue is the sum over its heavy atoms. Waters, ligands and hydrogens are not part of the
-surface, by the same filters as ``compute_interface_metrics``. ``interface_areas`` computes this
-once; every function takes the result as ``areas`` so that one pose is not measured twice.
+(Shrake-Rupley, 960 points per atom, 1.4 angstrom probe, as in ``metrics.interface``) in the
+chain alone minus its area in the binder-receptor complex, clamped at zero; the buried area of
+a residue is the sum over its heavy atoms. Waters, ligands and hydrogens are excluded by the
+filters of ``compute_interface_metrics``. ``interface_areas`` computes the areas once and every
+function takes them as ``areas``.
 
-Residue sets (``residue_set_descriptors``, design section 8.3). Notation: ``S`` is a named set in
-reference numbering, ``P`` the receptor residues of the pose that the frame pairs with reference
-residues (a trimmed construct lacks some), ``I`` the residues of ``P`` that are in the
-interface. A set with more than ``max_unmapped_fraction`` (default 0.5) of its residues outside
-``P`` has no value, and says so.
+Residue sets (``residue_set_descriptors``). ``S`` is a named set in reference numbering, ``P``
+the receptor residues of the pose that the frame pairs with reference residues (a trimmed
+construct lacks some), ``I`` the residues of ``P`` in the interface. A set with more than
+``max_unmapped_fraction`` (default 0.5) of its residues outside ``P`` has no value and says so.
 
-Steric exclusion (``partner_descriptors``, design section 8.4). The partner is a known binder
-that is already placed on the reference receptor (``Reference.partners``). The descriptors say
-how much of the pose's binder lies where the partner lies (distances between heavy atoms, a
-sphere-overlap volume) and how much of the receptor surface that the partner covers the pose
-covers too (buried area shared over the receptor atoms that the pose and the reference have in
-common). The partner and the binder keep only heavy polymer atoms, as the interface metric does.
+Partners (``partner_descriptors``). A partner is a known binder already placed on the reference
+receptor (``Reference.partners``). The descriptors give how much of the pose's binder lies where
+the partner lies (heavy-atom distances, a sphere-overlap volume) and how much of the receptor
+surface covered by the partner the pose covers too (buried area shared over the receptor atoms
+that pose and reference have in common). Partner and binder keep only heavy polymer atoms, as
+the interface metric does.
 
-Per-residue table (``interface_residue_table``, design section 8.5). One row per binder residue
-and per receptor residue with buried area, in a fixed column order and sort order, for a reader
-that wants the residue-level picture rather than the set-level one. The areas are those of
-``_collect_per_residue`` with threshold 0, labelled with the numbering of the pose and, for the
-receptor residues that the frame pairs, with the reference numbering. There is no
-per-residue interaction energy: the only energy-like column is the Eisenberg-McLachlan solvation
-term, which is a surface-area model.
+Residue table (``interface_residue_table``). One row per binder residue and per receptor residue
+with buried area, in a fixed column and sort order. The areas are those of
+``_collect_per_residue`` with threshold 0, labelled with the pose numbering and, for receptor
+residues that the frame pairs, the reference numbering. The only energy-like column is the
+Eisenberg-McLachlan solvation term (a surface-area model); there is no per-residue interaction
+energy.
 
-Residue identity everywhere is ``(chain, number, insertion code)``: ``52`` and ``52A`` are two
-residues.
+Residue identity is ``(chain, number, insertion code)``: ``52`` and ``52A`` are two residues.
 """
 
 from __future__ import annotations
@@ -78,13 +74,13 @@ DEFAULT_MAX_UNMAPPED_FRACTION = 0.5
 DEFAULT_PROBE_RADIUS = 1.4
 
 #: Heavy-atom distances (angstrom) below which an atom, or a pair of atoms, counts as a clash.
-#: 2.2 is the cutoff of the validation work for clashing pairs; 3.0 also catches strongly
-#: compressed carbon pairs and some hydrogen-bonded N/O pairs, so both are reported.
+#: 2.2 is the clash cutoff of the validation work; 3.0 also catches strongly compressed carbon
+#: pairs and some hydrogen-bonded N/O pairs.
 DEFAULT_CLASH_CUTOFFS_ANGSTROM = (2.2, 3.0)
 #: A binder atom within this distance (angstrom) of a partner atom is in the partner's shell.
 DEFAULT_SHELL_ANGSTROM = 4.0
 
-#: The columns of a partner block, in order (design section 8.4).
+#: The columns of a partner block, in order.
 PARTNER_COLUMNS = (
     "min_distance_angstrom",
     "clash_atoms",
@@ -97,7 +93,7 @@ PARTNER_COLUMNS = (
     "overlap_volume_angstrom3",
 )
 
-#: The columns of a row of the per-residue table, in order (design section 8.5).
+#: The columns of a row of the per-residue table, in order.
 TABLE_COLUMNS = (
     "chain",
     "role",
@@ -116,7 +112,7 @@ TABLE_COLUMNS = (
     "in_sets",
 )
 
-#: The columns of a residue-set block, in order (design section 8.3).
+#: The columns of a residue-set block, in order.
 SET_COLUMNS = (
     "n_set",
     "n_set_mapped",
@@ -258,8 +254,8 @@ def interface_areas(
     sasa_receptor = _per_atom_sasa(receptor_atoms, probe_radius, sasa_fn, vdw_fn)
     sasa_complex = _per_atom_sasa(complex_atoms, probe_radius, sasa_fn, vdw_fn)
     in_complex = np.asarray(complex_atoms.chain_id)
-    # The isolated and the complex areas are sampled independently, so a buried atom can come
-    # out marginally negative: clamp, as compute_interface_metrics does.
+    # Isolated and complex areas are sampled independently, so a buried atom can come out
+    # slightly negative; clamp, as compute_interface_metrics does.
     buried_binder = np.maximum(sasa_binder - sasa_complex[in_complex == binder_chain], 0.0)
     buried_receptor = np.maximum(sasa_receptor - sasa_complex[in_complex == target_chain], 0.0)
     return InterfaceAreas(
@@ -306,7 +302,7 @@ def _residue_key(row: Mapping) -> ResidueKey:
     return ResidueKey(row["chain"], row["res_id"], row["ins_code"])
 
 
-# ---------------------------------------------------------------------------- B1: residue sets
+# ---------------------------------------------------------------------------- residue sets
 
 
 def _set_failure(n_set: int, n_mapped: Optional[int], reason: str) -> dict:
@@ -485,7 +481,7 @@ def _set_block(members, mapped_keys, interface_keys, area_of_reference, total_ar
     return block
 
 
-# ---------------------------------------------------------------------------- B2: partners
+# ---------------------------------------------------------------------------- partners
 
 # Rows of the binder-by-partner distance matrix built at a time; bounds the memory of a large
 # partner.
@@ -501,9 +497,8 @@ def sphere_overlap_volume(radius_a, radius_b, distance):
         pi (R + r - d)^2 (d^2 + 2 d (R + r) - 3 (R - r)^2) / (12 d)
 
     When ``d <= |R - r|`` the smaller sphere lies inside the larger one and the volume is that
-    of the smaller sphere, ``4/3 pi min(R, r)^3`` (also the volume for ``d = 0``); when
-    ``d >= R + r`` the spheres do not overlap and the volume is 0. The two branches agree at
-    ``d = |R - r|``, so the function is continuous in ``d``.
+    of the smaller sphere, ``4/3 pi min(R, r)^3`` (also for ``d = 0``); when ``d >= R + r`` the
+    spheres do not overlap and the volume is 0. The function is continuous in ``d``.
 
     Args:
         radius_a, radius_b, distance: Numbers or arrays that broadcast together; radii are
@@ -673,16 +668,15 @@ def partner_descriptors(
     The keys of the two clash dictionaries are the cutoffs written as floats (``"2.2"``,
     ``"3.0"``). ``b_X(a)`` is the area of receptor atom ``a`` that ``X`` buries: the area of the
     receptor alone minus its area with ``X`` added, clamped at zero. The sums run over the
-    receptor atoms ``a`` that the pose and the reference both have (residues paired by the
-    frame, same atom name): ``b_pose`` is measured on the pose's receptor with the pose's binder
-    and ``b_partner`` on the reference's receptor with the partner, so the shared area is the
-    receptor surface that the pose and the partner both cover. When the partner is the pose's
-    own binder in the pose's own receptor, the shared area is the partner's whole area.
+    receptor atoms ``a`` that pose and reference both have (residues paired by the frame, same
+    atom name). ``b_pose`` is measured on the pose's receptor with the pose's binder and
+    ``b_partner`` on the reference's receptor with the partner, so the shared area is the
+    receptor surface that both cover. For a partner equal to the pose's own binder in the pose's
+    own receptor, the shared area is the partner's whole area.
 
-    The overlap volume is a proxy. A triple overlap is counted once per pair, so a crowded site
-    is overestimated; atoms at van der Waals distance contribute nothing, and compression adds
-    volume. Two atoms of one hydrogen bond (N...O about 2.9 angstrom, radii 1.55 and 1.52)
-    overlap a little, as they count in any distance-based clash count.
+    The overlap volume counts a triple overlap once per pair, so a crowded site is
+    overestimated. Atoms at van der Waals distance add nothing; a hydrogen-bonded N...O pair
+    (about 2.9 angstrom) adds a small volume.
 
     A partner with no value (the frame failed, a chain has no heavy polymer atom, the partner
     has none) has every column None and a ``reason``. A column that cannot be computed alone is
@@ -798,7 +792,7 @@ def _area_columns(pose_burial: np.ndarray, partner_burial: np.ndarray, reasons: 
     return columns
 
 
-# ---------------------------------------------------------------------------- C3: residue table
+# ---------------------------------------------------------------------------- residue table
 
 
 def _table_row(row: Mapping, role: str, threshold: float) -> dict:
