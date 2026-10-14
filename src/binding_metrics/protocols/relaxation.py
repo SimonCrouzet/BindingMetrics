@@ -1,8 +1,7 @@
 """Implicit solvent MD relaxation protocol for protein complexes.
 
 Performs multi-stage energy minimization followed by an optional short MD
-simulation using OpenMM with implicit solvent (OBC2 or GBn2). Designed for
-fast GPU-accelerated evaluation of protein-peptide complexes.
+simulation using OpenMM with implicit solvent (OBC2 or GBn2).
 
 Minimization stages:
     Stage 1: Initial global relaxation (resolves clashes)
@@ -86,10 +85,9 @@ logger = logging.getLogger(__name__)
 
 # --- Minimization schedule -------------------------------------------------
 #
-# The three stages use a tolerance that tightens from coarse to fine: the first
-# stages only need to remove clashes and relieve strain, so stopping early saves
-# time, while the last stage converges to ``RelaxationConfig.min_tolerance``.
-# OpenMM measures the tolerance as the RMS force in kJ/mol/nm.
+# Stages 1 and 2 stop at a coarser tolerance than Stage 3, which converges to
+# ``RelaxationConfig.min_tolerance``. OpenMM measures the tolerance as the RMS
+# force in kJ/mol/nm.
 
 #: Stage 1 (global relaxation) tolerance, as a multiple of ``min_tolerance``.
 STAGE1_TOLERANCE_FACTOR = 10
@@ -98,10 +96,9 @@ STAGE2_TOLERANCE_FACTOR = 5
 
 # --- Cyclic closure (Stage 0) ----------------------------------------------
 #
-# A closure bond taken from a predicted or crystal structure can start far from
-# its equilibrium length. Stage 0 first pulls each closure bond to a peptide-bond
-# length with a strong harmonic restraint, then switches the restraint off so the
-# force field alone decides the final geometry in Stages 1-3.
+# Stage 0 pulls each closure bond to a peptide-bond length with a strong
+# harmonic restraint, then switches the restraint off so the force field alone
+# sets the geometry in Stages 1-3.
 
 #: Restraint force constant of the closure bond in kJ/mol/nm^2.
 CLOSURE_RESTRAINT_K_KJ_MOL_NM2 = 1000.0
@@ -129,8 +126,7 @@ CYCLIC_WARMUP_PS = 10.0
 #: Force constant k of the phi/psi restraints in kJ/mol for the three phases.
 WARMUP_PHI_PSI_K_KJ_MOL = (50.0, 10.0, 1.0)
 #: Force constant k of the closure omega restraint in kJ/mol for the three
-#: phases. It is twice the phi/psi value: the single closure omega is held more
-#: tightly than the phi/psi torsions.
+#: phases (twice the phi/psi value).
 WARMUP_OMEGA_K_KJ_MOL = (100.0, 20.0, 2.0)
 
 #: Slack when deciding whether ``md_duration_ps`` is a whole number of save
@@ -219,10 +215,10 @@ class RelaxationConfig:
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED
     """Seed for every stochastic step (hydrogen placement, MD initial velocities
     and the Langevin thermostat). A fixed int (the default) makes a run
-    reproducible; ``None`` opts into fresh randomness, e.g. to generate
-    independent MD replicas. Note: minimization is reproducible regardless, but
-    GPU MD may still differ in the last digits across runs even with a fixed seed
-    because CUDA force reduction order is not deterministic."""
+    reproducible; ``None`` draws fresh randomness (independent MD replicas).
+    Minimization is reproducible regardless; GPU MD may still differ in the last
+    digits with a fixed seed, because the CUDA force reduction order is not
+    deterministic."""
 
     peptide_chain_id: Optional[str] = None
     receptor_chain_id: Optional[str] = None
@@ -266,27 +262,15 @@ class RelaxationConfig:
     small_molecule_ff: str = "gaff-2.2.20"
     """GAFF2 force-field version used by :attr:`small_molecules`.
 
-    Passed as the ``forcefield`` argument to
-    ``GAFFTemplateGenerator``.  Run
-    ``GAFFTemplateGenerator.INSTALLED_FORCEFIELDS`` for available versions.
-    Default is ``"gaff-2.2.20"`` (latest stable at package release time).
+    Passed as the ``forcefield`` argument to ``GAFFTemplateGenerator``;
+    ``GAFFTemplateGenerator.INSTALLED_FORCEFIELDS`` lists the available versions.
     """
 
-    # Cyclization is always auto-detected; see patch_cyclic_topology.
-    # Supported types (detected by inter-atom distance):
-    #   • head_to_tail  — backbone C(last)–N(first) amide
-    #   • disulfide     — CYS SG–SG (residues renamed CYX)
-    #   • lactam_n_asp  — ASP CG–N-terminus amide  (residue renamed ASPL)
-    #   • lactam_n_glu  — GLU CD–N-terminus amide  (residue renamed GLUL)
-    #   • lactam_c_lys  — LYS NZ–C-terminus amide  (residue renamed LYSL)
-    #
-    # Unsupported types (hydrocarbon staples, thioethers, macrolactones, …)
-    # raise a CyclizationError with guidance on using custom_bond_handler
-    # with GAFF2/SMIRNOFF.
-    #
-    # Ring-aware restraint protocol (active when cyclization is detected):
-    #   Stage 0 — closure bond distance restraint (strong, before Stage 1)
-    #   Warmup MD — backbone φ/ψ dihedral restraints (10 ps, before production)
+    # Cyclization is always auto-detected by ``core.cyclic.patch_cyclic_topology``, whose
+    # module docstring lists the supported types; other cross-links raise CyclizationError.
+    # When a closure is found the protocol adds Stage 0 (closure-bond distance restraint,
+    # before Stage 1) and a warm-up MD of ``CYCLIC_WARMUP_PS`` with backbone phi/psi
+    # restraints (before production).
 
     def __post_init__(self) -> None:
         """Reject MD settings that would produce no frames or a shorter run.
@@ -497,10 +481,11 @@ class ImplicitRelaxation(Relaxer):
     Runs multi-stage energy minimization followed by an optional short MD
     simulation using AMBER ff14SB with OBC2 or GBn2 implicit solvent.
 
-    Structure preparation:
+    Structure preparation (the input is expected to be prepared already, see
+    ``binding-metrics-prep``; missing heavy atoms are not rebuilt here):
         - Removes atoms placed at the origin (0,0,0), which some structure
           prediction tools use as placeholders for unresolved side chains.
-        - Rebuilds missing heavy atoms and adds hydrogens using PDBFixer.
+        - Adds hydrogens with ``Modeller.addHydrogens`` at ``config.ph``.
 
     Minimization protocol (3 stages):
         Stage 1: Global relaxation (resolves clashes from side-chain rebuilding)
@@ -711,10 +696,13 @@ class ImplicitRelaxation(Relaxer):
 
         Steps:
             1. Remove atoms at the origin (placeholder atoms)
-            2. Rebuild missing heavy atoms with PDBFixer
-            3. Add hydrogens at pH 7.4
-            4. Apply custom_bond_handler if configured
-            5. Create OpenMM system with implicit solvent
+            2. Identify the peptide and receptor chains; strip heterogens and any
+               other protein chain
+            3. Patch D-amino acid, N-methyl and cyclic residues; parameterize
+               non-canonical residues with GAFF2 when ``small_molecules`` is set
+            4. Add hydrogens at ``config.ph``
+            5. Apply custom_bond_handler if configured
+            6. Create OpenMM system with implicit solvent
 
         Returns:
             Tuple of (system, topology, positions, bond_info)
@@ -726,9 +714,8 @@ class ImplicitRelaxation(Relaxer):
         self._ncaa_charge_scheme = {}
         self._dropped_protein_chains = []
 
-        # --- Structure loading ---
-        # The input is expected to already be prepared (via binding-metrics-prep).
-        # No PDBFixer repair here — just load and strip any origin placeholders.
+        # The input is expected to be prepared already (binding-metrics-prep): no PDBFixer
+        # repair here, only the removal of origin placeholders.
         if input_path.suffix.lower() in (".cif", ".mmcif"):
             struct = PDBxFile(str(input_path))
             # OpenMM's chain IDs are the label IDs for a file with more label IDs than
@@ -766,13 +753,12 @@ class ImplicitRelaxation(Relaxer):
                 gap["c_n_distance_angstrom"],
             )
 
-        # --- Identify chains ---
         peptide_chain, receptor_chain = self._identify_chains(topology)
         self._chain_ids = (peptide_chain, receptor_chain)
 
-        # --- Strip heterogens (non-protein residues outside the two chains) and
-        # any third protein chain: E_complex would include it, the isolated
-        # components would not, and its termini and patches are not handled ---
+        # Strip heterogens (non-protein residues outside the two chains) and any third
+        # protein chain: E_complex would include it, the isolated components would not,
+        # and its termini and patches are not handled.
         strip_report: dict = {}
         topology, positions = self._strip_heterogens(
             topology, positions, peptide_chain, receptor_chain, report=strip_report
@@ -780,7 +766,6 @@ class ImplicitRelaxation(Relaxer):
         self._dropped_protein_chains = list(strip_report.get("dropped_protein_chains", []))
         stripped_topology = topology  # still carries the author IDs; the steps below rebuild it
 
-        # --- Force field setup ---
         gb_file = (
             "implicit/gbn2.xml" if self.config.solvent_model == "gbn2" else "implicit/obc2.xml"
         )
@@ -793,7 +778,7 @@ class ImplicitRelaxation(Relaxer):
 
         phosaa.register(ff)
 
-        # --- Non-standard residue patching (D-AAs and NMe-AAs, before H addition) ---
+        # D-amino acids and N-methylated residues are patched before hydrogens are added.
         from binding_metrics.core.nonstandard import (
             _detect_nonstandard,
             _patch_nonstandard,
@@ -812,9 +797,8 @@ class ImplicitRelaxation(Relaxer):
             topology, positions = _patch_nonstandard(topology, positions, peptide_chain, ns_info)
             load_nonstandard_xmls(ff, ns_info)
 
-        # --- Cyclic peptide topology patching (before hydrogen addition) ---
-        # Always auto-detect: linear peptides pass through unchanged.
-        # Must run here so addHydrogens sees the correct internal-residue topology.
+        # Cyclic topology: detection is automatic and linear peptides pass through unchanged.
+        # It runs before addHydrogens, which then sees the closure residues as internal.
         bond_info = []
         from binding_metrics.core.cyclic import (
             load_extra_xmls,
@@ -837,7 +821,6 @@ class ImplicitRelaxation(Relaxer):
         require_closed_c_termini(topology)
         if bond_info:
             logger.info("  Cyclic peptide detected — %d bond(s):", len(bond_info))
-            # Build a residue-name lookup: (chain_id, res_idx_in_chain) → res_name
             res_name_map: dict = {}
             for chain in topology.chains():
                 for i, res in enumerate(chain.residues()):
@@ -861,15 +844,10 @@ class ImplicitRelaxation(Relaxer):
         else:
             logger.info("  Linear peptide (no cyclization detected)")
 
-        # --- GAFF2 for non-standard residues / small-molecule co-factors ---
-        # Must run BEFORE addHydrogens so the generated residue templates (with
-        # <ExternalBond> tags) match the backbone-embedded NCAA residues and so
-        # their hydrogens are injected before createSystem.
-        #
-        # Note: GAFF2 is a general small-molecule force field. It works for
-        # small organic co-factors and modified amino acids (as a pragmatic
-        # approximation), but purpose-built parameters (e.g. CGENFF, RESP-fitted
-        # charges) give higher accuracy for MD production runs.
+        # GAFF2 for non-standard residues and small-molecule co-factors. It runs before
+        # addHydrogens so that the generated residue templates (with <ExternalBond> tags)
+        # match the backbone-embedded NCAA residues and their hydrogens are injected
+        # before createSystem.
         if self.config.small_molecules == "auto":
             # Auto path: generate ExternalBond residue templates for every exotic
             # NCAA (BMT, ABA, …) directly from the topology geometry. Residues
@@ -933,7 +911,6 @@ class ImplicitRelaxation(Relaxer):
                     "  → Or run binding-metrics-prep --canonicalize to replace them first."
                 )
 
-        # --- Add hydrogens ---
         logger.info("  Adding hydrogens...")
         modeller = app.Modeller(topology, positions)
 
@@ -979,7 +956,7 @@ class ImplicitRelaxation(Relaxer):
 
         positions = repair_ca_hydrogen_chirality(topology, positions)
 
-        # --- Custom bond handler (plugin hook, called after H addition) ---
+        # Plugin hook, called after hydrogen addition.
         if self.config.custom_bond_handler is not None:
             topology, positions, user_bond_info = self.config.custom_bond_handler(
                 topology, positions, peptide_chain
@@ -991,7 +968,6 @@ class ImplicitRelaxation(Relaxer):
                 if not bond_info:
                     bond_info = user_bond_info
 
-        # --- Create system ---
         from binding_metrics.core.system import create_system_respecting_chain_breaks
 
         system, topology = create_system_respecting_chain_breaks(
@@ -1155,7 +1131,6 @@ class ImplicitRelaxation(Relaxer):
 
         self._import_openmm()
 
-        # Collect backbone φ/ψ atom quads for each residue in the peptide chain
         phi_quads = []
         psi_quads = []
 
@@ -1192,7 +1167,6 @@ class ImplicitRelaxation(Relaxer):
         if not phi_quads and not psi_quads:
             return  # nothing to restrain
 
-        # Measure reference dihedrals from minimised positions
         ref_pos = np.array([[p.x, p.y, p.z] for p in ref_positions])
 
         def _dihedral_rad(p, i1, i2, i3, i4):
@@ -1220,7 +1194,6 @@ class ImplicitRelaxation(Relaxer):
             theta0 = _dihedral_rad(ref_pos, *quad)
             torsion_force.addTorsion(*quad, [theta0])
 
-        # Add ω restraint for the closure bond (if available)
         omega_force = None
         omega_idx = None
         if omega_indices is not None:
@@ -1427,9 +1400,9 @@ class ImplicitRelaxation(Relaxer):
                 .value_in_unit(unit.kilojoules_per_mole)
             )
 
-            # --- Resolve cyclic closure atom indices (post-addHydrogens) ---
-            # closure_indices_list: list of (idx1, idx2) tuples, one per bond
-            # omega_indices: first non-None omega from the list (for warmup dihedral)
+            # Closure atom indices, resolved after addHydrogens. closure_indices_list holds
+            # one (idx1, idx2) tuple per bond; omega_indices is the first omega found, for
+            # the warm-up dihedral restraint.
             closure_indices_list = []
             omega_indices = None
             if bond_info:
@@ -1449,7 +1422,6 @@ class ImplicitRelaxation(Relaxer):
                             "[%s]   Warning: could not resolve closure atoms: %s", sample_id, e
                         )
 
-            # --- Multi-stage minimization ---
             n_stages = "4" if closure_indices_list else "3"
             logger.info("[%s] Minimizing (%s stages)...", sample_id, n_stages)
             min_start = time.time()
@@ -1539,7 +1511,6 @@ class ImplicitRelaxation(Relaxer):
             result.minimized_structure_path = str(min_path)
             logger.info("[%s] Minimized: %.1f kJ/mol", sample_id, result.potential_energy_minimized)
 
-            # --- MD simulation ---
             if self.config.md_duration_ps > 0:
                 logger.info("[%s] Running MD (%s ps)...", sample_id, self.config.md_duration_ps)
                 md_start = time.time()
@@ -1595,7 +1566,6 @@ class ImplicitRelaxation(Relaxer):
                 final_positions = trajectory_positions[-1]
                 result.rmsd_md_final = self._compute_rmsd(final_positions, minimized_positions)
 
-                # RMSF for peptide CA atoms
                 peptide_ca_indices = [
                     a.index
                     for a in topology.atoms()
@@ -1607,7 +1577,6 @@ class ImplicitRelaxation(Relaxer):
                     result.peptide_rmsf_max = float(rmsf.max())
                     result.peptide_rmsf_per_residue = rmsf.tolist()
 
-                # Receptor Cα RMSD / drift
                 receptor_ca_indices = [
                     a.index
                     for a in topology.atoms()
@@ -1623,7 +1592,6 @@ class ImplicitRelaxation(Relaxer):
                     ]
                     result.receptor_drift_mean = float(np.mean(per_frame_rmsd))
 
-                # Peptide–receptor Cα COM distance delta (minimized → final)
                 if peptide_ca_indices and receptor_ca_indices:
                     result.pep_rec_com_distance_delta = self._com_distance_delta(
                         minimized_positions,
