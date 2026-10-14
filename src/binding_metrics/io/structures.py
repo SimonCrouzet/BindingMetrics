@@ -104,23 +104,22 @@ _STRUCT_CONN_BOND_TYPES = ("covale", "disulf", "modres")
 def _restore_struct_conn_bonds(path: Path, topology) -> int:
     """Add the ``_struct_conn`` bonds that ``PDBxFile`` failed to resolve.
 
-    ``PDBxFile`` keys every atom by ``auth_seq_id`` (and, in most files, by
-    ``auth_asym_id``) but looks the two partners of a ``_struct_conn`` row up by
-    ``ptnr*_label_seq_id`` and ``ptnr*_label_asym_id``. The numberings differ
-    whenever a chain does not start at residue 1 (the 1QJB peptide has label
-    numbers 4 and 5 for author numbers 6 and 7), so the row matches nothing and
-    the bond is dropped without a message. That is fatal for a link into a
-    non-standard residue such as phosphoserine: ``createStandardBonds`` only
-    knows the standard residue types, so the HIS-SEP peptide bond exists nowhere
-    else and the force field later reports "bonds are different".
+    ``PDBxFile`` keys atoms by ``auth_seq_id`` (and, in most files, by
+    ``auth_asym_id``) but looks up the two partners of a ``_struct_conn`` row by
+    ``ptnr*_label_seq_id`` and ``ptnr*_label_asym_id``. When the numberings differ
+    (a chain that does not start at residue 1: the 1QJB peptide has label numbers
+    4 and 5 for author numbers 6 and 7), the row matches nothing and the bond is
+    dropped without a message. A dropped link into a non-standard residue such as
+    phosphoserine is not rebuilt elsewhere, because ``createStandardBonds`` knows
+    only the standard residue types.
 
     Partners are matched through ``_atom_site.id``, which OpenMM keeps as
     ``Atom.id``. The author columns of ``_struct_conn`` are used when present
-    (wwPDB files always have them) and the label columns otherwise. A residue
-    is told apart by chain, number and insertion code, so a row can name 60 or
-    60A when the file gives the code (``pdbx_ptnr1_PDB_ins_code``, which
-    ``save_cif`` writes for a file whose residues share a number). A partner
-    that matches no atom, or more than one, is skipped.
+    (wwPDB files always have them) and the label columns otherwise. A residue is
+    identified by chain, number and insertion code, so a row can name 60 or 60A
+    when the file gives the code (``pdbx_ptnr1_PDB_ins_code``, which ``save_cif``
+    writes for a file whose residues share a number). A partner that matches no
+    atom, or more than one, is skipped.
 
     Returns the number of bonds added.
     """
@@ -202,11 +201,11 @@ def _bond_bare_residues(topology, positions) -> int:
     """Bond, by covalent radii, every multi-atom residue that has no bond at all.
 
     A raw mmCIF lists no bond inside a non-standard residue (the wwPDB leaves them
-    to the Chemical Component Dictionary), and ``createStandardBonds`` knows only
-    the standard residue types, so phosphoserine and the like load as a cloud of
-    unbonded atoms. A PDB file carries them as CONECT records. Without the bonds
-    the force field cannot match the residue ("bonds are different"). The peptide
-    chain gets this repair again in ``patch_cyclic_topology``; no other chain does.
+    to the Chemical Component Dictionary) and ``createStandardBonds`` knows only
+    the standard residue types, so phosphoserine and the like load as unbonded
+    atoms; a PDB file carries them as CONECT records. The force field cannot match
+    a residue without its bonds. ``patch_cyclic_topology`` repeats this repair for
+    the peptide chain only.
 
     Returns the number of bonds added.
     """
@@ -287,14 +286,15 @@ def attach_author_chain_ids(topology, source_path: str | Path) -> bool:
     results use the author ID, so the peptide of 1CWA is chain C for them and chain
     B in the OpenMM topology. The topology keeps its own IDs, because the waters
     of a chain share its author ID and renaming would merge them with the protein.
-    This function stores the author ID beside them; :func:`author_chain_ids` reads
-    it and :func:`openmm_chain_id` turns an author ID into the chain to look up.
+    This function stores the author IDs beside them; :func:`author_chain_ids` reads
+    them and :func:`openmm_chain_id` turns an author ID into the chain to look up.
 
-    Atoms are matched by ``Atom.id``, the ``_atom_site.id`` of the row an atom was read
-    from, which ``Modeller`` keeps, and must agree with the row on the element. A topology
-    that has lost atoms or chains since the file was read can still be annotated from it;
-    one that has gained atoms cannot, because ``Topology`` gives a new atom an ID of its
-    own that may be a row's. A PDB file needs no call: its chain IDs are the author IDs.
+    Atoms are matched by ``Atom.id`` (the ``_atom_site.id`` of the row an atom was
+    read from, which ``Modeller`` keeps) and must agree with the row on the element.
+    A topology that has lost atoms or chains since the file was read can still be
+    annotated; one that has gained atoms cannot, because ``Topology`` gives a new
+    atom an ID that may be a row's. A PDB file needs no call: its chain IDs are the
+    author IDs.
 
     Args:
         topology: OpenMM Topology read from ``source_path``.
@@ -759,8 +759,8 @@ def detect_chains(topology) -> tuple[Optional[str], Optional[str]]:
         Tuple of (ligand_chain_id, receptor_chain_id). Either may be None
         if no protein chains are found or only one chain exists.
     """
-    # Amino acids only — exclude water (HOH) and nucleic acids which are also
-    # in app.PDBFile._standardResidues and would cause water chains to be ranked.
+    # Amino acids only: water and nucleic acids are also in PDBFile._standardResidues
+    # and would rank as chains.
     amino_acids = _amino_acid_names()
     chain_sizes = []
     for chain in topology.chains():
@@ -805,13 +805,12 @@ def detect_chains_from_file(
             receptor_chain (str): resolved receptor chain ID (author ID); None
                 when the file has a single protein chain
             peptide_chain_label (str): the peptide chain ID as OpenMM sees it, which
-                OpenMM-based steps need. OpenMM's PDBxFile names the chains by
+                OpenMM-based steps need. PDBxFile names the chains by
                 ``label_asym_id`` when the file has more distinct label IDs than
                 author IDs (waters and ligands each get their own label ID), and
                 by the author ID otherwise. It equals ``peptide_chain`` for PDB
-                files, for CIFs whose author and label IDs agree, for CIFs with
-                as many author IDs as label IDs, and when the mapping cannot be
-                built (a warning is logged then).
+                files, for CIFs whose author and label IDs agree or are equally
+                many, and when the mapping cannot be built (a warning is logged).
             receptor_chain_label (str): same for the receptor chain
             peptide_n_residues (int): number of residues in peptide chain
             receptor_n_residues (int): number of residues in receptor chain
@@ -827,13 +826,10 @@ def detect_chains_from_file(
     path = Path(path)
     suffix = path.suffix.lower()
 
-    # Build auth→label chain ID mapping for CIF files.
-    # biotite uses auth_asym_id by default; OpenMM uses label_asym_id when the file
-    # has more label IDs than author IDs, and auth_asym_id otherwise. OpenMM-based
-    # steps need the ID OpenMM used.
-    # We restrict the mapping to CA atoms so that ligand/water label chains
-    # (which share the same auth chain as the protein) don't overwrite the
-    # protein label.
+    # auth -> label chain ID mapping for CIF files: biotite uses auth_asym_id, OpenMM
+    # label_asym_id when the file has more label IDs than author IDs. Only CA atoms
+    # count, so that the label chains of waters and ligands (same author chain as the
+    # protein) do not overwrite the protein label.
     auth_to_label: dict[str, str] = {}
     if suffix in (".cif", ".mmcif"):
         f = pdbx.CIFFile.read(str(path))
@@ -850,12 +846,11 @@ def detect_chains_from_file(
                     if a_str not in auth_to_label:  # first occurrence wins
                         auth_to_label[a_str] = l_str
             if len(set(label_ids)) <= len(set(auth_ids)):
-                # OpenMM's PDBxFile keeps the author IDs unless there are strictly
-                # more label IDs; a label ID would then name another chain.
+                # PDBxFile keeps the author IDs unless there are strictly more label
+                # IDs; a label ID would then name another chain.
                 auth_to_label = {}
         except (KeyError, ValueError) as exc:
-            # Without the label/auth pair the mapping stays empty, and the label
-            # chain IDs handed to OpenMM-based steps fall back to the author IDs.
+            # The mapping stays empty: the label IDs fall back to the author IDs.
             logger.warning(
                 "%s: cannot map author chain IDs to label chain IDs (%s: %s); "
                 "assuming they are identical",
@@ -867,7 +862,6 @@ def detect_chains_from_file(
         f = pdb_io.PDBFile.read(str(path))
         atoms = pdb_io.get_structure(f, model=1)
 
-    # Count standard amino-acid residues per chain
     aa_filter = struc.filter_amino_acids(atoms)
     aa_atoms = atoms[aa_filter]
     chain_ids = sorted(set(aa_atoms.chain_id))
@@ -886,7 +880,6 @@ def detect_chains_from_file(
     if not chain_info:
         raise ValueError(f"No protein chains found in {path}")
 
-    # Resolve IDs
     if peptide_chain is None:
         peptide_chain = chain_info[0]["id"]
         pep_auto = True
@@ -897,8 +890,7 @@ def detect_chains_from_file(
         if len(chain_info) == 2:
             receptor_chain = chain_info[1]["id"]
         else:
-            # Multiple candidates — pick the one with the most Cα contacts
-            # to the peptide within 8 Å (interface-proximity criterion).
+            # Several candidates: the one with the most CA atoms within 8 A of the peptide.
             pep_ca = aa_atoms[(aa_atoms.chain_id == peptide_chain) & (aa_atoms.atom_name == "CA")]
             best_chain, best_contacts = None, -1
             for ci in chain_info:
@@ -945,8 +937,7 @@ def detect_chains_from_file(
     return {
         "peptide_chain": pep_str,
         "receptor_chain": rec_str,
-        # label_asym_id equivalents for OpenMM-based steps (same as auth when
-        # both ID systems are identical, i.e. standard PDB structures)
+        # label_asym_id equivalents for OpenMM-based steps
         "peptide_chain_label": auth_to_label.get(pep_str, pep_str) if pep_str else None,
         "receptor_chain_label": auth_to_label.get(rec_str, rec_str) if rec_str else None,
         "peptide_n_residues": pep_info["n_residues"] if pep_info else None,
@@ -965,13 +956,13 @@ def strip_heterogens(
 ):
     """Remove non-protein residues from topology, warning if close to the interface.
 
-    Amino-acid residues count as protein and are kept in every chain, so an unselected
-    chain is not cut where it carries a phosphoserine or a D-amino acid: the definition
-    is that of :func:`detect_chains` and :func:`drop_other_protein_chains` (the standard
-    residues and their AMBER variants, the D-amino acids, SEP, TPO and PTR and, with
-    biotite installed, the peptide-linking components of the Chemical Component
-    Dictionary), so a whole chain of them reaches ``drop_other_protein_chains`` and is
-    reported there as a dropped protein chain.
+    Amino-acid residues are kept in every chain, so an unselected chain is not cut
+    where it carries a phosphoserine or a D-amino acid. The definition is that of
+    :func:`detect_chains` and :func:`drop_other_protein_chains` (the standard residues
+    and their AMBER variants, the D-amino acids, SEP, TPO, PTR and, with biotite
+    installed, the peptide-linking components of the Chemical Component Dictionary);
+    a whole chain of them reaches ``drop_other_protein_chains`` and is reported there
+    as a dropped protein chain.
 
     Args:
         topology: OpenMM Topology (post-PDBFixer).
@@ -1107,13 +1098,13 @@ def drop_other_protein_chains(
 
     The relaxation and the interaction energy describe the peptide-receptor pair. A
     third protein chain (a second copy of the complex in the asymmetric unit, a
-    crystallisation partner) adds its own energy to the complex but not to the
-    isolated components, so E_int would mix the pair with the bystander, and its caps,
-    phosphorylated residues and lactam bridges are not patched, so the force field
-    often cannot build it. Call after :func:`strip_heterogens`. Nothing is removed
-    unless both chain IDs are given and both are in the topology. A logged warning
-    names each removed chain: a receptor made of several chains (a Fab) has to be
-    reduced to the chain that carries the interface before it goes in.
+    crystallisation partner) would add its energy to the complex but not to the
+    isolated components, and its caps, phosphorylated residues and lactam bridges
+    are not patched, so the force field often cannot build it. Call after
+    :func:`strip_heterogens`. Nothing is removed unless both chain IDs are given and
+    both are in the topology. A logged warning names each removed chain; a receptor
+    of several chains (a Fab) has to be reduced to the chain that carries the
+    interface beforehand.
 
     Args:
         topology: OpenMM Topology.
@@ -1332,12 +1323,11 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
     doc = gemmi.cif.read(str(cif_path))
     block = doc.sole_block()
 
-    # Derive each residue's (auth_asym_id, auth_seq_id, insertion code) from the FINAL
-    # _atom_site that was just written.  Those rows are 1:1 with topology.atoms(), and those
-    # are the exact columns OpenMM's PDBxFile keys atoms on when it reloads the
-    # file.  Using the topology chain id / a chain-local index here instead would
-    # not match _atom_site after save_cif has rewritten it to the original auth
-    # IDs, and OpenMM would silently drop the bond on reload.
+    # Each residue's (auth_asym_id, auth_seq_id, insertion code) comes from the final
+    # _atom_site: its rows are 1:1 with topology.atoms(), and these are the columns
+    # PDBxFile keys atoms on at reload. The topology's chain ID or a chain-local index
+    # would not match once save_cif has rewritten _atom_site to the original author IDs,
+    # and OpenMM would drop the bond silently.
     res_key: dict[int, tuple[str, str, str]] = {}
     site = block.find("_atom_site.", ["auth_asym_id", "auth_seq_id", "?pdbx_PDB_ins_code"])
     if site:
@@ -1347,7 +1337,7 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
             res_key.setdefault(atom.residue.index, (row[0], row[1], code))
 
     def _partner(res) -> tuple[str, str, str]:
-        # Fall back to the topology's own values if _atom_site could not be read.
+        # The topology's own values when _atom_site could not be read.
         return res_key.get(res.index, (res.chain.id, str(res.id), res.insertionCode.strip()))
 
     numbers = Counter((asym, seq) for asym, seq, _ in res_key.values())
@@ -1366,8 +1356,8 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
     ambiguous = shared if with_author else set()
 
     if ambiguous:
-        # The label_seq_id of a residue at a shared number is "." in _atom_site and in the rows,
-        # which is how a reader that matches the label columns (biotite) still finds one residue.
+        # The label_seq_id of a residue at a shared number is "." in _atom_site and in the
+        # rows; a reader that matches the label columns (biotite) still finds one residue.
         labels = block.find("_atom_site.", ["auth_asym_id", "auth_seq_id", "label_seq_id"])
         for row in labels:
             if (row[0], row[1]) in ambiguous and row[2] != ".":
@@ -1378,13 +1368,11 @@ def _patch_nonstd_bonds_in_cif(cif_path: Path, topology) -> None:
         existing = block.find(["_struct_conn.id"])
         n_existing = len(existing) if existing else 0
 
-        # Use the SAME label_* column names PDBxFile.writeFile emits.  On reload
-        # OpenMM reads struct_conn partners exclusively via ptnr*_label_asym_id /
-        # ptnr*_label_seq_id / ptnr*_label_atom_id — a freshly-created loop that used
-        # auth_* column names would be written but never read back.  The values we
-        # store come from _atom_site's auth_asym_id / auth_seq_id (which save_cif has
-        # already made equal to the label_asym_id it writes), so they match the atom
-        # keys OpenMM builds.
+        # Same label_* column names as PDBxFile.writeFile: OpenMM reads the partners of
+        # a row only through ptnr*_label_asym_id / _label_seq_id / _label_atom_id, so a
+        # new loop with auth_* names would never be read back. The values come from
+        # _atom_site's auth_asym_id / auth_seq_id (which save_cif has made equal to the
+        # label_asym_id it writes) and so match the atom keys OpenMM builds.
         columns = list(_STRUCT_CONN_LABEL_COLUMNS)
         if with_author:
             columns += _author_partner_columns("1") + _author_partner_columns("2")
@@ -1426,20 +1414,16 @@ _FF_INTERNAL_RESIDUE_RENAMES = (
 def _rename_internal_residues_to_standard(cif_path: Path) -> None:
     """Restore force-field-internal residue names to standard codes on output.
 
-    Prep renames residues internally so they match specialised force-field
-    templates — disulfide CYS→CYX, and lactam-closing ASP/GLU/LYS→ASPL/GLUL/LYSL.
-    Those internal names must not leak into output files: downstream tools, and
-    binding-metrics' own ``detect_cyclization`` (which matches the standard
-    residue name plus the ``_struct_conn`` closure bond), expect CYS/ASP/GLU/LYS.
-    The bond geometry and ``_struct_conn`` records are untouched, so re-detection
-    recovers the closure from the bond on reload. Without this, a saved lactam
-    structure carries GLUL/LYSL names and fails re-detection, raising a spurious
-    CyclizationError when the prepped file is relaxed.
+    Prep renames residues so they match specialised force-field templates:
+    disulfide CYS to CYX, lactam-closing ASP/GLU/LYS to ASPL/GLUL/LYSL. The internal
+    names must not reach output files: downstream tools and ``detect_cyclization``
+    (which matches the standard residue name plus the ``_struct_conn`` closure bond)
+    expect CYS/ASP/GLU/LYS. Bonds and ``_struct_conn`` records are untouched, so the
+    closure is re-detected on reload.
 
-    Uses whole-word text replacement rather than gemmi mutation because gemmi
-    Table views from ``block.find()`` do not propagate edits back through
-    ``doc.write_file()``. Each code is a 3–4-letter token unique to the
-    force-field internals and safe to replace as a whole word.
+    Uses whole-word text replacement because gemmi Table views from
+    ``block.find()`` do not propagate edits back through ``doc.write_file()``. Each
+    code is a 3-4 letter token unique to the force-field internals.
     """
     import re
 
@@ -1608,11 +1592,11 @@ def _assign_residue_numbers(output_residues: dict, source_residues: dict) -> dic
 
     Residues that pair with a source residue keep its number and code; they are numbered
     first. Numbers stay unique per chain: several output chains can map back to one author
-    chain (waters especially), each with its own 1-based numbering from PDBxFile, and two
-    residues with one number are folded into one by the reader. That is a silent structural
-    mutation, so uniqueness wins over fidelity to the source numbering where the two conflict.
-    Unpaired residues take the number OpenMM gave them, or the next free one above everything
-    used when that number is taken.
+    chain (waters especially), each with its own 1-based numbering from PDBxFile, and a
+    reader folds two residues with one number into one. Uniqueness therefore wins over
+    fidelity to the source numbering where the two conflict. Unpaired residues take the
+    number OpenMM gave them, or the next free one above everything used when that number
+    is taken.
     """
     assigned: dict[tuple, tuple[str, str]] = {}
     for auth_chain, residues in output_residues.items():
@@ -1693,29 +1677,27 @@ def save_cif(
 ) -> None:
     """Save structure as a CIF file.
 
-    Writes a fresh CIF from OpenMM (correct atoms, hydrogens, bonds), then
-    patches the auth_asym_id and auth_seq_id columns back to the original
-    values from source_cif_path so that chain IDs and residue numbers are
-    preserved.
+    Writes a fresh CIF from OpenMM, then patches the auth_asym_id and auth_seq_id
+    columns back to the original values from source_cif_path, so that chain IDs and
+    residue numbers are preserved.
 
     OpenMM uses label_asym_id internally and resets auth_seq_id to 1-based
-    sequential integers.  A single source auth chain may also be split into
-    multiple label chains by OpenMM.  The patch step handles both by building
-    a label→auth mapping and a positional (auth_chain, res_idx) → auth_seq_id
-    table from the source CIF.
+    sequential integers, and may split one source author chain into several label
+    chains. The patch step handles both with a label -> auth mapping and a
+    positional (auth_chain, res_idx) -> auth_seq_id table from the source CIF.
 
     Falls back to raw OpenMM output if gemmi is not available (logged as a
     warning) or source is None.
 
-    Residues that share a number (60 and 60A) cannot be told apart by the label
-    columns of ``_struct_conn`` that ``PDBxFile`` reads, which resolve a number to
-    the last residue that has it. When a chain has such residues, every row of
+    Residues that share a number (60 and 60A) cannot be told apart by the
+    ``_struct_conn`` label columns that ``PDBxFile`` reads, which resolve a number
+    to the last residue that has it. When a chain has such residues, every row of
     ``_struct_conn`` also names its partners by ``ptnr*_auth_asym_id``,
     ``ptnr*_auth_comp_id``, ``ptnr*_auth_seq_id`` and
-    ``pdbx_ptnr*_PDB_ins_code``, which ``load_structure`` reads, and the
+    ``pdbx_ptnr*_PDB_ins_code`` (read by ``load_structure``), and the
     ``label_seq_id`` of those residues is ``.`` in ``_atom_site`` and in the rows,
     so ``PDBxFile`` leaves the rows to ``load_structure``. A file with no shared
-    number is written as before.
+    number is written without these changes.
 
     Args:
         topology: OpenMM Topology object
@@ -1729,13 +1711,12 @@ def save_cif(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if source_cif_path is None:
-        # Without a source CIF to read the caller's IDs from, the topology's own
-        # chain IDs and residue numbers are the only ones there are. PDBxFile
-        # would replace them with A, B, C... and 1, 2, 3...
+        # No source CIF: the topology's own chain IDs and residue numbers are the only
+        # ones there are; PDBxFile would replace them with A, B, C... and 1, 2, 3...
         with open(output_path, "w", encoding="utf-8") as f:
             PDBxFile.writeFile(topology, positions, f, keepIds=_ids_fit_cif(topology))
-        # PDBxFile only writes disulfide bonds to _struct_conn; patch in any
-        # other non-sequential intra-chain covalent bonds (e.g. head-to-tail).
+        # PDBxFile writes only disulfides to _struct_conn: add the other
+        # non-sequential intra-chain bonds (e.g. head-to-tail).
         _patch_nonstd_bonds_in_cif(output_path, topology)
         _rename_internal_residues_to_standard(output_path)
         return
@@ -1755,8 +1736,7 @@ def save_cif(
         _rename_internal_residues_to_standard(output_path)
         return
 
-    # Write fresh OpenMM CIF — correct atoms and H, but with label chain IDs
-    # and 1-based sequential auth_seq_id.
+    # Fresh OpenMM CIF with label chain IDs and 1-based auth_seq_id, patched below.
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".cif", delete=False, encoding="utf-8"
     ) as tmp:
@@ -1769,29 +1749,19 @@ def save_cif(
         output_block = output_doc.sole_block()
 
         # ── Restore original chain IDs and residue numbers ───────────────────────
-        #
-        # PDBxFile.writeFile assigns sequential letters (A, B, C…) and resets
-        # residue numbers to 1-based, ignoring the topology's chain IDs.
-        # The topology carries the source label_asym_id as chain IDs (that's what
-        # PDBxFile sets when it reads a CIF).  So we need two things from the source:
-        #
-        #   label_to_auth   : source label_asym_id → source auth_asym_id
-        #   source_residues : source_auth_chain → [((auth_seq_id, insertion code), name)]
-        #
-        # Then for each output chain (sequential letter[i]):
-        #   original chain = label_to_auth[ topology.chains()[i].id ]
-        #
-        # And residue numbers are restored by pairing the residues of each auth chain, source
-        # and output, by name along the chain (see ``_pair_residues``).
-        # A residue is a run of rows with one (number, insertion code), which is where
-        # OpenMM's PDBxFile starts a new residue: 60 and 60A are two residues.
-        #
-        # PDBxFile names the chains by label_asym_id only when the file has more
-        # label IDs than author IDs (waters and ligands each get a label ID);
-        # otherwise the topology already carries the author IDs and the map stays
-        # empty: a label ID could name another chain's author ID.
+        # PDBxFile.writeFile names the chains A, B, C... and numbers residues from 1,
+        # ignoring the topology's IDs. From the source CIF we need
+        #   label_to_auth   : source label_asym_id -> source auth_asym_id
+        #   source_residues : source auth chain -> [((auth_seq_id, insertion code), name)]
+        # The original chain of output chain i is label_to_auth[topology.chains()[i].id].
+        # Residue numbers are restored by pairing the residues of each author chain,
+        # source and output, by name along the chain (see ``_pair_residues``). A residue
+        # is a run of rows with one (number, insertion code), where PDBxFile starts a
+        # new residue: 60 and 60A are two residues.
+        # PDBxFile names the chains by label_asym_id only when the file has more label
+        # IDs than author IDs; otherwise the topology already carries the author IDs and
+        # the map stays empty (a label ID could name another chain's author ID).
 
-        # source label → auth
         label_to_auth: dict[str, str] = {}
         source_auth_ids: set[str] = set()
         # source_auth_chain → [((auth_seq_id, insertion code), residue name)] in file order
@@ -1989,16 +1959,13 @@ def save_cif(
 def _append_missing_conect(topology, output_path: Path) -> None:
     """Add CONECT records for covalent bonds ``PDBFile.writeFile`` leaves out.
 
-    OpenMM emits CONECT only when a bond touches a non-standard residue, or for
-    a CYS SG-SG disulfide. A ring closure between two *standard* residues — the
-    head-to-tail amide of a cyclic peptide, where the partners are an ordinary
-    GLY and ASP — therefore leaves no trace in the file. On reload,
-    ``createStandardBonds`` cannot infer it either, because it only bonds
-    sequential residues and the two ends of a macrocycle are far apart in
-    sequence. The peptide silently comes back linear.
+    OpenMM emits CONECT only when a bond touches a non-standard residue, or for a
+    CYS SG-SG disulfide. A ring closure between two standard residues (the
+    head-to-tail amide of a cyclic peptide, say GLY to ASP) leaves no record in the
+    file, and ``createStandardBonds`` bonds only sequential residues on reload, so
+    the peptide comes back linear.
 
-    Only bonds OpenMM did not already write are appended, so no bond is
-    declared twice.
+    Only bonds OpenMM did not already write are appended.
     """
     from openmm.app import PDBFile
 
@@ -2040,8 +2007,7 @@ def _append_missing_conect(topology, output_path: Path) -> None:
         if line.startswith(("ATOM  ", "HETATM")):
             serials.append(line[6:11].strip())
     if len(serials) != topology.getNumAtoms():
-        # Numbering could not be established; leaving the file as written is
-        # better than emitting CONECT records pointing at the wrong atoms.
+        # Numbering unknown: no CONECT record is safer than one for the wrong atoms.
         return
 
     conect = [
@@ -2253,8 +2219,8 @@ def merge_cif_models(model_paths: list[tuple[int, Path]], output_path: Path) -> 
         raise ValueError(f"{model_tag} column missing from {first_path}")
     model_col = tags.index(model_tag)
 
-    # Build column-major layout for first model, stamp model number.
-    # loop.values is flat row-major; set_all_values() expects column-major.
+    # Column-major layout of the first model with its model number stamped
+    # (loop.values is flat row-major; set_all_values() takes column-major).
     first_vals = list(loop.values)
     n_rows = len(first_vals) // n_cols
     columns: list[list[str]] = [
@@ -2263,7 +2229,6 @@ def merge_cif_models(model_paths: list[tuple[int, Path]], output_path: Path) -> 
     for r in range(n_rows):
         columns[model_col][r] = str(first_num)
 
-    # Append subsequent models column by column
     for model_num, path in model_paths[1:]:
         other_doc = gemmi.cif.read(str(path))
         other_block = other_doc.sole_block()
@@ -2276,11 +2241,9 @@ def merge_cif_models(model_paths: list[tuple[int, Path]], output_path: Path) -> 
         if model_tag not in other_tags:
             raise ValueError(f"{model_tag} column missing from {path}")
 
-        # Column order is a property of the writer, not of the format, so
-        # resolve each of the first model's columns by tag rather than by
-        # position: matching on index alone silently interleaves fields (say
-        # Cartn_y into Cartn_x) whenever two inputs order _atom_site
-        # differently.
+        # Column order depends on the writer: resolve each column of the first model by
+        # tag, not by position, or fields interleave (Cartn_y into Cartn_x) when two
+        # inputs order _atom_site differently.
         missing = [tag for tag in tags if tag not in other_tags]
         if missing:
             raise ValueError(
