@@ -765,8 +765,8 @@ def _add_hydrogens_cyclic(
     fails when the N is already bonded to the C-terminus carbon.  This function
     uses the cyclic-aware ForceField templates instead.
 
-    ``report``, when given, receives ``ncaa_bond_order_source`` (see
-    ``prep_structure``) for the residues that needed a GAFF template.
+    ``report``, when given, receives ``ncaa_bond_order_source`` and ``ncaa_charge_scheme``
+    (see ``prep_structure``) for the residues that needed a GAFF template.
     """
     from openmm.app import ForceField, Modeller
 
@@ -821,6 +821,9 @@ def _add_hydrogens_cyclic(
     sources = getattr(ncaa_xmls, "bond_order_source_by_residue", {})
     if report is not None and sources:
         report.setdefault("ncaa_bond_order_source", {}).update(sources)
+    schemes = getattr(ncaa_xmls, "charge_scheme_by_residue", {})
+    if report is not None and schemes:
+        report.setdefault("ncaa_charge_scheme", {}).update(schemes)
 
     modeller = Modeller(topology, positions)
     addh_variants = (
@@ -1068,6 +1071,10 @@ def prep_structure(
               Component Dictionary) or ``"single_bonds"`` (the residue is not in
               the dictionary or disagrees with it, so double bonds, aromatic
               rings and the hydrogen count are unreliable). Absent otherwise.
+            * ``ncaa_charge_scheme`` (dict[str, str]): for the same residues, how the
+              capped molecule of each template ended at its external bonds and the
+              version of the charge scheme, for example ``"ace-nme-caps-v2"``
+              (``gaff_ncaa.CHARGE_SCHEME_VERSION``). Absent otherwise.
 
             Behaviour is identical when ``report`` is None.
 

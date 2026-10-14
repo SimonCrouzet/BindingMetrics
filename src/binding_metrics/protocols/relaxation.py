@@ -363,6 +363,11 @@ class RelaxationResult:
             the Chemical Component Dictionary (or disagrees with its entry); its
             double bonds, aromatic rings and hydrogen count are unreliable.
             Empty when no residue was parameterised this way.
+        ncaa_charge_scheme: How the capped molecule of each auto-parameterised
+            non-canonical residue ended at its external bonds, and the version of the
+            charge scheme, ``{residue name: "<kind>-v<version>"}`` (for example
+            ``"ace-nme-caps-v2"``; ``gaff_ncaa.CHARGE_SCHEME_VERSION``). Empty when no
+            residue was parameterised this way.
         dropped_protein_chains: IDs of the protein chains that are neither the peptide
             nor the receptor and were removed before the system was built (see
             ``io.structures.drop_other_protein_chains``). Empty when there were none.
@@ -410,6 +415,7 @@ class RelaxationResult:
     qc_passed: Optional[bool] = None
 
     ncaa_bond_order_source: dict = field(default_factory=dict)
+    ncaa_charge_scheme: dict = field(default_factory=dict)
     dropped_protein_chains: list = field(default_factory=list)
 
     def _qc_failed_checks(self) -> list:
@@ -477,6 +483,7 @@ class RelaxationResult:
             "qc_warnings": ",".join(self._qc_warning_keys()),
             "qc_checks": self._qc_check_rows(),
             "ncaa_bond_order_source": dict(self.ncaa_bond_order_source),
+            "ncaa_charge_scheme": dict(self.ncaa_charge_scheme),
             "dropped_protein_chains": list(self.dropped_protein_chains),
         }
         if self.peptide_rmsf_per_residue is not None:
@@ -519,6 +526,7 @@ class ImplicitRelaxation(Relaxer):
         self._platform_fallback_reason: Optional[str] = None
         # Set by _setup_system from the GAFF template step, copied into the result.
         self._ncaa_bond_order_source: dict = {}
+        self._ncaa_charge_scheme: dict = {}
         # Set by _setup_system: the peptide and receptor chain IDs in the topology it
         # returns, which is no longer the one the configured author IDs were read in.
         self._chain_ids: Optional[tuple] = None
@@ -715,6 +723,7 @@ class ImplicitRelaxation(Relaxer):
         self._import_openmm()
         self._ns_info = None
         self._ncaa_bond_order_source = {}
+        self._ncaa_charge_scheme = {}
         self._dropped_protein_chains = []
 
         # --- Structure loading ---
@@ -878,6 +887,7 @@ class ImplicitRelaxation(Relaxer):
             self._ncaa_bond_order_source = dict(
                 getattr(ncaa_xmls, "bond_order_source_by_residue", {})
             )
+            self._ncaa_charge_scheme = dict(getattr(ncaa_xmls, "charge_scheme_by_residue", {}))
             if ncaa_xmls:
                 logger.info(
                     "  Registered GAFF2 (%s) ExternalBond templates for %d NCAA residue(s).",
@@ -1366,6 +1376,7 @@ class ImplicitRelaxation(Relaxer):
             logger.info("[%s] Preparing system...", sample_id)
             system, topology, positions, bond_info = self._setup_system(input_path)
             result.ncaa_bond_order_source = dict(self._ncaa_bond_order_source)
+            result.ncaa_charge_scheme = dict(self._ncaa_charge_scheme)
             result.dropped_protein_chains = list(self._dropped_protein_chains)
 
             if bond_info:
