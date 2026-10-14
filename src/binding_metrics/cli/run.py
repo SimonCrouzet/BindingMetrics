@@ -111,6 +111,7 @@ from binding_metrics.cli.prediction import (
 )
 from binding_metrics.metrics._common import (
     ChainAliasAction,
+    ChainNotFoundError,
     require_distinct_chains,
     resolve_chain_role,
 )
@@ -170,10 +171,6 @@ ALL_METRICS = _steps_taking_a_path(_STEP_METRICS)
 # part of the default set; they are auto-enabled when a reference is supplied.
 REFERENCE_METRICS = _steps_taking_a_path({"dockq": ("dockq",)})
 KNOWN_METRICS = ALL_METRICS | REFERENCE_METRICS
-
-
-class ChainNotFoundError(ValueError):
-    """A chain ID requested by the caller does not exist in the structure."""
 
 
 def _require_chains_present(

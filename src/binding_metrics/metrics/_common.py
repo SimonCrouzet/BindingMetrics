@@ -148,6 +148,14 @@ def resolve_chain_role(
     return chain
 
 
+class ChainNotFoundError(ValueError):
+    """A chain ID requested by the caller does not exist in the structure.
+
+    Defined here so that the metric modules and ``binding_metrics.cli.run`` (which re-exports it)
+    raise and catch one class.
+    """
+
+
 def require_distinct_chains(peptide_chain: Optional[str], receptor_chain: Optional[str]) -> None:
     """Raise ``ValueError`` when both chain roles name one chain.
 

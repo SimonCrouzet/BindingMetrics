@@ -23,7 +23,11 @@ from typing import Literal, Optional
 import numpy as np
 
 from binding_metrics._constants import COULOMB_KCAL_ANG_MOL_E2
-from binding_metrics.metrics._common import import_biotite, resolve_chain_role
+from binding_metrics.metrics._common import (
+    ChainNotFoundError,
+    import_biotite,
+    resolve_chain_role,
+)
 
 # e²/(4π ε0) in kcal·Å/(mol·e²)
 _COULOMB_K = COULOMB_KCAL_ANG_MOL_E2
@@ -140,8 +144,6 @@ def require_chain_pair(
         if chain is not None and chain not in present
     ]
     if absent:
-        from binding_metrics.cli.run import ChainNotFoundError
-
         raise ChainNotFoundError(
             f"{' and '.join(absent)} not found in {where}; available chains: {present}"
         )
