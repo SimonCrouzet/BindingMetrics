@@ -136,8 +136,11 @@ def run_tests(test_type: str = "unit", verbose: bool = False) -> int:
     else:
         cmd.extend(["-q", "--no-header"])
 
-    # Markers
-    if test_type == "unit":
+    # Markers. A plain pytest is the fast tier (tests/_tiers.py); "all" asks for every tier, and the
+    # expressions below name tier markers, so they select what they say.
+    if test_type == "all":
+        cmd.extend(["--full", "--gpu"])
+    elif test_type == "unit":
         cmd.extend(["-m", "not integration and not slow"])
     elif test_type == "integration":
         cmd.extend(["-m", "integration and not slow"])

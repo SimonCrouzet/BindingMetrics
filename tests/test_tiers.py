@@ -10,6 +10,7 @@ The small project has 20 tests: 9 in the fast tier, 8 that carry slow, integrati
 (the ones ``--full`` adds) and 3 that carry gpu (the ones ``--gpu`` adds).
 """
 
+import importlib.util
 import re
 import subprocess
 import sys
@@ -22,6 +23,7 @@ import pytest
 
 pytest_plugins = ["pytester"]
 
+REPO = Path(__file__).resolve().parent.parent
 REPO_CONFTEST = Path(__file__).resolve().parent / "conftest.py"
 
 PROJECT_CONFTEST = f'''
@@ -727,3 +729,44 @@ class TestTheRealSuite:
         assert default and default == former_default
         assert full == former_full
         assert default < full  # the directory holds cases that only --full adds
+
+
+class TestWhatRunsTheSuite:
+    """A plain pytest is the fast tier, so what runs the whole suite has to say so."""
+
+    def test_ci_runs_the_full_tier_with_the_flags_it_had(self):
+        text = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        commands = re.findall(r"^\s*run:\s*(pytest\b.*)$", text, flags=re.MULTILINE)
+        suite = [c for c in commands if ".py" not in c and "--collect-only" not in c]
+        assert suite == ["pytest --full -v --durations=10"]
+        # -m gpu names a tier marker: it collects the GPU tests whatever the options
+        assert [c for c in commands if "--collect-only" in c] == [
+            'pytest -m "gpu" --collect-only -q'
+        ]
+        # a named file runs whatever its tier, so the job of the import test needs no option
+        assert [c for c in commands if ".py" in c] == [
+            "pytest tests/test_w2a_import_without_openmm.py -v"
+        ]
+
+    @pytest.mark.parametrize(
+        ("test_type", "expected"),
+        [
+            ("all", ["--full", "--gpu"]),
+            ("unit", ["-m", "not integration and not slow"]),
+            ("integration", ["-m", "integration and not slow"]),
+            ("slow", ["-m", "slow"]),
+        ],
+    )
+    def test_the_test_runner_script_selects_the_tiers_it_names(
+        self, monkeypatch, test_type, expected
+    ):
+        spec = importlib.util.spec_from_file_location(
+            "bm_run_tests_tiers", REPO / "scripts" / "run_tests.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        commands = []
+        monkeypatch.setattr(module.subprocess, "call", lambda cmd, **_: commands.append(cmd) or 0)
+
+        assert module.run_tests(test_type, verbose=True) == 0
+        assert commands[0][-len(expected) :] == expected

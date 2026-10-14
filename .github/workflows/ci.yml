@@ -74,12 +74,13 @@ jobs:
           # mismatches the ABI and segfaults the openff/AmberTools registry.
           python -c "import numpy; assert numpy.__version__.startswith('1.'), numpy.__version__; print('numpy', numpy.__version__)"
 
-      # Everything except the gpu tier: GitHub runners have no CUDA device, so
-      # those tests can only be run locally or on self-hosted hardware. The
-      # integration tests do run here — they take seconds on CPU.
+      # --full is every test except the gpu tier: GitHub runners have no CUDA
+      # device, so those tests can only be run locally or on self-hosted
+      # hardware. The integration tests do run here — they take seconds on CPU.
+      # A plain pytest is the fast tier and would leave the slow ones out.
       - name: Run tests
         shell: bash -el {0}
-        run: pytest -m "not gpu" -v --durations=10
+        run: pytest --full -v --durations=10
 
       # The gpu tier is invisible to this workflow, so a test that fails to
       # collect there would go unnoticed. Collect-only proves the modules at
