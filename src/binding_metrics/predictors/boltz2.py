@@ -1,13 +1,13 @@
 """Adapter for the output of Boltz-2 (``boltz predict``).
 
-Layout checked against the source of Boltz v2.2.1 (released 2025-09-08; main b1ebfc4, read on
-2026-09-29). The layout below comes from reading the writers (``boltz/data/write/writer.py``,
+Layout as written by Boltz v2.2.1 (released 2025-09-08; main b1ebfc4;
+https://github.com/jwohlwend/boltz), read in the writers (``boltz/data/write/writer.py``,
 ``mmcif.py``, ``pdb.py``), the confidence heads (``boltz/model/modules/confidencev2.py``,
-``confidence_utils.py``) and the tokenizer (``boltz/data/tokenize/boltz2.py``), and from one
-Boltz mmCIF excerpt in the ipSAE script (``ipsae.py:186-207`` of
-https://github.com/DunbrackLab/IPSAE). Line numbers refer to that source.
-Real outputs of v2.2.1 (1YCR and 1CWA, single-sequence mode, from ``Boltz2Runner``) were read
-without a reason; the points that they did not settle are listed under TO VERIFY.
+``confidence_utils.py``) and the tokenizer (``boltz/data/tokenize/boltz2.py``), and in one Boltz
+mmCIF excerpt of the ipSAE script (``ipsae.py:186-207`` of https://github.com/DunbrackLab/IPSAE).
+Line numbers refer to that source. Real outputs of v2.2.1 (1YCR and 1CWA, single-sequence mode,
+from ``Boltz2Runner``) were read without a reason; the points not settled by them are listed
+under "Not verified".
 
     {out}/boltz_results_{stem}/predictions/{stem}/          (main.py:1134, 752)
         {stem}_model_{r}.cif | .pdb                          the structure (--output_format)
@@ -19,29 +19,28 @@ without a reason; the points that they did not settle are listed under TO VERIFY
         affinity_{stem}.json                                 not read
 
 * ``r`` counts from 0 and is the rank by ``confidence_score`` (``writer.py:73-79,159``): sample
-  ``k`` of this adapter is file ``r = k - 1``, so ``sample=1`` is the best-ranked model, not just
-  the first written. ``{stem}`` is the name of the input file without its suffix. When ``boltz
-  predict`` is given a directory of inputs, ``boltz_results_`` carries the name of that
-  directory, so the adapter also looks in ``boltz_results_*/predictions/{name}``. It looks in
-  ``prediction_dir`` itself, in ``prediction_dir/{name}``, in ``prediction_dir/predictions/{name}``
-  and then in those ``boltz_results_*`` folders, and takes the first that holds the sample.
+  ``k`` of this adapter is file ``r = k - 1``, so ``sample=1`` is the best-ranked model.
+  ``{stem}`` is the name of the input file without its suffix. When ``boltz predict`` is given
+  a directory of inputs, ``boltz_results_`` carries the name of that directory. The adapter looks
+  in ``prediction_dir`` itself, in ``prediction_dir/{name}``, in
+  ``prediction_dir/predictions/{name}`` and then in ``boltz_results_*/predictions/{name}``, and
+  takes the first that holds the sample.
 * ``--write_embeddings`` makes the writer save ``s`` and ``z`` (the trunk's single and pair
   representations) in ``embeddings_{stem}.npz`` next to the structures, once per input and not per
   sample (``writer.py:249-257``). The adapter registers the file as ``PredictionFiles.extra
   ["embeddings"]`` for every sample that exists, and ``parse`` puts its path in
   ``extras["embeddings_path"]``; the path is found when the files are located, from the directory
-  they are in, so it follows the store's rename. The arrays are never read here, and a missing file
-  adds no reason: whether embeddings were asked for is a fact of the request, which the session
-  knows.
+  they are in, so it follows the store's rename. The arrays are never read here, and a missing
+  file adds no reason: whether embeddings were asked for is a fact of the request, which the
+  session knows.
 * One ``boltz predict`` run has one seed (``--seed``, ``main.py:919``), so there is no seed
   dimension: ``seed_index`` must be 1, another seed is another output directory.
 * PAE and PDE are written whenever the confidence head ran: ``predict_step`` adds ``pde``
   unconditionally and ``pae`` when ``alpha_pae > 0`` (``boltz2.py:1084-1102``), which is 1 in
-  the released checkpoint (read from its ``data.pkl`` by the format report). The
-  ``--write_full_pae`` and ``--write_full_pde`` flags are read only by Boltz-1
-  (``boltz1.py:1192-1194``), although ``docs/prediction.md`` lists them as switches for these
-  files (TO VERIFY on a run without the flags; a file that is absent gives a reason). The
-  weights are not in the output, so nothing records which checkpoint produced a file.
+  the released checkpoint. The ``--write_full_pae`` and ``--write_full_pde`` flags are read only
+  by Boltz-1 (``boltz1.py:1192-1194``), although ``docs/prediction.md`` lists them as switches
+  for these files; an absent file gives a reason. The weights are not in the output, so nothing
+  records which checkpoint produced a file.
 * The confidence summary has ``confidence_score``, ``ptm``, ``iptm``, ``ligand_iptm``,
   ``protein_iptm``, ``complex_plddt``, ``complex_iplddt``, ``complex_pde``, ``complex_ipde``
   (``writer.py:190-201``) and the dictionaries ``chains_ptm`` and ``pair_chains_iptm``
@@ -58,10 +57,9 @@ without a reason; the points that they did not settle are listed under TO VERIFY
   doi:10.1038/s41586-021-03819-2). ``iptm`` is exactly 0 when the complex has one chain
   (``confidence_utils.py:91-96,119-123``): the record then gets NaN and a reason.
   ``confidence_score`` is ``(4 complex_plddt + iptm) / 5`` (``ptm`` in place of an ``iptm`` of 0;
-  ``boltz2.py:1086-1095``), so it is dominated by pLDDT and is the ranking score of the record.
-  ``complex_pde`` is the PDE averaged over token pairs, weighted by the probability of contact
-  (the first 20 distogram bins, about 8 angstrom; ``confidencev2.py:433-458``); it fills the
-  record's ``gpde``.
+  ``boltz2.py:1086-1095``) and is the ranking score of the record. ``complex_pde`` is the PDE
+  averaged over token pairs, weighted by the probability of contact (the first 20 distogram
+  bins, about 8 angstrom; ``confidencev2.py:433-458``); it fills the record's ``gpde``.
 * PAE orientation: ``pae[i, j]`` is the error of token j when the structures are aligned on token
   i. Boltz sums the TM term over the column index j for each row i and takes the maximum over
   the rows i (``confidence_utils.py:108-123``), so the row is the alignment frame, and the
@@ -79,7 +77,9 @@ without a reason; the points that they did not settle are listed under TO VERIFY
   array through the token map and compares the result with the B-factor column of the file.
 * Structure files (see :func:`_read_atom_sites`): atoms chain by chain, residues numbered from 1
   in each chain (``mmcif.py:187``), chain names as given in the input, a polymer chain as ``ATOM``
-  records and a ligand chain as ``HETATM`` records with ``label_seq_id`` ``.``.
+  records and a ligand chain as ``HETATM`` records with ``label_seq_id`` ``.``. The mmCIF has
+  ``auth_asym_id`` and ``auth_seq_id`` (the chain name and the residue number ``res_idx + 1``);
+  without them the ``label_`` columns are read.
 
 Fields this model does not provide, left NaN or empty: ``has_clash`` and ``disorder`` (Boltz-2
 computes neither) and ``timing`` (it writes no timing file). ``chain_pair_iptm`` holds the
@@ -90,26 +90,21 @@ by ``"A-B"``; the values as Boltz writes them, keyed by index, are in
 ``complex_iplddt`` (0-1), ``complex_ipde``, ``chain_ids_by_index``, ``model_rank``, ``n_tokens``
 and ``bfactor_matches_plddt``.
 
-TO VERIFY against a real Boltz-2 run (each is marked where it is used):
+Not verified against a real Boltz-2 run (each is marked where it is used):
 
-1. The layout for versions after 2.2.1, which are not checked, and for outputs other than the
-   two complexes above. Boltz-1 writes the same file names with other semantics (it tokenises
-   modified residues per atom), which this adapter does not implement: a token count that
-   differs raises.
-2. That the mmCIF written through the ihm library has ``auth_asym_id`` and ``auth_seq_id`` (the
-   Boltz-1 excerpt in ``ipsae.py`` does) and that they equal the chain name and the residue number
-   ``res_idx + 1``: confirmed on the real outputs of 1YCR and 1CWA. Without them the label
-   columns are read.
-3. That the chain index of the confidence file is the position of the chain in the structure
+1. The layout for versions after 2.2.1 and for outputs other than the two complexes above.
+   Boltz-1 writes the same file names with other semantics (it tokenises modified residues per
+   atom), which this adapter does not implement: a token count that differs raises.
+2. That the chain index of the confidence file is the position of the chain in the structure
    file for complexes of three or more chains and for identical chains listed apart (the input
    is grouped by entity, so ``A: x, B: y, C: x`` gives the chains A, C, B; ``schema.py:1014-1037``).
    The adapter uses the order of the file, which the writer takes from the same chain table.
-4. A checkpoint whose confidence head is per atom (``token_level_confidence=False``,
+3. A checkpoint whose confidence head is per atom (``token_level_confidence=False``,
    ``confidencev2.py:398``) would write a longer ``plddt``; the adapter refuses it (the array
-   length differs from the token count) instead of guessing.
-5. That a standard residue never appears in a ligand chain and a modified residue never in a
+   length differs from the token count).
+4. That a standard residue never appears in a ligand chain and a modified residue never in a
    ``HETATM`` record of a polymer chain, which the token rule assumes (``mmcif.py:149-153``).
-6. That ``complex_pde`` (contact-weighted mean PDE) is the quantity that OpenFold3 and Protenix
+5. That ``complex_pde`` (contact-weighted mean PDE) is the quantity that OpenFold3 and Protenix
    write as ``gpde``; the record's ``gpde`` is compared only within one model either way.
 
 The module imports numpy only. The structure file is read as text when the confidence files are
@@ -377,7 +372,7 @@ def _read_atom_sites(path: Path) -> Optional[_AtomSites]:
     pdbx_PDB_model_num`` in the Boltz example of ``ipsae.py:186-207``). The chain is
     ``auth_asym_id`` and the residue number ``auth_seq_id``, each falling back to its ``label_``
     column, the fields that biotite reads. A ligand row has ``.`` as ``label_seq_id`` and its
-    residue number in ``auth_seq_id``. TO VERIFY: that Boltz-2 files have the author columns.
+    residue number in ``auth_seq_id``.
 
     PDB: the fixed columns of ``pdb.py:127-134`` (atom name 13-16, residue name 18-20, chain
     22, residue number 23-26, insertion code 27, B-factor 61-66); ligand residues are named LIG.
@@ -425,8 +420,8 @@ def _boltz_tokens(sites: _AtomSites) -> _BoltzTokens:
     standard or modified. The token of a residue is represented by its C-alpha (its C1' for a
     nucleotide, its first atom otherwise), the token of a ligand atom by that atom.
 
-    TO VERIFY: the rule assumes that a standard residue never appears in a ligand chain and a
-    modified residue never as ``HETATM`` in a polymer chain (module docstring, item 5). Where it
+    The rule assumes that a standard residue never appears in a ligand chain and a modified residue
+    never as ``HETATM`` in a polymer chain (module docstring, "Not verified", item 4). Where it
     fails the token count differs from the arrays and ``Boltz2Parser.parse`` refuses the file.
 
     Raises:
@@ -625,29 +620,24 @@ class Boltz2Parser(PredictionParser):
     display_name = "Boltz-2"
     family = "af3"
 
-    # The inputs Boltz-2 2.2.1 can be given, from its source and documentation (checked against
-    # the clone on 2026-09-30; tests/test_pre_boltz2_limits.py re-reads it when the clone is at
-    # hand). No closure is refused: `cyclic: true` wraps a chain head-to-tail
-    # (boltz/data/parse/schema.py) and the `bond` constraint takes any two atoms of the input
-    # (`atom_idx_map`), so a disulfide or a lactam between canonical residues can be given. A bond
-    # between the first and the last residue also sets the cyclic period, but only for the first
-    # chain of the input, because featurizerv2.py compares residue indices counted over the whole
+    # Limits of Boltz-2 2.2.1, from its source and documentation (tests/test_pre_boltz2_limits.py
+    # re-reads the clone when it is at hand).
+    # Closures: none is refused. `cyclic: true` wraps a chain head-to-tail (schema.py) and the
+    # `bond` constraint takes any two atoms of the input (`atom_idx_map`). A bond between the
+    # first and the last residue also sets the cyclic period, but only for the first chain of
+    # the input, because featurizerv2.py compares residue indices counted over the whole
     # structure with 0; Boltz2Runner writes the receptor first, so it relies on `cyclic: true`.
-    # Not declared because nothing shows it: a limit on the residue classes (a modified residue is
-    # a CCD code in `modifications`; D-amino acids and N-methyl are not mentioned), and on the
-    # binder size (no maximum is stated).
-    # Modes (v2.2.1 source and documentation, checked against the clone on 2026-10-01): all five
-    # are declared. predict is the plain input; refold and score need a template per chain, which
-    # `templates` takes with `chain_id` (docs/prediction.md, Templates); an unforced template
-    # carries no pose, because the template module lets features attend within the same chain only
-    # (src/boltz/model/modules/trunkv2.py, "Compute asym mask"). score-lock is the template with
-    # `force: true` and a `threshold`: process_template_features
+    # No limit is declared on the residue classes (a modified residue is a CCD code in
+    # `modifications`) or on the binder size (no maximum is stated).
+    # Modes: all five. predict is the plain input. refold and score need a template per chain,
+    # which `templates` takes with `chain_id` (docs/prediction.md, Templates); an unforced
+    # template carries no pose, because the template module lets features attend within the same
+    # chain only (src/boltz/model/modules/trunkv2.py, "Compute asym mask"). The lock modes use
+    # `force: true` with a `threshold`: process_template_features
     # (src/boltz/data/feature/featurizerv2.py) puts all the chains a template file maps into one
     # row, and TemplateReferencePotential (src/boltz/model/potentials/potentials.py) aligns that
     # row rigidly over its templated tokens (weighted_rigid_align) and penalises a deviation
-    # larger than the threshold. It is a guidance term, so score-lock is a caveat and not a promise.
-    # refold-lock is the same template for the receptor chain alone, with the binder free; it has
-    # the same caveat.
+    # larger than the threshold. It is a guidance term, hence the caveats below.
     capabilities = Capabilities(
         modes={"predict", "refold", "score", "score-lock", "refold-lock"},
         caveats={
@@ -786,8 +776,8 @@ class Boltz2Parser(PredictionParser):
             if role in files.extra
         }
         sizes = {role: array.shape[0] for role, array in arrays.items()}
-        # TO VERIFY: a per-atom pLDDT (a head without token_level_confidence, module docstring
-        # item 4) has more values than PAE has rows and is refused here.
+        # A per-atom pLDDT (a head without token_level_confidence, module docstring, "Not
+        # verified", item 3) has more values than PAE has rows and is refused here.
         if len(set(sizes.values())) > 1:
             raise ValueError(
                 f"the arrays of {stem} disagree on the number of tokens: {sizes}; "
@@ -895,7 +885,8 @@ class Boltz2Parser(PredictionParser):
             )
         if tokens is None:
             return
-        # TO VERIFY (module docstring, item 3): chain index k is the k-th chain of the file.
+        # Not verified for three or more chains (module docstring, item 2): chain index k is the
+        # k-th chain of the file.
         order = tokens.chain_order
         by_index = {str(k): chain for k, chain in enumerate(order)}
         record.extras["chain_ids_by_index"] = by_index
