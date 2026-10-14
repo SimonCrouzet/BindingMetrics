@@ -12,9 +12,10 @@ Stages
 1. Every argument is checked before a structure is read: an unknown or unsupported metric, an
    unknown option or choice, a repeated pose id, a metric name that is also a reserved row name
    (``ValueError``, ``KeyError``, ``TypeError``).
-2. The first pose that can be read (in id order) gives the chains (``binder_chain`` and
-   ``target_chain`` are detected from it when not given), the implicit reference (when no
-   ``reference`` is given) and the profile that the pre-flight check reads.
+2. The first pose that can be read (in id order) and, with a ``reference``, placed on it gives
+   the chains (``binder_chain`` and ``target_chain`` are detected from it when not given) and the
+   profile that the pre-flight check reads; without a ``reference`` it is also the implicit
+   reference. When no pose can be placed, the first pose that can be read plays that role.
 3. Per pose, in parallel when ``n_workers > 1``: read the structure, profile the binder, place
    the pose on the receptor of each reference variant (``frame``), write the structure that the
    path-based metrics read, and run the light metrics.
@@ -1835,17 +1836,25 @@ def _scan_first_pose(
     binder_chain: Optional[str],
     target_chain: Optional[str],
     raise_mode: bool,
+    placement: Optional[Callable[[Pose, str], Optional[str]]] = None,
 ) -> _Scan:
     """Read the poses in id order until one gives both chains and a profile.
 
     The chains that were not given are detected from that pose (the smaller protein chain is
     the binder, the larger the target). Under ``on_error="raise"`` a pose that fails before
     it raises.
+
+    ``placement(pose, target_chain)`` returns why a pose cannot be placed on the reference, or
+    None. A pose that reads but cannot be placed is not the pose the others are compared with
+    (the profile of the pre-flight check and the "differs" warnings come from the first pose
+    that can be placed); when no pose can be placed, the first one that reads is returned and
+    its row fails at the frame stage like the others.
     """
     from binding_metrics.capabilities import profile_input
     from binding_metrics.metrics.interface import detect_interface_chains
 
     failures: dict[str, tuple[str, str]] = {}
+    unplaced: Optional[_Scan] = None
 
     def failed(pose_id: str, stage: str, text: str, exc: Optional[BaseException] = None):
         failures[pose_id] = (stage, text)
@@ -1886,8 +1895,12 @@ def _scan_first_pose(
             failed(pose_id, "profile", _describe(exc), exc)
             continue
         detected = {"binder_chain": binder_chain is None, "target_chain": target_chain is None}
-        return _Scan(pose, atoms, binder, target, profile, failures, detected)
-    return _Scan(None, None, binder_chain, target_chain, None, failures, {})
+        scan = _Scan(pose, atoms, binder, target, profile, failures, detected)
+        if placement is not None and placement(pose, target) is not None:
+            unplaced = unplaced or scan
+            continue
+        return scan
+    return unplaced or _Scan(None, None, binder_chain, target_chain, None, failures, {})
 
 
 def _preflight(
@@ -1901,7 +1914,7 @@ def _preflight(
     design_policy: str = "skip",
     backends: Sequence[str] = (),
 ) -> tuple[Optional[dict], list[_MetricPlan], list[str]]:
-    """The pre-flight check of the requested metrics against the first pose's profile.
+    """The pre-flight check of the requested metrics against the profile of the scanned pose.
 
     Returns the report as a dictionary (None when ``mode`` is ``"off"``), the plans with the
     metrics that the check left out (policy ``"skip"``) marked as skipped, and the warnings of
@@ -2236,7 +2249,8 @@ def score_pose_set(
         poses: The poses (``DockedPose``, ``ExperimentalPose``, ``PredictedPose``) with unique
             ids. The order does not matter: rows are sorted by id.
         binder_chain: The binder (peptide) chain ID in the poses (user chain IDs, after any
-            ``chain_map``); None detects the smaller protein chain of the first readable pose.
+            ``chain_map``); None detects the smaller protein chain of the first readable pose
+            that can be placed on the reference.
         target_chain: The receptor chain ID; None detects the larger other protein chain.
         metrics: Registry names (``"interface"``, ``"hbonds"``, ``"delta_sasa_static"``, ...) run
             on each pose; ``()`` gives the frame, the native scores and the agreement only.
@@ -2382,7 +2396,28 @@ def score_pose_set(
     # -- 2. first pose, chains, reference, pre-flight --------------------------------------
     stage_started = time.perf_counter()
     raise_mode = on_error == "raise"
-    scan = _scan_first_pose(sorted_poses, binder_chain, target_chain, raise_mode)
+    explicit_reference = next(iter(variants.values()), None)
+
+    def placement(pose: Pose, target: str) -> Optional[str]:
+        try:
+            frame = superpose_receptor(
+                pose,
+                explicit_reference,
+                receptor_chain=target,
+                residue_map=maps_by_pose.get(pose.id),
+                options=options.frame,
+            )
+        except Exception as exc:  # noqa: BLE001 - the row of the pose records it later
+            return _describe(exc)
+        return None if frame.ok else (frame.reason or "the pose could not be placed")
+
+    scan = _scan_first_pose(
+        sorted_poses,
+        binder_chain,
+        target_chain,
+        raise_mode,
+        placement if explicit_reference is not None else None,
+    )
     implicit = not variants
     preflight_report: Optional[dict] = None
     notes: list[str] = []
@@ -2659,7 +2694,7 @@ def _all_failed(poses: Sequence[tuple[str, Pose]], scan: _Scan) -> list[_Outcome
 
 
 def _compare_profiles(outcomes: Sequence[_Outcome], scan: _Scan) -> list[str]:
-    """Mark the rows whose binder profile differs from the first pose's; return the warnings."""
+    """Mark the rows whose binder profile differs from the scanned pose's; return the warnings."""
     if scan.pose is None:
         return []
     first = next((o.row for o in outcomes if o.pose_id == scan.pose.id), None)
