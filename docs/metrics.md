@@ -172,7 +172,7 @@ Neither score includes solvent screening, cooperativity or burial. For an electr
 | `charged_atoms_receptor` | list[dict] | — | same for the target |
 | `reason` | str | — | only when a chain was not found; the scores are then 0 |
 
-formula: E = (k / ε) · Σ q_i q_j / r_ij over cross-chain pairs with r_ij below the cutoff, with k = 1389.35 kJ·Å/(mol·e²), ε = 4.0 and a 12 Å cutoff (both settable). One uniform dielectric, formal charges taken from residue names, no pKa shifts, no chain termini and no solvent screening: a heuristic ranking score, not a binding free energy.
+formula: E = (k / ε) · Σ q_i q_j / r_ij over cross-chain pairs with r_ij below the cutoff, with k = 1389.35457 kJ·Å/(mol·e²) (the one value of `binding_metrics._constants`, which the salt-bridge score and the pair sums of the trajectory energy use as well), ε = 4.0 and a 12 Å cutoff (both settable). One uniform dielectric, formal charges taken from residue names, no pKa shifts, no chain termini and no solvent screening: a heuristic ranking score, not a binding free energy.
 
 formal charges (D-amino acids use the entry of their L counterpart):
 
