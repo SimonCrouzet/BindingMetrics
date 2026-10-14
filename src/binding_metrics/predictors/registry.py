@@ -2,11 +2,9 @@
 
 Each ``ParserSpec`` names one adapter without importing it, as ``MetricSpec`` does for a
 metric: ``PARSERS`` maps a model name to its spec, ``get_parser(name)`` returns an adapter
-instance, and the adapter module is imported when ``ParserSpec.load`` runs. Loading the
-registry imports no adapter, so an adapter that needs a heavier dependency later does not
-slow the others down.
+instance, and the adapter module is imported when ``ParserSpec.load`` runs.
 
-What a consumer may rely on:
+Stable names and behaviour:
 
 * the field names of ``ParserSpec`` and the names ``PARSERS``, ``get_parser`` and
   ``register_parser`` keep their meaning; the registry grows by adding entries;
