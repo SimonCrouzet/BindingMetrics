@@ -1,12 +1,11 @@
 """Hydrogen-bond and salt-bridge detection for protein complexes.
 
-Both metrics return a small dict containing an energy estimate (kcal/mol,
-primary signal) plus interpretable count(s) (supplementary). See
-``docs/metrics.md`` for the full description and rationale.
+Both metrics return a small dict with an energy estimate (kcal/mol) and
+count(s). See ``docs/metrics.md``.
 
-The energies are heuristic scores built for ranking designs: their functional
-forms and constants are not fitted to measured energies, so they should not be
-compared with force-field or experimental free energies.
+The energies are heuristic scores for ranking designs; their functional forms
+and constants are not fitted to measured energies and are not comparable to
+force-field or experimental free energies.
 
 References:
     Baker & Hubbard, Prog. Biophys. Mol. Biol. 44:97-179 (1984): geometric
@@ -34,8 +33,7 @@ _COULOMB_K = COULOMB_KCAL_ANG_MOL_E2
 _DIELECTRIC = 4.0
 
 # Package-chosen scale, not a fitted constant: an ideal H-bond (d_HA = 2.0 Å,
-# θ_DHA = 180°) evaluates to -2.5 kcal/mol, in the range usually quoted for a
-# protein H-bond.
+# θ_DHA = 180°) scores -2.5 kcal/mol.
 _HBOND_K = 5.0
 
 
@@ -51,10 +49,9 @@ def _import_hydride():
 def _prepare_for_hydride(atoms, structure_mod):
     """Ensure the AtomArray has the BondList and charge field hydride needs.
 
-    Hydride requires (a) an associated BondList and (b) a ``charge`` annotation.
-    Raw AlphaFold/OpenFold-style CIFs typically have neither, which used to make
-    the call fail silently and yield zero H-bonds. We infer bonds from residue
-    names (CCD-based) and zero-fill missing charges as needed.
+    Hydride requires a BondList and a ``charge`` annotation, which raw
+    AlphaFold/OpenFold-style CIFs usually lack. Bonds are inferred from residue
+    names (CCD) and missing charges are zero-filled.
     """
     if atoms.bonds is None:
         atoms.bonds = structure_mod.connect_via_residue_names(atoms)
@@ -67,8 +64,8 @@ def _add_hydrogens_if_needed(atoms, structure_mod):
     """Add explicit hydrogens via hydride iff the structure has none yet.
 
     Returns ``(atoms, reason)``. ``reason`` is None unless hydride failed on a
-    structure that needed hydrogens; the H-bond count is then 0 for want of
-    hydrogens, not because no bond exists.
+    structure that needed hydrogens; the H-bond count is then 0 for lack of
+    hydrogens.
     """
     n_h = int(np.sum(atoms.element == "H"))
     if n_h > 0:
@@ -132,17 +129,17 @@ def compute_hbonds(
     BondList.
 
     Triplets returned by biotite are deduplicated to unique cross-chain
-    ``(donor_heavy, acceptor_heavy)`` pairs so that e.g. ARG NH1's two
-    equivalent hydrogens contacting the same acceptor count as one H-bond
-    rather than two. The shortest-H–A triplet is kept per pair.
+    ``(donor_heavy, acceptor_heavy)`` pairs, so the two equivalent hydrogens
+    of ARG NH1 contacting one acceptor count as one H-bond. The shortest-H–A
+    triplet is kept per pair.
 
     Energy per kept pair:
 
         E = -k_hb * cos²(180° - θ_DHA) / d_HA
         k_hb = 5.0 kcal·Å/mol  (ideal d=2.0, θ=180° → -2.5 kcal/mol)
 
-    This form is a heuristic score (bent contacts are down-weighted smoothly
-    and short contacts count more), not a published H-bond potential.
+    This form is a heuristic score (bent contacts are down-weighted and short
+    contacts count more), not a published H-bond potential.
 
     If ``atoms`` has no BondList or charge annotation and ``hetero="keep"``,
     both are added to the caller's array in place; ``hetero="ignore"`` works
@@ -159,7 +156,7 @@ def compute_hbonds(
     hetero : {"ignore", "keep"}
         "ignore" (default) drops waters, ions, ligands and glycans before the
         chain selection, so a water that carries a receptor chain ID is not
-        counted as a receptor atom. "keep" uses every atom as before.
+        counted as a receptor atom. "keep" uses every atom.
 
     Returns
     -------
@@ -167,8 +164,7 @@ def compute_hbonds(
         hbond_energy : float  — sum of pair energies, kcal/mol (≤ 0)
         hbonds       : int    — number of unique cross-chain heavy-atom pairs
         reason       : str    — only when hydrogens could not be built or the
-                                detector failed; the count is then 0 for that
-                                reason rather than a measured absence of H-bonds
+                                detector failed; the count is then 0
     """
     from binding_metrics.metrics.interface import filter_hetero_atoms
 
@@ -236,10 +232,10 @@ def compute_hbonds(
 
 # Side-chain charged-atom allowlists (L-residue names; D-residues are mapped to their
 # L counterpart first, see ``l_equivalent_residue_names``).
-# HIS / HID / HIE are intentionally excluded — see docs/metrics.md.
+# HIS / HID / HIE are excluded (see docs/metrics.md).
 # SEP/TPO/PTR are the phosphorylated residues of the AMBER phosaa set used by the
-# relaxation step (core/phosaa.py): a phosphate monoester carrying net -2 at pH 7,
-# shared by the three non-bridging oxygens.
+# relaxation step (core/phosaa.py): net -2 at pH 7, shared by the three non-bridging
+# oxygens.
 _POSITIVE_ATOMS: set[tuple[str, str]] = {
     ("LYS", "NZ"),
     ("ARG", "NH1"),
@@ -267,8 +263,8 @@ _NEGATIVE_ATOMS: set[tuple[str, str]] = {
 
 @lru_cache(maxsize=1)
 def _d_to_l_residue_names() -> dict[str, str]:
-    # Imported on first use so that importing this module does not pull in the
-    # simulation stack that ``binding_metrics.core`` may load.
+    # Imported on first use: importing this module must not load the simulation
+    # stack that ``binding_metrics.core`` may import.
     from binding_metrics.core.nonstandard import D_AA_MAP
 
     return dict(D_AA_MAP)
@@ -316,11 +312,10 @@ def compute_saltbridges(
         negative: ASP OD1/OD2, GLU OE1/OE2, and the non-bridging phosphate
                   oxygens O1P/O2P/O3P of SEP, TPO and PTR
 
-    Plain HIS, HID and HIE are treated as neutral (no pKa lookup performed).
-    HIP is the AMBER name for the doubly-protonated, +1 form. After
-    pdbfixer/OpenMM relaxation, charged histidines are typically renamed to
-    HIP; raw predicted CIFs only carry HIS and so contribute no histidine
-    salt bridges.
+    Plain HIS, HID and HIE are treated as neutral (no pKa lookup). HIP is the
+    AMBER name for the doubly protonated +1 form. Relaxation with
+    pdbfixer/OpenMM typically renames charged histidines to HIP; raw predicted
+    CIFs carry only HIS and so give no histidine salt bridges.
 
     Energy per residue pair (Coulomb at ε=4, closest atom-pair distance):
 
@@ -330,10 +325,9 @@ def compute_saltbridges(
     with k = e²/(4π ε0) in kcal·Å/(mol·e²), the constant that
     ``binding_metrics._constants`` shares with the electrostatics metric.
 
-    A bidentate bridge naturally scores stronger because r_min is the
-    shorter of the two contacts. Like the H-bond energy, this is a
-    heuristic ranking score: unit charges, one uniform dielectric, no
-    screening by solvent or ions.
+    r_min is the shortest contact, so a bidentate bridge scores stronger.
+    Like the H-bond energy, this is a heuristic ranking score: unit charges,
+    one uniform dielectric, no screening by solvent or ions.
 
     Parameters
     ----------
@@ -345,7 +339,7 @@ def compute_saltbridges(
         an alias and its parameter raise ``ValueError``.
     hetero : {"ignore", "keep"}
         "ignore" (default) drops waters, ions, ligands and glycans before the
-        chain selection; "keep" uses every atom as before.
+        chain selection; "keep" uses every atom.
 
     Returns
     -------
