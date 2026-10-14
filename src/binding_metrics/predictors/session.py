@@ -191,8 +191,7 @@ def _seed_value(request: PredictionRequest, record: PredictedPose) -> tuple[Opti
     right even for seeds the model generated or outputs adopted from elsewhere. Without it the
     request's seeds can be used only when they are strictly increasing: the adapters count seeds
     in the numeric order of their values, so the ``seed_index``-th seed of a request in another
-    order is not the sample's. A seed attributed wrongly is worse than none, so otherwise the
-    seed is None and the second item says why.
+    order is not the sample's. Otherwise the seed is None and the second item says why.
     """
     reported = record.extras.get("seed_value")
     if reported is not None and str(reported).isdecimal():
