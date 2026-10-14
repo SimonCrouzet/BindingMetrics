@@ -72,8 +72,7 @@ How the prediction was requested. ``record`` adds the facts of the request to
 of the file name) put it in ``extras["seed_value"]``, and that is what is used. For the others
 (Boltz-2 has one seed per request) it is ``request.seeds[seed_index - 1]``, but only when the
 request's seeds are strictly increasing, because every adapter counts seeds in the numeric order
-of their values. Otherwise ``seed`` is None and ``record.reasons`` says "seed value unknown": a
-seed attributed wrongly is worse than an absent one.
+of their values. Otherwise ``seed`` is None and ``record.reasons`` says "seed value unknown".
 
 ``stats()`` counts, since the session was made (all integers, ready for a JSON result)::
 
