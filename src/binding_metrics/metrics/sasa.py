@@ -9,6 +9,11 @@ The static function reports the buried area of heavy atoms by default
 parameters used for ΔG_int in ``interface``. The trajectory functions do not
 filter hydrogens: they use the atoms of the index lists as given. Their areas are
 in nm^2 (mdtraj); the static function reports Å^2.
+
+A trajectory that stores a unit cell is imaged first (``_periodic.image_complex``): molecules
+are made whole and the ligand is placed next to the receptor, so the areas do not depend on
+the periodic image in which either partner was written. A trajectory without a unit cell is
+used as stored.
 """
 
 import logging
@@ -19,6 +24,7 @@ from typing import Literal, Optional
 import numpy as np
 
 from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
+from binding_metrics.metrics._periodic import has_unit_cell, image_complex
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +101,18 @@ def _interface_sasa_nm2(
     ions of a solvated trajectory) are left out of every term; with them in, the complex
     term would hold the outer surface of the solvent box and the buried area would be
     negative.
+
+    With a unit cell, the areas are taken on the imaged complex of ``image_complex``, which
+    holds the two selections only; the index lists are then positions in that copy.
     """
     md = _import_mdtraj()
     _check_selections(function_name, ligand_indices, receptor_indices, on_empty)
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
+    if len(ligand_indices) and len(receptor_indices) and has_unit_cell(traj):
+        traj, ligand_indices, receptor_indices = image_complex(
+            traj, ligand_indices, receptor_indices
+        )
 
     def total_sasa(atom_indices) -> np.ndarray:
         sliced = traj.atom_slice(atom_indices)
@@ -133,6 +146,11 @@ def calculate_buried_sasa(
     The complex is the ligand and receptor atoms only; other atoms of the trajectory
     (water, ions) are ignored, so a solvated trajectory gives the same area as a dry one.
     Hydrogens are not filtered, unlike in ``compute_delta_sasa_static``.
+
+    When the trajectory stores a unit cell (orthorhombic or triclinic), molecules are made
+    whole and the ligand is placed in the periodic image next to the receptor before the
+    areas are taken, so the result does not depend on the image in which either partner was
+    written; without a cell the stored coordinates are used.
 
     Args:
         trajectory_path: Path to trajectory file (DCD, XTC, etc.)

@@ -30,9 +30,6 @@ N_RECEPTOR = 12
 N_LIGAND = 5
 RECEPTOR = list(range(N_RECEPTOR))
 LIGAND = list(range(N_RECEPTOR, N_RECEPTOR + N_LIGAND))
-# Two copies of the alanine dipeptide of conftest's sample, the second 5 A off along each axis:
-# the nearest atoms are 0.30 nm apart.
-SECOND_DIPEPTIDE_SHIFT_ANGSTROM = 5.0
 
 
 def cell_vectors_nm(cell: str) -> np.ndarray:
@@ -91,32 +88,52 @@ def carbon_pair_topology() -> "md.Topology":
     return topology
 
 
-def write_dipeptide_pair(path, sample_pdb_content: str):
-    """PDB with the alanine dipeptide of the sample as chain A and a shifted copy as chain B."""
+def write_dipeptides(path, sample_pdb_content: str, shifts_angstrom):
+    """PDB of alanine dipeptides, chains A, B, ...: the sample's chain A shifted by each vector."""
     chain_a = [
         line
         for line in sample_pdb_content.splitlines()
         if line.startswith("ATOM") and line[21] == "A"
     ]
-    shift = SECOND_DIPEPTIDE_SHIFT_ANGSTROM
-    chain_b = []
-    for serial, line in enumerate(chain_a, start=len(chain_a) + 1):
-        x, y, z = (float(line[start : start + 8]) + shift for start in (30, 38, 46))
-        chain_b.append(
-            f"{line[:6]}{serial:5d}{line[11:21]}B{line[22:30]}{x:8.3f}{y:8.3f}{z:8.3f}{line[54:]}"
-        )
-    lines = [*chain_a, "TER", *chain_b, "TER", "END"]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    lines = []
+    for chain_number, shift in enumerate(shifts_angstrom):
+        chain_id = "ABCDEFGH"[chain_number]
+        for position, line in enumerate(chain_a):
+            serial = chain_number * len(chain_a) + position + 1
+            x, y, z = (float(line[start : start + 8]) + d for start, d in zip((30, 38, 46), shift))
+            lines.append(
+                f"{line[:6]}{serial:5d}{line[11:21]}{chain_id}{line[22:30]}"
+                f"{x:8.3f}{y:8.3f}{z:8.3f}{line[54:]}"
+            )
+        lines.append("TER")
+    path.write_text("\n".join([*lines, "END"]) + "\n", encoding="utf-8")
     return path
 
 
+def write_dipeptide_pair(path, sample_pdb_content: str):
+    """Chain A and a copy 5 A off along each axis (nearest atoms 0.30 nm apart)."""
+    return write_dipeptides(path, sample_pdb_content, [(0, 0, 0), (5, 5, 5)])
+
+
+def write_dipeptide_trio(path, sample_pdb_content: str):
+    """The pair plus a third copy, 0.27 nm from chain A and 0.64 nm from chain B."""
+    return write_dipeptides(path, sample_pdb_content, [(0, 0, 0), (5, 5, 5), (-5, -5, 5)])
+
+
+def chain_atom_indices(topology) -> list[list[int]]:
+    """Atom indices of each chain."""
+    return [[atom.index for atom in chain.atoms] for chain in topology.chains]
+
+
 def peptide_pair(pair_path):
-    """Topology, coordinates (nm), ligand and receptor indices of the dipeptide pair."""
+    """Topology, coordinates (nm), ligand and receptor indices of a dipeptide pair or trio.
+
+    The ligand is chain B and the receptor is chain A, plus chain C when there is one.
+    """
     reference = md.load(str(pair_path))
-    chains = list(reference.topology.chains)
-    receptor = [atom.index for atom in chains[0].atoms]
-    ligand = [atom.index for atom in chains[1].atoms]
-    return reference.topology, reference.xyz[0].astype(float), ligand, receptor
+    chains = chain_atom_indices(reference.topology)
+    receptor = [*chains[0], *(chains[2] if len(chains) > 2 else [])]
+    return reference.topology, reference.xyz[0].astype(float), chains[1], receptor
 
 
 def wrap_into_cell(xyz, cell: str) -> np.ndarray:
