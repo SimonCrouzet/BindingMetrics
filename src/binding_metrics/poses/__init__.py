@@ -1,23 +1,23 @@
-"""Poses: one structure of a complex, classified by where it came from, and the analysis of a set.
+"""Poses: one structure of a complex, classified by its origin, and the analysis of a set of them.
 
-``Pose`` is the abstract base class; ``DockedPose`` (a docking or design tool),
-``ExperimentalPose`` (a crystal, NMR or EM structure) and ``PredictedPose`` (a co-folding
-model; defined in ``binding_metrics.predictors.record`` and exported here too) are its
-kinds. Every pose has an ``id``, the structure (``atoms()``), a ``content_hash()``,
-``provenance`` and ``native_scores()``: what the tool that made it reported. A computed
-metric is never stored on a pose.
+``Pose`` is the abstract base class. Its kinds are ``DockedPose`` (a docking or design tool),
+``ExperimentalPose`` (a crystal, NMR or EM structure) and ``PredictedPose`` (a co-folding model;
+defined in ``binding_metrics.predictors.record`` and exported here too). Every pose has an
+``id``, the structure (``atoms()``), a ``content_hash()``, ``provenance`` and
+``native_scores()``, what the tool that made it reported. A computed metric is never stored on a
+pose.
 
 ``score_pose_set`` takes the poses of one construct and returns a ``PoseSetResult``: each pose
 placed on a ``Reference`` receptor, measured with the registry metrics, compared with the other
-poses (RMSD, clusters, medoids, interface overlap), summarised per group and with one
-representative pose per group. The other names are what it is built from: the reference and the
-frame (``Reference``, ``superpose_receptor``), the aggregation (``aggregate_poses``), the
-descriptors of a pose against a reference (``residue_set_descriptors``) and the reconciliation of
-two back-ends (``gap_between_backends``). The pose-agreement functions are in
+poses (RMSD, clusters, medoids, interface overlap), summarised per group, with one
+representative pose per group. It is built from the reference and frame code (``Reference``,
+``superpose_receptor``), the aggregation (``aggregate_poses``), the descriptors of a pose
+against a reference (``residue_set_descriptors``) and the reconciliation of two back-ends
+(``gap_between_backends``). The pose-agreement functions are in
 ``binding_metrics.poses.agreement``.
 
-Names load on first access (PEP 562); importing this package imports nothing heavy, and
-biotite is imported only when a structure is read.
+Names load on first access (PEP 562). Importing the package imports nothing heavy; biotite is
+imported when a structure is read.
 """
 
 from typing import TYPE_CHECKING
