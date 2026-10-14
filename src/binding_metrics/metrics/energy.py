@@ -4,7 +4,7 @@ Two families of functions:
 
 * ``calculate_interaction_energy`` / ``calculate_component_energies``: per-frame
   Coulomb + Lennard-Jones sums over ligand-receptor atom pairs of a trajectory
-  (vacuum, no cutoff).
+  (vacuum, no cutoff; minimum-image separations when the trajectory stores a unit cell).
 * ``compute_interaction_energy`` (CLI: ``binding-metrics-energy``): end-state
   subsystem decomposition E_complex - E_peptide - E_receptor in implicit solvent
   for a single structure, evaluated at the input geometry (``raw``), after a
@@ -45,6 +45,7 @@ from binding_metrics._constants import (
 )
 from binding_metrics.core.residues import BACKBONE_HEAVY_ATOM_NAMES, CYSTEINE_NAMES, residue_label
 from binding_metrics.metrics._common import ChainAliasAction, require_openmm, resolve_chain_role
+from binding_metrics.metrics._periodic import ligand_receptor_distances_nm
 from binding_metrics.utils import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,13 @@ def calculate_interaction_energy(
     bonded through a covalent ligand-receptor link (for example an inter-chain
     disulfide) therefore contribute at full strength.
 
+    When the trajectory stores a unit cell (orthorhombic or triclinic), r_ij is the
+    minimum-image distance, so the energy does not depend on the periodic image in which
+    either partner was written; without a cell the stored coordinates are used. The sum is
+    a vacuum pair energy of the two selections, not the PME interaction energy of the
+    simulation, which sums the pair terms over all periodic images and adds the
+    reciprocal-space term.
+
     Args:
         trajectory_path: Path to trajectory file
         topology_path: Path to topology file (PDB: read with OpenMM's PDBFile)
@@ -160,23 +168,25 @@ def calculate_interaction_energy(
     interaction_energies = []
 
     for frame_idx in range(traj.n_frames):
-        positions = traj.xyz[frame_idx]  # nm
+        distances_nm = ligand_receptor_distances_nm(
+            traj, frame_idx, ligand_indices, receptor_indices
+        )
 
         energy = 0.0
 
-        for lig_idx in ligand_indices:
+        for lig_position, lig_idx in enumerate(ligand_indices):
             q1, sig1, eps1 = nonbonded_force.getParticleParameters(lig_idx)
             q1 = q1.value_in_unit(unit.elementary_charge)
             sig1 = sig1.value_in_unit(unit.nanometer)
             eps1 = eps1.value_in_unit(unit.kilojoule_per_mole)
 
-            for rec_idx in receptor_indices:
+            for rec_position, rec_idx in enumerate(receptor_indices):
                 q2, sig2, eps2 = nonbonded_force.getParticleParameters(rec_idx)
                 q2 = q2.value_in_unit(unit.elementary_charge)
                 sig2 = sig2.value_in_unit(unit.nanometer)
                 eps2 = eps2.value_in_unit(unit.kilojoule_per_mole)
 
-                r = np.linalg.norm(positions[lig_idx] - positions[rec_idx])
+                r = distances_nm[lig_position, rec_position]
 
                 if r < _MIN_PAIR_DISTANCE_NM:
                     continue
@@ -207,9 +217,9 @@ def calculate_component_energies(
 ) -> dict[str, np.ndarray]:
     """Calculate separated electrostatic and vdW interaction energies.
 
-    Same pair sum, force-field parameters and caveats as
-    ``calculate_interaction_energy``, with the Coulomb and Lennard-Jones terms
-    returned separately.
+    Same pair sum, force-field parameters, minimum-image separations for a trajectory
+    with a unit cell, and vacuum (not PME) caveat as ``calculate_interaction_energy``,
+    with the Coulomb and Lennard-Jones terms returned separately.
 
     Args:
         trajectory_path: Path to trajectory file
@@ -265,23 +275,25 @@ def calculate_component_energies(
     lj_energies = []
 
     for frame_idx in range(traj.n_frames):
-        positions = traj.xyz[frame_idx]
+        distances_nm = ligand_receptor_distances_nm(
+            traj, frame_idx, ligand_indices, receptor_indices
+        )
         e_coulomb_total = 0.0
         e_lj_total = 0.0
 
-        for lig_idx in ligand_indices:
+        for lig_position, lig_idx in enumerate(ligand_indices):
             q1, sig1, eps1 = nonbonded_force.getParticleParameters(lig_idx)
             q1 = q1.value_in_unit(unit.elementary_charge)
             sig1 = sig1.value_in_unit(unit.nanometer)
             eps1 = eps1.value_in_unit(unit.kilojoule_per_mole)
 
-            for rec_idx in receptor_indices:
+            for rec_position, rec_idx in enumerate(receptor_indices):
                 q2, sig2, eps2 = nonbonded_force.getParticleParameters(rec_idx)
                 q2 = q2.value_in_unit(unit.elementary_charge)
                 sig2 = sig2.value_in_unit(unit.nanometer)
                 eps2 = eps2.value_in_unit(unit.kilojoule_per_mole)
 
-                r = np.linalg.norm(positions[lig_idx] - positions[rec_idx])
+                r = distances_nm[lig_position, rec_position]
                 if r < _MIN_PAIR_DISTANCE_NM:
                     continue
 
