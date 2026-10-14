@@ -118,6 +118,8 @@ The closure families are `head_to_tail`, `disulfide`, `lactam` (the four lactam 
 - `msa_policy` is `default`, which checks nothing, or `forbid-server`, which says that no sequence may be sent to an MSA server; `msa_server` says whether the run of the predictors would use one (`True`, `False`, or `None` when the caller does not know or the model is not run here). Under `forbid-server`, `msa_server=True` gives one violation per predictor (constraint `msa_policy`, kind `msa`, fact "the run would use an MSA server"), and `None` adds a note that the policy was not checked. See [The MSA policy](#the-msa-policy). `report.msa_policy` holds the policy, `report.format()` prints "MSA policy: forbid-server (no MSA server may be called)" when it is not `default`, and `to_dict()["msa_policy"]` is present only then.
 - `receptor_msa` is the receptor MSA of the request: `None` (no source), the word `single` or the path of an alignment. It is read only by the caveat for a target with neither a template nor an MSA (see [A target with neither a template nor an MSA](#a-target-with-neither-a-template-nor-an-msa)); the file is not opened.
 
+A receptor chain that is also a binder chain gives one violation of kind `input` (constraint `chain_roles`, subject "input chains") whatever the steps: found "chain 'B' is named as the binder and as the receptor", required two different chains, and the fix names the options. It follows `policy`: `error` raises `IncompatibleInputError`; `skip` and `warn` report it and leave nothing out, because every step is affected. `run_pipeline`, `run_batch` and both commands refuse the same chain for the two roles earlier (`ValueError`; on the command line see below).
+
 All violations are collected and reported at once. Each has the fact found in the input, the requirement, the step's own reason and a fix. For a refused predictor the fix lists the other registered predictors in two lists: those whose declared limits accept the input, and those that declare no limits (which is not the same as validated). The refused predictor is never offered, even when it is passed under another name than its registry entry: the entry is matched by registry name, by display name or by adapter class. When no other predictor declares support for the input, or none is registered, the fix says so.
 
 | Policy | Effect of an incompatibility |
@@ -220,6 +222,8 @@ A pose set (`score_pose_set`) reads predictions made elsewhere, names no predict
 ## On the command line
 
 `binding-metrics-run` and `binding-metrics-batch` call the check first, through `binding_metrics.preflight_cli.check_input`. It runs before the output directory is created, before the provenance probe, preparation, relaxation, any model run and any use of the prediction store; tests replace all of those with stubs that must not be called when the input is refused.
+
+`--peptide-chain` and `--receptor-chain` with the same ID print `ERROR: peptide chain and receptor chain are both '<ID>'; name two different chains` to stderr and exit with status 1 before the pre-flight check, for `binding-metrics-run` and `binding-metrics-batch`.
 
 | Option | Default | Effect |
 |---|---|---|
