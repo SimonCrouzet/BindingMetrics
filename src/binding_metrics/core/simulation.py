@@ -50,8 +50,7 @@ class SimulationConfig:
     save_interval_ps: float = 10.0
     friction: float = 1.0
     nonbonded_cutoff: float = 1.0
-    # A 2 fs timestep is only stable with bonds to hydrogen constrained, which is
-    # why the default constraint is "hbonds".
+    # The default 2 fs timestep needs the bonds to hydrogen constrained.
     constraints: Literal["none", "hbonds", "allbonds"] = "hbonds"
     platform: Literal["CUDA", "OpenCL", "CPU", "auto"] = "auto"
     random_seed: int | None = DEFAULT_RANDOM_SEED
@@ -92,16 +91,15 @@ class MDSimulation:
         """Set up the simulation system and integrator."""
         config = self.config
 
-        # Map constraint type
         constraint_map = {
             "none": None,
             "hbonds": openmm.app.HBonds,
             "allbonds": openmm.app.AllBonds,
         }
 
-        # Create system. A chain break of the prepared model is left unbonded: bonded by name,
-        # the minimisation would pull its two sides together. The topology that comes back is
-        # the one the system belongs to (the caller's Modeller is not changed).
+        # A chain break of the prepared model is left unbonded (bonded by name, the
+        # minimisation would pull its two sides together). The returned topology belongs
+        # to the system; the caller's Modeller is not changed.
         self._system, topology = create_system_respecting_chain_breaks(
             self.forcefield,
             self.modeller.topology,
@@ -121,11 +119,9 @@ class MDSimulation:
                 barostat.setRandomNumberSeed(config.random_seed)
             self._system.addForce(barostat)
 
-        # Create integrator: Langevin dynamics with the LFMiddle discretization
-        # (Zhang, Z. et al., J. Phys. Chem. A 2019, 123, 6056-6079), which OpenMM
-        # documents as sampling the configurational ensemble more accurately than
-        # its older LangevinIntegrator. Seed the Langevin noise for reproducibility
-        # (random_seed None => leave unseeded for fresh randomness).
+        # Langevin dynamics with the LFMiddle discretization (Zhang, Z. et al.,
+        # J. Phys. Chem. A 2019, 123, 6056-6079). The noise is seeded unless
+        # random_seed is None.
         integrator = LangevinMiddleIntegrator(
             config.temperature * unit.kelvin,
             config.friction / unit.picosecond,
@@ -134,10 +130,8 @@ class MDSimulation:
         if config.random_seed is not None:
             integrator.setRandomNumberSeed(config.random_seed)
 
-        # Select platform
         platform = self._get_platform()
 
-        # Create simulation
         self.simulation = Simulation(
             topology,
             self._system,
@@ -149,7 +143,6 @@ class MDSimulation:
     def _get_platform(self) -> Platform:
         """Get the compute platform based on configuration."""
         if self.config.platform == "auto":
-            # Try platforms in order of preference
             for name in ["CUDA", "OpenCL", "CPU"]:
                 try:
                     return Platform.getPlatformByName(name)
@@ -164,8 +157,8 @@ class MDSimulation:
         Args:
             max_iterations: Maximum minimization steps (0 for unlimited)
             tolerance: Minimization stops once the root-mean-square value of all
-                force components falls below this, in kJ/mol/nm. The default of 10
-                is OpenMM's own default for ``minimizeEnergy``.
+                force components falls below this, in kJ/mol/nm (OpenMM's default
+                is 10).
         """
         if self.simulation is None:
             raise RuntimeError("Call setup() before minimize()")
@@ -210,11 +203,9 @@ class MDSimulation:
         traj_path = output_dir / trajectory_file
         state_path = output_dir / state_file
 
-        # Calculate steps
         n_steps = int(config.duration_ns * 1e6 / config.timestep)
         save_interval = int(config.save_interval_ps * 1000 / config.timestep)
 
-        # Add reporters
         self.simulation.reporters.append(DCDReporter(str(traj_path), save_interval))
         self.simulation.reporters.append(
             StateDataReporter(
@@ -230,7 +221,6 @@ class MDSimulation:
             )
         )
 
-        # Run simulation
         self.simulation.step(n_steps)
 
         return traj_path
@@ -276,7 +266,6 @@ def run_simulation(
     Returns:
         Path to the trajectory file
     """
-    # Load structure
     pdb = PDBFile(str(pdb_path))
     forcefield = get_forcefield(forcefield_name)
 
@@ -284,7 +273,6 @@ def run_simulation(
     seed = config.random_seed if config is not None else DEFAULT_RANDOM_SEED
     modeller = prepare_system(pdb, forcefield=forcefield, random_seed=seed)
 
-    # Run simulation
     sim = MDSimulation(modeller, forcefield, config)
     sim.setup()
     sim.minimize()
