@@ -66,12 +66,10 @@ def _filter_hetero(atoms, hetero: Literal["ignore", "keep"]):
 
     Waters, ions and ligands frequently carry the chain ID of the protein
     chain they sit next to, so a chain-ID mask alone counts them as protein
-    atoms (on 1CWA this moves Sc from 0.722 to 0.750 and the void interface
-    atom count from 153 to 123). The policy is the one shared by the
-    structure-based metrics, `interface.filter_hetero_atoms`: "ignore" keeps
-    the polymer (amino acids including D- and non-canonical residues, AMBER
-    protonation variants such as HID/HIE, and ACE/NME/NH2 caps), "keep"
-    returns the atoms as read.
+    atoms. The policy is the one shared by the structure-based metrics,
+    `interface.filter_hetero_atoms`: "ignore" keeps the polymer (amino acids
+    including D- and non-canonical residues, AMBER protonation variants such
+    as HID/HIE, and ACE/NME/NH2 caps), "keep" returns the atoms as read.
 
     Raises:
         ValueError: If ``hetero`` is not one of the two modes.
@@ -113,18 +111,16 @@ def _auto_detect_chains(atoms, peptide_chain=None, receptor_chain=None):
     return peptide_chain, receptor_chain
 
 
-# Van der Waals radii in Å (Bondi, J. Phys. Chem. 68, 441, 1964) by upper-case element symbol.
-# This table serves the two packing metrics of this module: the surface dots of the shape
-# complementarity and the occupancy grid of the buried void volume.
+# Van der Waals radii in Å (Bondi, J. Phys. Chem. 68, 441, 1964) by upper-case element symbol,
+# for the surface dots of the shape complementarity and the occupancy grid of the void volume.
 #
-# Three radius tables are in use, each for one family of metrics, and they are kept apart:
+# Three radius tables are in use, each for one family of metrics, and they stay separate
+# because merging them changes the numbers:
 #   - this one, with hydrogen at 1.20 Å, for Sc and the void volume;
 #   - `receptor_quality._VDW_RADII`, the same Bondi values for heavy atoms only, for the clash
 #     score;
 #   - biotite's `vdw_radius_single` (Mantina et al., J. Phys. Chem. A 113, 5806, 2009; hydrogen
 #     1.10 Å, bromine 1.83 Å), for the SASA, interface and pose-descriptor metrics.
-# Merging them moves numbers: on a structure with hydrogens, 1.10 instead of 1.20 Å here takes Sc
-# from 0.653 to 0.613 and the void volume from 0 to 9.6 Å3 (1YCR after preparation).
 _BONDI_VDW_RADII: dict[str, float] = {
     "H": 1.20,
     "C": 1.70,
@@ -245,10 +241,8 @@ def _amino_acid_residue_rows(chain_atoms, n_rows: int) -> tuple[np.ndarray, np.n
     ``dihedral_backbone`` returns one row per residue of the array it is given,
     so a row number is a residue number. Caps (ACE, NME, NH2), waters, ions and
     any other residue that is not an amino acid have a row too, with NaN angles,
-    and an amino acid without a Cα atom has a row of NaN. Pairing the rows with
-    the Cα atoms by position therefore labels every residue after the first such
-    residue with the angles of its predecessor; the rows are paired with the
-    residues here instead.
+    and an amino acid without a Cα atom has a row of NaN. The rows are therefore
+    paired with the residues, not with the Cα atoms by position.
 
     Args:
         chain_atoms: The array that was passed to ``dihedral_backbone``.
@@ -386,14 +380,11 @@ def compute_ramachandran(
     """Compute Ramachandran backbone dihedral quality metrics for a chain.
 
     Evaluates phi/psi dihedral angles and classifies each residue as
-    favoured, allowed or outlier. MolProbity defines these classes as the
-    contours that hold 98 % (favoured) and 99.95 % (allowed) of a
-    high-resolution reference set, separately for general, Gly, Pro and
-    pre-Pro residues (Lovell et al., 2003; Williams et al., 2018). This
-    function uses hand-drawn rectangular regions that approximate the general
-    case only (see `_classify_ramachandran`), so its percentages are a screen
-    and will not match MolProbity's. D-residues are mirrored before the
-    lookup.
+    favoured, allowed or outlier. The regions are hand-drawn rectangles that
+    approximate the general case of MolProbity's 98 % (favoured) and 99.95 %
+    (allowed) contours (Lovell et al., 2003; Williams et al., 2018; see
+    `_classify_ramachandran`), so the percentages will not match MolProbity's.
+    D-residues are mirrored before the lookup.
 
     Terminal residues of a linear chain have no complete φ/ψ pair and are
     skipped. A residue next to a cap or another residue that is not an amino
@@ -723,10 +714,8 @@ def _build_surface_dots(
 
     The outward surface normal at each dot is estimated as the direction
     from the local same-chain atomic centroid (atoms within
-    ``normal_radius``) to the dot. This smoothed normal approximates the
-    true molecular-surface normal far better than a single atom-centre →
-    dot vector, which is dominated by per-atom curvature and collapses the
-    normal dot-product for anything but head-on contacts.
+    ``normal_radius``) to the dot. A single atom-centre → dot vector would be
+    dominated by per-atom curvature.
 
     Args:
         interface_atoms: Atoms in this chain that are at the interface.
@@ -825,9 +814,8 @@ def compute_shape_complementarity(
     This is a dot-and-normal approximation of the published method, not a
     port of the CCP4 ``sc`` program: surface dots are placed on van der Waals
     spheres rather than on a molecular surface, and the outward normals are
-    estimated from the local atom neighbourhood. Values are comparable
-    between structures scored here; do not compare them numerically with
-    CCP4 ``sc`` output.
+    estimated from the local atom neighbourhood. The values do not match
+    CCP4 ``sc`` output numerically.
 
     For the buried interface patch of each chain this samples molecular
     surface dots with smoothed outward normals, then for every dot on one
@@ -837,10 +825,6 @@ def compute_shape_complementarity(
     flipped so complementary, anti-parallel surfaces score positive), ``d``
     their separation and ``w`` the weight. Sc is the mean of the two
     directional medians (A→B and B→A).
-
-    Typical values for well-formed native interfaces: ~0.65-0.75 for
-    protein-protein/protease-inhibitor packing, a touch lower for peptide
-    interfaces; ≲0.4 indicates flat, non-complementary surfaces.
 
     Type: score
 
@@ -1039,10 +1023,8 @@ def _occupancy_grid(
 
 # Probe-centre voxels are voxel centres inside the allowed region, so they sit
 # on average a fraction of a voxel inside its true boundary and a sweep by the
-# bare probe radius under-fills the cavity. Extending the sweep by this many
-# voxels removes most of the bias: against a fine-grid reference on synthetic
-# cavities of 5-7 A radius the void volume agrees within about 8 % for probes
-# of 1.4-3 A, where the bare radius is 7-25 % low at 0.5 A spacing.
+# bare probe radius under-fills the cavity. The sweep is extended by this many
+# voxels to offset the bias.
 _SWEEP_BIAS_VOXELS = 0.25
 
 
@@ -1142,8 +1124,7 @@ def compute_buried_void_volume(
     The result depends on the probe and the grid: compare values only at the
     same ``probe_radius`` and ``grid_spacing``. The voxel-count volume has a
     discretisation error that grows with the cavity surface and the voxel
-    size (a few percent on 5 Å-radius test cavities at 0.5 Å); use a finer
-    grid to check a value.
+    size; check a value on a finer grid.
 
     The bounding box is set by the interface atoms (any atom of one chain
     within ``interface_cutoff`` of the other, plus ``padding``); every atom of
