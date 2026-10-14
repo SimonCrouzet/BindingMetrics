@@ -25,24 +25,20 @@ def calculate_contacts(
     """Calculate the number of interface contacts per frame.
 
     A contact is one (ligand atom, receptor atom) pair closer than the
-    cutoff. The atoms counted are exactly the ones whose indices are passed:
-    nothing is filtered, so hydrogens (and atoms of co-labelled waters) are
-    counted whenever their indices are in the lists, and the count then
-    depends on the protonation state of the input. Pass heavy-atom indices
-    for a count that does not.
+    cutoff. No atoms are filtered: hydrogens and co-labelled waters count
+    when their indices are passed, so the count then depends on the
+    protonation state of the input. Pass heavy-atom indices to avoid this.
 
     Args:
         trajectory_path: Path to trajectory file
         topology_path: Path to topology file
         ligand_indices: Atom indices of the ligand
         receptor_indices: Atom indices of the receptor
-        cutoff: Distance cutoff in nm (default 0.45 nm = 4.5 A, a conventional
-            interface-contact distance rather than a fitted value)
+        cutoff: Distance cutoff in nm (default 0.45 nm = 4.5 A)
         on_empty: What to do when ``ligand_indices`` or ``receptor_indices``
             is empty. "warn" (default) emits a ``RuntimeWarning`` naming the
-            empty selection and returns zeros, the historical result, which
-            means "nothing evaluated" and not "no contacts"; "raise" raises
-            ``ValueError`` instead.
+            empty selection and returns zeros (meaning "nothing evaluated",
+            not "no contacts"); "raise" raises ``ValueError``.
 
     Returns:
         Array of contact counts (float64) for each frame
@@ -99,8 +95,8 @@ def calculate_contact_residues(
     """Identify residues involved in interface contacts.
 
     An atom pair (one index from each list) is in contact in a frame when its
-    distance is below the cutoff. Atoms are counted exactly as given, so
-    hydrogens and co-labelled waters take part when their indices are passed.
+    distance is below the cutoff. No atoms are filtered: hydrogens and
+    co-labelled waters take part when their indices are passed.
 
     Args:
         trajectory_path: Path to trajectory file
@@ -117,9 +113,8 @@ def calculate_contact_residues(
             receptor_residues (list[tuple]): Same for the receptor
             contact_frequency (dict): Maps a (ligand_residue, receptor_residue)
                 pair of the tuples above to the mean number of atom pairs in
-                contact per frame. It is an average count and can exceed 1;
-                the keys are tuples, so the dict is not JSON-serialisable
-                as is.
+                contact per frame (can exceed 1). The keys are tuples, so
+                the dict is not JSON-serialisable as is.
     """
     if md is None:
         raise ImportError(

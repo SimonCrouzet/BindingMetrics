@@ -1,15 +1,11 @@
 """DockQ reference-based accuracy metrics for predicted complexes.
 
-Unlike the physics-based scorers in this package (energy, SASA, electrostatics,
-…) which score a *single* structure on physical plausibility, these metrics are
-**reference-based**: they quantify how close a *predicted* complex is to a known
-*native* (reference) structure. They only make sense for benchmarking or
-retrospective validation — never for scoring a design in isolation — and are
-therefore gated behind an explicit ``--reference`` argument.
+These metrics are reference-based: they measure how close a predicted complex
+is to a native (reference) structure, so they need an explicit ``--reference``.
 
-This module wraps the canonical DockQ tool (Basu & Wallner, *PLoS ONE* 11:e0161879,
+This module wraps the DockQ tool (Basu & Wallner, *PLoS ONE* 11:e0161879,
 2016; https://github.com/bjornwallner/DockQ, MIT licensed) and reports the
-CAPRI-style quantities used by CAPRI/CASP assessors:
+CAPRI quantities:
 
     - DockQ    : composite score in [0, 1] combining the three below
     - fnat     : fraction of native residue-residue contacts recovered
@@ -17,14 +13,13 @@ CAPRI-style quantities used by CAPRI/CASP assessors:
     - iRMSD    : interface backbone RMSD (Å)   — CAPRI "i-RMSD"
     - LRMSD    : ligand RMSD after receptor superposition (Å) — CAPRI "L-RMSD"
 
-DockQ runs its own optimal chain-mapping search, so antibody-antigen complexes
-whose chains are named differently or permuted between model and reference
-(H/L chains, VHH, antigen) are matched automatically — something the exact-key
-matching in ``comparison.py`` does not do.
+DockQ runs its own optimal chain-mapping search, so chains that are named
+differently or permuted between model and reference (antibody H/L chains, VHH,
+antigen) are matched automatically; ``comparison.py`` matches chains by exact
+ID only.
 
-We invoke the ``DockQ`` command-line tool with ``--json`` rather than calling the
-Python API: the CLI performs the full automatic chain-mapping search and emits
-structured JSON, which is stable across DockQ releases.
+The ``DockQ`` command-line tool is invoked with ``--json``: the CLI performs the
+full chain-mapping search and emits JSON that is stable across DockQ releases.
 
 Requires the DockQ package::
 
@@ -45,9 +40,8 @@ from typing import Optional
 
 from binding_metrics.utils import configure_logging
 
-# DockQ-score thresholds for CAPRI quality classes (Basu & Wallner 2016).
-# These bins are the standard shortcut mapping from a DockQ score to the CAPRI
-# Incorrect / Acceptable / Medium / High categories.
+# DockQ-score thresholds of the CAPRI classes Incorrect / Acceptable / Medium / High
+# (Basu & Wallner 2016).
 _CAPRI_ACCEPTABLE = 0.23
 _CAPRI_MEDIUM = 0.49
 _CAPRI_HIGH = 0.80
@@ -128,7 +122,7 @@ def _parse_dockq_json(data: dict) -> dict:
             }
         )
 
-    # "GlobalDockQ" is the mean across interfaces; fall back to "best_dockq".
+    # "GlobalDockQ" is the mean over interfaces; "best_dockq" is the fallback key.
     global_dockq = data.get("GlobalDockQ")
     if global_dockq is None:
         global_dockq = data.get("best_dockq")
@@ -181,7 +175,7 @@ def compute_dockq_metrics(
         json_path = Path(tmp.name)
 
     try:
-        # DockQ CLI argument order is: DockQ <model> <native> ...
+        # DockQ CLI order: DockQ <model> <native> ...
         full_cmd = cmd + [str(model_path), str(reference_path), "--json", str(json_path)]
         if mapping:
             full_cmd += ["--mapping", mapping]
