@@ -39,14 +39,6 @@ _DIELECTRIC = 4.0
 _HBOND_K = 5.0
 
 
-def _import_biotite():
-    structure, pdbx, _ = import_biotite("H-bond/salt bridge metrics")
-    from biotite.structure.info import vdw_radius_single
-    from biotite.structure.sasa import sasa
-
-    return structure, pdbx, sasa, vdw_radius_single
-
-
 def _import_hydride():
     try:
         import hydride
@@ -186,7 +178,7 @@ def compute_hbonds(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
     )
-    structure, _, _, _ = _import_biotite()
+    structure, _, _ = import_biotite("H-bond/salt bridge metrics")
     atoms = filter_hetero_atoms(atoms, hetero)
     atoms, hydrogen_reason = _add_hydrogens_if_needed(atoms, structure)
 

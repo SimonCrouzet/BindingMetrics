@@ -63,11 +63,6 @@ _COULOMB_KJ_ANG_MOL: float = COULOMB_KJ_ANG_MOL_E2
 _KJ_TO_KCAL: float = KJ_TO_KCAL
 
 
-def _import_biotite():
-    """Lazy import of required biotite modules."""
-    return import_biotite("electrostatics metrics")
-
-
 def _load_structure(path: Path):
     """Load a PDB or CIF file as a biotite AtomArray."""
     return load_structure(path, purpose="electrostatics metrics")
@@ -81,7 +76,7 @@ def _collect_charged_atoms(chain_atoms) -> tuple[np.ndarray, np.ndarray, list[di
         residues that carry at least one charged atom, and the number of
         amino-acid residues whose name is not in ``_RECOGNISED_RESIDUES``.
     """
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite("electrostatics metrics")
     from binding_metrics.metrics.interface import _amino_acid_mask
 
     res_l = l_equivalent_residue_names(chain_atoms.res_name)

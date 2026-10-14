@@ -19,7 +19,6 @@ from binding_metrics.metrics import (  # noqa: E402
     geometry,
     interface,
     openfold,
-    polar_contacts,
     receptor_quality,
     sasa,
 )
@@ -37,15 +36,11 @@ BLOCKED = {
     "biotite.structure.io.pdbx": None,
 }
 
-# Each module keeps its own import function and its own install-hint wording.
+# The modules that still keep their own import function, with their install-hint wording;
+# tests/test_b6_biotite_import.py covers the modules that call ``import_biotite`` directly.
 HINTS = [
-    (electrostatics._import_biotite, "electrostatics metrics"),
-    (evobind._import_biotite, "EvoBind metrics"),
-    (geometry._import_biotite, "geometry metrics"),
     (interface._import_biotite, "interface metrics"),
     (openfold._import_biotite_struc, "per-chain structural analysis"),
-    (polar_contacts._import_biotite, "H-bond/salt bridge metrics"),
-    (receptor_quality._import_biotite, "receptor quality metrics"),
 ]
 
 LOADERS = [

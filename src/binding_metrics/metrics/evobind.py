@@ -80,11 +80,6 @@ __getattr__ = deprecated_name_getattr(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _import_biotite():
-    struc, pdbx, _ = import_biotite("EvoBind metrics")
-    return struc, pdbx
-
-
 def _load_atoms(path: Path):
     """Load an AtomArray from a CIF or PDB file (model 1)."""
     return load_structure(path, purpose="EvoBind metrics")
@@ -465,7 +460,7 @@ def _adversarial_from_atoms(
     whatever model made it. ``adversary_label`` is how error messages and the
     ``reason`` name that second structure.
     """
-    struc, _ = _import_biotite()
+    struc, _, _ = import_biotite("EvoBind metrics")
 
     # --- Receptor Cα superposition: place design into the AFM coordinate frame ---
     # Match by residue number and insertion code — the two structures may cover different

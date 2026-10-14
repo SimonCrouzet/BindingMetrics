@@ -40,13 +40,12 @@ from binding_metrics.metrics._common import (
 )
 from binding_metrics.utils import configure_logging
 
+# Names the feature in the install hint when biotite is missing.
+_BIOTITE_PURPOSE = "receptor quality metrics"
+
 # ---------------------------------------------------------------------------
 # Lazy imports
 # ---------------------------------------------------------------------------
-
-
-def _import_biotite():
-    return import_biotite("receptor quality metrics")
 
 
 def _import_scipy():
@@ -82,8 +81,8 @@ def _import_openmm():
 
 def _load_all_models(path: Path) -> list:
     """Load all models from a PDB or CIF file as a list of AtomArrays."""
-    struc, _, _ = _import_biotite()
-    structure = load_structure(path, model=None, purpose="receptor quality metrics")
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
+    structure = load_structure(path, model=None, purpose=_BIOTITE_PURPOSE)
 
     if isinstance(structure, struc.AtomArrayStack):
         return [structure[i] for i in range(structure.shape[0])]
@@ -100,7 +99,7 @@ def _detect_receptor_chain(atoms) -> Optional[str]:
 
     A residue is a (number, insertion code) pair, so 52 and 52A count twice.
     """
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     aa_mask = struc.filter_amino_acids(atoms)
     aa_atoms = atoms[aa_mask]
     chain_ids = sorted(set(aa_atoms.chain_id))
@@ -130,7 +129,7 @@ def _iter_residues(atoms):
 
     Uses biotite's get_residue_starts for correct residue boundaries.
     """
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     starts = struc.get_residue_starts(atoms)
     for i, start in enumerate(starts):
         end = int(starts[i + 1]) if i + 1 < len(starts) else len(atoms)
@@ -192,7 +191,7 @@ def _ramachandran(chain_atoms) -> dict:
     from binding_metrics.core.nonstandard import is_d_residue
     from binding_metrics.metrics.geometry import _amino_acid_residue_rows, _classify_ramachandran
 
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     _empty = {
         "favoured_pct": np.nan,
         "allowed_pct": np.nan,
@@ -313,7 +312,7 @@ def _covalent_reach(
     """
     from scipy import sparse
 
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     n_atoms = len(heavy)
     starts = struc.get_residue_starts(heavy)
     residue_of = np.zeros(n_atoms, dtype=np.int64)
@@ -568,7 +567,7 @@ def _rotamer_quality(chain_atoms) -> dict:
         ``outlier_count`` and ``n_evaluated`` (int), ``outlier_pct`` (float,
         NaN when no residue has a χ1), and ``reason`` (str) only in that case.
     """
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
 
     n_evaluated = 0
     n_outliers = 0
@@ -890,7 +889,7 @@ def _receptor_energy(
         has_pdbfixer = False
 
     try:
-        _, _, pdb_io = _import_biotite()
+        _, _, pdb_io = import_biotite(_BIOTITE_PURPOSE)
     except ImportError as e:
         return {**_nan, "error": str(e)}
 
@@ -991,7 +990,7 @@ def _score_model(
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
     """Compute all quality metrics for one model."""
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
 
     aa_mask = struc.filter_amino_acids(atoms)
     rec_mask = aa_mask & (atoms.chain_id == receptor_chain)

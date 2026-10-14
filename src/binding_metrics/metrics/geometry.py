@@ -26,17 +26,12 @@ from binding_metrics.metrics._common import (
 )
 from binding_metrics.utils import configure_logging
 
+# Names the feature in the install hint when biotite is missing.
+_BIOTITE_PURPOSE = "geometry metrics"
+
 # ---------------------------------------------------------------------------
 # Lazy imports
 # ---------------------------------------------------------------------------
-
-
-def _import_biotite():
-    """Lazy import of required biotite modules."""
-    struc, pdbx, pdb_io = import_biotite("geometry metrics")
-    from biotite.structure.info import vdw_radius_single
-
-    return struc, pdbx, pdb_io, vdw_radius_single
 
 
 def _import_scipy():
@@ -60,7 +55,7 @@ def _import_scipy():
 
 def _load_structure(path: Path):
     """Load a PDB or CIF file as a biotite AtomArray."""
-    return load_structure(path, purpose="geometry metrics")
+    return load_structure(path, purpose=_BIOTITE_PURPOSE)
 
 
 _HETERO_MODES = ("ignore", "keep")
@@ -191,7 +186,7 @@ def _terminal_backbone_coords(chain_atoms) -> dict[str, np.ndarray]:
     ``"CA_last"`` and ``"C_last"``; an atom the residue lacks is left out. The
     dict is empty when the chain has fewer than two amino-acid residues.
     """
-    struc, _, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     # waters and ions can carry the chain ID and would be taken as the last residue
     chain_atoms = chain_atoms[struc.filter_amino_acids(chain_atoms)]
     starts = struc.get_residue_starts(chain_atoms)
@@ -231,7 +226,7 @@ def _closing_dihedrals_deg(chain_atoms) -> Optional[tuple[float, float, float]]:
         ``(phi_first, psi_last, omega_last)``, or None when the chain does not
         close head to tail or a backbone atom of either end residue is missing.
     """
-    struc, _, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     if not _has_head_to_tail_closure(chain_atoms):
         return None
     c = _terminal_backbone_coords(chain_atoms)
@@ -270,7 +265,7 @@ def _amino_acid_residue_rows(chain_atoms, n_rows: int) -> tuple[np.ndarray, np.n
     Raises:
         RuntimeError: If ``n_rows`` differs from the number of residues.
     """
-    struc, _, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     starts = struc.get_residue_starts(chain_atoms)
     if len(starts) != n_rows:
         raise RuntimeError(
@@ -329,7 +324,7 @@ def _backbone_dihedrals_deg(chain_atoms):
         chain, see `_amino_acid_residue_rows`), ``closure_evaluated`` is True
         when the ring-closing angles were computed and put into them.
     """
-    struc, _, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     closure_detected = _has_head_to_tail_closure(chain_atoms)
     phi_deg, psi_deg, omega_deg = (np.degrees(a) for a in struc.dihedral_backbone(chain_atoms))
     closure_evaluated = closure_detected and _apply_closing_dihedrals(
@@ -894,7 +889,7 @@ def compute_shape_complementarity(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
     cKDTree, _ = _import_scipy()
-    struc, _, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
 
     cif_path = Path(cif_path)
     atoms = _filter_hetero(_load_structure(cif_path), hetero)
