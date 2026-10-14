@@ -881,6 +881,32 @@ def _hole_reason(removed: list) -> str:
     return f"modified {noun} {names} {verb} removed, so the chain has a hole"
 
 
+def _failed_energy(text: str) -> dict:
+    """The energy term when it could not be computed: NaN values, ``error`` and ``reason``."""
+    return {
+        "energy_kJ_mol": np.nan,
+        "energy_per_residue_kJ_mol": np.nan,
+        "n_atoms_with_h": None,
+        "error": text,
+        "reason": text,
+    }
+
+
+def _energy_failure(model_results: list) -> Optional[str]:
+    """The sentence that names the models whose energy term failed, or None if none did."""
+    models_by_error: dict[str, list] = {}
+    for model in model_results:
+        error = model["energy"].get("error")
+        if error:
+            models_by_error.setdefault(error, []).append(str(model["model_index"]))
+    if not models_by_error:
+        return None
+    return "; ".join(
+        f"energy of {'model' if len(models) == 1 else 'models'} {', '.join(models)}: {error}"
+        for error, models in models_by_error.items()
+    )
+
+
 def _receptor_energy(
     chain_atoms,
     solvent_model: str = "obc2",
@@ -899,21 +925,14 @@ def _receptor_energy(
     With PDBFixer, a residue it removes from inside the chain (a modified residue it does
     not replace, such as the IAM of 1XY4) would leave a hole whose two sides the force field
     bonds by name, and the energy would be that of another molecule: the result is NaN, with
-    ``reason`` (and ``error``, the same sentence) naming the residues. A residue removed at an
-    end of the chain is not a hole.
+    an ``error`` that names the residues. A residue removed at an end of the chain is not a
+    hole. Every failure returns NaN with ``error`` and ``reason``, the same sentence.
 
     Stochastic steps (PDBFixer's rebuild of missing atoms and the jitter of new
     hydrogens) are seeded with ``random_seed``, so the same input gives the same
     energy; ``None`` leaves them unseeded. With ``device="cuda"`` the final
     single-point evaluation uses mixed precision, which is not bit-reproducible.
     """
-    _nan = {
-        "energy_kJ_mol": np.nan,
-        "energy_per_residue_kJ_mol": np.nan,
-        "n_atoms_with_h": None,
-        "error": None,
-    }
-
     try:
         openmm, unit, ForceField, Modeller, PDBFile, Simulation = _import_openmm()
         from binding_metrics.core.system import (
@@ -922,7 +941,7 @@ def _receptor_energy(
             deterministic_hydrogen_placement,
         )
     except ImportError as e:
-        return {**_nan, "error": str(e)}
+        return _failed_energy(str(e))
 
     try:
         from pdbfixer import PDBFixer
@@ -934,7 +953,7 @@ def _receptor_energy(
     try:
         _, _, pdb_io = import_biotite(_BIOTITE_PURPOSE)
     except ImportError as e:
-        return {**_nan, "error": str(e)}
+        return _failed_energy(str(e))
 
     tmp_path = None
     try:
@@ -964,8 +983,7 @@ def _receptor_energy(
                 fixer.removeHeterogens(keepWater=False)
                 holes = _removed_from_inside_chain(residues_before, _residue_keys(fixer.topology))
                 if holes:
-                    reason = _hole_reason(holes)
-                    return {**_nan, "error": reason, "reason": reason}
+                    return _failed_energy(_hole_reason(holes))
                 fixer.findMissingAtoms()
                 fixer.addMissingAtoms(seed=random_seed)
                 # Same call as PDBFixer.addMissingHydrogens(DEFAULT_PH), with the platform pinned.
@@ -1007,7 +1025,7 @@ def _receptor_energy(
         energy = state.getPotentialEnergy().value_in_unit(unit.kilojoules_per_mole)
 
         if not np.isfinite(energy):
-            return {**_nan, "error": "non-finite energy (likely severe clashes)"}
+            return _failed_energy("non-finite energy (likely severe clashes)")
 
         n_res = topology.getNumResidues()
         return {
@@ -1027,7 +1045,7 @@ def _receptor_energy(
                 " PDBFixer rebuilds the missing atoms of a chain and is not installed "
                 "(pip install binding-metrics[structure])."
             )
-        return {**_nan, "error": error}
+        return _failed_energy(error)
 
     finally:
         if tmp_path is not None:
@@ -1067,12 +1085,7 @@ def _score_model(
             "cbeta": {},
             "backbone_geometry": {},
             "b_factors": {"available": False},
-            "energy": {
-                "energy_kJ_mol": np.nan,
-                "energy_per_residue_kJ_mol": np.nan,
-                "n_atoms_with_h": None,
-                "error": "no receptor atoms found",
-            },
+            "energy": _failed_energy("no receptor atoms found"),
             "molprobity_score": np.nan,
         }
 
@@ -1177,15 +1190,21 @@ def compute_receptor_quality(
             backbone_geometry: bad/total bonds+angles and %
             b_factors: mean/max/min/std, n_high_b_residues (>60 Å²)
             energy: energy_kJ_mol, energy_per_residue_kJ_mol, n_atoms_with_h,
-                error (None on success, else "ExceptionType: message"); when residues
-                were removed from inside the chain, NaN with ``reason`` (the same sentence
-                as ``error``) naming them
+                error (None on success, else "ExceptionType: message"); on failure the
+                values are NaN and ``reason`` repeats ``error``; when residues were removed
+                from inside the chain, ``error`` names them
             molprobity_score (float): composite score (lower = better); NaN when
                 the clashscore, Ramachandran or rotamer term is undefined
                 (for example a chain without any χ1 residue)
 
             Every term dict above carries a ``reason`` string only when its
             value could not be computed; the value then keeps its NaN sentinel.
+
+        error_message (str): present only when the energy term failed, naming the
+            models ("energy of model 1: ..."). It is the shape of a metric that failed
+            in part, so ``score_pose_set`` marks the pose ``partial`` and keeps the other
+            terms in its aggregates. The block has no top-level ``reason``, which would
+            exclude all of them.
 
         Aggregate summary (mean over models):
             summary (dict) — all scalar metrics averaged; best_model_index
@@ -1228,12 +1247,16 @@ def compute_receptor_quality(
         for idx, atoms in enumerate(all_models)
     ]
 
-    return {
+    result = {
         "receptor_chain": str(receptor_chain),
         "n_models": len(model_results),
         "models": model_results,
         "summary": _aggregate_summary(model_results),
     }
+    energy_failure = _energy_failure(model_results)
+    if energy_failure:
+        result["error_message"] = energy_failure
+    return result
 
 
 def _aggregate_summary(model_results: list) -> dict:
