@@ -27,6 +27,7 @@ from binding_metrics.core.residues import (
     residue_number,
 )
 from binding_metrics.io.structures import (
+    _amino_acid_names,
     author_chain_ids,
     copy_author_chain_ids,
     has_alpha_carbon,
@@ -995,10 +996,14 @@ def prep_structure(
     # zero-coord placeholder atoms are in their correct positions.
     _rebuild_connect_records(fixer)
 
+    # A chain is a protein chain when it holds a residue of the AMBER standard set or an
+    # amino acid by the definition every chain detector uses, which has the D-amino
+    # acids: a peptide made only of D residues has no standard one.
+    amino_acids = _amino_acid_names()
     protein_chains: set = set()
     for chain in fixer.topology.chains():
         for res in chain.residues():
-            if res.name in AMBER_STANDARD_RESIDUES:
+            if res.name in AMBER_STANDARD_RESIDUES or res.name in amino_acids:
                 protein_chains.add(chain.id)
                 break
 
