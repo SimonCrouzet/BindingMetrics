@@ -14,8 +14,8 @@ class ProtocolResults:
 
     Attributes:
         sasa_buried: Buried solvent accessible surface area (A^2) per frame
-        sasa_buried_mean: Mean buried SASA over trajectory
-        sasa_buried_std: Standard deviation of buried SASA
+        sasa_buried_mean: Mean buried SASA over trajectory (A^2)
+        sasa_buried_std: Standard deviation of buried SASA (A^2)
         interface_contacts: Number of interface contacts per frame
         interface_contacts_mean: Mean interface contacts
         interaction_energy: Interaction energy (kJ/mol) per frame

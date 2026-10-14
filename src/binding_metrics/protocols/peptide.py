@@ -16,6 +16,10 @@ from binding_metrics.metrics.rmsd import calculate_rmsd
 from binding_metrics.metrics.sasa import calculate_buried_sasa
 from binding_metrics.protocols.base import BaseProtocol, ProtocolResults
 
+#: ``calculate_buried_sasa`` returns nm^2 (mdtraj units) and ``ProtocolResults`` reports A^2:
+#: 1 nm = 10 A, so 1 nm^2 = 100 A^2.
+_NM2_TO_ANGSTROM2 = 100.0
+
 
 def _require_frames(series) -> None:
     """Raise if a per-frame series is empty: ``np.mean`` of it would be NaN."""
@@ -144,13 +148,14 @@ class PeptideBindingProtocol(BaseProtocol):
         receptor_indices = get_chain_atom_indices(topology_path, self.receptor_chains)
 
         # Calculate metrics
-        buried_sasa = calculate_buried_sasa(
+        buried_sasa_nm2 = calculate_buried_sasa(
             traj_path,
             topology_path,
             ligand_indices,
             receptor_indices,
         )
-        _require_frames(buried_sasa)
+        _require_frames(buried_sasa_nm2)
+        buried_sasa = buried_sasa_nm2 * _NM2_TO_ANGSTROM2
 
         contacts = calculate_contacts(
             traj_path,

@@ -7,8 +7,8 @@ static function uses biotite. Both implement the Shrake-Rupley algorithm
 The static function reports the buried area of heavy atoms by default
 (``hydrogens="ignore"``), the convention of PISA and of the atomic solvation
 parameters used for ΔG_int in ``interface``. The trajectory functions do not
-filter hydrogens: they use the atoms of the trajectory and of the index lists as
-given.
+filter hydrogens: they use the atoms of the index lists as given. Their areas are in
+nm^2, the unit of mdtraj; the static function reports Å^2.
 """
 
 import logging
@@ -38,6 +38,40 @@ def _import_mdtraj():
     return mdtraj
 
 
+def _interface_sasa_nm2(
+    trajectory_path: str | Path,
+    topology_path: str | Path,
+    ligand_indices: list[int],
+    receptor_indices: list[int],
+    probe_radius: float,
+) -> dict[str, np.ndarray]:
+    """Per-frame SASA in nm^2 of the ligand, the receptor and their complex.
+
+    The complex is the union of the two index lists. Atoms outside both (the water and
+    ions of a solvated trajectory) are left out of every term: with them in, the complex
+    term would hold the outer surface of the solvent box and the buried area would be
+    negative (-186.6 nm^2 instead of +16.0 nm^2 for 1YCR in a 0.6 nm water box).
+    """
+    md = _import_mdtraj()
+
+    traj = md.load(str(trajectory_path), top=str(topology_path))
+
+    def total_sasa(atom_indices) -> np.ndarray:
+        sliced = traj.atom_slice(atom_indices)
+        return md.shrake_rupley(sliced, probe_radius=probe_radius).sum(axis=1)
+
+    sasa_ligand = total_sasa(ligand_indices)
+    sasa_receptor = total_sasa(receptor_indices)
+    sasa_complex = total_sasa(sorted(set(ligand_indices) | set(receptor_indices)))
+
+    return {
+        "ligand": sasa_ligand,
+        "receptor": sasa_receptor,
+        "complex": sasa_complex,
+        "buried": sasa_ligand + sasa_receptor - sasa_complex,
+    }
+
+
 def calculate_buried_sasa(
     trajectory_path: str | Path,
     topology_path: str | Path,
@@ -50,6 +84,8 @@ def calculate_buried_sasa(
     The buried SASA is computed as:
         SASA_buried = SASA_ligand_alone + SASA_receptor_alone - SASA_complex
 
+    The complex is the ligand and receptor atoms only: any other atom of the trajectory
+    (water, ions) is ignored, so a solvated trajectory gives the same area as a dry one.
     Hydrogens are not filtered here, unlike in ``compute_delta_sasa_static``.
 
     Args:
@@ -60,29 +96,15 @@ def calculate_buried_sasa(
         probe_radius: Probe radius in nm (default 0.14 nm = 1.4 A)
 
     Returns:
-        Array of buried SASA values (in nm^2) for each frame
+        Array of buried SASA values (in nm^2, not Angstrom^2: multiply by 100 for A^2)
+        for each frame
 
     Raises:
         ImportError: If mdtraj is not installed
     """
-    md = _import_mdtraj()
-
-    traj = md.load(str(trajectory_path), top=str(topology_path))
-
-    sasa_complex = md.shrake_rupley(traj, probe_radius=probe_radius)
-    sasa_complex_total = sasa_complex.sum(axis=1)
-
-    ligand_traj = traj.atom_slice(ligand_indices)
-    sasa_ligand = md.shrake_rupley(ligand_traj, probe_radius=probe_radius)
-    sasa_ligand_total = sasa_ligand.sum(axis=1)
-
-    receptor_traj = traj.atom_slice(receptor_indices)
-    sasa_receptor = md.shrake_rupley(receptor_traj, probe_radius=probe_radius)
-    sasa_receptor_total = sasa_receptor.sum(axis=1)
-
-    buried_sasa = sasa_ligand_total + sasa_receptor_total - sasa_complex_total
-
-    return buried_sasa
+    return _interface_sasa_nm2(
+        trajectory_path, topology_path, ligand_indices, receptor_indices, probe_radius
+    )["buried"]
 
 
 def calculate_interface_sasa(
@@ -94,6 +116,8 @@ def calculate_interface_sasa(
 ) -> dict[str, np.ndarray]:
     """Calculate per-component SASA values at the interface.
 
+    The complex is the ligand and receptor atoms only, as in ``calculate_buried_sasa``.
+
     Args:
         trajectory_path: Path to trajectory file
         topology_path: Path to topology file
@@ -102,33 +126,16 @@ def calculate_interface_sasa(
         probe_radius: Probe radius in nm
 
     Returns:
-        Dictionary with per-frame SASA arrays of shape (n_frames,) in nm^2:
-        "ligand" and "receptor" (each alone), "complex", and "buried"
-        (ligand + receptor - complex)
+        Dictionary with per-frame SASA arrays of shape (n_frames,) in nm^2 (multiply
+        by 100 for A^2): "ligand" and "receptor" (each alone), "complex" (ligand and
+        receptor atoms together), and "buried" (ligand + receptor - complex)
+
+    Raises:
+        ImportError: If mdtraj is not installed
     """
-    md = _import_mdtraj()
-
-    traj = md.load(str(trajectory_path), top=str(topology_path))
-
-    sasa_complex = md.shrake_rupley(traj, probe_radius=probe_radius)
-    sasa_complex_total = sasa_complex.sum(axis=1)
-
-    ligand_traj = traj.atom_slice(ligand_indices)
-    sasa_ligand = md.shrake_rupley(ligand_traj, probe_radius=probe_radius)
-    sasa_ligand_total = sasa_ligand.sum(axis=1)
-
-    receptor_traj = traj.atom_slice(receptor_indices)
-    sasa_receptor = md.shrake_rupley(receptor_traj, probe_radius=probe_radius)
-    sasa_receptor_total = sasa_receptor.sum(axis=1)
-
-    buried = sasa_ligand_total + sasa_receptor_total - sasa_complex_total
-
-    return {
-        "ligand": sasa_ligand_total,
-        "receptor": sasa_receptor_total,
-        "complex": sasa_complex_total,
-        "buried": buried,
-    }
+    return _interface_sasa_nm2(
+        trajectory_path, topology_path, ligand_indices, receptor_indices, probe_radius
+    )
 
 
 # ---------------------------------------------------------------------------
