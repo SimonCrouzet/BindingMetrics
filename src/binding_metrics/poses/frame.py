@@ -2,15 +2,15 @@
 
 For one pose and one ``Reference`` the stage
 
-1. **pairs** the receptor residues of the pose with those of the reference (``pair_residues``),
-2. **superposes** the pose on the reference with a Kabsch fit on the paired receptor C-alpha
+1. pairs the receptor residues of the pose with those of the reference (``pair_residues``),
+2. superposes the pose on the reference with a Kabsch fit on the paired receptor C-alpha
    atoms (``superpose_receptor``), and
-3. reports how good the frame is: the pairing method and counts, the receptor RMSD of the fit,
-   and the C-alpha RMSD of named regions in the final frame.
+3. reports the frame: the pairing method and counts, the receptor RMSD of the fit, and the
+   C-alpha RMSD of named regions in the final frame.
 
-``place_in_reference_frame`` then applies the transform to the atoms of the pose, so that later
-stages can compute every metric in the reference frame; ``renumber_to_reference`` gives the
-paired receptor residues the numbers of the reference. Nothing here modifies its input.
+``place_in_reference_frame`` applies the transform to the atoms of the pose;
+``renumber_to_reference`` gives the paired receptor residues the numbers of the reference.
+Nothing here modifies its input.
 
 Pairing (first success wins; the method used is reported)
 ---------------------------------------------------------
@@ -30,18 +30,17 @@ Pairing (first success wins; the method used is reported)
     ``biotite.sequence.align.align_optimal``: substitution matrix BLOSUM62, affine gap penalty
     open -10 and extend -1 (biotite's convention for ``(-10, -1)``), no penalty for gaps at
     the ends, so a trimmed construct aligns inside the longer chain. The aligned columns whose
-    two residues have compatible names are paired, which handles trimmed ends, internal gaps,
-    renumbering and insertion codes. When several alignments score the same, the first one in
-    biotite's order is used and ``alignment_ambiguous`` is True.
+    two residues have compatible names are paired. When several alignments score the same,
+    the first one in biotite's order is used and ``alignment_ambiguous`` is True.
 ``position``
     Opt-in (``pairing="position"``): the i-th residue to the i-th, equal lengths required.
 
 A pose fails (``status="failed"``, a ``reason``, no transform) when its receptor chain is
-missing, when the sequence identity of the pairing is below ``min_sequence_identity`` (the
-receptor is not the same protein), when fewer than ``min_frame_fraction`` of the reference
-receptor residues are paired, when fewer than ``min_frame_residues`` residues are left to fit,
-or when the fit atoms of either structure are collinear. The identity limit does not apply to
-a ``residue_map``, which states the correspondence itself.
+missing, when the sequence identity of the pairing is below ``min_sequence_identity``, when
+fewer than ``min_frame_fraction`` of the reference receptor residues are paired, when fewer
+than ``min_frame_residues`` residues are left to fit, or when the fit atoms of either structure
+are collinear. The identity limit does not apply to a ``residue_map``, which states the
+correspondence itself.
 
 Fit
 ---
@@ -55,26 +54,24 @@ residues of a named residue set of the reference, or of the binding site (``"sit
 ``biotite.structure.superimpose_without_outliers``: a residue is an outlier when its squared
 deviation exceeds the upper quartile by ``iqr_threshold`` interquartile ranges, at most
 ``iqr_max_iterations`` rounds), with two guards: a residue that deviates by less than
-``iqr_min_deviation_angstrom`` is never rejected (rounding noise is not an outlier), and
-rejection stops before fewer than ``min_frame_residues`` residues would be left.
+``iqr_min_deviation_angstrom`` is never rejected, and rejection stops before fewer than
+``min_frame_residues`` residues would be left.
 
 Determinism
 -----------
-No random numbers. Everything is computed in float64. Degenerate inputs are refused with a
-reason and never fitted: fewer than 3 residues cannot be requested (``min_frame_residues`` is
-at least 3), and a fit set whose atoms are collinear or coincident, in the pose or in the
-reference, has no unique rotation, so the pose fails instead of getting an arbitrary one.
-Sequence-alignment ties are broken by biotite's order (flagged, not documented by biotite as
-stable across versions).
+No random numbers; everything is computed in float64. Degenerate inputs are refused with a
+reason, never fitted: ``min_frame_residues`` is at least 3, and a fit set whose atoms are
+collinear or coincident, in the pose or in the reference, has no unique rotation and fails the
+pose. Sequence-alignment ties are broken by biotite's order, which biotite does not document as
+stable across versions; they are flagged by ``alignment_ambiguous``.
 
 Regions
 -------
 ``region_rmsd_angstrom`` holds the C-alpha RMSD of the paired residues of a region in the final
-frame, with no refit, so it measures how far the region moved: ``"all"`` (every paired
-residue), ``"site"`` (receptor residues with a heavy atom within ``site_cutoff_angstrom`` of a
-heavy atom of the reference binder chain; present only when the reference has a
-``binder_chain``) and every named residue set of the reference. A region with no paired residue
-has ``None`` and a reason in ``region_reasons``.
+frame, with no refit: ``"all"`` (every paired residue), ``"site"`` (receptor residues with a
+heavy atom within ``site_cutoff_angstrom`` of a heavy atom of the reference binder chain;
+present only when the reference has a ``binder_chain``) and every named residue set of the
+reference. A region with no paired residue has ``None`` and a reason in ``region_reasons``.
 
 Importing this module imports numpy and the standard library (and the reference module);
 biotite is imported when a structure is read and when a sequence alignment is needed.
@@ -123,13 +120,11 @@ class FrameOptions:
             reference, or ``"site"`` (the binding site; the reference needs a binder chain):
             fit only the paired residues of that set.
         outliers: None (no rejection) or ``"iqr"``.
-        min_frame_residues: Fewest residues to fit, at least 3 (a rigid fit needs three
-            points). A pose with fewer fails.
+        min_frame_residues: Fewest residues to fit, at least 3; a pose with fewer fails.
         min_frame_fraction: Smallest fraction of the reference receptor residues that must be
-            paired (0 to 1). A pose with a smaller fraction fails.
-        min_sequence_identity: Smallest fraction of aligned or same-numbered residues that
-            have compatible names (0 to 1); below it the receptor is not the reference
-            protein and the pose fails. Not applied to a ``residue_map``.
+            paired (0 to 1); a pose below it fails.
+        min_sequence_identity: Smallest fraction of aligned or same-numbered residues with
+            compatible names (0 to 1); a pose below it fails. Not applied to a ``residue_map``.
         min_pair_fraction: ``"number"`` pairing is used only when at least this fraction of
             the shorter chain pairs by number and name (0 to 1).
         site_cutoff_angstrom: Distance (any heavy atom to any heavy atom of the reference
@@ -139,9 +134,9 @@ class FrameOptions:
         iqr_min_deviation_angstrom: A residue that deviates by less is never an outlier.
         alignment_matrix: Name of the biotite substitution matrix of the sequence alignment.
         alignment_gap_penalty: ``(open, extend)``, both negative or zero integers.
-        renumber_receptor: Read by the scoring stage, not by this module: write the structure
-            of the registry metrics with the reference numbers on the paired receptor residues
-            (see ``renumber_to_reference``).
+        renumber_receptor: Read by the scoring stage: write the structure of the registry
+            metrics with the reference numbers on the paired receptor residues (see
+            ``renumber_to_reference``).
         metrics_frame: Read by the scoring stage: ``"reference"`` computes path-based metrics
             on the transformed pose, ``"original"`` on the pose's own file.
     """
@@ -347,9 +342,9 @@ def kabsch_transform(mobile: np.ndarray, fixed: np.ndarray) -> Transform:
     """The proper rotation and translation that best map ``mobile`` onto ``fixed`` (Kabsch, 1976).
 
     Least squares over the rows (point i of ``mobile`` corresponds to point i of ``fixed``).
-    The optimal rotation comes from the SVD of the covariance matrix; if it is a reflection the
-    last singular direction is flipped, so the result is always a rotation. The inputs must not
-    be degenerate (see ``is_degenerate``): the rotation is then not unique.
+    The rotation comes from the SVD of the covariance matrix; a reflection is corrected by
+    flipping the last singular direction. The inputs must not be degenerate (see
+    ``is_degenerate``), or the rotation is not unique.
 
     Args:
         mobile: Coordinates, shape (n, 3).
@@ -373,8 +368,8 @@ def kabsch_transform(mobile: np.ndarray, fixed: np.ndarray) -> Transform:
 def is_degenerate(coords: np.ndarray) -> bool:
     """True when the points do not fix a rotation: fewer than 3, coincident, or collinear.
 
-    The second singular value of the centred coordinates is compared with the first; planar
-    sets are fine, collinear ones (ratio below 1e-6) are not.
+    Collinear means a ratio of the second to the first singular value of the centred
+    coordinates below 1e-6; planar sets are fine.
     """
     coords = np.asarray(coords, dtype=np.float64)
     if coords.ndim != 2 or coords.shape[0] < 3:
@@ -413,8 +408,8 @@ _THREE_TO_ONE = {
     "VAL": "V",
 }
 
-#: Common modified residues that stand for a standard amino acid: selenomethionine and the
-#: three phosphorylated residues. A crystal with MSE and a model with MET pair.
+#: Modified residues that stand for a standard amino acid: selenomethionine and three
+#: phosphorylated residues. MSE in a crystal pairs with MET in a model.
 _MODIFIED_PARENTS = {"MSE": "MET", "SEP": "SER", "TPO": "THR", "PTR": "TYR"}
 
 
@@ -825,9 +820,9 @@ def prepare_reference(
 ) -> PreparedReference:
     """Validate a reference against its structure and read what the frame stage needs.
 
-    The result is cached on the ``Reference`` (per cutoff) together with the content hash of
-    its structure, so repeated calls are cheap (one ``os.stat`` of a structure file) and a
-    structure file that was rewritten is read again.
+    The result is cached on the ``Reference`` (per cutoff) with the content hash of its
+    structure, so repeated calls cost one ``os.stat`` and a rewritten structure file is read
+    again.
 
     Args:
         reference: The reference.
@@ -840,8 +835,8 @@ def prepare_reference(
     """
     cache = reference.__dict__.setdefault("_prepared_cache", {})
     cutoff = float(site_cutoff_angstrom)
-    # the prepared data come from the structure only (the other fields of the reference are
-    # frozen), so its hash, which follows a rewrite of the file, is what the entry must match
+    # The prepared data depend on the structure only (the other fields of the reference are
+    # frozen), so the entry is valid while the structure hash matches.
     structure_hash = reference.structure.content_hash()
     entry = cache.get(cutoff)
     if entry is not None and entry[0] == structure_hash:
@@ -894,11 +889,11 @@ def _site_keys(atoms, table: _ReceptorTable, binder_chain: str, cutoff: float) -
 
 @dataclass(frozen=True, eq=False)
 class FrameResult:
-    """The outcome of placing one pose on one reference (design section 3.4).
+    """The outcome of placing one pose on one reference.
 
-    ``status`` is ``"ok"`` or ``"failed"``; a failed result has a ``reason``, no transform and
-    no RMSD, and still carries the pairing counts that were found. Region RMSDs are C-alpha
-    RMSDs of the paired residues of a region in the final frame, with no refit.
+    A failed result has a ``reason``, no transform and no RMSD, and keeps the pairing counts
+    that were found. Region RMSDs are C-alpha RMSDs of the paired residues of a region in the
+    final frame, with no refit.
 
     Attributes:
         status, reason: ``"ok"`` or ``"failed"``, and why it failed (None when ok).
@@ -963,7 +958,7 @@ class FrameResult:
         self.__dict__.update(state)
 
     def to_dict(self, *, include_transform: bool = True, include_pairs: bool = False) -> dict:
-        """The ``frame`` block of a row: JSON-ready, with the keys of design section 3.4.
+        """The ``frame`` block of a row, JSON-ready: every attribute except ``rejected_pairs``.
 
         Args:
             include_transform: Include the rotation and translation (None when failed).
@@ -1206,8 +1201,8 @@ def superpose_receptor(
 
     Pairs the receptor residues (``pair_residues``), fits the pose onto the reference by
     Kabsch on the paired atoms, and measures the receptor RMSD of the fit and the C-alpha RMSD
-    of each region (see the module docstring). A pose that cannot be placed is a failed result
-    with a reason, never an exception; what the caller got wrong raises.
+    of each region (see the module docstring). A pose that cannot be placed gives a failed
+    result with a reason; an invalid argument raises.
 
     Args:
         pose: A ``Pose`` (its ``atoms()`` are used) or a biotite ``AtomArray`` of one model.
@@ -1364,8 +1359,7 @@ def place_in_reference_frame(structure, frame) -> Any:
 
     Returns:
         A new ``AtomArray`` (same annotations and bonds, float32 coordinates as biotite
-        stores them) with every atom, receptor and binder alike, moved by the transform. The
-        input is never modified.
+        stores them) with every atom, receptor and binder alike, moved by the transform.
 
     Raises:
         ValueError: If ``frame`` is a failed ``FrameResult`` (it has no transform).
@@ -1386,13 +1380,12 @@ def renumber_to_reference(
 ):
     """A copy of the atoms with the reference numbers on the paired receptor residues.
 
-    For the structure that the registry metrics read, so that labels such as
-    ``interface_residues_receptor`` use one numbering for every pose. Residues of the receptor
-    chain that are not paired (unpaired polymer residues, ligands, waters on that chain) get
-    unused numbers above the highest residue number of the reference receptor chain, one per
-    residue in file order, with no insertion code. Other chains keep their numbers. The
-    coordinates are not changed (apply ``place_in_reference_frame`` separately), and the input
-    is never modified.
+    Makes labels such as ``interface_residues_receptor`` share one numbering across poses.
+    Residues of the receptor chain that are not paired (unpaired polymer residues, ligands,
+    waters) get unused numbers above the highest residue number of the reference receptor
+    chain, one per residue in file order, with no insertion code. Other chains keep their
+    numbers. Coordinates are unchanged (apply ``place_in_reference_frame`` separately); the
+    input is never modified.
 
     Args:
         structure: A ``Pose`` or an ``AtomArray`` of one model.
