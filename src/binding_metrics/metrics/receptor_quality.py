@@ -144,6 +144,12 @@ def _iter_residues(atoms):
 # VDW radii
 # ---------------------------------------------------------------------------
 
+# Bondi radii in Å (J. Phys. Chem. 68, 441, 1964) of the heavy atoms, used by the clash score
+# only; hydrogens are left out of that score, so the table has no entry for them. Two other
+# tables serve other metrics and are kept apart (see `geometry._BONDI_VDW_RADII`): the same
+# Bondi values with hydrogen at 1.20 Å for the shape complementarity and the void volume, and
+# biotite's table (hydrogen 1.10 Å, bromine 1.83 Å) for the SASA, interface and pose-descriptor
+# metrics.
 _VDW_RADII: dict[str, float] = {
     "C": 1.70,
     "N": 1.55,
@@ -159,6 +165,7 @@ _VDW_RADII: dict[str, float] = {
 
 
 def _vdw(element: str) -> float:
+    """Bondi radius in Å of a heavy-atom element symbol, 1.80 Å when the table lacks it."""
     return _VDW_RADII.get(element.strip().upper(), 1.80)
 
 

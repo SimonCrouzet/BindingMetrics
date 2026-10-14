@@ -118,13 +118,39 @@ def _auto_detect_chains(atoms, peptide_chain=None, receptor_chain=None):
     return peptide_chain, receptor_chain
 
 
+# Van der Waals radii in Å (Bondi, J. Phys. Chem. 68, 441, 1964) by upper-case element symbol.
+# This table serves the two packing metrics of this module: the surface dots of the shape
+# complementarity and the occupancy grid of the buried void volume.
+#
+# Three radius tables are in use, each for one family of metrics, and they are kept apart:
+#   - this one, with hydrogen at 1.20 Å, for Sc and the void volume;
+#   - `receptor_quality._VDW_RADII`, the same Bondi values for heavy atoms only, for the clash
+#     score;
+#   - biotite's `vdw_radius_single` (Mantina et al., J. Phys. Chem. A 113, 5806, 2009; hydrogen
+#     1.10 Å, bromine 1.83 Å), for the SASA, interface and pose-descriptor metrics.
+# Merging them moves numbers: on a structure with hydrogens, 1.10 instead of 1.20 Å here takes Sc
+# from 0.653 to 0.613 and the void volume from 0 to 9.6 Å3 (1YCR after preparation).
+_BONDI_VDW_RADII: dict[str, float] = {
+    "H": 1.20,
+    "C": 1.70,
+    "N": 1.55,
+    "O": 1.52,
+    "S": 1.80,
+    "P": 1.80,
+    "SE": 1.90,
+    "F": 1.47,
+    "CL": 1.75,
+    "BR": 1.85,
+    "I": 1.98,
+}
+
+# Radius of an element the table does not list (metal ions, for instance), in Å.
 _DEFAULT_VDW_RADIUS = 1.80
 
 
 def _get_vdw(element: str) -> float:
-    """Return the van der Waals radius in Å of an element (Bondi, 1964), default 1.8 Å."""
-    _VDW = {"C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80, "H": 1.20, "P": 1.80}
-    return _VDW.get(element.strip().upper(), _DEFAULT_VDW_RADIUS)
+    """Bondi radius in Å of an element symbol, `_DEFAULT_VDW_RADIUS` when the table lacks it."""
+    return _BONDI_VDW_RADII.get(element.strip().upper(), _DEFAULT_VDW_RADIUS)
 
 
 # ---------------------------------------------------------------------------
