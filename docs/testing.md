@@ -12,14 +12,14 @@ pytest --gpu          # adds the GPU tests to the fast tier
 pytest --full --gpu   # every test
 ```
 
-The fast tier has 8,912 of the 9,324 cases that need no GPU. Recorded on 14 October 2026 (commit 1fe658d) on a 15-core machine whose load was 4 to 6 and 4 to 11 because another job used three of its cores, it took 2 min 42 s on four processes and 6 min 22 s on one process (the same command without `-n`). Earlier the same day, with 8,840 cases, four processes took 1 min 40 s at a load of 2 to 5 and between 2 min 28 s and 2 min 48 s at a load of 11 to 18. `-n` comes from pytest-xdist, which the `dev` extra installs (`pip install -e ".[dev]"`); nothing in the configuration sets it, so a plain `pytest` runs on one process and works without the plugin.
+At commit 1fe658d, recorded on 14 October 2026 on a 15-core machine whose load was 4 to 6 and 4 to 11 because another job used three of its cores, the fast tier had 8,912 of the 9,324 cases that need no GPU and took 2 min 42 s on four processes and 6 min 22 s on one process (the same command without `-n`). The suite has grown since, so a later commit has more cases and takes longer; the line that each run prints (below) gives its count. Earlier the same day, with 8,840 cases, four processes took 1 min 40 s at a load of 2 to 5 and between 2 min 28 s and 2 min 48 s at a load of 11 to 18. `-n` comes from pytest-xdist, which the `dev` extra installs (`pip install -e ".[dev]"`); nothing in the configuration sets it, so a plain `pytest` runs on one process and works without the plugin.
 
-`pytest --full` is the gate before a pull request and before a signed release, and the run that CI makes. Its 9,324 cases took 7 min 31 s with `-n 4` at a load of 6 to 11 and about twenty minutes on one process. `pytest --gpu` adds the GPU tests, which skip on a machine without a CUDA device, so `pytest --full --gpu` is the run of a machine that has one.
+`pytest --full` is the gate before a pull request and before a signed release, and the run that CI makes. At that commit its 9,324 cases took 7 min 31 s with `-n 4` at a load of 6 to 11 and about twenty minutes on one process. `pytest --gpu` adds the GPU tests, which skip on a machine without a CUDA device, so `pytest --full --gpu` is the run of a machine that has one.
 
 Each run prints one line about its tier after the count of collected tests, with the number of tests it selected and how many each option adds:
 
 ```
-tier: fast - 8912 of 9412 tests selected; --full adds 412 slow/integration/openfold tests, --gpu adds 88 GPU tests
+tier: fast - 9640 of 10273 tests selected; --full adds 540 slow/integration/openfold tests, --gpu adds 93 GPU tests
 ```
 
 With `-n` only the workers collect, so the controller prints the line at the end of the session, before the summary. The rules that decide what a run selects are in the docstring of `tests/_tiers.py`:
