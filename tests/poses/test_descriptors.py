@@ -850,7 +850,7 @@ class TestScaleCheck1YCR:
         assert at_zero["shared_buried_area_angstrom2"] == at_zero["partner_buried_area_angstrom2"]
         assert at_zero["pose_buried_area_angstrom2"] == at_zero["partner_buried_area_angstrom2"]
         assert at_zero["shared_fraction_of_partner"] == 1.0
-        # the design note measured 662 square angstrom for the crystal peptide on MDM2
+        # buried area of the crystal peptide on MDM2 (1YCR), recomputed from the file
         assert at_zero["partner_buried_area_angstrom2"] == pytest.approx(662.3, abs=1.0)
 
     def test_shared_area_falls_monotonically_to_zero(self, results):

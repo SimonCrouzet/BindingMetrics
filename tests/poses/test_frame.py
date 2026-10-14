@@ -39,7 +39,7 @@ DATA = Path(__file__).resolve().parents[2] / "data"
 YCR = DATA / "example_linear_p53_1YCR.pdb"
 SFTI = DATA / "example_bicyclic_sfti1_3P8F.cif"
 
-# MDM2 residues within 4.5 angstrom of the crystal peptide (design note, section 1.2).
+# MDM2 residues within 4.5 angstrom of the crystal peptide.
 YCR_SITE = [25, 26, 50, 51, 54, 57, 58, 61, 62, 67, 70, 71, 72, 73, 75, 91, 93, 94, 96, 99, 100]
 YCR_SITE += [104]
 

@@ -125,8 +125,8 @@ class TestBlocks:
             ]
             for row in result["poses"]
         }
-        # the pose with no shift is the crystal peptide: its partner area is 662.3 A^2 (the
-        # scale check of the design note on 1YCR) and the fraction is exactly one
+        # the pose with no shift is the crystal peptide: its partner area is 662.3 A^2 on 1YCR
+        # and the fraction is exactly one
         assert shared["backend_a-s1"] == pytest.approx(662.3, abs=0.5)
         fractions = [
             row["descriptors"]["reference"]["partners"]["crystal_peptide"][
