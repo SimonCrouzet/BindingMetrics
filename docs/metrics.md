@@ -202,7 +202,7 @@ binding-metrics-electrostatics --input complex.cif [--binder-chain B] [--target-
 
 Needs OpenMM (Eastman et al. 2017; `pip install "binding-metrics[simulation]"`, or `environment.yml` for a CUDA build). Registered as `structure_interaction_energy`.
 
-The chain IDs (`peptide_chain`, `receptor_chain`, and the `binding-metrics-energy` flags) are author IDs for an mmCIF, as for every other metric. OpenMM names the chains of a CIF with more label IDs than author IDs by their label IDs, so the peptide of 1CWA is author chain C and chain B of the topology, and the function finds it from either ID. 1CWA, raw file, `peptide_chain="C"`: 2288 contacts and −260.4 kJ/mol, the values of `"B"`.
+The chain IDs (`peptide_chain`, `receptor_chain`, and the `binding-metrics-energy` flags) are author IDs for an mmCIF, as for every other metric. OpenMM names the chains of a CIF with more label IDs than author IDs by their label IDs, so the peptide of 1CWA is author chain C and chain B of the topology, and the function finds it from either ID. 1CWA, raw file, `peptide_chain="C"`: 2288 contacts and −266.7 kJ/mol, the values of `"B"`.
 
 E_int = E_complex − E_peptide − E_receptor, with AMBER ff14SB and implicit solvent. It is an end-state estimate in the spirit of MM-GBSA (Kollman et al. 2000): the isolated binder and target are evaluated at their geometry in the complex. E_int therefore contains the force-field interaction and the change in generalized Born polar solvation and nonpolar surface term, and it leaves out conformational reorganisation and entropy. Compare values between structures of the same system, not with measured binding free energies.
 
