@@ -7,7 +7,7 @@ import tempfile
 from typing import Literal, Optional
 
 import openmm.unit as unit
-from openmm.app import ForceField, Modeller, PDBFile
+from openmm.app import ForceField, Modeller, PDBFile, Topology
 
 from binding_metrics._constants import (
     DEFAULT_PH,
@@ -124,6 +124,50 @@ def _readd_custom_bonds(topology, custom_bonds: list):
                 an2,
             )
     return topology
+
+
+def _drop_duplicate_bonds(topology) -> tuple:
+    """Return ``topology`` with every bond listed once, and the number of bonds dropped.
+
+    ``PDBFixer.addMissingAtoms`` builds the standard bonds of the rebuilt topology and
+    then adds again each bond of the old one that touches a residue the standard table
+    does not know, so the peptide bond on either side of a phosphoserine, an
+    N-methylated or any other non-standard residue comes out twice. OpenMM turns the
+    second copy into one more harmonic bond term, and the GAFF2 cap logic into a second
+    cap on the same carbon.
+
+    A bond is identified by its two atoms, in either order. The first listing is kept
+    with its type and order, and the others keep their relative order, so the result
+    does not depend on anything but the input. OpenMM has no call that removes a bond:
+    when there is a duplicate the topology is rebuilt through the public interface,
+    with the same chains, residues (numbers and insertion codes), atoms (indices and
+    IDs) and box. A topology without a duplicate is returned as it is.
+    """
+    seen: set = set()
+    unique_bonds = []
+    for bond in topology.bonds():
+        pair = frozenset((bond.atom1.index, bond.atom2.index))
+        if pair not in seen:
+            seen.add(pair)
+            unique_bonds.append(bond)
+    n_dropped = topology.getNumBonds() - len(unique_bonds)
+    if not n_dropped:
+        return topology, 0
+
+    cleaned = Topology()
+    cleaned.setPeriodicBoxVectors(topology.getPeriodicBoxVectors())
+    new_atom = {}
+    for chain in topology.chains():
+        new_chain = cleaned.addChain(chain.id)
+        for residue in chain.residues():
+            new_residue = cleaned.addResidue(
+                residue.name, new_chain, residue.id, residue.insertionCode
+            )
+            for atom in residue.atoms():
+                new_atom[atom] = cleaned.addAtom(atom.name, atom.element, new_residue, atom.id)
+    for bond in unique_bonds:
+        cleaned.addBond(new_atom[bond.atom1], new_atom[bond.atom2], bond.type, bond.order)
+    return cleaned, n_dropped
 
 
 def _rebuild_connect_records(fixer) -> None:
@@ -720,6 +764,11 @@ def prep_structure(
     n_atoms_before_rebuild = fixer.topology.getNumAtoms()
     fixer.addMissingAtoms(seed=random_seed)
     n_atoms_rebuilt = fixer.topology.getNumAtoms() - n_atoms_before_rebuild
+    # PDBFixer lists the bonds next to a non-standard residue twice; the cyclic and
+    # GAFF2 steps below read the bond list, so it is cleaned before they run.
+    fixer.topology, n_duplicate_bonds = _drop_duplicate_bonds(fixer.topology)
+    if n_duplicate_bonds:
+        log.debug("Dropped %d bond(s) that PDBFixer listed twice", n_duplicate_bonds)
 
     # Detect and register all non-standard bonds from the rebuilt geometry
     # (SS bonds, CYS→CYX rename). Must run after addMissingAtoms so that
