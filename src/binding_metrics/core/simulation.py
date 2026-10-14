@@ -18,7 +18,11 @@ from openmm.app import (
 )
 
 from binding_metrics.core.forcefields import get_forcefield
-from binding_metrics.core.system import DEFAULT_RANDOM_SEED, prepare_system
+from binding_metrics.core.system import (
+    DEFAULT_RANDOM_SEED,
+    create_system_respecting_chain_breaks,
+    prepare_system,
+)
 
 
 @dataclass
@@ -95,9 +99,13 @@ class MDSimulation:
             "allbonds": openmm.app.AllBonds,
         }
 
-        # Create system
-        self._system = self.forcefield.createSystem(
+        # Create system. A chain break of the prepared model is left unbonded: bonded by name,
+        # the minimisation would pull its two sides together. The topology that comes back is
+        # the one the system belongs to (the caller's Modeller is not changed).
+        self._system, topology = create_system_respecting_chain_breaks(
+            self.forcefield,
             self.modeller.topology,
+            self.modeller.positions,
             nonbondedMethod=openmm.app.PME,
             nonbondedCutoff=config.nonbonded_cutoff * unit.nanometer,
             constraints=constraint_map[config.constraints],
@@ -131,7 +139,7 @@ class MDSimulation:
 
         # Create simulation
         self.simulation = Simulation(
-            self.modeller.topology,
+            topology,
             self._system,
             integrator,
             platform,
