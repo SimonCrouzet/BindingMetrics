@@ -37,12 +37,6 @@ import numpy as np
 from binding_metrics.metrics._common import import_biotite, load_structure
 
 
-def _import_biotite_struc():
-    """Lazy import of biotite structure modules."""
-    struc, pdbx, _ = import_biotite("per-chain structural analysis")
-    return struc, pdbx
-
-
 def _load_atoms(path: Path):
     """Load an AtomArray from a CIF or PDB file using biotite (model 1)."""
     return load_structure(path, purpose="per-chain structural analysis")
@@ -204,7 +198,7 @@ def _binder_ca_rmsd(
             Cα atoms (a receptor-frame superposition is then not defined); or,
             without a receptor chain, if the binder has fewer than 3 Cα atoms.
     """
-    struc, _ = _import_biotite_struc()
+    struc, _, _ = import_biotite("per-chain structural analysis")
 
     def _ca(atoms, chain):
         return atoms[(atoms.chain_id == chain) & (atoms.atom_name == "CA")]

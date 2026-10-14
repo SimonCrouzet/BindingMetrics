@@ -1,8 +1,9 @@
 """The metric modules call the shared ``import_biotite`` and keep their install hints.
 
-Each of ``electrostatics``, ``evobind``, ``geometry``, ``polar_contacts`` and
+Each of ``electrostatics``, ``evobind``, ``geometry``, ``interface``, ``polar_contacts`` and
 ``receptor_quality`` used to wrap ``import_biotite(purpose)`` in a private
-``_import_biotite``. The wrappers are gone; a function that needs biotite names the
+``_import_biotite``, and ``predictors/_confidence`` in ``_import_biotite_struc``. The wrappers
+are gone; a function that needs biotite names the
 same feature in the install hint as before.
 """
 
@@ -18,10 +19,12 @@ from binding_metrics.metrics import (  # noqa: E402
     electrostatics,
     evobind,
     geometry,
+    interface,
     polar_contacts,
     receptor_quality,
 )
 from binding_metrics.metrics._common import load_structure  # noqa: E402
+from binding_metrics.predictors import _confidence  # noqa: E402
 
 DATA = Path(__file__).parent.parent / "data"
 P53 = DATA / "example_linear_p53_1YCR.pdb"
@@ -34,7 +37,15 @@ BLOCKED = {
     "biotite.structure.io.pdbx": None,
 }
 
-WRAPPERS_REMOVED = [electrostatics, evobind, geometry, polar_contacts, receptor_quality]
+WRAPPERS_REMOVED = [
+    electrostatics,
+    evobind,
+    geometry,
+    interface,
+    polar_contacts,
+    receptor_quality,
+    _confidence,
+]
 
 
 @pytest.fixture(scope="module")
@@ -67,6 +78,16 @@ CALLS = [
         "geometry metrics",
     ),
     (
+        "interface",
+        lambda atoms: interface._amino_acid_mask(atoms),
+        "interface metrics",
+    ),
+    (
+        "confidence",
+        lambda atoms: _confidence._binder_ca_rmsd(atoms, atoms, "B"),
+        "per-chain structural analysis",
+    ),
+    (
         "polar_contacts",
         lambda atoms: polar_contacts.compute_hbonds(atoms, "B", "A"),
         "H-bond/salt bridge metrics",
@@ -82,6 +103,7 @@ CALLS = [
 @pytest.mark.parametrize("module", WRAPPERS_REMOVED, ids=lambda m: m.__name__.rsplit(".", 1)[-1])
 def test_the_private_wrapper_is_gone(module):
     assert not hasattr(module, "_import_biotite")
+    assert not hasattr(module, "_import_biotite_struc")
 
 
 @pytest.mark.parametrize("call, purpose", [c[1:] for c in CALLS], ids=[c[0] for c in CALLS])

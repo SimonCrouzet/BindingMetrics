@@ -55,10 +55,11 @@ from typing import Any, Mapping, Optional
 
 import numpy as np
 
+from binding_metrics.metrics._common import import_biotite
 from binding_metrics.metrics.interface import (
+    _BIOTITE_PURPOSE,
     _collect_per_residue,
     _get_vdw_radii,
-    _import_biotite,
     _per_atom_sasa,
     filter_hetero_atoms,
     filter_hydrogens,
@@ -234,7 +235,10 @@ def interface_areas(
     _check_chains(binder_chain, target_chain)
     _check_number("probe_radius", probe_radius, minimum=0.0, exclusive=True)
     _check_one_model(atoms)
-    _, _, _, sasa_fn, vdw_fn = _import_biotite()
+    import_biotite(_BIOTITE_PURPOSE)
+    from biotite.structure.info import vdw_radius_single as vdw_fn
+    from biotite.structure.sasa import sasa as sasa_fn
+
     heavy = filter_hydrogens(filter_hetero_atoms(atoms))
     binder_mask = np.asarray(heavy.chain_id) == binder_chain
     receptor_mask = np.asarray(heavy.chain_id) == target_chain
@@ -738,7 +742,10 @@ def partner_descriptors(
         logger.debug("partner descriptors have no value: %s", reason)
         return {name: _partner_failure(reason) for name in partners}
 
-    _, _, _, sasa_fn, vdw_fn = _import_biotite()
+    import_biotite(_BIOTITE_PURPOSE)
+    from biotite.structure.info import vdw_radius_single as vdw_fn
+    from biotite.structure.sasa import sasa as sasa_fn
+
     pose_rows, reference_rows = _matched_receptor_atoms(
         areas.receptor_atoms, reference_receptor, frame
     )

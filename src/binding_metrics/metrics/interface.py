@@ -47,6 +47,9 @@ from binding_metrics.utils import configure_logging
 
 logger = logging.getLogger(__name__)
 
+# Names the feature in the install hint when biotite is missing.
+_BIOTITE_PURPOSE = "interface metrics"
+
 _HETERO_MODES = ("ignore", "keep")
 _HYDROGEN_MODES = ("ignore", "keep")
 
@@ -83,15 +86,6 @@ _KCAL_TO_KJ = KCAL_TO_KJ
 SASA_POINT_NUMBER = 960
 
 
-def _import_biotite():
-    """Lazy import of required biotite modules."""
-    struc, pdbx, pdb_io = import_biotite("interface metrics")
-    from biotite.structure.info import vdw_radius_single
-    from biotite.structure.sasa import sasa as biotite_sasa
-
-    return struc, pdbx, pdb_io, biotite_sasa, vdw_radius_single
-
-
 def load_biotite_structure(cif_path: str | Path):
     """Load a PDB or CIF file as a biotite AtomArray.
 
@@ -101,12 +95,12 @@ def load_biotite_structure(cif_path: str | Path):
     Returns:
         biotite AtomArray
     """
-    return load_structure(cif_path, charge=True, purpose="interface metrics")
+    return load_structure(cif_path, charge=True, purpose=_BIOTITE_PURPOSE)
 
 
 def _amino_acid_mask(atoms) -> np.ndarray:
     """Atoms of amino-acid residues: CCD peptide-linking residues plus AMBER variants."""
-    struc, _, _, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     res_names = np.char.upper(np.char.strip(atoms.res_name.astype(str)))
     return struc.filter_amino_acids(atoms) | np.isin(res_names, list(AMBER_VARIANTS_OUTSIDE_CCD))
 
@@ -451,7 +445,9 @@ def compute_interface_metrics(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
-    _, _, _, sasa_fn, vdw_fn = _import_biotite()
+    import_biotite(_BIOTITE_PURPOSE)
+    from biotite.structure.info import vdw_radius_single as vdw_fn
+    from biotite.structure.sasa import sasa as sasa_fn
 
     cif_path = Path(cif_path)
     atoms = load_biotite_structure(cif_path)

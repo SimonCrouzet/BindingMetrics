@@ -36,13 +36,6 @@ BLOCKED = {
     "biotite.structure.io.pdbx": None,
 }
 
-# The modules that still keep their own import function, with their install-hint wording;
-# tests/test_b6_biotite_import.py covers the modules that call ``import_biotite`` directly.
-HINTS = [
-    (interface._import_biotite, "interface metrics"),
-    (openfold._import_biotite_struc, "per-chain structural analysis"),
-]
-
 LOADERS = [
     electrostatics._load_structure,
     evobind._load_atoms,
@@ -74,19 +67,6 @@ class TestImportBiotite:
             "biotite is required for some metrics. "
             "Install with: pip install binding-metrics[biotite]"
         )
-
-    @pytest.mark.parametrize("function, purpose", HINTS)
-    def test_each_module_keeps_its_own_function_and_wording(self, function, purpose):
-        with mock.patch.dict(sys.modules, BLOCKED):
-            with pytest.raises(ImportError) as excinfo:
-                function()
-        assert str(excinfo.value) == (
-            f"biotite is required for {purpose}. Install with: pip install binding-metrics[biotite]"
-        )
-
-    @pytest.mark.parametrize("function, purpose", HINTS)
-    def test_each_module_function_returns_biotite_structure_first(self, function, purpose):
-        assert function()[0] is struc
 
     def test_static_sasa_reports_the_missing_extra_before_reading_anything(self):
         with mock.patch.dict(sys.modules, BLOCKED):
