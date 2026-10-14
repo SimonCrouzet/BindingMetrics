@@ -56,7 +56,7 @@ class TestTheOption:
         )
         assert action.default is False and action.nargs == 0
 
-    def test_the_help_says_what_the_run_does_and_what_one_complex_showed(self):
+    def test_the_help_says_what_the_run_does(self):
         parser = argparse.ArgumentParser()
         from binding_metrics.cli import add_openfold_no_msa_server_arg
 
@@ -65,20 +65,11 @@ class TestTheOption:
         for stated in (
             "dummy MSA that holds only the query sequence of each chain",
             "input reference suggests this for MSA-free runs",
-            "lowers accuracy for a natural receptor",
             "no longer replaced by the server (issue #68)",
             "the default, structure, keeps the template with the server on too",
         ):
             assert stated in help_text
-        # the measurement is stated as one complex, one seed, with its numbers
-        for stated in (
-            "One complex (1YCR, OpenFold3 0.5.0, one seed)",
-            "1.57 A with the server and the template as a structure (the default)",
-            "1.62 A with the server and the template as an alignment",
-            "21.6 A with no MSA and no template",
-            "1.12 A with a working template and no MSA",
-        ):
-            assert stated in help_text
+        assert "1YCR" not in help_text and "RMSD" not in help_text
 
     @staticmethod
     def _parsed(monkeypatch, tmp_path, module, extra):

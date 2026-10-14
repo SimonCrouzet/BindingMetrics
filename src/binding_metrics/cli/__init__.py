@@ -175,14 +175,10 @@ def add_openfold_no_msa_server_arg(parser) -> None:
         help=(
             "Do not use the ColabFold MSA server for OpenFold3: it then runs with a dummy MSA "
             "that holds only the query sequence of each chain (OpenFold3's input reference "
-            "suggests this for MSA-free runs), which lowers accuracy for a natural receptor. "
+            "suggests this for MSA-free runs). "
             "With --openfold-templates alignment the template alignments written by the toolkit "
             "are no longer replaced by the server (issue #68); the default, structure, keeps the "
-            "template with the server on too. One complex (1YCR, OpenFold3 0.5.0, one seed), "
-            "binder C-alpha RMSD against the crystal pose: 1.57 A with the server and the "
-            "template as a structure (the default), 1.62 A with the server and the template as "
-            "an alignment (the server replaces it: no template), 21.6 A with no MSA and no "
-            "template, 1.12 A with a working template and no MSA."
+            "template with the server on too."
         ),
     )
 
@@ -278,11 +274,8 @@ def add_openfold_cyclic_arg(parser) -> None:
             "the chain: it does not enforce the closure bond, documents the flag only in an "
             "example query, and has published no accuracy benchmark for cyclic peptides. It "
             "builds the wrap from the token count of the chain and gives every atom of a "
-            "modified residue its own token: for 1CWA (D-amino acid, N-methylated residues; one "
-            "complex, three seeds) the flag lowered ipTM from 0.91-0.92 to 0.78-0.81 and raised "
-            "the binder C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A, so auto leaves such a binder "
-            "linear (on forces the flag); for SFTI-1 (standard residues; one seed) the flag "
-            "closed the ring (C-N 7.40 A without it, 1.38 A with it). Disulfide, lactam and "
+            "modified residue its own token, so auto leaves a binder with modified residues "
+            "linear (on forces the flag). Disulfide, lactam and "
             "staple closures cannot be given to OpenFold3 and are not written."
         ),
     )

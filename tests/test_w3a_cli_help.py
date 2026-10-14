@@ -311,17 +311,13 @@ GOLDEN = {
                 "and the installed OpenFold3 is new enough; on: always; off: "
                 "never. OpenFold3 uses the flag only to wrap the relative "
                 "positions of the chain: it does not enforce the closure bond, "
-                "documents the flag only in an example query, and has published"
-                " no accuracy benchmark for cyclic peptides. It builds the wrap"
-                " from the token count of the chain and gives every atom of a "
-                "modified residue its own token: for 1CWA (D-amino acid, "
-                "N-methylated residues; one complex, three seeds) the flag "
-                "lowered ipTM from 0.91-0.92 to 0.78-0.81 and raised the binder"
-                " C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A, so auto leaves such"
-                " a binder linear (on forces the flag); for SFTI-1 (standard "
-                "residues; one seed) the flag closed the ring (C-N 7.40 A "
-                "without it, 1.38 A with it). Disulfide, lactam and staple "
-                "closures cannot be given to OpenFold3 and are not written.",
+                "documents the flag only in an example query, and has published "
+                "no accuracy benchmark for cyclic peptides. It builds the wrap "
+                "from the token count of the chain and gives every atom of a "
+                "modified residue its own token, so auto leaves a binder with "
+                "modified residues linear (on forces the flag). Disulfide, "
+                "lactam and staple closures cannot be given to OpenFold3 and "
+                "are not written.",
             ),
             "--openfold-no-msa-server": (
                 "OpenFold",
@@ -333,16 +329,10 @@ GOLDEN = {
                 "Do not use the ColabFold MSA server for OpenFold3: it then "
                 "runs with a dummy MSA that holds only the query sequence of "
                 "each chain (OpenFold3's input reference suggests this for "
-                "MSA-free runs), which lowers accuracy for a natural receptor. "
-                "With --openfold-templates alignment the template alignments "
-                "written by the toolkit are no longer replaced by the server "
-                "(issue #68); the default, structure, keeps the template with "
-                "the server on too. One complex (1YCR, OpenFold3 0.5.0, one "
-                "seed), binder C-alpha RMSD against the crystal pose: 1.57 A "
-                "with the server and the template as a structure (the default), "
-                "1.62 A with the server and the template as an alignment (the "
-                "server replaces it: no template), 21.6 A with no MSA and no "
-                "template, 1.12 A with a working template and no MSA.",
+                "MSA-free runs). With --openfold-templates alignment the "
+                "template alignments written by the toolkit are no longer "
+                "replaced by the server (issue #68); the default, structure, "
+                "keeps the template with the server on too.",
             ),
             "--prediction-mode": (
                 "Prediction",
@@ -377,17 +367,15 @@ GOLDEN = {
                 "Whether the binder is given to the model as cyclic, for "
                 "--predictor MODEL run from here. auto (default): when the "
                 "binder has a head-to-tail bond (for OpenFold3 also only when "
-                "it consists of standard residues: with a D-amino acid and "
-                "N-methylated residues, 1CWA, the flag lowered ipTM from "
-                "0.91-0.92 to 0.78-0.81 in one complex, three seeds, so auto "
-                "leaves such a binder linear); on: always; off: never. "
-                "OpenFold3 (>= 0.4.5) and Boltz-2 get 'cyclic: true' on the "
-                "binder chain, which only wraps its relative positions and does"
-                " not enforce the closure bond; Protenix gets the head-to-tail "
-                "and disulfide bonds as covalent_bonds; ColabFold has no such "
-                "setting and refuses a value. For --predictor of3 it is the "
-                "setting of --openfold-cyclic (both given with different values"
-                " is an error). Needs --predictor.",
+                "it consists of standard residues, so auto leaves a binder with "
+                "modified residues linear); on: always; off: never. OpenFold3 "
+                "(>= 0.4.5) and Boltz-2 get 'cyclic: true' on the binder chain, "
+                "which only wraps its relative positions and does not enforce "
+                "the closure bond; Protenix gets the head-to-tail and disulfide "
+                "bonds as covalent_bonds; ColabFold has no such setting and "
+                "refuses a value. For --predictor of3 it is the setting of "
+                "--openfold-cyclic (both given with different values is an "
+                "error). Needs --predictor.",
             ),
             "--prediction-no-msa-server": (
                 "Prediction",
@@ -396,12 +384,11 @@ GOLDEN = {
                 0,
                 False,
                 "False",
-                "Do not use an MSA server, for --predictor MODEL run from "
-                "here: ColabFold runs single_sequence, Boltz-2 writes 'msa:"
-                " empty', Protenix runs with --use_msa false, OpenFold3 as "
-                "--openfold-no-msa-server. The accuracy for a natural "
-                "receptor drops; no sequence leaves the machine. Needs "
-                "--predictor.",
+                "Do not use an MSA server, for --predictor MODEL run from here: "
+                "ColabFold runs single_sequence, Boltz-2 writes 'msa: empty', "
+                "Protenix runs with --use_msa false, OpenFold3 as "
+                "--openfold-no-msa-server. No sequence leaves the machine. "
+                "Needs --predictor.",
             ),
             "--prediction-conda-env": (
                 "Prediction",
@@ -776,17 +763,13 @@ GOLDEN = {
                 "and the installed OpenFold3 is new enough; on: always; off: "
                 "never. OpenFold3 uses the flag only to wrap the relative "
                 "positions of the chain: it does not enforce the closure bond, "
-                "documents the flag only in an example query, and has published"
-                " no accuracy benchmark for cyclic peptides. It builds the wrap"
-                " from the token count of the chain and gives every atom of a "
-                "modified residue its own token: for 1CWA (D-amino acid, "
-                "N-methylated residues; one complex, three seeds) the flag "
-                "lowered ipTM from 0.91-0.92 to 0.78-0.81 and raised the binder"
-                " C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A, so auto leaves such"
-                " a binder linear (on forces the flag); for SFTI-1 (standard "
-                "residues; one seed) the flag closed the ring (C-N 7.40 A "
-                "without it, 1.38 A with it). Disulfide, lactam and staple "
-                "closures cannot be given to OpenFold3 and are not written.",
+                "documents the flag only in an example query, and has published "
+                "no accuracy benchmark for cyclic peptides. It builds the wrap "
+                "from the token count of the chain and gives every atom of a "
+                "modified residue its own token, so auto leaves a binder with "
+                "modified residues linear (on forces the flag). Disulfide, "
+                "lactam and staple closures cannot be given to OpenFold3 and "
+                "are not written.",
             ),
             "--openfold-no-msa-server": (
                 "OpenFold",
@@ -798,16 +781,10 @@ GOLDEN = {
                 "Do not use the ColabFold MSA server for OpenFold3: it then "
                 "runs with a dummy MSA that holds only the query sequence of "
                 "each chain (OpenFold3's input reference suggests this for "
-                "MSA-free runs), which lowers accuracy for a natural receptor. "
-                "With --openfold-templates alignment the template alignments "
-                "written by the toolkit are no longer replaced by the server "
-                "(issue #68); the default, structure, keeps the template with "
-                "the server on too. One complex (1YCR, OpenFold3 0.5.0, one "
-                "seed), binder C-alpha RMSD against the crystal pose: 1.57 A "
-                "with the server and the template as a structure (the default), "
-                "1.62 A with the server and the template as an alignment (the "
-                "server replaces it: no template), 21.6 A with no MSA and no "
-                "template, 1.12 A with a working template and no MSA.",
+                "MSA-free runs). With --openfold-templates alignment the "
+                "template alignments written by the toolkit are no longer "
+                "replaced by the server (issue #68); the default, structure, "
+                "keeps the template with the server on too.",
             ),
             "--prediction-mode": (
                 "Prediction",
@@ -842,17 +819,15 @@ GOLDEN = {
                 "Whether the binder is given to the model as cyclic, for "
                 "--predictor MODEL run from here. auto (default): when the "
                 "binder has a head-to-tail bond (for OpenFold3 also only when "
-                "it consists of standard residues: with a D-amino acid and "
-                "N-methylated residues, 1CWA, the flag lowered ipTM from "
-                "0.91-0.92 to 0.78-0.81 in one complex, three seeds, so auto "
-                "leaves such a binder linear); on: always; off: never. "
-                "OpenFold3 (>= 0.4.5) and Boltz-2 get 'cyclic: true' on the "
-                "binder chain, which only wraps its relative positions and does"
-                " not enforce the closure bond; Protenix gets the head-to-tail "
-                "and disulfide bonds as covalent_bonds; ColabFold has no such "
-                "setting and refuses a value. For --predictor of3 it is the "
-                "setting of --openfold-cyclic (both given with different values"
-                " is an error). Needs --predictor.",
+                "it consists of standard residues, so auto leaves a binder with "
+                "modified residues linear); on: always; off: never. OpenFold3 "
+                "(>= 0.4.5) and Boltz-2 get 'cyclic: true' on the binder chain, "
+                "which only wraps its relative positions and does not enforce "
+                "the closure bond; Protenix gets the head-to-tail and disulfide "
+                "bonds as covalent_bonds; ColabFold has no such setting and "
+                "refuses a value. For --predictor of3 it is the setting of "
+                "--openfold-cyclic (both given with different values is an "
+                "error). Needs --predictor.",
             ),
             "--prediction-no-msa-server": (
                 "Prediction",
@@ -861,12 +836,11 @@ GOLDEN = {
                 0,
                 False,
                 "False",
-                "Do not use an MSA server, for --predictor MODEL run from "
-                "here: ColabFold runs single_sequence, Boltz-2 writes 'msa:"
-                " empty', Protenix runs with --use_msa false, OpenFold3 as "
-                "--openfold-no-msa-server. The accuracy for a natural "
-                "receptor drops; no sequence leaves the machine. Needs "
-                "--predictor.",
+                "Do not use an MSA server, for --predictor MODEL run from here: "
+                "ColabFold runs single_sequence, Boltz-2 writes 'msa: empty', "
+                "Protenix runs with --use_msa false, OpenFold3 as "
+                "--openfold-no-msa-server. No sequence leaves the machine. "
+                "Needs --predictor.",
             ),
             "--prediction-conda-env": (
                 "Prediction",
