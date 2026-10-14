@@ -1553,7 +1553,6 @@ def renumber_to_reference(
         _renumber_chain(atoms, binder, binder_key, highest + 1, new_numbers, new_icodes)
     if not has_icode:
         renumbered.add_annotation("ins_code", dtype="U1")
-        new_icodes = np.full(renumbered.array_length(), "", dtype="U1")
     renumbered.res_id = new_numbers
     renumbered.ins_code = new_icodes
     return renumbered
