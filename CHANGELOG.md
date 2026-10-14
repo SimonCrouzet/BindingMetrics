@@ -26,12 +26,12 @@ Values from earlier versions differ in the cases below. Each line gives "before 
 - `binder_ca_rmsd` against a reference (#93): a copy rotated by 40 degrees and translated, 7.20 -> 0.00 A without a receptor chain, 7.20 -> NaN with a receptor of another length.
 - `--predictor af2`, `boltz2` and `protenix` without `--prediction-dir`: stopped with "no runner yet" -> starts the model.
 - CSV of `binding-metrics-run` and `-batch` (#91): the six array columns `openfold_plddt_per_atom`, `openfold_binder_plddt_per_residue`, `openfold_pde`, `openfold_pae`, `openfold_pde_interface` and `openfold_pae_interface` are gone.
-- `provenance["openmm_version"]`: `8.2` -> `8.2.0` for the conda 8.2 build.
+- `provenance["openmm_version"]` (#138): `8.2` -> `8.2.0` for the conda 8.2 build.
 - Protenix `chain_ptm` and `chain_pair_iptm` after `ProtenixParser.complete`: keys by chain position (`"0"`, `"0-1"`) -> by chain ID (`"A"`, `"A-B"`).
 
 **Residue numbering, insertion codes and chain IDs**
 
-- `save_cif` with a source CIF, 3P8F saved with itself (#122, #131): 210 of 255 non-water residues renumbered (60 -> 61, 62, ...) -> 1, and 102 of 357 residues, the glutathione and the waters among them, -> 0; the 144 waters of 1CWA, written 166-305 and 12-15, -> 0 differ.
+- `save_cif` with a source CIF, 3P8F saved with itself (#122, #131): 210 of 255 non-water residues with another number than the source (60 -> 61, 62, ...) -> 1 (the glutathione) in #122, and 102 of 357 residues (the glutathione and the waters) -> 0 in #131; the 144 waters of 1CWA, written 166-305 and 12-15, -> 0 differ.
 - `compute_structure_rmsd` of 3P8F against the file it was saved from (#122): `rmsd` 16.8 -> 0.00 A.
 - `compute_structure_rmsd` pairing (#116, #118): the same six atoms in another order (synthetic) 6.19 -> 0.00 A, a two-chain PDB with chain B written first 6.95 -> 0.00 A, residues 52, 52A, 53 against 52A, 52, 53 (synthetic) 1.38 -> 0.00 A; equal atom counts with no shared key: a number -> None with a `reason`.
 - Chain detection with insertion codes (#120): `compute_receptor_quality` `n_residues` of 3P8F chain A 227 -> 241, and the chain-detection log of `detect_chains_from_file` 227 -> 241 (the chain choice is unchanged).
