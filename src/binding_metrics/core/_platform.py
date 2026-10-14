@@ -11,9 +11,9 @@ never invalidated: CUDA initialises once per process, so a device that appears o
 afterwards, or a changed ``CUDA_VISIBLE_DEVICES``, is not noticed. The lookup of the platform is
 not kept, so a name that stops resolving is seen at once.
 
-A probe that reaches the CUDA platform initialises CUDA in the calling process, and a child
-forked from that process cannot create a CUDA context (``CUDA_ERROR_NOT_INITIALIZED``). A process
-that forks GPU workers therefore must not probe before it starts them.
+The first probe of the CUDA platform initialises CUDA in the calling process, and a child
+created afterwards by ``fork`` cannot use CUDA (``CUDA_ERROR_NOT_INITIALIZED``). Start such
+children with ``spawn`` or ``forkserver``, or probe in the child.
 """
 
 import logging
@@ -83,6 +83,10 @@ def select_platform(preferred: str = "auto"):
     returned when it is usable and is never replaced by another: when it is not registered, the
     error is OpenMM's, and when it is registered but no context can be created on it, the error
     is an ``openmm.OpenMMException`` that names the platform and carries OpenMM's message.
+
+    The first probe of the CUDA platform initialises CUDA in the calling process, so a child
+    created afterwards by ``fork`` cannot use CUDA (``CUDA_ERROR_NOT_INITIALIZED``). Start such
+    children with ``spawn`` or ``forkserver``, or call this in the child.
 
     Raises:
         openmm.OpenMMException: ``preferred`` is not usable, or no platform at all is.
