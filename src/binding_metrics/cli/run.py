@@ -13,8 +13,7 @@ Usage:
         [--random-seed 1] \\
         [--device cuda]
 
-The results JSON carries a ``provenance`` block (package version, git sha, seed,
-platform) so a result can be tied to the code and settings that produced it.
+The results JSON carries a ``provenance`` block (package version, git sha, seed, platform).
 
 Structure prediction:
     The ``openfold`` step runs OpenFold3 and writes ``results["openfold"]``. With
@@ -33,11 +32,10 @@ Structure prediction:
 
 Design origin:
     --designed-with {boltzgen,bindcraft,colabdesign} names the pipeline that made the binder.
-    The EvoBind adversarial check asks whether a model other than the designer puts the binder
-    where the design has it, so when the model of the run is one that pipeline ran itself
-    (BoltzGen: Boltz-2; BindCraft and ColabDesign: AlphaFold2, --predictor af2) the check is left
-    out with a warning and the rest runs (--design-policy skip, the default; warn runs it and
-    marks the result, error refuses). --on-incompatible does not change this.
+    When the model of the run is one that pipeline ran itself (BoltzGen: Boltz-2; BindCraft and
+    ColabDesign: AlphaFold2, --predictor af2), the EvoBind adversarial check is left out with a
+    warning and the rest runs (--design-policy skip, the default; warn runs it and marks the
+    result, error refuses). --on-incompatible does not change this.
 
 Configuration file:
     --config run.toml supplies option defaults; flags on the command line override
@@ -211,10 +209,8 @@ def _warn(msg: str) -> None:
 def _raw_energy_note(n_rebuilt: int) -> str:
     """The sentence for a raw interaction energy of a structure PDBFixer rebuilt atoms of.
 
-    PDBFixer places a missing heavy atom from a template without checking its neighbours.
-    Overlaps between the two chains then dominate the raw energy: 1YCR with one interface
-    side chain rebuilt (8 atoms) goes from -16 to +33 665 kJ/mol, and relaxing brings it back
-    to about -300.
+    PDBFixer places a missing heavy atom from a template without checking its neighbours, so
+    overlaps between the two chains can dominate the raw energy.
     """
     plural = "" if n_rebuilt == 1 else "s"
     return (
@@ -323,8 +319,8 @@ def _label_independence(block: dict, independent: Optional[bool]) -> None:
     """Add ``independent_of_design`` to the block of the model step when the design is known.
 
     True when the model of the run is not one the design pipeline ran itself, False when it is.
-    Nothing is added without a known design source, so the block is unchanged for a run that did
-    not say where the design came from, nor to a block of a step that was left out or failed.
+    Nothing is added without a known design source, nor to the block of a step that was left out
+    or failed.
     """
     if (
         independent is not None
@@ -415,11 +411,11 @@ def run_pipeline(
             given. Separate from ``random_seed``.
         openfold_use_msa_server: Whether the OpenFold3 step uses the ColabFold MSA server
             (keyword-only, default True; ``--openfold-no-msa-server`` is False). With the server
-            off OpenFold3 runs with a dummy MSA that holds only the query sequence of each chain,
-            which lowers accuracy for a natural receptor; with ``openfold_templates="alignment"``
-            it also keeps the template alignments that the server would replace (issue #68). The
-            value is recorded as ``provenance["openfold3_use_msa_server"]`` when OpenFold3 is run
-            here, and is part of the key of the prediction store.
+            off OpenFold3 runs with a dummy MSA that holds only the query sequence of each chain;
+            with ``openfold_templates="alignment"`` it also keeps the template alignments that
+            the server would replace. The value is recorded as
+            ``provenance["openfold3_use_msa_server"]`` when OpenFold3 is run here, and is part of
+            the key of the prediction store.
         openfold_templates: How the template of each chain reaches OpenFold3 in ``score`` and
             ``refold`` mode (keyword-only): ``"structure"`` (default) gives the template
             CIF itself (OpenFold3's CIF Direct Template Mode, OpenFold3 0.4.2 or later), which
@@ -436,13 +432,11 @@ def run_pipeline(
             (keyword-only): ``"auto"`` (default) when the binder has a head-to-tail bond, standard
             residues only, and the installed OpenFold3 is 0.4.5 or later, ``True`` (``"on"``)
             always, ``False`` (``"off"``) never; see ``prepare_refolding_query``. OpenFold3 uses
-            the flag only to wrap the relative positions of the chain: it does not enforce the
-            closure bond and has published no accuracy benchmark for cyclic peptides, and with
-            modified residues the flag made the one complex tried worse. The block of the step
-            (``results["openfold"]``, or ``results["prediction"]`` with ``predictor``) gets
-            ``binder_cyclic`` (bool), and a ``reason`` when a head-to-tail binder was left
-            linear because it has modified residues or the OpenFold3 version is too old or
-            unreadable.
+            the flag only to wrap the relative positions of the chain and does not enforce the
+            closure bond. The block of the step (``results["openfold"]``, or
+            ``results["prediction"]`` with ``predictor``) gets ``binder_cyclic`` (bool), and a
+            ``reason`` when a head-to-tail binder was left linear because it has modified
+            residues or the OpenFold3 version is too old or unreadable.
         predictor: A key of ``binding_metrics.predictors.PARSERS`` (keyword-only). The
             ``openfold`` step then reads that model's prediction through a
             ``PredictionSession`` and writes ``results["prediction"]``; ``results["openfold"]``
@@ -524,19 +518,17 @@ def run_pipeline(
             run with ``predictor`` takes the first two from ``prediction_msa_policy`` and the
             merged ``prediction_use_msa_server``.
         designed_with, design_policy: The pipeline that made the designed binder and what to do
-            about it (keyword-only; ``--designed-with`` and ``--design-policy``). The EvoBind
-            adversarial check asks whether a model other than the designer puts the binder where
-            the design has it, and a model that the design pipeline ran itself agrees partly by
-            construction. ``designed_with`` is ``"boltzgen"`` (Boltz-2), ``"bindcraft"`` or
-            ``"colabdesign"`` (AlphaFold2, ``af2``), in any case, or a list of the registry names
-            of the models the design ran. When the model step runs one of them, ``design_policy``
-            ``"skip"`` (default) leaves the adversarial check out, warns loudly and runs the rest;
+            about it (keyword-only; ``--designed-with`` and ``--design-policy``).
+            ``designed_with`` is ``"boltzgen"`` (Boltz-2), ``"bindcraft"`` or ``"colabdesign"``
+            (AlphaFold2, ``af2``), in any case, or a list of the registry names of the models the
+            design ran. When the model step runs one of them, ``design_policy`` ``"skip"``
+            (default) leaves the EvoBind adversarial check out, warns loudly and runs the rest;
             ``"warn"`` runs it and warns; ``"error"`` raises ``IncompatibleInputError`` before
             anything runs. ``on_incompatible`` does not change this rule. The block of the model
             step (``results["prediction"]`` or ``results["openfold"]``) gets
             ``independent_of_design`` (False for such a model, True for another) and, for a check
-            left out, ``adversarial_skipped`` with the reason. Without ``designed_with``
-            nothing is decided and the output is unchanged.
+            left out, ``adversarial_skipped`` with the reason. Without ``designed_with`` nothing
+            is decided and the output is unchanged.
         The remaining arguments mirror the ``binding-metrics-run`` flags.
 
     Returns:
@@ -741,9 +733,8 @@ def run_pipeline(
                     "keep_water": keep_water,
                     **prep_report,
                 }
-                # save_cif preserves original auth IDs and aligns label IDs to match,
-                # so downstream OpenMM steps will see the original chain IDs. This logs
-                # the chains of the prepped file.
+                # save_cif keeps the original auth IDs, so downstream OpenMM steps see the
+                # original chain IDs. This call logs the chains of the prepped file.
                 detect_chains_from_file(
                     prepped_path,
                     peptide_chain=peptide_chain,
@@ -774,8 +765,8 @@ def run_pipeline(
                 [b.cyclic_type for b in cyclic_bond_hints],
             )
     except Exception as e:  # noqa: BLE001 - the hints are best effort; the failure is logged
-        # Without them relaxation detects cyclisation from the prepped file, which may
-        # have lost the STRUCT_CONN records. Debug level keeps the CLI output unchanged.
+        # Without them relaxation detects cyclisation from the prepped file, which may have
+        # lost the STRUCT_CONN records.
         logger.debug("Cyclic bond hints unavailable from %s: %s", input_path, e)
 
     relaxed_path: Optional[Path] = None
@@ -839,10 +830,9 @@ def run_pipeline(
         )
         results["relax"] = {"skipped": True}
 
-    # The metrics below read ``relaxed_path``. Those that use biotite name the chains
-    # by author ID. The input has its own author IDs; a prepped or relaxed file is
-    # written from the input CIF with those author IDs restored and repeated as its
-    # label IDs. So the author IDs of the input name the chains in every case.
+    # The metrics below read ``relaxed_path``. A prepped or relaxed file keeps the author chain
+    # IDs of the input (repeated as its label IDs), so the author IDs of the input name the
+    # chains in every case.
     working_peptide, working_receptor = peptide_chain, receptor_chain
 
     # ------------------------------------------------------------------ Energy
@@ -971,10 +961,9 @@ def run_pipeline(
             try:
                 from binding_metrics.metrics.dockq import compute_dockq_metrics
 
-                # Score the prediction *as submitted* (original input coordinates)
-                # against the reference: CAPRI evaluates the predicted coordinates,
-                # so we deliberately use input_path, not the prepped/relaxed pose
-                # (prep + MD would move atoms and confound the accuracy measure).
+                # Score the prediction as submitted (original input coordinates) against the
+                # reference: CAPRI evaluates the predicted coordinates, so input_path is used,
+                # not the prepped or relaxed pose (prep and MD would move atoms).
                 dockq = compute_dockq_metrics(input_path, reference_path)
                 results["dockq"] = dockq
                 score = dockq.get("dockq")
@@ -1102,7 +1091,7 @@ def run_pipeline(
                 if weights is not None:
                     of_metrics["weights"] = weights
                     results["provenance"]["prediction_weights"] = weights
-                # EvoBind metrics — no extra model calls, reuse OF3 outputs
+                # EvoBind metrics reuse the OF3 outputs (no extra model call)
                 of_structure = of_metrics.get("structure_path")
                 plddt = of_metrics.get("plddt_per_atom")
                 if of_structure:
@@ -1125,9 +1114,8 @@ def run_pipeline(
                         _warn(f"EvoBind score failed: {e}")
                         of_metrics["evobind_error"] = str(e)
 
-                    # Adversarial check: does the OF3 prediction agree with the
-                    # input design pose? Large ΔCOM = OF3 places the binder
-                    # elsewhere → design pose not supported by the prediction.
+                    # Adversarial check: compares the OF3 prediction with the input design pose
+                    # (ΔCOM of the binder).
                     if adversarial_skipped is not None:
                         of_metrics["adversarial_skipped"] = adversarial_skipped
                     else:
