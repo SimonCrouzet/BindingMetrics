@@ -202,11 +202,13 @@ A chain ID that is not in the file, or the same chain twice, prints `ERROR: <mes
 
 ## 5. force-field interaction energy
 
-`compute_interaction_energy(input_path, peptide_chain=None, receptor_chain=None, solvent_model="obc2", device="cuda", sample_id=None, modes=("raw", "relaxed", "after_md"), ph=7.4, relaxed_min_steps_restrained=500, relaxed_min_steps_full=2000, after_md_duration_ps=10.0, after_md_timestep_fs=2.0, after_md_temperature_k=300.0, random_seed=1, *, binder_chain=None, target_chain=None)` — `binding_metrics.metrics.energy`
+`compute_interaction_energy(input_path, peptide_chain=None, receptor_chain=None, solvent_model="obc2", device="cuda", sample_id=None, modes=("raw", "relaxed", "after_md"), ph=7.4, relaxed_min_steps_restrained=500, relaxed_min_steps_full=2000, after_md_duration_ps=10.0, after_md_timestep_fs=2.0, after_md_temperature_k=300.0, random_seed=1, *, binder_chain=None, target_chain=None, complete_terminal_oxygens=False)` — `binding_metrics.metrics.energy`
 
 Needs OpenMM (Eastman et al. 2017; `pip install "binding-metrics[simulation]"`, or `environment.yml` for a CUDA build). Registered as `structure_interaction_energy`.
 
 The chain IDs (`peptide_chain`, `receptor_chain`, and the `binding-metrics-energy` flags) are author IDs for an mmCIF, as for every other metric. OpenMM names the chains of a CIF with more label IDs than author IDs by their label IDs (the peptide of 1CWA is author chain C and chain B of the topology), and the function finds the chain from either ID.
+
+A chain that ends in a standard residue without its terminal oxygen (OXT), with no cap and no closure bond, is refused with a message that names the chain. With `complete_terminal_oxygens=True` the function adds the OXT first (`core.system.add_terminal_oxygens`: the atom and its bond, 1.25 Å from the carbonyl carbon in the plane of CA, C and O; the hydrogens are added as for any chain) and returns `terminal_oxygens_added`. A chain that has its OXT, a cap or a ring closure is left as it is. `binding-metrics-energy` has no flag for it.
 
 E_int = E_complex − E_peptide − E_receptor, with AMBER ff14SB and implicit solvent. It is an end-state estimate in the spirit of MM-GBSA (Kollman et al. 2000): the isolated binder and target are evaluated at their geometry in the complex. E_int therefore contains the force-field interaction and the change in generalized Born polar solvation and nonpolar surface term, and it leaves out conformational reorganisation and entropy. Compare values between structures of the same system, not with measured binding free energies.
 
@@ -217,6 +219,7 @@ E_int = E_complex − E_peptide − E_receptor, with AMBER ff14SB and implicit s
 | `error_message` | str \| None | — | one `"<mode>: <reason>"` entry per failed mode, joined by `"; "` |
 | `num_contacts` | int | — | binder–target atom pairs closer than 8 Å in the input file |
 | `num_close_contacts` | int | — | pairs closer than 4 Å |
+| `terminal_oxygens_added` | list of str | — | present only with `complete_terminal_oxygens=True`: one `"<chain>:<residue><number>"` per chain that got an OXT, empty when none was missing |
 | `raw_interaction_energy` | float | kJ/mol | E_int at the input geometry with hydrogens added |
 | `raw_e_complex`, `raw_e_peptide`, `raw_e_receptor` | float | kJ/mol | the three terms (raw) |
 | `relaxed_interaction_energy` | float | kJ/mol | E_int after minimisation |
