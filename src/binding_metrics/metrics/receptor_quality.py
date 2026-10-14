@@ -10,10 +10,9 @@ The receptor chain is identified as the largest protein chain by residue count.
 This module is self-contained and does not depend on the main pipeline.
 
 The validation terms follow MolProbity (Chen et al. 2010, Acta Cryst. D66:12-21;
-Williams et al. 2018, Protein Sci. 27:293-315) but are lighter approximations:
-the clashscore counts heavy-atom overlaps only (no hydrogens), the rotamer term
-is a chi1-only check, and the composite score is therefore indicative rather than
-comparable to published MolProbity values.
+Williams et al. 2018, Protein Sci. 27:293-315) with simplifications: the clashscore
+counts heavy-atom overlaps only (no hydrogens) and the rotamer term checks chi1 only,
+so the composite score is not comparable to published MolProbity values.
 
 Usage:
     binding-metrics-receptor-quality --input receptor.pdb
@@ -143,12 +142,11 @@ def _iter_residues(atoms):
 # VDW radii
 # ---------------------------------------------------------------------------
 
-# Bondi radii in Å (J. Phys. Chem. 68, 441, 1964) of the heavy atoms, used by the clash score
-# only; hydrogens are left out of that score, so the table has no entry for them. Two other
-# tables serve other metrics and are kept apart (see `geometry._BONDI_VDW_RADII`): the same
-# Bondi values with hydrogen at 1.20 Å for the shape complementarity and the void volume, and
-# biotite's table (hydrogen 1.10 Å, bromine 1.83 Å) for the SASA, interface and pose-descriptor
-# metrics.
+# Bondi radii in Å (J. Phys. Chem. 68, 441, 1964) of the heavy atoms, for the clash score only
+# (hydrogens are not scored, so there is no entry for them). Other tables: the same Bondi values
+# with hydrogen at 1.20 Å for the shape complementarity and the void volume
+# (`geometry._BONDI_VDW_RADII`), and biotite's (hydrogen 1.10 Å, bromine 1.83 Å) for the SASA,
+# interface and pose-descriptor metrics.
 _VDW_RADII: dict[str, float] = {
     "C": 1.70,
     "N": 1.55,
@@ -179,7 +177,7 @@ def _ramachandran(chain_atoms) -> dict:
     Each residue with both phi and psi is placed in a favoured, allowed or
     outlier region of the Ramachandran plot (``geometry._classify_ramachandran``;
     D-residues are scored on the mirrored plot). The regions are simplified
-    boxes, not the density contours of MolProbity's Top8000 data (Lovell et al.
+    boxes; MolProbity uses density contours from the Top8000 data (Lovell et al.
     2003, Proteins 50:437; Williams et al. 2018).
 
     Returns:
@@ -261,9 +259,9 @@ _COVALENT_DEFAULT_RADIUS = 1.0
 _COVALENT_TOLERANCE_ANGSTROM = 0.4
 
 # Peptide bond between residues that follow each other in the chain. Read off
-# the coordinates rather than from residue numbers, so that numbering gaps
-# (chymotrypsin numbering skips 149 and 218) do not turn a peptide bond into a
-# clash. Same value as the amide threshold in ``core.cyclic``.
+# the coordinates, not the residue numbers, so that numbering gaps (chymotrypsin
+# numbering skips 149 and 218) do not turn a peptide bond into a clash. Same value
+# as the amide threshold in ``core.cyclic``.
 _PEPTIDE_BOND_MAX_ANGSTROM = 2.0
 
 # Longest distance at which two atoms of residues that are not sequence
@@ -399,11 +397,9 @@ def _clashscore(
 
     Two heavy atoms clash when the sum of their van der Waals radii exceeds
     their distance by at least ``clash_cutoff`` Å (the 0.4 Å of Word et al. 1999;
-    Chen et al. 2010). This is not MolProbity's clashscore: MolProbity adds
-    hydrogens with Reduce and evaluates all-atom contacts with Probe
-    (Williams et al. 2018), which also resolves hydrogen bonds from the
-    hydrogen position. Here hydrogens are ignored, so the value is an
-    approximation that is usually higher than MolProbity's for the same model.
+    Chen et al. 2010). This is a heavy-atom approximation of MolProbity's
+    clashscore, which adds hydrogens with Reduce and evaluates all-atom contacts
+    with Probe (Williams et al. 2018).
 
     A pair is not scored when
 
@@ -419,8 +415,8 @@ def _clashscore(
     - ``exempt_hbond_pairs`` is true and the pair is N/O to N/O at
       2.5 Å or more (a hydrogen bond, not an overlap).
 
-    With both switches off the result equals the earlier definition, which
-    counted disulfides, cyclic closures and N...O hydrogen bonds as clashes.
+    With both switches off, disulfides, cyclic closures and N...O hydrogen bonds
+    count as clashes.
 
     Returns:
         ``clashscore`` (float, NaN below two heavy atoms), ``n_clashes`` (int)
@@ -559,9 +555,9 @@ def _rotamer_quality(chain_atoms) -> dict:
     more than 40° from the nearest canonical rotamer position (g−/g+/trans).
     Residues without χ1 (GLY, ALA) are skipped.
 
-    Note: this is a χ1-only approximation. Full rotamer validation requires
-    the backbone-dependent Dunbrack rotamer library (Shapovalov & Dunbrack 2011,
-    Structure 19:844; used by MolProbity via Lovell et al. 2000, Proteins 40:389).
+    χ1 only. Full rotamer validation uses a backbone-dependent rotamer library
+    (Shapovalov & Dunbrack 2011, Structure 19:844; used by MolProbity via
+    Lovell et al. 2000, Proteins 40:389).
 
     Returns:
         ``outlier_count`` and ``n_evaluated`` (int), ``outlier_pct`` (float,
@@ -579,7 +575,6 @@ def _rotamer_quality(chain_atoms) -> dict:
         if not all(k in atoms for k in ("N", "CA", "CB", terminal)):
             continue
 
-        # Dihedral N-CA-CB-X
         chi1_rad = float(
             struc.dihedral(
                 atoms["N"],
@@ -650,10 +645,10 @@ def _ideal_cbeta(n: np.ndarray, ca: np.ndarray, c: np.ndarray) -> Optional[np.nd
 def _cbeta_deviations(chain_atoms, threshold: float = 0.25) -> dict:
     """Count Cβ deviations > threshold Å from their ideal backbone-derived position.
 
-    Follows MolProbity convention: deviations > 0.25 Å indicate backbone distortion
-    (Lovell et al. 2003, Proteins 50:437). GLY is skipped (no Cβ). MolProbity
-    derives the ideal Cβ from the side-chain-dependent Cα geometry; here it comes
-    from the backbone N, CA, C with tetrahedral geometry, so values differ slightly.
+    MolProbity convention: a deviation > 0.25 Å indicates backbone distortion
+    (Lovell et al. 2003, Proteins 50:437). GLY is skipped (no Cβ). The ideal Cβ is
+    built from the backbone N, CA, C with tetrahedral geometry; MolProbity derives
+    it from the side-chain-dependent Cα geometry, so values differ slightly.
 
     Returns:
         ``cb_deviation_count`` and ``cb_n_evaluated`` (int), ``cb_deviation_pct``
@@ -750,7 +745,6 @@ def _backbone_geometry(chain_atoms) -> dict:
     for i, r in enumerate(residues):
         r_next = residues[i + 1] if i + 1 < len(residues) else None
 
-        # Intra-residue backbone bonds
         for (a1, a2), (ideal, thresh) in _INTRA_BONDS.items():
             if a1 in r and a2 in r:
                 d = float(np.linalg.norm(r[a2] - r[a1]))
@@ -758,7 +752,6 @@ def _backbone_geometry(chain_atoms) -> dict:
                 if abs(d - ideal) > thresh:
                     bad_bonds += 1
 
-        # Inter-residue peptide C–N bond
         if r_next and "C" in r and "N" in r_next:
             d = float(np.linalg.norm(r_next["N"] - r["C"]))
             if d < _PEPTIDE_BOND_MAX:
@@ -767,7 +760,6 @@ def _backbone_geometry(chain_atoms) -> dict:
                 if abs(d - ideal) > thresh:
                     bad_bonds += 1
 
-        # Intra-residue backbone angles
         for (a1, a2, a3), (ideal, thresh) in _INTRA_ANGLES.items():
             if all(k in r for k in (a1, a2, a3)):
                 ang = _angle_deg(r[a1], r[a2], r[a3])
@@ -776,7 +768,6 @@ def _backbone_geometry(chain_atoms) -> dict:
                     if abs(ang - ideal) > thresh:
                         bad_angles += 1
 
-        # Inter-residue backbone angles (spanning peptide bond)
         if r_next:
             # CA–C–N: current CA and C, next N
             if all(k in r for k in ("CA", "C")) and "N" in r_next:
@@ -829,10 +820,9 @@ def _molprobity_score(
     a single score on a scale similar to X-ray resolution (lower = better).
     Penalty terms activate above baseline noise levels (0.2% rama, 2% rotamer).
 
-    Note: rotamer term uses simplified χ1 classification, not the full Dunbrack
-    library, and the clashscore counts heavy-atom overlaps only (Williams et al.
-    2018 describe the all-atom original), so the score is indicative rather than
-    directly comparable to published MolProbity values.
+    The rotamer term is a χ1-only classification and the clashscore counts
+    heavy-atom overlaps only, so the score is not comparable to published
+    MolProbity values.
 
     Returns NaN when any input is not finite.
     """
@@ -910,7 +900,7 @@ def _receptor_energy(
     not replace, such as the IAM of 1XY4) would leave a hole whose two sides the force field
     bonds by name, and the energy would be that of another molecule: the result is NaN, with
     ``reason`` (and ``error``, the same sentence) naming the residues. A residue removed at an
-    end of the chain changes nothing.
+    end of the chain is not a hole.
 
     Stochastic steps (PDBFixer's rebuild of missing atoms and the jitter of new
     hydrogens) are seeded with ``random_seed``, so the same input gives the same
@@ -982,8 +972,8 @@ def _receptor_energy(
                 mod = Modeller(fixer.topology, fixer.positions)
                 mod.addHydrogens(pH=DEFAULT_PH, platform=placement_platform)
             else:
-                # The chain is completed as far as Modeller needs (the terminal oxygen) and gets
-                # the hydrogens of the PDBFixer branch, so the energy does not depend on whether
+                # Complete the chain as far as Modeller needs (the terminal oxygen) and add the
+                # same hydrogens as the PDBFixer branch, so the energy does not depend on whether
                 # PDBFixer is installed.
                 pdb = PDBFile(str(tmp_path))
                 mod = Modeller(*add_terminal_oxygens(pdb.topology, pdb.positions))
@@ -1164,13 +1154,11 @@ def compute_receptor_quality(
         exclude_bonded: Leave covalently linked atom pairs (disulfides, cyclic
             closures, lactams, staples, peptide bonds across numbering gaps) and
             N/O hydrogen-bond pairs out of the clash count (default True). False
-            restores the earlier count, which scored them as clashes.
+            counts them as clashes.
         random_seed: Seed for the stochastic steps of the energy term
             (hydrogen placement and PDBFixer's rebuild of missing atoms).
             Defaults to the package-wide ``DEFAULT_RANDOM_SEED`` so repeated
-            calls agree; ``None`` gives fresh randomness. The energy is a single
-            point at the input geometry, so it is the term most exposed to the
-            hydrogen jitter.
+            calls agree; ``None`` gives fresh randomness.
         target_chain: Alias of ``receptor_chain``; different IDs in both raise
             ``ValueError``.
 
@@ -1309,37 +1297,29 @@ def _model_to_csv_row(filename: str, receptor_chain: str, m: dict) -> dict:
         "model_index": m.get("model_index"),
         "n_residues": m.get("n_residues"),
         "n_heavy_atoms": m.get("n_heavy_atoms"),
-        # Ramachandran
         "rama_favoured_pct": r.get("favoured_pct"),
         "rama_allowed_pct": r.get("allowed_pct"),
         "rama_outlier_pct": r.get("outlier_pct"),
         "rama_outlier_count": r.get("outlier_count"),
         "rama_favoured_count": r.get("favoured_count"),
         "rama_n_evaluated": r.get("n_evaluated"),
-        # Clashscore
         "clashscore": c.get("clashscore"),
         "n_clashes": c.get("n_clashes"),
-        # Rotamers
         "rotamer_outlier_count": ro.get("outlier_count"),
         "rotamer_outlier_pct": ro.get("outlier_pct"),
         "rotamer_n_evaluated": ro.get("n_evaluated"),
-        # Cβ deviations
         "cbeta_dev_count": cb.get("cb_deviation_count"),
         "cbeta_n_evaluated": cb.get("cb_n_evaluated"),
         "cbeta_dev_pct": cb.get("cb_deviation_pct"),
-        # Backbone geometry
         "bad_bonds": bg.get("bad_bonds"),
         "total_bonds": bg.get("total_bonds"),
         "bad_bonds_pct": bg.get("bad_bonds_pct"),
         "bad_angles": bg.get("bad_angles"),
         "total_angles": bg.get("total_angles"),
         "bad_angles_pct": bg.get("bad_angles_pct"),
-        # MolProbity
         "molprobity_score": m.get("molprobity_score"),
-        # Energy
         "energy_kJ_mol": e.get("energy_kJ_mol"),
         "energy_per_residue_kJ_mol": e.get("energy_per_residue_kJ_mol"),
-        # B-factors
         "b_factor_mean": b.get("mean_b_factor"),
         "b_factor_max": b.get("max_b_factor"),
         "b_factor_std": b.get("std_b_factor"),
