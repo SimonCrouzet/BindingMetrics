@@ -1,42 +1,37 @@
-"""``Pose``: one structure of a complex, whatever produced it, and what every kind shares.
+"""``Pose``: one structure of a complex and the interface every kind shares.
 
-A pose is classified by its origin, and each kind has its own class::
+Each origin has its own class::
 
     Pose                    abstract base class (this module)
      +-- PredictedPose      the output of a co-folding model (``binding_metrics.predictors.record``)
      +-- DockedPose         the output of a docking or design tool: no model confidences
      +-- ExperimentalPose   a crystal, NMR or EM structure
 
-What the kinds have in common, and what the metrics and a downstream pipeline may rely on:
+Shared interface:
 
 * ``kind``: ``"predicted"``, ``"docked"`` or ``"experimental"`` (class attribute).
-* ``id``: a stable string. A caller-given id wins; otherwise a predicted pose uses
-  ``<model>:<name>:s<seed_index>:<sample>`` and a docked or experimental one uses the file
-  stem (the name of the kind for an in-memory structure) and the first 8 hex digits of the
-  content hash, ``decoy_01-3f9a1c2e``.
+* ``id``: a caller-given id, else ``<model>:<name>:s<seed_index>:<sample>`` for a predicted
+  pose, else the file stem (the kind for an in-memory structure) and the first 8 hex digits of
+  the content hash, ``decoy_01-3f9a1c2e``.
 * ``structure_path``: the structure file, or None for an in-memory structure.
 * ``atoms()``: the structure as a biotite ``AtomArray`` with the chain IDs of ``chain_map``
   applied. A gzip-compressed file is decompressed first.
-* ``chain_map``: renames chains, structure-file ID to the user's ID; empty means no renaming.
-* ``provenance``: free facts about the pose (program, method, a decoy flag, the run mode), a
-  dictionary of JSON scalars.
-* ``content_hash()``: SHA-256 of the file bytes for a path (``file_sha256``), and of a
-  canonical serialisation of the atoms for an in-memory structure (``atoms_sha256``). A path
-  and the same structure loaded into memory therefore have different hashes.
+* ``chain_map``: structure-file chain ID to user chain ID; empty means no renaming.
+* ``provenance``: a dictionary of JSON scalars (program, method, decoy flag, run mode).
+* ``content_hash()``: SHA-256 of the file bytes for a path (``file_sha256``), of a canonical
+  serialisation of the atoms for an in-memory structure (``atoms_sha256``). A path and the
+  same structure in memory therefore have different hashes.
 * ``native_scores()``: what the tool that produced the pose reported, flat, values only
-  (``float`` or None for a value that is missing). A computed metric is never stored on a
-  pose: metrics are functions of a pose, and their results live in the result dictionaries.
+  (``float`` or None for a missing value). A computed metric is never stored on a pose.
 
-``atoms()`` and ``content_hash()`` of a pose with a path are a view of the file as it is when
-they are called: the result is cached with the file's size and modification time, and the
-file is read again when either has changed (a rewrite at the same path, a relaxed structure
-written back over its input). A call on an unchanged file costs one ``os.stat``. A rewrite
-that keeps both the size and the modification time, which a file system with a coarse clock
-allows within one tick, is not seen. An in-memory structure is never stale.
+``atoms()`` and ``content_hash()`` of a pose with a path cache their result with the file's
+size and modification time and read the file again when either changes. A call on an
+unchanged file costs one ``os.stat``. A rewrite that keeps both the size and the modification
+time (a coarse file-system clock allows it within one tick) is not seen. An in-memory
+structure is never stale.
 
-Importing this module imports numpy and the standard library only (and
-``binding_metrics.predictors.store`` for ``file_sha256``, which imports the standard library
-only); biotite is imported when a structure is read.
+Importing this module imports numpy, the standard library and ``predictors.store``
+(``file_sha256``); biotite is imported when a structure is read.
 """
 
 from __future__ import annotations
@@ -94,11 +89,9 @@ class Pose(ABC):
         """SHA-256 hex digest that identifies the structure.
 
         The bytes of the file for a pose with a ``structure_path`` (a compressed file is
-        hashed as it is stored), the canonical serialisation of the atoms for an in-memory
+        hashed as stored), the canonical serialisation of the atoms for an in-memory
         structure (``atoms_sha256``; the chain IDs of the source, before ``chain_map``).
-        The digest of a path is cached with the file's size and modification time and
-        computed again when either has changed, so it is always that of the file as it is
-        now (one ``os.stat`` per call when the file is unchanged).
+        A path digest is cached with the file's size and modification time.
 
         Raises:
             ValueError: If the pose has no structure.
@@ -108,8 +101,8 @@ class Pose(ABC):
         inline = self._inline_atoms()
         if path is None and inline is None:
             raise ValueError(self._no_structure_message())
-        # the stamp is taken before the read: a rewrite during the read leaves an older stamp
-        # than the file, so the next call reads again instead of pairing new stamp and old bytes
+        # the stamp is taken before the read: a rewrite during the read leaves an older stamp,
+        # so the next call reads again
         key = (str(path), _file_stamp(path)) if path is not None else None
         cached = self.__dict__.get("_content_hash_cache")
         if cached is not None and cached[0] == key:
@@ -123,13 +116,11 @@ class Pose(ABC):
     def atoms(self):
         """The structure as a biotite ``AtomArray``, chain IDs renamed by ``chain_map``.
 
-        The array is cached and returned again until ``structure_path``, ``chain_map`` or the
-        file's size or modification time changes, when the file is read again (one
-        ``os.stat`` per call on an unchanged file); treat the result as read-only and copy it
-        before modifying. A call that follows a rewrite returns a new array, and an array
-        returned before it keeps the old coordinates. Model 1 is read, with the author chain
-        and residue IDs. A gzip-compressed file is decompressed first. An in-memory structure
-        is returned as it is when ``chain_map`` is empty and as a renamed copy otherwise; the
+        The array is cached until ``structure_path``, ``chain_map`` or the file's size or
+        modification time changes; treat it as read-only and copy it before modifying. An array
+        returned before a rewrite keeps the old coordinates. Model 1 is read, with the author
+        chain and residue IDs. A gzip-compressed file is decompressed first. An in-memory
+        structure is returned as it is when ``chain_map`` is empty, else as a renamed copy; the
         array that was given is never modified.
 
         Raises:
@@ -173,18 +164,16 @@ class Pose(ABC):
     def native_scores(self) -> dict[str, Optional[float]]:
         """What the tool that produced the pose reported: flat, values only.
 
-        Keys are stable names, values are floats, and a value that is missing is None. A
-        reason for a missing value stays in ``reasons`` where the kind has one. The result is
-        a new dictionary the caller may change.
+        Keys are stable names, values are floats, a missing value is None (a kind that records
+        a reason keeps it in ``reasons``). The result is a new dictionary.
         """
 
 
 class SourcedPose(Pose):
-    """Shared part of the kinds that wrap a ``source``: a structure path or an ``AtomArray``.
+    """Base of the kinds that wrap a ``source``, a structure path or an ``AtomArray``.
 
     ``DockedPose`` and ``ExperimentalPose`` are frozen dataclasses with a ``source`` field and
-    call ``_check_common`` from ``__post_init__``; they differ in what they report about the
-    structure. Not for direct use.
+    call ``_check_common`` from ``__post_init__``. Not for direct use.
     """
 
     source: Any
@@ -296,10 +285,8 @@ def atoms_sha256(atoms) -> str:
     """SHA-256 hex digest of the canonical serialisation of an ``AtomArray``.
 
     Per atom, in array order: chain ID, residue number, insertion code, residue name, atom
-    name, element, and the coordinates rounded to 0.001 angstrom as int64. Nothing else is
-    read (no B-factor, occupancy or charge), so two arrays that differ only in annotations
-    outside this list have one digest, and a shift of a coordinate by less than about
-    0.0005 angstrom does not change it unless the value sits on a rounding boundary.
+    name, element, and the coordinates rounded to 0.001 angstrom as int64. Other annotations
+    (B-factor, occupancy, charge) are not read.
     """
     n_atoms = atoms.array_length()
     digest = hashlib.sha256()
