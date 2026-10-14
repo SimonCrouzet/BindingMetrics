@@ -69,7 +69,6 @@ from binding_metrics.core.residues import (
     FORCE_FIELD_CAP_NAMES,
     ION_NAMES_COMMON,
     LACTAM_TEMPLATE_RESIDUES,
-    PROTEIN_RESIDUES,
     STANDARD_AMINO_ACIDS,
     WATER_NAMES_WITH_H2O,
     residue_number,
@@ -78,6 +77,7 @@ from binding_metrics.io.structures import (
     attach_author_chain_ids,
     author_chain_ids,
     copy_author_chain_ids,
+    detect_chains,
     topology_chain_id,
 )
 from binding_metrics.protocols.relaxer import Relaxer
@@ -644,28 +644,22 @@ class ImplicitRelaxation(Relaxer):
     def _identify_chains(self, topology) -> tuple[str, Optional[str]]:
         """Identify peptide (smallest) and receptor (largest) protein chains.
 
-        Returns the IDs of the two chains in ``topology``. The configured IDs are author
-        IDs when the topology carries them (``io.structures.load_structure``), and the
-        ID of a chain of the topology otherwise or when no amino-acid chain has that
-        author ID.
+        Returns the IDs of the two chains in ``topology``. A chain is a protein chain when
+        it holds amino-acid residues as ``io.structures.detect_chains`` counts them, which
+        includes the D-amino acids: a peptide made only of D-residues is found. The
+        configured IDs are author IDs when the topology carries them
+        (``io.structures.load_structure``), and the ID of a chain of the topology otherwise
+        or when no amino-acid chain has that author ID.
         """
         self._import_openmm()
-        # Amino acids only — exclude water (HOH), nucleic acids (A/C/G/T/U/I/DA/…)
-        chain_sizes = []
-        for chain in topology.chains():
-            n_protein = sum(1 for r in chain.residues() if r.name in PROTEIN_RESIDUES)
-            if n_protein > 0:
-                chain_sizes.append((chain.id, n_protein))
-
-        if not chain_sizes:
+        detected_peptide, detected_receptor = detect_chains(topology)
+        if detected_peptide is None:
             raise ValueError("No protein chains found in structure")
 
-        chain_sizes.sort(key=lambda x: x[1])
-
         peptide_chain = topology_chain_id(topology, self.config.peptide_chain_id)
-        peptide_chain = peptide_chain or chain_sizes[0][0]
-        receptor_chain = topology_chain_id(topology, self.config.receptor_chain_id) or (
-            chain_sizes[-1][0] if len(chain_sizes) > 1 else None
+        peptide_chain = peptide_chain or detected_peptide
+        receptor_chain = (
+            topology_chain_id(topology, self.config.receptor_chain_id) or detected_receptor
         )
         return peptide_chain, receptor_chain
 
