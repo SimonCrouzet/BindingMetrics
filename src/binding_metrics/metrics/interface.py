@@ -13,11 +13,10 @@ al., J. Phys. Chem. A 113:5806-5812, 2009; 1.8 Å for an element without an
 entry). Water and monoatomic ions are not part of the surface.
 
 The areas are heavy-atom areas: hydrogen and deuterium atoms are dropped before
-the surface is built (``hydrogens="ignore"``, the default). The atomic solvation
-parameters describe the accessible area of heavy atoms, and PISA reports buried
-area on heavy atoms, so the buried area, the polar/apolar partition and ΔG_int
-do not depend on how the input was protonated. ``hydrogens="keep"`` puts the H
-atoms back into the surface.
+the surface is built (``hydrogens="ignore"``, the default), as the atomic
+solvation parameters and PISA refer to heavy atoms. The buried area, the
+polar/apolar partition and ΔG_int then do not depend on how the input was
+protonated. ``hydrogens="keep"`` puts the H atoms back into the surface.
 
 Usage:
     binding-metrics-interface --input complex.cif --design-chain A
@@ -56,20 +55,13 @@ _HYDROGEN_MODES = ("ignore", "keep")
 # Hydrogen and its isotope deuterium: the elements that ``hydrogens="ignore"`` drops.
 _HYDROGEN_ELEMENTS = ("H", "D")
 
-# Polymer residues that biotite's CCD-based amino-acid filter does not know are
-# the AMBER/OpenMM protonation variants (AMBER_VARIANTS_OUTSIDE_CCD) and the
-# terminal capping groups (TERMINAL_CAP_NAMES). Structures that come from MD or
-# from other modelling tools carry them, and dropping them would remove residues
-# of the chain instead of the surrounding solvent.
-
 # Atomic solvation parameters of Eisenberg & McLachlan, Nature 319:199-203 (1986).
-# The published values (cal/mol/Å² of accessible area; positive = exposing the atom
-# to water is unfavorable) are, with their standard errors:
+# Published values (cal/mol/Å² of accessible area; positive = exposure to water is
+# unfavorable), with standard errors, as tabulated in Table 1 of Krissinel & Henrick,
+# J. Mol. Biol. 372:774-797 (2007):
 #     C +16 (2), S +21 (10), neutral O/N -6 (4), charged O(-) -24 (10), charged N(+) -50 (9)
-# as tabulated for the same reference in Table 1 of Krissinel & Henrick, J. Mol. Biol.
-# 372:774-797 (2007). ΔG_int below is the solvation part of binding, so each value enters
-# with the opposite sign and per Å² of BURIED area (kcal/mol/Å²; negative = burial is
-# favorable, positive = burial is unfavorable).
+# ΔG_int is the solvation part of binding, so each value enters with the opposite sign
+# and per Å² of BURIED area (kcal/mol/Å²; negative = burial is favorable).
 _SOLVATION_PARAMS: dict[str, float] = {
     "C": -0.016,
     "S": -0.021,
@@ -109,9 +101,9 @@ def filter_hetero_atoms(atoms, hetero: Literal["ignore", "keep"] = "ignore"):
     """Apply the heteroatom policy of the structure-based metrics.
 
     Waters, ions, ligands and glycans often carry the chain ID of the protein
-    chain they sit next to. Selecting atoms by chain ID alone then counts them
-    as protein atoms, and biotite reports NaN SASA for waters and monoatomic
-    ions, which turned every area sum into NaN.
+    chain they sit next to, so selecting atoms by chain ID alone counts them as
+    protein atoms; biotite reports NaN SASA for waters and monoatomic ions,
+    which makes every area sum NaN.
 
     Args:
         atoms: biotite AtomArray.
@@ -139,12 +131,11 @@ def filter_hetero_atoms(atoms, hetero: Literal["ignore", "keep"] = "ignore"):
 def filter_hydrogens(atoms, hydrogens: Literal["ignore", "keep"] = "ignore"):
     """Apply the hydrogen policy of the area-based interface metrics.
 
-    The Eisenberg-McLachlan parameters describe the accessible area of heavy
-    atoms, and PISA computes buried area on heavy atoms. With explicit
-    hydrogens the surface of a carbon or nitrogen is partly taken by its
-    attached H atoms, which carry no parameter, so the area of the
-    parameterised atoms shrinks while the total still counts the H atoms.
-    Dropping them makes the areas independent of how the input was protonated.
+    The Eisenberg-McLachlan parameters and PISA refer to the area of heavy
+    atoms. With explicit hydrogens, part of the surface of a carbon or nitrogen
+    belongs to its attached H atoms, which carry no parameter, so the area of
+    the parameterised atoms shrinks while the total still counts the H atoms.
+    Dropping them makes the areas independent of the input protonation.
 
     Args:
         atoms: biotite AtomArray.
@@ -354,11 +345,10 @@ def compute_interface_metrics(
     counting. The solvation binding energy (ΔG_int) is the sum over atoms of
     an atomic solvation parameter times the atom's buried area, with the five
     Eisenberg & McLachlan (1986) atom types (C, S, neutral N/O, charged O(-),
-    charged N(+)) as used in PISA (Krissinel & Henrick, 2007). ΔG_int is only
-    the solvation term: PISA adds explicit hydrogen-bond and salt-bridge terms,
-    which are reported here as separate keys. The parameters are not fitted to
-    this package's data, so read ΔG_int as a relative score between designs of
-    one target, not as an absolute affinity.
+    charged N(+)) as used in PISA (Krissinel & Henrick, 2007). ΔG_int is the
+    solvation term only; the hydrogen-bond and salt-bridge terms of PISA are
+    separate keys here. It compares designs of one target and is not an
+    absolute affinity.
 
     Args:
         cif_path: Path to CIF structure file
@@ -372,20 +362,18 @@ def compute_interface_metrics(
         hetero: "ignore" (default) keeps only the polymer before the chain
             selection (see :func:`filter_hetero_atoms`), so waters, ions,
             ligands and glycans that carry a protein chain ID are dropped.
-            "keep" uses every atom with the chain ID as before; atoms without
-            a defined SASA (water, ions) then count as zero area instead of
-            turning the sums into NaN.
+            "keep" uses every atom with the chain ID; atoms without a defined
+            SASA (water, ions) count as zero area.
         binder_chain: Alias of ``design_chain``; different IDs in both raise
             ``ValueError``.
         target_chain: Alias of ``receptor_chain``, same rule.
         hydrogens: "ignore" (default) drops hydrogen and deuterium atoms
             before the per-atom areas are computed, so every area, the
-            polar/apolar partition and ΔG_int refer to heavy atoms whatever the
-            protonation of the input (see :func:`filter_hydrogens`). "keep"
-            uses the atoms left by the ``hetero`` filter; the total area then
-            includes the H atoms, which are in neither the polar nor the
-            apolar mask. Hydrogen-bond and salt-bridge counts do not depend on
-            this setting.
+            polar/apolar partition and ΔG_int refer to heavy atoms (see
+            :func:`filter_hydrogens`). "keep" uses the atoms left by the
+            ``hetero`` filter; the total area then includes the H atoms, which
+            are in neither the polar nor the apolar mask. Hydrogen-bond and
+            salt-bridge counts do not depend on this setting.
 
     Returns:
         Dictionary with keys:
@@ -522,8 +510,8 @@ def compute_interface_metrics(
         result["reason"] = f"SASA computation failed: {type(e).__name__}: {e}"
         return result
 
-    # Split complex SASA back by chain — complex_atoms preserves the original
-    # atom ordering so chain submasks correctly select the respective atoms.
+    # complex_atoms keeps the original atom order, so the chain masks select each
+    # chain's atoms in the complex SASA.
     sasa_pep_in_cpx = sasa_cpx[complex_atoms.chain_id == design_chain]
     sasa_rec_in_cpx = sasa_cpx[complex_atoms.chain_id == receptor_chain]
 
