@@ -138,7 +138,7 @@ class TestProteinResidues:
             {
                 "A": ["LYSL", "NMA", "MVA"],
                 "B": ["GLY"] * 5,
-                "C": ["HOH"] * 10 + ["CYM"] * 8,
+                "C": ["HOH"] * 10 + ["HIN"] * 8,
             }
         )
 
