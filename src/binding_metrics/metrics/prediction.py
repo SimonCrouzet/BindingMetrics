@@ -223,7 +223,6 @@ def summarize_prediction(
         "chain_ptm": record.chain_ptm,
         "chain_pair_iptm": record.chain_pair_iptm,
         "bespoke_iptm": record.extras.get("bespoke_iptm", {}),
-        # Per-atom data
         "plddt_per_atom": plddt_arr,
         "n_atoms": record.n_atoms,
         "pde": record.pde if include_matrices else None,
@@ -242,21 +241,17 @@ def summarize_prediction(
         "pae_interface": None,
         # Refolding RMSD (populated when binder_chain + reference_structure_path)
         "binder_ca_rmsd": _NAN,
-        # Timing
         "timing": record.timing,
         # The seed behind the sample (appended, so the order of the older keys is unchanged)
         "seed_value": _seed_value_of(record),
     }
 
-    # --- Per-chain structural analysis ---
-    # Requires binder_chain; uses the predicted structure.
     if binder_chain is not None and record.structure_path is None:
         reasons.append("structure file not found; per-chain values not computed")
     if binder_chain is not None and record.structure_path is not None:
         try:
             pred_atoms = record.atoms()
 
-            # Per-residue binder pLDDT
             if plddt_arr is not None:
                 try:
                     per_res = _binder_plddt_per_residue(plddt_arr, pred_atoms, binder_chain)
@@ -272,7 +267,6 @@ def summarize_prediction(
                 reasons.append("binder pLDDT: no per-atom pLDDT in the confidences file")
 
             if receptor_chain is not None:
-                # Interface PDE statistics (binder x receptor token block)
                 if record.pde is not None:
                     try:
                         pde_stats = _interface_pde_stats(
@@ -294,7 +288,6 @@ def summarize_prediction(
                 elif arrays_read and "pde" not in record.not_provided:
                     reasons.append("interface PDE: no PDE matrix in the confidences file")
 
-                # Interface PAE statistics (binder x receptor token block)
                 if record.pae is not None:
                     try:
                         pae_stats = _interface_pae_stats(
@@ -316,7 +309,6 @@ def summarize_prediction(
                 elif arrays_read and "pae" not in record.not_provided:
                     reasons.append("interface PAE: no PAE matrix in the confidences file")
 
-            # Binder C-alpha RMSD vs. reference structure
             if reference_structure_path is not None:
                 try:
                     ref_atoms = _load_atoms(Path(reference_structure_path))
