@@ -1,5 +1,12 @@
 name: Build and Push Docker Image
 
+# A version tag is published only after verify-ci.yml: the tag must be v plus
+# the project version, and ci.yml must have passed on the tagged commit. A push
+# to main is not a release: it moves `main` and `full` and carries no `latest`,
+# because ci.yml runs on that commit at the same time and its result is not
+# known when this workflow starts. `latest` comes from the metadata action's
+# default flavor (latest=auto), which adds it only for a stable version tag,
+# that is, only after the verification.
 on:
   push:
     branches:
@@ -7,9 +14,22 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
 jobs:
+  verify:
+    name: Verify tag and CI
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/verify-ci.yml
+
   docker:
+    needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -27,7 +47,6 @@ jobs:
           images: simoncrouzet/binding-metrics
           tags: |
             type=raw,value=main,enable={{is_default_branch}}
-            type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 

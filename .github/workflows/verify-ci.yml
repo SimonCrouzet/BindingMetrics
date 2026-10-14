@@ -1,0 +1,118 @@
+name: Verify tag and CI
+
+# The gate of the workflows that publish for a version tag (release.yml and
+# docker-publish.yml call it, and every job that publishes lists it in `needs`).
+# A tag passes only if
+#   1. it is `v` followed by the version in pyproject.toml, and
+#   2. ci.yml finished successfully on the push of the tagged commit to the
+#      default branch.
+# ci.yml does not run for tags, so (2) looks up the run that the merge to main
+# started. A tag pushed before that run has finished fails here; "Re-run failed
+# jobs" on the publishing workflow repeats the lookup.
+#
+# docker-publish.yml also runs for pushes to main. There is no tag to verify
+# then, so the steps below are skipped and the job passes.
+on:
+  workflow_call:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify:
+    name: Verify tag and CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Nothing to verify without a tag
+        if: github.ref_type != 'tag'
+        run: echo "A branch push carries no release; nothing to verify."
+
+      - uses: actions/checkout@v7
+        if: github.ref_type == 'tag'
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        if: github.ref_type == 'tag'
+        with:
+          python-version: "3.12"
+
+      - name: Install packaging
+        if: github.ref_type == 'tag'
+        run: python -m pip install packaging
+
+      # Version() applies PEP 440 normalisation, so v0.2.0-rc1 matches 0.2.0rc1.
+      # The tag reaches the script through the environment, never through the text.
+      - name: Check the tag is v plus the project version
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+
+          from packaging.version import InvalidVersion, Version
+
+          tag = os.environ["TAG"]
+          with open("pyproject.toml", "rb") as handle:
+              version = tomllib.load(handle)["project"]["version"]
+          try:
+              matches = tag.startswith("v") and Version(tag.removeprefix("v")) == Version(version)
+          except InvalidVersion:
+              matches = False
+          if not matches:
+              raise SystemExit(f"tag {tag} is not v plus the pyproject.toml version {version}")
+          print(f"tag {tag} matches pyproject.toml version {version}")
+          PY
+
+      # Only a run of the push to the default branch counts: a pull-request run
+      # tested a merge with an older base, not the tagged tree. The runs are
+      # filtered here and not in the query so that the log lists every run of the
+      # commit when none qualifies.
+      - name: Require a successful CI run of the tagged commit
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CI_WORKFLOW: ci.yml
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${CI_WORKFLOW}/runs?head_sha=${GITHUB_SHA}&per_page=100" > "${RUNNER_TEMP}/ci-runs.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          sha = os.environ["GITHUB_SHA"]
+          branch = os.environ["DEFAULT_BRANCH"]
+          workflow = os.environ["CI_WORKFLOW"]
+          reply = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "ci-runs.json").read_text(encoding="utf-8")
+          )
+          runs = [run for run in reply["workflow_runs"] if run["head_sha"] == sha]
+          print(f"{workflow} runs of {sha}: {len(runs)}")
+          for run in runs:
+              print(
+                  f"  #{run['run_number']} {run['event']} on {run['head_branch']}: "
+                  f"{run['status']}/{run['conclusion']} {run['html_url']}"
+              )
+          passed = [
+              run
+              for run in runs
+              if run["event"] == "push"
+              and run["head_branch"] == branch
+              and run["status"] == "completed"
+              and run["conclusion"] == "success"
+          ]
+          if not passed:
+              raise SystemExit(
+                  f"no successful {workflow} run of the push of {sha} to {branch}; "
+                  "wait for the run on that commit to finish, then re-run this job"
+              )
+          print(f"{workflow} succeeded on {branch} for {sha}")
+          PY
