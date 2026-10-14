@@ -965,9 +965,13 @@ def strip_heterogens(
 ):
     """Remove non-protein residues from topology, warning if close to the interface.
 
-    Amino-acid residues and the phosphorylated residues SEP, TPO and PTR count as
-    protein and are kept in every chain, so an unselected chain is not cut where it
-    carries a phosphoserine.
+    Amino-acid residues count as protein and are kept in every chain, so an unselected
+    chain is not cut where it carries a phosphoserine or a D-amino acid: the definition
+    is that of :func:`detect_chains` and :func:`drop_other_protein_chains` (the standard
+    residues and their AMBER variants, the D-amino acids, SEP, TPO and PTR and, with
+    biotite installed, the peptide-linking components of the Chemical Component
+    Dictionary), so a whole chain of them reaches ``drop_other_protein_chains`` and is
+    reported there as a dropped protein chain.
 
     Args:
         topology: OpenMM Topology (post-PDBFixer).
@@ -993,6 +997,7 @@ def strip_heterogens(
     import numpy as np
 
     protein_chain_ids = {c for c in (peptide_chain, receptor_chain) if c}
+    amino_acids = _amino_acid_names()
     author_ids = author_chain_ids(topology)  # for the messages; the selection uses chain.id
     protein_pos = (
         np.array(
@@ -1011,7 +1016,7 @@ def strip_heterogens(
     for res in topology.residues():
         if res.chain.id in protein_chain_ids:
             continue
-        if res.name in PROTEIN_RESIDUES or res.name in PHOSPHO_RESIDUES:
+        if res.name in amino_acids:
             continue  # peptide-linked: deleting it would cut the chain in two
         # Water: always remove silently
         if res.name in WATER_NAMES_STRIP_HETEROGENS:
