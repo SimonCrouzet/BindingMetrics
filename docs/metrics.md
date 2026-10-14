@@ -470,15 +470,16 @@ binding-metrics-dockq --model predicted.cif --reference native.cif [--mapping AB
 | `calculate_rmsd(..., atom_indices=None, reference_frame=0, *, on_empty="warn")` | per-frame RMSD after superposition (default selection `protein and not type H`) | nm |
 | `calculate_rmsf(..., atom_indices=None)` | per-atom fluctuation about the mean after a fit on frame 0 | nm |
 | `calculate_ligand_rmsd(..., ligand_indices, receptor_indices, reference_frame=0)` | dict `ligand_rmsd`, `receptor_rmsd` (per frame) | nm |
-| `calculate_buried_sasa(..., ligand_indices, receptor_indices, probe_radius=0.14)` | per-frame buried SASA | nm² |
-| `calculate_interface_sasa(...)` | dict `ligand`, `receptor`, `complex`, `buried` (per frame) | nm² |
+| `calculate_buried_sasa(..., ligand_indices, receptor_indices, probe_radius=0.14, *, on_empty="warn")` | per-frame buried SASA | nm² |
+| `calculate_interface_sasa(..., probe_radius=0.14, *, on_empty="warn")` | dict `ligand`, `receptor`, `complex`, `buried` (per frame) | nm² |
 | `calculate_contacts(..., cutoff=0.45, *, on_empty="warn")` | atom-pair contacts per frame | count |
 | `calculate_contact_residues(..., cutoff=0.45)` | dict `ligand_residues`, `receptor_residues`, `contact_frequency` | — |
 | `calculate_interaction_energy(..., forcefield_name="amber")` | per-frame Coulomb + Lennard-Jones sum over ligand–receptor pairs (vacuum, no cutoff) | kJ/mol |
 | `calculate_component_energies(...)` | dict `electrostatic`, `vdw`, `total` (per frame) | kJ/mol |
 
 - `calculate_ligand_rmsd` superposes each frame on the receptor atoms and reports the plain root-mean-square displacement of the ligand atoms in that frame, with no second fit (the CAPRI ligand RMSD; Mendez et al. 2003). It contains the rigid-body motion of the ligand relative to the receptor, so a ligand moved 5 Å without any internal change gives 0.5 nm. Earlier versions fitted the ligand a second time and returned 0 for such a shift.
-- With an empty selection, `calculate_rmsd` and `calculate_contacts` return zeros and emit a `RuntimeWarning`, which is not an RMSD or a contact count; `on_empty="raise"` raises `ValueError` instead. The default selection of `calculate_rmsd` knows standard residue names only, so a chain made of unrecognised non-canonical residues matches nothing.
+- With an empty selection, `calculate_rmsd`, `calculate_contacts`, `calculate_buried_sasa` and `calculate_interface_sasa` return zeros and emit a `RuntimeWarning`, which is not an RMSD, a contact count or a buried area; `on_empty="raise"` raises `ValueError` instead. The two index lists of the SASA functions must not share an atom; `ValueError` gives their number and the first ones. The default selection of `calculate_rmsd` knows standard residue names only, so a chain made of unrecognised non-canonical residues matches nothing.
+- `calculate_buried_sasa` and `calculate_interface_sasa` compute the complex term over the atoms of `ligand_indices` and `receptor_indices` only, so the water and ions of a solvated trajectory do not enter it; they return nm² (multiply by 100 for Å²). `PeptideBindingProtocol` reports the buried area in Å²: `sasa_buried`, `sasa_buried_mean` and `sasa_buried_std` are the function values times 100.
 - `calculate_contacts` and `calculate_contact_residues` count the atoms whose indices are passed, hydrogens included, so the count depends on the protonation state of the input unless heavy-atom indices are given.
 - `calculate_interaction_energy` (trajectory) is registered as `interaction_energy`; the per-structure decomposition of §5 is `structure_interaction_energy`.
 
