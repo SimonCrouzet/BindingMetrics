@@ -20,7 +20,10 @@ Per non-canonical residue the generator:
 1. Builds an RDKit heavy-atom molecule from the residue's intra-residue topology
    bonds, adding a carbon *cap* atom at each external bond (a bond with exactly one
    endpoint inside the residue — backbone N/C and any cyclic-closure atom),
-   positioned at the external partner's coordinate.
+   positioned at the external partner's coordinate.  Where the residue has a peptide
+   backbone (atoms N, CA, C, O) and the external bond is a peptide bond, the cap is
+   then completed to the acetyl (ACE) or N-methylamide (NME) group, so that the
+   backbone is an amide when the charges are computed (see :func:`_cap_backbone_as_amide`).
 2. Takes bond orders from the wwPDB Chemical Component Dictionary (bundled with
    biotite, so no network access) by residue and atom name, neutralises the
    ionisable groups, sanitises and adds explicit H. The RDKit molecule has no
@@ -34,7 +37,9 @@ Per non-canonical residue the generator:
 4. Rewrites the ``<Residue>`` block: renames it to the real residue name, gives the
    residue heavy atoms their topology names, drops the cap atoms (and any H bonded
    only to a cap), adds an ``<ExternalBond>`` for every capped residue atom, and
-   redistributes the removed cap charge so the template is net-neutral (integer).
+   spreads the charge of the removed caps evenly over the kept atoms so that the
+   template has exactly the integer charge of the residue
+   (:func:`_charges_with_integer_total`).
 5. Injects the residue's kept hydrogens into the OpenMM topology (rebuilding it) so
    the topology residue matches the generated template. A residue that already carries
    exactly those hydrogens, as in a structure this route has relaxed, keeps its own.
@@ -45,6 +50,18 @@ GAFF2 is a *general* small-molecule force field — this is a pragmatic approxim
 for exotic building blocks (e.g. BMT/ABA in cyclosporin A), not a substitute for
 purpose-built RESP-fitted parameters.  Residues already covered by curated templates
 (NMG/NMA/MVA/MLE, the ASPL/GLUL/LYSL lactams, CYX) are skipped here.
+
+Charge scheme
+-------------
+The AM1-BCC charges are computed on a capped molecule, and a backbone N next to a
+methyl carbon is an amine, not the amide nitrogen of a peptide (ALA: N -0.79 e against
+-0.42 e in ff14SB).  The caps of a residue with an N-CA-C=O backbone are therefore ACE
+and NME where the external bond is a peptide bond, the capping on which the ff94
+charges of the amino acids were fitted; a side-chain link (disulfide, staple, lactam)
+and a residue without that backbone keep the methyl cap (see
+:data:`CHARGE_SCHEME_VERSION` for the history).  The cap atoms are dropped from the
+template and their charge is spread evenly over the kept atoms.  Each template's scheme
+is reported in ``NcaaTemplateList.charge_scheme_by_residue``.
 
 References
 ----------
@@ -57,6 +74,8 @@ References
   J. Comput. Chem. 2002, 23, 1623-1641 (parameterisation and validation).
 * ff14SB backbone types kept on the NCAA backbone: Maier, J.A. et al. J. Chem.
   Theory Comput. 2015, 11, 3696-3713.
+* Amino-acid charges fitted on ACE/NME-capped residues: Cornell, W.D. et al. J. Am.
+  Chem. Soc. 1995, 117, 5179-5197.
 * Chemical Component Dictionary (bond orders and formal charges): Westbrook, J.D.
   et al. Bioinformatics 2015, 31, 1274-1278.
 """
@@ -65,11 +84,12 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 import os
 import tempfile
 import warnings
 import xml.etree.ElementTree as ET
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import numpy as np
 
@@ -142,6 +162,33 @@ def _is_ncaa(res) -> bool:
 #: Bond-order source recorded per residue in ``NcaaTemplateList.bond_order_source_by_residue``.
 BOND_ORDER_SOURCE_CCD = "ccd"
 BOND_ORDER_SOURCE_SINGLE_BONDS = "single_bonds"
+
+#: Version of the recipe that turns a residue into template charges: the caps of the molecule
+#: whose AM1-BCC charges are computed, and the spreading of the cap charge over the kept
+#: atoms. Whatever stores a template or its charges (a cache, a result file) has to carry it,
+#: because a template of another version has other charges for the same residue and seed.
+#: Version 1 capped every external bond with a methyl carbon; version 2 completes the caps of
+#: peptide bonds to ACE and NME and makes the integer total of the template exact.
+CHARGE_SCHEME_VERSION = 2
+
+#: How the capped molecule of a residue ends at its external bonds, as recorded (with the
+#: version) per residue in ``NcaaTemplateList.charge_scheme_by_residue``.
+CAP_KIND_AMIDE = "ace-nme-caps"  # peptide bonds capped by ACE / NME, other links by a methyl
+CAP_KIND_METHYL = "methyl-caps"  # every external bond capped by a methyl carbon
+CAP_KIND_NONE = "uncapped"  # the residue has no external bond
+
+
+class CapScheme(NamedTuple):
+    """How the capped molecule of one residue ends at its external bonds."""
+
+    kind: str  # one of the CAP_KIND_* values
+    reason: str = ""  # why the methyl caps were kept, for CAP_KIND_METHYL
+
+    @property
+    def label(self) -> str:
+        """``kind`` with the scheme version: ``"ace-nme-caps-v2"``."""
+        return f"{self.kind}-v{CHARGE_SCHEME_VERSION}"
+
 
 _CCD_BOND_ORDER = {
     "SINGLE": 1,
@@ -433,6 +480,138 @@ def _build_capped_molecule(res, topology, pos_A):
     return mol, rd_res_names, cap_indices, ext_atom_names, cap_partner
 
 
+# Geometry of the atoms added to a cap (angstrom, degrees). They only have to be sensible:
+# the AM1-BCC conformer is embedded from the graph, and the cap atoms are dropped afterwards.
+_CAP_CARBONYL_BOND = 1.23
+_CAP_METHYL_BOND = 1.50
+_CAP_NITROGEN_METHYL_BOND = 1.46
+_CAP_BOND_ANGLE_DEGREES = 120.0
+
+
+def _cap_atom_position(p_inner, p_cap, bond_length: float, side: float) -> tuple:
+    """Position of a cap substituent: ``bond_length`` from the cap atom, ``side`` = +1 or -1.
+
+    The substituent lies in a plane that contains the inner-cap bond, at 120 degrees to
+    that bond, on one side (``side``) of it.
+    """
+    axis = np.asarray(p_cap, dtype=float) - np.asarray(p_inner, dtype=float)
+    axis /= np.linalg.norm(axis)
+    helper = np.array([1.0, 0.0, 0.0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    perpendicular = np.cross(axis, helper)
+    perpendicular /= np.linalg.norm(perpendicular)
+    angle = math.radians(_CAP_BOND_ANGLE_DEGREES)
+    direction = -math.cos(angle) * axis + side * math.sin(angle) * perpendicular
+    return tuple(np.asarray(p_cap, dtype=float) + bond_length * direction)
+
+
+def _cap_backbone_as_amide(mol, rd_res_names: dict, cap_indices: set, cap_partner: dict):
+    """Complete the carbon caps of the peptide bonds to ACE and NME.
+
+    A residue whose backbone N sits next to a methyl carbon is an amine in the AM1-BCC
+    calculation and gets the N charge of one: -0.79 e on ALA against -0.42 e in ff14SB.
+    ACE (``CH3-C(=O)-`` on the N) and NME (``-NH-CH3`` on the C) are the groups on which the
+    amino-acid charges of ff94 were fitted, so the backbone atoms are peptide atoms.
+
+    ``mol`` is the hydrogen-free, sanitised molecule of :func:`_perceive_residue_bond_orders`
+    and the other arguments come from :func:`_build_capped_molecule`. A cap is completed when
+    the residue has an ``N``-``CA``-``C``=``O`` backbone under those atom names and the cap
+    stands for the ``C`` of the previous residue (on the ``N``) or the ``N`` of the next one
+    (on the ``C``). The existing cap atom becomes the acyl carbon of the ACE or the nitrogen
+    of the NME, so the indices that the caller holds stay valid. Every other cap, such as a
+    disulfide or a staple link on a side chain, stays a methyl carbon, and so does every cap
+    of a residue without that backbone. The backbone ``C=O`` is a double bond afterwards even
+    if the bond orders were perceived as single (the fallback of
+    :func:`_perceive_residue_bond_orders`).
+
+    Returns ``(mol, cap_indices, scheme)``: the molecule (a new one if a cap was completed),
+    the cap indices including the added atoms (a new set), and the :class:`CapScheme`.
+    """
+    from rdkit import Chem
+    from rdkit.Geometry import Point3D
+
+    if not cap_indices:
+        return mol, cap_indices, CapScheme(CAP_KIND_NONE)
+
+    by_name = {name: index for index, name in rd_res_names.items()}
+    backbone_bonds = (("N", "CA"), ("CA", "C"), ("C", "O"))
+    if not BACKBONE_HEAVY_ATOM_NAMES <= set(by_name) or any(
+        mol.GetBondBetweenAtoms(by_name[a], by_name[b]) is None for a, b in backbone_bonds
+    ):
+        return mol, cap_indices, CapScheme(CAP_KIND_METHYL, "it has no N-CA-C=O backbone")
+
+    completions = {}  # cap atom -> "ACE" or "NME"
+    for cap in sorted(cap_indices):
+        (inner,) = [neighbour.GetIdx() for neighbour in mol.GetAtomWithIdx(cap).GetNeighbors()]
+        link = (rd_res_names.get(inner), cap_partner.get(cap))
+        if link == ("N", "C"):
+            completions[cap] = "ACE"
+        elif link == ("C", "N"):
+            completions[cap] = "NME"
+    if not completions:
+        return mol, cap_indices, CapScheme(CAP_KIND_METHYL, "it has no peptide bond to a neighbour")
+
+    edited = Chem.RWMol(mol)
+    conformer = edited.GetConformer()
+    caps = set(cap_indices)
+    for cap, kind in completions.items():
+        inner = by_name["N" if kind == "ACE" else "C"]
+        p_inner, p_cap = conformer.GetAtomPosition(inner), conformer.GetAtomPosition(cap)
+        p_inner, p_cap = (p_inner.x, p_inner.y, p_inner.z), (p_cap.x, p_cap.y, p_cap.z)
+        if kind == "ACE":
+            oxygen = edited.AddAtom(Chem.Atom(8))
+            methyl_carbon = edited.AddAtom(Chem.Atom(6))
+            edited.AddBond(cap, oxygen, Chem.BondType.DOUBLE)
+            edited.AddBond(cap, methyl_carbon, Chem.BondType.SINGLE)
+            placed = {
+                oxygen: _cap_atom_position(p_inner, p_cap, _CAP_CARBONYL_BOND, +1.0),
+                methyl_carbon: _cap_atom_position(p_inner, p_cap, _CAP_METHYL_BOND, -1.0),
+            }
+        else:
+            edited.GetAtomWithIdx(cap).SetAtomicNum(7)
+            methyl_carbon = edited.AddAtom(Chem.Atom(6))
+            edited.AddBond(cap, methyl_carbon, Chem.BondType.SINGLE)
+            placed = {
+                methyl_carbon: _cap_atom_position(p_inner, p_cap, _CAP_NITROGEN_METHYL_BOND, +1.0)
+            }
+        for index, xyz in placed.items():
+            conformer.SetAtomPosition(index, Point3D(*xyz))
+        caps.update(placed)
+    edited.GetBondBetweenAtoms(by_name["C"], by_name["O"]).SetBondType(Chem.BondType.DOUBLE)
+    try:
+        amide = edited.GetMol()
+        Chem.SanitizeMol(amide)
+    except Exception as exc:  # noqa: BLE001 - RDKit raises several types for a bad valence
+        reason = f"the ACE/NME caps do not sanitise ({exc})"
+        return mol, cap_indices, CapScheme(CAP_KIND_METHYL, reason)
+    return amide, caps, CapScheme(CAP_KIND_AMIDE)
+
+
+def _charges_with_integer_total(charges: dict, total_charge: int) -> dict:
+    """Charges that sum to exactly ``total_charge``, in units of 1e-6 e.
+
+    The difference between the sum of ``charges`` (``{atom index: e}``) and ``total_charge``
+    is the charge of the atoms that were dropped, the caps. It is spread evenly over the
+    atoms. A rule that favours some atoms (the backbone, the amide group, the side chain,
+    or a share proportional to |q|) moved the RMS deviation from the ff14SB charges of
+    ALA, SER, LEU, PHE, ASP and LYS by 0.002 e at most (mean 0.0906 to 0.0920 e), so none
+    of them is better founded than an even share. With ACE and NME caps the share is
+    0.001 to 0.006 e per atom for those six residues, against 0.012 to 0.025 e with
+    methyl caps.
+
+    The force-field XML stores six decimals, so the charges are rounded to 1e-6 e here, the
+    last digit going to the atoms with the largest rounding remainder, and the sum of the
+    stored values is the integer to the precision of a float.
+    """
+    shift = (total_charge - sum(charges.values())) / len(charges)
+    micro = {index: (charge + shift) * 1e6 for index, charge in charges.items()}
+    floors = {index: math.floor(value) for index, value in micro.items()}
+    missing = round(total_charge * 1e6) - sum(floors.values())
+    by_remainder = sorted(micro, key=lambda index: micro[index] - floors[index], reverse=True)
+    for index in by_remainder[: max(0, min(len(micro), missing))]:
+        floors[index] += 1
+    return {index: value / 1e6 for index, value in floors.items()}
+
+
 def _hydrogen_names(keep_h, rd_res_names) -> dict:
     """Assign PDB-ish unique names to kept hydrogens: parent 'CB' → 'HB', 'HB2'…"""
     names: dict = {}
@@ -697,14 +876,20 @@ def _generate_residue_template(
     backbone class with a GAFF sidechain class) are emitted explicitly with the
     GAFF force constants so nothing is silently dropped by ``createSystem``.
 
-    Returns ``(ffxml_string, h_inject, neutral_groups, single_bond_reason)`` where
-    ``h_inject`` is a list of ``(h_name, parent_atom_name, position_nm_ndarray)``
+    Returns ``(ffxml_string, h_inject, neutral_groups, single_bond_reason, cap_scheme)``
+    where ``h_inject`` is a list of ``(h_name, parent_atom_name, position_nm_ndarray)``
     for the hydrogens that must be injected into the topology residue,
     ``neutral_groups`` lists the ``(label, charge)`` of side-chain groups that
     ionise at pH 7.4 but were built neutral (see
-    :func:`_neutral_ionizable_groups`), and ``single_bond_reason`` is empty when the
+    :func:`_neutral_ionizable_groups`), ``single_bond_reason`` is empty when the
     bond orders come from the Chemical Component Dictionary, else the reason the
-    residue was built with single bonds only. Returns ``None`` on failure.
+    residue was built with single bonds only, and ``cap_scheme`` is the
+    :class:`CapScheme` of the molecule whose charges the template carries. Returns
+    ``None`` on failure.
+
+    The template charges are the AM1-BCC charges of the capped residue (ACE and NME at the
+    peptide bonds, see :func:`_cap_backbone_as_amide`) without the cap atoms, with the cap
+    charge spread over the kept atoms so that the template has the residue's integer charge.
 
     ``random_seed`` seeds the conformer of the AM1-BCC charge calculation (see
     :func:`_am1bcc_charges`); the same residue graph and seed give the same template.
@@ -717,6 +902,9 @@ def _generate_residue_template(
         res, topology, pos_A
     )
     mol, single_bond_reason = _perceive_residue_bond_orders(mol, rd_res_names, res.name)
+    mol, cap_indices, cap_scheme = _cap_backbone_as_amide(
+        mol, rd_res_names, cap_indices, cap_partner
+    )
     mh = Chem.AddHs(mol, addCoords=True)
     hconf = mh.GetConformer()
     # Read the stereocentres and the E/Z double bonds from the geometry. The graph carries no
@@ -820,17 +1008,11 @@ def _generate_residue_template(
             is_amber[cap] = False
     changed = {i: new_class[i] != orig_class[i] for i in new_class}
 
-    # Redistribute dropped cap/cap-H/spurious-H charge so the template is neutral.
-    # The integer target is taken from the set *before* dropping the spurious
-    # carbonyl hydrogens (i.e. the true residue charge, normally 0); the dropped
-    # H charge is then absorbed into the redistribution so the net stays integer.
-    pre_drop = [i for i in range(len(tatoms)) if i not in (set(cap_indices) | drop_h)]
-    target = round(sum(float(tatoms[i].get("charge")) for i in pre_drop))
-    kept_charge = {i: float(tatoms[i].get("charge")) for i in keep_idx}
-    total = sum(kept_charge.values())
-    delta = (target - total) / len(keep_idx)
-    for i in keep_idx:
-        kept_charge[i] += delta
+    # The residue keeps the formal charge of the capped molecule (the caps are neutral). The
+    # charge of the dropped cap, cap-H and spurious-H atoms is spread over the kept atoms.
+    kept_charge = _charges_with_integer_total(
+        {i: float(tatoms[i].get("charge")) for i in keep_idx}, Chem.GetFormalCharge(mh)
+    )
 
     # --- Rewrite the <Residue> block with the mixed types ---
     for el in list(resel):
@@ -865,7 +1047,7 @@ def _generate_residue_template(
         h_inject.append(
             (new_name[h_idx], rd_res_names[parent], np.array([p.x, p.y, p.z]) / 10.0)  # Å → nm
         )
-    return ffxml_out, h_inject, neutral_groups, single_bond_reason
+    return ffxml_out, h_inject, neutral_groups, single_bond_reason, cap_scheme
 
 
 def _inject_boundary_terms(
@@ -1107,6 +1289,13 @@ class NcaaTemplateList(list):
             (or disagrees with its entry) and was built with every bond single, so
             its unsaturation, aromaticity and hydrogen count are unreliable; a
             warning is logged for each of those.
+        charge_scheme_by_residue: ``{residue name: "<kind>-v<version>"}``, how the
+            capped molecule of the template ended at its external bonds and the
+            version of the charge scheme (:data:`CHARGE_SCHEME_VERSION`).
+            ``"ace-nme-caps-v2"``: the peptide bonds were capped by ACE and NME.
+            ``"methyl-caps-v2"``: every external bond was capped by a methyl carbon, as
+            for a residue without an N-CA-C=O backbone; the reason is logged.
+            ``"uncapped-v2"``: the residue has no external bond.
     """
 
     def __init__(self, *args):
@@ -1114,6 +1303,7 @@ class NcaaTemplateList(list):
         self.net_charge_by_residue: dict = {}
         self.neutral_ionizable_groups: dict = {}
         self.bond_order_source_by_residue: dict = {}
+        self.charge_scheme_by_residue: dict = {}
 
 
 def parameterize_ncaa_residues(
@@ -1159,8 +1349,10 @@ def parameterize_ncaa_residues(
         loaded into ``ff``; callers that build *separate* force fields (e.g. the
         peptide/receptor subsystems in the energy decomposition) must reload them.
         The list is an :class:`NcaaTemplateList`, which also carries the net
-        charge of each template and the residues built neutral although they hold
-        a group charged at pH 7.4; a warning is logged for each of those.
+        charge of each template, how the capped molecule behind its charges ended
+        at the external bonds (``charge_scheme_by_residue``) and the residues built
+        neutral although they hold a group charged at pH 7.4; a warning is logged
+        for each of those.
     """
     ncaa_ffxmls = NcaaTemplateList()
     ncaa_residues = [res for res in topology.residues() if _is_ncaa(res)]
@@ -1205,7 +1397,9 @@ def parameterize_ncaa_residues(
             result = None
         if result is None:
             continue
-        ffxml, h_inject, neutral_groups, single_bond_reason = result
+        # The fifth element, the CapScheme, is optional so that a stand-in generator with the
+        # four values of the earlier versions still works.
+        ffxml, h_inject, neutral_groups, single_bond_reason, *scheme = result
         if hydrogen_parents is None:
             hydrogen_parents = _hydrogen_parents(topology)
         if _has_template_hydrogens(res, hydrogen_parents, h_inject):
@@ -1233,6 +1427,8 @@ def parameterize_ncaa_residues(
                     res.name,
                     single_bond_reason,
                 )
+            if scheme:
+                ncaa_ffxmls.charge_scheme_by_residue[res.name] = scheme[0].label
             if neutral_groups:
                 ncaa_ffxmls.neutral_ionizable_groups[res.name] = [g for g, _ in neutral_groups]
                 logger.warning(
@@ -1252,6 +1448,12 @@ def parameterize_ncaa_residues(
                     len(h_inject),
                     net,
                 )
+                if scheme:
+                    logger.info(
+                        "  Auto-GAFF2: '%s' charges from %s",
+                        res.name,
+                        _describe_cap_scheme(scheme[0]),
+                    )
         elif h_names != expected_h.get(res.name):
             # A second instance perceived differently — reuse the first template
             # but warn; createSystem will surface a mismatch if truly incompatible.
@@ -1269,6 +1471,15 @@ def parameterize_ncaa_residues(
 
     topology, positions = _rebuild_topology_with_injected_h(topology, pos_nm, h_by_res)
     return topology, positions, ncaa_ffxmls
+
+
+def _describe_cap_scheme(scheme: CapScheme) -> str:
+    """One phrase for the log: what the capped molecule of a template ended with."""
+    if scheme.kind == CAP_KIND_AMIDE:
+        return "the ACE/NME-capped residue (AM1-BCC)"
+    if scheme.kind == CAP_KIND_METHYL:
+        return f"the methyl-capped residue (AM1-BCC), because {scheme.reason}"
+    return "the free residue (AM1-BCC), which has no external bond"
 
 
 def _template_net_charge(ffxml_string: str) -> float:
