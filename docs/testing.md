@@ -14,7 +14,7 @@ pytest --full --gpu   # every test
 
 `-n` comes from pytest-xdist, which the `dev` extra installs (`pip install -e ".[dev]"`). Nothing in the configuration sets it, so a plain `pytest` runs on one process and works without the plugin.
 
-`pytest --full` is the gate before a pull request and before a signed release, and the run that CI makes. `pytest --gpu` adds the GPU tests, which skip on a machine without a CUDA device, so `pytest --full --gpu` is the run of a machine that has one.
+`pytest --full` is the gate before a pull request and before a signed release, and the run that CI makes. `pytest --gpu` adds the GPU tests, which skip on a machine where no context can be created on the CUDA platform (the plugin without a visible device skips them too), so `pytest --full --gpu` is the run of a machine that has one.
 
 Each run prints one line about its tier after the count of collected tests, with the number of tests it selected and how many each option adds:
 
