@@ -4,11 +4,92 @@ All notable changes to BindingMetrics are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Issue numbers refer to the GitHub issue
 tracker of the project. Example values come from the structures in `data/`: 1YCR (p53 peptide with
 MDM2), 3P8F (SFTI-1 with matriptase), 1CWA (cyclosporin A with cyclophilin A), 1XY4 (somatostatin
-analogue) and 3V3B (stapled peptide).
+analogue), 3V3B (stapled peptide) and 1QJB (phosphopeptide).
 
 ## [Unreleased]
 
+A co-folding model run with five seeds returns five structures of one complex, and the questions that decide which design to take sit across the set: how far apart the poses lie, whether two models put the peptide in the same place, how many poses stand behind an average. This release adds the pose-set layer that answers them (`binding_metrics.poses`, `score_pose_set`) and the prediction layer that feeds it: adapters for OpenFold3, AlphaFold2 and ColabFold, Boltz-2 and Protenix, a runner for each of the four behind a run-once store, and a pre-flight check that refuses an input that a step or a model cannot take (OpenFold3 and Boltz-2 have been run for real on bundled complexes; Protenix and ColabFold only against a stand-in process). Residue numbers and insertion codes now survive preparation, relaxation and `save_cif`, and a review of the metrics corrected values that earlier versions reported: "Results that change" lists each of them once, as before -> after. The test suite is split into tiers (`pytest`, `--full`, `--gpu`) and into areas of the code, so that a change runs the tests it can affect.
+
 ### Results that change
+
+Values from earlier versions differ in the cases below. Each line gives "before -> after" as measured in the entry that "Results that change: details" has further down, on the bundled examples except where a line says that the case was constructed or names another entry (4KRL, 5WGD, 6SBA); the entry has the cause, the cases tested and the limits. A value that was NaN or an error and is now a number, or the reverse, is listed too.
+
+**Structure-prediction layer**
+
+- Inputs a step cannot take (#75, #77, #90): a run that went on is refused with the reason, for example 3P8F chain I (head-to-tail and disulfide) sent to OpenFold3, or 1XY4 (one chain), which gave an `interface` error, `electrostatics` 0.0 kJ/mol and `shape_complementarity` NaN.
+- OpenFold3 seed (#67): the default seed 2746317213 -> 42, so the structures and confidences of a default run change; `--openfold-seeds 1 2 3` gave one seed and gives three.
+- OpenFold3 template (#68): given as a structure by default; 1YCR `score`, server on, binder Cα RMSD against the input 1.62 -> 1.57 A and ipTM 0.847 -> 0.865; the request key of every default `score` and `refold` request changes once.
+- `cyclic: true` for OpenFold3 (#77): no longer written for a binder with modified residues, so for 1CWA chain C (`refold`, no MSA, seeds 42, 7, 11) ipTM 0.784 / 0.776 / 0.809 -> 0.921 / 0.922 / 0.912; the flag is kept for 3P8F chain I.
+- OpenFold3 query sequence (#75, #76): 1CWA chain C `allvtaglVlA` -> `ALLVTAGLVLA`; a residue OpenFold3 cannot take, left out or turned into a wrong letter before, raises `UnmappableResidueError`.
+- Interface PAE and PDE of an OpenFold3 prediction with modified residues: 1CWA `ValueError` (`compute_interface_pae`) or NaN -> `mean_interface_pae` 8.76 A and `mean_interface_pde` 0.68 A.
+- `binder_ca_rmsd` of a prediction: NaN -> a number in OpenFold3 `score` mode (synthetic binder moved 2.0 A: NaN -> 2.00 A) and for outputs of ColabFold, Boltz-2 and Protenix.
+- `binder_ca_rmsd` against a reference (#93): a copy rotated by 40 degrees and translated, 7.20 -> 0.00 A without a receptor chain, 7.20 -> NaN with a receptor of another length.
+- `--predictor af2`, `boltz2` and `protenix` without `--prediction-dir`: stopped with "no runner yet" -> starts the model.
+- CSV of `binding-metrics-run` and `-batch` (#91): the six array columns `openfold_plddt_per_atom`, `openfold_binder_plddt_per_residue`, `openfold_pde`, `openfold_pae`, `openfold_pde_interface` and `openfold_pae_interface` are gone.
+- `provenance["openmm_version"]`: `8.2` -> `8.2.0` for the conda 8.2 build.
+- Protenix `chain_ptm` and `chain_pair_iptm` after `ProtenixParser.complete`: keys by chain position (`"0"`, `"0-1"`) -> by chain ID (`"A"`, `"A-B"`).
+
+**Residue numbering, insertion codes and chain IDs**
+
+- `save_cif` with a source CIF, 3P8F saved with itself (#122, #131): 210 of 255 non-water residues renumbered (60 -> 61, 62, ...) -> 1, and 102 of 357 residues, the glutathione and the waters among them, -> 0; the 144 waters of 1CWA, written 166-305 and 12-15, -> 0 differ.
+- `compute_structure_rmsd` of 3P8F against the file it was saved from (#122): `rmsd` 16.8 -> 0.00 A.
+- `compute_structure_rmsd` pairing (#116, #118): the same six atoms in another order (synthetic) 6.19 -> 0.00 A, a two-chain PDB with chain B written first 6.95 -> 0.00 A, residues 52, 52A, 53 against 52A, 52, 53 (synthetic) 1.38 -> 0.00 A; equal atom counts with no shared key: a number -> None with a `reason`.
+- Chain detection with insertion codes (#120): `compute_receptor_quality` `n_residues` of 3P8F chain A 227 -> 241, and the chain-detection log of `detect_chains_from_file` 227 -> 241 (the chain choice is unchanged).
+- Clashscore of 3P8F chain A (#121): 1 -> 2 clashes, 0.5365 -> 1.0730, `molprobity_score` 1.655 -> 1.783.
+- Salt bridges of residues 52 and 52A (constructed): 1 salt bridge, -27.7 kcal/mol -> 2, -51.4 kcal/mol; the bundled examples are unchanged.
+- Residue labels with insertion codes (#117, #128): `ASP:A:60` -> `ASP:A:60B` in the interface residues of 3P8F; the residues of a chain break between 60B and 60C `"60"` and `"60"` -> `"60B"` and `"60C"`.
+- Chain IDs of the input survive prep (#41): 1QJB.pdb prepped, chains A B C D -> A B Q S; the relaxed CIF of a PDB input keeps the chain IDs and residue numbers of the input.
+- Author chain IDs of an mmCIF (#64, #112): 1CWA prep `kept_nonstandard` `'DAL (chain B)'` -> `'DAL (chain C)'`, 3P8F `removed_heterogens` `'GSH (chain C)'` -> `'GSH (chain A)'`, `peptide_cyclic_bonds` `B:11:C` -> `C:11:C`; on the raw 1CWA file with chain C as the peptide, `potential_energy_minimized` -29964.5 -> -21549.6 kJ/mol, and `compute_interaction_energy` `num_contacts` 7542 -> 2288 and `raw_interaction_energy` -674.7 -> -260.4 kJ/mol.
+- Raw mmCIF with different label and author numbering (#40): 1QJB.cif bond HIS6 C - SEP7 N absent -> present, and SEP 0 -> 9 internal bonds.
+
+**Static metrics**
+
+- RMSD superposition (#13): 1YCR rotated by 30 degrees and translated, `rmsd` 11.23 -> 0.00 A and `rmsd_design` 6.80 -> 0.00 A.
+- Waters, ions and ligands dropped by default (#14): 1CWA `delta_sasa` NaN -> 985.4 A^2 and 3P8F NaN -> 1508.3 A^2; H-bonds 1CWA 6 -> 5 and 3P8F 11 -> 9; `sc` 1CWA 0.722 -> 0.750 and 3P8F 0.732 -> 0.738; interface atoms of the void 1CWA 153 -> 123 and 3P8F 227 -> 207.
+- `delta_g_int` (#18): 1YCR -0.77 -> -11.05 kcal/mol, 1CWA +1.26 -> -6.11, 3P8F NaN -> -4.97.
+- Buried area on heavy atoms (#39): 1YCR relaxed by `binding-metrics-run`, `delta_sasa` 1552.4 -> 1488.4 A^2 and `delta_g_int` -0.95 -> -10.50 kcal/mol.
+- Void volume with the probe radius (#17): `void_volume_A3` 1YCR 0.25 -> 55.875, 3P8F 0.38 -> 31.875, 1CWA 0.50 -> 16.25.
+- `binding-metrics-geometry --metric void` without `--interface-cutoff` (#54): void volume 3P8F 15.625 -> 31.875, 1CWA 10.75 -> 16.25, 1YCR 56.0 -> 55.875 A^3.
+- Clashscore (#16): 3P8F chain I 66.67 -> 0.00 and chain A 18.24 -> 0.54, 1XY4 52.17 -> 0.00, 1YCR chain A 11.35 -> 7.09, 1CWA chain A 2.37 -> 0.00, 3V3B chain C 31.25 -> 0.00.
+- Radii of F, Cl, Br, I and Se (#62) and of deuterium (#162) in shape complementarity and void: the bundled examples are unchanged; 1YCR with the hydrogens of the prepared structure labelled D, Sc 0.7323 -> 0.6531.
+- Ramachandran and ω after a cap (#48): 1YCR chain B with ACE, NH2 and a D label on residue 18 (constructed), favoured 90.91 -> 81.82 % with outliers 0 -> 1; the residues after a cap carried the `res_id` and `res_name` of their predecessor.
+- Ring-closing φ, ψ and ω (#15): 1CWA chain C residues 9 -> 11, favoured 66.7 -> 72.7 %; 3P8F chain I residues 12 -> 14, favoured 91.7 -> 85.7 %.
+- Coulomb constant (#62): `coulomb_energy_kJ` 1YCR -91.58911 -> -91.58941, 3P8F -299.58958 -> -299.59057.
+- Coulomb energy of D, HIP and phospho residues (#29): an all-D peptide (DLY) against ASP at 4 A, 0.0 -> -101.3 kJ/mol; 1YCR and 3P8F are unchanged.
+- Chain detection with D residues (#29): a 20-residue ALA receptor and a 5-residue DAL peptide, `('A', None)` -> `('B', 'A')`.
+- Trajectory SASA of the legacy protocol (#58): 1YCR in a 0.6 nm water box, buried area -186.59 nm^2 -> +15.97 nm^2, reported as "-186.6 A^2" -> 1596.9 A^2; an empty selection warns and overlapping selections raise `ValueError` (#157).
+- Ligand RMSD (#37): 1YCR chain B moved 5 A against chain A, `ligand_rmsd` [0, 0] -> [0, 0.5] nm.
+- Receptor energy with the seed (#23): 1YCR chain A 4828.7, 4834.2 and 2337.5 kJ/mol in three runs -> 4371.8 kJ/mol every time.
+- EvoBind (#92, #102, #103, #108, #145): `mean_plddt_binder` of residues 1, 1A, 2 with pLDDT 10, 30, 50 35.0 -> 30.0 and `if_dist_pep_to_rec` 6.55 -> 8.37 A (constructed binders); the adversarial check of 1YCR against a copy renumbered from 1, `ValueError` -> `delta_com_angstrom` 0.00 A; in a pose set with a synthetic OpenFold3 pose, `evobind_adversarial_score` None -> 15.1; `*_resname_mismatch_fraction` no longer counts HIN against HIS.
+
+**Preparation, relaxation and energies**
+
+- Preparation of 1QJB (#163): 120 -> 124 atoms (53 -> 57 hydrogens, the four of SEP5) in a fresh process, so the result no longer depends on what was prepared before.
+- Duplicate bonds of the prepped topology (#55): 1QJB 1 -> 0, 1XY4 1 -> 0 (231 -> 230 bonds), 1CWA 2 -> 0 (2729 -> 2727).
+- Peptides of D-amino acids (#56, #158, #159, #164): 1YCR with chain B renamed to D forms, `removed_heterogens` 13 entries -> `[]` in prep, chains in the relaxation `("A", None)` -> `("B", "A")`, chain B 113 atoms and 0 hydrogens -> 221 atoms and 108 hydrogens.
+- GAFF bond orders (#38): 1CWA MeBmt 19 -> 17 hydrogens and its CE=CZ bond after relaxation 1.544 -> 1.340 A; 1XY4 IAM `ncaa_bond_order_source` `single_bonds` -> `ccd` with 24 -> 18 hydrogens.
+- Charges of GAFF2 residues that varied from run to run: four runs of one 1CWA command gave minimised complex energy -21555.1, -21562.7 or -21563.2 kJ/mol -> one value.
+- 1CWA `relaxed_interaction_energy` (`--md-duration-ps 0`, seed 1, CUDA), as measured in each entry: -280.9 -> -299.7 kJ/mol (GAFF2 bond orders, stereochemistry and hydrogens, #38), -299.68 -> -300.26 (duplicate bond, #55), -300.26 -> -288.18 (amide backbone charges, #61).
+- Template charges of GAFF2 residues with the ACE and NME caps (#61): 1CWA BMT N -0.738 -> -0.465, ABA N -0.798 -> -0.566; 1XY4 IAM N -0.814 -> -0.562; minimised energy of 1XY4 -1020.61 -> -1068.09 kJ/mol.
+- Relaxation and energy of a complex with a third protein chain (#42): 1QJB `relaxed_interaction_energy` -41065.6 -> -546.0 kJ/mol; 5WGD failed with "No template found for residue 473 (SER)" -> -235.7 kJ/mol; 1YCR with a third chain, raw +139.6 -> -16.0 kJ/mol.
+- Chain break (#60): 1YCR without residues 60-62 of chain A, C-N across the gap after relaxation 1.34 -> 3.50 A and minimised energy -14681.38 -> -14667.48 kJ/mol; without residues 27-31, 2 of 89 inverted C-alpha centres -> none.
+- Receptor energy (#165, #166): a chain with a hole, 1XY4 26777.82 kJ/mol -> NaN and 3V3B 8304.17 -> NaN, with a `reason`; without PDBFixer, 1YCR chain A NaN -> 3816.81 kJ/mol and chain B -1758.87 -> -650.27.
+- Structural QC bond lengths (#44): `bond_lengths` of 1QJB fail (3 of 1932 bonds) -> pass and of 4KRL_relaxed fail (29 of 2613) -> pass, `qc_passed` False -> True for both.
+- Peptide bonds next to a non-standard residue (#43): 6SBA as a PDB file, "No template found for residue 144 (LEU)" -> minimised -32300.7 kJ/mol.
+- Author chain IDs in `detect_cyclization` and `detect_nonstandard` (#64, #113): on the 1CWA topology with chain `"C"`, `[]` -> `['head_to_tail']` and `d_residues` `[]` -> DAL; `detect_cyclization` of 3P8F chain B with its CYS renamed CYX (#101), `CyclizationError` -> head-to-tail and disulfide.
+- `compute_interaction_energy` `error_message` when a mode failed (#25): None -> `"<mode>: <reason>"`.
+- Names after prep and relax (#15, #34): the relaxed CIF of 1CWA `ALA ... NMG` -> `DAL ... SAR`; 1YCR with one CYS renamed CYM, `kept_nonstandard` `['CYM (chain A)']` -> `[]`; `DME` is no longer a D residue and `MED` is D-methionine.
+- Raw structure without terminal oxygen (#114): 3P8F with `--skip-prep`, `ValueError: No template found for residue 241 (VAL) ...` -> `ValueError: chain A ends in VAL244 without its terminal oxygen (OXT) ...`.
+
+**Commands and exit status**
+
+- `binding-metrics-energy` (#160): exit status 0 -> 1 when no sample produced an energy (1YCR as deposited, `--modes raw`).
+- `binding-metrics-batch` (#19, #32, #107): a sample whose steps failed `ok` -> `partial`, and the exit code is non-zero when no sample is `ok`.
+- `--md-duration-ps` from 1 to 9 (#27): `IndexError` after the MD -> one frame saved and the run completes.
+- `binding-metrics-check-env` (#161): `--help` ran the whole check -> prints the usage; an unknown argument exits 2.
+- Console that cannot encode a character (#53): `--help` of seven tools and `check-env` exit 1 -> 0, the character reads `?`.
+
+### Results that change: details
 
 Values from earlier versions differ in the cases below. A change reads "before -> after".
 
