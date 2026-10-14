@@ -3,9 +3,8 @@
 RMSDs are computed with mdtraj (McGibbon et al., 2015, Biophys. J. 109, 1528),
 whose ``rmsd`` superposes every frame on the reference with the QCP algorithm
 (Theobald, 2005, Acta Cryst. A61, 478), so values are free of overall rotation
-and translation. ``calculate_ligand_rmsd`` is the exception: it fits on the
-receptor and leaves the ligand unfitted. Distances are in nm unless a function
-says otherwise.
+and translation. ``calculate_ligand_rmsd`` fits on the receptor and leaves the
+ligand unfitted. Distances are in nm unless a function says otherwise.
 """
 
 import warnings
@@ -28,8 +27,8 @@ def _report_empty_selection(message: str, on_empty: str) -> None:
     """Warn or raise for an atom selection that matched nothing.
 
     A zero-filled result reads as a perfect fit or as no contacts, so the
-    caller has to be told that nothing was evaluated. ``stacklevel=3`` points
-    the warning at the caller of the public function.
+    caller is told that nothing was evaluated. ``stacklevel=3`` points the
+    warning at the caller of the public function.
 
     Raises:
         ValueError: If ``on_empty`` is "raise" (message is the error text).
@@ -64,8 +63,7 @@ def calculate_rmsd(
         reference_frame: Frame index to use as reference (default 0)
         on_empty: What to do when the selection contains no atoms. "warn"
             (default) emits a ``RuntimeWarning`` naming the selection and
-            returns zeros, the historical result, which is not a real RMSD;
-            "raise" raises ``ValueError`` instead.
+            returns zeros (not an RMSD); "raise" raises ``ValueError``.
 
     Returns:
         Array of RMSD values (in nm) for each frame
@@ -99,8 +97,6 @@ def calculate_rmsd(
 
     traj_subset = traj.atom_slice(atom_indices)
 
-    # md.rmsd fits each frame onto the reference itself, so the RMSD does not
-    # depend on how the frames are oriented in the file.
     traj_subset.superpose(traj_subset, frame=reference_frame)
     rmsd = md.rmsd(traj_subset, traj_subset, frame=reference_frame)
 
@@ -120,8 +116,8 @@ def calculate_rmsf(
     Args:
         trajectory_path: Path to trajectory file
         topology_path: Path to topology file
-        atom_indices: Atom indices to include. If None, uses all
-            non-water, non-ion heavy atoms.
+        atom_indices: Atom indices to include. If None, uses the mdtraj
+            selection ``protein and not type H``.
 
     Returns:
         Array of RMSF values (in nm) for each selected atom
@@ -142,8 +138,7 @@ def calculate_rmsf(
 
     traj_subset = traj.atom_slice(atom_indices)
 
-    # Fitted on frame 0, not iteratively on the mean structure: a frame-0 fit
-    # that is far from the mean adds to the fluctuation of every atom.
+    # Fit on frame 0 (no iteration towards the mean structure).
     traj_subset.superpose(traj_subset, frame=0)
 
     mean_positions = traj_subset.xyz.mean(axis=0)
@@ -163,10 +158,10 @@ def calculate_ligand_rmsd(
     """Calculate RMSD for ligand after aligning on receptor.
 
     Every frame is superposed on the reference frame using the receptor atoms
-    only. The ligand RMSD is then the plain root-mean-square displacement of
-    the ligand atoms in that receptor frame, with no further fit, as in the
-    CAPRI ligand RMSD (Mendez et al., 2003, Proteins 52, 51). The value
-    includes the rigid-body motion of the ligand relative to the receptor.
+    only. The ligand RMSD is the root-mean-square displacement of the ligand
+    atoms in that receptor frame, with no further fit, as in the CAPRI ligand
+    RMSD (Mendez et al., 2003, Proteins 52, 51); it includes the rigid-body
+    motion of the ligand relative to the receptor.
 
     Args:
         trajectory_path: Path to trajectory file
@@ -188,16 +183,13 @@ def calculate_ligand_rmsd(
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
 
-    # Align on receptor
     traj.superpose(traj, frame=reference_frame, atom_indices=receptor_indices)
 
-    # Calculate receptor RMSD (should be ~0 after alignment)
     receptor_traj = traj.atom_slice(receptor_indices)
     receptor_rmsd = md.rmsd(receptor_traj, receptor_traj, frame=reference_frame)
 
-    # md.rmsd would fit the ligand onto its own reference again and hide any
-    # displacement relative to the receptor, so the RMSD is taken directly on
-    # the receptor-aligned coordinates.
+    # md.rmsd would fit the ligand again and hide its displacement relative to the
+    # receptor, so the RMSD is taken directly on the receptor-aligned coordinates.
     ligand_xyz = traj.xyz[:, np.asarray(ligand_indices, dtype=int), :]
     ligand_displacement = ligand_xyz - ligand_xyz[reference_frame]
     ligand_rmsd = np.sqrt((ligand_displacement**2).sum(axis=2).mean(axis=1))
@@ -287,14 +279,14 @@ def compute_receptor_drift(
 
     ca_idx_arr = np.array(ca_indices)
 
-    # Aligned drift: MDTraj superpose on Cα and compute RMSD (nm → Å)
+    # md.rmsd superposes on the Cα atoms (nm -> Å).
     drift_aligned = md.rmsd(traj, traj, reference_frame, atom_indices=ca_idx_arr) * 10.0
 
-    # A stored unit cell means the coordinates may be wrapped, which makes raw
-    # displacements meaningless.
+    # A stored unit cell means the coordinates may be wrapped, so raw displacements
+    # are meaningless.
     pbc_detected = traj.unitcell_lengths is not None
 
-    # Raw drift: per-frame RMSD of positions relative to reference frame (nm → Å)
+    # Raw drift: unfitted per-frame RMSD against the reference frame (nm -> Å).
     if pbc_detected:
         drift_raw = np.full(traj.n_frames, np.nan)
         drift_raw_mean = np.nan
