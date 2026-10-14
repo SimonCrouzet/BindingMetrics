@@ -2,26 +2,25 @@
 
 ``check_input`` profiles one structure, lists the steps that the run would execute as registry
 metrics and predictors, and hands them to ``binding_metrics.capabilities.preflight``. It runs
-first, before preparation, relaxation, any model run and any touch of the prediction store.
-What comes back is a ``PreflightOutcome``: the block for ``results["preflight"]``, the steps to
-leave out under ``--on-incompatible skip``, and the error to raise under ``error``.
+first, before preparation, relaxation, any model run and any touch of the prediction store, and
+returns a ``PreflightOutcome``: the block for ``results["preflight"]``, the steps to leave out
+under ``--on-incompatible skip``, and the error to raise under ``error``.
 
 Rules the hooks follow:
 
-* The steps checked are the ones the run will execute: ``relax`` (``md_implicit``), ``energy``,
+* The steps checked are the ones the run executes: ``relax`` (``md_implicit``), ``energy``,
   ``interface``, ``geometry`` (its three metrics one by one), ``electrostatics`` and the model
   step (the ``openfold`` metric for the OpenFold3 step, ``prediction`` for ``--predictor``).
   ``dockq`` is not checked: without a reference the pipeline already skips it and says so.
 * A model whose output was made elsewhere (``--prediction-dir``) gets the policy ``warn``: what
-  it was given is not known, so its limits never refuse an input that may have been predicted
-  correctly.
+  it was given is not known, so its limits never refuse an input.
 * The EvoBind adversarial check runs inside the model step. With ``--designed-with`` it is checked
-  as the registry metric ``evobind_adversarial`` against the design, which names the pipeline that
-  made the binder, and the check is left out (``--design-policy skip``, the default) when the model
-  of the run is one that pipeline ran itself. ``--on-incompatible`` does not change that rule.
-  Without ``--designed-with`` the report is exactly what it was before the option existed.
-* An input that cannot be profiled runs as it did before, with a warning and the status
-  ``skipped`` in the block: a failed check is not an incompatibility.
+  as the registry metric ``evobind_adversarial`` against the design, and left out
+  (``--design-policy skip``, the default) when the model of the run is one that the named
+  pipeline ran itself. ``--on-incompatible`` does not change that rule. Without
+  ``--designed-with`` the check is not listed in the report.
+* An input that cannot be profiled runs as before, with a warning and the status ``skipped`` in
+  the block: a failed check is not an incompatibility.
 """
 
 from __future__ import annotations
