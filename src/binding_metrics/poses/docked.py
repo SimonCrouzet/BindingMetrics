@@ -1,10 +1,9 @@
 """``DockedPose``: a structure from a docking or design tool, with no model confidences.
 
 A docking program (HADDOCK, Rosetta, a design pipeline) writes a structure and its own
-scores. ``DockedPose`` holds the structure and those scores as the program reported them;
-nothing is computed from them. A bare structure that is neither predicted nor experimental
-(a decoy displaced by hand, a test fixture) is a ``DockedPose`` with ``decoy=True`` and no
-``program``::
+scores. ``DockedPose`` holds both, the scores as reported; nothing is computed from them. A
+bare structure that is neither predicted nor experimental (a hand-displaced decoy, a test
+fixture) is a ``DockedPose`` with ``decoy=True`` and no ``program``::
 
     pose = DockedPose.from_file("rank_1.pdb", program="haddock", scores={"haddock_score": -112.4})
     decoy = DockedPose.from_atoms(shifted_atoms, decoy=True)
@@ -28,8 +27,7 @@ class DockedPose(SourcedPose):
     """A structure produced by a docking or design tool.
 
     ``source`` is the only positional argument; every other field is keyword-only. The pose is
-    frozen and compares by identity; ``content_hash()`` tells two poses with the same
-    structure apart from poses with another one.
+    frozen and compares by identity.
 
     Attributes:
         source: The structure: a path (mmCIF or PDB, possibly gzip-compressed) or a biotite
@@ -39,8 +37,8 @@ class DockedPose(SourcedPose):
             structure.
         scores: The program's own scores, free-form: name to ``float`` or None. NaN becomes
             None. ``native_scores()`` returns a copy of it.
-        decoy: True for a structure that was deliberately made wrong (a displaced peptide, a
-            shuffled sequence), so a pipeline can use it as a negative.
+        decoy: True for a structure made wrong on purpose (a displaced peptide, a shuffled
+            sequence), to serve as a negative.
         provenance: Free facts, JSON scalars only (a protocol, a run ID, a parameter).
         given_id: The ``id`` the caller chose; None means the default, the file stem (or
             ``"docked"``) and the first 8 hex digits of ``content_hash()``.

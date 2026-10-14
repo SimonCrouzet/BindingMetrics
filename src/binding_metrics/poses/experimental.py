@@ -1,7 +1,7 @@
 """``ExperimentalPose``: a crystal, NMR or cryo-EM structure.
 
-The structure comes with the facts a deposition reports about it (method, resolution,
-R-free); they are held as reported, never recomputed::
+The pose holds the facts the deposition reports (method, resolution, R-free) as reported,
+never recomputed::
 
     pose = ExperimentalPose.from_file(
         "1ycr.cif", method="X-RAY DIFFRACTION", resolution_angstrom=2.2, pdb_id="1YCR",
