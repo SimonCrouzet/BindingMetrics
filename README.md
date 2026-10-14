@@ -15,7 +15,7 @@ Limits:
 - **No antibody-specific analysis.** There is no CDR numbering (no ANARCI), and an antibody is scored like any other chain.
 - **No calibration for non-peptides.** No calibration against binder and non-binder data ships with the package, for peptides or for other binders. The scorecard bands, the shape-complementarity ranges and `delta_g_int` are heuristics.
 - **Chemistry handling is for the binder chain.** Cyclic closures and non-canonical residues are looked for in the binder chain.
-- **Interface PDE and PAE** are cut by chain from one token per residue, or from the token layout of the record when the parser builds one (Boltz-2). A prediction with ligands or modified residues from OpenFold3, or from Protenix in the pipeline, gives NaN for them, with a `reason`.
+- **Interface PDE and PAE** are cut by chain from one token per residue, or from the token layout of the record when the parser builds one (the OpenFold3, Boltz-2 and Protenix adapters do; Protenix needs its full-data file). A prediction with ligands or modified residues has them when the layout fits the matrices; otherwise they are NaN, with a `reason`.
 
 ---
 
