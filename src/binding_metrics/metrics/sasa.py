@@ -7,8 +7,8 @@ static function uses biotite. Both implement the Shrake-Rupley algorithm
 The static function reports the buried area of heavy atoms by default
 (``hydrogens="ignore"``), the convention of PISA and of the atomic solvation
 parameters used for ΔG_int in ``interface``. The trajectory functions do not
-filter hydrogens: they use the atoms of the index lists as given. Their areas are in
-nm^2, the unit of mdtraj; the static function reports Å^2.
+filter hydrogens: they use the atoms of the index lists as given. Their areas are
+in nm^2 (mdtraj); the static function reports Å^2.
 """
 
 import logging
@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 def _import_mdtraj():
     """Import mdtraj for the trajectory functions; the static function never needs it.
 
-    Importing it at module scope would load MDTraj (and its compiled extensions) for every
-    caller of ``compute_delta_sasa_static``, including a pose-set call on the ``static`` extra.
+    A module-level import would load mdtraj for every caller of
+    ``compute_delta_sasa_static``, including a pose-set call on the ``static`` extra.
     """
     try:
         import mdtraj
@@ -47,12 +47,11 @@ def _check_selections(
 ) -> None:
     """Refuse overlapping index lists and report empty ones.
 
-    An atom in both lists would be counted in the ligand term and in the receptor term and
-    once in the complex, so the buried area would be wrong: that is an input error. An empty
-    list gives a buried area of zero, which means "nothing was evaluated" and not "nothing is
-    buried", so ``on_empty`` decides between a ``RuntimeWarning`` and a ``ValueError``. The
-    warning is attributed to the caller of the public function (``stacklevel=4``: this
-    function, ``_interface_sasa_nm2``, the public function, its caller).
+    An atom in both lists would be counted in the ligand term, the receptor term and once in
+    the complex, so overlapping lists raise ``ValueError``. An empty list gives a buried area
+    of zero ("nothing was evaluated"); ``on_empty`` selects a ``RuntimeWarning`` or a
+    ``ValueError``. ``stacklevel=4`` attributes the warning to the caller of the public
+    function (this function, ``_interface_sasa_nm2``, the public function, its caller).
     """
     from binding_metrics.metrics.rmsd import _check_on_empty
 
@@ -93,9 +92,9 @@ def _interface_sasa_nm2(
     """Per-frame SASA in nm^2 of the ligand, the receptor and their complex.
 
     The complex is the union of the two index lists. Atoms outside both (the water and
-    ions of a solvated trajectory) are left out of every term: with them in, the complex
+    ions of a solvated trajectory) are left out of every term; with them in, the complex
     term would hold the outer surface of the solvent box and the buried area would be
-    negative (-186.6 nm^2 instead of +16.0 nm^2 for 1YCR in a 0.6 nm water box).
+    negative.
     """
     md = _import_mdtraj()
     _check_selections(function_name, ligand_indices, receptor_indices, on_empty)
@@ -129,12 +128,11 @@ def calculate_buried_sasa(
 ) -> np.ndarray:
     """Calculate buried solvent accessible surface area upon binding.
 
-    The buried SASA is computed as:
-        SASA_buried = SASA_ligand_alone + SASA_receptor_alone - SASA_complex
+    SASA_buried = SASA_ligand_alone + SASA_receptor_alone - SASA_complex
 
-    The complex is the ligand and receptor atoms only: any other atom of the trajectory
-    (water, ions) is ignored, so a solvated trajectory gives the same area as a dry one.
-    Hydrogens are not filtered here, unlike in ``compute_delta_sasa_static``.
+    The complex is the ligand and receptor atoms only; other atoms of the trajectory
+    (water, ions) are ignored, so a solvated trajectory gives the same area as a dry one.
+    Hydrogens are not filtered, unlike in ``compute_delta_sasa_static``.
 
     Args:
         trajectory_path: Path to trajectory file (DCD, XTC, etc.)
@@ -144,8 +142,7 @@ def calculate_buried_sasa(
         probe_radius: Probe radius in nm (default 0.14 nm = 1.4 A)
         on_empty: What to do when ``ligand_indices`` or ``receptor_indices`` is empty.
             "warn" (default) emits a ``RuntimeWarning`` naming the empty selection and
-            returns zeros, which means "nothing evaluated" and not "nothing buried";
-            "raise" raises ``ValueError`` instead.
+            returns zeros ("nothing evaluated"); "raise" raises ``ValueError``.
 
     Returns:
         Array of buried SASA values (in nm^2, not Angstrom^2: multiply by 100 for A^2)
@@ -226,15 +223,13 @@ def compute_delta_sasa_static(
 ) -> dict:
     """Compute delta SASA (buried surface area on binding) for a static structure.
 
-    Uses biotite's SASA implementation, which does not require a trajectory.
-    Suitable for evaluating single energy-minimized or predicted structures.
+    Uses biotite's SASA implementation; no trajectory is needed.
 
-    The buried area is defined as:
-        delta_SASA = SASA(peptide alone) + SASA(receptor alone) - SASA(complex)
+    delta_SASA = SASA(peptide alone) + SASA(receptor alone) - SASA(complex)
 
     Positive values indicate surface buried upon binding. The areas are
-    heavy-atom areas unless ``hydrogens="keep"``, so ``delta_sasa`` is the same
-    number as in ``interface.compute_interface_metrics`` and does not depend on
+    heavy-atom areas unless ``hydrogens="keep"``, so ``delta_sasa`` equals the
+    value from ``interface.compute_interface_metrics`` and does not depend on
     the protonation of the input.
 
     Args:
@@ -251,13 +246,10 @@ def compute_delta_sasa_static(
             selection (see ``interface.filter_hetero_atoms``), so waters,
             ions, ligands and glycans that carry a protein chain ID are
             dropped. "keep" uses every atom with the chain ID; atoms without
-            a defined SASA (water, ions) then count as zero area instead of
-            turning the sums into NaN.
+            a defined SASA (water, ions) count as zero area.
         hydrogens: "ignore" (default) drops hydrogen and deuterium atoms
-            before the areas are computed, so the buried area refers to heavy
-            atoms whatever the protonation of the input (see
-            ``interface.filter_hydrogens``). "keep" includes them in the
-            surface.
+            before the areas are computed (see ``interface.filter_hydrogens``).
+            "keep" includes them.
 
     Returns:
         Dictionary with keys:
