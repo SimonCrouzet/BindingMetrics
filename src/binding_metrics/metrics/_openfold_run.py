@@ -40,31 +40,27 @@ from binding_metrics.metrics._openfold_templates import (
 
 logger = logging.getLogger(__name__)
 
-#: Seed values written to ``experiment_settings.seeds`` of the runner YAML that the toolkit
-#: generates, when the caller gives neither ``seeds`` nor ``num_model_seeds``. OpenFold3 samples
-#: from these, so the same query gives the same prediction (up to GPU non-determinism). The
-#: value carries no meaning; pass ``seeds=`` to the ``run_openfold*`` functions to use others.
-#: OpenFold3 0.5.0 does not read seeds from the query JSON (its input reference says so), which
-#: is why the ``prepare_*`` functions no longer write them.
+#: Seeds written to ``experiment_settings.seeds`` of the generated runner YAML when the caller
+#: gives neither ``seeds`` nor ``num_model_seeds``; the same query then gives the same prediction
+#: (up to GPU non-determinism). Pass ``seeds=`` to the ``run_openfold*`` functions to use others.
+#: OpenFold3 0.5.0 does not read seeds from the query JSON, so the ``prepare_*`` functions do not
+#: write them.
 _DEFAULT_QUERY_SEEDS: tuple[int, ...] = (42,)
 
 
-#: Version of what the query builders write: the query JSON, the template CIFs, the A3M
-#: self-alignments and the dummy MSAs. It is raised whenever a change to them can change a
-#: prediction, and it has two uses:
+#: Version of what the query builders write (query JSON, template CIFs, A3M self-alignments,
+#: dummy MSAs). It is raised when a change can change a prediction. Two uses:
 #:
-#: * it is part of the request key of ``OpenFold3Runner`` (``options["query_builder_version"]``),
-#:   so a prediction that the store kept from an older builder is not reused for a request that the
-#:   newer builder would write differently;
-#: * it is part of the A3M query row (see :func:`_write_a3m_self_alignment`): OpenFold3 keeps the
-#:   result of its template preprocessing in a cache keyed on the chain sequence and the content of
-#:   the A3M file only, so an A3M that does not change when the template CIF writer does would be
-#:   answered with an entry made from the older CIF.
+#: * part of the request key of ``OpenFold3Runner`` (``options["query_builder_version"]``), so a
+#:   stored prediction from an older builder is not reused;
+#: * part of the A3M query row (see :func:`_write_a3m_self_alignment`): OpenFold3 caches its
+#:   template preprocessing under the chain sequence and the content of the A3M file, so an A3M
+#:   that stayed the same when the template CIF writer changed would hit the entry made from the
+#:   older CIF.
 #:
-#: History: 1, the builders before the version existed (their template CIF was rejected by
-#: OpenFold3 0.5.0); 2, a template CIF that OpenFold3 0.5.0 reads; 3, the cyclic flag only for a
-#: binder of standard residues, ``template_mode``, and the dummy MSA of a run without the MSA
-#: server.
+#: History: 1, before the version existed; 2, a template CIF that OpenFold3 0.5.0 reads; 3, the
+#: cyclic flag only for a binder of standard residues, ``template_mode``, and the dummy MSA of a
+#: run without the MSA server.
 QUERY_BUILDER_VERSION = 3
 
 
@@ -98,10 +94,9 @@ def _resolve_run_seeds(
     """Check the two ways of choosing seeds and return ``(seed values, generated count)``.
 
     OpenFold3 0.5.0 takes seeds from ``experiment_settings.seeds`` of the runner YAML, or
-    generates them from ``--num_model_seeds`` (seeds from ``random.seed(42)``), and the option
-    replaces the YAML seeds whenever it is given. Both being set therefore loses the explicit
-    values silently, and is refused. ``extra_args`` is read for the option too, because a
-    caller can pass it there.
+    generates them from ``--num_model_seeds`` (seeds from ``random.seed(42)``); the option
+    replaces the YAML seeds whenever it is given, so both together are refused. ``extra_args``
+    is searched for the option too.
 
     Returns:
         ``(None, None)`` when the caller chose neither (the toolkit's default seeds then apply
@@ -128,9 +123,8 @@ def _resolve_run_seeds(
 def _warn_query_seeds_ignored(seeds: Sequence[int]) -> None:
     """Validate the ``seeds`` of a ``prepare_*`` function and warn when they are not the default.
 
-    The argument is kept so that existing calls work, but a query JSON carries no seeds that
-    OpenFold3 reads. A value other than the default would have changed the run before; the
-    warning says where it goes now.
+    The argument is kept so that existing calls work; a query JSON carries no seeds that
+    OpenFold3 reads.
     """
     values = _query_seeds(seeds)
     if tuple(values) != _DEFAULT_QUERY_SEEDS:
@@ -196,10 +190,9 @@ def installed_openfold3_version(python_cmd: Optional[Sequence[str]] = None) -> O
     return probe.stdout.strip() or None
 
 
-#: Versions already read from a conda environment, by interpreter command. Starting ``conda run``
-#: costs seconds, and one batch asks once per sample. Only a version that was read is kept, so an
-#: environment that is fixed later is looked at again. The interpreter that runs this code is not
-#: cached: asking it is a metadata lookup.
+#: Versions already read from a conda environment, by interpreter command (``conda run`` takes
+#: seconds and a batch asks once per sample). Only a version that was read is kept; the current
+#: interpreter is not cached.
 _VERSION_BY_PYTHON: dict[tuple[str, ...], str] = {}
 
 
@@ -243,8 +236,8 @@ class BinderCyclicDecision:
     ``cyclic`` is the value to write. ``reason`` is set when "auto" has a head-to-tail binder and
     leaves it as a linear chain: the installed OpenFold3 is too old for the field or its version
     could not be read, the binder has modified residues (D-amino acids, N-methylated or other
-    non-standard residues, with which the flag made the one complex tried worse), or the structure
-    could not be searched. It is None otherwise, including when the binder has no such bond.
+    non-standard residues), or the structure could not be searched. It is None otherwise,
+    including when the binder has no such bond.
     """
 
     cyclic: bool
@@ -265,9 +258,7 @@ def _binder_is_head_to_tail(structure_path: str | Path, binder_chain: str) -> bo
     return any(c.family == "head_to_tail" for c in detect_closures(atoms, binder_chain))
 
 
-#: What was measured with the flag on a binder of modified residues, stated wherever the rule that
-#: leaves such a binder linear is explained. One complex, OpenFold3 0.5.0, no MSA, one diffusion
-#: sample per seed, a prediction with the receptor template and the binder from its sequence.
+#: Text appended to the warning for ``binder_cyclic=True`` on a binder of modified residues.
 _MODIFIED_RESIDUE_OBSERVATION = (
     "OpenFold3 wraps the relative positions of the chain by its token count and gives every atom "
     "of a modified residue a token of its own, so the wrap does not follow the ring. On one "
@@ -282,11 +273,10 @@ def _modified_binder_residues(structure_path: str | Path, binder_chain: str) -> 
     """The residues of ``binder_chain`` that OpenFold3 would tokenise one token per atom.
 
     OpenFold3 makes one token of each standard residue and one token of each heavy atom of any
-    other residue, and what it builds follows the query, not the structure file: the standard
-    letters (a protonation variant or a cross-link variant is sent as its parent letter) stay
-    standard, while a residue sent through ``non_canonical_residues`` (a D-amino acid, an
-    N-methylated residue, any other CCD component) and selenocysteine (``U``) do not. The
-    classification is that of :func:`_extract_query_chain`, so it is the one the query uses.
+    other residue. The classification follows the query (:func:`_extract_query_chain`): standard
+    letters (a protonation or cross-link variant is sent as its parent letter) stay standard;
+    a residue sent through ``non_canonical_residues`` (a D-amino acid, an N-methylated residue,
+    any other CCD component) and selenocysteine (``U``) do not.
 
     Returns:
         The sorted, distinct CCD codes of those residues (``SEC`` for ``U``); an empty list when
@@ -321,20 +311,12 @@ def decide_binder_cyclic(
 ) -> BinderCyclicDecision:
     """Decide whether the query writes ``"cyclic": true`` for ``binder_chain``.
 
-    OpenFold3 uses the field only to wrap the relative-position offsets of the chain, which
-    describes a head-to-tail closure. It does not enforce the closure bond, the field appears
-    in its documentation only through an example query, and no accuracy figure for cyclic
-    peptides has been published (source: ``input_format_reference.md`` and
-    ``examples/example_inference_inputs/query_multimer_cyclic.json`` at tag v0.5.0, and the
-    release notes of 0.4.5).
-
-    The offsets are built from the number of tokens of the chain (``cyclic_offset`` in
-    ``openfold3/core/utils/relpos.py``) and ignore the residue indices, while OpenFold3 makes a
-    token of each heavy atom of a modified residue, so for a binder with modified residues the
-    wrap does not follow the ring. Measured once (one complex per case, OpenFold3 0.5.0, no MSA;
-    see ``_MODIFIED_RESIDUE_OBSERVATION``): with the flag, 1CWA (D-Ala and N-methylated residues)
-    lost 0.10 to 0.15 ipTM and gained 2.3 to 4.2 A of binder RMSD over three seeds, and SFTI-1
-    (standard residues) closed its ring (C-N 7.40 A without the flag, 1.38 A with it, one seed).
+    OpenFold3 uses the field only to wrap the relative-position offsets of the chain; it does
+    not enforce the closure bond (``input_format_reference.md`` and
+    ``examples/example_inference_inputs/query_multimer_cyclic.json`` at tag v0.5.0). The offsets
+    are built from the number of tokens of the chain (``cyclic_offset`` in
+    ``openfold3/core/utils/relpos.py``), and OpenFold3 makes one token per heavy atom of a
+    modified residue, so for a binder with modified residues the wrap does not follow the ring.
 
     Args:
         structure_path: The structure the query is built from (the complex file).
@@ -497,11 +479,11 @@ def _write_runner_yaml(
             ``structure_directory`` pointing here and
             ``fetch_missing_structures: false`` so OF3 uses local CIFs only. It also adds
             ``msa_computation_settings.cleanup_msa_dir: false``: with the MSA server and
-            templates on (the defaults), OpenFold3 deletes ``structure_directory.parent``
-            at the end of a run (0.3.1 to 0.5.0; unreleased ``main`` no longer deletes
-            user-chosen directories), which here is the folder that holds the query JSON,
-            the A3M files and the template CIFs. In 0.5.0 ``cleanup_msa_dir`` guards only
-            that deletion; 0.4.0 also removed the MSA output directory with it.
+            templates on (the defaults), OpenFold3 0.3.1 to 0.5.0 deletes
+            ``structure_directory.parent`` at the end of a run, which here is the folder that
+            holds the query JSON, the A3M files and the template CIFs. In 0.5.0
+            ``cleanup_msa_dir`` guards only that deletion; 0.4.0 also removed the MSA output
+            directory with it.
         conda_env: Conda environment that will run OpenFold3, asked for its version when
             ``presets`` names ``pae_enabled``; None asks the current interpreter.
         seeds: If given, written as ``experiment_settings.seeds``, the seeds OpenFold3 samples
@@ -704,28 +686,24 @@ def _merge_runner_settings(
 ) -> Path:
     """Return the runner YAML to pass to OpenFold3 once the toolkit's settings are added.
 
-    A runner YAML given by the user says nothing about where the toolkit put the template CIFs
-    that the query's A3M files point to, and OpenFold3 looks for them only in
+    OpenFold3 looks for the template CIFs that the query's A3M files point to only in
     ``template_preprocessor_settings.structure_directory``. With ``template_dir`` this writes a
     copy of the user's file to ``output_dir / "runner_config_merged.yaml"`` with that key set to
     ``template_dir``, and ``msa_computation_settings.cleanup_msa_dir: false`` unless the user
-    set it (otherwise OpenFold3 deletes the folder that holds the query files at the end of a
-    run; see :func:`_write_runner_yaml`).
+    set it (see :func:`_write_runner_yaml`).
 
-    With ``seeds`` the copy also sets ``experiment_settings.seeds``, replacing the user's value:
-    seeds the caller asked for explicitly win over the file. Without ``seeds`` the file's own
-    seeds (or OpenFold3's default of ``[42]``) apply, and nothing about seeds is touched. Nothing
+    With ``seeds`` the copy also sets ``experiment_settings.seeds``, replacing the user's value.
+    Without ``seeds`` the file's own seeds (or OpenFold3's default of ``[42]``) apply. Nothing
     else is added and the user's file is never modified.
 
     The copy is made by loading and dumping the YAML, so comments and anchors of the original
     are not kept. Without PyYAML the settings are appended to the text instead, which works only
     for a plain block mapping that sets none of the sections that are appended.
 
-    A ``structure_directory`` that the user's file already sets is not overwritten. The
-    differing path is logged as a warning that names both directories: the toolkit's templates
-    are found only if the user's directory holds them. When the file already says everything
-    that would be added, the user's own path is returned and no copy is written; so it is when
-    there is nothing to add (neither ``template_dir`` nor ``seeds``), and the file is not read.
+    A ``structure_directory`` that the user's file already sets is not overwritten; a differing
+    path is logged as a warning that names both directories. When the file already says
+    everything that would be added, or there is nothing to add (neither ``template_dir`` nor
+    ``seeds``; the file is not read), the user's own path is returned and no copy is written.
 
     Args:
         runner_yaml: The user's runner YAML.
@@ -823,10 +801,9 @@ def _stderr_lines(text: str) -> list[str]:
     return lines
 
 
-#: Phrases of a line that gives the reason of a failure better than the exception that carries it.
-#: openfold3 0.5.0 without its default checkpoint stops with a pydantic ``ValidationError`` whose
-#: first line says only "1 validation error for InferenceExperimentConfig"; the reason is a later
-#: line, "Value error, Default checkpoint ... cowardly refusing to perform inference".
+#: Phrases of a line that gives the reason of a failure better than the exception that carries it
+#: (openfold3 0.5.0 without its default checkpoint raises a pydantic ``ValidationError`` whose
+#: first line does not name the reason).
 _REASON_PHRASES = ("cowardly refusing",)
 
 
@@ -969,11 +946,10 @@ def _failed_query_reasons(
     or any other exception inside the forward pass), so this is the only trace of it. An empty
     dict means no failure was reported, or that there is no summary.
 
-    A query that fails while its features are built (before the model runs: an unreadable
-    template, for one) leaves no log file: OpenFold3 only prints a warning, and removes the empty
-    log directory. ``notes`` (what the run printed, see :class:`StreamNotes`) then gives the
-    exception. No reason names ``output_dir``: the store renames the folder of a run when it
-    keeps it, so a path in a recorded reason would point at nothing.
+    A query that fails while its features are built (an unreadable template, for one) leaves no
+    log file: OpenFold3 only prints a warning, and removes the empty log directory. ``notes``
+    (what the run printed, see :class:`StreamNotes`) then gives the exception. No reason names
+    ``output_dir``: the store renames the folder of a run when it keeps it.
     """
     summary = _read_run_summary(output_dir, not_before)
     if summary is None:
@@ -1137,13 +1113,12 @@ def _openfold_predict_command(
 def _run_openfold_command(cmd: Sequence[str], output_dir: Path) -> OpenFoldRunInfo:
     """Run an OpenFold3 command line and explain how it failed.
 
-    stdout and stderr are both echoed as they arrive. The last few kilobytes of stderr are kept,
-    so a non-zero exit raises :class:`OpenFoldRunError` with the reason instead of only the exit
-    status. Both streams are also read for the lines that say why a template was lost or a
-    query failed (:class:`StreamNotes`): OpenFold3 prints a failed template preprocessing on
-    stdout, and the replacement of an alignment by the MSA server and a failure while the
-    features of a query are built on stderr, well before the tail that is kept. After an exit
-    with status 0:
+    stdout and stderr are both echoed as they arrive. The last few kilobytes of stderr are kept
+    for the :class:`OpenFoldRunError` of a non-zero exit. Both streams are also read for the
+    lines that say why a template was lost or a query failed (:class:`StreamNotes`): OpenFold3
+    prints a failed template preprocessing on stdout, and the replacement of an alignment by
+    the MSA server and a failure while the features of a query are built on stderr. After an
+    exit with status 0:
 
     * the run's ``summary.txt`` is read: queries that failed inside OpenFold3 are logged with
       their reasons (the log file of the forward pass, or the warning of the data processing),
@@ -1444,9 +1419,8 @@ def _extract_sequence_from_structure(
 def _require_chain(structure, chain_id: str, source: str = "") -> None:
     """Raise ``ValueError`` unless the first model of ``structure`` has a chain ``chain_id``.
 
-    ``source`` names where the structure came from (a file path) so that the message says
-    which template file lacks the chain; without this check a missing chain gives a template
-    CIF with no atoms and no error.
+    ``source`` (a file path) is named in the message. Without this check a missing chain gives
+    a template CIF with no atoms and no error.
     """
     chain_ids = [chain.name for chain in structure[0]]
     if chain_id not in chain_ids:
@@ -1513,12 +1487,11 @@ def _extract_chain_to_cif(
 
     OpenFold3 0.5.0 reads the file twice, with the parsers it uses for PDB entries: the
     template preprocessor takes the canonical sequence of each chain and the release date, and
-    the data loader reads the atoms and indexes the residues by ``label_seq_id``. A file as
-    gemmi writes a bare chain is rejected (``label_entity_id`` is ``.``, there is no
-    ``_entity_poly_seq``, ``label_seq_id`` is ``.`` and ``_chem_comp.type`` is ``.``), and an
-    ``_entity_poly`` without ``pdbx_seq_one_letter_code_can`` makes the preprocessing fail with
-    a message that OpenFold3 only prints, after which the chain has no template. The file written
-    here has:
+    the data loader reads the atoms and indexes the residues by ``label_seq_id``. gemmi's bare
+    chain is rejected (``label_entity_id``, ``label_seq_id`` and ``_chem_comp.type`` are ``.``,
+    there is no ``_entity_poly_seq``), and an ``_entity_poly`` without
+    ``pdbx_seq_one_letter_code_can`` makes the preprocessing fail with a message that OpenFold3
+    only prints, after which the chain has no template. The file written here has:
 
     * one polymer entity with the integer id 1, in ``_entity``, ``_entity_poly`` (with
       ``pdbx_seq_one_letter_code_can``), ``_entity_poly_seq`` and ``_struct_asym``, and
@@ -1675,12 +1648,11 @@ def _write_a3m_self_alignment(
 
 
 #: How a template reaches OpenFold3 (``template_mode`` of the ``prepare_*`` and ``run_openfold_*``
-#: functions). ``"structure"``: the CIF itself in ``template_cif_paths`` (OpenFold3's CIF Direct
-#: Template Mode, which needs no alignment and which the ColabFold MSA-server step does not
-#: overwrite; the default). ``"alignment"``: an A3M self-alignment per chain that points to the
-#: template CIF through ``template_alignment_file_path`` (the first way, and the default until
-#: the toolkit changed it; the server overwrites that path, so a run with the server on has no
-#: template).
+#: functions). ``"structure"`` (default): the CIF itself in ``template_cif_paths`` (OpenFold3's
+#: CIF Direct Template Mode, which needs no alignment and which the ColabFold MSA-server step
+#: does not overwrite). ``"alignment"``: an A3M self-alignment per chain that points to the
+#: template CIF through ``template_alignment_file_path``; the server overwrites that path, so a
+#: run with the server on has no template.
 TEMPLATE_MODES = ("structure", "alignment")
 
 #: The ``template_mode`` that the functions and commands use when none is given.
@@ -1759,14 +1731,11 @@ def _query_chain(
 #: File name of the MSA that the query gives a chain (a dummy MSA, or the receptor's alignment
 #: that the caller supplies). OpenFold3 0.5.0 parses an MSA file only when its name (without the
 #: suffix) is a key of ``MSASettings.max_seq_counts`` (``projects/of3_all_atom/config/
-#: dataset_config_components.py``: ``uniref90_hits``, ``uniprot_hits``, ``bfd_uniclust_hits``,
-#: ``bfd_uniref_hits``, ``cfdb_uniref30``, ``cfdb_hits``, ``mgnify_hits``, ``rfam_hits``,
-#: ``rnacentral_hits``, ``nt_hits``, ``nucleotide_collection_hits``,
-#: ``concat_cfdb_uniref100_filtered``, ``mmseqs_colabfold``, ``colabfold_main`` and
-#: ``colabfold_paired``) and a suffix of ``.a3m`` or ``.sto``; it skips any other file, and a
+#: dataset_config_components.py``, for example ``uniref90_hits``, ``mgnify_hits`` or
+#: ``colabfold_main``) and its suffix is ``.a3m`` or ``.sto``; it skips any other file, and a
 #: chain with no parsed MSA then fails with ``IndexError`` while its features are built.
-#: ``colabfold_main`` is the name of the MSA that the ColabFold server returns, with a limit of
-#: 16384 rows, and of OpenFold3's own dummy MSA.
+#: ``colabfold_main`` is the name of the MSA that the ColabFold server returns (limit 16384
+#: rows) and of OpenFold3's own dummy MSA.
 _MAIN_MSA_FILE = "colabfold_main.a3m"
 _DUMMY_MSA_FILE = _MAIN_MSA_FILE
 
@@ -1809,10 +1778,10 @@ def _check_receptor_msa(path: str | Path, sequence: str, chain_id: str, sample: 
     OpenFold3 0.5.0 takes the first row of a chain's alignment as the query row of its MSA
     features and puts the columns of that row on the residues of the chain by position
     (``MsaSampleParserInference.parse_msas`` in ``core/data/io/sequence/msa.py`` and
-    ``map_msas_to_tokens`` in ``core/data/primitives/featurization/msa.py``, v0.5.0). It never
-    compares the row with the sequence of the chain, so an alignment made for another sequence
-    gives features that belong to that other sequence (a shorter one fails with ``IndexError``
-    while the features are built). The comparison is made here, before anything is written.
+    ``map_msas_to_tokens`` in ``core/data/primitives/featurization/msa.py``, v0.5.0). It does
+    not compare the row with the sequence of the chain; a shorter alignment fails with
+    ``IndexError`` while the features are built. The comparison is made here, before anything
+    is written.
 
     Raises:
         FileNotFoundError: ``path`` is not a file.
@@ -1868,17 +1837,14 @@ def _msa_fields(
     """The arguments of :func:`_query_chain` that give a chain its MSA, or none.
 
     ``given_msa_path`` is an alignment the caller supplies for this chain (the receptor's): it is
-    copied to ``directory`` as ``colabfold_main.a3m`` and wins over the dummy MSA. Check it
-    first with :func:`_check_receptor_msa`.
+    copied to ``directory`` as ``colabfold_main.a3m`` and takes precedence over the dummy MSA.
+    Check it first with :func:`_check_receptor_msa`.
 
-    Otherwise ``dummy_msa`` gives the chain an MSA that holds only the query sequence.
-    OpenFold3's input reference suggests MSA-free inference through a dummy MSA that holds only
-    the query sequence and discourages leaving the MSA input out. 0.5.0 builds the same dummy
-    for a chain without MSA files (with a warning), so the prediction is the same either way
-    (measured: three seeds of one complex, within 0.03 ipTM and 0.1 A of binder RMSD); the
-    file is written so that the query says what it uses. Only a run without the ColabFold MSA
-    server needs it: with the server on, OpenFold3 replaces ``main_msa_file_paths`` (with a
-    warning), the supplied alignment included.
+    Otherwise ``dummy_msa`` gives the chain an MSA that holds only the query sequence, the
+    MSA-free input that OpenFold3's input reference recommends. OpenFold3 0.5.0 builds the same
+    dummy for a chain without MSA files (with a warning); the file is written so that the query
+    says what it uses. Only a run without the ColabFold MSA server needs it: with the server on,
+    OpenFold3 replaces ``main_msa_file_paths`` (with a warning), the supplied alignment included.
     """
     if given_msa_path is not None:
         return {"main_msa_file_paths": [str(_stage_receptor_msa(given_msa_path, directory))]}
@@ -1929,13 +1895,11 @@ def prepare_refolding_query(
     """Prepare an OpenFold3 query JSON for binder refolding with receptor as template.
 
     **Mode 2 — refolding:**
-    The receptor chain is given its own structure from the complex as a template, so that OF3
-    is conditioned on the receptor fold. The binder chain is predicted from sequence only (no
-    template), so OF3 predicts both the binder conformation and its pose against the receptor.
-    This answers: "next to a receptor of known fold, can OF3 recover the bound binder
-    conformation and pose from its sequence?" ``binder_ca_rmsd`` against the input, in the
-    receptor frame, measures it (the refolding RMSD). The receptor template carries the
-    receptor fold only, not the position of the binder (see the note under Mode 1).
+    The receptor chain is given its own structure from the complex as a template. The binder
+    chain is predicted from sequence only (no template), so OF3 predicts both the binder
+    conformation and its pose against the receptor. ``binder_ca_rmsd`` against the input, in
+    the receptor frame, is the refolding RMSD. The receptor template carries the receptor fold
+    only, not the position of the binder (see the note under Mode 1).
 
     Files written under ``output_dir``:
 
@@ -1984,14 +1948,12 @@ def prepare_refolding_query(
         binder_cyclic: ``"auto"`` (default) writes ``"cyclic": true`` on the binder chain when
             it has a head-to-tail bond, is made of standard residues only and the installed
             OpenFold3 is 0.4.5 or later; a head-to-tail binder that is left linear because it
-            has modified residues (D-amino acids, N-methylated residues; the flag made the one
-            complex tried worse) or because the version is too old or unreadable is logged as a
-            warning. ``True`` writes it on the binder whatever the structure says (with a warning
-            when the binder has modified residues), ``False`` never. OpenFold3 uses the field
-            only to wrap the relative positions of the chain; it does not enforce the closure
-            bond, documents the field only in an example query, and has published no accuracy
-            benchmark for cyclic peptides. Disulfide, lactam and staple closures have no
-            OpenFold3 input and are not written. See :func:`decide_binder_cyclic`.
+            has modified residues (D-amino acids, N-methylated residues) or because the version
+            is too old or unreadable is logged as a warning. ``True`` writes it on the binder
+            whatever the structure says (with a warning when the binder has modified residues),
+            ``False`` never. OpenFold3 uses the field only to wrap the relative positions of the
+            chain; it does not enforce the closure bond. Disulfide, lactam and staple closures
+            have no OpenFold3 input and are not written. See :func:`decide_binder_cyclic`.
         conda_env: Conda environment that runs OpenFold3, asked for its version when
             ``binder_cyclic`` is not ``False``; None asks the current interpreter.
         template_mode: How the receptor template reaches OpenFold3. ``"structure"`` (default)
@@ -2001,8 +1963,7 @@ def prepare_refolding_query(
             not overwrite, and writes no A3M file. ``"alignment"`` writes an A3M self-alignment
             and gives its path as ``template_alignment_file_path``; the server overwrites that
             path (see ``the MSA server and the templates`` of the metrics documentation), so a
-            run with the server on has no template. ``"alignment"`` is what the default was
-            before the toolkit changed it.
+            run with the server on has no template.
         dummy_msa: Give every chain a dummy MSA that holds only its sequence
             (``main_msa_file_paths``, one file ``colabfold_main.a3m`` in a folder per chain below
             ``{output_dir}/msas``). It is for a run without the ColabFold MSA server, which
@@ -2071,13 +2032,10 @@ def prepare_refolding_query(
     # Template CIF — named receptor.cif so OF3 finds entry_id="receptor"
     receptor_entry_id = "receptor"
     template_dest = templates_dir / f"{receptor_entry_id}.cif"
-    # Only the receptor chain is extracted from the template source
     _extract_chain_to_cif(
         template_src, receptor_chain, template_dest, sequence=receptor_seq, source=template_source
     )
 
-    # The receptor's template: an A3M self-alignment (header receptor_{chain}/{1}-{N}) that
-    # points to the CIF, or the CIF itself
     receptor_template = _template_fields(
         template_mode,
         sequence=receptor_seq,
@@ -2087,7 +2045,6 @@ def prepare_refolding_query(
         a3m_path=output_dir / f"{query_name}_receptor.a3m",
     )
 
-    # Query JSON — receptor has template, binder is free (sequence only)
     query = {
         "queries": {
             query_name: {
@@ -2149,29 +2106,23 @@ def prepare_scoring_query(
     conformation (its scaffold) and the receptor its conformation. OF3 outputs confidence
     scores (pLDDT, pTM, ipTM, etc.) for the complex that it predicts from them.
 
-    A template carries the fold of the chain it is made from and no inter-chain geometry. Each
-    query chain gets its own template structures (the template files here hold one chain each),
-    so no cross-chain geometry is ever supplied; and ``_embed_feats`` of the template embedder
-    of OpenFold3 (v0.5.0, ``openfold3/core/model/feature_embedders/template_embedders.py``)
-    applies the same-chain mask (``asym_id[i] == asym_id[j]``) to the validity indicators of the
-    template pair features, so cross-chain pairs are marked invalid (the distogram and
-    unit-vector tensors are not multiplied by that mask there). OpenFold3 therefore places the
-    binder against the receptor itself, and its confidences (pLDDT, pTM, ipTM, PAE) describe
-    that pose, not the pose of the input. How far the predicted pose is from the input pose is
-    a separate result: ``binder_ca_rmsd`` (binder Cα RMSD against the input, in the receptor
-    frame) and ``delta_com_angstrom`` of the EvoBind adversarial check (the displacement of the
-    binder centre of mass after superposing the receptor). In this mode the binder also has its
-    own fold as a template, so ``binder_ca_rmsd`` is less free of the input than in refold mode.
+    A template carries the fold of the chain it is made from and no inter-chain geometry: each
+    query chain gets its own template structures (one chain per file), and the template embedder
+    of OpenFold3 (``_embed_feats`` in v0.5.0, ``openfold3/core/model/feature_embedders/
+    template_embedders.py``) masks the validity indicators of the template pair features to
+    pairs of the same chain. OpenFold3 therefore places the binder against the receptor itself,
+    and its confidences (pLDDT, pTM, ipTM, PAE) describe that pose, not the pose of the input.
+    The distance of the predicted pose from the input pose is given by ``binder_ca_rmsd``
+    (binder C-alpha RMSD against the input, in the receptor frame) and by ``delta_com_angstrom``
+    of the EvoBind adversarial check (displacement of the binder centre of mass after
+    superposing the receptor). The binder also has its own fold as a template in this mode.
 
-    Issue #68, measured on one complex (1YCR, OpenFold3 0.5.0, one seed): with the ColabFold MSA
-    server on OpenFold3 replaces the template alignment of both chains with the server's, finds
-    none of the structures it lists (the toolkit runs it with ``fetch_missing_structures:
-    false``) and goes on without any template, so a run with ``template_mode="alignment"`` is a
-    template-free prediction (binder Cα RMSD against the input 1.62 A, against 1.57 A with the
-    template given as a structure and 1.12 A with the template read and the server off). The
-    default ``template_mode="structure"`` is not affected, because the server does not overwrite
-    ``template_cif_paths``; ``run_openfold`` records what became of each template (see
-    :mod:`binding_metrics.metrics._openfold_templates`).
+    With ``template_mode="alignment"`` and the ColabFold MSA server on (issue #68), OpenFold3
+    replaces the template alignment of both chains with the server's, finds none of the
+    structures it lists (the toolkit runs it with ``fetch_missing_structures: false``) and goes
+    on without any template. ``template_mode="structure"`` is not affected, because the server
+    does not overwrite ``template_cif_paths``. ``run_openfold`` records what became of each
+    template (see :mod:`binding_metrics.metrics._openfold_templates`).
 
     Files written under ``output_dir``:
 
@@ -2285,8 +2236,6 @@ def prepare_scoring_query(
         source=template_source,
     )
 
-    # The templates: A3M self-alignments (header {entry_id}_{chain_id}/{1}-{N}) that point to
-    # the CIFs, or the CIFs themselves
     receptor_template = _template_fields(
         template_mode,
         sequence=receptor_seq,
@@ -2367,13 +2316,11 @@ def _safe_entry_id(sample_id: str, suffix: str) -> str:
 def _unique_entry_ids(sample_ids: Sequence[str], suffix: str) -> dict[str, str]:
     """Return the entry ID of every sample, unique across the batch.
 
-    An ID is :func:`_safe_entry_id` of the sample ID, so samples whose IDs contain no
-    underscore and do not collide keep exactly that. ``a_b`` and ``a-b`` (or ``Ab`` and
+    An ID is :func:`_safe_entry_id` of the sample ID. ``a_b`` and ``a-b`` (or ``Ab`` and
     ``aB``, which collide on a case-insensitive file system) would both give
-    ``templates/a-b<suffix>.cif`` and the second CIF would replace the first, so one query
-    would be predicted from the other's template. Every sample of such a group gets a short
-    hash of its own sample ID before the suffix (``a-b-1f2e3d4c<suffix>``), which does not
-    depend on the other samples or their order.
+    ``templates/a-b<suffix>.cif``, and the second CIF would replace the first. Every sample of
+    such a group gets a short hash of its own sample ID before the suffix
+    (``a-b-1f2e3d4c<suffix>``), which does not depend on the other samples or their order.
 
     Args:
         sample_ids: Sample IDs of the batch; a repeated ID is one sample.
