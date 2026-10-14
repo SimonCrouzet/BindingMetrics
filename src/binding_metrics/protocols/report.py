@@ -12,10 +12,12 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime
+import html
 import json
 import logging
 import math
 import numbers
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -214,7 +216,58 @@ def _rag(value: Any, spec: dict) -> str:
         return "⬜"
 
 
-def _md_table(headers: list[str], rows: list[list[str]]) -> str:
+# ASCII punctuation that Python-Markdown treats as syntax in a line of text or a table cell.
+_MARKDOWN_SYNTAX = frozenset("\\`*_{}[]()>#+-.!|")
+
+
+def _one_line(value: Any) -> str:
+    """``str(value)`` with each run of line breaks, and the blanks around it, as one space."""
+    return re.sub(r"\s*[\r\n]+\s*", " ", str(value))
+
+
+def _escape_pipes(text: str) -> str:
+    """``text`` with each pipe escaped; a backslash run before a pipe is doubled to stay literal."""
+    return re.sub(r"(\\*)\|", lambda m: m.group(1) * 2 + "\\|", text)
+
+
+def _text(value: Any, for_html: bool = False) -> str:
+    """Result text for a line of the Markdown summary.
+
+    The Markdown file keeps the text as written. With ``for_html`` the text is the one
+    line that the renderer shows as typed: ``&`` and ``<`` become entities and each
+    character of Markdown syntax gets a backslash, so no tag, link or list comes out of it.
+    """
+    if not for_html:
+        return str(value)
+    text = _one_line(value).replace("&", "&amp;").replace("<", "&lt;")
+    return "".join("\\" + ch if ch in _MARKDOWN_SYNTAX else ch for ch in text)
+
+
+def _cell(value: Any, for_html: bool = False) -> str:
+    """Result text for a table cell: one line, and a pipe that does not end the cell."""
+    return _text(value, True) if for_html else _escape_pipes(_one_line(value))
+
+
+def _code(value: Any, *, in_table: bool = False, for_html: bool = False) -> str:
+    """A code span that holds ``value`` as written.
+
+    The fence is one backtick longer than the longest run in the text, so a backtick in the
+    text does not end the span. In a table of the Markdown file a pipe is escaped, as GitHub
+    reads it; the HTML renderer keeps a pipe in a code span as it is, and escapes ``&`` and
+    ``<`` itself.
+    """
+    text = _one_line(value)
+    if in_table and not for_html:
+        text = _escape_pipes(text)
+    longest = max((len(run) for run in re.findall("`+", text)), default=0)
+    fence = "`" * (longest + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def _md_table(headers: list[str], rows: list[list[str]], for_html: bool = False) -> str:
+    headers = [_cell(h, for_html) for h in headers]
+    rows = [[_cell(c, for_html) for c in row] for row in rows]
     widths = [
         max(len(h), max((len(str(r[i])) for r in rows), default=0)) for i, h in enumerate(headers)
     ]
@@ -332,7 +385,7 @@ def _flatten(results: dict) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _md_header(results: dict) -> str:
+def _md_header(results: dict, for_html: bool = False) -> str:
     sid = results.get("sample_id", "unknown")
     inp = results.get("input", "—")
     total = results.get("total_elapsed_s")
@@ -344,14 +397,18 @@ def _md_header(results: dict) -> str:
     rec_chain = chains.get("receptor_chain", "—")
     pep_n = chains.get("peptide_n_residues")
     rec_n = chains.get("receptor_n_residues")
-    pep_str = f"`{pep_chain}`" + (f" ({pep_n} res)" if pep_n else "")
-    rec_str = f"`{rec_chain}`" + (f" ({rec_n} res)" if rec_n else "")
+    pep_str = _code(pep_chain, in_table=True, for_html=for_html) + (
+        f" ({_cell(pep_n, for_html)} res)" if pep_n else ""
+    )
+    rec_str = _code(rec_chain, in_table=True, for_html=for_html) + (
+        f" ({_cell(rec_n, for_html)} res)" if rec_n else ""
+    )
 
     return (
         f"# Binding Metrics Report\n\n"
         f"| Field | Value |\n|---|---|\n"
-        f"| Sample ID | `{sid}` |\n"
-        f"| Input | `{inp}` |\n"
+        f"| Sample ID | {_code(sid, in_table=True, for_html=for_html)} |\n"
+        f"| Input | {_code(inp, in_table=True, for_html=for_html)} |\n"
         f"| Peptide chain | {pep_str} |\n"
         f"| Receptor chain | {rec_str} |\n"
         f"| Elapsed | {elapsed} |\n"
@@ -363,30 +420,36 @@ def _is_skipped(section: dict | None) -> bool:
     return isinstance(section, dict) and section.get("skipped") is True
 
 
-def _md_preflight(pre: dict | None) -> str:
+def _md_preflight(pre: dict | None, for_html: bool = False) -> str:
     """The ``results["preflight"]`` block: the decision, what was left out, and the warnings."""
     lines = ["## Pre-flight check\n"]
     if not isinstance(pre, dict):
         return lines[0] + "_Absent._\n"
-    lines.append(f"Status: `{pre.get('status')}` (policy: `{pre.get('policy')}`).\n")
+    lines.append(
+        f"Status: {_code(pre.get('status'), for_html=for_html)} "
+        f"(policy: {_code(pre.get('policy'), for_html=for_html)}).\n"
+    )
     if pre.get("reason"):
-        lines.append(f"{pre['reason']}\n")
+        lines.append(f"{_text(pre['reason'], for_html)}\n")
     skipped = dict(pre.get("skipped_steps") or {})
     skipped.update({f"geometry.{k}": v for k, v in (pre.get("skipped_geometry") or {}).items()})
     if skipped:
         lines.append("Left out:\n")
-        lines.extend(f"- `{step}`: {reason}" for step, reason in skipped.items())
+        lines.extend(
+            f"- {_code(step, for_html=for_html)}: {_text(reason, for_html)}"
+            for step, reason in skipped.items()
+        )
         lines.append("")
     report = pre.get("report") or {}
     for title, key in (("Warnings", "warnings"), ("Notes", "notes")):
         if report.get(key):
             lines.append(f"{title}:\n")
-            lines.extend(f"- {text}" for text in report[key])
+            lines.extend(f"- {_text(text, for_html)}" for text in report[key])
             lines.append("")
     return "\n".join(lines)
 
 
-def _md_cyclic(relax: dict | None) -> str | None:
+def _md_cyclic(relax: dict | None, for_html: bool = False) -> str | None:
     """Return a cyclic topology section, or None if linear.
 
     The closure bonds are read from ``peptide_cyclic_bonds``, the key
@@ -402,6 +465,7 @@ def _md_cyclic(relax: dict | None) -> str | None:
         _md_table(
             ["Bond type", "Atom 1", "Atom 2"],
             [[b["type"], b["atom1"], b["atom2"]] for b in bonds],
+            for_html,
         )
     )
     lines.append(
@@ -411,12 +475,13 @@ def _md_cyclic(relax: dict | None) -> str | None:
     return "\n".join(lines) + "\n"
 
 
-def _md_relax(relax: dict | None) -> str:
+def _md_relax(relax: dict | None, for_html: bool = False) -> str:
     lines = ["## Relaxation\n"]
     if _is_skipped(relax):
         return lines[0] + "_Skipped._\n"
     if not relax or not relax.get("success", False):
-        return lines[0] + f"_Failed: {(relax or {}).get('error_message', 'missing')}_\n"
+        message = _text((relax or {}).get("error_message", "missing"), for_html)
+        return lines[0] + f"_Failed: {message}_\n"
     lines.append(
         _md_table(
             ["Metric", "Value", "Unit"],
@@ -428,6 +493,7 @@ def _md_relax(relax: dict | None) -> str:
                 ["RMSF mean", _fmt(relax.get("peptide_rmsf_mean")), "Å"],
                 ["RMSF max", _fmt(relax.get("peptide_rmsf_max")), "Å"],
             ],
+            for_html,
         )
     )
     rmsf_raw = relax.get("peptide_rmsf_per_residue")
@@ -444,12 +510,13 @@ def _md_relax(relax: dict | None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _md_energy(energy: dict | None) -> str:
+def _md_energy(energy: dict | None, for_html: bool = False) -> str:
     lines = ["## Interaction Energy\n"]
     if _is_skipped(energy):
         return lines[0] + "_Skipped._\n"
     if not energy or not energy.get("success", True):
-        return lines[0] + f"_Failed: {(energy or {}).get('error_message', 'absent')}_\n"
+        message = _text((energy or {}).get("error_message", "absent"), for_html)
+        return lines[0] + f"_Failed: {message}_\n"
     mode = next(
         (
             m
@@ -469,12 +536,13 @@ def _md_energy(energy: dict | None) -> str:
                 ["Contacts", _fmt(energy.get("num_contacts")), ""],
                 ["Close contacts", _fmt(energy.get("num_close_contacts")), ""],
             ],
+            for_html,
         )
     )
     return "\n".join(lines) + "\n"
 
 
-def _md_interface(iface: dict | None) -> str:
+def _md_interface(iface: dict | None, for_html: bool = False) -> str:
     lines = ["## Interface\n"]
     if _is_skipped(iface):
         return lines[0] + "_Skipped._\n"
@@ -497,6 +565,7 @@ def _md_interface(iface: dict | None) -> str:
                 ["Interface res (pep)", _fmt(iface.get("n_interface_residues_peptide")), ""],
                 ["Interface res (rec)", _fmt(iface.get("n_interface_residues_receptor")), ""],
             ],
+            for_html,
         )
     )
     # Per-residue buried SASA for peptide. Without the chain the result names, no chain is
@@ -525,12 +594,13 @@ def _md_interface(iface: dict | None) -> str:
                     ]
                     for r in pep_res
                 ],
+                for_html,
             )
         )
     return "\n".join(lines) + "\n"
 
 
-def _md_geometry(geo: dict | None) -> str:
+def _md_geometry(geo: dict | None, for_html: bool = False) -> str:
     lines = ["## Geometry\n"]
     if _is_skipped(geo):
         return lines[0] + "_Skipped._\n"
@@ -552,13 +622,12 @@ def _md_geometry(geo: dict | None) -> str:
                 ],
                 ["Residues evaluated", _fmt(rama.get("n_residues_evaluated"))],
             ],
+            for_html,
         )
     )
     for r in [r for r in (rama.get("per_residue") or []) if r.get("region") == "outlier"]:
-        lines.append(
-            f"\n⚠️ **Rama outlier:** {r['res_name']}{r['res_id']}{r.get('ins_code') or ''} "
-            f"(φ={r['phi']:.1f}°, ψ={r['psi']:.1f}°)"
-        )
+        residue = _text(f"{r['res_name']}{r['res_id']}{r.get('ins_code') or ''}", for_html)
+        lines.append(f"\n⚠️ **Rama outlier:** {residue} (φ={r['phi']:.1f}°, ψ={r['psi']:.1f}°)")
     lines.append("\n**Peptide-bond planarity (ω)**\n")
     lines.append(
         _md_table(
@@ -569,12 +638,13 @@ def _md_geometry(geo: dict | None) -> str:
                 ["Outlier fraction", _fmt(omega.get("omega_outlier_fraction"), 3)],
                 ["Outlier count", _fmt(omega.get("omega_outlier_count"))],
             ],
+            for_html,
         )
     )
     for r in [r for r in (omega.get("per_residue") or []) if r.get("is_outlier")]:
+        residue = _text(f"{r['res_name']}{r['res_id']}{r.get('ins_code') or ''}", for_html)
         lines.append(
-            f"\n⚠️ **ω outlier:** {r['res_name']}{r['res_id']}{r.get('ins_code') or ''} "
-            f"(ω={r['omega']:.1f}°, dev={r['deviation']:.1f}°)"
+            f"\n⚠️ **ω outlier:** {residue} (ω={r['omega']:.1f}°, dev={r['deviation']:.1f}°)"
         )
     sc = geo.get("shape_complementarity") or {}
     if sc:
@@ -589,12 +659,13 @@ def _md_geometry(geo: dict | None) -> str:
                     ["Surface dots (pep)", _fmt(sc.get("n_surface_dots_A"))],
                     ["Surface dots (rec)", _fmt(sc.get("n_surface_dots_B"))],
                 ],
+                for_html,
             )
         )
     return "\n".join(lines) + "\n"
 
 
-def _md_electrostatics(elec: dict | None) -> str:
+def _md_electrostatics(elec: dict | None, for_html: bool = False) -> str:
     lines = ["## Electrostatics\n"]
     if _is_skipped(elec):
         return lines[0] + "_Skipped._\n"
@@ -609,6 +680,7 @@ def _md_electrostatics(elec: dict | None) -> str:
                 ["Attractive", _fmt(elec.get("n_attractive")), ""],
                 ["Repulsive", _fmt(elec.get("n_repulsive")), ""],
             ],
+            for_html,
         )
     )
     return "\n".join(lines) + "\n"
@@ -645,7 +717,9 @@ def _templates_label(templates: dict) -> str:
     return ", ".join(parts)
 
 
-def _md_confidence_lines(section: dict, extra_rows: list[list[str]] | None = None) -> list[str]:
+def _md_confidence_lines(
+    section: dict, extra_rows: list[list[str]] | None = None, for_html: bool = False
+) -> list[str]:
     """The confidence table and the low-pLDDT warning shared by the OpenFold and prediction blocks.
 
     ``section`` is a ``compute_openfold_metrics`` or ``summarize_prediction`` dict; its
@@ -679,7 +753,7 @@ def _md_confidence_lines(section: dict, extra_rows: list[list[str]] | None = Non
     if _show_rmsd:
         rows.append(["Refolding RMSD", f"{_fmt(refold_rmsd, 2)} Å"])
     rows.extend(extra_rows or [])
-    lines = [_md_table(["Metric", "Value"], rows)]
+    lines = [_md_table(["Metric", "Value"], rows, for_html)]
     # per-residue low pLDDT warning
     plddt_per_res = section.get("binder_plddt_per_residue")
     if plddt_per_res is not None:
@@ -696,13 +770,13 @@ def _md_confidence_lines(section: dict, extra_rows: list[list[str]] | None = Non
     return lines
 
 
-def _md_openfold(of: dict | None) -> str:
+def _md_openfold(of: dict | None, for_html: bool = False) -> str:
     lines = ["## OpenFold\n"]
     if _is_skipped(of):
         return lines[0] + "_Skipped._\n"
     if not of:
         return lines[0] + "_Absent._\n"
-    lines.extend(_md_confidence_lines(of))
+    lines.extend(_md_confidence_lines(of, for_html=for_html))
     return "\n".join(lines) + "\n"
 
 
@@ -716,7 +790,7 @@ def _prediction_display_name(model: Any) -> str | None:
     return spec.display_name if spec is not None else str(model)
 
 
-def _md_prediction(pred: dict | None) -> str:
+def _md_prediction(pred: dict | None, for_html: bool = False) -> str:
     """The ``results["prediction"]`` block: the OpenFold table for any model, plus the extras.
 
     Below the table it shows the interface PAE, the EvoBind score and the adversarial COM
@@ -724,14 +798,16 @@ def _md_prediction(pred: dict | None) -> str:
     served the prediction (``cache``: runs, store hits, adopted outputs).
     """
     model_name = _prediction_display_name(pred.get("model")) if isinstance(pred, dict) else None
-    heading = "## Structure prediction" + (f" ({model_name})" if model_name else "")
+    heading = "## Structure prediction" + (
+        f" ({_text(model_name, for_html)})" if model_name else ""
+    )
     lines = [heading + "\n"]
     if _is_skipped(pred):
         return lines[0] + "_Skipped._\n"
     if not pred:
         return lines[0] + "_Absent._\n"
     if pred.get("error"):
-        return lines[0] + f"_Failed: {pred['error']}_\n"
+        return lines[0] + f"_Failed: {_text(pred['error'], for_html)}_\n"
 
     extra_rows = []
     for label, key, decimals, unit in (
@@ -742,27 +818,31 @@ def _md_prediction(pred: dict | None) -> str:
         value = pred.get(key)
         if value is not None and not _is_nonfinite(value):
             extra_rows.append([label, f"{_fmt(value, decimals)}{unit}"])
-    lines.extend(_md_confidence_lines(pred, extra_rows))
+    lines.extend(_md_confidence_lines(pred, extra_rows, for_html))
 
     if pred.get("reason"):
-        lines.append(f"\n_Not computed: {pred['reason']}_")
+        lines.append(f"\n_Not computed: {_text(pred['reason'], for_html)}_")
     cache = pred.get("cache")
     if isinstance(cache, dict) and "runs" in cache:
+        runs, hits, adopted = (
+            _text(cache.get(key, default), for_html)
+            for key, default in (("runs", None), ("hits", 0), ("adopted", 0))
+        )
         lines.append(
-            f"\n_Prediction store: {cache.get('runs')} run(s), {cache.get('hits', 0)} store "
-            f"hit(s), {cache.get('adopted', 0)} adopted output(s)._"
+            f"\n_Prediction store: {runs} run(s), {hits} store hit(s), "
+            f"{adopted} adopted output(s)._"
         )
     return "\n".join(lines) + "\n"
 
 
-def _md_dockq(dq: dict | None) -> str:
+def _md_dockq(dq: dict | None, for_html: bool = False) -> str:
     lines = ["## DockQ — reference-based CAPRI accuracy\n"]
     if _is_skipped(dq):
         return lines[0] + "_Skipped._\n"
     if not dq:
         return lines[0] + "_Absent._\n"
     if dq.get("error"):
-        return lines[0] + f"_Failed: {dq['error']}_\n"
+        return lines[0] + f"_Failed: {_text(dq['error'], for_html)}_\n"
     score = dq.get("dockq")
     cls = dq.get("capri_class")
     lines.append(
@@ -774,6 +854,7 @@ def _md_dockq(dq: dict | None) -> str:
                 ["Interfaces", _fmt(dq.get("n_interfaces"))],
                 ["Chain mapping", dq.get("best_mapping") or "—"],
             ],
+            for_html,
         )
     )
     ifaces = dq.get("interfaces") or []
@@ -804,12 +885,13 @@ def _md_dockq(dq: dict | None) -> str:
                     ]
                     for i in ifaces
                 ],
+                for_html,
             )
         )
     return "\n".join(lines) + "\n"
 
 
-def _md_scorecard(results: dict) -> str:
+def _md_scorecard(results: dict, for_html: bool = False) -> str:
     rows = []
     for spec in _THRESHOLDS:
         if "getter" in spec:
@@ -826,13 +908,18 @@ def _md_scorecard(results: dict) -> str:
             ]
         )
     lines = ["## Summary Scorecard\n"]
-    lines.append(_md_table(["", "Metric", "Value", "Unit", "Better"], rows))
+    lines.append(_md_table(["", "Metric", "Value", "Unit", "Better"], rows, for_html))
     lines.append("\n🟢 OK  🟡 AMBER  🔴 RED  ⬜ N/A")
     return "\n".join(lines) + "\n"
 
 
-def _build_html(results: dict) -> str:
-    """Convert the Markdown summary to a self-contained HTML page."""
+def _markdown_to_html(md_text: str) -> str:
+    """Render the Markdown summary; raw HTML in it is shown as text.
+
+    The summary builds its own markup and escapes result text (``for_html``). Dropping the
+    renderer's raw-HTML handling keeps a tag that reaches the text some other way from
+    becoming an element.
+    """
     try:
         import markdown as _md
     except ImportError as exc:  # pragma: no cover
@@ -840,10 +927,21 @@ def _build_html(results: dict) -> str:
             "HTML report requires the 'markdown' package: pip install 'binding-metrics[report]'"
         ) from exc
 
-    md_text = _build_summary(results)
-    body = _md.markdown(md_text, extensions=["tables", "nl2br"])
+    renderer = _md.Markdown(extensions=["tables", "nl2br"])
+    renderer.preprocessors.deregister("html_block")
+    renderer.inlinePatterns.deregister("html")
+    return renderer.convert(md_text)
 
-    sid = results.get("sample_id", "report")
+
+def _build_html(results: dict) -> str:
+    """Convert the Markdown summary to a self-contained HTML page.
+
+    Result text is escaped before the Markdown is rendered and in the title, so a model
+    error, a pre-flight reason or a sample ID with tags comes out as text.
+    """
+    body = _markdown_to_html(_build_summary(results, for_html=True))
+
+    sid = html.escape(str(results.get("sample_id", "report")), quote=True)
     css = """
         body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto;
                padding: 0 1rem; color: #1a1a1a; line-height: 1.5; }
@@ -867,25 +965,30 @@ def _build_html(results: dict) -> str:
     )
 
 
-def _build_summary(results: dict) -> str:
-    cyclic = _md_cyclic(results.get("relax"))
+def _build_summary(results: dict, for_html: bool = False) -> str:
+    """The Markdown summary of ``results``.
+
+    With ``for_html`` result text is escaped for the renderer of ``_build_html``; the default
+    keeps it as written, for the ``.md`` file.
+    """
+    cyclic = _md_cyclic(results.get("relax"), for_html)
     sections = [
-        _md_header(results),
-        *([_md_preflight(results["preflight"])] if "preflight" in results else []),
-        _md_relax(results.get("relax")),
+        _md_header(results, for_html),
+        *([_md_preflight(results["preflight"], for_html)] if "preflight" in results else []),
+        _md_relax(results.get("relax"), for_html),
         *([] if cyclic is None else [cyclic]),
-        _md_energy(results.get("energy")),
-        _md_interface(results.get("interface")),
-        _md_geometry(results.get("geometry")),
-        _md_electrostatics(results.get("electrostatics")),
+        _md_energy(results.get("energy"), for_html),
+        _md_interface(results.get("interface"), for_html),
+        _md_geometry(results.get("geometry"), for_html),
+        _md_electrostatics(results.get("electrostatics"), for_html),
     ]
     if "openfold" in results:
-        sections.append(_md_openfold(results["openfold"]))
+        sections.append(_md_openfold(results["openfold"], for_html))
     if "prediction" in results:
-        sections.append(_md_prediction(results["prediction"]))
+        sections.append(_md_prediction(results["prediction"], for_html))
     if "dockq" in results:
-        sections.append(_md_dockq(results["dockq"]))
-    sections.append(_md_scorecard(results))
+        sections.append(_md_dockq(results["dockq"], for_html))
+    sections.append(_md_scorecard(results, for_html))
     return "\n".join(sections)
 
 
