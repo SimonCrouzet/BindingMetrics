@@ -12,6 +12,7 @@ At d = 0.40 nm that is 0.4285 nm^2 (42.85 A^2). Shrake-Rupley with 960 points la
 """
 
 import math
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -160,3 +161,81 @@ class TestThePeptideProtocolReportsSquareAngstrom:
         mean, std = results.sasa_buried_mean, results.sasa_buried_std
         assert f"Buried SASA: {mean:.1f} +/- {std:.1f} A^2" in results.summary()
         assert 20.0 < mean < 25.0  # (42.85 + 23.37 + 0) / 3 = 22.1 A^2, not 0.22
+
+
+TRAJECTORY_FUNCTIONS = [
+    pytest.param(lambda *a, **k: calculate_buried_sasa(*a, **k), id="buried"),
+    pytest.param(lambda *a, **k: calculate_interface_sasa(*a, **k)["buried"], id="interface"),
+]
+
+
+class TestAnEmptySelection:
+    """An empty index list is reported, as ``calculate_rmsd`` and ``calculate_contacts`` do."""
+
+    @pytest.fixture
+    def system(self, tmp_path):
+        return make_system(tmp_path, DISTANCES_NM, solvent=True)
+
+    @pytest.mark.parametrize("compute", TRAJECTORY_FUNCTIONS)
+    @pytest.mark.parametrize(
+        ("ligand", "receptor", "named"),
+        [
+            pytest.param([], [0], "ligand_indices", id="no_ligand"),
+            pytest.param([1], [], "receptor_indices", id="no_receptor"),
+            pytest.param([], [], "ligand_indices and receptor_indices", id="neither"),
+        ],
+    )
+    def test_the_default_warns_and_keeps_the_zeros(self, system, compute, ligand, receptor, named):
+        dcd, pdb, _, _ = system
+
+        with pytest.warns(RuntimeWarning, match=f"{named} contain no atoms") as caught:
+            buried = compute(dcd, pdb, ligand, receptor)
+
+        np.testing.assert_array_equal(buried, np.zeros(len(DISTANCES_NM)))
+        assert caught[0].filename == __file__  # points at the caller, not at the package
+
+    @pytest.mark.parametrize("compute", TRAJECTORY_FUNCTIONS)
+    def test_raise_refuses_before_reading_the_trajectory(self, tmp_path, compute):
+        with pytest.raises(ValueError, match="ligand_indices contain no atoms"):
+            compute(tmp_path / "absent.dcd", tmp_path / "absent.pdb", [], [0], on_empty="raise")
+
+    @pytest.mark.parametrize("compute", TRAJECTORY_FUNCTIONS)
+    def test_an_unknown_mode_is_refused(self, system, compute):
+        dcd, pdb, _, _ = system
+
+        with pytest.raises(ValueError, match="on_empty must be one of"):
+            compute(dcd, pdb, [1], [0], on_empty="ignore")
+
+    @pytest.mark.parametrize("compute", TRAJECTORY_FUNCTIONS)
+    @pytest.mark.parametrize("on_empty", ["warn", "raise"])
+    def test_full_selections_give_the_same_values_and_no_warning(self, system, compute, on_empty):
+        dcd, pdb, receptor, ligand = system
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            buried = compute(dcd, pdb, ligand, receptor, on_empty=on_empty)
+
+        assert buried == pytest.approx(
+            [two_sphere_buried_nm2(d) for d in DISTANCES_NM], abs=CAP_TOLERANCE_NM2
+        )
+
+    def test_the_interface_terms_keep_their_zeros_and_values_when_the_ligand_is_empty(self, system):
+        dcd, pdb, receptor, _ = system
+
+        with pytest.warns(RuntimeWarning):
+            terms = calculate_interface_sasa(dcd, pdb, [], receptor)
+
+        np.testing.assert_array_equal(terms["ligand"], 0.0)
+        np.testing.assert_array_equal(terms["buried"], 0.0)
+        np.testing.assert_array_equal(terms["complex"], terms["receptor"])
+
+
+class TestOverlappingSelections:
+    """An atom in both lists would be counted twice in the buried area."""
+
+    @pytest.mark.parametrize("compute", TRAJECTORY_FUNCTIONS)
+    def test_the_shared_atoms_are_named(self, tmp_path, compute):
+        dcd, pdb, _, _ = make_system(tmp_path, DISTANCES_NM, solvent=True)
+
+        with pytest.raises(ValueError, match=r"share 1 atom.*\[1\]"):
+            compute(dcd, pdb, [1], [0, 1])

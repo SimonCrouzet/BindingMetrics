@@ -12,6 +12,7 @@ nm^2, the unit of mdtraj; the static function reports Å^2.
 """
 
 import logging
+import warnings
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -38,12 +39,56 @@ def _import_mdtraj():
     return mdtraj
 
 
+def _check_selections(
+    function_name: str,
+    ligand_indices: list[int],
+    receptor_indices: list[int],
+    on_empty: str,
+) -> None:
+    """Refuse overlapping index lists and report empty ones.
+
+    An atom in both lists would be counted in the ligand term and in the receptor term and
+    once in the complex, so the buried area would be wrong: that is an input error. An empty
+    list gives a buried area of zero, which means "nothing was evaluated" and not "nothing is
+    buried", so ``on_empty`` decides between a ``RuntimeWarning`` and a ``ValueError``. The
+    warning is attributed to the caller of the public function (``stacklevel=4``: this
+    function, ``_interface_sasa_nm2``, the public function, its caller).
+    """
+    from binding_metrics.metrics.rmsd import _check_on_empty
+
+    _check_on_empty(on_empty)
+    shared = sorted(set(ligand_indices) & set(receptor_indices))
+    if shared:
+        raise ValueError(
+            f"{function_name}: ligand_indices and receptor_indices share {len(shared)} "
+            f"atom(s), first {shared[:5]}; the selections must be disjoint"
+        )
+    empty = [
+        name
+        for name, indices in (
+            ("ligand_indices", ligand_indices),
+            ("receptor_indices", receptor_indices),
+        )
+        if len(indices) == 0
+    ]
+    if empty:
+        message = (
+            f"{function_name}: {' and '.join(empty)} contain no atoms; the buried area is "
+            "zero because nothing was evaluated"
+        )
+        if on_empty == "raise":
+            raise ValueError(message)
+        warnings.warn(message, RuntimeWarning, stacklevel=4)
+
+
 def _interface_sasa_nm2(
+    function_name: str,
     trajectory_path: str | Path,
     topology_path: str | Path,
     ligand_indices: list[int],
     receptor_indices: list[int],
     probe_radius: float,
+    on_empty: str,
 ) -> dict[str, np.ndarray]:
     """Per-frame SASA in nm^2 of the ligand, the receptor and their complex.
 
@@ -53,6 +98,7 @@ def _interface_sasa_nm2(
     negative (-186.6 nm^2 instead of +16.0 nm^2 for 1YCR in a 0.6 nm water box).
     """
     md = _import_mdtraj()
+    _check_selections(function_name, ligand_indices, receptor_indices, on_empty)
 
     traj = md.load(str(trajectory_path), top=str(topology_path))
 
@@ -78,6 +124,8 @@ def calculate_buried_sasa(
     ligand_indices: list[int],
     receptor_indices: list[int],
     probe_radius: float = 0.14,
+    *,
+    on_empty: Literal["warn", "raise"] = "warn",
 ) -> np.ndarray:
     """Calculate buried solvent accessible surface area upon binding.
 
@@ -94,6 +142,10 @@ def calculate_buried_sasa(
         ligand_indices: Atom indices of the ligand
         receptor_indices: Atom indices of the receptor
         probe_radius: Probe radius in nm (default 0.14 nm = 1.4 A)
+        on_empty: What to do when ``ligand_indices`` or ``receptor_indices`` is empty.
+            "warn" (default) emits a ``RuntimeWarning`` naming the empty selection and
+            returns zeros, which means "nothing evaluated" and not "nothing buried";
+            "raise" raises ``ValueError`` instead.
 
     Returns:
         Array of buried SASA values (in nm^2, not Angstrom^2: multiply by 100 for A^2)
@@ -101,9 +153,17 @@ def calculate_buried_sasa(
 
     Raises:
         ImportError: If mdtraj is not installed
+        ValueError: If the two index lists share an atom, if ``on_empty`` is not "warn"
+            or "raise", or is "raise" and a selection is empty.
     """
     return _interface_sasa_nm2(
-        trajectory_path, topology_path, ligand_indices, receptor_indices, probe_radius
+        "calculate_buried_sasa",
+        trajectory_path,
+        topology_path,
+        ligand_indices,
+        receptor_indices,
+        probe_radius,
+        on_empty,
     )["buried"]
 
 
@@ -113,6 +173,8 @@ def calculate_interface_sasa(
     ligand_indices: list[int],
     receptor_indices: list[int],
     probe_radius: float = 0.14,
+    *,
+    on_empty: Literal["warn", "raise"] = "warn",
 ) -> dict[str, np.ndarray]:
     """Calculate per-component SASA values at the interface.
 
@@ -124,6 +186,7 @@ def calculate_interface_sasa(
         ligand_indices: Atom indices of the ligand
         receptor_indices: Atom indices of the receptor
         probe_radius: Probe radius in nm
+        on_empty: As in ``calculate_buried_sasa``.
 
     Returns:
         Dictionary with per-frame SASA arrays of shape (n_frames,) in nm^2 (multiply
@@ -132,9 +195,16 @@ def calculate_interface_sasa(
 
     Raises:
         ImportError: If mdtraj is not installed
+        ValueError: As in ``calculate_buried_sasa``.
     """
     return _interface_sasa_nm2(
-        trajectory_path, topology_path, ligand_indices, receptor_indices, probe_radius
+        "calculate_interface_sasa",
+        trajectory_path,
+        topology_path,
+        ligand_indices,
+        receptor_indices,
+        probe_radius,
+        on_empty,
     )
 
 
