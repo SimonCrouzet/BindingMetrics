@@ -1,9 +1,8 @@
 """Adapter for the output of Protenix (``protenix pred``, ByteDance).
 
-Layout checked on 2026-09-30 by reading the Protenix source at commit 85767b8 (2026-09-21;
-``protenix/version.py`` says 2.0.0) and the format report of 2026-09-29. Nothing was run and no
-real output was parsed: every statement below comes from the writer code, cited as file:line at
-that commit. TO VERIFY: that the tag v2.0.0 writes the same layout, and one real run with
+Layout from the Protenix source at commit 85767b8 (2026-09-21; ``protenix/version.py`` says
+2.0.0) and the format report of 2026-09-29, cited as file:line at that commit. Not run: no real
+output was parsed. Not verified: that the tag v2.0.0 writes the same layout, and a real run with
 ``--need_atom_confidence true`` against this adapter.
 
     {prediction_dir}/{name}/seed_{S}/predictions/{name}_sample_{r}.cif
@@ -74,13 +73,12 @@ Model-specific values are in ``record.extras`` under the model's own key: ``chai
 ``chain_pair_gpde``, ``chain_pair_pae_mean``, ``chain_pair_pae_min``, ``num_recycles`` and,
 from the full-data file, ``token_asym_id``, ``token_has_frame`` and ``atom_to_token_idx``.
 
-Where the source does not settle a point the adapter refuses instead of guessing. TO VERIFY
-against real output: (1) that the atoms of the CIF follow the order of the arrays: the writer
-implies it, and ``record.validate(check_structure=True)`` checks the atom count,
-and :func:`token_layout` checks the chains;
-(2) the 0-1 scale of ``atom_plddt``, where a value above 1 raises; (3) the shape of every
-array, where another shape raises; (4) a chain list of another shape, which is left out and
-explained in ``record.reasons``.
+Where the source does not settle a point the adapter refuses instead of guessing. Not verified
+against real output: (1) that the atoms of the CIF follow the order of the arrays (the writer
+implies it; ``record.validate(check_structure=True)`` checks the atom count and
+:func:`token_layout` checks the chains); (2) the 0-1 scale of ``atom_plddt``, where a value above
+1 raises; (3) the shape of every array, where another shape raises; (4) a chain list of another
+shape, which is left out and explained in ``record.reasons``.
 
 The module imports numpy only; the structure file is not opened while parsing.
 """
@@ -398,19 +396,18 @@ class ProtenixParser(PredictionParser):
     display_name = "Protenix"
     family = "af3"
 
-    # The inputs Protenix 2.0.0 can be given, from its documentation (commit 85767b8, checked
-    # against the clone on 2026-09-30; tests/test_pre_protenix_limits.py re-reads it when the
-    # clone is at hand). No closure is refused: the documentation gives a head-to-tail amide bond
-    # and a disulfide as the supported cases and calls other polymer-polymer bonds "not reliably
-    # handled", a reliability statement, so they are warnings and the source takes any atom pair.
-    # Not declared because nothing shows it: a limit on the residue classes (modified residues go
-    # through a CCD code, D-amino acids and N-methyl are not mentioned), and the 2560-token limit
-    # of the model protenix-v2, which is a limit of the whole complex.
-    # Modes: none is declared. A score-lock is not refused: the `contact` and `pocket` constraints
-    # guide the interface and are documented as soft (docs/infer_json_format.md, section
-    # constraint), so score-lock is a caveat. Templates only come through `templatesPath` (a3m
-    # or hhr alignments, section protein), so a structure cannot be given as a template: whether
-    # refold and score exist is not shown and nothing is declared for them.
+    # Limits of Protenix 2.0.0, from its documentation (commit 85767b8;
+    # tests/test_pre_protenix_limits.py re-reads the clone when it is at hand).
+    # Closures: none is refused. The documentation gives a head-to-tail amide bond and a disulfide
+    # as the supported cases and calls other polymer-polymer bonds "not reliably handled", a
+    # reliability statement, so they are warnings, and the source takes any atom pair. No limit
+    # is declared on the residue classes (modified residues go through a CCD code) or on the
+    # complex size (the 2560-token limit of the model protenix-v2 applies to the whole complex).
+    # Modes: none is declared. The `contact` and `pocket` constraints guide the interface and are
+    # documented as soft (docs/infer_json_format.md, section constraint), so score-lock is a
+    # caveat, not a refusal. Templates only come through `templatesPath` (a3m or hhr alignments,
+    # section protein), so a structure cannot be given as a template; whether refold and score
+    # exist is not shown, and nothing is declared for them.
     capabilities = Capabilities(
         caveats={
             "modes:score-lock": (
