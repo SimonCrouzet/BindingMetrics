@@ -2,9 +2,8 @@
 
 ``Boltz2Runner`` builds the Boltz-2 YAML input and the template CIFs from a complex structure,
 starts ``boltz predict`` in the current environment or in a conda environment, and leaves the
-output where ``binding_metrics.predictors.boltz2.Boltz2Parser`` reads it. It is the Boltz-2
-counterpart of ``OpenFold3Runner``: the same request, the same store layout, the same failure
-reporting.
+output where ``binding_metrics.predictors.boltz2.Boltz2Parser`` reads it. It takes the same
+request, uses the same store layout and reports failures like ``OpenFold3Runner``.
 
 Public names and signatures (the module imports the standard library, the runner ABC and the
 request; gemmi is imported when an input is built, the OpenFold3 residue reader when a chain
@@ -40,67 +39,65 @@ is read)::
 Modes. ``input_path`` is the complex structure (PDB or mmCIF); ``binder_chain`` and
 ``receptor_chain`` are required in every mode. The YAML has one protein entity per chain, with
 the chain IDs of the input, the sequence and the modified residues that
-``metrics._openfold_run._extract_query_chain`` reads (the same chain reader as the OpenFold3
-runner), and these templates:
+``metrics._openfold_run._extract_query_chain`` reads (the chain reader of the OpenFold3 runner),
+and these templates:
 
 * ``predict``: no ``templates`` block; the model sees the sequences only.
 * ``refold``: the receptor is templated from ``receptor.cif`` (the receptor chain of the input);
   the binder is free.
 * ``score``: each chain is templated from its own single-chain CIF (``receptor.cif``,
   ``binder.cif``), unforced. A template row gives the fold of its chain only; the model places
-  the chains against each other itself.
+  the chains against each other.
 * ``score-lock``: one ``lock.cif`` holds both chains in the frame of the input and is listed for
   both chains with ``force: true`` and a ``threshold``. Boltz-2 keeps both chains in one
-  template row and the forced template pulls the prediction back to within the threshold of the
+  template row, and the forced template guides the prediction to within the threshold of the
   input after a rigid alignment over the templated residues. It is a guidance term of weight
   0.1, not a hard constraint, so the pose can still move.
 * ``refold-lock``: ``receptor.cif`` holds the receptor chain alone and is listed for it with
   ``force: true`` and a ``threshold``; the binder has no template and is free. It is ``refold``
-  with the receptor pinned to the input by the same guidance term as ``score-lock``, so the
-  receptor can still move by about the threshold and the binder is placed by the model.
+  with the receptor guided to the input by the same term as ``score-lock``.
 
 Any other mode raises ``ValueError``.
 
-The threshold. Boltz-2 requires ``threshold`` when ``force`` is true and documents no default,
-so ``lock_threshold_angstrom`` defaults to 2.0 here: that is this package's choice, not
-Boltz-2's. It is an option of the request (``options["lock_threshold_angstrom"]``, None outside
-the lock modes ``score-lock`` and ``refold-lock``) and so part of the key. It is the upper bound,
-in angstrom, on the distance of a residue's representative atom (CB, CA for glycine) from the
-aligned template before the guidance term acts; a smaller value pins the pose harder.
+Threshold. Boltz-2 requires ``threshold`` when ``force`` is true and documents no default, so
+``lock_threshold_angstrom`` defaults to 2.0 here (this package's choice). It is an option of the
+request (``options["lock_threshold_angstrom"]``, None outside the lock modes ``score-lock`` and
+``refold-lock``) and so part of the key. It is the upper bound, in angstrom, on the distance of
+a residue's representative atom (CB, CA for glycine) from the aligned template before the
+guidance term acts; a smaller value holds the pose closer.
 
-Residues. Standard residues and their protonation variants are plain letters; D-amino acids,
+Residues. Standard residues and their protonation variants are plain letters. D-amino acids,
 N-methylated and other peptide-linking Chemical Component Dictionary residues keep their
 chemistry through ``modifications`` (position and CCD code), with the letter of the parent
-residue; selenocysteine is sent as ``C`` with ``SEC``, because Boltz-2 reads the letter ``U`` as
-an unknown residue. A residue that cannot be expressed raises ``ValueError`` naming the chain and
-the residues before any file is written, unless ``on_unmappable_residue="x"`` sends an unknown
-residue (``X``) in its place and logs a warning. Waters, ions, ligands and terminal caps are not
-sent. Chains with one sequence become one Boltz-2 entity, which keeps the modifications and the
-cyclic flag of the first of them, so such chains that differ in either raise ``ValueError``.
+residue. Selenocysteine is sent as ``C`` with ``SEC``, because Boltz-2 reads the letter ``U`` as
+an unknown residue. A residue that cannot be expressed raises ``ValueError`` naming the chain
+and the residues before any file is written, unless ``on_unmappable_residue="x"`` sends an
+unknown residue (``X``) in its place and logs a warning. Waters, ions, ligands and terminal caps
+are not sent. Chains with one sequence become one Boltz-2 entity, which keeps the modifications
+and the cyclic flag of the first of them, so such chains that differ in either raise
+``ValueError``.
 
-Template CIFs. Boltz-2 aligns the template sequence to the query sequence letter by letter, and
-reads a modified residue of a template as ``X``, so the chain ``ALLVTAGLVLA`` of cyclosporin
-would match its own template over a few residues only. The template CIF therefore names every
-residue by its parent (``MLE`` becomes ``LEU``, ``DAL`` becomes ``ALA``, an unknown parent
-becomes ``UNK``), as the OpenFold3 template carries the canonical sequence in ``_entity_poly``.
-The coordinates are those of the input; hydrogens are dropped. The chain names of a template
-are its ``label_asym_id`` values (``Subchain.subchain_id`` in Boltz-2's reader), which are set to
+Template CIFs. Boltz-2 aligns the template sequence to the query sequence letter by letter and
+reads a modified residue of a template as ``X``. The template CIF therefore names every residue
+by its parent (``MLE`` becomes ``LEU``, ``DAL`` becomes ``ALA``, an unknown parent becomes
+``UNK``). The coordinates are those of the input; hydrogens are dropped. The chain names of a
+template are its ``label_asym_id`` values (``Subchain.subchain_id`` in Boltz-2's reader), set to
 the chain IDs of the input.
 
 Stored input. The YAML lists each template CIF by an absolute path below the ``work_dir`` of the
 run. ``PredictionStore`` runs in a temporary directory (``<key>.tmp-<pid>-<random>``) and renames
-it when it keeps the run, so the YAML of a stored entry (``outputs/input/<name>.yaml``) names the
-temporary path, which no longer exists, while the CIFs are in the entry
-(``outputs/input/templates/``). That is by design. The path is not part of the key, and a relative
-path would not be simpler: Boltz-2 opens ``cif`` as written (``schema.py:1611-1672``, relative to
-its working directory, not to the YAML). A stored YAML records what was run; it cannot be given to
-``boltz predict`` as it stands, and ``prepare`` writes a fresh one.
+it when it keeps the run, so the YAML of a stored entry (``outputs/input/<name>.yaml``) names a
+path that no longer exists, while the CIFs are in ``outputs/input/templates/``. The path is not
+part of the key. Boltz-2 opens ``cif`` as written, relative to its working directory and not to
+the YAML (``schema.py:1611-1672``), so a relative path would not help. A stored YAML records
+what was run and cannot be given to ``boltz predict`` as it stands; ``prepare`` writes a fresh
+one.
 
-Cyclic binder. ``binder_cyclic`` is ``"auto"``, True or False, with the meaning it has for
-OpenFold3: True writes ``cyclic: true`` on the binder entity, False never does, ``"auto"``
-writes it when the binder has a head-to-tail bond (``capabilities.detect_closures``). Boltz-2
-turns the flag into a cyclic period of the chain length for the relative positions; it does not
-enforce the closure bond. ``closure_bonds`` (below) writes the bonds themselves.
+Cyclic binder. ``binder_cyclic`` is ``"auto"``, True or False, as for OpenFold3: True writes
+``cyclic: true`` on the binder entity, False never does, ``"auto"`` writes it when the binder
+has a head-to-tail bond (``capabilities.detect_closures``). Boltz-2 turns the flag into a cyclic
+period of the chain length for the relative positions and does not enforce the closure bond.
+``closure_bonds`` writes the bonds.
 
 Closure bonds. ``closure_bonds`` is ``"none"`` (default), ``"auto"`` or a list of bonds, and is
 written as the ``constraints`` of the YAML::
@@ -113,20 +110,21 @@ written as the ``constraints`` of the YAML::
 ``"auto"`` writes one ``bond`` for each closure that ``capabilities.detect_closures`` finds on
 the binder of the input, of the families ``head_to_tail`` (C of the last residue to N of the
 first), ``disulfide`` (SG to SG) and ``lactam`` (the amide of a side chain or of a terminus).
-A staple or another cross-link is not written and a warning names it: Boltz-2 documents the
-constraint for CCD ligands and canonical residues only. The position of a closure end is found
-by ``predictors/_closures.py``, the mapping that the Protenix runner uses, so a modified residue
-in the chain does not shift it, and a closure that cannot be placed raises ``ValueError`` before
-any file is written. A list is written as given, each item ``{"atom1": [chain, position, atom],
-"atom2": [...]}``; a shape error or a chain or position the input lacks raises ``ValueError``.
+A staple or another cross-link is not written and a warning names it, because Boltz-2
+documents the constraint for CCD ligands and canonical residues only. The position of a closure
+end is found by ``predictors/_closures.py``, the mapping that the Protenix runner uses, so a
+modified residue in the chain does not shift it; a closure that cannot be placed raises
+``ValueError`` before any file is written. A list is written as given, each item
+``{"atom1": [chain, position, atom], "atom2": [...]}``; a shape error or a chain or position
+the input lacks raises ``ValueError``.
+
 A bond is an input feature of the trunk (``token_bonds``, ``boltz2.py:426``). Boltz-2 reads a
-bond between the first and the last residue of a chain as a cyclic period too, but it compares
-the residue indices of the whole structure with 0 (``featurizerv2.py:1027-1050``), so only for the
-first chain of the YAML; the receptor comes first here, and the period of the binder comes from
-``cyclic: true``. ``ConnectionsPotential`` skips a bond inside one chain (``featurizerv2.py:2023``),
-so the source shows nothing that holds the distance of a disulfide or a lactam. Whether the
-feature moves the prediction is a measurement and not a promise. ``"none"`` keeps the YAML and
-the key as they were.
+bond between the first and the last residue of a chain as a cyclic period too, but only for the
+first chain of the YAML (``featurizerv2.py:1027-1050``); the receptor comes first here, and the
+period of the binder comes from ``cyclic: true``. ``ConnectionsPotential`` skips a bond inside
+one chain (``featurizerv2.py:2023``), so nothing in the source holds the distance of a disulfide
+or a lactam.
+
 ``options["closure_bonds"]`` holds the list that is written (an ``"auto"`` request is resolved
 when the request is made) and is absent when that list is empty, so two requests that write the
 same bonds share a key and a request without the option keeps its key.
@@ -140,8 +138,7 @@ request without it keeps its key, and a stored entry made without it is not a hi
 that asks for the embeddings.
 
 MSA. ``use_msa_server`` (default True) passes ``--use_msa_server``: the sequences are sent to the
-ColabFold server. False writes ``msa: empty`` on each entity, the single-sequence mode of the
-documentation, which Boltz-2 itself calls suboptimal.
+ColabFold server. False writes ``msa: empty`` on each entity (single-sequence mode).
 
 Receptor MSA and the policy that forbids the server. ``receptor_msa`` is the path of the
 receptor's alignment (``.a3m`` or ``.csv``, the two formats Boltz-2 reads; the first sequence is
@@ -149,20 +146,22 @@ the query and must be the receptor sequence sent) or the word ``"single"``; ``ms
 ``"default"`` or ``"forbid-server"`` (``binding_metrics.predictors._msa`` holds the rules, shared
 with the other runners). A file is copied to ``<work_dir>/input/msa/receptor.<ext>`` and the YAML
 gives that copy to the receptor entity (``msa: "<path>"``). The binder entity is written
-``msa: "empty"`` whenever the receptor has a file or ``"single"``: Boltz-2 refuses a custom MSA
-next to an automatic one in one input (``schema.py:1311``), and an alignment of 4 to 12 residues
-is of no use. Boltz-2 reads chains with one sequence as one entity with one MSA
-(``schema.py:1118``), so a receptor and a binder with the same sequence are refused when a file is
-given. Under ``forbid-server`` ``use_msa_server`` must be False, the receptor needs a file or
+``msa: "empty"`` whenever the receptor has a file or ``"single"``, because Boltz-2 refuses a
+custom MSA next to an automatic one in one input (``schema.py:1311``). Boltz-2 reads chains with
+one sequence as one entity with one MSA (``schema.py:1118``), so a receptor and a binder with the
+same sequence are refused when a file is given.
+
+Under ``forbid-server`` ``use_msa_server`` must be False, the receptor needs a file or
 ``"single"``, and the command never carries ``--use_msa_server``: ``prepare`` and ``run`` check
 the request again (a request built by hand) and refuse the command line they built if it holds a
 server flag, before a file is written or a process starts. Boltz-2 raises "Missing MSA's in
 input and --use_msa_server flag not set" for an entity without an ``msa`` when the flag is
-absent (``main.py:581``), so no entity can reach the server without it. The key:
-``options["msa_policy"]`` only when it is ``"forbid-server"``, ``options["receptor_msa"] =
+absent (``main.py:581``), so no entity can reach the server without it.
+
+Key. ``options["msa_policy"]`` only when it is ``"forbid-server"``, ``options["receptor_msa"] =
 "single"`` only when asked, ``extra_files["receptor_msa"]`` (hashed by content, not by path) only
 when a file is given; a request without these keeps its key. With a file and
-``use_msa_server=True`` (default policy) the flag is on the command but moot: every entity has an
+``use_msa_server=True`` (default policy) the flag is on the command but every entity has an
 ``msa``, so nothing is generated.
 
 Seeds and samples. ``boltz predict`` takes one ``--seed`` and writes no seed dimension, which
@@ -181,8 +180,8 @@ would be without the field.
 
 Environment. Boltz-2's cache is ``~/.boltz`` or ``$BOLTZ_CACHE``; it holds the weights and the
 Chemical Component Dictionary and is downloaded on first use (network). Boltz-2 prints some of
-its failures and exits with status 0 (see below), and takes the model's messages on stdout and
-stderr: both are echoed to stderr and the last 8000 characters are kept for the reason.
+its failures and exits with status 0 (see Failures) and writes messages to stdout and stderr:
+both are echoed to stderr and the last 8000 characters are kept for the reason.
 
 Version. ``version()`` and ``is_available()`` describe the same installation, the ``boltz`` that
 ``run`` starts. Without ``conda_env`` the version is read by the interpreter named on the first
@@ -190,122 +189,37 @@ line of the ``boltz`` script that ``PATH`` finds (``pip``, ``pipx`` and ``conda`
 line), so a ``boltz`` in an environment other than the one that runs this package has its
 version in the request key. The version is None, and the key holds an empty version, when
 ``boltz`` is not on PATH, when the script is not Python (a shell wrapper names no interpreter)
-or when the interpreter has no ``boltz`` distribution (the package metadata is read, as for
-OpenFold3; the package is not imported). With ``conda_env`` the interpreter is
-``conda run -n ENV python``.
+or when the interpreter has no ``boltz`` distribution (the package metadata is read; the package
+is not imported). With ``conda_env`` the interpreter is ``conda run -n ENV python``.
 
 Failures. A non-zero exit raises ``Boltz2RunError`` (a ``CalledProcessError`` whose text starts
 with the reason, advice for the failures that have a known fix, the last lines of output and the
 command). ``boltz predict`` catches an exception in the preparation of an input (a YAML or a
 template it cannot read) and in a batch that runs out of memory, prints a message and exits with
-status 0 without writing a prediction; ``run`` raises ``RuntimeError`` with that message then,
+status 0 without writing a prediction; ``run`` then raises ``RuntimeError`` with that message,
 so that an empty result is never stored as done.
 
-What rests on reading the source. Boltz-2 v2.2.1 (tag ``v2.2.1``, ``pyproject.toml`` 2.2.1;
-https://github.com/jwohlwend/boltz) was read on 2026-10-01: ``docs/prediction.md`` (YAML
-schema, ``msa: empty``, ``modifications``, ``templates`` with ``chain_id``, ``template_id``,
-``force`` and ``threshold``), ``src/boltz/main.py`` (every flag above and the layout
-``<out_dir>/boltz_results_<input stem>/predictions/<input stem>/``; ``process_input`` catches
-every exception of the preparation, ``main.py:657``), ``src/boltz/data/parse/schema.py`` (entities
-are grouped by type and sequence, ``schema.py:1037``; modifications replace the residue by its
-CCD code, ``schema.py:1169``; ``threshold`` is required with ``force``, ``schema.py:1698``; the
-letter ``U`` is an unknown residue, ``data/const.py:166``), ``src/boltz/data/parse/mmcif.py``
-(template chain names, ``mmcif.py:886``), ``src/boltz/data/feature/featurizerv2.py`` (a template
-row per template file, ``featurizerv2.py:1784``), ``src/boltz/model/potentials/potentials.py``
-(``TemplateReferencePotential`` is on by default through ``contact_guidance_update``, which
-``BoltzSteeringParams`` sets to True at ``main.py:156`` and ``use_potentials`` does not touch:
-``potentials.py:755-786``), ``src/boltz/model/models/boltz2.py`` (a batch that runs out of memory
-is skipped with a printed warning, ``boltz2.py:1125``, and the writer then writes nothing,
-``writer.py:60``) and ``src/boltz/data/write/writer.py`` (the files).
-``--write_full_pae`` and ``--write_full_pde`` are read by ``boltz1.py`` only: ``boltz2.py`` adds
-the PDE to every prediction and the PAE when the PAE head is on, whatever the flags
-(``boltz2.py:1083-1101``), so the flags are passed for the documentation's sake and a later
-version that reads them.
+Source. Boltz-2 v2.2.1 (tag ``v2.2.1``; https://github.com/jwohlwend/boltz): ``docs/prediction.md``
+(YAML schema, ``msa: empty``, ``modifications``, ``templates``), ``src/boltz/main.py`` (the
+flags above and the layout ``<out_dir>/boltz_results_<input stem>/predictions/<input stem>/``;
+``process_input`` catches every exception of the preparation, ``main.py:657``),
+``data/parse/schema.py`` (``threshold`` is required with ``force``, ``schema.py:1698``; the
+letter ``U`` is an unknown residue, ``data/const.py:166``) and
+``model/potentials/potentials.py`` (``TemplateReferencePotential`` is on by default through
+``contact_guidance_update``, set to True at ``main.py:156``; ``potentials.py:755-786``).
+A batch that runs out of memory is skipped with a printed warning (``boltz2.py:1125``) and the
+writer then writes nothing (``writer.py:60``). ``--write_full_pae`` and ``--write_full_pde`` are
+read by ``boltz1.py`` only: ``boltz2.py`` adds the PDE to every prediction and the PAE when the
+PAE head is on, whatever the flags (``boltz2.py:1083-1101``).
 
-What was run. On 2026-10-01 the runner was run against the real model once, on one machine: the
-v2.2.1 source tree on the interpreter of a conda environment that has Boltz-2's dependencies, the
-``boltz2_conf.ckpt`` of its cache, an 8 GB GPU, ``use_msa_server=False`` (``msa: empty``),
-``extra_args=["--no_kernels"]`` and two samples, through ``PredictionStore``, ``PredictionSession``
-and ``Boltz2Parser``. Modes ``predict``, ``refold``, ``score`` and ``score-lock`` ran on 1YCR, and
-``score-lock`` on 1CWA (a cyclic binder with nine modified residues). Boltz-2 accepted every YAML
-and template, wrote the layout above, and the parser read it without a reason: 98 tokens for 1YCR
-and 176 for 1CWA (a modified residue is one token), PAE and PDE of that size, the structure files
-with ``auth_asym_id`` and ``auth_seq_id``. A first run failed in Boltz-2's cuequivariance kernels
-(an import error of the installed ``cuequivariance_ops_torch``): its text and the advice about
-``--no_kernels`` are what ``Boltz2RunError`` produced. The YAML and the templates of every mode
-were also read by Boltz-2's own ``parse_yaml`` (CPU) for 1YCR and 1CWA.
-
-What was not run on 2026-10-01: ``use_msa_server=True`` (network), a conda environment,
-``weights``, any version other than 2.2.1, and a run that exits with status 0 without output (the
-swallowed preparation error and the batch skipped for memory rest on the source and on the stub of
-the tests).
-
-What was measured about the modes. A second set of runs moved the binder of 1YCR as a rigid body
-(receptor fixed; 3, 6 and 10 A away from the pocket, and a 30 degree tilt or roll with 4 A of
-translation) and ran each pose as the input, with seeds 42 to 44, one diffusion sample and
-single-sequence mode. ``score`` returned the same structure for every pose of the binder
-(identical coordinates for five decoys). ``score-lock`` kept the prediction within about the
-threshold of the supplied pose and not on it: the representative atom of every templated residue
-ended within 2.06 A of the input after a rigid alignment in 18 of 18 runs (threshold 2.0 A), so
-the binder C-alpha RMSD to the input pose was 1.8 to 2.3 A (means over the seeds) for decoys 3 to
-10 A out. A lower threshold held the pose tighter (one seed each), and the same two-chain
-template without ``force`` did not carry the pose (one seed, three decoys). This is one complex
-that Boltz-2 very likely saw in training and three seeds: nothing follows for a design, another
-complex or another version. The table is in ``docs/metrics.md``, "Observed behaviour".
-
-What was measured about the bonds and the embeddings. On 2026-10-13, Boltz-2 v2.2.1 on one
-machine, mode ``predict`` (sequences only), single sequence, ``--no_kernels``, one diffusion sample,
-seeds 42 to 44, through the store and the adapter. Boltz-2's own ``parse_yaml`` (CPU) accepted the
-block for 3P8F chain I, 1CWA chain C and 1XY4 chain A and put each bond on the intended residues
-and atoms. Distance of the closure atoms in the prediction, without the bond constraint -> with
-``closure_bonds="auto"`` (mean of three seeds, angstrom; the value in the input structure in
-brackets):
-
-* 3P8F chain I with ``cyclic: true`` (what ``binder_cyclic="auto"`` writes for a ring): SG-SG
-  2.03 -> 1.90 (2.04), head-to-tail C-N 1.33 -> 1.33 (1.44). 1CWA chain C: C-N 1.30 -> 1.30
-  (1.33). Both closed without the bond already.
-* Without ``cyclic: true`` (``binder_cyclic=False``), so that the bond is the only closure: C-N
-  6.68 -> 1.77 on 3P8F (6.3 to 7.0 without), 7.78 -> 1.40 on 1CWA (6.0 to 9.3 without).
-* 1XY4 (disulfide and lactam; a chain of 1YCR added as receptor, no template): lactam NZ-CD 5.09
-  (3.5 to 6.2) -> 2.15 (1.9 to 2.4; the input has 1.89, an amide bond is 1.33), SG-SG 2.03 -> 1.81.
-* Sequences the model cannot have seen, the same atoms in a made-up input: SFTI-1 with nine
-  residues replaced (disulfide and ring) without ``cyclic: true``: SG-SG 13.4 -> 1.75, C-N 20.7 ->
-  1.37, binder pLDDT 82 -> 57; a p53 peptide with two cysteines (explicit bond, no ring):
-  SG-SG 18.1 -> 1.84, ipTM 0.92 -> 0.78 (0.57 to 0.92), binder pLDDT 90 -> 61. One seed gave
-  SG-SG 1.46, shorter than a disulfide.
-
-So the constraint moved a closure that the model did not make by itself in every run (12 of 12
-for the disulfide and the ring, 3 of 3 for the lactam, which came within 1.9 to 2.4 and not to
-the bond length) and changed little where it already did (a 0.1 to 0.2 shorter SG-SG); it can
-over-close, and the confidence of the prediction falls with it. Three complexes that the model has
-very probably seen, two made-up sequences, three seeds each: no accuracy of the model is claimed.
-With ``write_embeddings=True`` on 1YCR (98 tokens) the run wrote ``embeddings_<name>.npz`` with
-``s`` of shape (1, 98, 384) and ``z`` of shape (1, 98, 98, 128), float32, 4.6 MB compressed;
-the run without the flag wrote no such file, and both runs gave the same ipTM (0.943).
-
-What was measured about ``refold-lock`` and the given MSA. On 2026-10-13, Boltz-2 v2.2.1 on one
-machine, one diffusion sample, seeds 42 to 44, ``--no_kernels``, through the store and the adapter.
-Boltz-2's own ``parse_yaml`` (CPU) read the YAML of ``refold-lock`` as one template record on the
-receptor chain, forced, with the threshold, and none on the binder. On 1YCR in single-sequence
-mode (receptor Cα RMSD to the input; largest deviation of a templated residue's representative atom
-after one rigid alignment, Boltz-2's own guided quantity; binder Cα RMSD to the crystal peptide
-after superposing the receptor; ipTM; mean over three seeds, angstrom): unforced ``refold`` 0.48,
-3.90, 1.81, 0.952; ``refold-lock`` at 0.5 A 0.39, 0.49, 1.80, 0.954; at 1.0 A 0.44, 0.99, 1.85,
-0.953; at 2.0 A 0.46, 1.98, 1.86, 0.951. The largest deviation ended at the threshold in 9 of 9
-runs (one residue, the C-terminal one, moves 3.9 A unforced); the typical residue moves little in
-all cells (mean deviation 0.53 unforced, 0.33 to 0.50 locked); the binder, which has no template,
-is where the unforced run puts it (1.8 A from the crystal peptide, 2.0 A for ``predict``) and ipTM
-does not change beyond the seed spread. The term is flat inside the threshold: on 1CWA (a ring with
-nine modified residues) at 2.0 A the output was identical to the unforced run, because the
-receptor was within 0.90 A of the input, and at 0.5 A the largest deviation went from 0.90 to 0.49 A
-with nothing else changed. The threshold stays 2.0 A: no cost showed at 0.5 or 1.0 A either.
-With a receptor alignment of the public MDM2 sequence (1633 sequences, from the ColabFold server
-once) under ``msa_policy="forbid-server"`` in a network namespace without an interface, three
-seeds ran and no log mentions a server; a control with the server on failed in the server call.
-ipTM was 0.969 (0.965 to 0.972) with the given alignment, 0.969 (0.964 to 0.974) with the server
-for both entities, and 0.948 (0.943 to 0.954) in single-sequence mode. One public complex that the
-model very probably saw in training: nothing here says how the lock behaves for a designed receptor
-that the model does not already reproduce.
+Status. Run with Boltz-2 v2.2.1 (``boltz2_conf.ckpt``, one GPU, single-sequence mode,
+``--no_kernels``) through ``PredictionStore``, ``PredictionSession`` and ``Boltz2Parser``: modes
+``predict``, ``refold``, ``score`` and ``score-lock`` on 1YCR, ``score-lock`` on 1CWA,
+``refold-lock`` on 1YCR and 1CWA, ``closure_bonds="auto"`` on 3P8F, 1CWA and 1XY4,
+``write_embeddings`` on 1YCR, and a given receptor MSA under ``forbid-server`` on 1YCR. Boltz-2's
+own ``parse_yaml`` read the YAML and templates of every mode. Not run: ``use_msa_server=True``
+(network), a conda environment, ``weights``, a version other than 2.2.1. A run that exits with
+status 0 without output is covered by the stub tests only.
 
 Boltz-2 licence: MIT; no weights or model code are read or shipped here.
 """
