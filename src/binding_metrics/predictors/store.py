@@ -1,4 +1,4 @@
-"""The run-once store of model predictions (design addendum G1).
+"""The run-once store of model predictions.
 
 One prediction feeds several consumers (the confidence scalars, the interface PAE and PDE, the
 EvoBind score, the adversarial check). The store makes each model run happen at most once for one
