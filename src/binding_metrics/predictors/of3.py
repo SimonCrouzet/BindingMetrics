@@ -365,18 +365,10 @@ class OpenFold3Parser(PredictionParser):
                 "the number of tokens of the chain, and OpenFold3 makes a modified residue one "
                 "token per heavy atom (tokenize_atom_array in openfold3/core/data/primitives/"
                 "structure/tokenization.py), so the offsets between the tokens of one modified "
-                "residue change from 0 to wrapped values (checked on that function with a toy "
-                "chain). Runs of OpenFold3 0.5.0 without an MSA gave one example of each case, "
-                "not a benchmark: for the standard-residue binder of SFTI-1 (3P8F, one seed) the "
-                "flag closed the ring (C-N 1.38 A with it, 7.40 A without); for the cyclosporin of "
-                "1CWA, which has nine modified residues (three seeds), the ring was closed without "
-                "the flag (C-N 1.0-1.3 A) and the prediction was worse with it (ipTM 0.78-0.81 "
-                "against 0.91-0.92, binder RMSD against the input 3.0-4.8 A against 0.5-0.7 A). "
-                "The change of the offsets may be the reason; no ablation of the model was done, "
-                "so the cause is not established. The query builders of this package therefore "
-                'write the flag with binder_cyclic="auto" (the default) only for a binder of '
-                "standard residues that is closed head to tail (a protonation or cross-link "
-                "variant counts as standard), when OpenFold3 is 0.4.5 or later; "
+                "residue change from 0 to wrapped values. The query builders of this package "
+                'therefore write the flag with binder_cyclic="auto" (the default) only for a '
+                "binder of standard residues that is closed head to tail (a protonation or "
+                "cross-link variant counts as standard), when OpenFold3 is 0.4.5 or later; "
                 "binder_cyclic=True (`--openfold-cyclic on`) writes it for any binder and "
                 "binder_cyclic=False (`--openfold-cyclic off`) never does."
             ),

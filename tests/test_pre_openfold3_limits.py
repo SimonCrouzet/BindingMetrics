@@ -119,21 +119,13 @@ class TestClosures:
         assert "folded as a linear chain" not in warning
         assert "do not write" not in warning
 
-    def test_the_warning_gives_what_the_runs_showed_as_one_example_per_case(self):
+    def test_the_warning_gives_the_mechanism_and_its_sources(self):
         (warning,) = [w for w in preflight(_profile("1CWA"), [], "of3").warnings if "cyclic" in w]
-        # the sources of the mechanism
         for cited in ("relpos.py", "cyclic_offset", "tokenize_atom_array", "tokenization.py"):
             assert cited in warning
         assert "one token per heavy atom" in warning
-        # the measurements, and that they are examples (OpenFold3 0.5.0, no MSA)
-        assert "one example of each case, not a benchmark" in warning
-        assert "C-N 1.38 A with it, 7.40 A without" in warning
-        assert "(3P8F, one seed)" in warning and "(three seeds)" in warning
-        assert "ipTM 0.78-0.81 against 0.91-0.92" in warning
-        assert "3.0-4.8 A against 0.5-0.7 A" in warning
-        # what they do not show
-        assert "no ablation of the model was done" in warning
-        assert "the cause is not established" in warning
+        assert "change from 0 to wrapped values" in warning
+        assert "ipTM" not in warning and "RMSD" not in warning
 
     def test_the_warning_says_which_binders_get_the_flag_by_default(self):
         (warning,) = [w for w in preflight(_profile("1CWA"), [], "of3").warnings if "cyclic" in w]
