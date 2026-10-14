@@ -1,11 +1,11 @@
 """The structure-prediction step of ``binding-metrics-run`` and ``binding-metrics-batch``.
 
-With ``--predictor MODEL`` the step of the pipeline that ``--metrics openfold`` names does not
-call OpenFold3 directly. It builds one ``PredictionSession`` per sample on a ``PredictionStore``,
-so a model runs at most once for all the metrics that read its output (the confidence scalars,
-the interface PAE and PDE, the EvoBind score and the adversarial check), and writes
-``results["prediction"]``. Without ``--predictor`` nothing here runs and the OpenFold step keeps
-its own code path and ``results["openfold"]``.
+With ``--predictor MODEL`` the step that ``--metrics openfold`` names does not call OpenFold3
+directly. It builds one ``PredictionSession`` per sample on a ``PredictionStore``, so a model runs
+at most once for all the metrics that read its output (the confidence scalars, the interface PAE
+and PDE, the EvoBind score and the adversarial check), and writes ``results["prediction"]``.
+Without ``--predictor`` nothing here runs and the OpenFold step keeps its own code path and
+``results["openfold"]``.
 
 What the step does for one sample, in order::
 
@@ -28,7 +28,7 @@ other steps.
 
 Every registered model has a runner (``RUNNERS``): ``af2`` (ColabFold), ``boltz2``, ``of3`` and
 ``protenix``. A model without one is refused without ``--prediction-dir`` while the command line
-is checked, before anything runs. The runners differ in what they can do, and the step asks them:
+is checked, before anything runs. The step asks each runner what it can do:
 
 * ``supported_modes`` and ``default_mode`` of the runner class say which ``--prediction-mode`` a
   run from here can have and which it has by default (``runner_modes``, ``runner_default_mode``);
@@ -43,10 +43,10 @@ is checked, before anything runs. The runners differ in what they can do, and th
 
 ``--prediction-cyclic``, ``--prediction-no-msa-server`` and ``--prediction-conda-env`` are the
 settings of the ``--predictor`` route for every model. ``--openfold-cyclic``,
-``--openfold-no-msa-server`` and ``--openfold-conda-env`` stay the settings of the OpenFold3 step
-and, for ``--predictor of3``, the same setting under the older name: giving both with different
-values is a usage error. For another model the ``--openfold-*`` spelling is a usage error that
-names the generic one.
+``--openfold-no-msa-server`` and ``--openfold-conda-env`` are the settings of the OpenFold3 step
+and, for ``--predictor of3``, the same settings under their older names: giving both with
+different values is a usage error. For another model the ``--openfold-*`` spelling is a usage
+error that names the generic one.
 
 The store lives in ``--prediction-cache DIR``; the default is ``<output-dir>/predictions`` for a
 single run and ``<output-dir>/_predictions`` for a batch (the underscore keeps it apart from a
@@ -444,16 +444,11 @@ def check_prediction_args(parser: argparse.ArgumentParser, args: argparse.Namesp
     """Refuse a combination of the prediction options that cannot work, before anything runs.
 
     Ends the program through ``parser.error`` (exit code 2) when a prediction option is given
-    without ``--predictor``, when ``--predictor`` names a model that has no runner and no
-    ``--prediction-dir`` is given, or when a setting is not one the model's runner has (a mode it
-    does not run, ``--prediction-cyclic on`` for ColabFold, ``--prediction-lock-threshold``
-    outside ``score-lock`` and ``refold-lock``, an ``--openfold-*`` option for a model other than
-    OpenFold3, or the two spellings of one setting with different values; see
-    ``resolve_prediction_options``). Ends with exit code 1 and a message when
-    ``--prediction-dir`` is not an existing directory, or when ``--prediction-weights`` does not
-    exist or is not the kind the model's runner takes.
-    ``--prediction-weights`` with ``--prediction-dir`` is a usage error: the weights of an output
-    you made are whatever produced it.
+    without ``--predictor``, when ``--predictor`` names a model with no runner and no
+    ``--prediction-dir`` is given, when ``--prediction-weights`` goes with ``--prediction-dir``,
+    or when a setting is not one the model's runner has (see ``resolve_prediction_options``).
+    Ends with exit code 1 and a message when ``--prediction-dir`` is not an existing directory or
+    ``--prediction-weights`` does not exist or is not the kind the model's runner takes.
     """
     weights = getattr(args, "prediction_weights", None)
     if weights is not None and args.prediction_dir is not None:
@@ -521,8 +516,8 @@ def model_refuses_mode(model: str, mode: str) -> bool:
     """True when the declared limits of the model (``Capabilities.modes``) do not list ``mode``.
 
     The pre-flight check refuses such a mode with the models that do have it, according to the
-    policy ``--on-incompatible``, so the command line leaves it to that check and refuses only a
-    mode that the model has and its runner does not run.
+    policy ``--on-incompatible``; the command line refuses only a mode that the model has and its
+    runner does not run.
     """
     spec = PARSERS.get(model)
     declared = None if spec is None else spec.load_capabilities()
@@ -590,10 +585,10 @@ def check_templates_option(
     """Refuse ``--openfold-templates alignment`` where it cannot apply.
 
     The setting is OpenFold3's (``template_mode`` of its runner; the other runners take their
-    templates in their own way, see ``docs/prediction.md``) and there is no ``--prediction-``
-    spelling. It applies to the OpenFold3 step (no ``--predictor``) and to ``--predictor of3``;
-    for another model run from here it is a usage error that says so; with ``--prediction-dir``
-    nothing is run, so it is ignored.
+    templates in their own way, see ``docs/prediction.md``) and has no ``--prediction-`` spelling.
+    It applies to the OpenFold3 step (no ``--predictor``) and to ``--predictor of3``; it is a
+    usage error for another model run from here, and ignored with ``--prediction-dir``, where
+    nothing is run.
 
     Raises:
         ValueError: ``openfold_templates`` is not ``"structure"`` or ``"alignment"``, or it is
@@ -648,13 +643,13 @@ def resolve_prediction_options(
 
     The ``--prediction-*`` options (``prediction_cyclic``, ``prediction_use_msa_server``,
     ``prediction_conda_env``, ``prediction_lock_threshold``, ``prediction_msa_policy``,
-    ``prediction_receptor_msa``) are the settings of the
-    ``--predictor`` route for every model. The ``--openfold-*`` ones (``openfold_mode``,
-    ``openfold_cyclic``, ``openfold_use_msa_server``, ``openfold_conda_env``) are those of the
-    OpenFold3 step and, for ``predictor == "of3"``, the same settings under their older names.
-    Nothing is checked or changed without ``predictor`` (the OpenFold3 step), and the
-    ``--openfold-*`` values are returned as they are; with ``prediction_dir`` the model is not run,
-    so a setting of a run is refused and the ``--openfold-*`` ones are ignored, as they always were.
+    ``prediction_receptor_msa``) are the settings of the ``--predictor`` route for every model.
+    The ``--openfold-*`` ones (``openfold_mode``, ``openfold_cyclic``,
+    ``openfold_use_msa_server``, ``openfold_conda_env``) are those of the OpenFold3 step and, for
+    ``predictor == "of3"``, the same settings under their older names. Without ``predictor`` (the
+    OpenFold3 step) nothing is checked or changed and the ``--openfold-*`` values are returned
+    as they are. With ``prediction_dir`` the model is not run: a setting of a run is refused and
+    the ``--openfold-*`` ones are ignored.
 
     For a run from here:
 
@@ -666,15 +661,14 @@ def resolve_prediction_options(
       of the runner) must be one the runner runs, unless the model does not have it at all
       (``model_refuses_mode``): the pre-flight check refuses that one, with the models that do;
     * a setting is passed on only when the keyword is in the runner's ``make_request``:
-      ``binder_cyclic`` other than ``auto``, ``use_msa_server`` False,
-      ``lock_threshold_angstrom``, ``msa_policy`` other than ``default`` and ``receptor_msa`` are
-      refused for a runner that has not; the lock threshold also needs a lock mode
-      (``score-lock`` or ``refold-lock``), and ``prediction_receptor_msa`` is ``"single"`` or an
-      existing file that the runner takes (its ``supports_given_msa`` and ``supports_single``;
-      ColabFold takes ``"single"`` only);
+      ``binder_cyclic`` other than ``auto``, ``use_msa_server`` False, ``lock_threshold_angstrom``,
+      ``msa_policy`` other than ``default`` and ``receptor_msa`` are refused for a runner that
+      has not; the lock threshold also needs a lock mode (``score-lock`` or ``refold-lock``), and
+      ``prediction_receptor_msa`` is ``"single"`` or an existing file that the runner takes (its
+      ``supports_given_msa`` and ``supports_single``; ColabFold takes ``"single"`` only);
     * the MSA policy needs the run to be from here, like the other ``--prediction-*`` settings.
-      That ``forbid-server`` with the server on is refused is the job of the pre-flight check,
-      which refuses it under every ``--on-incompatible`` value.
+      ``forbid-server`` with the server on is refused by the pre-flight check under every
+      ``--on-incompatible`` value.
 
     Returns:
         The merged settings; for the OpenFold3 step or an adopted output they are the
@@ -803,13 +797,13 @@ def check_receptor_msa_arg(
     an alignment file, which must exist. A ``Path`` is always a file, whatever its name.
 
     With a ``runner`` (a class or an object; ``model`` names it in the message) the value must
-    also be one the runner takes: its ``supports_given_msa`` and ``supports_single`` are given to
-    ``predictors._msa.check_msa_request``, the check that ``make_request`` makes, so that a runner
-    which would refuse the value when it builds the request refuses it here, before anything is
+    also be one the runner takes: its ``supports_given_msa`` and ``supports_single`` go to
+    ``predictors._msa.check_msa_request``, the check that ``make_request`` makes, so a value that
+    the runner would refuse when it builds the request is refused here, before anything is
     prepared or relaxed. A runner without those attributes (a stand-in) states no limit. A runner
     whose ``msa_conflicts_with_server`` is True (OpenFold3: with its server on it replaces the
     alignment) also refuses the value with ``use_msa_server`` True, naming
-    ``--prediction-no-msa-server``; ``use_msa_server`` is the merged setting of the run and False
+    ``--prediction-no-msa-server``; ``use_msa_server`` is the merged setting of the run, False
     when the caller does not say.
 
     Raises:
@@ -975,11 +969,10 @@ def effective_prediction_mode(
     """The mode a prediction step runs in, or None when it is not known.
 
     ``--prediction-mode`` wins. Without it, the OpenFold3 step (no ``--predictor``) and
-    ``--predictor of3`` run from here use ``--openfold-mode``, so a run that did not use the new
-    option behaves as before; any other model run from here uses the default mode of its runner
-    (``default_mode``: ``score`` for Boltz-2, ``predict`` for ColabFold and Protenix); an output
-    read with ``--prediction-dir`` was made elsewhere, and its mode is not known unless the user
-    says it.
+    ``--predictor of3`` run from here use ``--openfold-mode``; any other model run from here uses
+    the default mode of its runner (``default_mode``: ``score`` for Boltz-2, ``predict`` for
+    ColabFold and Protenix); an output read with ``--prediction-dir`` was made elsewhere, and its
+    mode is not known unless the user says it.
     """
     if prediction_mode is not None:
         return prediction_mode
@@ -1045,27 +1038,27 @@ def make_request(
 ):
     """The store request of one sample.
 
-    With ``adopt`` False the runner builds it (every setting that changes the output written
-    out, so two callers that mean one run share its key). With ``adopt`` True it describes
-    outputs the user made: the model, the sample name, the content of the input file and the
-    chain roles. The name is part of that key, so two samples with identical inputs adopt
-    their own outputs and not one another's. ``prediction_mode`` (``--prediction-mode``) sets the
-    mode of the request, and so its key; without it the mode is the one of
-    ``effective_prediction_mode`` (``openfold_mode`` for OpenFold3, the default mode of the
-    runner for another model) and, for an adopted output of another model, ``predict``, as before.
+    With ``adopt`` False the runner builds it, with every setting that changes the output written
+    out, so two callers that mean one run share its key. With ``adopt`` True it describes outputs
+    the user made: the model, the sample name, the content of the input file and the chain roles.
+    The name is part of that key, so two samples with identical inputs adopt their own outputs.
+    ``prediction_mode`` (``--prediction-mode``) sets the mode of the request, and so its key;
+    without it the mode is the one of ``effective_prediction_mode`` (``openfold_mode`` for
+    OpenFold3, the default mode of the runner for another model) and, for an adopted output of
+    another model, ``predict``.
 
-    The runner is called with the keywords of its ``make_request``. ``name``, the chain roles and
-    ``mode`` always; ``seeds`` and ``on_unmappable_residue`` as given; ``binder_cyclic`` (when
-    ``openfold_cyclic`` is not ``"auto"``), ``use_msa_server`` (when ``openfold_use_msa_server``
-    is False), ``lock_threshold_angstrom``, ``template_mode`` (when ``openfold_templates`` is not
-    the default, ``"structure"``), ``msa_policy`` (when ``prediction_msa_policy`` is not
-    ``"default"``), ``receptor_msa`` (when ``prediction_receptor_msa`` is given: a path, or
-    ``"single"``), and ``weights`` (a path, or the ``WeightsRef`` of
-    ``PredictionStore.weights_reference``; by content in the key) only when they are not at their
-    defaults, so a runner without the keyword is never called with it. ``openfold_cyclic`` and
-    ``openfold_use_msa_server`` are the settings of the run, after ``resolve_prediction_options``
-    merged them with the ``--prediction-*`` spelling. An adopted request has no weights: the
-    weights of an output you made are not known.
+    The runner is called with the keywords of its ``make_request``: ``name``, the chain roles and
+    ``mode`` always; ``seeds`` and ``on_unmappable_residue`` as given; and, only when they are not
+    at their defaults, so that a runner without the keyword is never called with it,
+    ``binder_cyclic`` (``openfold_cyclic`` is not ``"auto"``), ``use_msa_server``
+    (``openfold_use_msa_server`` is False), ``lock_threshold_angstrom``, ``template_mode``
+    (``openfold_templates`` is not ``"structure"``), ``msa_policy`` (``prediction_msa_policy`` is
+    not ``"default"``), ``receptor_msa`` (``prediction_receptor_msa`` is given: a path, or
+    ``"single"``) and ``weights`` (a path, or the ``WeightsRef`` of
+    ``PredictionStore.weights_reference``; by content in the key). ``openfold_cyclic`` and
+    ``openfold_use_msa_server`` are the settings of the run, merged with the ``--prediction-*``
+    spelling by ``resolve_prediction_options``. An adopted request has no weights: the weights of
+    an output you made are not known.
 
     Raises:
         ValueError: ``runner`` is None and ``adopt`` is False, the runner has no keyword for a
@@ -1161,8 +1154,7 @@ def scored_seed_kwargs(
 ) -> dict:
     """``{"seed": index}`` for ``compute_openfold_metrics`` when seeds were given, else ``{}``.
 
-    Without ``--openfold-seeds`` the call is the one that always scored the first sample of the
-    first seed directory, so a function that predates the option is called as before.
+    Without ``--openfold-seeds`` the call scores the first sample of the first seed directory.
     """
     if not openfold_seeds:
         return {}
@@ -1190,16 +1182,9 @@ def prediction_chain_map(
 def reference_for(predictor: str, input_path: Path) -> Optional[Path]:
     """The structure the binder RMSD is measured against: the input pose, for every model.
 
-    The binder is placed by the model in every mode: a prediction from sequences does not see the
-    pose, and a template holds one chain and no inter-chain geometry (OpenFold3, Boltz-2 ``score``
-    and ``refold``), so the binder RMSD in the receptor frame (``binder_ca_rmsd``) says how far the
-    predicted pose is from the input pose, in ``predict``, ``refold`` and ``score`` alike. In
-    ``score`` the binder also has its own fold as a template, so the number is less free of the
-    input than in ``refold``, and in ``predict`` the model has seen neither chain.
-    ``delta_com_angstrom`` of the EvoBind adversarial check is the displacement of the binder
-    centre of mass between the same two poses. ``score-lock`` pins the pose, so the number then
-    measures how well the pin held; ``refold-lock`` pins the receptor and leaves the binder free,
-    so the number reads as in ``refold``.
+    ``binder_ca_rmsd`` is the binder C-alpha RMSD in the receptor frame between the prediction and
+    the input pose, in every mode. ``delta_com_angstrom`` of the EvoBind adversarial check is the
+    displacement of the binder centre of mass between the same two poses.
 
     When the receptor frame cannot be built (a chain missing from the prediction under the input's
     ID, or another number of C-alpha atoms) ``binder_ca_rmsd`` stays NaN and the reason of the
@@ -1243,9 +1228,9 @@ def record_binder_cyclic(
     Adds ``binder_cyclic`` (bool: the binder chain was sent as ``"cyclic": true``) and, when a
     head-to-tail binder was left linear because the OpenFold3 version is too old or unreadable,
     the reason under ``reason`` (joined to an existing one). The query builders decide the same
-    way from the same input; this repeats the decision without logging it again, because the
-    functions that run OpenFold3 return a path and nothing else. The block of a model that
-    did not run here (an adopted output) is not given the key: nothing is known of its query.
+    way from the same input; the decision is repeated here, without logging, because the
+    functions that run OpenFold3 return only a path. The block of a model that did not run here
+    (an adopted output) is not given the key: nothing is known of its query.
 
     Nothing is added when the decision cannot be made (``True`` with an OpenFold3 that is too
     old, which the run itself refused), and a failure is logged.
@@ -1353,8 +1338,8 @@ def missing_chains_reason(record, binder_chain: str, receptor_chain: str) -> Opt
     """Why the metrics cannot find the chains in the prediction, or None when both are there.
 
     The model names the chains of its prediction itself (ColabFold: ``A`` and ``B``), or the output
-    of ``--prediction-dir`` uses other IDs than the input, and every metric that needs a chain by
-    its ID in the input then reports a mismatch that does not say whose chains are meant. The
+    of ``--prediction-dir`` uses other IDs than the input; every metric that needs a chain by its
+    ID in the input then reports a mismatch that does not say whose chains are meant. The
     sentence names the model and the option that fixes it. It is best effort: a structure that
     cannot be read gives None (the metrics say why).
     """
@@ -1430,8 +1415,7 @@ def _analyse(
             logger.warning("  [warning] EvoBind score failed: %s", e)
             block["evobind_error"] = str(e)
 
-        # Does the prediction agree with the input pose? A large COM shift means the model
-        # puts the binder elsewhere, so the design pose is not supported by the prediction.
+        # Adversarial check: displacement of the binder centre of mass, input pose to prediction.
         if adversarial_skipped is not None:
             block["adversarial_skipped"] = adversarial_skipped
         else:
@@ -1575,17 +1559,16 @@ def run_single_prediction(
     store root (``PredictionStore.weights_reference``), part of the request key, and recorded in
     ``block["weights"]`` and ``provenance["prediction_weights"]``; ignored for an adopted output.
     ``openfold_cyclic``, ``openfold_use_msa_server`` and ``openfold_conda_env`` are the settings
-    of the run: the pipelines have merged them with the ``--prediction-*`` spelling
-    (``resolve_prediction_options``). ``prediction_lock_threshold`` is the threshold of the lock
-    modes in angstrom (None: the runner's own). ``openfold_templates`` is how OpenFold3 is
-    given its templates (``"structure"``, the default, or ``"alignment"``; ``"alignment"`` is
-    refused for a runner without a ``template_mode`` setting). The runner's ``output_chain_map``
-    names the chains of its prediction, unless ``prediction_binder_chain`` or
-    ``prediction_target_chain`` is given. ``adversarial_skipped`` is the reason the EvoBind
-    adversarial check is left out (the design pipeline ran this model itself); None runs it.
-    ``prediction_msa_policy`` and ``prediction_receptor_msa`` are the MSA policy (``"default"`` or
-    ``"forbid-server"``) and the receptor's alignment (a path, or ``"single"``) of the request;
-    they reach the runner only when they are not at their default.
+    of the run, merged with the ``--prediction-*`` spelling by ``resolve_prediction_options``.
+    ``prediction_lock_threshold`` is the threshold of the lock modes in angstrom (None: the
+    runner's own). ``openfold_templates`` is how OpenFold3 is given its templates
+    (``"structure"``, the default, or ``"alignment"``; ``"alignment"`` is refused for a runner
+    without a ``template_mode`` setting). The runner's ``output_chain_map`` names the chains of
+    its prediction, unless ``prediction_binder_chain`` or ``prediction_target_chain`` is given.
+    ``adversarial_skipped`` is the reason the EvoBind adversarial check is left out (the design
+    pipeline ran this model itself); None runs it. ``prediction_msa_policy`` (``"default"`` or
+    ``"forbid-server"``) and ``prediction_receptor_msa`` (a path, or ``"single"``) reach the
+    runner only when they are not at their default.
 
     Returns:
         ``(block, provenance)`` as ``run_prediction_step``; the block is ``{"skipped": True}``
