@@ -303,7 +303,7 @@ allowed regions: φ −125 to 0 with ψ −100 to +30; φ −180 to −30 with �
 
 D-amino acids: φ and ψ are negated before the lookup, so a D-α-helix (φ ≈ +57°, ψ ≈ +47°) falls in the α-helix region.
 
-Terminal residues of a linear chain have no complete φ/ψ pair and are skipped. For a head-to-tail cyclic peptide, φ of the first residue and ψ of the last residue are computed across the closing amide bond, so every residue is evaluated. N-methylation and ring constraints move φ/ψ outside the general regions: the favoured fraction of the bundled macrocycles is 72.7 % (1CWA, chain C) and 85.7 % (3P8F, chain I), against 90.9 % for the linear peptide of 1YCR.
+Terminal residues of a linear chain have no complete φ/ψ pair and are skipped. A cap (ACE, NME, NH2) or another residue that is not an amino acid is not listed, and the residue beside it has no φ or no ψ, as at a chain end; the residues are labelled by their position in the chain, so a capped peptide keeps the `res_id`, `res_name` and D flag of each residue. For a head-to-tail cyclic peptide, φ of the first residue and ψ of the last residue are computed across the closing amide bond, so every residue is evaluated. N-methylation and ring constraints move φ/ψ outside the general regions: the favoured fraction of the bundled macrocycles is 72.7 % (1CWA, chain C) and 85.7 % (3P8F, chain I), against 90.9 % for the linear peptide of 1YCR.
 
 ### omega planarity
 
@@ -322,7 +322,7 @@ Terminal residues of a linear chain have no complete φ/ψ pair and are skipped.
 
 `ins_code` is the insertion code, an empty string when the residue has none.
 
-deviation = min(\|ω − 180°\|, \|ω + 180°\|). The 15° cut-off is a package heuristic. A cis bond has a deviation near 180° and counts as an outlier, cis-proline and N-methylated amides included; `omega_cis_count` tells cis bonds from twisted trans bonds.
+deviation = min(\|ω − 180°\|, \|ω + 180°\|). The 15° cut-off is a package heuristic. A cis bond has a deviation near 180° and counts as an outlier, cis-proline and N-methylated amides included; `omega_cis_count` tells cis bonds from twisted trans bonds. A bond to a cap or to another residue that is not an amino acid has no ω and is not evaluated.
 
 ### CLI: `binding-metrics-geometry`
 
@@ -351,7 +351,7 @@ A dot-and-normal approximation of the Sc score of Lawrence & Colman (1993). It i
 
 algorithm:
 1. Atoms of each chain that lie within `interface_cutoff` (6.0 Å) of the other chain are the candidates; this pre-selection only decides which atoms get dots.
-2. Each candidate atom gets `n_dots` (150) points from a Fibonacci lattice on its van der Waals sphere (Bondi radii: C 1.70, N 1.55, O 1.52, S 1.80, H 1.20, P 1.80 Å; 1.80 Å for other elements). Points inside another same-chain sphere are dropped.
+2. Each candidate atom gets `n_dots` (150) points from a Fibonacci lattice on its van der Waals sphere (Bondi radii: H 1.20, C 1.70, N 1.55, O 1.52, F 1.47, P 1.80, S 1.80, Cl 1.75, Se 1.90, Br 1.85, I 1.98 Å; 1.80 Å for other elements; deuterium takes the hydrogen radius). Points inside another same-chain sphere are dropped.
 3. A point stays only when the nearest atom of the other chain is within `buried_cutoff` (2.4 Å). This keeps the buried contact patch.
 4. The outward normal at a point is the direction from the centroid of the same-chain atoms within `normal_radius` (6.0 Å) to the point.
 5. For each dot on one surface, S = (n · −n′) · exp(−w d²), with n′ the normal at the nearest dot of the other surface, d their distance and w = `weight` (0.5 Å⁻²). Anti-parallel normals give a positive product.
@@ -359,11 +359,13 @@ algorithm:
 
 Typical values for native interfaces are about 0.65–0.75 for protein–protein and protease–inhibitor packing, somewhat lower for peptide interfaces; values below about 0.4 indicate flat, non-complementary surfaces. On the bundled complexes: 0.632 (1YCR), 0.738 (3P8F), 0.750 (1CWA).
 
+Three van der Waals tables are in use, one per family of metrics. Shape complementarity and the void volume use the Bondi radii above, with hydrogen at 1.20 Å. The clash score of the receptor quality uses the same Bondi values for heavy atoms. The area metrics (SASA, the interface of §2, the pose descriptors) use biotite's table (Mantina et al. 2009), where hydrogen is 1.10 Å and bromine 1.83 Å. The tables are kept apart because changing the hydrogen radius moves the numbers: on the prepared 1YCR, 1.10 Å instead of 1.20 Å takes Sc from 0.653 to 0.613 and the void volume from 0 to 9.6 Å³. Without hydrogens the tables agree on every element of the bundled examples.
+
 ### CLI
 
 ```bash
 binding-metrics-geometry --metric sc --input complex.cif [--binder-chain B] [--target-chain A] \
-    [--n-dots 150] [--interface-cutoff 6.0] [--buried-cutoff 2.4] [--normal-radius 6.0] \
+    [--n-dots 150] [--interface-cutoff ANGSTROM] [--buried-cutoff 2.4] [--normal-radius 6.0] \
     [--weight 0.5] [--hetero ignore]
 ```
 
@@ -397,10 +399,10 @@ SASA and void volume answer different questions: SASA measures surface reachable
 
 ```bash
 binding-metrics-geometry --metric void --input complex.cif [--binder-chain B] [--target-chain A] \
-    [--grid-spacing 0.5] [--probe-radius 1.4] [--interface-cutoff 6.0] [--hetero ignore]
+    [--grid-spacing 0.5] [--probe-radius 1.4] [--interface-cutoff ANGSTROM] [--hetero ignore]
 ```
 
-`--interface-cutoff` defaults to 6.0 on the command line, where it also sets the Sc pre-selection, while the function default for the void is 5.0. The command line therefore reports the void with a 6.0 Å cutoff (56.0 Å³ for 1YCR instead of 55.875).
+`--interface-cutoff` has no default of its own: without it each metric keeps the default of its function (6.0 Å for shape complementarity, 5.0 Å for the void volume), and a value applies to both. On 1YCR the void is 55.875 Å³ at 5.0 Å and 56.0 Å³ at 6.0 Å; on 3P8F it is 31.875 and 15.625 Å³, on 1CWA 16.25 and 10.75 Å³. Shape complementarity does not depend on the cutoff on these examples (it only pre-selects the atoms that get dots).
 
 ---
 
@@ -1106,7 +1108,7 @@ MolProbity-style quality of one receptor chain, independent of a binder. It acce
 | rotamers | χ1 only: an outlier deviates more than 40° from the nearest of g−, g+, trans |
 | Cβ deviation | count of residues whose Cβ is more than 0.25 Å from its ideal position |
 | backbone geometry | bonds and angles more than 4σ from the Engh & Huber (1991) values; inter-residue C–N bonds longer than 2.5 Å are skipped |
-| clashscore | heavy-atom overlaps per 1000 heavy atoms: two atoms clash when their van der Waals radii overlap by at least `clash_cutoff` (0.4 Å; Word et al. 1999). Hydrogens are ignored, so it is usually higher than MolProbity's value. With `exclude_bonded=True` pairs within three covalent bonds (peptide bonds, disulfides, ring closures, lactams, staples) and N/O pairs at 2.5 Å or more (hydrogen bonds) are not scored. Two atoms are not scored against each other when they lie in one residue or in neighbouring residues of a chain; neighbours follow each other in the sequence of (number, insertion code) pairs and differ by at most one in number, so 52 and 53 are not neighbours when 52A lies between them |
+| clashscore | heavy-atom overlaps per 1000 heavy atoms: two atoms clash when their van der Waals radii overlap by at least `clash_cutoff` (0.4 Å; Word et al. 1999), with Bondi radii (C 1.70, N 1.55, O 1.52, S 1.80, P 1.80, Se 1.90, F 1.47, Cl 1.75, Br 1.85, I 1.98 Å; 1.80 Å for other elements). Hydrogens are ignored, so it is usually higher than MolProbity's value. With `exclude_bonded=True` pairs within three covalent bonds (peptide bonds, disulfides, ring closures, lactams, staples) and N/O pairs at 2.5 Å or more (hydrogen bonds) are not scored. Two atoms are not scored against each other when they lie in one residue or in neighbouring residues of a chain; neighbours follow each other in the sequence of (number, insertion code) pairs and differ by at most one in number, so 52 and 53 are not neighbours when 52A lies between them |
 | MolProbity score | `0.426·ln(1 + clashscore) + 0.33·ln(1 + max(0, Rama outlier % − 0.2)/0.2) + 0.25·ln(1 + max(0, rotamer outlier % − 2)/2) + 0.5`; lower is better; NaN when a term is undefined |
 | B-factors | mean, max, min, std, and the number of residues above 60 Å² |
 | energy | absolute ff14SB + implicit-solvent potential energy at the input geometry with hydrogens added; hydrogen placement and PDBFixer's rebuild are seeded, so the value is reproducible for one seed |
