@@ -262,7 +262,8 @@ def _run_one(
     ``preflight_reason`` carry the reason and nothing was prepared or run.
     ``preflight_model`` is the whole-batch model step of this sample, as ``(model, metric,
     adopted)``, so that its limits are checked here, before this worker does anything;
-    ``preflight_msa`` is ``(msa_policy, uses_msa_server)`` of that step, checked with it.
+    ``preflight_msa`` is ``(msa_policy, uses_msa_server, receptor_msa)`` of that step, checked
+    with it.
 
     The row carries ``batch_status``:
 
@@ -1223,7 +1224,11 @@ def run_batch(
             route.use_msa_server,
             route.conda_env,
         )
-        preflight_msa = (prediction_msa_policy, bool(openfold_use_msa_server))
+        preflight_msa = (
+            prediction_msa_policy,
+            bool(openfold_use_msa_server),
+            prediction_receptor_msa,
+        )
     prediction_weights = check_weights_arg(prediction_weights, predictor)
     if binder_type not in BINDER_TYPE_CHOICES:
         raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")

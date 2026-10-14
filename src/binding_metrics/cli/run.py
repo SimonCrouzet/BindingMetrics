@@ -394,7 +394,7 @@ def run_pipeline(
     design_policy: str = DEFAULT_DESIGN_POLICY,
     prediction_msa_policy: str = DEFAULT_MSA_POLICY,
     prediction_receptor_msa: Optional[str | Path] = None,
-    preflight_msa: Optional[tuple[str, Optional[bool]]] = None,
+    preflight_msa: Optional[tuple] = None,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -519,8 +519,10 @@ def run_pipeline(
             and without ``predictor``.
         preflight_msa: For a caller that runs the model step itself after this call (the batch):
             ``(msa_policy, uses_msa_server)`` of that step, so that the policy is checked here
-            with ``preflight_model``. Without it a run with ``predictor`` takes both from
-            ``prediction_msa_policy`` and the merged ``prediction_use_msa_server``.
+            with ``preflight_model``; a third element, the receptor MSA of that step (a path,
+            ``"single"`` or None), tells the check whether the target has an MSA. Without it a
+            run with ``predictor`` takes the first two from ``prediction_msa_policy`` and the
+            merged ``prediction_use_msa_server``.
         designed_with, design_policy: The pipeline that made the designed binder and what to do
             about it (keyword-only; ``--designed-with`` and ``--design-policy``). The EvoBind
             adversarial check asks whether a model other than the designer puts the binder where
@@ -622,6 +624,11 @@ def run_pipeline(
     if sample_id is None:
         sample_id = input_path.stem
 
+    # the batch runs the model step itself and tells the receptor MSA of that step with the policy
+    receptor_msa = prediction_receptor_msa
+    if receptor_msa is None and preflight_msa is not None and len(preflight_msa) > 2:
+        receptor_msa = preflight_msa[2]
+
     # Pre-flight: before the output directory, the provenance probe, prep, relaxation, any model
     # run and the prediction store, so that a refused input costs nothing.
     outcome = _run_preflight(
@@ -646,7 +653,7 @@ def run_pipeline(
         design_policy=design_policy,
         msa_policy=DEFAULT_MSA_POLICY if preflight_msa is None else preflight_msa[0],
         msa_server=None if preflight_msa is None else preflight_msa[1],
-        receptor_msa=prediction_receptor_msa,
+        receptor_msa=receptor_msa,
     )
     if preflight_only:
         return {"sample_id": sample_id, "input": str(input_path), "preflight": outcome.block}

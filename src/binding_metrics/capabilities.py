@@ -2143,6 +2143,53 @@ def _msa_server_violation(step: _Step) -> Violation:
     )
 
 
+#: The ``receptor_msa`` value for a receptor predicted from its own sequence, with no alignment;
+#: the word of ``binding_metrics.predictors._msa.SINGLE_SEQUENCE``, which imports this module.
+_SINGLE_SEQUENCE = "single"
+
+#: The caveat of a prediction whose target has neither a template nor an MSA, see
+#: ``_target_is_unconstrained``.
+_TARGET_UNCONSTRAINED_CAVEAT = (
+    "the target fold is unconstrained (no template and no MSA), so the binder placement and the "
+    "confidence scores say little: give the target as a template (--prediction-mode refold or "
+    "score), give a receptor MSA (--prediction-receptor-msa PATH), or leave the MSA server on if "
+    "the sequence may be sent out"
+)
+
+
+def _target_is_unconstrained(
+    mode: Optional[str],
+    msa_server: Optional[bool],
+    receptor_msa: Optional[str | os.PathLike],
+) -> bool:
+    """True when a prediction is planned with no template for the target and no target MSA.
+
+    A co-folding run has to give the model some constraint on the fold of the target: the target
+    is a template (pinned when locked) and a cached target MSA is optional. Exactly one
+    configuration gives it none, and it is a caveat, not a violation, because no source says that
+    the input cannot be given. It holds when both of these do:
+
+    * ``mode`` is ``predict``, the only mode with no template on the target (``refold``,
+      ``score``, ``refold-lock`` and ``score-lock`` template or pin it);
+    * there is no target MSA: ``msa_server`` is False (the MSA server is off) and ``receptor_msa``
+      is None or the word ``"single"``. A given alignment (the path of a file, a ``str`` or a
+      ``Path``, even one called ``single``) and a server search both count as an MSA.
+
+    A caller that does not say (``mode`` or ``msa_server`` None) is never told its target is
+    unconstrained. The binder type plays no part: the rule is the same for a peptide, a
+    miniprotein, a nanobody and an antibody. One complex was measured (1YCR, an old PDB entry that
+    the models have very probably seen; OpenFold3 0.5.0, one seed): the binder C-alpha RMSD
+    against the crystal pose was 21.6 A with neither, 1.1 A with a template alone and 1.6 A with
+    an MSA alone.
+    """
+    if mode != "predict" or msa_server is not False:
+        return False
+    given_alignment = receptor_msa is not None and not (
+        isinstance(receptor_msa, str) and receptor_msa == _SINGLE_SEQUENCE
+    )
+    return not given_alignment
+
+
 def preflight(
     profile: InputProfile,
     metrics: Iterable[Any] = (),
@@ -2160,6 +2207,7 @@ def preflight(
     prediction_models: Optional[Collection[str]] = None,
     msa_policy: str = DEFAULT_MSA_POLICY,
     msa_server: Optional[bool] = None,
+    receptor_msa: Optional[str | os.PathLike] = None,
 ) -> PreflightReport:
     """Check an input against the limits of every requested metric and predictor, before any run.
 
@@ -2234,11 +2282,23 @@ def preflight(
             violations it is refused under every ``policy``: a forbid cannot be downgraded to
             ``skip`` or ``warn``, which would drop the step the policy was set for or send the
             sequences out. None adds a note that the policy was not checked.
+        receptor_msa: The receptor MSA of the request: None (no source), the word ``"single"`` (the
+            receptor is predicted from its own sequence) or the path of an alignment. Read only by
+            the caveat for a target with neither a template nor an MSA (below).
 
     Returns:
         The ``PreflightReport``. Soft warnings for inputs a step accepts but never validated are
         in ``report.warnings`` whatever the policy, and ``report.design`` says what the design
         origin did when a ``design_source`` was given.
+
+        A caveat is added to ``report.warnings`` for each predictor when ``mode`` is ``predict``
+        (no template on the target), ``msa_server`` is False and ``receptor_msa`` is None or
+        ``"single"`` (no target MSA either): the target fold is then unconstrained, and the binder
+        placement and the confidence scores say little (``_target_is_unconstrained``). It is a
+        warning under every ``policy`` and never a violation; a given alignment, a server on, a
+        templated or pinned mode, or an unknown ``mode`` or ``msa_server`` leaves the report as it
+        was. A pose set cannot ask for it: ``score_pose_set`` reads predictions made elsewhere and
+        names no predictor, mode or MSA.
 
     Raises:
         IncompatibleInputError: Policy ``error`` and at least one violation, or ``design_policy``
@@ -2297,6 +2357,13 @@ def preflight(
                 )
             elif msa_server:
                 violations.append(_msa_server_violation(step))
+
+    if _target_is_unconstrained(mode, msa_server, receptor_msa):
+        warnings += [
+            f"{step.subject}: {_TARGET_UNCONSTRAINED_CAVEAT}"
+            for step in steps
+            if step.kind == "predictor"
+        ]
 
     typed = [s.subject for s in steps if s.capabilities and s.capabilities.binder_types]
     if profile.binder_type == "unknown" and typed:

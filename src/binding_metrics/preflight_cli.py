@@ -353,7 +353,10 @@ def check_input(
         msa_server: Whether the model step would use an MSA server: True for a run from here with
             the server on (the default of every runner), False with it off, None when not known.
         receptor_msa: The receptor MSA of the request (``--prediction-receptor-msa``), a path or
-            ``"single"``; only named in the plan, it is checked when the request is built.
+            ``"single"``. It is named in the plan, and with the mode and ``msa_server`` it decides
+            the caveat for a target with neither a template nor an MSA (see
+            ``binding_metrics.capabilities.preflight``); the file itself is checked when the
+            request is built.
 
     Raises:
         ValueError: ``prediction_weights`` does not exist, cannot be read or is not the kind the
@@ -427,6 +430,7 @@ def check_input(
             prediction_models=[] if model is None else [model[0]],
             msa_policy=msa_policy if checks_msa else DEFAULT_MSA_POLICY,
             msa_server=msa_server if checks_msa else None,
+            receptor_msa=receptor_msa if checks_msa else None,
         )
     except IncompatibleInputError as refused:
         error, report = refused, refused.report
