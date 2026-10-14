@@ -5,6 +5,7 @@ import logging
 import re
 import tempfile
 from collections import Counter
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -14,6 +15,7 @@ from binding_metrics.core.residues import (
     PHOSPHO_RESIDUES,
     PROTEIN_RESIDUES,
     STANDARD_AMINO_ACIDS,
+    TERMINAL_CAP_NAMES,
     VARIANT_TO_PARENT_RESIDUE,
     WATER_NAMES_ALL,
     WATER_NAMES_STRIP_HETEROGENS,
@@ -228,7 +230,9 @@ def load_structure(path: str | Path) -> tuple:
     and ``modres`` rows of ``_struct_conn`` are bonded even when the label and
     author numbering of the file differ (with gemmi installed), and a residue
     that the file gives no bond at all (phosphoserine, an NCAA) is bonded by
-    covalent radii, as a PDB file's CONECT records would do.
+    covalent radii, as a PDB file's CONECT records would do. The sequence records of
+    the file (SEQRES, ``_entity_poly_seq``) are recorded on the topology for
+    ``core.system.find_missing_residues`` (see :func:`attach_sequence_records`).
 
     Args:
         path: Path to the structure file
@@ -259,6 +263,7 @@ def load_structure(path: str | Path) -> tuple:
             struct = PDBFile(str(path))
         else:
             raise ValueError(f"Unsupported structure format: {suffix}. Use .pdb, .cif, or .mmcif")
+        attach_sequence_records(struct.topology, path)
     except (ValueError, FileNotFoundError):
         raise
     except Exception as e:
@@ -414,6 +419,275 @@ def copy_author_chain_ids(source, target) -> None:
             recorded.append((chain.id, pairs[match][1]))
             cursor = match + 1
     setattr(target, _AUTHOR_IDS_ATTRIBUTE, tuple(recorded))
+
+
+#: Attribute that carries the sequence records on an OpenMM ``Topology``: a tuple with one
+#: :class:`ChainSequence` (or None) per chain, in chain order.
+_SEQUENCE_RECORDS_ATTRIBUTE = "_binding_metrics_sequence_records"
+
+#: Residue names that a chain's sequence records may list for a cap: acetyl, formyl, the
+#: N-methylamide and the amide.
+_CAP_NAMES = TERMINAL_CAP_NAMES | {"FOR"}
+
+
+@dataclass(frozen=True)
+class ChainSequence:
+    """What the sequence records of a file say about one chain of its topology.
+
+    Attributes:
+        source: ``"SEQRES"`` (PDB file) or ``"_entity_poly_seq"`` (mmCIF).
+        residues: Residue names of the full sequence, position 1 first.
+        positions: For each residue of the topology chain, in chain order, its position
+            in ``residues`` (1-based), or None for a residue that is not part of the
+            sequence (a water, a ligand).
+        chain_id: ID of the topology chain the record was made for.
+    """
+
+    source: str
+    residues: tuple[str, ...]
+    positions: tuple[Optional[int], ...]
+    chain_id: str
+
+
+def _same_residue(sequence_name: str, residue_name: str) -> bool:
+    """True when two names stand for the same amino acid, protonation variants included."""
+    return sequence_name == residue_name or VARIANT_TO_PARENT_RESIDUE.get(
+        sequence_name, sequence_name
+    ) == VARIANT_TO_PARENT_RESIDUE.get(residue_name, residue_name)
+
+
+def has_alpha_carbon(residue) -> bool:
+    """True when an OpenMM residue has an alpha carbon: it is an amino acid of a chain.
+
+    Water, ions, ligands and nucleotides have none. A calcium ion, whose only atom is
+    named CA as well, is told from the carbon by its element.
+    """
+    return any(
+        atom.name == "CA" and (atom.element is None or atom.element.symbol == "C")
+        for atom in residue.atoms()
+    )
+
+
+def _is_polymer_residue(residue) -> bool:
+    """True for an amino acid and for a capping group: the residues a chain's sequence lists."""
+    return residue.name in _CAP_NAMES or has_alpha_carbon(residue)
+
+
+def _residue_slots(residues) -> list[int]:
+    """Place consecutive residues of a chain on a line by their numbers.
+
+    The first residue sits at slot 0. The next one sits one slot further, or further
+    still when its number jumps by more than 1 (the residues in between are not in the
+    model). Residues that share a number or follow in order of their insertion codes
+    (60, 60A, 60B, 61) take one slot each, and a number that cannot be read or goes
+    backwards cannot show a gap, so it takes the next slot.
+    """
+    slots: list[int] = []
+    previous_number: Optional[int] = None
+    for residue in residues:
+        try:
+            number: Optional[int] = int(residue.id)
+        except ValueError:
+            number = None
+        if slots:
+            jump = 1 if number is None or previous_number is None else number - previous_number
+            slots.append(slots[-1] + max(jump, 1))
+        else:
+            slots.append(0)
+        previous_number = number
+    return slots
+
+
+def _align_to_sequence(residues: list, sequence: list[str]) -> Optional[list[int]]:
+    """Positions (1-based) in ``sequence`` of the modelled ``residues``, or None.
+
+    The residues are placed by their numbers (:func:`_residue_slots`), and the one offset
+    at which every residue name agrees with the sequence is taken, as PDBFixer does for
+    SEQRES. No offset, or more than one (a short chain of repeated residues fits in several
+    places and the split between an N- and a C-terminal tail would be a guess), gives None.
+    """
+    slots = _residue_slots(residues)
+    span = slots[-1] + 1
+    fits = [
+        offset
+        for offset in range(len(sequence) - span + 1)
+        if all(_same_residue(sequence[offset + slot], r.name) for slot, r in zip(slots, residues))
+    ]
+    if len(fits) != 1:
+        return None
+    return [fits[0] + slot + 1 for slot in slots]
+
+
+def _read_seqres(path: Path) -> dict[str, list[str]]:
+    """Residue names of the SEQRES records of a PDB file, by chain ID.
+
+    A chain whose records do not add up to the residue count they announce is left out.
+    """
+    sequences: dict[str, list[str]] = {}
+    announced: dict[str, int] = {}
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if line.startswith("SEQRES"):
+                chain_id = line[11]
+                sequences.setdefault(chain_id, []).extend(line[19:70].split())
+                try:
+                    announced[chain_id] = int(line[13:17])
+                except ValueError:
+                    announced[chain_id] = -1
+            elif line.startswith(("ATOM  ", "HETATM", "MODEL ")):
+                break  # the sequence records come first
+    return {c: names for c, names in sequences.items() if len(names) == announced.get(c)}
+
+
+def _pdb_sequence_records(topology, path: Path) -> list[Optional[ChainSequence]]:
+    """One record per chain of a topology read from a PDB file (None where there is none)."""
+    sequences = _read_seqres(path)
+    records: list[Optional[ChainSequence]] = []
+    claimed: set = set()
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        polymer = [(k, r) for k, r in enumerate(residues) if _is_polymer_residue(r)]
+        sequence = sequences.get(chain.id)
+        # The first chain of an ID that holds amino acids takes the SEQRES of that ID.
+        if not polymer or sequence is None or chain.id in claimed:
+            records.append(None)
+            continue
+        aligned = _align_to_sequence([r for _, r in polymer], sequence)
+        if aligned is None:
+            logger.info(
+                "%s: the SEQRES records of chain %s match its residues at no single place; "
+                "missing residues of that chain are judged from the residue numbers",
+                path.name,
+                chain.id,
+            )
+            records.append(None)
+            continue
+        claimed.add(chain.id)
+        positions: list[Optional[int]] = [None] * len(residues)
+        for (k, _), position in zip(polymer, aligned):
+            positions[k] = position
+        records.append(ChainSequence("SEQRES", tuple(sequence), tuple(positions), chain.id))
+    return records
+
+
+def _cif_sequence_records(topology, path: Path) -> list[Optional[ChainSequence]]:
+    """One record per chain of a topology read from an mmCIF (None where there is none).
+
+    The position of a residue is the ``label_seq_id`` of its atoms, which numbers the
+    entity's ``_entity_poly_seq`` from 1, so no alignment is needed.
+    """
+    import gemmi
+
+    block = gemmi.cif.read(str(path))[0]
+    poly = block.find("_entity_poly_seq.", ["entity_id", "num", "mon_id"])
+    site = block.find("_atom_site.", ["id", "label_entity_id", "label_seq_id"])
+    no_records: list[Optional[ChainSequence]] = [None] * topology.getNumChains()
+    if not poly or not site:
+        return no_records
+
+    entity_sequences: dict[str, dict[int, str]] = {}
+    for row in poly:
+        # A heterogeneous position lists an alternative per row; the first is kept.
+        entity_sequences.setdefault(row.str(0), {}).setdefault(int(row.str(1)), row.str(2))
+    entity_sequences = {
+        entity: names
+        for entity, names in entity_sequences.items()
+        if sorted(names) == list(range(1, len(names) + 1))
+    }
+
+    place_of_atom: dict[str, tuple[str, int]] = {}
+    for row in site:
+        seq_id = row.str(2)  # gemmi reads the null values "." and "?" as ""
+        if seq_id not in ("", ".", "?"):
+            place_of_atom[row.str(0)] = (row.str(1), int(seq_id))
+
+    records: list[Optional[ChainSequence]] = []
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        places = [
+            next((place_of_atom[str(a.id)] for a in r.atoms() if str(a.id) in place_of_atom), None)
+            for r in residues
+        ]
+        entities = {place[0] for place in places if place is not None}
+        names = entity_sequences.get(next(iter(entities))) if len(entities) == 1 else None
+        if names is None or any(
+            place is not None and not _same_residue(names.get(place[1], ""), r.name)
+            for place, r in zip(places, residues)
+        ):
+            records.append(None)
+            continue
+        records.append(
+            ChainSequence(
+                "_entity_poly_seq",
+                tuple(names[k] for k in range(1, len(names) + 1)),
+                tuple(None if place is None else place[1] for place in places),
+                chain.id,
+            )
+        )
+    return records
+
+
+def attach_sequence_records(topology, source_path: str | Path) -> bool:
+    """Record on ``topology`` what the sequence records of its file say about each chain.
+
+    PDBFixer cannot report missing residues from a topology: it reads the sequence
+    records of a file, and the topology has none. ``load_structure`` calls this so that
+    ``core.system.find_missing_residues`` can still tell a truncated terminus from a
+    complete chain. The records are the SEQRES lines of a PDB file, aligned to the
+    residues of each chain by name and number, and the ``_entity_poly_seq`` of an mmCIF,
+    joined to the residues through ``label_seq_id``. Only chains of amino acids get one;
+    a chain whose residues the records do not fit at one place gets none.
+
+    Args:
+        topology: OpenMM Topology read from ``source_path``.
+        source_path: The PDB or mmCIF file.
+
+    Returns:
+        True when at least one chain got a record. False, with a log record where
+        something went wrong, when the file has none, gemmi is missing (mmCIF) or the
+        file cannot be read; :func:`sequence_records` then gives None for every chain.
+    """
+    path = Path(source_path)
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".pdb":
+            records = _pdb_sequence_records(topology, path)
+        elif suffix in (".cif", ".mmcif"):
+            records = _cif_sequence_records(topology, path)
+        else:
+            return False
+    except ImportError:
+        logger.debug("gemmi is not installed: the sequence records of %s are not read", path.name)
+        return False
+    except Exception as exc:  # noqa: BLE001 - optional extra: loading goes on without records
+        logger.warning(
+            "cannot read the sequence records of %s (%s: %s)", path.name, type(exc).__name__, exc
+        )
+        return False
+    if not any(records):
+        return False
+    setattr(topology, _SEQUENCE_RECORDS_ATTRIBUTE, tuple(records))
+    return True
+
+
+def sequence_records(topology) -> list[Optional[ChainSequence]]:
+    """The :class:`ChainSequence` of each chain of ``topology``, None where there is none.
+
+    A record belongs to the chain it was made for: one whose chain ID or residue count no
+    longer fits (a topology that was edited since the file was read) is ignored.
+    """
+    recorded = getattr(topology, _SEQUENCE_RECORDS_ATTRIBUTE, None)
+    chains = list(topology.chains())
+    if recorded is None or len(recorded) != len(chains):
+        return [None] * len(chains)
+    return [
+        record
+        if record is not None
+        and record.chain_id == chain.id
+        and len(record.positions) == sum(1 for _ in chain.residues())
+        else None
+        for record, chain in zip(recorded, chains)
+    ]
 
 
 def openmm_chain_id(topology, author_id: str) -> Optional[str]:

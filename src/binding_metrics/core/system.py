@@ -26,7 +26,12 @@ from binding_metrics.core.residues import (
     residue_label,
     residue_number,
 )
-from binding_metrics.io.structures import author_chain_ids, copy_author_chain_ids
+from binding_metrics.io.structures import (
+    author_chain_ids,
+    copy_author_chain_ids,
+    has_alpha_carbon,
+    sequence_records,
+)
 from binding_metrics.utils import add_to_report, extend_report
 
 log = logging.getLogger(__name__)
@@ -255,19 +260,16 @@ def _topology_to_fixer(topology, positions) -> "PDBFixer":
 _PEPTIDE_BOND_MAX_ANGSTROM = 2.0
 
 
-def _count_residue_gaps(topology, positions) -> int:
-    """Count places where a chain skips residues (unresolved loops).
+def _numbering_gaps(topology, positions):
+    """Yield ``(chain, residue before, residue after, n_missing)`` for each numbering gap.
 
     A gap is a pair of consecutive amino-acid residues in one chain whose residue
-    numbers jump by more than 1 and whose C and N atoms are not bonded. The
-    distance test keeps a chain that is merely renumbered from being counted.
-    When the C or N atom is absent, or sits at the origin as a placeholder, the
-    numbering jump alone decides.
-
-    Call it on the topology as loaded from the file. PDBFixer's own
-    ``missingResidues`` cannot serve: it reads the sequence records of the input
-    file, which the topology-to-CIF round trip in :func:`_topology_to_fixer` does
-    not carry, and that round trip also renumbers residues from 1 in each chain.
+    numbers jump by more than 1 and whose C and N atoms are not bonded; ``n_missing``
+    is the number of residue numbers skipped. A residue with an insertion code shares
+    the number of its predecessor (60, 60A, 60B, 61), so it never makes a jump. The
+    distance test keeps a chain that is merely renumbered from being counted. When the
+    C or N atom is absent, or sits at the origin as a placeholder, the numbering jump
+    alone decides.
     """
     import numpy as np
 
@@ -281,13 +283,12 @@ def _count_residue_gaps(topology, positions) -> int:
             return None
         return xyz * 10.0
 
-    n_gaps = 0
     for chain in topology.chains():
         previous = None
         for res in chain.residues():
-            atoms = {a.name: a.index for a in res.atoms()}
-            if "CA" not in atoms:
+            if not has_alpha_carbon(res):
                 continue  # water, ion, ligand or nucleotide
+            atoms = {a.name: a.index for a in res.atoms()}
             if previous is not None:
                 try:
                     jump = int(res.id) - int(previous[0].id)
@@ -302,9 +303,48 @@ def _count_residue_gaps(topology, positions) -> int:
                         and np.linalg.norm(c_xyz - n_xyz) < _PEPTIDE_BOND_MAX_ANGSTROM
                     )
                     if not bonded:
-                        n_gaps += 1
+                        yield chain, previous[0], res, jump - 1
             previous = (res, atoms)
-    return n_gaps
+
+
+def _count_residue_gaps(topology, positions) -> int:
+    """Count places where a chain skips residues (unresolved loops).
+
+    See :func:`_numbering_gaps` for what counts. Call it on the topology as loaded
+    from the file. PDBFixer's own ``missingResidues`` cannot serve: it reads the
+    sequence records of the input file, which the topology-to-CIF round trip in
+    :func:`_topology_to_fixer` does not carry, and that round trip also renumbers
+    residues from 1 in each chain.
+    """
+    return sum(1 for _ in _numbering_gaps(topology, positions))
+
+
+def _chain_breaks(topology, positions):
+    """Yield ``(chain, residue before, residue after, distance in A)`` for each chain break."""
+    import numpy as np
+
+    coords_nm = np.array(positions.value_in_unit(unit.nanometer))
+
+    def _atom_angstrom(atoms: dict, name: str):
+        index = atoms.get(name)
+        if index is None or np.abs(coords_nm[index]).max() < _ORIGIN_PLACEHOLDER_TOL_NM:
+            return None
+        return coords_nm[index] * 10.0
+
+    for chain in topology.chains():
+        previous = None
+        for res in chain.residues():
+            atoms = {a.name: a.index for a in res.atoms()}
+            if "CA" not in atoms and res.name not in TERMINAL_CAP_NAMES | {"FOR"}:
+                continue  # water, ion, ligand or nucleotide
+            if previous is not None:
+                c_xyz = _atom_angstrom(previous[1], "C")
+                n_xyz = _atom_angstrom(atoms, "N")
+                if c_xyz is not None and n_xyz is not None:
+                    distance = float(np.linalg.norm(c_xyz - n_xyz))
+                    if distance > _PEPTIDE_BOND_MAX_ANGSTROM:
+                        yield chain, previous[0], res, distance
+            previous = (res, atoms)
 
 
 def find_chain_breaks(topology, positions) -> list:
@@ -328,40 +368,200 @@ def find_chain_breaks(topology, positions) -> list:
         code appended when there is one: ``"60B"``) and
         ``c_n_distance_angstrom``.
     """
-    import numpy as np
-
-    coords_nm = np.array(positions.value_in_unit(unit.nanometer))
     author_ids = author_chain_ids(topology)
+    return [
+        {
+            "chain": author_ids[chain.index],
+            "residue_before": residue_number(before),
+            "residue_after": residue_number(after),
+            "c_n_distance_angstrom": round(distance, 2),
+        }
+        for chain, before, after, distance in _chain_breaks(topology, positions)
+    ]
 
-    def _atom_angstrom(atoms: dict, name: str):
-        index = atoms.get(name)
-        if index is None or np.abs(coords_nm[index]).max() < _ORIGIN_PLACEHOLDER_TOL_NM:
-            return None
-        return coords_nm[index] * 10.0
 
-    breaks = []
+#: ``detected_by`` of a ``find_missing_residues`` entry that the sequence records of the
+#: input file gave: the SEQRES of a PDB file and the ``_entity_poly_seq`` of an mmCIF.
+_SEQUENCE_RECORD_SOURCES = ("SEQRES", "_entity_poly_seq")
+
+
+def _missing_entry(
+    chain: str,
+    kind: str,
+    detected_by: str,
+    n_residues: Optional[int],
+    before=None,
+    after=None,
+    terminus: Optional[str] = None,
+    sequence_positions: Optional[list] = None,
+) -> dict:
+    return {
+        "chain": chain,
+        "kind": kind,
+        "terminus": terminus,
+        "n_residues": n_residues,
+        "residue_before": None if before is None else residue_number(before),
+        "residue_after": None if after is None else residue_number(after),
+        "sequence_positions": sequence_positions,
+        "detected_by": detected_by,
+    }
+
+
+def _missing_from_records(chain, author_id: str, record) -> Optional[list]:
+    """The entries of one chain whose sequence record is known, or None when it cannot serve.
+
+    The positions of the modelled residues in the sequence must increase along the chain;
+    a chain whose numbering runs backwards (a circular permutation) is left to the
+    numbering.
+    """
+    placed = [
+        (residue, position)
+        for residue, position in zip(chain.residues(), record.positions)
+        if position is not None
+    ]
+    if not placed:
+        return []
+    positions = [position for _, position in placed]
+    if any(later <= earlier for earlier, later in zip(positions, positions[1:])):
+        return None
+
+    source = record.source
+    entries = []
+    if positions[0] > 1:
+        entries.append(
+            _missing_entry(
+                author_id,
+                "terminal_tail",
+                source,
+                positions[0] - 1,
+                after=placed[0][0],
+                terminus="N",
+                sequence_positions=[1, positions[0] - 1],
+            )
+        )
+    for (before, first), (after, last) in zip(placed, placed[1:]):
+        if last - first > 1:
+            entries.append(
+                _missing_entry(
+                    author_id,
+                    "gap",
+                    source,
+                    last - first - 1,
+                    before=before,
+                    after=after,
+                    sequence_positions=[first + 1, last - 1],
+                )
+            )
+    n_sequence = len(record.residues)
+    if positions[-1] < n_sequence:
+        entries.append(
+            _missing_entry(
+                author_id,
+                "terminal_tail",
+                source,
+                n_sequence - positions[-1],
+                before=placed[-1][0],
+                terminus="C",
+                sequence_positions=[positions[-1] + 1, n_sequence],
+            )
+        )
+    return entries
+
+
+def find_missing_residues(topology, positions) -> list:
+    """List the residues a model is missing: unresolved loops and truncated chain ends.
+
+    Nothing is rebuilt. PDBFixer could do it from the sequence records of the input
+    file, but ``prep_structure`` hands it a topology rewritten as a CIF that has none,
+    and a rebuilt loop or tail would be invented coordinates that enter the interaction
+    energy, the shape complementarity and the surface areas. This only reports.
+
+    Where ``io.structures.load_structure`` recorded the sequence of a chain (SEQRES of a
+    PDB file, ``_entity_poly_seq`` of an mmCIF) the chain is compared with it: the
+    positions of the sequence that no residue occupies are missing, at the ends of the
+    chain (terminal tails) and between two modelled residues (gaps). Without a record
+    only gaps can be found, from the residue numbers and the geometry of the model:
+
+    * the numbers jump by more than 1 and the C and N atoms of the two neighbours are not
+      bonded (``"numbering"``). Residues with insertion codes share a number (60, 60A,
+      60B, 61), so they never make a jump, and a renumbered chain whose atoms are bonded
+      is not a gap;
+    * the numbers are consecutive but the neighbours are more than 2.0 A apart
+      (``"chain_break"``): a break of unknown size, which :func:`find_chain_breaks` lists
+      as well. A chain with a sequence record is not searched for it, because its
+      numbering is complete.
+
+    Only chains of amino acids are searched.
+
+    Returns:
+        A list of dicts, chains in order and each chain from its N- to its C-terminus.
+        Each has the keys ``chain`` (author chain ID), ``kind`` (``"gap"`` or
+        ``"terminal_tail"``), ``terminus`` (``"N"`` or ``"C"`` for a tail, else None),
+        ``n_residues`` (None for a chain break of unknown size), ``residue_before`` and
+        ``residue_after`` (the modelled neighbours as residue numbers with their insertion
+        code; None on the side of a tail that has no neighbour), ``sequence_positions``
+        (``[first, last]`` in the sequence record, else None) and ``detected_by``
+        (``"SEQRES"``, ``"_entity_poly_seq"``, ``"numbering"`` or ``"chain_break"``).
+    """
+    author_ids = author_chain_ids(topology)
+    records = sequence_records(topology)
+
+    # Per chain, the gaps by the residue after them, in chain order. A numbering gap
+    # replaces the chain break at the same place: it knows how many residues are missing.
+    found: dict[int, dict[int, dict]] = {}
+    for chain, before, after, _ in _chain_breaks(topology, positions):
+        found.setdefault(chain.index, {})[after.index] = _missing_entry(
+            author_ids[chain.index], "gap", "chain_break", None, before=before, after=after
+        )
+    for chain, before, after, n_skipped in _numbering_gaps(topology, positions):
+        found.setdefault(chain.index, {})[after.index] = _missing_entry(
+            author_ids[chain.index], "gap", "numbering", n_skipped, before=before, after=after
+        )
+
+    missing = []
     for chain in topology.chains():
-        previous = None
-        for res in chain.residues():
-            atoms = {a.name: a.index for a in res.atoms()}
-            if "CA" not in atoms and res.name not in TERMINAL_CAP_NAMES | {"FOR"}:
-                continue  # water, ion, ligand or nucleotide
-            if previous is not None:
-                c_xyz = _atom_angstrom(previous[1], "C")
-                n_xyz = _atom_angstrom(atoms, "N")
-                if c_xyz is not None and n_xyz is not None:
-                    distance = float(np.linalg.norm(c_xyz - n_xyz))
-                    if distance > _PEPTIDE_BOND_MAX_ANGSTROM:
-                        breaks.append(
-                            {
-                                "chain": author_ids[chain.index],
-                                "residue_before": residue_number(previous[0]),
-                                "residue_after": residue_number(res),
-                                "c_n_distance_angstrom": round(distance, 2),
-                            }
-                        )
-            previous = (res, atoms)
-    return breaks
+        record = records[chain.index]
+        from_records = (
+            _missing_from_records(chain, author_ids[chain.index], record)
+            if record is not None
+            else None
+        )
+        if from_records is not None:
+            missing.extend(from_records)
+        else:
+            missing.extend(entry for _, entry in sorted(found.get(chain.index, {}).items()))
+    return missing
+
+
+def _describe_missing(entry: dict) -> str:
+    n_residues = entry["n_residues"]
+    if entry["kind"] == "terminal_tail":
+        first, last = entry["sequence_positions"]
+        return (
+            f"{n_residues} at the {entry['terminus']}-terminus (sequence positions {first}-{last})"
+        )
+    return f"{n_residues} between residues {entry['residue_before']} and {entry['residue_after']}"
+
+
+def _warn_missing_residues(missing: list) -> None:
+    """One warning per chain for the entries ``find_missing_residues`` found.
+
+    A chain break of unknown size has its own warning (``prep_structure`` logs every break
+    it finds), so it is not repeated here.
+    """
+    by_chain: dict[str, list] = {}
+    for entry in missing:
+        if entry["detected_by"] != "chain_break":
+            by_chain.setdefault(entry["chain"], []).append(entry)
+    for chain_id, entries in by_chain.items():
+        sources = sorted({e["detected_by"] for e in entries})
+        log.warning(
+            "Missing residues in chain %s: %s. Found from %s. The residues are not in the "
+            "model and prep does not rebuild them.",
+            chain_id,
+            "; ".join(_describe_missing(e) for e in entries),
+            " and ".join("the residue numbers" if s == "numbering" else s for s in sources),
+        )
 
 
 def find_open_c_termini(topology) -> list:
@@ -680,7 +880,15 @@ def prep_structure(
             * ``n_missing_atoms_rebuilt`` (int): heavy atoms PDBFixer added,
               including atoms deleted as origin placeholders and terminal OXT.
             * ``n_missing_residue_gaps`` (int): chain positions where residues
-              are unresolved and were left as a gap, not rebuilt.
+              are unresolved and were left as a gap, not rebuilt. Terminal tails
+              are not counted.
+            * ``missing_residues`` (list[dict]): the residues the input lacks, each as
+              ``{"chain", "kind", "terminus", "n_residues", "residue_before",
+              "residue_after", "sequence_positions", "detected_by"}`` (see
+              :func:`find_missing_residues`): a gap or a terminal tail, found from the
+              SEQRES or ``_entity_poly_seq`` records of the input file when it has them
+              and from the residue numbers and chain breaks otherwise. Prep logs a
+              warning for each chain and rebuilds nothing.
             * ``chain_breaks`` (list[dict]): consecutive residues of one chain whose C
               and N atoms are more than 2.0 A apart in the input, each as ``{"chain",
               "residue_before", "residue_after", "c_n_distance_angstrom"}`` (see
@@ -715,6 +923,18 @@ def prep_structure(
     input_author_ids = author_chain_ids(topology)  # the names a user knows the chains by
     n_residue_gaps = _count_residue_gaps(topology, positions)
     chain_breaks = find_chain_breaks(topology, positions)
+    missing_residues = find_missing_residues(topology, positions)
+    _warn_missing_residues(missing_residues)
+    # A gap that the sequence records show and the numbering does not (a chain renumbered
+    # after its loop was cut out) is unresolved all the same.
+    n_residue_gaps = max(
+        n_residue_gaps,
+        sum(
+            1
+            for entry in missing_residues
+            if entry["kind"] == "gap" and entry["detected_by"] in _SEQUENCE_RECORD_SOURCES
+        ),
+    )
     for gap in chain_breaks:
         log.warning(
             "Chain break in chain %s: residues %s and %s are %.2f A apart (C to N). "
@@ -827,6 +1047,7 @@ def prep_structure(
         add_to_report(report, "n_missing_atoms_rebuilt", n_atoms_rebuilt)
         add_to_report(report, "n_missing_residue_gaps", n_residue_gaps)
         extend_report(report, "chain_breaks", chain_breaks)
+        extend_report(report, "missing_residues", missing_residues)
 
     # Chains that keep at least one residue, by the caller's ID. Modeller.delete drops
     # a chain that ends up empty (the water chains of a PDB file) and keeps the order.
