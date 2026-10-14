@@ -367,9 +367,10 @@ class TestSyntheticSet:
         assert list(result["aggregates"]) == ["backend_a", "backend_b", "all"]
         assert result["aggregates"]["all"]["frame.n_paired"]["n_total"] == 6
 
-    def test_the_native_scores_are_aggregated_too(self, result):
-        entry = result["aggregates"]["all"]["native.ranking_score"]
-        assert entry["n_ok"] == 6
+    def test_the_native_scores_are_aggregated_within_each_back_end(self, result):
+        for group in ("backend_a", "backend_b"):
+            assert result["aggregates"][group]["native.ranking_score"]["n_ok"] == 3
+        assert "native.ranking_score" not in result["aggregates"]["all"]
 
     def test_the_spread_per_position_and_the_overlap_of_the_interfaces(self, result):
         spread = result["agreement"]["spread"]
