@@ -302,7 +302,7 @@ class TestTheDeclarations:
             report = preflight(PROFILE, [], "boltz2", mode=mode)
             assert report.compatible
             (warning,) = [w for w in report.warnings if "force: true" in w]
-            assert "guidance term" in warning and "measured once" in warning
+            assert "guidance term" in warning and "not reproduced exactly" in warning
         for mode in ("predict", "refold", "score"):
             assert preflight(PROFILE, [], "boltz2", mode=mode).warnings == ()
 

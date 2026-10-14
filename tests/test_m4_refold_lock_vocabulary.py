@@ -197,7 +197,7 @@ class TestOnlyBoltz2RunsIt:
         (warning,) = report.warnings
         assert warning.startswith("predictor Boltz-2 2.2.1: ")
         assert "force: true" in warning and "guidance term" in warning
-        assert "weight 0.1" in warning and "measured once" in warning
+        assert "weight 0.1" in warning and "not reproduced exactly" in warning
 
     def test_the_runner_of_boltz2_builds_an_input_for_it(self):
         from binding_metrics.predictors.boltz2_runner import RUN_MODES

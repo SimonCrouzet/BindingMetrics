@@ -265,7 +265,7 @@ class TestTheDeclarationAndThePreflightCheck:
         sentence = self.caps.caveats["modes:refold-lock"]
         for part in ("force: true", "TemplateReferencePotential", "weight 0.1", "not a hard"):
             assert part in sentence
-        assert "receptor" in sentence and "measured once" in sentence
+        assert "receptor" in sentence and "not reproduced exactly" in sentence
 
     def test_the_check_accepts_boltz2_for_a_peptide_and_warns_once(self):
         profile = profile_input(YCR, "B", "A")
