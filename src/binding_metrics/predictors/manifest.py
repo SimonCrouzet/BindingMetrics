@@ -1,10 +1,10 @@
 """A table of the samples that a set of predictions holds: one row per backend, seed and sample.
 
-``manifest(session, requests)`` answers "what did these runs produce?" from the store and the
-session memory. It never starts a model: a request with nothing stored gets a row that says so,
-and a request whose run failed gets a row with the stored reason. The rows are plain dictionaries
-of JSON values (``json.dumps(manifest(...))`` works), in a fixed order, so two calls on the same
-store give equal lists whatever order the requests came in.
+``manifest(session, requests)`` lists what the runs produced, from the store and the session
+memory. It never starts a model: a request with nothing stored gets a row that says so, and a
+request whose run failed gets a row with the stored reason. The rows are dictionaries of JSON
+values, in a fixed order, so two calls on the same store give equal lists whatever order the
+requests came in.
 
 Public names and signatures (the module imports the standard library only)::
 
@@ -14,10 +14,9 @@ Public names and signatures (the module imports the standard library only)::
     COLUMNS: tuple[str, ...]            # the keys every row has, in order
     STATUS_MISSING = "missing"
 
-``binding_metrics.predictors`` exports the function as ``prediction_manifest``, because its
-attribute ``manifest`` is this module: importing a submodule binds its name on the package, so a
-function of the same name would be replaced by the module as soon as anything imports it. Call
-``from binding_metrics.predictors import prediction_manifest`` or ``from
+``binding_metrics.predictors`` exports the function as ``prediction_manifest``: importing the
+submodule binds ``manifest`` on the package to the module, which would replace a function of that
+name. Use ``from binding_metrics.predictors import prediction_manifest`` or ``from
 binding_metrics.predictors.manifest import manifest``.
 
 Columns (every row has all of them; ``None`` where a value does not apply)::
@@ -56,9 +55,8 @@ on the content of the requests and nothing else. A request given twice makes one
 
 Ranks. A sample's rank is its position inside its seed when the samples are sorted by the
 model's score, highest first, with ties in the model's natural order. Boltz-2, Protenix and
-ColabFold number their samples by rank, so a sample without a score takes its position. OpenFold3
-writes a score for each sample but its sample numbers are not a ranking, and the manifest leaves
-its rank empty rather than invent an order that the model does not define.
+ColabFold number their samples by rank, so a sample without a score takes its position. The
+sample numbers of OpenFold3 are not a ranking, and its rank is None.
 """
 
 from __future__ import annotations
