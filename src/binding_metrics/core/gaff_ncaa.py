@@ -11,8 +11,6 @@ OpenMM's native template matcher understands ``<ExternalBond>``.
 
 Per non-canonical residue the generator:
 
-Per non-canonical residue the generator:
-
 1. Builds an RDKit heavy-atom molecule from the residue's intra-residue topology
    bonds, adding a carbon cap atom at each external bond (a bond with exactly one
    endpoint inside the residue: backbone N/C and any cyclic-closure atom),
