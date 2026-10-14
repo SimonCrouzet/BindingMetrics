@@ -54,13 +54,15 @@ residue.
 
 ``status`` is ``"failed"`` when the structure could not be read, a chain is missing or the pose
 could not be placed on the reference (nothing else is attempted; ``reason`` says why),
-``"partial"`` when a metric raised, was skipped or reported a ``reason``, else ``"ok"``.
-``reasons`` maps the stage (``load``, ``chains``, ``frame``, ``profile``, ``agreement``) or the
-metric name to a sentence; a metric that raised has no block and its sentence is
-``"<ExceptionType>: <message>"``. A failed pose counts in ``n_total`` of the aggregates and never
-in ``n_ok``. No value is NaN unless a registry metric returned it; ``nonfinite_fields`` lists
-the paths of those. ``independent_of_design`` is None unless ``design_source`` is given (see the
-argument).
+``"partial"`` when a metric raised, was skipped, reported a failure or reported a ``reason``,
+else ``"ok"``. ``reasons`` maps the stage (``load``, ``chains``, ``frame``, ``profile``,
+``agreement``) or the metric name to a sentence; a metric that raised has no block and its
+sentence is ``"<ExceptionType>: <message>"``. A metric that reports its own failure or skip in
+its result (see ``_result_status``) keeps its block and the sentence is the metric's own text;
+a block that holds no result gets that text as its ``reason`` too, so the aggregates drop its
+fields. A failed pose counts in ``n_total`` of the aggregates and never in ``n_ok``. No value is
+NaN unless a registry metric returned it; ``nonfinite_fields`` lists the paths of those.
+``independent_of_design`` is None unless ``design_source`` is given (see the argument).
 
 The design origin. Checks that need a model independent of the designer
 (``INDEPENDENCE_DEPENDENT_CHECKS`` of ``binding_metrics.capabilities``, today
@@ -79,11 +81,14 @@ run and are not part of ``input_key``, the SHA-256 of the inputs and parameters.
 ``to_json(include_timing=False)`` is byte-identical for the same inputs.
 
 Errors. ``on_error="record"`` (default) turns a pose that cannot be loaded or placed, and a
-metric that raises, into a row with a reason. ``on_error="raise"`` raises ``PoseScoringError``
-at the first pose (in id order) whose row would be ``failed`` or whose metric raised, chained to
-the original exception when there is one, and does not process the poses after it. A metric
-that returns a ``reason`` is not an exception in either mode. A refused pre-flight check
-raises ``IncompatibleInputError`` before any pose is scored.
+metric that raises or reports a failure in its result, into a row with a reason.
+``on_error="raise"`` raises ``PoseScoringError`` at the first pose (in id order) whose row would
+be ``failed`` or whose metric raised or reported a failure, chained to the original exception
+when there is one, and does not process the poses after it. A metric that reports a failure
+is one whose result has a truthy ``error``, or ``success=False``. A metric that is skipped,
+that fails in part (``success`` true with an ``error_message``, as one failed mode of
+``compute_interaction_energy``) or that returns a ``reason`` is not an exception in either mode.
+A refused pre-flight check raises ``IncompatibleInputError`` before any pose is scored.
 
 Importing this module imports numpy, the standard library and the pose modules; biotite is
 imported when a structure is read.
@@ -1022,6 +1027,55 @@ class _NotApplicableError(Exception):
     """A requested block that the pose cannot have (not a failure of the pose)."""
 
 
+@dataclass(frozen=True)
+class _ResultStatus:
+    """How a metric's result reads: ``kind`` is ``ok``, ``caveat``, ``skipped`` or ``failed``."""
+
+    kind: str
+    reason: Optional[str] = None
+
+
+_RESULT_OK = _ResultStatus("ok")
+_SKIPPED_WITHOUT_REASON = "skipped by the metric, which gave no reason"
+_FAILED_WITHOUT_MESSAGE = "the metric reported success=False without a message"
+
+
+def _text_of(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) and value else None
+
+
+def _result_status(block: Any) -> _ResultStatus:
+    """The one reading of what a metric says about itself in its (JSON-plain) result.
+
+    A registry metric reports itself in four shapes, read in this order:
+
+    * ``{"skipped": True}``, with an optional ``reason``: the metric did not run (``skipped``).
+    * a truthy ``error``, or ``success`` False (its text is the ``error_message``, else the
+      ``reason``): the metric produced no result, and the other fields are sentinels or inputs
+      (``failed``). An ``error`` that is None or empty says that nothing failed.
+    * ``error_message`` with ``success`` not False: part of the metric failed and the rest is
+      valid; ``compute_interaction_energy`` does it when one of its modes fails, and names the
+      mode (``caveat``).
+    * a ``reason``: the metric could not compute some of its values (``caveat``).
+
+    ``reason`` of the returned status is the sentence for the row's ``reasons``. The single run
+    counts the ``failed`` shapes as failures too (``binding_metrics.cli.run._collect_failures``).
+    """
+    if not isinstance(block, Mapping):
+        return _RESULT_OK
+    reason = _text_of(block.get("reason"))
+    if block.get("skipped"):
+        return _ResultStatus("skipped", reason or _SKIPPED_WITHOUT_REASON)
+    if block.get("error"):
+        return _ResultStatus("failed", str(block["error"]))
+    message = _text_of(block.get("error_message"))
+    if block.get("success") is False:
+        return _ResultStatus("failed", message or reason or _FAILED_WITHOUT_MESSAGE)
+    if message or reason:
+        return _ResultStatus("caveat", message or reason)
+    return _RESULT_OK
+
+
 @dataclass
 class _Outcome:
     """What the per-pose stage hands back: the row, the placed atoms and how it failed."""
@@ -1125,10 +1179,21 @@ def _fail(outcome: _Outcome, stage: str, text: str, exc: Optional[BaseException]
         outcome.failure, outcome.exception = (stage, text), exc
 
 
-def _note(outcome: _Outcome, stage: str, text: str, exc: Optional[BaseException] = None) -> None:
-    """Record a reason for a stage or metric without failing the row."""
+def _note(
+    outcome: _Outcome,
+    stage: str,
+    text: str,
+    exc: Optional[BaseException] = None,
+    *,
+    failure: bool = False,
+) -> None:
+    """Record a reason for a stage or metric without failing the row.
+
+    With ``exc`` or ``failure`` the outcome also becomes the failure that ``on_error="raise"``
+    raises for (``failure`` is for a metric that reported its failure without raising).
+    """
     outcome.row["reasons"][stage] = text
-    if outcome.failure is None and exc is not None:
+    if outcome.failure is None and (exc is not None or failure):
         outcome.failure, outcome.exception = (stage, text), exc
 
 
@@ -1336,10 +1401,19 @@ def _run_plans(
                 return
             continue
         plain = _plain(block)
+        status = _result_status(plain)
+        if status.kind in ("failed", "skipped") and not _text_of(plain.get("reason")):
+            # nothing in the block is a result, so the aggregates must not count its fields
+            plain = {**plain, "reason": status.reason}
         row[name] = plain
-        reason = plain.get("reason") if isinstance(plain, dict) else None
-        if isinstance(reason, str) and reason:
-            row["reasons"][name] = reason
+        if status.reason is None:
+            continue
+        row["reasons"][name] = status.reason
+        if status.kind == "failed":
+            logger.warning("metric %s failed on pose %s: %s", name, pose.id, status.reason)
+            if ctx.raise_mode:
+                _note(outcome, name, status.reason, failure=True)
+                return
 
 
 def _pose_stage(pose: Pose, index: int, ctx: _Context) -> _Outcome:
