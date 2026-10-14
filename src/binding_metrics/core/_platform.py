@@ -64,7 +64,7 @@ def unusable_reason(name: str) -> str | None:
             _create_probe_context(platform)
         except openmm.OpenMMException as exc:
             _probe_results[name] = str(exc)
-            logger.info("OpenMM platform %s is registered but unusable: %s", name, exc)
+            logger.warning("OpenMM platform %s is registered but unusable: %s", name, exc)
         else:
             _probe_results[name] = None
     return _probe_results[name]

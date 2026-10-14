@@ -66,6 +66,17 @@ class TestProbe:
         assert _platform.usable_platform("CUDA") is False
         assert _platform.unusable_reason("CUDA") == NO_DEVICE
 
+    def test_a_registered_platform_without_a_context_is_reported_once(self, monkeypatch, caplog):
+        FakePlatforms(monkeypatch, ALL, broken={"CUDA": NO_DEVICE})
+
+        with caplog.at_level("WARNING", logger=_platform.logger.name):
+            _platform.usable_platform("CUDA")
+            _platform.usable_platform("CUDA")
+
+        reports = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(reports) == 1
+        assert "CUDA" in reports[0].getMessage() and NO_DEVICE in reports[0].getMessage()
+
     def test_a_platform_that_is_not_registered_is_not_usable(self, monkeypatch):
         FakePlatforms(monkeypatch, ("CPU", "Reference"))
 
