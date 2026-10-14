@@ -3,9 +3,8 @@
 Each ``MetricSpec`` describes one metric function without importing it: where it
 lives, what input it takes, how chains are passed, and how to read and schedule
 the result. ``METRICS`` lists the specs, ``get_metric`` looks one up by name and
-``metrics_by_input_type`` filters by input type. The functions are the API of
-the package; the registry is the adapter that lets a generic caller drive them
-without knowing their signatures, so metrics have no common base class.
+``metrics_by_input_type`` filters by input type. The registry lets a generic
+caller drive the metric functions without knowing their signatures.
 
 What a consumer may rely on
 ---------------------------
@@ -30,9 +29,8 @@ What a consumer may rely on
   tuple) means "not declared", never a guess.
 * ``capabilities`` is an optional, keyword-only ``binding_metrics.capabilities.Capabilities``:
   the inputs the metric cannot take (a receptor chain, a reference structure, a ring closure
-  its force field cannot patch), each with a sentence that says why. None declares no limit,
-  and a limit is declared only where the code of the metric shows it. ``preflight`` reads it
-  to refuse an input before anything runs.
+  its force field cannot patch), each with a sentence that says why. None declares no limit.
+  ``preflight`` reads it to refuse an input before anything runs.
 
 Building a call from a spec
 ---------------------------
@@ -277,12 +275,12 @@ class MetricSpec:
 # Declared limits
 # ---------------------------------------------------------------------------
 #
-# Each entry states a limit that the code of the metric shows, and its ``reasons`` sentence names
+# Each entry states a limit that the code of the metric shows; its ``reasons`` sentence names
 # that code (the function and what it does) and says what to do instead. A metric with no entry
-# has no limit that could be proved, not a proof that it has none: the ones considered and left
-# out are listed in docs/preflight.md. tests/test_pre_metric_limits.py runs the metrics on an
-# input that breaks the limit and pins the behaviour the sentence describes, so a metric that
-# starts to handle the input makes its test fail and the entry has to go.
+# has no provable limit; the metrics considered and left out are listed in docs/preflight.md.
+# tests/test_pre_metric_limits.py runs each metric on an input that breaks the limit and pins
+# the behaviour the sentence describes, so the entry has to go when the metric starts to
+# handle the input.
 
 
 def _needs(need: str, why: str) -> Capabilities:
@@ -677,10 +675,9 @@ METRICS: list[MetricSpec] = [
         requires_extras=("biotite",),
     ),
     # --- Reference-based accuracy metrics -----------------------------------
-    # These require a *reference* (native) structure and only make sense for
-    # benchmarking / retrospective validation, not for scoring a design in
-    # isolation. path_arg = predicted model, secondary_path_arg = reference.
-    # DockQ performs its own automatic optimal chain-mapping search.
+    # These require a reference (native) structure, so they apply to benchmarking and
+    # retrospective validation. path_arg = predicted model, secondary_path_arg = reference.
+    # DockQ searches for the optimal chain mapping itself.
     MetricSpec(
         name="dockq",
         capabilities=_NEEDS_A_REFERENCE,
@@ -703,8 +700,8 @@ METRICS: list[MetricSpec] = [
     #   "ligand_indices"   — atom indices for the ligand/peptide chain
     #   "receptor_indices" — atom indices for the receptor chain
     #   "receptor_chain"   — chain ID string (compute_receptor_drift only)
-    # ligand_indices / receptor_indices are auto-computed from ligand_chain /
-    # receptor_chain in the manifest, so users never have to supply raw indices.
+    # The runner computes ligand_indices / receptor_indices from ligand_chain /
+    # receptor_chain in the manifest.
     MetricSpec(
         name="interaction_energy",
         import_path="binding_metrics.metrics.energy:calculate_interaction_energy",
