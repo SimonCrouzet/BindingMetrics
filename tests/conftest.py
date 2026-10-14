@@ -9,6 +9,18 @@ import pytest
 # Allow `from conftest import ...` in test files
 sys.path.insert(0, str(Path(__file__).parent))
 
+from _tiers import (  # noqa: E402 - needs the line above
+    GPU,
+    HEAVY,
+    TIER_MARKERS,
+    TierCounts,
+    TierRequest,
+    describe,
+    is_named,
+    kind_of,
+    named_targets,
+)
+
 # ---------------------------------------------------------------------------
 # GPU / CUDA availability
 # ---------------------------------------------------------------------------
@@ -33,9 +45,10 @@ def requires_cuda(item):
 
     Applies both halves deliberately:
 
-    - the ``gpu`` marker, so ``-m "not gpu"`` deselects it. This is what makes
-      the GPU tier addressable as a set — CI cannot run these, but it can still
-      collect them to prove they import.
+    - the ``gpu`` marker, so that neither the default tier nor ``--full`` runs it
+      and ``--gpu`` (or ``-m gpu``) selects it. This is what makes the GPU tier
+      addressable as a set — CI cannot run these, but it can still collect them
+      to prove they import.
     - ``skipif``, so that selecting the gpu tier on a machine without a device
       skips cleanly instead of erroring.
 
@@ -53,27 +66,49 @@ BEST_PLATFORM = "CUDA" if HAS_CUDA else "CPU"
 
 
 # ---------------------------------------------------------------------------
-# Guard against untagged slow tests
+# Options: the test tiers and the guard against untagged slow tests
 # ---------------------------------------------------------------------------
 
-# The everyday run leaves out whatever carries one of these markers (docs/testing.md), so a test
-# that grows slow and has none of them silently lengthens it. The guard lists such tests at the
-# end of a session. It only reports unless --strict-slow is given, because a duration depends on
-# the load of the machine (a run with -n inflates the times of the heavy tests).
-SPEED_MARKERS = ("slow", "integration", "openfold", "gpu")
+# The fast tier leaves out whatever carries one of these markers (docs/testing.md), so a test
+# that grows slow and has none of them silently lengthens the everyday run. The guard lists such
+# tests at the end of a session. It only reports unless --strict-slow is given, because a duration
+# depends on the load of the machine (a run with -n inflates the times of the heavy tests).
+SPEED_MARKERS = TIER_MARKERS
 SLOW_CALL_SECONDS = 2.0
 
 
 def pytest_addoption(parser):
-    group = parser.getgroup("slow-guard", "untagged slow tests")
-    group.addoption(
+    tiers = parser.getgroup("tiers", "test tiers (rules in tests/_tiers.py)")
+    tiers.addoption(
+        "--full",
+        action="store_true",
+        default=False,
+        help="also run the slow, integration and openfold tests: every test but the GPU ones. "
+        "Without it only the tests that carry none of slow, integration, openfold and gpu run",
+    )
+    tiers.addoption(
+        "--gpu",
+        action="store_true",
+        default=False,
+        help="also run the tests that carry the gpu marker (they skip without a CUDA device); "
+        "--full --gpu runs every test",
+    )
+    tiers.addoption(
+        "--tier-named",
+        action="store_true",
+        default=False,
+        help="apply the tier to the test files and node ids named on the command line too, "
+        "which otherwise run whatever their tier (for a script that names the files to run)",
+    )
+    guard = parser.getgroup("slow-guard", "untagged slow tests")
+    guard.addoption(
         "--strict-slow",
         action="store_true",
         default=False,
         help="fail the run when a test without a speed marker (slow, integration, openfold, gpu) "
         "takes --slow-seconds or more",
     )
-    group.addoption(
+    guard.addoption(
         "--slow-seconds",
         type=float,
         default=SLOW_CALL_SECONDS,
@@ -81,6 +116,78 @@ def pytest_addoption(parser):
         help="duration of the call of a test from which it should carry a speed marker "
         f"(default {SLOW_CALL_SECONDS})",
     )
+
+
+# ---------------------------------------------------------------------------
+# Test tiers: the fast tier by default, --full and --gpu for the rest
+# ---------------------------------------------------------------------------
+
+
+class _TierSelection:
+    """Leaves out of the run the tests that its tier does not include (tests/_tiers.py).
+
+    The hook wraps the others, so it sees the tests that ``-k`` and ``-m`` leave and counts what
+    the tier holds back from those. A pytest-xdist worker collects and applies the same rule to
+    the same command line, so every worker ends with the same list; the controller never collects,
+    so it prints the line about the tier from the counts that the workers hand over at the end.
+    """
+
+    def __init__(self, config):
+        self.request = TierRequest(
+            full=config.getoption("--full"),
+            gpu=config.getoption("--gpu"),
+            tier_named=config.getoption("--tier-named"),
+            markexpr=config.option.markexpr,
+            named=named_targets(config.args, config.invocation_params.dir),
+        )
+        self.counts: TierCounts | None = None
+        self.printed = False
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_collection_modifyitems(self, config, items):
+        collected = len(items)
+        named = set()
+        if self.request.named and not self.request.chosen_by_hand:
+            named = {id(i) for i in items if is_named(str(i.path), i.nodeid, self.request.named)}
+        outcome = yield
+        if outcome.excinfo is not None:
+            return
+        kept, held = [], {HEAVY: [], GPU: []}
+        for item in items:
+            kind = kind_of(mark.name for mark in item.iter_markers())
+            if self.request.holds_back(kind, id(item) in named):
+                held[kind].append(item)
+            else:
+                kept.append(item)
+        deselected = held[HEAVY] + held[GPU]
+        if deselected:
+            config.hook.pytest_deselected(items=deselected)
+            items[:] = kept
+        self.counts = TierCounts(collected, len(items), len(held[HEAVY]), len(held[GPU]))
+        if hasattr(config, "workeroutput"):
+            config.workeroutput["tier_counts"] = self.counts.as_dict()
+
+    def pytest_report_collectionfinish(self, config):
+        if self.counts is None or hasattr(config, "workerinput"):
+            return None
+        self.printed = True
+        return describe(self.request, self.counts)
+
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_testnodedown(self, node, error):
+        counts = (getattr(node, "workeroutput", None) or {}).get("tier_counts")
+        if counts and self.counts is None:
+            self.counts = TierCounts(**counts)
+
+    def pytest_terminal_summary(self, terminalreporter, config):
+        if self.counts is not None and not self.printed and not hasattr(config, "workerinput"):
+            self.printed = True
+            terminalreporter.write_line(describe(self.request, self.counts))
+
+
+# ---------------------------------------------------------------------------
+# Guard against untagged slow tests
+# ---------------------------------------------------------------------------
 
 
 class _SlowGuard:
@@ -115,7 +222,7 @@ class _SlowGuard:
         noun, pronoun = ("test", "it") if count == 1 else ("tests", "them")
         terminalreporter.write_line(
             f"{count} {noun} took {self.threshold_seconds:g} s or more without any of "
-            f"{', '.join(SPEED_MARKERS)}, so the everyday run does not leave {pronoun} out. "
+            f"{', '.join(SPEED_MARKERS)}, so the fast tier does not leave {pronoun} out. "
             "scripts/tag_slow_tests.py tags a list of node ids."
         )
         for nodeid, seconds in sorted(self.untagged.items(), key=lambda item: -item[1]):
@@ -130,6 +237,7 @@ class _SlowGuard:
 
 
 def pytest_configure(config):
+    config.pluginmanager.register(_TierSelection(config), "test-tiers")
     # A pytest-xdist worker has no terminal; its reports reach the controller's guard.
     if not hasattr(config, "workerinput"):
         config.pluginmanager.register(_SlowGuard(config), "slow-guard")

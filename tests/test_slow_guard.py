@@ -190,7 +190,15 @@ class TestWithXdist:
             """
         )
         result = pytester.runpytest_subprocess(
-            "-q", "-p", "no:cacheprovider", "-n", "2", "--slow-seconds", "0.2", "--strict-slow"
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "-n",
+            "2",
+            "--full",  # the tagged test has to run to show that the guard does not list it
+            "--slow-seconds",
+            "0.2",
+            "--strict-slow",
         )
         assert result.ret == pytest.ExitCode.TESTS_FAILED
         assert listed(result) == ["test_sleep.py::test_a_slow_call_without_a_marker"]
