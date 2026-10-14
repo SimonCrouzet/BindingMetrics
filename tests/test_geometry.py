@@ -419,7 +419,7 @@ class TestShapeComplementarity:
         assert result["n_surface_dots_A"] > 0
         assert result["n_surface_dots_B"] > 0
 
-    def test_facing_slabs_are_complementary(self):
+    def test_facing_slabs_are_complementary(self, tmp_path):
         """Two facing atom slabs in vdW contact must give a high positive Sc.
 
         A cheap, self-contained calibration case: two multi-layer slabs whose
@@ -430,8 +430,6 @@ class TestShapeComplementarity:
         smoothed surface normal of the contact face is well defined.
         """
         _skip_if_no_biotite()
-        import tempfile
-
         import biotite.structure as struc
         import biotite.structure.io.pdb as pdb_io
 
@@ -461,11 +459,11 @@ class TestShapeComplementarity:
         arr.atom_name = np.array(["C"] * len(coords))
         arr.element = np.array(["C"] * len(coords))
 
-        with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as fh:
-            pf = pdb_io.PDBFile()
-            pf.set_structure(arr)
-            pf.write(fh.name)
-            result = compute_shape_complementarity(fh.name, peptide_chain="A", receptor_chain="B")
+        slabs = tmp_path / "slabs.pdb"
+        pf = pdb_io.PDBFile()
+        pf.set_structure(arr)
+        pf.write(str(slabs))
+        result = compute_shape_complementarity(slabs, peptide_chain="A", receptor_chain="B")
 
         if not np.isnan(result["sc"]):
             assert result["sc"] > 0.7, (
