@@ -109,7 +109,7 @@ The metric registry (`binding_metrics.metrics.registry`) declares the direction,
 
 ### Recommended: conda (GPU-accelerated)
 
-The force-field energies, the relaxation and the MD run on OpenMM; a CUDA-capable GPU makes them practical, and the pipeline warns when MD is requested on the CPU. The conda environment installs OpenMM from conda-forge with CUDA 12.4.
+The force-field energies, the relaxation and the MD run on OpenMM; a CUDA-capable GPU makes them practical, and the pipeline warns when MD is requested on the CPU. `--device cuda` and `platform="auto"` use the CUDA platform only when a context can be created on it, and the CPU platform otherwise. The conda environment installs OpenMM from conda-forge with CUDA 12.4.
 
 ```bash
 conda env create -f environment.yml   # creates the binding-metrics conda env
@@ -155,8 +155,9 @@ Pre-built images are available on Docker Hub (requires [NVIDIA Container Toolkit
 
 | Tag | Contents |
 |---|---|
-| `latest` / `main` | the `environment.yml` environment: OpenMM with CUDA 12.4, the dependencies of the `all` extra and the GAFF2 stack |
-| `full` | Everything in `latest` + OpenFold3 conda env |
+| `latest` | the `environment.yml` environment (OpenMM with CUDA 12.4, the dependencies of the `all` extra and the GAFF2 stack) as of the newest stable release tag |
+| `main` | the same environment as of the last push to `main` |
+| `full` | Everything in the `main` image + OpenFold3 conda env |
 | `<version>`, `<version>-full` | the same two images, built when a `v*` tag is pushed |
 
 ```bash
@@ -197,7 +198,7 @@ docker run --gpus all --rm \
     binding-metrics-relax --input /data/complex.cif --output /data/relaxed.cif
 ```
 
-Build locally with `docker build --target base -t simoncrouzet/binding-metrics:latest .` (or `--target full`). GitHub Actions rebuilds and pushes the images on every push to `main` and on version tags (`v*`).
+Build locally with `docker build --target base -t simoncrouzet/binding-metrics:latest .` (or `--target full`). GitHub Actions rebuilds and pushes the images on every push to `main` (tags `main` and `full`) and on version tags (`v*`), which push `<version>`, `<version>-full` and, for a stable version, `latest`.
 
 ### OpenFold3 (optional)
 
@@ -576,7 +577,7 @@ binding-metrics-run --config run.toml --input complex.cif --output-dir results/
 binding-metrics-batch --input-dir designs/ --output-csv metrics.csv --workers 4
 ```
 
-Each structure gets its own directory, JSON report and log under `--output-dir` (by default the directory of the CSV). The CSV has one row per structure, in input order, with a `batch_status` column: `ok` (every step completed), `partial` (the pipeline finished but a step failed; see `batch_failed_steps` and `batch_failed_reasons`) or `error` (the worker raised; see `batch_error`). The last columns, `provenance_*`, record the package version, git sha, Python, OS, OpenMM version, platform and seed. The exit code is non-zero only when no sample is `ok`. Each worker process opens its own CUDA context and takes its share of GPU memory, so several workers on one GPU can run out of memory. Structures are matched to natives for DockQ by file stem (`--reference-dir`, `target1.cif` with `target1.pdb`).
+Each structure gets its own directory, JSON report and log under `--output-dir` (by default the directory of the CSV). The file stem is the sample ID, so two inputs with the same stem (`a/sample.pdb` and `b/sample.pdb` found by `--glob`, or `sample.pdb` and `sample.cif`) end the run with a usage error (exit code 2) before anything is created; `run_batch` raises `ValueError`. The CSV has one row per structure, in input order, with a `batch_status` column: `ok` (every step completed), `partial` (the pipeline finished but a step failed; see `batch_failed_steps` and `batch_failed_reasons`) or `error` (the worker raised; see `batch_error`). The last columns, `provenance_*`, record the package version, git sha, Python, OS, OpenMM version, platform and seed. The exit code is non-zero only when no sample is `ok`. Each worker process opens its own CUDA context and takes its share of GPU memory, so several workers on one GPU can run out of memory. Structures are matched to natives for DockQ by file stem (`--reference-dir`, `target1.cif` with `target1.pdb`).
 
 **Scoring (individual steps)**
 
@@ -636,7 +637,7 @@ binding-metrics-report --results results/my_run/sample_results.json \
     --summary --summary-format html
 ```
 
-The `--summary` flag (available on both `binding-metrics-run` and `binding-metrics-report`) writes a human-readable summary alongside the JSON/CSV output. Use `--summary-format md` (default) for Markdown or `--summary-format html` for a self-contained HTML page (needs the `report` extra). It has a section for each step (marked skipped when the step did not run), per-residue buried SASA of the peptide in the interface section, and a RAG scorecard (🟢/🟡/🔴, ⬜ for a value that was not computed). The scorecard thresholds are heuristic; see [`docs/report_thresholds.md`](docs/report_thresholds.md).
+The `--summary` flag (available on both `binding-metrics-run` and `binding-metrics-report`) writes a human-readable summary alongside the JSON/CSV output. Use `--summary-format md` (default) for Markdown or `--summary-format html` for a self-contained HTML page (needs the `report` extra); result text (errors, reasons, names) is escaped, so it appears as written. It has a section for each step (marked skipped when the step did not run), per-residue buried SASA of the peptide in the interface section, and a RAG scorecard (🟢/🟡/🔴, ⬜ for a value that was not computed). When one mode of the interaction energy failed, a line `A mode failed: <error_message>` follows the energy table. The scorecard thresholds are heuristic; see [`docs/report_thresholds.md`](docs/report_thresholds.md).
 
 The individual scoring tools take the binder chain as `--binder-chain` and the target chain as `--target-chain`, each also under its older name (`--peptide-chain` or `--design-chain`, depending on the tool, and `--receptor-chain`). A tool accepts only the chains it uses: `binding-metrics-receptor-quality` takes the target and `binding-metrics-compare` the binder. Without them the smallest protein chain is the binder and the largest the target. See `--help` on each command for the options.
 
@@ -658,7 +659,7 @@ The individual scoring tools take the binder chain as `--binder-chain` and the t
 | `preflight` | the decision of the [pre-flight check](#pre-flight-check): `status`, `reason`, `policy`, the steps left out and the full report |
 | `nonfinite_fields` | the JSON paths of every NaN or infinite value |
 
-A value that could not be computed keeps its NaN, 0 or None, and its dict gains a string under `reason` that says why; a dict without `reason` was computed in full. The seven QC checks of the relaxed structure (finite energy that did not rise, heavy-atom RMSD to the input, finite coordinates, no fused atoms, no stretched or broken bonds, no inverted Cα stereocentre, unchanged heavy-atom composition) are advisory: a failed check logs a warning and changes neither the results nor the exit code. `binding-metrics-run` exits with 1 when a step failed, after writing the partial results. The schemas are in [`docs/metrics.md`](docs/metrics.md#15-pipeline-results-and-provenance).
+A value that could not be computed keeps its NaN, 0 or None, and its dict gains a string under `reason` that says why; a dict without `reason` was computed in full. The seven QC checks of the relaxed structure (finite energy that did not rise, heavy-atom RMSD to the input, finite coordinates, no fused atoms, no stretched or broken bonds, no inverted Cα stereocentre, unchanged heavy-atom composition) are advisory: a failed check logs a warning and changes neither the results nor the exit code. `binding-metrics-run` exits with 1 when a step failed, after writing the partial results. A requested EvoBind score or adversarial check that could not be computed counts as a failed step. The schemas are in [`docs/metrics.md`](docs/metrics.md#15-pipeline-results-and-provenance).
 
 ---
 
@@ -684,7 +685,7 @@ configure_logging(logging.INFO)
 - **GPU precision.** CUDA runs in mixed precision and its force reduction order is not deterministic, so energies and MD from one seed can differ in the last digits between GPU runs.
 - **Provenance.** Every results file carries the `provenance` block (package version, git sha, Python, OS, OpenMM version, platform, seed), and batch CSV rows carry it as `provenance_*` columns.
 - **Environments.** `environment.yml` is the specification that CI and the Dockerfile build from. `environment.lock.yml` is a snapshot of the exact versions of the development environment (`conda env create -n binding-metrics -f environment.lock.yml`, then `pip install --no-deps -e .`); neither CI nor the Dockerfile reads it, and its header says how to regenerate it.
-- **Releases.** Pushing a `v*` tag builds the sdist and the wheel and attaches them to a GitHub Release. Nothing is published to PyPI.
+- **Releases.** Pushing a `v*` tag builds the sdist and the wheel and attaches them to a GitHub Release, and builds the Docker images, once the tag is `v` plus the `pyproject.toml` version and `ci.yml` has passed on the tagged commit (the push to `main`); a tag pushed before that run ends fails and is retried with "Re-run failed jobs". The wheel is installed in a clean virtualenv on Python 3.11 and 3.12 and every console script is run with `--help` before the release is created. Nothing is published to PyPI.
 
 ---
 
