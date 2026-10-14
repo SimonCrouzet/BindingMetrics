@@ -8,6 +8,8 @@ analogue), 3V3B (stapled peptide) and 1QJB (phosphopeptide).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-14
+
 A co-folding model run with five seeds returns five structures of one complex, and the questions that decide which design to take sit across the set: how far apart the poses lie, whether two models put the peptide in the same place, how many poses stand behind an average. This release adds the pose-set layer that answers them (`binding_metrics.poses`, `score_pose_set`) and the prediction layer that feeds it: adapters for OpenFold3, AlphaFold2 and ColabFold, Boltz-2 and Protenix, a runner for each of the four behind a run-once store, and a pre-flight check that refuses an input that a step or a model cannot take (OpenFold3 and Boltz-2 have been run for real on bundled complexes; Protenix and ColabFold only against a stand-in process). Residue numbers and insertion codes now survive preparation, relaxation and `save_cif`, and a review of the metrics corrected values that earlier versions reported: "Results that change" lists each of them once, as before -> after. The test suite is split into tiers (`pytest`, `--full`, `--gpu`) and into areas of the code, so that a change runs the tests it can affect.
 
 ### Results that change

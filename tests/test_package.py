@@ -50,7 +50,10 @@ class TestPackageImports:
         import binding_metrics
 
         assert hasattr(binding_metrics, "__version__")
-        assert binding_metrics.__version__ == "0.1.0"
+        # The value is the installed distribution's version, which an editable install
+        # keeps until it is reinstalled: pyproject.toml and the changelog are compared
+        # in tests/test_release_version.py, not here.
+        assert isinstance(binding_metrics.__version__, str) and binding_metrics.__version__
 
     def test_import_simulation_config(self):
         """SimulationConfig should be importable from main package."""

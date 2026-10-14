@@ -1195,7 +1195,7 @@ The limits are wide on purpose: they separate a relaxed structure from an explod
 ```
 {
     "schema_version": 1,          # bumped when a key changes meaning
-    "package_version": "0.1.0",   # installed distribution version
+    "package_version": "0.2.0",   # installed distribution version
     "git_sha": "...",             # HEAD of the source checkout, else None
     "python": "3.12.3",
     "os": "Linux-...",
