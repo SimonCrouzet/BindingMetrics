@@ -182,15 +182,17 @@ Phosphoserine (SEP), phosphothreonine (TPO) and phosphotyrosine (PTR), together 
 
 Openmmforcefields' GAFF template generator cannot match a backbone residue, because the backbone N and C carry peptide bonds and the generator only matches residues without external bonds. The route works around this for each residue:
 
-1. It builds an RDKit molecule of the heavy atoms and adds a carbon cap at each external bond (backbone N and C, closure atoms).
+1. It builds an RDKit molecule of the heavy atoms and adds a carbon cap at each external bond (backbone N and C, closure atoms). For a residue with an N-CA-C=O backbone, the cap on a peptide bond is completed to an acetyl group (ACE, on the N) or an N-methylamide (NME, on the C), so that the backbone is an amide when the charges are computed. The cap of a side-chain link (disulfide, staple, lactam) stays a methyl carbon, and so do all the caps of a residue without that backbone, such as glutathione; the log says which of the two a template got.
 2. **Bond orders and formal charges come from the wwPDB Chemical Component Dictionary (CCD)** that ships with biotite, so no network access is needed. The entry is used only if it describes the same molecule: every atom name must exist with the same element and the bonds between named atoms must be the same set. The molecule has no hydrogens, so bond orders cannot be recovered from its connectivity; valence-based perception would leave every bond single and turn an alkene into an alkane. Ionisable groups are neutralised.
 3. RDKit adds hydrogens and reads the stereocentres and E/Z double bonds from the geometry. `antechamber` and `sqm` (AmberTools, on `PATH`) compute AM1-BCC charges on a conformer that RDKit embeds with `random_seed` (default 1), and openmmforcefields' `GAFFTemplateGenerator` supplies the GAFF2 atom types and bonded parameters.
-4. The template drops the caps, adds an `<ExternalBond>` at every capped atom, retypes the backbone atoms to the ff14SB types, and adds explicit GAFF terms for the backbone–side-chain junctions. The charge of the removed cap atoms is spread evenly over the remaining atoms, so the template has an integer net charge, normally 0.
+4. The template drops the caps, adds an `<ExternalBond>` at every capped atom, retypes the backbone atoms to the ff14SB types, and adds explicit GAFF terms for the backbone–side-chain junctions. The charge of the removed cap atoms is spread evenly over the remaining atoms, so the template has an integer net charge, normally 0. The charges of the template add up to the integer charge of the residue to 1e-9 e.
 5. The hydrogens of the residue are injected into the topology, which is rebuilt so that the residue matches its template. They sit where RDKit puts them for the heavy atoms. A residue that already holds exactly its template's hydrogens, the same names on the same parent atoms, keeps them and their positions: prep injects them, and the relaxation and the energy step then read them back from the relaxed file, so the `raw` energy of a relaxed complex uses the relaxed hydrogens. A residue with other hydrogens loses them and gets the ones RDKit places.
 
 **Fallback to single bonds.** A residue that is not in the CCD, whose atoms disagree with its entry, or whose CCD bond orders do not sanitise in RDKit is built with every bond single. The double bonds, aromatic rings and hydrogen count of such a residue are unreliable, and a warning says so. The pipeline records the outcome for each residue under `ncaa_bond_order_source` in `results["prep"]` (cyclic peptides) and `results["relax"]`: `"ccd"` or `"single_bonds"`. For the somatostatin analogue 1XY4, prep reports `{"IAM": "ccd"}`. Use the CCD residue code and atom names to get the chemistry right.
 
 Effect of the CCD bond orders on the cyclosporin A residues of 1CWA: MeBmt has 17 hydrogens instead of 19, and its CE=CZ bond relaxes to 1.340 Å instead of 1.544 Å (crystal 1.336 Å).
+
+**Charge scheme.** `NcaaTemplateList.charge_scheme_by_residue` names, for each template, how the capped molecule ended at its external bonds and the version of the scheme (`CHARGE_SCHEME_VERSION`, 2): `"ace-nme-caps-v2"` (the peptide bonds were capped by ACE and NME), `"methyl-caps-v2"` (every external bond by a methyl carbon, as in the version before) or `"uncapped-v2"` (the residue has no external bond). Version 1 capped every external bond with a methyl carbon; a template or a charge that is stored somewhere has to carry the version, because the same residue and seed give other charges in another version.
 
 ### Reproducibility
 
@@ -199,7 +201,7 @@ The template of a residue is the same in every run and at every step: prep, rela
 ### Charge-model limits
 
 - **Neutral form.** Bond-order perception runs at total charge 0, so carboxylic acid, phosphate, sulfate, primary amine and guanidine side chains come out uncharged. A warning names the residue, the group and the expected net charge; electrostatics and energies involving such a residue are unreliable unless its charge is set by hand.
-- **Backbone charges.** The template keeps the AM1-BCC charges of the capped molecule for every atom, backbone atoms included, and only the atom types of the backbone are set to ff14SB. The backbone N and H charges are not amide-like. In 1CWA (seed 1) the template of ABA has N −0.798 and HN +0.378, and BMT (N-methylated, no amide H) has N −0.738, against N −0.416 and H +0.272 for ALA in ff14SB. The carbon caps that stand in for the neighbouring residues during the charge calculation are the likely cause; capping with ACE and NME groups is not implemented. Treat energies that involve such residues as approximate.
+- **Backbone charges.** The template keeps the AM1-BCC charges of the capped molecule for every atom, backbone atoms included, and only the atom types of the backbone are set to ff14SB. With ACE and NME caps the backbone is an amide when the charges are computed. In 1CWA (seed 1) ABA has N −0.566 and HN +0.321 (−0.798 and +0.378 with the former methyl caps) against N −0.416 and H +0.272 for ALA in ff14SB, and BMT (N-methylated, no amide H) has N −0.465 (−0.738). What remains is the difference between AM1-BCC and RESP charges: for ALA, SER, LEU, PHE, ASP and LYS capped this way the backbone N is on average 0.14 e more negative than in ff14SB (0.38 e with methyl caps), the carbonyl carbon deviates by 0.07 e (0.03 e), and the RMS deviation over the atoms of a residue is 0.091 e (0.139 e). Treat energies that involve such residues as approximate.
 - **General force field.** GAFF2 is a general small-molecule force field, a pragmatic approximation for exotic building blocks and not a substitute for purpose-built RESP-fitted parameters.
 
 ---
@@ -212,7 +214,7 @@ The template of a residue is the same in every run and at every step: prep, rela
 | N-methylated (NMG, NMA, MVA, MLE) | ForceField_NCAA RESP (ff03 protocol) | condensed-phase RESP used with ff14SB (see above) |
 | Lactam residues (ASPL, GLUL, LYSL) | approximate, from the ff14SB ASN/GLN analogues | recompute RESP charges for production or free-energy work and pass them through `custom_bond_handler` |
 | Phosphorylated (SEP, TPO, PTR, ...) | phosaa14SB (RESP) | none known here |
-| Everything else | AM1-BCC on a capped, neutral molecule | neutral form and non-amide backbone charges (above) |
+| Everything else | AM1-BCC on a capped, neutral molecule | neutral form; AM1-BCC backbone charges (above) |
 
 ---
 
