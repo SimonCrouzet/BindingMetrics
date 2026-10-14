@@ -97,11 +97,8 @@ class PeptideBindingProtocol(BaseProtocol):
 
         # Save solvated topology for analysis
         self._topology_path = output_dir / "solvated.pdb"
-        PDBFile.writeFile(
-            modeller.topology,
-            modeller.positions,
-            open(self._topology_path, "w", encoding="utf-8"),
-        )
+        with open(self._topology_path, "w", encoding="utf-8") as topology_file:
+            PDBFile.writeFile(modeller.topology, modeller.positions, topology_file)
 
         # Set up simulation
         self._simulation = MDSimulation(modeller, forcefield, self.simulation_config)
