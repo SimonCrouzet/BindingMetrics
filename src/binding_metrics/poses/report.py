@@ -1,8 +1,7 @@
 """Writers of a pose-set result: JSON, CSV, a Markdown summary and a self-contained HTML page.
 
 ``write_pose_report(result, fmt, path)`` writes one file from a ``PoseSetResult`` (or the
-dictionary that ``json.loads`` gives back from its JSON). The result is the data; the writers
-are views of it, and none of them changes it or the type that ``score_pose_set`` returns.
+dictionary that ``json.loads`` gives back from its JSON). No writer changes the result.
 
 ``json``
     The canonical dictionary (``PoseSetResult.to_json``), UTF-8, keys in the order of the
@@ -30,12 +29,11 @@ are views of it, and none of them changes it or the type that ``score_pose_set``
     aggregates of the headline values per group, the representatives and the warnings.
 
 ``html``
-    The same content as one page with inline styles: no script, no link, no external font or
-    image, nothing fetched from a network. Every text is escaped.
+    The same content as one page with inline styles: no script, link, external font or image.
+    Every text is escaped.
 
-The Markdown and the HTML are built from the same blocks, so they say the same. Nothing in a
-file depends on the time or the machine except what the result itself records
-(``provenance``, ``timing`` in the JSON), so the same result gives the same bytes.
+Markdown and HTML are built from the same blocks. A file depends only on the result (its
+``provenance`` and ``timing`` included), so the same result gives the same bytes.
 
 Importing this module imports the standard library and the pose-set result module.
 """
@@ -82,8 +80,8 @@ def write_pose_report(
     Args:
         result: A ``PoseSetResult``, or the dictionary read back from its JSON (checked with
             ``PoseSetResult.from_dict``).
-        fmt: ``"json"`` (default), ``"csv"``, ``"md"`` or ``"html"``; the module docstring
-            says what each one holds.
+        fmt: ``"json"`` (default), ``"csv"``, ``"md"`` or ``"html"`` (see the module
+            docstring).
         path: The file to write. Missing parent directories are created; an existing file is
             replaced. Nothing is written anywhere else.
         include_timing: ``json`` only: False leaves out the ``timing`` block.
@@ -190,9 +188,8 @@ def _dig(block: Any, path: str) -> Any:
 def _headline_columns(result: Mapping[str, Any]) -> list[tuple[str, str]]:
     """``[(metric name, headline key)]`` for the requested metrics, in request order.
 
-    The key is the ``headline_key`` of the registry; for a bundle the key of
-    ``_BUNDLE_HEADLINES``; for a metric the registry does not know (or a bundle that is not in
-    the table) the first top-level number of its block in the first pose that has one.
+    The key is the registry ``headline_key``, else the entry of ``_BUNDLE_HEADLINES``, else the
+    first top-level number of the metric's block in the first pose that has one.
     """
     columns = []
     rows = result["poses"]
@@ -508,9 +505,9 @@ def _md_table(header: list[str], rows: list[list[str]], aligns: list[str]) -> li
 def summary_markdown(result: PoseSetResult | Mapping[str, Any]) -> str:
     """The Markdown summary of a result (what ``PoseSetResult.summary()`` returns).
 
-    A short document: the poses per group with their headline values, the failed poses with
-    their reasons, the agreement block, the aggregates, the representatives and the warnings.
-    It ends with one newline.
+    Contents: the poses per group with their headline values, the failed poses with their
+    reasons, the agreement block, the aggregates, the representatives and the warnings. It ends
+    with one newline.
     """
     lines: list[str] = []
     for block in _blocks(_as_result(result)):
@@ -568,8 +565,8 @@ def _html_table(header: list[str], rows: list[list[str]], aligns: list[str]) -> 
 def summary_html(result: PoseSetResult | Mapping[str, Any]) -> str:
     """The summary as one HTML page with inline styles and nothing fetched from a network.
 
-    Same content as ``summary_markdown``; every text is escaped, there is no script, link,
-    external font or image, and the output depends on the result only.
+    Same content as ``summary_markdown``. Every text is escaped; no script, link, external
+    font or image.
     """
     blocks = _blocks(_as_result(result))
     title = next(block[1] for block in blocks if block[0] == "title")
