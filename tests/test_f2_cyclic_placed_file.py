@@ -144,3 +144,20 @@ def test_the_energy_of_a_saved_prediction_of_the_ring(tmp_path):
     assert row["status"] == "ok", row["reasons"]
     assert math.isfinite(row[ENERGY]["raw_interaction_energy"])
     assert row[ENERGY]["terminal_oxygens_added"] == ["A:GLU165"]
+
+
+def test_the_file_is_written_when_the_closure_search_fails(ring_model, tmp_path, monkeypatch):
+    from binding_metrics.io.structures import load_structure
+
+    def broken(atoms, chain_id):
+        raise RuntimeError("closure search failed")
+
+    monkeypatch.setattr("binding_metrics.capabilities.detect_closures", broken)
+
+    result = _place(ring_model, tmp_path)
+
+    assert result["poses"][0]["status"] == "ok", result["poses"][0]["reasons"]
+    placed = Path(result["provenance"]["temp_dir"]) / "pose_0000.cif"
+    topology, _ = load_structure(placed)
+    peptide = [c for c in topology.chains() if len(list(c.residues())) == 11][0]
+    assert len(_links(topology, peptide.id)) == 10  # the peptide links; the ring is not closed

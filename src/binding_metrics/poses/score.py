@@ -1336,8 +1336,13 @@ def _with_covalent_links(atoms: Any, binder_chain: str) -> Any:
                 pairs.append((previous[1], n_atom))
         previous = (start, c_atom)
 
+    try:
+        closures = detect_closures(atoms, binder_chain)
+    except Exception as exc:  # noqa: BLE001 - the links of the peptides are still written
+        logger.warning("the closures of chain %s were not searched: %s", binder_chain, exc)
+        closures = []
     chain_atoms = atoms.chain_id == binder_chain
-    for closure in detect_closures(atoms, binder_chain):
+    for closure in closures:
         ends = []
         for end in (closure.end1, closure.end2):
             hit = np.flatnonzero(
