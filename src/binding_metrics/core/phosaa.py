@@ -47,6 +47,7 @@ References
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 import xml.etree.ElementTree as ET
@@ -178,11 +179,54 @@ def register(ff) -> None:
             pass
 
 
+@contextlib.contextmanager
+def hydrogen_definitions():
+    """Let ``Modeller.addHydrogens`` place the hydrogens of the phospho residues in the block.
+
+    The definitions are process-global state of ``Modeller``: a call that loaded them for
+    good (:func:`ensure_hydrogen_definitions`) changes what every later ``addHydrogens`` of
+    the process does, so a structure prepared after a relaxation came out with the hydrogens
+    of its phosphoserine and the same structure prepared first came out without. Inside this
+    block they are loaded, and on exit each phospho residue goes back to what it was before:
+    its earlier definition when one was loaded, no definition otherwise, also when the block
+    raises.
+
+    Which hydrogens a residue gets does not depend on the pH: the definitions come from the
+    phosaa14SB templates, where the residue name sets the protonation of the phosphate (SEP,
+    TPO and PTR are the dianions with no phosphate hydrogen, S1P, T1P and Y1P the monoanions
+    with H1P). ``Modeller._residueHydrogens`` is private to OpenMM, which has no call that
+    removes a definition.
+    """
+    from openmm.app import Modeller
+
+    names = phospho_residue_names()
+    earlier = {name: Modeller._residueHydrogens.get(name) for name in names}
+    path = _write_temp(build_hydrogen_definitions_xml(), ".xml")
+    try:
+        Modeller.loadHydrogenDefinitions(path)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    try:
+        yield
+    finally:
+        for name, definition in earlier.items():
+            if definition is None:
+                Modeller._residueHydrogens.pop(name, None)
+            else:
+                Modeller._residueHydrogens[name] = definition
+
+
 _hydrogen_definitions_loaded = False
 
 
 def ensure_hydrogen_definitions() -> None:
-    """Register phospho-residue hydrogen definitions with Modeller (idempotent)."""
+    """Register phospho-residue hydrogen definitions with Modeller for the rest of the process.
+
+    Idempotent. Prefer :func:`hydrogen_definitions`, which restores the earlier state.
+    """
     global _hydrogen_definitions_loaded
     if _hydrogen_definitions_loaded:
         return

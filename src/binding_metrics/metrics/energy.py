@@ -374,7 +374,6 @@ def _create_implicit_system(
     from binding_metrics.core import phosaa
 
     phosaa.register(ff)
-    phosaa.ensure_hydrogen_definitions()
 
     # Accumulate every extra residue-template XML used to build the complex so
     # the peptide/receptor subsystems (which build their own force fields) can
@@ -419,11 +418,11 @@ def _create_implicit_system(
     from binding_metrics.core.system import deterministic_hydrogen_placement
 
     try:
-        with deterministic_hydrogen_placement(random_seed):
+        with deterministic_hydrogen_placement(random_seed), phosaa.hydrogen_definitions():
             modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
     except (ValueError, openmm.OpenMMException) as e:
         logger.warning(f"  Warning: addHydrogens with pH failed ({e}), retrying without pH")
-        with deterministic_hydrogen_placement(random_seed):
+        with deterministic_hydrogen_placement(random_seed), phosaa.hydrogen_definitions():
             modeller.addHydrogens(ff, variants=addh_variants)
 
     # A wrong-side Cα H (random jitter + frozen heavy atoms during H addition)

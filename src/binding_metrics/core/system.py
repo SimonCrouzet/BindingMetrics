@@ -13,6 +13,7 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,  # re-exported: callers import it from here
 )
+from binding_metrics.core import phosaa
 from binding_metrics.core.forcefields import get_forcefield
 from binding_metrics.core.residues import (
     AMBER_PROTONATION_VARIANTS,
@@ -677,10 +678,7 @@ def _add_hydrogens_cyclic(
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
 
     # Phosphorylated residues → AMBER phosaa params (net −2), not GAFF.
-    from binding_metrics.core import phosaa
-
     phosaa.register(ff)
-    phosaa.ensure_hydrogen_definitions()
 
     # D-amino-acid / N-methyl rename first (e.g. DAL→ALA, SAR→NMG) so their
     # standard/curated templates match; must precede patch_cyclic_topology.
@@ -716,7 +714,7 @@ def _add_hydrogens_cyclic(
     addh_variants = (
         get_addh_variants(modeller.topology, bond_info, cyclic_chain) if bond_info else None
     )
-    with deterministic_hydrogen_placement(random_seed):
+    with deterministic_hydrogen_placement(random_seed), phosaa.hydrogen_definitions():
         modeller.addHydrogens(
             ff,
             pH=ph,
@@ -1099,7 +1097,7 @@ def prep_structure(
         # minimization to the deterministic Reference platform (the method itself
         # exposes no platform argument).
         _h_modeller = Modeller(fixer.topology, fixer.positions)
-        with deterministic_hydrogen_placement(random_seed):
+        with deterministic_hydrogen_placement(random_seed), phosaa.hydrogen_definitions():
             _h_modeller.addHydrogens(pH=ph, platform=_hydrogen_placement_platform())
         result_topo, result_pos = _h_modeller.topology, _h_modeller.positions
 
