@@ -256,6 +256,13 @@ _FILE_INPUT_TYPES = ("static_structure", "md_simulation", "predicted_structure")
 #: ``structure_rmsd`` and ``dockq``.
 _POSE_IS_SECOND_STRUCTURE = {"evobind_adversarial": "afm_plddt_per_atom"}
 
+#: Keywords that ``score_pose_set`` sets on a registry call, below the caller's ``metric_kwargs``.
+#: The energy completes the terminal oxygens (OXT) of the chains that lack them, which the
+#: structures of Boltz-2 and OpenFold3 do; the metrics that read the file see it unchanged.
+_FIXED_KEYWORDS: dict[str, dict[str, Any]] = {
+    "structure_interaction_energy": {"complete_terminal_oxygens": True},
+}
+
 _POSE_AS_SECOND_STRUCTURE_REASON = (
     "in a pose set the reference is the design and each pose is the second, predicted structure, "
     "whose per-atom pLDDT the score divides by (evobind_adversarial_score is None without it), "
@@ -1386,6 +1393,7 @@ def _evaluate_metric(plan: _MetricPlan, pose: Pose, ctx: _Context, files: _PoseF
         if spec.secondary_path_arg:
             kwargs[spec.secondary_path_arg] = ctx.reference_path
     kwargs.update(_chain_kwargs(spec, ctx.binder_chain, ctx.target_chain))
+    kwargs.update(_FIXED_KEYWORDS.get(plan.name, {}))
     kwargs.update(extra)
     block = spec.call(**kwargs)
     if plddt_keyword is not None and kwargs.get(plddt_keyword) is None:

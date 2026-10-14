@@ -324,6 +324,7 @@ def _create_implicit_system(
     peptide_chain: Optional[str] = None,
     ph: float = DEFAULT_PH,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+    terminal_oxygens_added: Optional[list] = None,
 ):
     """Create an OpenMM implicit-solvent system after adding hydrogens.
 
@@ -348,6 +349,11 @@ def _create_implicit_system(
             OpenMM's default of 7.0.
         random_seed: Seed for hydrogen placement (OpenMM draws the initial
             hydrogen offsets from Python's global RNG); None leaves it unseeded.
+        terminal_oxygens_added: A list asks for the terminal oxygen (OXT) of every chain that
+            ends in a standard residue without one (``core.system.add_terminal_oxygens``,
+            after the cyclic patch, so a head-to-tail closure keeps the chain closed) and
+            receives one ``"<chain>:<residue><number>"`` label per chain completed. None
+            leaves such a chain to the refusal below.
 
     Returns:
         Tuple of (system, topology_with_h, positions_with_h, bond_info, ncaa_xmls)
@@ -370,7 +376,11 @@ def _create_implicit_system(
         _patch_nonstandard,
         load_nonstandard_xmls,
     )
-    from binding_metrics.core.system import require_closed_c_termini
+    from binding_metrics.core.system import (
+        add_terminal_oxygens,
+        find_open_c_termini,
+        require_closed_c_termini,
+    )
     from binding_metrics.io.structures import author_chain_ids
 
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
@@ -402,6 +412,12 @@ def _create_implicit_system(
 
     topology, positions, bond_info = patch_cyclic_topology(topology, positions, peptide_chain)
     topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
+    if terminal_oxygens_added is not None:
+        terminal_oxygens_added.extend(
+            f"{chain_names.get(chain_id, chain_id)}:{name}{number}"
+            for chain_id, name, number in find_open_c_termini(topology)
+        )
+        topology, positions = add_terminal_oxygens(topology, positions)
     # Before the force field: a chain that ends in a standard residue without OXT fails
     # there with a message that does not say what to do.
     require_closed_c_termini(topology, chain_names)
@@ -798,6 +814,7 @@ def compute_interaction_energy(
     *,
     binder_chain: Optional[str] = None,
     target_chain: Optional[str] = None,
+    complete_terminal_oxygens: bool = False,
 ) -> dict:
     """Compute interaction energies via subsystem decomposition for multiple modes.
 
@@ -849,6 +866,12 @@ def compute_interaction_energy(
         binder_chain: Alias of ``peptide_chain``; different IDs in both raise
             ``ValueError``.
         target_chain: Alias of ``receptor_chain``, same rule.
+        complete_terminal_oxygens: False (default) refuses a chain that ends in a standard
+            residue without its terminal oxygen (OXT), the message naming the chain. True
+            adds the OXT to each such chain first (``core.system.add_terminal_oxygens``:
+            the atom and its bond, 1.25 A from the carbonyl carbon in the plane of CA, C and
+            O; hydrogens are added as for any chain). A chain that has its OXT, a cap or a
+            ring closure is left as it is.
 
     Returns:
         Flat dictionary with keys:
@@ -868,6 +891,10 @@ def compute_interaction_energy(
             one "<mode>: <reason>" entry per failed mode (joined by "; "), so a
             mode that came back as None can be explained even when ``success``
             is True.
+            terminal_oxygens_added (list of str) is present only with
+            ``complete_terminal_oxygens=True``: one ``"<chain>:<residue><number>"`` per chain
+            that got an OXT (``["A:VAL109"]``), empty when none was missing. The contact
+            counts and the other keys do not depend on it.
 
     Raises:
         ModuleNotFoundError: If OpenMM is not installed; the message names
@@ -959,6 +986,9 @@ def compute_interaction_energy(
             result["num_close_contacts"] = int(np.sum(distances < _CLOSE_CONTACT_CUTOFF_ANGSTROM))
 
         # Hydrogens are added once here and the result is shared by all modes.
+        added = [] if complete_terminal_oxygens else None
+        if added is not None:
+            result["terminal_oxygens_added"] = added
         sys_complex, topo_h, pos_h, bond_info, extra_xmls = _create_implicit_system(
             topology,
             positions,
@@ -966,6 +996,7 @@ def compute_interaction_energy(
             peptide_chain=peptide_chain,
             ph=ph,
             random_seed=random_seed,
+            terminal_oxygens_added=added,
         )
         platform, props = _get_platform(device)
 
