@@ -629,8 +629,7 @@
         "frame.region_rmsd_angstrom.crystal_interface": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
         "frame.region_rmsd_angstrom.epitope": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
         "frame.region_rmsd_angstrom.site": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
-        "frame.sequence_identity": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
-        "native.ranking_score": {"mean": 0.575, "std": 0.03535533906, "min": 0.55, "max": 0.6, "median": 0.575, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}}
+        "frame.sequence_identity": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}}
       }
     },
     "representatives": {"crystal": "crystal-s1", "decoy_6A": "decoy_6A-s1", "all": "crystal-s1", "rule": "medoid", "reasons": {}},

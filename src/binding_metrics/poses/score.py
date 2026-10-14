@@ -265,6 +265,10 @@ _POSE_AS_SECOND_STRUCTURE_REASON = (
 #: Metrics whose ``reason`` names the values they could not compute, which they leave None:
 #: the aggregates keep the other values of the block (``aggregate_poses``, ``partial_blocks``).
 _PARTIAL_BLOCKS = ("structure_rmsd",)
+
+#: Blocks aggregated within each group and left out of the ``all`` group: the native scores
+#: of a model are not comparable with those of another.
+_PER_GROUP_BLOCKS = ("native",)
 _STRUCTURE_SUFFIXES = (".cif", ".mmcif", ".pdb")
 _LIGHT_COST_CLASSES = ("static", "model")
 
@@ -2557,6 +2561,7 @@ def score_pose_set(
         min_n_ok=options.aggregation.min_n_ok,
         reason_policy=options.aggregation.reason_policy,
         partial_blocks=_PARTIAL_BLOCKS,
+        per_group_blocks=_PER_GROUP_BLOCKS,
     )
     stage_seconds["aggregates"] = time.perf_counter() - stage_started
 

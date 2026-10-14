@@ -32,8 +32,10 @@ of a prediction, ``prediction.seed``, ``prediction.sample``, ``prediction.n_atom
 ``n_total`` of a key when it failed, its block is in the row, or the row's ``reasons`` names
 the block (a metric that raised). A pose with none of these was not asked for that metric (a
 heavy metric run on the representatives only) and is not counted. A key that no pose of a
-group has (a score that only one back-end writes) is not listed for that group. Values are
-sorted before any statistic is computed, so permuting the rows changes no digit.
+group has (a score that only one back-end writes) is not listed for that group, and
+``per_group_blocks`` keeps the blocks whose values belong to one model (``native``) out of the
+``all`` group, which pools the groups. Values are sorted before any statistic is computed, so
+permuting the rows changes no digit.
 
 Imports: numpy, the standard library and ``binding_metrics.poses.agreement``; no structure
 library.
@@ -475,6 +477,7 @@ def aggregate_poses(
     keys: Optional[Sequence[str]] = None,
     partial_blocks: Sequence[str] = (),
     exclude_keys: Sequence[str] = DEFAULT_EXCLUDED_KEYS,
+    per_group_blocks: Sequence[str] = (),
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Aggregate every numeric key of the rows per group and over all poses.
 
@@ -499,6 +502,10 @@ def aggregate_poses(
         exclude_keys: Dotted key paths (and the keys under them) that are not aggregated; the
             default leaves out the identity of a prediction (``prediction.seed`` and the other
             ``IDENTITY_FIELDS``, in ``prediction`` and ``native``). ``()`` aggregates them.
+        per_group_blocks: Names of blocks that are aggregated within each group and not in the
+            ``all`` group, whose values would come from several groups (``native``: the scores
+            of one model are not comparable with those of another). With no ``group_by`` the
+            ``all`` group is the only group and holds them.
 
     Returns:
         ``{group: {key path: entry}}``: groups in sorted order and ``"all"`` last, key paths
@@ -536,7 +543,10 @@ def aggregate_poses(
     aggregates: dict[str, dict[str, dict[str, Any]]] = {}
     for group, positions in groups.items():
         entries: dict[str, dict[str, Any]] = {}
+        pooled = group == "all" and bool(group_by)
         for path in paths:
+            if pooled and block_of[path] in per_group_blocks:
+                continue
             valid: list[float] = []
             missing: list[str] = []
             caveats: list[str] = []
