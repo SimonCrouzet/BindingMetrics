@@ -7,6 +7,7 @@ console handlers (``configure_logging``), so the text on stdout/stderr and in a
 """
 
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -297,6 +298,9 @@ class TestRunAsModule:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            # The text is read as UTF-8 whatever locale runs the tests: under LC_ALL=C the
+            # child would write ASCII, with "?" for the dash.
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             timeout=300,
         )
         assert proc.returncode == 0, proc.stderr
