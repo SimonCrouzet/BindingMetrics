@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -30,7 +31,7 @@ from binding_metrics.metrics._common import (
     load_structure,
     resolve_chain_role,
 )
-from binding_metrics.metrics.polar_contacts import l_equivalent_residue_names
+from binding_metrics.metrics.polar_contacts import l_equivalent_residue_names, require_chain_pair
 from binding_metrics.utils import configure_logging
 
 # Formal charges of ionisable atoms at pH 7, keyed by L-residue name (D-amino acids
@@ -170,7 +171,8 @@ def compute_coulomb_cross_chain(
                 non-zero count means the energy may be incomplete.
 
         reason (str): present only when the energy could not be evaluated
-            (a chain was not found); the scores are then the zeros above.
+            (chain detection found no pair of chains); the scores are then the
+            zeros above.
 
         Features:
             charged_atoms_peptide (list[dict]): Per charged atom info for peptide;
@@ -178,6 +180,12 @@ def compute_coulomb_cross_chain(
                 appended to NUM when there is one: "ARG:B:52A"), ins_code
                 (empty string when there is none), atom, charge, coords
             charged_atoms_receptor (list[dict]): Per charged atom info for receptor
+
+    Raises:
+        ChainNotFoundError: (a ``ValueError``) a chain ID passed by the caller is
+            not in the structure; the message lists the chains present.
+        ValueError: The peptide and receptor chains are the same chain, passed
+            or detected.
     """
     from binding_metrics.metrics.interface import detect_interface_chains
 
@@ -188,10 +196,12 @@ def compute_coulomb_cross_chain(
     cif_path = Path(cif_path)
     atoms = _load_structure(cif_path)
 
+    require_chain_pair(atoms, peptide_chain, receptor_chain)
     if peptide_chain is None or receptor_chain is None:
         auto_pep, auto_rec = detect_interface_chains(atoms, peptide_chain)
         peptide_chain = peptide_chain or auto_pep
         receptor_chain = receptor_chain or auto_rec
+        require_chain_pair(atoms, peptide_chain, receptor_chain)
 
     _default = {
         "coulomb_energy_kJ": 0.0,
@@ -303,13 +313,17 @@ def main():
 
     with log_to_file(args.log_file):
         print(f"Computing Coulomb cross-chain energy for: {args.input}")
-        metrics = compute_coulomb_cross_chain(
-            args.input,
-            peptide_chain=args.design_chain,
-            receptor_chain=args.receptor_chain,
-            dielectric=args.dielectric,
-            cutoff_ang=args.cutoff,
-        )
+        try:
+            metrics = compute_coulomb_cross_chain(
+                args.input,
+                peptide_chain=args.design_chain,
+                receptor_chain=args.receptor_chain,
+                dielectric=args.dielectric,
+                cutoff_ang=args.cutoff,
+            )
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
 
         print("\nElectrostatics summary:")
         scalar_keys = [

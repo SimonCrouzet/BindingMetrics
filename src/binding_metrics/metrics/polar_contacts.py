@@ -36,6 +36,10 @@ _DIELECTRIC = 4.0
 # θ_DHA = 180°) scores -2.5 kcal/mol.
 _HBOND_K = 5.0
 
+_HETERO_IGNORED_SCOPE = (
+    "the structure left by hetero='ignore' (it drops waters, ions, ligands, glycans)"
+)
+
 
 def _import_hydride():
     try:
@@ -105,6 +109,49 @@ def _angle_deg(a, b, c):
     return np.degrees(np.arccos(cos_t))
 
 
+def require_chain_pair(
+    atoms,
+    peptide_chain: Optional[str],
+    receptor_chain: Optional[str],
+    *,
+    where: str = "the structure",
+) -> None:
+    """Raise if a named chain has no atom in ``atoms`` or both roles name one chain.
+
+    A role left as ``None`` (to be detected) is not checked. The cross-chain
+    metrics call this before they select atoms by chain ID: an absent ID would
+    otherwise select nothing and read as a computed zero, and one chain scored
+    against itself would count its internal contacts.
+
+    Args:
+        atoms: biotite AtomArray the metric selects from.
+        peptide_chain, receptor_chain: Chain IDs of the two roles, or None.
+        where: Wording for the error message when the ID is absent.
+
+    Raises:
+        ChainNotFoundError: (a ``ValueError``) a named ID is absent; the message
+            names the roles asked and lists the chain IDs present.
+        ValueError: Both roles name the same chain.
+    """
+    present = sorted({str(chain) for chain in atoms.chain_id})
+    absent = [
+        f"{role} {chain!r}"
+        for role, chain in (("peptide chain", peptide_chain), ("receptor chain", receptor_chain))
+        if chain is not None and chain not in present
+    ]
+    if absent:
+        from binding_metrics.cli.run import ChainNotFoundError
+
+        raise ChainNotFoundError(
+            f"{' and '.join(absent)} not found in {where}; available chains: {present}"
+        )
+    if peptide_chain is not None and peptide_chain == receptor_chain:
+        raise ValueError(
+            f"peptide chain and receptor chain are both {peptide_chain!r}; "
+            "a cross-chain metric needs two different chains"
+        )
+
+
 def _no_hbonds(reason: Optional[str]) -> dict:
     result = {"hbond_energy": 0.0, "hbonds": 0}
     if reason is not None:
@@ -165,6 +212,14 @@ def compute_hbonds(
         hbonds       : int    — number of unique cross-chain heavy-atom pairs
         reason       : str    — only when hydrogens could not be built or the
                                 detector failed; the count is then 0
+
+    Raises
+    ------
+    ChainNotFoundError
+        A chain ID is not in the structure left after the ``hetero`` filter
+        (a ``ValueError``); the message lists the chains present.
+    ValueError
+        The two chains are the same.
     """
     from binding_metrics.metrics.interface import filter_hetero_atoms
 
@@ -176,6 +231,12 @@ def compute_hbonds(
     )
     structure, _, _ = import_biotite("H-bond/salt bridge metrics")
     atoms = filter_hetero_atoms(atoms, hetero)
+    require_chain_pair(
+        atoms,
+        peptide_chain,
+        receptor_chain,
+        where="the structure" if hetero == "keep" else _HETERO_IGNORED_SCOPE,
+    )
     atoms, hydrogen_reason = _add_hydrogens_if_needed(atoms, structure)
 
     with warnings.catch_warnings():
@@ -347,6 +408,14 @@ def compute_saltbridges(
         saltbridge_energy     : float — sum of pair energies, kcal/mol (≤ 0)
         saltbridges           : int   — residue-pair count
         saltbridges_bidentate : int   — pairs with ≥ 2 atom-pair contacts
+
+    Raises
+    ------
+    ChainNotFoundError
+        A chain ID is not in the structure left after the ``hetero`` filter
+        (a ``ValueError``); the message lists the chains present.
+    ValueError
+        The two chains are the same.
     """
     from binding_metrics.metrics.interface import filter_hetero_atoms
 
@@ -357,6 +426,12 @@ def compute_saltbridges(
         "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
     )
     atoms = filter_hetero_atoms(atoms, hetero)
+    require_chain_pair(
+        atoms,
+        peptide_chain,
+        receptor_chain,
+        where="the structure" if hetero == "keep" else _HETERO_IGNORED_SCOPE,
+    )
     pos_mask = np.zeros(len(atoms), dtype=bool)
     neg_mask = np.zeros(len(atoms), dtype=bool)
 
