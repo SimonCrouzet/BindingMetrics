@@ -1,14 +1,12 @@
 # Pose sets
 
-A co-folding model run with five seeds returns five structures of one peptide-receptor complex, and two models return ten. Each structure can be measured on its own, but the questions that decide which design to take sit across the set: how far apart the poses lie, whether two models put the peptide in the same place, which pose can speak for a group, and how many poses stand behind an average. A mean over the poses that happened to succeed answers none of them and hides the failures. The pose-set layer answers them in one call. `score_pose_set` takes the poses of one construct, places each on the receptor of one reference, measures each with the registry metrics that were asked for, compares the poses with one another, summarises them per group (the back-end by default) with the number of poses behind every value, and names a representative pose. The result is one JSON-ready dictionary with a versioned schema.
+`score_pose_set` takes the poses of one construct, places each on the receptor of one reference, measures each with the requested registry metrics, compares the poses with one another, and summarises them per group (the back-end by default) with the number of poses behind every value. It names a representative pose. The result is one JSON-ready dictionary with a versioned schema. The layer applies no threshold: every threshold is an option with a documented default.
 
-The layer reports numbers and judges none of them. Every threshold is an option with a documented default, and the code that reads the result decides what a gap or an overlap means.
-
-The names load from `binding_metrics.poses` on first access. Importing the package imports nothing heavy, and biotite is imported when a structure is read. A call with the static metrics imports no simulation package (`openmm`, `simtk`, `mdtraj`, `pdbfixer`) and does not look for one, so it runs on the `static` extra alone. The pose kinds are described in [`poses.md`](poses.md) and the metrics that the layer runs in [`metrics.md`](metrics.md).
+The names load from `binding_metrics.poses` on first access. Importing the package imports nothing heavy, and biotite is imported when a structure is read. A call with the static metrics imports no simulation package (`openmm`, `simtk`, `mdtraj`, `pdbfixer`) and does not look for one, so it runs on the `static` extra alone. The pose kinds are described in [`poses.md`](poses.md) and the metrics in [`metrics.md`](metrics.md).
 
 ## A worked example
 
-`binding_metrics.testing.make_synthetic_poses` builds a pose set without a model. The receptor of the bundled 1YCR complex (MDM2, chain A) stays where it is, the p53 peptide (chain B) is moved as a rigid body, and the pairwise RMSD of the peptides is known in closed form. The default set has two back-ends, `backend_a` and `backend_b`, with three seeds each, and every pose is stored in its own random frame.
+`binding_metrics.testing.make_synthetic_poses` builds a pose set without a model. The receptor of the bundled 1YCR complex (MDM2, chain A) stays in place, the p53 peptide (chain B) is moved as a rigid body, and every pose is stored in its own random frame, so the pairwise peptide RMSD is known in closed form. The default set has two back-ends, `backend_a` and `backend_b`, with three seeds each.
 
 ```python
 from binding_metrics.poses import score_pose_set
@@ -39,9 +37,7 @@ between    9 pairs  min 1.20  mean 2.00  max 2.90
 0.40
 ```
 
-No chain and no reference was given. The binder is the smaller protein chain of the first readable pose and the target the larger one, and the pose with the lowest id, `backend_a-s1`, plays the reference: every other pose was superposed on its receptor, so the peptides are compared in one frame. The 15 pairs of peptide RMSD split into 3 inside each back-end and 9 between them. The generator moved the peptide of `backend_a-s2` by 0.40 Å relative to `backend_a-s1`, and the layer measured 0.40 Å from the coordinates alone, after undoing the random frames. Each back-end is represented by its middle pose. The overall representative, `backend_a-s3`, ties with `backend_b-s1` at a mean distance of 1.2 Å to the other five poses, and the lowest id wins a tie.
-
-A pose that fails stays in the count. In the next example one pose has lost its peptide:
+A pose without its peptide is a failed row and stays in the count:
 
 ```python
 from binding_metrics.poses import DockedPose, score_pose_set
@@ -66,11 +62,9 @@ failed - binder chain 'B' not in the structure; it has ['A']
 backend_b-s3 {'backend_b-s4': "binder chain 'B' not in the structure; it has ['A']"}
 ```
 
-The mean buried area of `backend_b` is taken over three poses, and the entry says so: `n_ok` is 3 and `n_total` is 4. The failed pose is left out of the agreement block with its reason, and the call logs a warning.
-
 ## Poses, groups and the pose kinds
 
-The call takes poses of any kind (`PredictedPose`, `DockedPose`, `ExperimentalPose`) in a list. The ids must be unique and the order is irrelevant: rows are sorted by id.
+The call takes poses of any kind (`PredictedPose`, `DockedPose`, `ExperimentalPose`) in a list. The ids must be unique. The order is irrelevant: rows are sorted by id.
 
 | Kind | `backend` in the row's provenance | Also added |
 |---|---|---|
@@ -78,7 +72,9 @@ The call takes poses of any kind (`PredictedPose`, `DockedPose`, `ExperimentalPo
 | `docked` | `program`, when the pose names one | |
 | `experimental` | none | |
 
-A key that the pose's own provenance already sets is not replaced. A pose read through `PredictionSession.record` sets `backend`, `seed_index`, `sample` and `seed` itself (and `mode`, `receptor_forced`, `receptor_templated`, `request_key`, `model_version` and `request_name`), so `group_by=("backend", "mode")` or `("backend", "receptor_forced")` groups a mixed set of predictions without further work; `seed` there is the value the model sampled with, or None when it cannot be told (the `reasons` of the pose say why). The groups of the result are the values of the provenance keys named in `group_by`, `("backend",)` by default: a group is written `boltz2` for the back-end alone and `boltz2|seed=42` for `group_by=("backend", "seed")`, and a pose without the key falls in `backend=None`. Give a pose its back-end through its provenance (`DockedPose.from_file(path, program="haddock")` or `DockedPose.from_file(path, backend="haddock")`). `group_by=()` leaves the group `all` alone. The names `all`, `rule`, `reasons` and `caveats` are used by the result and cannot be a group.
+A key that the pose's own provenance already sets is not replaced. A pose read through `PredictionSession.record` sets `backend`, `seed_index`, `sample`, `seed`, `mode`, `receptor_forced`, `receptor_templated`, `request_key`, `model_version` and `request_name` itself, so `group_by=("backend", "mode")` or `("backend", "receptor_forced")` groups a mixed set of predictions. `seed` there is the value the model sampled with, or None when it cannot be told (the `reasons` of the pose say why).
+
+The groups of the result are the values of the provenance keys named in `group_by`, `("backend",)` by default. A group is written `boltz2` for the back-end alone and `boltz2|seed=42` for `group_by=("backend", "seed")`; a pose without the key falls in `backend=None`. `group_by=()` leaves the group `all` alone. The names `all`, `rule`, `reasons` and `caveats` are used by the result and cannot be a group. A docked pose gets its back-end through its provenance: `DockedPose.from_file(path, program="haddock")` or `DockedPose.from_file(path, backend="haddock")`.
 
 A pose set holds the poses of one construct: one binder sequence against one target. Two binders that differ in sequence (after the protonation variants and the D-amino-acid codes are mapped to their L parent) are not compared, and the pair has no value with a reason.
 
@@ -122,7 +118,7 @@ Which metrics run on which poses depends on the `cost_class` that the registry d
 
 ## Reference
 
-A `Reference` is the structure that the poses are placed on and measured against. It is a role that any structure can play: a crystal structure, a receptor that a model was forced to keep, a docked complex.
+A `Reference` is the structure that the poses are placed on and measured against: a crystal structure, a receptor that a model was forced to keep, or a docked complex.
 
 ```python
 Reference(structure, receptor_chain, binder_chain=None, residue_map=None,
@@ -139,7 +135,9 @@ Reference(structure, receptor_chain, binder_chain=None, residue_map=None,
 | `partners` | `{name: Partner(structure, chains=None)}`: structures that are already placed in the frame of the reference, such as a known binder on the same receptor. A partner is read as it is and never moved. `chains` names the partner's chains, and None takes every polymer chain. |
 | `name` | The name of this variant, the key of every block that is reported per variant. |
 
-A residue is a `ResidueKey(chain, number, icode)`, so 52 and 52A are two residues. Everywhere a key is expected, a tuple `("A", 52)` or `("A", 52, "B")` and a label `"A:52B"` are read as well. A reference is frozen and compares by identity, like a pose; `content_hash()` tells two references with the same content apart from others. `validate()` checks the reference against its structure and lists every problem in one `ValueError`. `to_dict()` and `from_dict()` write and read it: a structure that is a file is recorded by path and content hash and checked when it is read back, and a structure that was in memory has to be passed again. `Reference`, `Partner`, `ResidueKey`, `FrameOptions`, `FrameResult` and `Transform` pickle and deep-copy, so they can go to worker processes; a `Reference` does not carry the cache that `prepare_reference` builds, and the worker rebuilds it. That cache is checked against the content hash of the reference structure, so a reference file rewritten at the same path is prepared again.
+A residue is a `ResidueKey(chain, number, icode)`, so 52 and 52A are two residues. Wherever a key is expected, a tuple (`("A", 52)`, `("A", 52, "B")`) and a label (`"A:52B"`) are read as well.
+
+A reference is frozen and compares by identity, like a pose; `content_hash()` identifies its content. `validate()` checks the reference against its structure and lists every problem in one `ValueError`. `to_dict()` and `from_dict()` write and read it: a structure that is a file is recorded by path and content hash and checked when it is read back, and a structure that was in memory has to be passed again. `Reference`, `Partner`, `ResidueKey`, `FrameOptions`, `FrameResult` and `Transform` pickle and deep-copy, so they can go to worker processes. A `Reference` does not carry the cache that `prepare_reference` builds; the worker rebuilds it. The cache is checked against the content hash of the reference structure, so a reference file rewritten at the same path is prepared again.
 
 ```python
 from binding_metrics.poses import Partner, Reference
@@ -152,17 +150,15 @@ crystal = Reference(
 )
 ```
 
-The residues of `core` are the seven receptor residues of the crystal complex that bury at least 40 Å² (Lys51, Leu54, Met62, Gln72, Val93, His96, Tyr100).
+`core` holds the seven receptor residues of the crystal complex that bury at least 40 Å² (Lys51, Leu54, Met62, Gln72, Val93, His96, Tyr100).
 
-**Several variants.** `reference={"strict": Reference(...), "loose": Reference(...)}` places each pose once per variant, and the first variant defines the frame of the registry metrics and of the agreement. The row's `frame` block describes the first variant and `frame["variants"]` holds one block per variant. A variant with residue sets or partners adds `descriptors[variant]`. Variants may differ in their residue sets, their partners, their residue map or the residues the fit uses. Two variants have the same frame when `Reference.frame_key()` is equal: the structure and its chain renaming, the receptor chain, the residue map and, when the fit is restricted to a set, that set's residues.
+**Several variants.** `reference={"strict": Reference(...), "loose": Reference(...)}` places each pose once per variant, and the first variant defines the frame of the registry metrics and of the agreement. The row's `frame` block describes the first variant and `frame["variants"]` holds one block per variant. A variant with residue sets or partners adds `descriptors[variant]`. Variants may differ in their residue sets, partners, residue map or the residues the fit uses. Two variants have the same frame when `Reference.frame_key()` is equal: the structure and its chain renaming, the receptor chain, the residue map and, when the fit is restricted to a set, that set's residues.
 
-**No reference.** The pose with the lowest id that can be read plays the reference, under the variant name `first_pose`, with the receptor chain and binder chain of the call. The result says so: `references["implicit"]` is true and `references["implicit_pose_id"]` names the pose. Without a reference there are no residue sets or partners, and the descriptors are not computed.
+**No reference.** The pose with the lowest id that can be read plays the reference, under the variant name `first_pose`, with the receptor chain and binder chain of the call. `references["implicit"]` is true and `references["implicit_pose_id"]` names the pose. Without a reference there are no residue sets or partners, and the descriptors are not computed.
 
 ## The common frame
 
-Every pose is placed in the frame of the reference receptor before anything is compared or measured. Poses of one construct come from different programs, which store a complex in different frames, and the peptide RMSD between two poses means nothing until their receptors coincide.
-
-For each pose and each reference variant, the stage pairs the receptor residues of the pose with those of the reference, fits a rigid transform on the paired C-alpha atoms, and reports how good the frame is.
+Every pose is placed in the frame of the reference receptor before anything is compared or measured. For each pose and each reference variant, the stage pairs the receptor residues of the pose with those of the reference, fits a rigid transform on the paired C-alpha atoms, and reports the quality of the frame.
 
 **Pairing.** The first method that succeeds is used and named in `frame["pairing"]`.
 
@@ -175,11 +171,11 @@ For each pose and each reference variant, the stage pairs the receptor residues 
 
 **Fit.** A Kabsch fit on the C-alpha atoms of the paired residues: a proper rotation, never a reflection, in float64, with no random numbers. `frame_atoms="backbone"` fits the N, CA, C and O atoms that both residues have. `frame_residues` fits only the paired residues of a named residue set of the reference, or of the binding site (`"site"`, which needs a `binder_chain`). `outliers="iqr"` rejects residues, not atoms, in rounds of at most `iqr_max_iterations`: a residue is an outlier when its mean squared deviation exceeds the upper quartile by `iqr_threshold` interquartile ranges. A residue that deviates by less than `iqr_min_deviation_angstrom` is never rejected, and the rejection stops before `min_frame_residues` would be violated. The transform maps a coordinate `x` of the pose to `rotation @ x + translation`, which is `coords @ rotation.T + translation` for an array of row vectors.
 
-**Refusal.** A pose fails, with `status` `failed`, a `reason` and no transform, when its receptor chain is missing, when the sequence identity of the pairing is below `min_sequence_identity`, when fewer than `min_frame_fraction` of the reference receptor residues are paired, when fewer than `min_frame_residues` residues are left to fit, or when the fit atoms of the pose or of the reference are collinear. A pose that fails is a failed row and nothing else is attempted for it. The identity limit does not apply to a `residue_map`, which states the correspondence itself.
+**Refusal.** A pose fails, with `status` `failed`, a `reason` and no transform, when its receptor chain is missing, when the sequence identity of the pairing is below `min_sequence_identity`, when fewer than `min_frame_fraction` of the reference receptor residues are paired, when fewer than `min_frame_residues` residues are left to fit, or when the fit atoms of the pose or of the reference are collinear. Nothing else is attempted for a failed pose. The identity limit does not apply to a `residue_map`, which states the correspondence itself.
 
-Two consequences follow. The paired fraction is taken over the residues of the reference receptor, so a pose that holds one domain of a larger reference fails at the default 0.5 until `min_frame_fraction` is lowered. And the free end gaps let the alignment of two unrelated chains keep a short overlap with a high identity over its few columns, so it is the paired fraction that refuses an unrelated receptor: the trypsin of 3P8F against the MDM2 of 1YCR pairs 2 of 85 residues ("only 2 of the 85 reference receptor residues are paired (0.02); min_frame_fraction is 0.50"), and the identity limit refuses a related chain that has many other residues.
+The paired fraction is taken over the residues of the reference receptor, so a pose that holds one domain of a larger reference fails at the default 0.5 until `min_frame_fraction` is lowered. Free end gaps let the alignment of two unrelated chains keep a short overlap with a high identity, so the paired fraction is what refuses an unrelated receptor, for example the trypsin of 3P8F against the MDM2 of 1YCR: "only 2 of the 85 reference receptor residues are paired (0.02); min_frame_fraction is 0.50". The identity limit refuses a related chain that has many other residues.
 
-**The `frame` block of a row.** `status`, `reason`, `pairing`, `n_receptor_residues_pose`, `n_receptor_residues_reference`, `n_paired`, `paired_fraction`, `sequence_identity`, `alignment_ambiguous`, `n_fit_residues`, `n_fit_atoms`, `n_rejected`, `receptor_rmsd_angstrom`, `region_rmsd_angstrom`, `region_n_residues`, `region_n_paired`, `region_reasons`, `warnings`, then `transform` (`{"rotation": 3 x 3, "translation": 3}`, when `include_transform` is true), `variant` and, with several variants, `variants`. The region RMSD is the C-alpha RMSD of the paired residues of a region in the final frame, with no refit, so it measures how far the region moved. The regions are `all` (every paired residue), `site` (present when the reference has a binder chain) and every residue set of the reference. A region with no paired residue is None, with its reason in `region_reasons`.
+**The `frame` block of a row.** `status`, `reason`, `pairing`, `n_receptor_residues_pose`, `n_receptor_residues_reference`, `n_paired`, `paired_fraction`, `sequence_identity`, `alignment_ambiguous`, `n_fit_residues`, `n_fit_atoms`, `n_rejected`, `receptor_rmsd_angstrom`, `region_rmsd_angstrom`, `region_n_residues`, `region_n_paired`, `region_reasons`, `warnings`, then `transform` (`{"rotation": 3 x 3, "translation": 3}`, when `include_transform` is true), `variant` and, with several variants, `variants`. The region RMSD is the C-alpha RMSD of the paired residues of a region in the final frame, with no refit. The regions are `all` (every paired residue), `site` (present when the reference has a binder chain) and every residue set of the reference. A region with no paired residue is None, with its reason in `region_reasons`.
 
 **Options of the frame stage** (`options["frame"]`, class `FrameOptions`).
 
@@ -202,13 +198,13 @@ Two consequences follow. The paired fraction is taken over the residues of the r
 | `renumber_receptor` | `True` | Number the paired receptor residues of the structure that the metrics read as the reference does. |
 | `metrics_frame` | `"reference"` | `"reference"` runs the registry metrics on the transformed pose, `"original"` on the pose's own file. |
 
-**Metrics in the frame of the reference.** A metric that reads a file gets the transformed structure, written as mmCIF to a temporary directory (`tmp_dir`), one file per pose, removed when the call ends; a metric of the `atom_array` input type receives the transformed array. With `renumber_receptor` the paired receptor residues carry the numbers of the reference, so the labels of the metrics (`interface_residues_receptor` of `interface`) are in one numbering for all poses, and the peptide keeps the numbering of its file. Surface areas depend slightly on the orientation of a structure, and measuring every pose in one frame removes that difference between poses. On the synthetic set above, `delta_sasa` of `backend_a-s2` is 1481.7 Å² in the frame of the reference and 1475.8 Å² in its own random frame (`metrics_frame="original"`), a difference of 0.4 %.
+**Metrics in the frame of the reference.** A metric that reads a file gets the transformed structure, written as mmCIF to a temporary directory (`tmp_dir`), one file per pose, removed when the call ends; a metric of the `atom_array` input type receives the transformed array. With `renumber_receptor` the paired receptor residues carry the numbers of the reference, so the labels of the metrics (`interface_residues_receptor` of `interface`) share one numbering across poses, and the peptide keeps the numbering of its file. Surface areas depend slightly on the orientation of a structure; `metrics_frame="original"` measures each pose in its own frame.
 
 ## Agreement between poses
 
-The poses are compared through the peptide, in the frame of the reference receptor. The peptide is not refitted, so the RMSD measures displacement and conformation together, which is what says whether two models put the peptide in the same place. The functions are in `binding_metrics.poses.agreement` and take biotite `AtomArray` objects that are already in the common frame, with the binder chain ID. `score_pose_set` calls them and puts the output in `result["agreement"]`.
+The poses are compared through the peptide, in the frame of the reference receptor. The peptide is not refitted, so the RMSD combines displacement and conformation. The functions are in `binding_metrics.poses.agreement` and take biotite `AtomArray` objects that are already in the common frame, with the binder chain ID. `score_pose_set` calls them and puts the output in `result["agreement"]`.
 
-**All-pairs RMSD.** For every pair of poses the RMSD of the matched atoms, `sqrt(sum |x_a,i - x_b,i|^2 / m)` in angstrom, an average over atoms. It is computed for three atom sets, and all three are always reported.
+**All-pairs RMSD.** For every pair of poses, the RMSD of the matched atoms, `sqrt(sum |x_a,i - x_b,i|^2 / m)` in angstrom, over three atom sets. All three are always reported.
 
 | `kind` | Atoms |
 |---|---|
@@ -216,15 +212,15 @@ The poses are compared through the peptide, in the frame of the reference recept
 | `backbone` | N, CA, C and O of each residue (OXT is not part of it). |
 | `heavy` | Every non-hydrogen atom of the binder residues, matched by residue and atom name. |
 
-`result["agreement"]["rmsd"][kind]` holds the matrix and its statistics. `shape_rmsd` holds the same for the peptides refitted on the matched atoms (at least 3), which separates the conformation from the position; it is switched off with `shape_rmsd=False`.
+`result["agreement"]["rmsd"][kind]` holds the matrix and its statistics. `shape_rmsd` holds the same for the peptides refitted on the matched atoms (at least 3), so it excludes the position; `shape_rmsd=False` switches it off.
 
 **Residue pairing.** Residues of two poses are paired by `ResidueKey`, or by position when the numbering differs (`residue_pairing="auto"`: by key when the keys of one pose are all in the other pose, otherwise by position for equal lengths; `"key"` and `"position"` force one). Two paired residues must be the same amino acid after the protonation variants and the D-amino-acid codes are mapped to their L parent, so a model that flips a D residue to L is measured and a change of sequence is refused. Residues and atoms present in one pose only are dropped from that pair. A pair that shares fewer than `min_shared_atom_fraction` (0.8) of the atoms of the larger set has no value and a reason. Waters and hydrogens are never part of the binder.
 
-**Symmetric atoms.** Atoms that the chemistry cannot tell apart carry names that a model assigns arbitrarily. With `symmetry="standard"` the heavy-atom RMSD compares each residue in the labelling that gives the smallest sum of squared distances. The groups are Asp OD1/OD2, Glu OE1/OE2, Leu CD1/CD2, Val CG1/CG2, Arg NH1/NH2, the ring flip of Phe and Tyr (CD1/CD2 and CE1/CE2 together), and the three phosphate oxygens of Sep, Tpo and Ptr. D residues, protonation variants and N-methylated residues (MLE, MVA, SAR, NMA) use the entry of their L parent. Asn, Gln and His are not swapped. A residue that has no entry and is not known to lack symmetric atoms (BMT, ABA, the lactam templates, a stapling residue) is compared as named, which can only overestimate the RMSD, and its name is listed in `agreement["unknown_residues"]`. `symmetry="off"` compares atoms as named. `ca` and `backbone` do not depend on the labels.
+**Symmetric atoms.** With `symmetry="standard"` the heavy-atom RMSD compares each residue in the labelling that gives the smallest sum of squared distances. The groups are Asp OD1/OD2, Glu OE1/OE2, Leu CD1/CD2, Val CG1/CG2, Arg NH1/NH2, the ring flip of Phe and Tyr (CD1/CD2 and CE1/CE2 together), and the three phosphate oxygens of Sep, Tpo and Ptr. D residues, protonation variants and N-methylated residues (MLE, MVA, SAR, NMA) use the entry of their L parent. Asn, Gln and His are not swapped. A residue that has no entry and is not known to lack symmetric atoms (BMT, ABA, the lactam templates, a stapling residue) is compared as named, which can only overestimate the RMSD, and its name is listed in `agreement["unknown_residues"]`. `symmetry="off"` compares atoms as named. `ca` and `backbone` do not depend on the labels.
 
-**The free C-terminal carboxylate.** O and OXT of the last residue of a linear binder are equivalent by resonance whatever the residue, and a model that writes them the other way round raises the heavy-atom RMSD by the 2.2 Å between the two oxygens, spread over the atoms that are compared. On the 1YCR peptide (113 heavy atoms) with O and OXT of the last residue exchanged in one pose, the heavy-atom RMSD is 0.29 Å with the names as written and 0.00 Å with the rule. With `symmetry="standard"` and `kind="heavy"` they are a swappable pair when both binders are linear (neither is closed head to tail) and both poses carry O and OXT on the last residue. A pose without OXT, or a ring, leaves O as named. The `backbone` set holds O and not OXT, so the rule does not apply there, and the backbone RMSD of the same pair is 0.30 Å.
+**The free C-terminal carboxylate.** O and OXT of the last residue of a linear binder are equivalent by resonance. With `symmetry="standard"` and `kind="heavy"` they are a swappable pair when both binders are linear (neither is closed head to tail) and both poses carry O and OXT on the last residue. A pose without OXT, or a ring, leaves O as named. The `backbone` set holds O and not OXT, so the rule does not apply there.
 
-**The heavy-atom RMSD is not a metric.** The symmetric-atom labelling is chosen per pair of poses, so the heavy-atom matrix is a minimum over labellings and need not obey the triangle inequality. The clusters and the medoid are still defined on it, and an argument that needs a metric space does not apply to them.
+**Heavy-atom matrix.** The symmetric-atom labelling is chosen per pair of poses, so the heavy-atom matrix is a minimum over labellings and need not obey the triangle inequality. The clusters and the medoid are defined on it all the same.
 
 **Cyclic peptides.** No terminus is assumed and no residue is dropped by position. The atoms that close a ring (C of the last residue and N of the first for a head-to-tail amide, the SG atoms of a disulfide, the side-chain atoms of a lactam or a staple) are ordinary atoms of the sets. A head-to-tail ring has no chain break: the pairing never looks at which residue follows which. With `cyclic_shift="auto"` (`"off"` by default), two poses that are both closed head to tail (C of the last residue within 2.0 Å of N of the first), have the same number of residues and the same residue names under the shift, take the smallest RMSD over the cyclic shifts of the pairing; a tie goes to the smallest shift. The ring-closure families of each pose are listed in its `profile.closures`. `expected_closures` (by default the families that most poses have) is compared with each pose in `profile.closures_as_expected`, a pair with different families is listed in `agreement["closure_mismatch_pairs"]`, and `exclude_closure_mismatch=True` gives such a pair no value. The code does not detect closures beyond that distance test, does not try the reversed direction of a ring, and does not apply the shift to the spread or the contact maps.
 
@@ -233,13 +229,13 @@ The poses are compared through the peptide, in the frame of the reference recept
 | Statistic | Definition | Needs |
 |---|---|---|
 | `statistics` (`pair_statistics`) | Minimum, mean and maximum over the pairs of the whole set, inside each group and between each two groups, with the pairs that give the extremes. `between_reason` says why there is no between-group entry (`"only one back-end"`). | one pair |
-| `clusters` | Complete linkage, written here: start with one cluster per pose, merge the two clusters with the smallest linkage distance (the largest distance between a member of one and a member of the other) and stop when it exceeds the cutoff. Ties go to the pair with the smallest rank of its lowest members, the rank being the position in the sorted ids. Labels follow (size descending, lowest member). One clustering per cutoff, keyed by the cutoff as text (`"1.0"`), with `n_clusters`, `sizes`, `largest_cluster_fraction`, `labels`, `clusters` and, with groups, `mixed_clusters`. | two poses |
+| `clusters` | Complete linkage: start with one cluster per pose, merge the two clusters with the smallest linkage distance (the largest distance between a member of one and a member of the other) and stop when it exceeds the cutoff. Ties go to the pair with the smallest rank of its lowest members, the rank being the position in the sorted ids. Labels follow (size descending, lowest member). One clustering per cutoff, keyed by the cutoff as text (`"1.0"`), with `n_clusters`, `sizes`, `largest_cluster_fraction`, `labels`, `clusters` and, with groups, `mixed_clusters`. | two poses |
 | `medoids` | The pose with the smallest mean distance to the other poses, overall and per group, and the RMSD between the medoids of two groups. See [The representative pose](#the-representative-pose). | one pose (it is its own medoid) |
 | `contacts.interface_jaccard` | The Jaccard index `\|A ∩ B\| / \|A ∪ B\|` of the interfaces of two poses, for all interface residues, the receptor residues and the binder positions. Two empty sets have no value. | two poses |
 | `contacts.contact_map_jaccard` | The same index over the residue pairs in contact. | two poses |
 | `spread` | For each binder position, `sqrt(mean_i \|x_i - mean(x)\|^2)` of the alpha carbons over the poses (divisor n), the mean of that over the positions, for all poses and per group. It is always computed on the alpha carbons, whatever `kind` is. | two poses per position |
 
-Two distances closer than 1e-9 Å are equal in every tie rule. An undefined distance counts as infinite in the clustering. The interface of the Jaccard overlap follows a distance rule: a residue is in the interface, and a residue pair is in contact, when two of their heavy atoms are closer than `contact_cutoff_angstrom` (5.0). It is not the buried-area interface of the [descriptors](#reference-site-descriptors). Binder residues are named by their 1-based position in the binder chain and receptor residues by their key in the numbering of the reference. A quantity that cannot be computed is None with a reason, never NaN.
+Two distances closer than 1e-9 Å are equal in every tie rule. An undefined distance counts as infinite in the clustering. The interface of the Jaccard overlap follows a distance rule: a residue is in the interface, and a residue pair is in contact, when two of their heavy atoms are closer than `contact_cutoff_angstrom` (5.0). It differs from the buried-area interface of the [descriptors](#reference-site-descriptors). Binder residues are named by their 1-based position in the binder chain and receptor residues by their key in the numbering of the reference. A quantity that cannot be computed is None with a reason, never NaN.
 
 **Options of the agreement stage** (`options["agreement"]`, class `AgreementOptions`).
 
@@ -261,9 +257,9 @@ Two distances closer than 1e-9 Å are equal in every tie rule. An undefined dist
 
 ## Aggregation
 
-Every numeric value in the rows is summarised per group and over all poses, and every summary says how many poses gave a value: `n_ok` next to `n_total`. A pose that failed counts in `n_total` and never in `n_ok`, so a mean over the survivors cannot pass for a mean over the set.
+Every numeric value in the rows is summarised per group and over all poses, and every summary gives `n_ok` next to `n_total`. A pose that failed counts in `n_total` and never in `n_ok`.
 
-A value of a key is valid when the pose did not fail, no dictionary on the path to the value carries a `reason`, and the value is a finite number (not None, NaN, infinity, a bool or a string). The second condition is `reason_policy="exclude"`, the default: the convention of the registry metrics is a sentinel plus a `reason`, and some of them set it when one step failed, so the keys that the reason covers are not known and every value under that dictionary is dropped. The row keeps its values. `reason_policy="keep"` keeps them and lists the reasons under `caveats`.
+A value of a key is valid when the pose did not fail, no dictionary on the path to the value carries a `reason`, and the value is a finite number (not None, NaN, infinity, a bool or a string). The second condition is `reason_policy="exclude"`, the default. The registry metrics return a sentinel plus a `reason`, and some of them set it when one step failed, so the keys that the reason covers are not known and every value under that dictionary is dropped. The row keeps its values. `reason_policy="keep"` keeps the values and lists the reasons under `caveats`.
 
 A pose counts in `n_total` of a key when it failed, when its row has the block of the key, or when its `reasons` names the block (a metric that raised). A pose that has none of these was not asked for that metric (a heavy metric run on the representatives only) and is not counted.
 
@@ -290,7 +286,7 @@ The result is `aggregates[group][key path]`, with the groups in sorted order and
 
 ## The representative pose
 
-One pose speaks for each group and one for the whole set. `result["representatives"]` is `{group: id or None, ..., "all": id or None, "rule": ..., "reasons": {key: text}}`, with `reasons` holding a sentence for every None, and a `caveats` entry for a group where the medoid had to be chosen by the fallback below. A pose with `status` `failed` is never a candidate.
+One pose speaks for each group and one for the whole set. `result["representatives"]` is `{group: id or None, ..., "all": id or None, "rule": ..., "reasons": {key: text}}`, with `reasons` holding a sentence for every None, and a `caveats` entry for a group where the medoid had to be chosen by the fallback below. A pose with `status` `failed` is never a candidate. The representatives are the poses that the heavy metrics run on.
 
 **`"medoid"`** (the default) is the pose with the smallest mean distance to the other poses of its group in the matrix of `agreement.kind`. A pose is a candidate only when its row has no undefined distance to another pose of the group; then the smallest mean is also the smallest sum. A tie within 1e-9 Å goes to the lowest id. When no pose has a complete row, the mean runs over the distances that each pose has, a pose with none is left out, and the result carries a `caveat` that says so. A group of one pose is represented by it. `agreement["medoids"]` and `representatives` use one rule, so the two cannot name different poses.
 
@@ -298,15 +294,13 @@ One pose speaks for each group and one for the whole set. `result["representativ
 
 **A callable** takes the rows of a group that did not fail, sorted by id, and the `PoseDistances` (or None), and returns the id of one of them. `binding_metrics.poses.rank_by(key, largest=False)` builds one from a function of a row, for instance `rank_by(lambda row: row["interface"]["delta_sasa"], largest=True)`.
 
-The representatives are the poses that the heavy metrics run on.
-
 **Options** (`options["representative"]`, class `RepresentativeOptions`): `confidence_key` (`"ranking_score"`) and `confidence_direction` (`None`).
 
 ## Reference-site descriptors
 
-When the reference has residue sets or partners, each pose gets descriptors of where it sits against what is known about the target. They are computed on the pose placed in the frame of that variant, with the numbering that the frame stage read, and they are stored under `descriptors[variant]["sets"][set name]` and `descriptors[variant]["partners"][partner name]`. A block that has no value keeps its keys as None and has a `reason`, which is also recorded in the row's `reasons` as `descriptors.<variant>.sets.<set>` or `descriptors.<variant>.partners.<partner>`. A single column that cannot be computed alone is None and is named in the block's `column_reasons`, and the other columns stay valid.
+When the reference has residue sets or partners, each pose gets descriptors of its position against what is known about the target. They are computed on the pose placed in the frame of that variant, with the numbering that the frame stage read, and stored under `descriptors[variant]["sets"][set name]` and `descriptors[variant]["partners"][partner name]`. A block that has no value keeps its keys as None and has a `reason`, which is also recorded in the row's `reasons` as `descriptors.<variant>.sets.<set>` or `descriptors.<variant>.partners.<partner>`. A single column that cannot be computed alone is None and is named in the block's `column_reasons`, and the other columns stay valid.
 
-A residue is in the interface when its buried area is at least `interface_threshold_angstrom2` (0.5). The buried area of an atom is its Shrake-Rupley solvent-accessible area with the chain alone minus its area in the complex (960 points per atom, 1.4 Å probe, clamped at zero), as in `compute_interface_metrics`, and the buried area of a residue is the sum over its heavy atoms. Waters, ligands and hydrogens are not part of the surface. The area of a residue near the threshold can fall on either side of it after a rotation, which is another reason for measuring all poses in one frame.
+A residue is in the interface when its buried area is at least `interface_threshold_angstrom2` (0.5). The buried area of an atom is its Shrake-Rupley solvent-accessible area with the chain alone minus its area in the complex (960 points per atom, 1.4 Å probe, clamped at zero), as in `compute_interface_metrics`, and the buried area of a residue is the sum over its heavy atoms. Waters, ligands and hydrogens are not part of the surface.
 
 **Residue-set overlap.** Let S be a named set in the numbering of the reference, P the receptor residues of the pose that the frame pairs with reference residues (a trimmed construct lacks some), and I the residues of P that are in the interface.
 
@@ -340,26 +334,6 @@ A set of which more than `max_unmapped_fraction` (0.5) of the residues are not i
 
 `b_X(a)` is the area of receptor atom a that X buries: the area of the receptor alone minus its area with X added, clamped at zero. The sums run over the receptor atoms that the pose and the reference both have (residues paired by the frame, same atom name). `b_pose` is measured on the pose's receptor with the pose's binder, and `b_partner` on the reference's receptor with the partner, so the shared area is the receptor surface that both cover. When the partner is the pose's own binder in its own receptor, the shared area is the whole area of the partner. The overlap volume is a proxy: a triple overlap is counted once per pair, so a crowded site is overestimated, atoms at van der Waals distance contribute nothing, and compression adds volume. A partner that is not a polymer (a ligand) has no atom left after the polymer filter and gets a block without value.
 
-With the crystal peptide of 1YCR as the partner (the `crystal` reference above) and the synthetic poses shifted along a fixed direction, the shared area falls as the peptide leaves the groove:
-
-```python
-synthetic = make_synthetic_poses(
-    offsets_angstrom={"backend_a": (0.0, 3.0, 6.0), "backend_b": (-3.0, 10.0, 12.0)}
-)
-result = score_pose_set(synthetic.poses, reference=crystal)
-for row in result["poses"]:
-    block = row["descriptors"]["crystal"]["partners"]["crystal_peptide"]
-```
-
-| Pose | Shift (Å) | `min_distance_angstrom` | `shell_fraction` | `shared_buried_area_angstrom2` | `shared_fraction_of_partner` |
-|---|---:|---:|---:|---:|---:|
-| `backend_b-s1` | -3 | 0.37 | 1.00 | 378.6 | 0.57 |
-| `backend_a-s1` | 0 | 0.00 | 1.00 | 662.3 | 1.00 |
-| `backend_a-s2` | 3 | 0.37 | 1.00 | 513.0 | 0.77 |
-| `backend_a-s3` | 6 | 0.66 | 0.66 | 371.2 | 0.56 |
-| `backend_b-s2` | 10 | 0.80 | 0.20 | 164.9 | 0.25 |
-| `backend_b-s3` | 12 | 2.18 | 0.05 | 80.6 | 0.12 |
-
 **The per-residue interface table.** With `residue_table=True` each row gets `residue_table`: the interface residue by residue, in a long format with fixed columns, for the first reference variant. It has one line for every binder residue (a zero area is allowed) and for every receptor residue with a buried area above zero, sorted by role, chain, number and insertion code, so the binder lines come first.
 
 | Column | Meaning |
@@ -373,7 +347,7 @@ for row in result["poses"]:
 | `in_interface` | Whether the buried area is at least `interface_threshold_angstrom2`. It does not remove lines. |
 | `in_sets` | For a receptor residue, the sorted names of the residue sets that contain its reference residue (an empty list when there are none); None for a binder residue. |
 
-There is no per-residue interaction energy. The only energy-like column is the solvation term, which is a surface-area model.
+The only energy-like column is the solvation term, which is a surface-area model; there is no per-residue interaction energy.
 
 **Options of the descriptors** (`options["descriptors"]`, class `DescriptorOptions`).
 
@@ -387,19 +361,19 @@ There is no per-residue interaction energy. The only energy-like column is the s
 
 ## Reconciling two back-ends
 
-When two back-ends predict the same constructs, the next questions are how far their means differ, whether they hold the same interface, whether they rank a population of constructs in the same order, and whether the residues that an alanine scan finds sensitive are the residues a pose buries. The functions of `binding_metrics.poses.reconcile` (also importable from `binding_metrics.poses`) answer them from what the layer already produced: the aggregates of `aggregate_poses`, the per-pose rows with a `residue_table`, or a table with one row per construct and back-end. Nothing is read from disk and nothing is judged: thresholds are arguments, and a value that cannot be computed is None with a reason.
+The functions of `binding_metrics.poses.reconcile` (also importable from `binding_metrics.poses`) compare two back-ends that predict the same constructs. They work from what the layer already produced: the aggregates of `aggregate_poses`, the per-pose rows with a `residue_table`, or a table with one row per construct and back-end. Nothing is read from disk and no threshold is applied: thresholds are arguments, and a value that cannot be computed is None with a reason.
 
-**Gap and standardised gap.** `gap_between_backends(aggregates, "boltz2", "of3")` returns, per key path, `gap = mean_a - mean_b` (positive when the first back-end has the larger mean: the order of the call is the sign) and `standardised_gap = gap / s_pooled`, with `s_pooled = sqrt(((n_a - 1) s_a^2 + (n_b - 1) s_b^2) / (n_a + n_b - 2))`, where `s` is the sample standard deviation over the valid values of each back-end (the denominator of Cohen's d). The standardised gap is None with a reason unless both back-ends have at least two valid values and `s_pooled` is above 0. With three seeds per back-end the pooled value has 4 degrees of freedom and is unstable, so `scale={key: value}` replaces it with a scale of the caller's choosing, for example the spread of the same key over constructs, and then needs neither two seeds nor a spread. The gap is None with a reason when either back-end has no valid value, or when only one back-end is in the aggregates (a set with a single model). An entry holds `gap`, `standardised_gap`, `mean_a`, `mean_b`, `n_ok_a`, `n_ok_b`, `scale`, `scale_kind` (`"pooled"` or `"given"`) and `reasons` (`{field: sentence}`, empty when everything was computed). On made-up values, three per back-end (1260.2, 1290.5 and 1320.8 against 1197.9, 1284.0 and 1370.1, with sample standard deviations 30.3 and 86.1), the gap is +6.5, the pooled deviation 64.5 and the standardised gap 0.10.
+**Gap and standardised gap.** `gap_between_backends(aggregates, "boltz2", "of3")` returns, per key path, `gap = mean_a - mean_b` (positive when the first back-end has the larger mean) and `standardised_gap = gap / s_pooled`, with `s_pooled = sqrt(((n_a - 1) s_a^2 + (n_b - 1) s_b^2) / (n_a + n_b - 2))`, where `s` is the sample standard deviation over the valid values of each back-end (the denominator of Cohen's d). The standardised gap is None with a reason unless both back-ends have at least two valid values and `s_pooled` is above 0. `scale={key: value}` replaces `s_pooled` with a scale of the caller's choosing, for example the spread of the same key over constructs, and then needs neither two seeds nor a spread. The gap is None with a reason when either back-end has no valid value, or when only one back-end is in the aggregates. An entry holds `gap`, `standardised_gap`, `mean_a`, `mean_b`, `n_ok_a`, `n_ok_b`, `scale`, `scale_kind` (`"pooled"` or `"given"`) and `reasons` (`{field: sentence}`, empty when everything was computed).
 
-**Consensus interface.** `consensus_interface(rows, "boltz2", min_fraction=0.5)` collects, over the valid poses of a back-end (not failed, with a `residue_table`), the receptor residues (reference keys; a residue that the pose cannot map to the reference is left out and counted in `n_unmapped_receptor`) and the binder positions that are in the interface, and keeps those that at least `min_fraction` of the poses hold: `count / n_poses >= min_fraction`, so exactly half is in at 0.5. `compare_consensus_interfaces(a, b, limit=None)` returns the Jaccard index of the two consensus sets (`jaccard`, `jaccard_binder`, `jaccard_receptor`), `only_a` and `only_b` (`{"binder": [...], "receptor": [ResidueKey, ...]}`) and, when `limit` is given, `below_limit` (true when `jaccard < limit`). It never says "differs" without a limit. Two empty consensus sets have no Jaccard index. A back-end with no valid pose gives None everywhere with the reason, so that an empty consensus is not read as "no interface".
+**Consensus interface.** `consensus_interface(rows, "boltz2", min_fraction=0.5)` collects, over the valid poses of a back-end (not failed, with a `residue_table`), the receptor residues (reference keys; a residue that the pose cannot map to the reference is left out and counted in `n_unmapped_receptor`) and the binder positions that are in the interface, and keeps those that at least `min_fraction` of the poses hold: `count / n_poses >= min_fraction`, so exactly half is in at 0.5. `compare_consensus_interfaces(a, b, limit=None)` returns the Jaccard index of the two consensus sets (`jaccard`, `jaccard_binder`, `jaccard_receptor`), `only_a` and `only_b` (`{"binder": [...], "receptor": [ResidueKey, ...]}`) and, when `limit` is given, `below_limit` (true when `jaccard < limit`). Two empty consensus sets have no Jaccard index. A back-end with no valid pose gives None everywhere with the reason.
 
 **Rank agreement over a population.** `rank_agreement(table, "boltz2", "of3", metrics=None, method="spearman")` takes rows `{"construct": ..., "backend": ..., "<metric>": value}`, one per construct and back-end, and returns per metric `method`, `correlation`, `n` (the constructs with a valid value for both back-ends), `n_constructs`, `n_dropped`, `n_missing_a`, `n_missing_b` and, when the correlation is None, a `reason` (fewer than 3 constructs, or all the values of one back-end tie). Spearman's rho is the Pearson correlation of the midranks, and `method="kendall"` gives tau-b (ties in either list corrected). Only exact ties count as ties. A construct with a missing value for either back-end is dropped and counted. Both agree with `scipy.stats` to 1e-15 on seeded data with ties; scipy is not imported by the library.
 
-**Hotspot consistency.** `hotspot_consistency(sensitivities, residue_table, top_m=3)` takes an alanine scan `{binder position: sensitivity}` (larger means more important; pass the negated scale otherwise) and the per-residue table of one pose, and returns `spearman_area_vs_sensitivity` (the buried area against the sensitivity over the positions that have both; it needs 3 positions and a spread in both), `top_in_interface_fraction` (the fraction of the `top_m` most sensitive positions that are in the interface; it needs at least `top_m` positions), `top_positions`, `n_top`, `n_top_in_interface`, `n_positions`, `n_missing_sensitivity`, `n_unmatched_positions` and `reasons`. Every position whose sensitivity is at least that of the `top_m`-th most sensitive one is in the top set, so the set has more than `top_m` members when a tie straddles the cut, and the fraction is taken over the whole set. The default `top_m` of 3 is a choice, not a benchmark. The caller runs it on one pose's `residue_table`; `score_pose_set` has no argument for the sensitivities.
+**Hotspot consistency.** `hotspot_consistency(sensitivities, residue_table, top_m=3)` takes an alanine scan `{binder position: sensitivity}` (larger means more important; pass the negated scale otherwise) and the per-residue table of one pose. It returns `spearman_area_vs_sensitivity` (the buried area against the sensitivity over the positions that have both; it needs 3 positions and a spread in both), `top_in_interface_fraction` (the fraction of the `top_m` most sensitive positions that are in the interface; it needs at least `top_m` positions), `top_positions`, `n_top`, `n_top_in_interface`, `n_positions`, `n_missing_sensitivity`, `n_unmatched_positions` and `reasons`. Every position whose sensitivity is at least that of the `top_m`-th most sensitive one is in the top set, so the set has more than `top_m` members when a tie straddles the cut, and the fraction is taken over the whole set. The caller runs it on one pose's `residue_table`; `score_pose_set` has no argument for the sensitivities.
 
 ## The design origin
 
-A model that took part in the design agrees with the design partly because the design was selected for that model. When BoltzGen made a construct, the Boltz-2 poses of the construct are therefore not an independent witness, and an OpenFold3 pose of the same construct is. `design_source` names the pipeline (`capabilities.DESIGN_SOURCE_PREDICTORS` maps BoltzGen to `boltz2` and BindCraft and ColabDesign to `af2`; the models can also be named directly) and the layer compares it with the `backend` of each pose. It reports the label and never drops a pose for it.
+`design_source` names the pipeline that made the binder (`capabilities.DESIGN_SOURCE_PREDICTORS` maps BoltzGen to `boltz2` and BindCraft and ColabDesign to `af2`; the models can also be named directly), and the layer compares it with the `backend` of each pose. It reports the label and never drops a pose for it.
 
 - `independent_of_design` in each row is False for a pose whose back-end the pipeline ran, True for a pose with another back-end, and None when no usable source was given or the pose names no back-end.
 - The checks that rest on independence (`capabilities.INDEPENDENCE_DEPENDENT_CHECKS`, today `evobind_adversarial`) follow `design_policy`. With `"skip"`, the default, the check is not run on the poses of such a back-end: their rows hold the reason under the metric's name in `reasons` (status `partial`), their group counts them in `n_total` and not in `n_ok` of the keys of that metric, and the other back-ends are measured as asked. When every back-end is one the design ran, the check is left out of the whole set and `preflight["metrics_skipped"]` lists it. `"warn"` runs the check on all the poses. `"error"` raises `IncompatibleInputError` before a pose is scored.
@@ -409,7 +383,7 @@ The rule holds whatever `preflight` says: `preflight="off"` skips the limits of 
 
 ## The result
 
-`score_pose_set` returns a `PoseSetResult`, a `dict` subclass: `result["poses"]`, `json.dumps(result)` and `copy.deepcopy` work as they do for a dictionary, and the methods read it and never change it.
+`score_pose_set` returns a `PoseSetResult`, a `dict` subclass: `result["poses"]`, `json.dumps(result)` and `copy.deepcopy` work as they do for a dictionary, and the methods read the result and never change it.
 
 | Member | Meaning |
 |---|---|
@@ -432,7 +406,7 @@ The rule holds whatever `preflight` says: `preflight="off"` skips the limits of 
 | `binder_chain`, `target_chain` | The chains that were used, given or detected. |
 | `input_key` | The SHA-256 of the pose ids, content hashes and provenance, the chains, the content hash of each reference and the parameters. Equal for equal inputs, whatever the run: it does not depend on the package version, `n_workers` or the temporary directory. A callable is not in it. |
 | `provenance` | `collect_provenance()` (package version, git sha, Python, OS, OpenMM version read from the installed distribution without importing it, platform, seed) plus `pose_set_schema_version`, `n_poses` and `run` (`n_workers`, `start_method`, `on_error`, `tmp_dir`, `keep_tmp`), and `temp_dir` when the directory was kept. |
-| `parameters` | `options` (every option group), `metrics`, `metric_scope` (`all`, `representatives` or `none` for each metric), `metric_kwargs`, `aggregate`, `group_by`, `representative`, `heavy`, `preflight`, `residue_maps`, `residue_table`, `include_transform`, and `design` (`source`, `predictors`, `policy`) when `design_source` is given. The resolved values, so that a result says what produced it. |
+| `parameters` | `options` (every option group), `metrics`, `metric_scope` (`all`, `representatives` or `none` for each metric), `metric_kwargs`, `aggregate`, `group_by`, `representative`, `heavy`, `preflight`, `residue_maps`, `residue_table`, `include_transform`, and `design` (`source`, `predictors`, `policy`) when `design_source` is given. The resolved values. |
 | `references` | `implicit`, `implicit_pose_id`, `metrics_frame_variant` and `variants`: for each variant the `content_hash` and the `Reference.to_dict()` record. |
 | `preflight` | The `PreflightReport` as a dictionary, or None with `preflight="off"`. It has one more block, `design`, when `design_source` is given. |
 | `poses` | The rows, sorted by id. |
@@ -443,7 +417,7 @@ The rule holds whatever `preflight` says: `preflight="off"` skips the limits of 
 | `nonfinite_fields` | The key paths of every NaN or infinite number in the result. |
 | `timing` | `stages_seconds` and `poses_seconds`. Not part of `input_key`. |
 
-**`schema_version`** changes when a key is renamed or removed, or when a meaning or a unit changes. Adding a key or a statistic does not change it, so a reader should ignore keys it does not know. It is independent of the `schema_version` inside `provenance`, which versions the provenance block alone.
+`schema_version` changes when a key is renamed or removed, or when a meaning or a unit changes. Adding a key or a statistic does not change it, so a reader should ignore keys it does not know. It is independent of the `schema_version` inside `provenance`, which versions the provenance block alone.
 
 **The row of a pose**, keys in this order.
 
@@ -488,7 +462,7 @@ The rule holds whatever `preflight` says: `preflight="off"` skips the limits of 
 
 A matrix is `{"name": "rmsd_ca", "unit": "angstrom", "direction": "distance", ...}` with `matrix` as rows in the order of `pose_ids`; the Jaccard matrices have the direction `similarity`. A medoid also carries a `reason` when it has no distance to report (one pose, or no candidate) and a `caveat` when it was chosen by the fallback of the [representative rule](#the-representative-pose). Each entry of `agreement.contacts.interface_jaccard` and `agreement.contacts.contact_map_jaccard` has the keys `matrix` and `statistics` of a peptide RMSD.
 
-**A metric block next to the reserved names.** A metric is requested by its registry name and its block sits under that name in the row, so a metric whose name is one of the row's own keys is refused (`ValueError`, before any pose is read). The reserved names are `id`, `kind`, `content_hash`, `provenance`, `native`, `status`, `reason`, `reasons`, `independent_of_design`, `profile`, `frame`, `descriptors` and `residue_table`. A reader of the result finds a metric at `row[metric_name]` and a structured value at `row[metric_name][key]`, as `compute_interface_metrics` returns it.
+**A metric block next to the reserved names.** A metric is requested by its registry name and its block sits under that name in the row, so a metric whose name is one of the row's own keys is refused (`ValueError`, before any pose is read). The reserved names are `id`, `kind`, `content_hash`, `provenance`, `native`, `status`, `reason`, `reasons`, `independent_of_design`, `profile`, `frame`, `descriptors` and `residue_table`. A metric is found at `row[metric_name]` and a structured value at `row[metric_name][key]`, as `compute_interface_metrics` returns it.
 
 ## Writers
 
@@ -501,19 +475,17 @@ A matrix is `{"name": "rmsd_ca", "unit": "angstrom", "direction": "distance", ..
 | `md` | `summary()`: a table per group of poses with the status, the receptor RMSD of the frame and the headline value of each metric; the failed poses and the poses with a missing value, each with its reason; the agreement block; the aggregates of the headline values; the representatives; the warnings. |
 | `html` | The same content as one page with inline styles, no script, no link, and no font or image from a network. Every text is escaped. |
 
+First lines of `result.summary()` for the synthetic set of the worked example:
+
 ```text
 # Pose set
 
 6 poses in 2 groups: 6 ok, 0 partial, 0 failed. Binder chain B, target chain A. Reference: the first readable pose (backend_a-s1).
 ```
 
-These are the first lines of `result.summary()` for the synthetic set of the worked example.
-
 **The flattening rule of the CSV.** The columns are the keys of the row joined with dots (`interface.delta_sasa`, `native.iptm`, `frame.receptor_rmsd_angstrom`). A key is never changed or escaped, so a key that contains a dot, such as the clash cutoffs `"2.2"` and `"3.0"` of the partner descriptors, gives a column with that dot: `descriptors.crystal.partners.crystal_peptide.clash_atoms.2.2`. The column names of the numeric values are the key paths of `aggregates`, which are joined in the same way, so a column and an aggregate have one name. A column name does not tell a nested key from a key with a dot; the JSON does. A list of scalars, or of lists of scalars, with at most `max_list_items` items in all is written as one column per item (`frame.transform.translation[0]`, `frame.transform.rotation[1][2]`). A longer list and a list of dictionaries (the `residue_table`, a per-atom array) is left out and stays in the JSON. The first columns are `id`, `kind`, `status`, `reason` and `content_hash`, and the others follow in the order of their first occurrence over the poses in id order. Every row has every column. A missing value is an empty cell, NaN is `nan`, a float is written with `repr` so that it reads back to the same number, and the file is UTF-8 with one `\n` after each line.
 
 ## Errors and `on_error`
-
-Failures come in three kinds.
 
 - **A wrong argument raises before any pose is read**: `ValueError`, `TypeError` or `KeyError` for an unknown metric or option, a repeated pose id, a reserved metric name or an invalid `Reference` (one error that lists every problem); `ImportError` for a metric whose extra is not installed; `IncompatibleInputError` when the pre-flight check refuses the input.
 - **A pose that cannot be scored is a row with a reason** under `on_error="record"` (the default): a structure that cannot be read, a missing chain, a pose that cannot be placed on the reference. It counts in `n_total` and never in `n_ok`, and a warning is logged. A metric that raises gives a `partial` row with the sentence in `reasons`.
@@ -523,30 +495,32 @@ A metric that returns a `reason` is not an exception in either mode. When no pos
 
 ## Determinism
 
-No random numbers are used. The rows are sorted by id, so the order of `poses` changes nothing, and `n_workers` does not change a value. `to_json(include_timing=False)` is byte-identical for the same inputs on one installation; `provenance` records the versions and `timing` the run, and neither is part of `input_key`. A call changes none of its inputs (the poses, the reference, the options) and writes only the temporary structure files, in `tmp_dir` or the system temporary directory, which it removes at the end unless `keep_tmp` is set. The synthetic poses are deterministic as well: the only randomness of `make_synthetic_poses` is the frame noise, seeded by `rng_seed`.
+No random numbers are used. The rows are sorted by id, so the order of `poses` changes nothing, and `n_workers` does not change a value. `to_json(include_timing=False)` is byte-identical for the same inputs on one installation; `provenance` records the versions and `timing` the run, and neither is part of `input_key`. A call changes none of its inputs (the poses, the reference, the options) and writes only the temporary structure files, in `tmp_dir` or the system temporary directory, which it removes at the end unless `keep_tmp` is set. The only randomness of `make_synthetic_poses` is the frame noise, seeded by `rng_seed`.
 
 ## Checking a change against the golden results
 
-A source checkout has two golden results in `tests/golden/pose_sets/`: `synthetic_1ycr.json`, the `score_pose_set` result for `make_synthetic_poses()` against the unmoved 1YCR complex, and `descriptors_1ycr.json`, the crystal peptide of 1YCR and the same peptide shifted 6 Å. Both use an epitope of 22 receptor residues (the residues within 4.5 Å of the peptide) and a buried-area interface of 25 residues as residue sets, and the crystal peptide as partner. `tests/poses/test_golden_pose_set.py` rebuilds both results and compares them with the files. The files hold no `timing`, no top-level `provenance`, no `package_version` and no file path. A float agrees when `|live - golden| <= 1e-6 + 1e-6 * |golden|`; integers, booleans, strings, `None`, the keys and the length of every list must be equal, and a count that became a float is a failure. A failure names the path, the two values and the tolerance: `<path>: golden <value>, result <value> (difference <d>, relative <r>; tolerance rtol=1e-06 atol=1e-06)`.
+A source checkout has two golden results in `tests/golden/pose_sets/`: `synthetic_1ycr.json`, the `score_pose_set` result for `make_synthetic_poses()` against the unmoved 1YCR complex, and `descriptors_1ycr.json`, the crystal peptide of 1YCR and the same peptide shifted 6 Å. Both use an epitope of 22 receptor residues (within 4.5 Å of the peptide) and a buried-area interface of 25 residues as residue sets, and the crystal peptide as partner. `tests/poses/test_golden_pose_set.py` rebuilds both results and compares them with the files, which hold no `timing`, no top-level `provenance`, no `package_version` and no file path. A float agrees when `|live - golden| <= 1e-6 + 1e-6 * |golden|`; integers, booleans, strings, `None`, the keys and the length of every list must be equal, and a count that became a float fails. A failure reads `<path>: golden <value>, result <value> (difference <d>, relative <r>; tolerance rtol=1e-06 atol=1e-06)`.
 
-The values come from the code, and `tests/poses/test_golden_descriptors.py` checks the ones that matter most against a calculation from the PDB file that does not use the layer: the set overlap, the buried area shared with the partner, the minimum distance, the clash and shell counts and the overlap volume, for the crystal peptide and for the shifted one. The pairwise RMSD in `synthetic_1ycr.json` is compared with its closed form (`SyntheticTruth.rmsd`) to 1e-4 Å, the accuracy of float32 coordinates.
+`tests/poses/test_golden_descriptors.py` checks the set overlap, the buried area shared with the partner, the minimum distance, the clash and shell counts and the overlap volume, for the crystal peptide and the shifted one, against a calculation from the PDB file that does not use the layer. The pairwise RMSD in `synthetic_1ycr.json` is compared with its closed form (`SyntheticTruth.rmsd`) to 1e-4 Å, the accuracy of float32 coordinates.
 
-`python scripts/regen_pose_golden.py --write` rewrites the files and prints what moved. It refuses to run without `--write`, and it leaves a file alone when every value agrees within the tolerance, so that regenerating on another machine does not rewrite rounding noise. A regeneration is legitimate when the new numbers are intended and understood: a deliberate change of the pose-set code or of a registry metric that the cases call, of the synthetic generator, or a dependency whose algorithm changed (biotite surface areas, for example), after the new values were checked against an independent calculation. The commit that carries the new files states the reason as a regression note: one named value, before and after.
+`python scripts/regen_pose_golden.py --write` rewrites the files and prints what moved. It refuses to run without `--write`, and it leaves a file alone when every value agrees within the tolerance, so that regenerating on another machine does not rewrite rounding noise. Regenerate only for an intended change that was checked against an independent calculation: a change of the pose-set code, of a registry metric that the cases call or of the synthetic generator, or a dependency whose algorithm changed (biotite surface areas, for example). The commit that carries the new files states the reason as a regression note: one named value, before and after.
 
 The golden files are not installed with the package. An engine that wants the same check writes `make_synthetic_poses()` into its own fixture, calls its own `score_pose_set`, and compares with the rule above; the 1YCR complex that the generator reads is part of the installed package (`binding_metrics/testing/data/`).
 
 ## Parallelism
 
-`n_workers` above 1 scores the poses in worker processes, up to one per pose. The agreement, the representatives and the aggregates run in the calling process, and so do the heavy metrics, one after the other. The result does not depend on `n_workers`.
+`n_workers` above 1 scores the poses in worker processes, up to one per pose. The agreement, the representatives and the aggregates run in the calling process, and so do the heavy metrics, one after the other. The result does not depend on `n_workers`. One pose, or `n_workers=1`, never starts a pool.
 
-The workers are started with `start_method`. The default is `"spawn"`: each worker is a fresh interpreter, which is safe in a process that has threads or has loaded GPU libraries, and costs a few seconds of start-up per worker. `"forkserver"` starts the workers from a server process, `"fork"` copies the calling process (the quickest start, but forking a process that has threads is deprecated since Python 3.12 and can deadlock), and None takes the start method of the platform: `fork` on Linux up to Python 3.13, `forkserver` on Linux from Python 3.14, `spawn` on macOS and Windows. An unknown name is a `ValueError`, and so is a method that the platform does not have when `n_workers` is above 1. The method that was used is in `provenance["run"]["start_method"]`; it does not change a value and is not part of `input_key`. The call's context and the poses are pickled to each worker and the rows and the placed atoms are pickled back, so a pose class of your own has to pickle; `Reference`, `Partner`, `FrameResult`, the declared limits of the registry metrics (`Capabilities`, `InputProfile`, `PreflightReport` and every registered `MetricSpec`) and the pose kinds of the package do. With `spawn` (the default) or `forkserver` the script that makes the call needs the usual `if __name__ == "__main__":` guard. When no worker process can be started (the executor cannot be made, a process cannot be created, or the pool breaks before the first pose came back), the call logs a warning and scores the poses one after the other. A pool that breaks after poses came back raises `BrokenProcessPool`. One pose, or `n_workers=1`, never starts a pool.
+The workers are started with `start_method`. The default is `"spawn"`: each worker is a fresh interpreter, which is safe in a process that has threads or has loaded GPU libraries, and costs a few seconds of start-up per worker. `"forkserver"` starts the workers from a server process. `"fork"` copies the calling process (the quickest start, but forking a process that has threads is deprecated since Python 3.12 and can deadlock). None takes the start method of the platform: `fork` on Linux up to Python 3.13, `forkserver` on Linux from Python 3.14, `spawn` on macOS and Windows. An unknown name is a `ValueError`, and so is a method that the platform does not have when `n_workers` is above 1. The method that was used is in `provenance["run"]["start_method"]`; it does not change a value and is not part of `input_key`. With `spawn` or `forkserver` the script that makes the call needs the usual `if __name__ == "__main__":` guard.
 
-## What the layer does not cover
+The call's context and the poses are pickled to each worker and the rows and the placed atoms are pickled back, so a pose class of your own has to pickle. `Reference`, `Partner`, `FrameResult`, the declared limits of the registry metrics (`Capabilities`, `InputProfile`, `PreflightReport` and every registered `MetricSpec`) and the pose kinds of the package do. When no worker process can be started (the executor cannot be made, a process cannot be created, or the pool breaks before the first pose came back), the call logs a warning and scores the poses one after the other. A pool that breaks after poses came back raises `BrokenProcessPool`.
+
+## Limits and status
 
 - **No per-pose hotspot call.** `hotspot_consistency` takes the sensitivities and one pose's residue table, and the caller runs it. The result has no `hotspots` key.
 - **The design origin rests on a table.** `DESIGN_SOURCE_PREDICTORS` maps three pipelines to the models they ran, and `evobind_adversarial` is the only check that follows the rule. A pipeline outside the table needs `design_source=("model",)`. The confidence metrics of a model that made the design are reported with the label and are not left out. The layer compares back-end names and cannot tell that a pose really came from the model it names.
 - **No per-residue energy.** The residue table has a solvation term, which is a surface-area model.
-- **No real model output was used to test the layer.** The repository holds no output of a real co-folding model. The layer was tested on the synthetic set, on the bundled complexes of `data/` and on the fixtures of the adapters (the Boltz-2 case is the adapter fixture with the 1YCR atoms). The heavy metrics that need OpenMM were tested with stand-ins that are registered under test names, not run. The worker pool was tested on Linux with the `fork`, `spawn` and `forkserver` start methods; macOS and Windows were not tested.
+- **Tested without real model output.** The repository holds no output of a real co-folding model. The layer was tested on the synthetic set, on the bundled complexes of `data/` and on the fixtures of the adapters (the Boltz-2 case is the adapter fixture with the 1YCR atoms). The heavy metrics that need OpenMM ran with stand-ins registered under test names. The worker pool ran on Linux with the `fork`, `spawn` and `forkserver` start methods; macOS and Windows were not tested.
 - **One binder chain and one target chain.** A binder of several chains is not supported.
 - **Ring closures are read from the structure.** The agreement does not detect closures beyond the distance test of `cyclic_shift="auto"`, does not try the reversed direction of a ring, and does not apply the cyclic shift to the spread or the contact maps.
 - **No significance.** The correlations of `rank_agreement` come without p-values or confidence intervals, and the gap is expressed in units of a spread, not tested.
@@ -554,7 +528,7 @@ The workers are started with `start_method`. The default is `"spawn"`: each work
 
 ## Using it from the engine side
 
-A design engine that scores each construct with two models reads the output directories of the models through the adapters, builds one `Reference` for the target, and keeps the result of each construct as a JSON file. The example runs on the synthetic poses; with real output the lines that build `poses` are the adapters' `load`.
+The example scores one construct from two back-ends and writes the result as a JSON file. It runs on the synthetic poses; with real output the lines that build `poses` are the adapters' `load`.
 
 ```python
 from pathlib import Path
@@ -592,4 +566,4 @@ print(result["construct"], entry["n_ok"], entry["complete"], overlap["below_limi
 design_0042 6 True False
 ```
 
-The engine decides what a standardised gap or a Jaccard index of the consensus interfaces means. It reads `complete` before it trusts a mean, `representatives` for the pose to take forward, and `result["poses"]` for the reason of every pose that dropped out.
+`complete` says whether a mean covers every pose, `representatives` names the pose to take forward, and `result["poses"]` holds the reason for every pose that dropped out.
