@@ -97,7 +97,9 @@ def test_cli_prints_the_same_text_on_the_same_streams(
         "argv",
         ["binding-metrics-energy", "--input", str(missing), "--modes", "raw"],
     )
-    energy.main()
+    with pytest.raises(SystemExit) as stop:  # the only sample failed
+        energy.main()
+    assert stop.value.code == 1
     captured = capsys.readouterr()
     assert captured.out.startswith("[absent] ERROR: FileNotFoundError: Structure file not found: ")
     assert "\nResults:\n" in captured.out

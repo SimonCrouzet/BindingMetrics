@@ -123,7 +123,8 @@ class TestChainSelection:
             ["binding-metrics-energy", "--input", str(CWA), "--output", str(tmp_path / "e.csv")]
             + ["--peptide-chain", "C", "--receptor-chain", "A", "--modes", "raw"],
         )
-        energy.main()
+        with pytest.raises(SystemExit):  # the stubbed builder stops the only sample
+            energy.main()
         assert builder_calls[0]["peptide_chain"] == "B"
 
 

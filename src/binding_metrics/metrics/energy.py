@@ -22,6 +22,7 @@ References:
 
 import argparse
 import logging
+import sys
 import traceback
 import warnings
 from pathlib import Path
@@ -1232,6 +1233,20 @@ def main():
         else:
             print("\nResults:")
             print(df.to_string())
+
+        # Same rule as binding-metrics-batch: the status is non-zero only when no sample
+        # produced an energy; a partial failure is named in a warning and the status stays 0.
+        failed = [str(r.get("sample_id")) for r in results if not r.get("success")]
+        if failed and len(failed) < len(results):
+            logger.warning(
+                "\n%d of %d sample(s) produced no energy: %s",
+                len(failed),
+                len(results),
+                ", ".join(failed),
+            )
+    if results and len(failed) == len(results):
+        logger.warning("\nno sample produced an energy (%d failed)", len(failed))
+        sys.exit(1)
 
 
 if __name__ == "__main__":
