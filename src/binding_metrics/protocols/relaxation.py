@@ -352,7 +352,7 @@ class RelaxationResult:
         platform_fallback_reason: Why CUDA was not used, when CUDA was requested
             and the run fell back to CPU
         qc: Structural QC of the relaxed structure (``{"passed", "failed",
-            "checks"}`` from ``protocols.qc.check_relaxed_structure``), with the
+            "checks", "warnings"}`` from ``protocols.qc.check_relaxed_structure``), with the
             same schema under ``"md_final"`` when MD ran. Advisory.
         qc_passed: True when every QC check passed, False when one failed, None
             when QC did not run. The warnings of the QC (``qc["warnings"]``, for example
