@@ -863,6 +863,10 @@ def _receptor_energy(
     adds hydrogens, builds an AMBER ff14SB + implicit solvent system, and
     evaluates potential energy at the input geometry (no minimization).
 
+    Without PDBFixer the terminal oxygen of a chain is added here
+    (``core.system.add_terminal_oxygens``), and a chain that still lacks atoms gives NaN
+    with an ``error`` that says PDBFixer is needed (``pip install binding-metrics[structure]``).
+
     Stochastic steps (PDBFixer's rebuild of missing atoms and the jitter of new
     hydrogens) are seeded with ``random_seed``, so the same input gives the same
     energy; ``None`` leaves them unseeded. With ``device="cuda"`` the final
@@ -878,6 +882,7 @@ def _receptor_energy(
     try:
         openmm, unit, ForceField, Modeller, PDBFile, Simulation = _import_openmm()
         from binding_metrics.core.system import (
+            add_terminal_oxygens,
             create_system_respecting_chain_breaks,
             deterministic_hydrogen_placement,
         )
@@ -927,10 +932,12 @@ def _receptor_energy(
                 mod = Modeller(fixer.topology, fixer.positions)
                 mod.addHydrogens(pH=DEFAULT_PH, platform=placement_platform)
             else:
+                # The chain is completed as far as Modeller needs (the terminal oxygen) and gets
+                # the hydrogens of the PDBFixer branch, so the energy does not depend on whether
+                # PDBFixer is installed.
                 pdb = PDBFile(str(tmp_path))
-                ff_tmp = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
-                mod = Modeller(pdb.topology, pdb.positions)
-                mod.addHydrogens(ff_tmp, pH=DEFAULT_PH, platform=placement_platform)
+                mod = Modeller(*add_terminal_oxygens(pdb.topology, pdb.positions))
+                mod.addHydrogens(pH=DEFAULT_PH, platform=placement_platform)
         topology, positions = mod.topology, mod.positions
 
         ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
@@ -974,7 +981,13 @@ def _receptor_energy(
         # Broad on purpose: PDBFixer, OpenMM and the force field raise many exception
         # types on unusual input, so a failure is recorded in ``error`` instead of
         # aborting the other terms.
-        return {**_nan, "error": f"{type(e).__name__}: {e}"}
+        error = f"{type(e).__name__}: {e}"
+        if not has_pdbfixer and isinstance(e, ValueError):
+            error += (
+                " PDBFixer rebuilds the missing atoms of a chain and is not installed "
+                "(pip install binding-metrics[structure])."
+            )
+        return {**_nan, "error": error}
 
     finally:
         if tmp_path is not None:

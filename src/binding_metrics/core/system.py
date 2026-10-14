@@ -7,7 +7,7 @@ import tempfile
 from typing import Literal, Optional
 
 import openmm.unit as unit
-from openmm.app import ForceField, Modeller, PDBFile, Topology
+from openmm.app import Element, ForceField, Modeller, PDBFile, Topology
 
 from binding_metrics._constants import (
     DEFAULT_PH,
@@ -748,6 +748,73 @@ def require_closed_c_termini(topology, chain_names: Optional[dict] = None) -> No
         "or binding-metrics-run without --skip-prep), or give a structure whose chains end in "
         "OXT or a cap (ACE, NME, NH2)."
     )
+
+
+#: Distance from the carbonyl carbon to each oxygen of a carboxylate (nm): 1.25 A, the C-O
+#: length of a delocalised carboxylate (Engh and Huber, Acta Cryst. A47, 392-400, 1991).
+_CARBOXYLATE_C_O_NM = 0.125
+
+
+def add_terminal_oxygens(topology, positions) -> tuple:
+    """Give each chain listed by :func:`find_open_c_termini` its terminal oxygen (OXT).
+
+    PDBFixer does this in prep; this is the same step for a caller that cannot use it. OXT is
+    the third substituent of the carbonyl carbon: it lies in the plane of CA, C and O,
+    1.25 A from C, opposite the bisector of the C-CA and C-O bonds. Only the atom and its
+    bond are added; hydrogens and every other missing atom are left to the caller.
+
+    Args:
+        topology: OpenMM Topology.
+        positions: Positions of its atoms (Quantity).
+
+    Returns:
+        ``(topology, positions)``: the arguments when no chain is open, otherwise a copy of
+        the topology with the OXT atoms and their positions (a Quantity in nm).
+    """
+    import numpy as np
+
+    open_ends = find_open_c_termini(topology)
+    if not open_ends:
+        return topology, positions
+    last_residues = {
+        chain.id: list(chain.residues())[-1]
+        for chain in topology.chains()
+        if any(chain.id == chain_id for chain_id, _, _ in open_ends)
+    }
+    xyz_nm = np.array(positions.value_in_unit(unit.nanometer))
+
+    copy = Topology()
+    copy.setPeriodicBoxVectors(topology.getPeriodicBoxVectors())
+    new_atoms: dict = {}
+    new_xyz: list = []
+    oxygens: list = []  # (carbon, new OXT atom)
+    for chain in topology.chains():
+        new_chain = copy.addChain(chain.id)
+        for residue in chain.residues():
+            new_residue = copy.addResidue(
+                residue.name, new_chain, residue.id, residue.insertionCode
+            )
+            for atom in residue.atoms():
+                new_atoms[atom.index] = copy.addAtom(atom.name, atom.element, new_residue, atom.id)
+                new_xyz.append(xyz_nm[atom.index])
+            if last_residues.get(chain.id) is residue:
+                by_name = {atom.name: atom.index for atom in residue.atoms()}
+                carbon, alpha, oxygen = (xyz_nm[by_name[name]] for name in ("C", "CA", "O"))
+                to_alpha = (alpha - carbon) / np.linalg.norm(alpha - carbon)
+                to_oxygen = (oxygen - carbon) / np.linalg.norm(oxygen - carbon)
+                outward = -(to_alpha + to_oxygen)
+                outward /= np.linalg.norm(outward)
+                new_atom = copy.addAtom("OXT", Element.getBySymbol("O"), new_residue)
+                new_xyz.append(carbon + _CARBOXYLATE_C_O_NM * outward)
+                oxygens.append((new_atoms[by_name["C"]], new_atom))
+    for bond in topology.bonds():
+        copy.addBond(
+            new_atoms[bond.atom1.index], new_atoms[bond.atom2.index], bond.type, bond.order
+        )
+    for carbon_atom, oxt in oxygens:
+        copy.addBond(carbon_atom, oxt)
+    copy_author_chain_ids(topology, copy)
+    return copy, unit.Quantity(np.array(new_xyz), unit.nanometer)
 
 
 def _add_hydrogens_cyclic(
