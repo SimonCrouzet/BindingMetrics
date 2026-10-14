@@ -113,7 +113,10 @@ class TestNoLiteralCopyRemains:
         )
         found = []
         for path in self._python_files():
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+            if not re.search(r"\d{3}\.\d", text):  # the three have three digits before the point
+                continue
+            tree = ast.parse(text)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Constant) and isinstance(node.value, float):
                     if any(abs(node.value / t - 1.0) < 1e-3 for t in targets):
