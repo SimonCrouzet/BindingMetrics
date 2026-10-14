@@ -183,7 +183,7 @@ def _ramachandran(chain_atoms) -> dict:
         when nothing could be evaluated.
     """
     from binding_metrics.core.nonstandard import is_d_residue
-    from binding_metrics.metrics.geometry import _classify_ramachandran
+    from binding_metrics.metrics.geometry import _amino_acid_residue_rows, _classify_ramachandran
 
     struc, _, _ = _import_biotite()
     _empty = {
@@ -204,14 +204,13 @@ def _ramachandran(chain_atoms) -> dict:
 
     phi_deg = np.degrees(phi_rad)
     psi_deg = np.degrees(psi_rad)
-    ca_atoms = chain_atoms[chain_atoms.atom_name == "CA"]
     counts = {"favoured": 0, "allowed": 0, "outlier": 0}
 
-    for i, ca in enumerate(ca_atoms):
-        if i >= len(phi_deg):
-            break
-        phi, psi = float(phi_deg[i]), float(psi_deg[i])
-        res_name = str(ca.res_name).strip()
+    # one row per residue of the array: caps and residues without a C-alpha have a row too
+    rows, first_atoms = _amino_acid_residue_rows(chain_atoms, len(phi_deg))
+    for row, first_atom in zip(rows, first_atoms):
+        phi, psi = float(phi_deg[row]), float(psi_deg[row])
+        res_name = str(chain_atoms.res_name[first_atom]).strip()
         region = _classify_ramachandran(phi, psi, is_d=is_d_residue(res_name))
         if region is None:
             continue

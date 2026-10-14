@@ -196,23 +196,58 @@ def _closing_dihedrals_deg(chain_atoms) -> Optional[tuple[float, float, float]]:
     return tuple(float(np.degrees(angle)) for angle in (phi_first, psi_last, omega_last))
 
 
+def _amino_acid_residue_rows(chain_atoms, n_rows: int) -> tuple[np.ndarray, np.ndarray]:
+    """The rows of ``dihedral_backbone`` that belong to an amino acid, and where each starts.
+
+    ``dihedral_backbone`` returns one row per residue of the array it is given,
+    so a row number is a residue number. Caps (ACE, NME, NH2), waters, ions and
+    any other residue that is not an amino acid have a row too, with NaN angles,
+    and an amino acid without a Cα atom has a row of NaN. Pairing the rows with
+    the Cα atoms by position therefore labels every residue after the first such
+    residue with the angles of its predecessor; the rows are paired with the
+    residues here instead.
+
+    Args:
+        chain_atoms: The array that was passed to ``dihedral_backbone``.
+        n_rows: Length of the arrays it returned. It is checked against the
+            residue count of ``chain_atoms`` so that a change in biotite's row
+            convention stops the run instead of mislabelling residues.
+
+    Returns:
+        ``(rows, first_atoms)``: for each amino-acid residue, in chain order, its
+        row in the ``dihedral_backbone`` arrays and the index in ``chain_atoms``
+        of its first atom, which carries the residue's number, insertion code,
+        name and chain.
+
+    Raises:
+        RuntimeError: If ``n_rows`` differs from the number of residues.
+    """
+    struc, _, _, _ = _import_biotite()
+    starts = struc.get_residue_starts(chain_atoms)
+    if len(starts) != n_rows:
+        raise RuntimeError(
+            f"dihedral_backbone returned {n_rows} rows for {len(starts)} residues; "
+            "the rows can no longer be matched to the residues"
+        )
+    rows = np.flatnonzero(struc.filter_amino_acids(chain_atoms)[starts])
+    return rows, starts[rows]
+
+
 def _apply_closing_dihedrals(chain_atoms, phi_deg, psi_deg, omega_deg) -> bool:
     """Fill the ring-closing φ, ψ and ω into the arrays from ``dihedral_backbone``.
 
-    The arrays are indexed like the chain's Cα atoms (see the callers), so the
-    first and last amino-acid residues are located through the Cα atoms that
-    belong to amino acids. The arrays are modified in place.
+    The arrays have one row per residue of the chain; the closing angles go to
+    the rows of the first and the last amino-acid residue (see
+    `_amino_acid_residue_rows`). The arrays are modified in place.
 
     Returns:
         True if the chain closes head to tail and the closing angles were set.
     """
-    struc, _, _, _ = _import_biotite()
     closing = _closing_dihedrals_deg(chain_atoms)
     if closing is None:
         return False
-    is_amino_acid = struc.filter_amino_acids(chain_atoms)[chain_atoms.atom_name == "CA"]
-    rows = np.flatnonzero(is_amino_acid)
-    if len(rows) < 2 or rows[-1] >= len(phi_deg):
+    rows, _ = _amino_acid_residue_rows(chain_atoms, len(phi_deg))
+    if len(rows) < 2:
         return False
     phi_first, psi_last, omega_last = closing
     phi_deg[rows[0]] = phi_first
@@ -242,9 +277,9 @@ def _backbone_dihedrals_deg(chain_atoms):
 
     Returns:
         ``(phi_deg, psi_deg, omega_deg, closure_detected, closure_evaluated)``;
-        the three arrays follow ``dihedral_backbone`` (indexed like the chain's
-        Cα atoms), ``closure_evaluated`` is True when the ring-closing angles
-        were computed and put into them.
+        the three arrays follow ``dihedral_backbone`` (one row per residue of the
+        chain, see `_amino_acid_residue_rows`), ``closure_evaluated`` is True
+        when the ring-closing angles were computed and put into them.
     """
     struc, _, _, _ = _import_biotite()
     closure_detected = _has_head_to_tail_closure(chain_atoms)
@@ -318,10 +353,14 @@ def compute_ramachandran(
     lookup.
 
     Terminal residues of a linear chain have no complete φ/ψ pair and are
-    skipped. For a head-to-tail cyclic peptide (last C bonded to first N,
-    detected by a C-N distance below 2 Å) φ of the first residue and ψ of the
-    last residue are computed across the closing amide bond, so every residue
-    is evaluated; see ``cyclic_closure_detected`` and
+    skipped. A residue next to a cap or another residue that is not an amino
+    acid (ACE, NME, NH2) is treated like a terminal one: the cap is not
+    listed, and the residue on its side has no φ or no ψ.
+
+    For a head-to-tail cyclic peptide (last C bonded to first N, detected by a
+    C-N distance below 2 Å) φ of the first residue and ψ of the last residue
+    are computed across the closing amide bond, so every residue is
+    evaluated; see ``cyclic_closure_detected`` and
     ``cyclic_closure_evaluated``.
 
     Type: score
@@ -386,21 +425,16 @@ def compute_ramachandran(
     chain_atoms = _select_chain(atoms, chain)
     phi_deg, psi_deg, _, closure_detected, closure_evaluated = _backbone_dihedrals_deg(chain_atoms)
 
-    # dihedral_backbone yields one (phi, psi, omega) per residue, so the CA
-    # atoms are used to label them; this breaks if a residue lacks a CA atom.
-    ca_mask = chain_atoms.atom_name == "CA"
-    ca_atoms = chain_atoms[ca_mask]
-
     per_residue = []
     counts = {"favoured": 0, "allowed": 0, "outlier": 0}
     n_d = 0
 
-    for i, ca in enumerate(ca_atoms):
-        if i >= len(phi_deg):
-            break
-        phi = float(phi_deg[i])
-        psi = float(psi_deg[i])
-        res_name = str(ca.res_name).strip()
+    rows, first_atoms = _amino_acid_residue_rows(chain_atoms, len(phi_deg))
+    for row, first_atom in zip(rows, first_atoms):
+        residue = chain_atoms[first_atom]
+        phi = float(phi_deg[row])
+        psi = float(psi_deg[row])
+        res_name = str(residue.res_name).strip()
         d_aa = is_d_residue(res_name)
         region = _classify_ramachandran(phi, psi, is_d=d_aa)
         if region is None:
@@ -410,10 +444,10 @@ def compute_ramachandran(
             n_d += 1
         per_residue.append(
             {
-                "res_id": int(ca.res_id),
-                "ins_code": str(ca.ins_code).strip(),
+                "res_id": int(residue.res_id),
+                "ins_code": str(residue.ins_code).strip(),
                 "res_name": res_name,
-                "chain": str(ca.chain_id),
+                "chain": str(residue.chain_id),
                 "phi": phi,
                 "psi": psi,
                 "is_d_aa": d_aa,
@@ -471,6 +505,9 @@ def compute_omega_planarity(
     N-methylated amide scores a deviation near 180° and counts as an outlier.
     ``omega_cis_count`` reports how many of the evaluated bonds are cis so
     that these can be told apart from twisted trans bonds.
+
+    A bond to a cap or to another residue that is not an amino acid (ACE, NME,
+    NH2) has no ω and is not evaluated.
 
     For a head-to-tail cyclic peptide (last C bonded to first N, detected by a
     C-N distance below 2 Å) the closing peptide bond is evaluated as well and
@@ -536,16 +573,13 @@ def compute_omega_planarity(
     chain_atoms = _select_chain(atoms, chain)
     _, _, omega_deg, closure_detected, closure_evaluated = _backbone_dihedrals_deg(chain_atoms)
 
-    ca_mask = chain_atoms.atom_name == "CA"
-    ca_atoms = chain_atoms[ca_mask]
-
     per_residue = []
     deviations = []
 
-    for i, ca in enumerate(ca_atoms):
-        if i >= len(omega_deg):
-            break
-        omega = float(omega_deg[i])
+    rows, first_atoms = _amino_acid_residue_rows(chain_atoms, len(omega_deg))
+    for row, first_atom in zip(rows, first_atoms):
+        residue = chain_atoms[first_atom]
+        omega = float(omega_deg[row])
         if np.isnan(omega):
             continue
         # Distance from trans (180°), handling ±180° wrap
@@ -554,10 +588,10 @@ def compute_omega_planarity(
         deviations.append(dev)
         per_residue.append(
             {
-                "res_id": int(ca.res_id),
-                "ins_code": str(ca.ins_code).strip(),
-                "res_name": str(ca.res_name).strip(),
-                "chain": str(ca.chain_id),
+                "res_id": int(residue.res_id),
+                "ins_code": str(residue.ins_code).strip(),
+                "res_name": str(residue.res_name).strip(),
+                "chain": str(residue.chain_id),
                 "omega": omega,
                 "deviation": dev,
                 "is_outlier": is_outlier,
