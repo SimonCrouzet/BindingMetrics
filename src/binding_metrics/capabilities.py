@@ -1,24 +1,20 @@
-"""What a model or a metric can take as input, and a check of an input against it.
+"""Declared limits of a model or a metric, and a check of an input against them.
 
-Some steps cannot handle some inputs: a structure-prediction model that reads a cyclic binder as
-a linear chain, a metric that only makes sense for a peptide, a metric that needs a receptor
-chain. Without a check the run either fails late or returns numbers for the wrong molecule. This
-module lets a step declare its limits (``Capabilities``), describes the input once
-(``InputProfile``, made by ``profile_input``) and compares the two before anything expensive
-starts.
+``Capabilities`` states what a step accepts, ``InputProfile`` (made by ``profile_input``)
+describes the input once, and ``preflight`` compares the two before anything expensive starts.
+Without the check a run fails late or returns numbers for the wrong molecule: a cyclic binder
+read as a linear chain, a peptide-only metric on a protein, a metric that needs a receptor chain.
 
-Three rules keep it safe to add to the existing pipeline:
-
-* every field of ``Capabilities`` defaults to "no constraint", so a step that declares nothing is
-  never refused;
-* a constraint carries one human sentence in ``reasons`` that says why it holds and what to do
-  instead, and it must be backed by code or by the documentation of the model it describes;
-* an input the check cannot classify (a binder type that cannot be estimated) never blocks: the
+* Every field of ``Capabilities`` defaults to "no constraint": a step that declares nothing is
+  never refused.
+* A constraint carries a sentence in ``reasons`` that says why it holds and what to do instead,
+  backed by code or by the documentation of the model it describes.
+* An input the check cannot classify (a binder type that cannot be estimated) never blocks: the
   checks that depend on it are skipped and the profile says so.
 
-Importing the module needs the standard library and the two pure residue tables of
-``binding_metrics.core``. numpy and biotite are imported when an input is profiled, and OpenMM
-is never imported: the ring closures are found on the biotite structure (``detect_closures``).
+Importing the module needs the standard library and the two residue tables of
+``binding_metrics.core``. numpy and biotite are imported when an input is profiled. OpenMM is
+never imported: ``detect_closures`` finds the ring closures on the biotite structure.
 """
 
 from __future__ import annotations
@@ -119,12 +115,11 @@ RESIDUE_CLASSES: tuple[str, ...] = (
 NEEDS: tuple[str, ...] = ("receptor_chain", "reference_structure", "predicted_structure", "gpu")
 
 #: How a structure-prediction model is used for a complex, the vocabulary of
-#: ``Capabilities.modes``. ``predict``: from sequences only. ``refold``: the receptor is given as
-#: a template and the binder is predicted freely. ``score``: every chain is given its own
-#: structure as a template and the relative pose of the chains is NOT given, so the model
-#: re-docks them. ``score-lock``: ``score`` with the relative pose of the chains pinned to the
-#: input, by a forced template, constraints or both. ``refold-lock``: ``refold`` with the
-#: receptor pinned to the input by a forced template and the binder left free.
+#: ``Capabilities.modes``. ``predict``: sequences only. ``refold``: the receptor is a template and
+#: the binder is predicted freely. ``score``: every chain is a template of its own structure and
+#: their relative pose is not given, so the model re-docks them. ``score-lock``: ``score`` with
+#: the relative pose pinned to the input by a forced template, constraints or both.
+#: ``refold-lock``: ``refold`` with the receptor pinned to the input by a forced template.
 MODES: tuple[str, ...] = ("predict", "refold", "score", "score-lock", "refold-lock")
 
 #: The modes that pin part of the input with a forced template, and so take a lock threshold.
@@ -287,26 +282,24 @@ class Capabilities:
         multi_chain_binder: False refuses a binder that spans several chains.
         needs: What the step cannot run without, a subset of ``NEEDS``. ``receptor_chain`` is met
             by a receptor given or by any other protein chain in the structure.
-        modes: The ways a model can be used that it supports, a subset of ``MODES`` (``predict``,
-            ``refold``, ``score``, ``score-lock``, ``refold-lock``; see ``MODES``). Empty declares
-            nothing and refuses nothing. A non-empty set that leaves a mode out refuses a request
-            for it and needs ``reasons["modes"]`` (or ``"modes:<mode>"``) naming what is not
-            supported and why; the full set declares full support and refuses nothing. Partial or
-            unreliable support of a listed mode is a caveat, ``caveats["modes:<mode>"]``, which
-            applies to a request for that mode whether or not ``modes`` is declared.
+        modes: The modes the model supports, a subset of ``MODES``. Empty declares nothing and
+            refuses nothing, and so does the full set. A non-empty set that leaves a mode out
+            refuses a request for it and needs ``reasons["modes"]`` (or ``"modes:<mode>"``).
+            Partial or unreliable support of a listed mode is a caveat,
+            ``caveats["modes:<mode>"]``, which applies to a request for that mode whether or not
+            ``modes`` is declared.
         extra_checks: Functions ``profile -> violations`` for a limit that the sets above cannot
             state, such as the residue names a model's query builder can express. Each returns
-            ``Violation`` objects with ``fact``, ``requirement`` and a ``reason`` that says why and
-            what to do instead. A function reuses the code that enforces the limit at run time
-            rather than copying its rules, and imports it when called, so declaring the check
-            costs nothing at import.
+            ``Violation`` objects with ``fact``, ``requirement`` and a ``reason``. A function
+            reuses the code that enforces the limit at run time and imports it when called, so
+            declaring the check costs nothing at import.
         reasons: One sentence per constraint saying why it holds and what to do instead. Keys are
             the field name (``"closures"``), or field and value (``"closures:disulfide"``) for a
             sentence about one value; the second form is looked up first. A constraint without a
             ``reasons`` entry under its field name is rejected when the object is built.
         caveats: One sentence per input value that is accepted but was never validated, keyed
-            ``"<field>:<value>"`` (fields ``binder_types``, ``closures``, ``residue_classes``).
-            ``preflight`` reports it as a warning when the input has that value.
+            ``"<field>:<value>"`` (fields ``binder_types``, ``closures``, ``residue_classes``,
+            ``modes``). ``preflight`` reports it as a warning when the input has that value.
         version: The version of the model or metric the limits were checked against (shown in the
             messages, for example ``"0.5.0"``); empty when not applicable.
     """
@@ -615,10 +608,10 @@ def classify_residue(res_name: str, *, is_amino_acid: bool = True) -> Optional[s
 # Ring closures of a binder (biotite, no OpenMM)
 # ---------------------------------------------------------------------------
 
-# Cut-offs in angstrom. They equal the nanometre values of ``core.cyclic`` (``_AMIDE_BOND_THRESH``
-# 0.20 nm and ``_DISULFIDE_THRESH`` 0.26 nm; a test checks the equality), so that this detector and
+# Cut-offs in angstrom, equal to the nanometre values of ``core.cyclic`` (``_AMIDE_BOND_THRESH``
+# 0.20 nm, ``_DISULFIDE_THRESH`` 0.26 nm; a test checks the equality), so that this detector and
 # ``core.cyclic.detect_cyclization`` agree on the same coordinates. Amide C-N is 1.33 A (Engh and
-# Huber, Acta Cryst. A47, 392, 1991) and a disulfide S-S 2.03 A; the margin absorbs the stretched
+# Huber, Acta Cryst. A47, 392, 1991), disulfide S-S 2.03 A; the margin absorbs the stretched
 # closure bonds of predicted models.
 _AMIDE_BOND_THRESHOLD_ANGSTROM = 2.0
 _DISULFIDE_THRESHOLD_ANGSTROM = 2.6
@@ -896,18 +889,16 @@ def _closures_of(view: _ChainView, notes: Optional[list[str]] = None) -> list[Cl
 def detect_closures(atoms: AtomArray, chain_id: str) -> list[Closure]:
     """The covalent ring closures of a chain, found on a biotite structure without OpenMM.
 
-    It is the light counterpart of ``core.cyclic.detect_cyclization`` and finds the same
-    closures on the same coordinates: head-to-tail amide (C of the last residue to N of the
-    first), disulfide (SG to SG), the lactams (Asp CG or Glu CD to the N-terminus, Lys NZ to the
-    C-terminus, Lys NZ to an Asp or Glu side chain), and, from the bond table of the structure,
-    hydrocarbon staples and other cross-links. A pair counts as linked when the bond table lists
-    it or the atoms are closer than 2.0 A (2.6 A for SG-SG), so a strained model that has no
-    bond record is still found. A test compares the two detectors on the bundled examples.
+    Light counterpart of ``core.cyclic.detect_cyclization``; a test compares the two on the
+    bundled examples. It finds the head-to-tail amide (C of the last residue to N of the first),
+    the disulfide (SG to SG; residues CYS, CYX or DCY), the lactams (Asp CG or Glu CD to the
+    N-terminus, Lys NZ to the C-terminus, Lys NZ to an Asp or Glu side chain) and, from the bond
+    table of the structure, hydrocarbon staples and other cross-links. A pair counts as linked
+    when the bond table lists it or the atoms are closer than 2.0 A (2.6 A for SG-SG), so a
+    strained model without a bond record is still found.
 
-    It differs on one point: only the amino-acid residues of the chain are looked at, so the
-    waters and the ligands that share the chain ID of an author-numbered file cannot shift the
-    first or last residue. Both detectors take a disulfide between cysteines named CYS, CYX or
-    DCY.
+    Only the amino-acid residues of the chain are read, so the waters and ligands that share the
+    chain ID of an author-numbered file cannot shift the first or last residue.
 
     Args:
         atoms: A biotite ``AtomArray``. With a bond table (``include_bonds=True`` when read) the
@@ -927,14 +918,12 @@ def detect_closures(atoms: AtomArray, chain_id: str) -> list[Closure]:
 # The input profile
 # ---------------------------------------------------------------------------
 
-#: A binder of at most this many residues is called a peptide. The line is a length convention,
-#: the one the US FDA uses to separate peptides from proteins (21 CFR 600.3(h)(6): a protein is
-#: an amino-acid polymer of more than 40 residues), not a physical boundary.
+#: A binder of at most this many residues is called a peptide. The line is a length convention of
+#: the US FDA (21 CFR 600.3(h)(6): a protein has more than 40 residues).
 PEPTIDE_MAX_RESIDUES = 40
 #: A binder of more than ``PEPTIDE_MAX_RESIDUES`` and at most this many residues is called a
-#: miniprotein. 100 is a convention of this package: it keeps miniproteins apart from the single
-#: domain antibodies (nanobodies, about 110 to 130 residues), which size alone cannot tell from
-#: any other domain of that length.
+#: miniprotein. 100 is a convention of this package; nanobodies (about 110 to 130 residues) lie
+#: above it, and size cannot tell a longer chain from any other domain.
 MINIPROTEIN_MAX_RESIDUES = 100
 
 
@@ -942,10 +931,10 @@ def estimate_binder_type(n_residues: int) -> str:
     """The binder type a size class suggests: peptide, miniprotein, or ``unknown``.
 
     Up to ``PEPTIDE_MAX_RESIDUES`` residues is a ``peptide``, up to ``MINIPROTEIN_MAX_RESIDUES``
-    a ``miniprotein``. A longer chain could be a nanobody, an antibody chain or any other
-    protein, and size cannot tell them apart, so the answer is ``unknown``. A nanobody or an
-    antibody is only ever set by the caller. ``unknown`` never refuses an input: the checks that
-    depend on the binder type are skipped and the report says so.
+    a ``miniprotein``. A longer chain gives ``unknown``: size does not separate a nanobody, an
+    antibody chain and any other protein. A nanobody or an antibody is only ever set by the
+    caller. ``unknown`` never refuses an input: the checks that depend on the binder type are
+    skipped and the report says so.
     """
     if n_residues <= PEPTIDE_MAX_RESIDUES:
         return "peptide"
@@ -1099,7 +1088,6 @@ def _read_atoms(structure) -> Any:
         suffixes = [suffix.lower() for suffix in path.suffixes]
         gzipped = suffixes[-1:] == [".gz"]
         extension = suffixes[-2] if gzipped and len(suffixes) > 1 else (suffixes or [""])[-1]
-        # a plain file is opened by biotite as before; a gzip is decompressed into a text stream
         stream = gzip.open(path, "rt", encoding="utf-8", errors="replace") if gzipped else None
         try:
             source = stream if gzipped else str(path)
@@ -1226,16 +1214,15 @@ _AMINO_ACID_CLASSES = ("canonical", "d_amino", "n_methyl", "phospho", "other_nca
 def check_openfold3_residues(profile: InputProfile) -> list[Violation]:
     """The binder residues that the OpenFold3 query builder cannot express.
 
-    It asks the builder itself: ``metrics._openfold_run._residue_letter_and_ccd`` maps a residue
+    Asks the builder itself: ``metrics._openfold_run._residue_letter_and_ccd`` maps a residue
     name to a one-letter code and, for a D-amino acid or a modified residue, to the Chemical
     Component Dictionary code written into ``non_canonical_residues``. A name it cannot map is
-    what ``_extract_query_chain`` reports as an ``UnmappableResidueError``, and the ``reason`` of
-    the violation is the text of that error, so a run that gets past the check and one that does
-    not say the same thing. Caps, ligands, waters and ions are left out of the query by the
-    builder and are not checked.
+    what ``_extract_query_chain`` reports as an ``UnmappableResidueError``; the ``reason`` of the
+    violation is the text of that error. Caps, ligands, waters and ions are not checked: the
+    builder leaves them out of the query.
 
-    The builder is imported when the check runs, which needs biotite (or gemmi) for the CCD
-    lookup. This is the ``extra_checks`` entry of the OpenFold3 adapter.
+    The builder is imported when the check runs and needs biotite (or gemmi) for the CCD lookup.
+    This is the ``extra_checks`` entry of the OpenFold3 adapter.
 
     Args:
         profile: The input; ``residue_labels`` gives the residues, ``residue_names`` is used when
@@ -1314,14 +1301,12 @@ DESIGN_SOURCE_PREDICTORS: dict[str, frozenset[str]] = {
     "colabdesign": frozenset({"af2"}),
 }
 
-#: The registry metrics whose value means "a model other than the designer agrees", each with the
+#: The registry metrics whose value means "a model other than the designer agrees", each with a
 #: sentence that says why independence matters. ``evobind_adversarial`` compares the design pose
 #: with a second prediction of the same complex and reads a large shift of the binder centre of
-#: mass as disagreement (Bryant et al. 2025). A design was selected for the confidence of the
-#: model that made or filtered it, so that model agrees with it in part for that reason and its
-#: agreement says little. The confidence metrics (``prediction``, ``openfold``, ``interface_pae``,
-#: ``evobind_score``) are not listed: each reports one model's confidence in its own structure,
-#: to be read against that model's calibration, and none claims that a second model agrees.
+#: mass as disagreement (Bryant et al. 2025). The confidence metrics (``prediction``,
+#: ``openfold``, ``interface_pae``, ``evobind_score``) are not listed: each reports one model's
+#: confidence in its own structure and claims no agreement of a second model.
 INDEPENDENCE_DEPENDENT_CHECKS: dict[str, str] = {
     "evobind_adversarial": (
         "it asks whether a model other than the designer puts the binder where the design has "
@@ -1533,10 +1518,10 @@ def check_design_origin(
     """Decide what a design's origin does to the checks that rest on independence.
 
     A check in ``INDEPENDENCE_DEPENDENT_CHECKS`` compares the design with a structure from
-    ``models``; when one of those models is a model that the design pipeline ran itself, the
-    agreement is in part due to the design having been selected for that model. This function
-    needs no structure, so a caller that has none (a batch step after the workers, a pose set)
-    can ask it directly; ``preflight`` asks it for its metrics and predictors.
+    ``models``; it is circular when one of those models is a model that the design pipeline ran
+    itself. This function needs no structure, so a caller that has none (a batch step after the
+    workers, a pose set) can call it directly; ``preflight`` calls it for its metrics and
+    predictors.
 
     Args:
         design_source: See ``design_origin``. None says nothing is known: nothing is decided and
@@ -1664,9 +1649,7 @@ class PreflightReport:
 
     def policy_of(self, kind: str) -> str:
         """The policy that applies to a violation of ``kind`` (``metric``, ``predictor``,
-        ``design`` or ``msa``). A forbidden MSA server is always an ``error``: ``skip`` and
-        ``warn`` would either drop the step the policy was set for or run it and send the
-        sequences out."""
+        ``design`` or ``msa``). A violation of kind ``msa`` is always an ``error``."""
         if kind == "msa":
             return "error"
         if kind == "predictor":
@@ -2164,10 +2147,8 @@ def _target_is_unconstrained(
 ) -> bool:
     """True when a prediction is planned with no template for the target and no target MSA.
 
-    A co-folding run has to give the model some constraint on the fold of the target: the target
-    is a template (pinned when locked) and a cached target MSA is optional. Exactly one
-    configuration gives it none, and it is a caveat, not a violation, because no source says that
-    the input cannot be given. It holds when both of these do:
+    A caveat, not a violation: no source says that the input cannot be given. It holds when both
+    of these do:
 
     * ``mode`` is ``predict``, the only mode with no template on the target (``refold``,
       ``score``, ``refold-lock`` and ``score-lock`` template or pin it);
@@ -2176,11 +2157,7 @@ def _target_is_unconstrained(
       ``Path``, even one called ``single``) and a server search both count as an MSA.
 
     A caller that does not say (``mode`` or ``msa_server`` None) is never told its target is
-    unconstrained. The binder type plays no part: the rule is the same for a peptide, a
-    miniprotein, a nanobody and an antibody. One complex was measured (1YCR, an old PDB entry that
-    the models have very probably seen; OpenFold3 0.5.0, one seed): the binder C-alpha RMSD
-    against the crystal pose was 21.6 A with neither, 1.1 A with a template alone and 1.6 A with
-    an MSA alone.
+    unconstrained. The binder type plays no part.
     """
     if mode != "predict" or msa_server is not False:
         return False
@@ -2211,9 +2188,9 @@ def preflight(
 ) -> PreflightReport:
     """Check an input against the limits of every requested metric and predictor, before any run.
 
-    Call it first: it reads declarations only and never runs, prepares or instantiates a metric,
-    a predictor or a runner. It collects every incompatibility, not the first one, each with the
-    fact found in the input, the requirement, the step's own reason and a fix.
+    Reads declarations only: it never runs, prepares or instantiates a metric, a predictor or a
+    runner. It collects every incompatibility, each with the fact found in the input, the
+    requirement, the step's own reason and a fix.
 
     Args:
         profile: The input, from ``profile_input``.
@@ -2221,54 +2198,47 @@ def preflight(
             attribute (a ``MetricSpec``). A name the registry does not know has no declared limit.
         predictor: None, a registered predictor name (``"of3"``), an adapter or runner (class or
             instance) with a ``capabilities`` attribute, a ``Capabilities``, or a list of these.
-            When it is refused, the message lists the other registered predictors that accept the
-            input.
-        policy: ``error`` (default) raises ``IncompatibleInputError`` when anything is
-            incompatible, so nothing runs. ``skip`` leaves out each metric that has a violation
-            (``report.metrics_to_run`` holds the rest) and marks a refused predictor
-            ``report.predictor_usable=False``. ``warn`` logs every violation and lets everything
-            run.
-        predictor_policy: The policy for the violations of the predictors, when it is not the
-            one of the metrics; None uses ``policy``. A caller that only reads a prediction made
-            elsewhere passes ``warn``, because what the model was given is not known.
+            A refusal lists the other registered predictors that accept the input.
+        policy: ``error`` (default) raises ``IncompatibleInputError`` on any incompatibility, so
+            nothing runs. ``skip`` leaves out each metric that has a violation
+            (``report.metrics_to_run`` holds the rest) and sets ``report.predictor_usable=False``
+            for a refused predictor. ``warn`` logs every violation and lets everything run.
+        predictor_policy: The policy for the violations of the predictors; None uses ``policy``.
+            A caller that only reads a prediction made elsewhere passes ``warn``, because what
+            the model was given is not known.
         provided: What the caller makes available among ``NEEDS`` besides the receptor chain,
             for example ``{"reference_structure", "gpu"}``; None leaves those needs unchecked and
             the report says so.
-        mode: The mode the predictors are asked to run in, one of ``MODES``. A predictor that
-            declares ``modes`` without it is refused (constraint ``modes``) and its fix lists the
-            models that declare the mode, then those with no declaration; a caveat for the mode
-            is a warning. None does not say: the mode is not checked.
-        runnable: The names of the predictors that can be run from here; a model outside it
-            that the fix offers is marked as readable only. None leaves the fix unmarked.
-        weights: Custom weights (``--prediction-weights``) that the run will give the model. The
-            path must exist and be readable (``check_weights_path``). A predictor whose runner
-            does not take custom weights is refused (constraint ``weights``, with a fix that
-            names the runners that do), and one that does gets a note: the limits it declares
-            come from its input format and architecture, and its caveats about accuracy and
-            published benchmarks refer to the standard weights. The declared hard limits stay in
-            force.
+        mode: The mode the predictors are asked to run in, one of ``MODES``; None skips the mode
+            check. A predictor that declares ``modes`` without it is refused (constraint
+            ``modes``) and its fix lists the models that declare the mode, then those with no
+            declaration. A caveat for the mode is a warning.
+        runnable: The names of the predictors that can be run from here; a model outside it that
+            the fix offers is marked as readable only. None leaves the fix unmarked.
+        weights: Custom weights (``--prediction-weights``) that the run gives the model. The path
+            must exist and be readable (``check_weights_path``). A predictor whose runner does not
+            take custom weights is refused (constraint ``weights``, with a fix that names the
+            runners that do). A predictor whose runner does gets a note: its declared limits come
+            from its input format and architecture and stay in force, and its caveats about
+            accuracy and published benchmarks refer to the standard weights.
         weights_kinds: Model name to the kind of weights its runner takes (``"file"`` or
             ``"directory"``), for the models whose runner supports custom weights
-            (``cli.prediction.runner_weights_kinds`` reads it from the runner registry). None
-            says the caller does not know: the weights are not checked against the runners and the
-            report says so.
+            (``cli.prediction.runner_weights_kinds`` reads it from the runner registry). None:
+            the weights are not checked against the runners and the report says so.
         design_source: The pipeline that made the designed binder: a name from
             ``DESIGN_SOURCE_PREDICTORS`` in any case (``"boltzgen"``, ``"bindcraft"``,
             ``"colabdesign"``), or the registry names of the models it ran itself
             (``("boltz2",)``), see ``design_origin``. A metric of
-            ``INDEPENDENCE_DEPENDENT_CHECKS`` (``evobind_adversarial``) means something only when
-            the model that makes its second structure is not one of those: such a metric gets a
-            violation of kind ``design`` per model, handled by ``design_policy``. A source that is
-            not in the table gives a warning and never blocks; None checks nothing, leaves the
-            report as it was before this argument existed, and logs at INFO level that
-            independence was not checked when a metric of ``INDEPENDENCE_DEPENDENT_CHECKS`` is
-            requested.
-        design_policy: What to do with a check that rests on independence and would read a
-            structure from a model that the design ran itself, whatever ``policy`` says.
-            ``skip`` (default) leaves it out of ``report.metrics_to_run`` when every model that
-            makes its second structure is circular, and puts one loud sentence in
-            ``report.warnings`` and the log; ``warn`` runs it and says so the same way;
-            ``error`` raises ``IncompatibleInputError``.
+            ``INDEPENDENCE_DEPENDENT_CHECKS`` (``evobind_adversarial``) gets a violation of kind
+            ``design`` for each model that makes its second structure and that the pipeline ran
+            itself; ``design_policy`` handles it. A source that is not in the table gives a
+            warning and never blocks. None checks nothing, and logs at INFO level that
+            independence was not checked when such a metric is requested.
+        design_policy: What to do with a check that would read a structure from a model that the
+            design ran itself, whatever ``policy`` says. ``skip`` (default) leaves the check out
+            of ``report.metrics_to_run`` when every model that makes its second structure is such
+            a model, and puts one warning in ``report.warnings`` and the log. ``warn`` runs it and
+            warns the same way. ``error`` raises ``IncompatibleInputError``.
         prediction_models: The registry names of the models that make the second structures of
             the checks; None takes the names of ``predictor``. A pose set passes the back-ends of
             its poses, which are not checked against the limits of a model.
@@ -2278,27 +2248,25 @@ def preflight(
         msa_server: Whether the run of the predictors would use an MSA server; None when the
             caller does not know or the model is not run (an output made elsewhere). Under
             ``forbid-server``, True gives a violation of the constraint ``msa_policy`` for each
-            predictor (kind ``msa``, fact "the run would use an MSA server"). Unlike the other
-            violations it is refused under every ``policy``: a forbid cannot be downgraded to
-            ``skip`` or ``warn``, which would drop the step the policy was set for or send the
-            sequences out. None adds a note that the policy was not checked.
+            predictor (kind ``msa``, fact "the run would use an MSA server"). It is refused under
+            every ``policy``: ``skip`` or ``warn`` would drop the step the policy was set for or
+            send the sequences out. None adds a note that the policy was not checked.
         receptor_msa: The receptor MSA of the request: None (no source), the word ``"single"`` (the
-            receptor is predicted from its own sequence) or the path of an alignment. Read only by
-            the caveat for a target with neither a template nor an MSA (below).
+            receptor is predicted from its own sequence) or the path of an alignment. Read only
+            by the target caveat (see Returns).
 
     Returns:
-        The ``PreflightReport``. Soft warnings for inputs a step accepts but never validated are
-        in ``report.warnings`` whatever the policy, and ``report.design`` says what the design
-        origin did when a ``design_source`` was given.
+        The ``PreflightReport``. Warnings for inputs a step accepts but never validated are in
+        ``report.warnings`` whatever the policy; ``report.design`` is set when a
+        ``design_source`` was given.
 
-        A caveat is added to ``report.warnings`` for each predictor when ``mode`` is ``predict``
-        (no template on the target), ``msa_server`` is False and ``receptor_msa`` is None or
-        ``"single"`` (no target MSA either): the target fold is then unconstrained, and the binder
-        placement and the confidence scores say little (``_target_is_unconstrained``). It is a
-        warning under every ``policy`` and never a violation; a given alignment, a server on, a
-        templated or pinned mode, or an unknown ``mode`` or ``msa_server`` leaves the report as it
-        was. A pose set cannot ask for it: ``score_pose_set`` reads predictions made elsewhere and
-        names no predictor, mode or MSA.
+        Each predictor gets a warning when ``mode`` is ``predict`` (no template on the target),
+        ``msa_server`` is False and ``receptor_msa`` is None or ``"single"`` (no target MSA
+        either): the target fold is unconstrained (``_target_is_unconstrained``). It is a warning
+        under every ``policy``, never a violation, and is absent when an alignment is given, the
+        server is on, the mode templates or pins the target, or ``mode`` or ``msa_server`` is
+        None. A pose set does not trigger it: ``score_pose_set`` reads predictions made elsewhere
+        and names no predictor, mode or MSA.
 
     Raises:
         IncompatibleInputError: Policy ``error`` and at least one violation, or ``design_policy``
@@ -2308,9 +2276,9 @@ def preflight(
             ``POLICIES``, ``mode`` is not one of ``MODES``, ``msa_policy`` is not one of
             ``MSA_POLICIES``, or ``weights`` does not exist, cannot be read or is not the kind a
             runner takes (``check_weights_path``).
-        TypeError: ``design_source`` is of a type ``design_origin`` does not take.
+        TypeError: ``design_source`` is of a type ``design_origin`` does not take, or a
+            ``capabilities`` attribute is neither None nor a ``Capabilities``.
         KeyError: A predictor name that is not registered.
-        TypeError: A ``capabilities`` attribute that is neither None nor a ``Capabilities``.
     """
     if policy not in POLICIES:
         raise ValueError(f"policy must be one of {POLICIES}, got {policy!r}")
