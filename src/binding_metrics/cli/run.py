@@ -576,6 +576,13 @@ def run_pipeline(
         where ``"single_bonds"`` marks a residue whose double bonds, aromatic
         rings and hydrogen count are unreliable.
 
+        ``relax`` also carries ``ncaa_charge_scheme`` when non-canonical residues were
+        parameterised: ``{residue name: scheme}``, the way the AM1-BCC charges of the
+        residue were computed (``"ace-nme-caps-v2"``: on the residue capped with ACE and
+        NME, see ``core.gaff_ncaa``). It carries ``qc_warnings``, the comma-joined keys of
+        the advisory QC findings (``chain_break_closed``, ``ca_ca_distance``), which never
+        change ``qc_passed``.
+
     Raises:
         ChainNotFoundError: a requested chain ID does not exist in the structure.
         IncompatibleInputError: the input cannot go through a requested step or model and
