@@ -1,9 +1,8 @@
 """Run the binding-metrics pipeline on all structures in a directory.
 
-Scans --input-dir for .cif / .pdb / .mmcif files, runs the full pipeline on
-each one (optionally in parallel), and aggregates all results into a single CSV.
-Per-sample JSON reports and intermediate files are written to sub-directories
-inside --output-dir.
+Scans --input-dir for .cif / .pdb / .mmcif files, runs the full pipeline on each one
+(optionally in parallel), and aggregates all results into a single CSV. Per-sample JSON reports
+and intermediate files are written to sub-directories inside --output-dir.
 
 Usage:
     binding-metrics-batch \\
@@ -12,8 +11,7 @@ Usage:
         --workers 4 \\
         [all the same options as binding-metrics-run]
 
-Every CSV row ends with ``provenance_*`` columns (package version, git sha,
-seed, platform) that tie the row to the code and settings that produced it.
+Every CSV row ends with ``provenance_*`` columns (package version, git sha, seed, platform).
 
 Configuration file:
     --config batch.toml supplies option defaults; flags on the command line
@@ -43,11 +41,11 @@ Structure prediction (--predictor MODEL)
 Like the batched OpenFold3 call, the prediction step runs once for all samples after the
 workers, in the main process. The samples share one prediction store (``--prediction-cache``,
 default ``<output-dir>/_predictions``): the model starts once for the predictions the store
-lacks, each sample then reads its prediction from the store, and a second run over the same
-samples starts no model. ``--prediction-dir ROOT`` reads existing outputs instead, one per
-sample ID, and never runs the model. The columns are ``prediction_*`` (the only ``openfold_*``
-column is ``openfold_skipped``). A sample whose prediction failed is ``partial`` with
-``prediction`` in ``batch_failed_steps``; the others are not affected.
+lacks, each sample reads its prediction from the store, and a second run over the same samples
+starts no model. ``--prediction-dir ROOT`` reads existing outputs instead, one per sample ID, and
+never runs the model. The columns are ``prediction_*`` (the only ``openfold_*`` column is
+``openfold_skipped``). A sample whose prediction failed is ``partial`` with ``prediction`` in
+``batch_failed_steps``; the others are not affected.
 
 The legacy batched OpenFold3 call (``--openfold-*`` without ``--predictor``) marks a sample it
 failed for ``partial`` with ``openfold`` in ``batch_failed_steps`` and the reason in
@@ -55,19 +53,14 @@ failed for ``partial`` with ``openfold`` in ``batch_failed_steps`` and the reaso
 
 Concurrency model (--workers > 1)
 ----------------------------------
-Workers are OS processes (ProcessPoolExecutor), not threads. This means:
+Workers are OS processes (ProcessPoolExecutor), not threads:
 
-  * No shared memory — each worker has its own address space. There are no
-    shared variables and no risk of race conditions between workers.
+  * Each worker has its own address space; nothing is shared.
 
-  * No concurrent file writes — each worker is given a unique output directory
-    ({output-dir}/{sample_id}/). Workers never write to the same path.
+  * Each worker writes to its own output directory ({output-dir}/{sample_id}/) and logs to
+    {output-dir}/{sample_id}/{sample_id}.log. Workers never write to the same path.
 
-  * The aggregated CSV is written by the main process only after all workers
-    have finished, so it is always written by a single writer.
-
-  * Per-sample logs are written inside each sample's own output directory
-    ({output-dir}/{sample_id}/{sample_id}.log), again unique per worker.
+  * The main process writes the aggregated CSV once, after all workers have finished.
 
 Note on GPU parallelism:
     Each worker process initialises its own CUDA context. Running N workers
@@ -175,11 +168,10 @@ _STRUCTURE_SUFFIXES = {".cif", ".pdb", ".mmcif"}
 def _build_reference_map(reference_dir: Path) -> dict[str, Path]:
     """Map native structures in *reference_dir* by filename stem, for DockQ.
 
-    Each sample input is later matched to its reference by stem (e.g. an input
-    ``target1.cif`` pairs with a reference ``target1.pdb``). Only files with a
-    recognised structure suffix are included. If two references share a stem
-    (e.g. ``target1.pdb`` and ``target1.cif``), the first in sorted order wins,
-    so the mapping is deterministic.
+    A sample input matches its reference by stem (an input ``target1.cif`` pairs with a
+    reference ``target1.pdb``). Only files with a recognised structure suffix are included. Of
+    two references with the same stem (``target1.pdb`` and ``target1.cif``) the first in sorted
+    order wins, so the mapping is deterministic.
 
     Args:
         reference_dir: Directory containing native/reference structures.
@@ -195,10 +187,9 @@ def _build_reference_map(reference_dir: Path) -> dict[str, Path]:
 
 
 def _provenance_columns(provenance: dict) -> dict:
-    """Flatten a provenance block into ``provenance_<key>`` CSV columns.
+    """Flatten a provenance block into ``provenance_<key>`` CSV columns, after every existing one.
 
-    ``report._flatten`` only knows the metric sections, so the block is
-    flattened here. The columns come after every existing one.
+    ``report._flatten`` only knows the metric sections.
     """
     return {f"provenance_{key}": value for key, value in provenance.items()}
 
@@ -206,9 +197,8 @@ def _provenance_columns(provenance: dict) -> dict:
 def _resolve_log_path(sample_output_dir: Path, sid: str, log_file: Optional[Path]) -> Path:
     """Return the file a worker logs to.
 
-    Without ``--log-file`` every sample gets ``{sample_dir}/{sid}.log``; this is
-    what ``--per-sample-log`` asks for, so the flag needs no separate branch.
-    An explicit ``--log-file`` wins and all samples share it.
+    ``{sample_dir}/{sid}.log`` without ``--log-file`` (what ``--per-sample-log`` asks for); an
+    explicit ``--log-file`` wins and all samples share it.
     """
     return Path(log_file) if log_file else sample_output_dir / f"{sid}.log"
 
@@ -253,17 +243,14 @@ def _run_one(
 ) -> dict:
     """Run the pipeline for a single structure and return a flat results dict.
 
-    ``binder_chain`` and ``target_chain`` are keyword-only aliases of
-    ``peptide_chain`` and ``receptor_chain``; both spellings with different IDs
-    make the sample an ``"error"`` row, like any other pipeline failure. With
-    ``raise_errors`` an exception from the pipeline is re-raised instead of
-    becoming an ``"error"`` row. An input that the pre-flight check refuses
-    (``on_incompatible="error"``) is such an error row: ``batch_error`` and
-    ``preflight_reason`` carry the reason and nothing was prepared or run.
-    ``preflight_model`` is the whole-batch model step of this sample, as ``(model, metric,
-    adopted)``, so that its limits are checked here, before this worker does anything;
-    ``preflight_msa`` is ``(msa_policy, uses_msa_server, receptor_msa)`` of that step, checked
-    with it.
+    ``binder_chain`` and ``target_chain`` are keyword-only aliases of ``peptide_chain`` and
+    ``receptor_chain``; both spellings with different IDs give an ``"error"`` row. With
+    ``raise_errors`` an exception from the pipeline is re-raised instead of becoming an
+    ``"error"`` row. An input that the pre-flight check refuses (``on_incompatible="error"``)
+    is an error row: ``batch_error`` and ``preflight_reason`` carry the reason and nothing was
+    prepared or run. ``preflight_model`` is the whole-batch model step of this sample, as
+    ``(model, metric, adopted)``, checked here before the worker does anything;
+    ``preflight_msa`` is ``(msa_policy, uses_msa_server, receptor_msa)`` of that step.
 
     The row carries ``batch_status``:
 
@@ -395,7 +382,6 @@ def _detect_sample_chains(
         if input_path is None:
             continue
 
-        # Detect chains from the input file (same logic as run_pipeline)
         try:
             chain_info = detect_chains_from_file(
                 input_path,
@@ -430,12 +416,11 @@ def _model_step_allowed(
     """Whether the whole-batch model step may run for one sample, and why not.
 
     The worker of the sample has already checked the model (``preflight_model``): under ``error``
-    it refused the sample, so it is not here, and under ``warn`` it logged the problems. What
-    is left is ``skip``, where the sample's model step is dropped and the reason recorded. The
-    check runs again here, before any request is built or the store touched, so that the
-    whole-batch step never depends on what the worker did. A forbidden MSA server (``msa_policy``
-    ``forbid-server`` with ``msa_server`` True) is the exception to the rule above: it is refused
-    under ``warn`` too.
+    it refused the sample, so it is not here, and under ``warn`` it logged the problems. What is
+    left is ``skip``: the sample's model step is dropped and the reason recorded. The check runs
+    again here, before any request is built or the store touched, so the whole-batch step does
+    not depend on the worker. A forbidden MSA server (``msa_policy`` ``forbid-server`` with
+    ``msa_server`` True) is refused under ``warn`` too.
     """
     if on_incompatible == "warn" and msa_policy == DEFAULT_MSA_POLICY:
         return True, ""  # a forbidden MSA server is refused under warn as well
@@ -517,20 +502,19 @@ def _run_batched_openfold(
 ) -> None:
     """Run OpenFold3 on all successful samples in a single subprocess.
 
-    Modifies *rows* in-place, merging OF3 and EvoBind metrics into each
-    sample's flat dict.  Also updates each sample's JSON report on disk.
-    ``openfold_seeds`` are the seeds OpenFold3 samples with (written to its runner YAML); ``None``
-    keeps the default, 42. ``openfold_cyclic`` decides, sample by sample, whether the binder gets
-    ``"cyclic": true``; each sample's block records ``binder_cyclic``. ``openfold_use_msa_server``
-    False runs OpenFold3 without the ColabFold MSA server; each row records it as
+    Modifies *rows* in place, merging OpenFold3 and EvoBind metrics into each sample's flat dict,
+    and updates each sample's JSON report on disk. ``openfold_seeds`` are the seeds OpenFold3
+    samples with (written to its runner YAML); ``None`` keeps the default, 42.
+    ``openfold_cyclic`` decides, sample by sample, whether the binder gets ``"cyclic": true``;
+    each sample's block records ``binder_cyclic``. ``openfold_use_msa_server`` False runs
+    OpenFold3 without the ColabFold MSA server; each row records it as
     ``provenance_openfold3_use_msa_server``. ``prediction_weights`` (a checkpoint file) is passed
     to OpenFold3 as ``inference_ckpt_path`` for the whole batch, hashed once with the cache in
-    ``prediction_cache`` (default ``<output_dir>/_predictions``) and recorded in each block as
+    ``prediction_cache`` (default ``<output_dir>/_predictions``), and recorded in each block as
     ``weights`` and in the row as ``provenance_prediction_weights_*``. ``on_unmappable_residue``
-    is passed to the query preparation of every sample; a residue OpenFold3 cannot take then
-    stops the whole
-    batch call (the error names each such residue) before the model starts. A sample that the
-    pre-flight check leaves out (``on_incompatible="skip"``) gets ``openfold_skipped`` and the
+    is passed to the query preparation of every sample; a residue OpenFold3 cannot take stops the
+    whole batch call before the model starts (the error names each such residue). A sample that
+    the pre-flight check leaves out (``on_incompatible="skip"``) gets ``openfold_skipped`` and the
     reason in ``openfold_reason`` and is not part of the call. ``designed_with`` and
     ``design_policy`` decide whether the adversarial check runs (it is left out, with
     ``openfold_adversarial_skipped`` in the row, when the design pipeline ran OpenFold3 itself)
@@ -545,7 +529,6 @@ def _run_batched_openfold(
 
     adversarial_skipped, independent = _design_decision(designed_with, design_policy, "of3")
 
-    # Build list of eligible samples (succeeded, have chain info)
     samples: list[_BatchSample] = []
     # Map query_name → row index for merging results back
     sid_to_row_idx: dict[str, int] = {}
@@ -617,7 +600,7 @@ def _run_batched_openfold(
             **openfold_template_kwargs(openfold_templates),
         )
     except Exception as e:  # noqa: BLE001 - the batch call spawns a subprocess; see openfold_error
-        # Warning level keeps the line on stdout, where it was printed before.
+        # Warning level keeps the line on stdout.
         logger.warning("  [ERROR] Batched OpenFold failed: %s", e)
         import traceback
 
@@ -627,7 +610,6 @@ def _run_batched_openfold(
             _mark_step_failed(rows[idx], "openfold", str(e))
         return
 
-    # Extract per-sample metrics and merge into rows
     for s in samples:
         sid = s.query_name
         idx = sid_to_row_idx[sid]
@@ -692,12 +674,10 @@ def _run_batched_openfold(
                     of_metrics["evobind_error"] = str(e)
             _label_independence(of_metrics, independent)
 
-            # Flatten OF3 metrics into the row
             for k, v in _flatten({"openfold": of_metrics}).items():
                 if k.startswith("openfold_"):
                     rows[idx][k] = v
 
-            # Update per-sample JSON report on disk
             _update_sample_json(output_dir / sid, sid, of_metrics)
 
             logger.info(
@@ -905,7 +885,7 @@ def _run_batched_prediction(
         if requests and not adopt:
             make_session(store, runner, rerun=rerun_predictions).prefetch(requests.values())
     except Exception as e:  # noqa: BLE001 - the batch call starts a model; see prediction_error
-        # Warning level keeps the line on stdout, where the OpenFold step printed its own.
+        # Warning level keeps the line on stdout.
         logger.warning("  [ERROR] Batched %s prediction failed: %s", display_name(predictor), e)
         traceback.print_exc()
         for sid in requests:
@@ -1078,10 +1058,10 @@ def run_batch(
             given (see ``--openfold-seeds``).
         openfold_use_msa_server: Whether OpenFold3 uses the ColabFold MSA server (default True;
             ``--openfold-no-msa-server`` is False). With the server off OpenFold3 runs with a dummy
-            MSA that holds only the query sequence of each chain, which lowers accuracy for a
-            natural receptor; with ``openfold_templates="alignment"`` it also keeps the template
-            alignments that the server would replace (issue #68). Each row that OpenFold3 was run
-            for records it as ``provenance_openfold3_use_msa_server``.
+            MSA that holds only the query sequence of each chain; with
+            ``openfold_templates="alignment"`` it also keeps the template alignments that the
+            server would replace. Each row that OpenFold3 was run for records it as
+            ``provenance_openfold3_use_msa_server``.
         openfold_cyclic: ``"auto"`` (default), ``True`` (``"on"``) or ``False`` (``"off"``):
             whether the binder chain of each OpenFold3 query gets ``"cyclic": true`` (see
             ``--openfold-cyclic``). The ``openfold_*`` (or ``prediction_*``) columns then
@@ -1095,11 +1075,10 @@ def run_batch(
             whether OpenFold3 used each template.
         predictor: A key of ``binding_metrics.predictors.PARSERS`` (keyword-only). The
             ``openfold`` step then runs as the prediction step of every sample through one
-            shared prediction store and fills the ``prediction_*`` columns instead of the
-            ``openfold_*`` ones; ``None`` (default) keeps the batched OpenFold3 call. Like
-            ``openfold`` it runs once for all samples after the others. Every registered model
-            has a runner and can be run from here (``cli.prediction.RUNNERS``); ``prediction_dir``
-            reads outputs you made instead.
+            shared prediction store, once for all samples after the others, and fills the
+            ``prediction_*`` columns instead of the ``openfold_*`` ones; ``None`` (default) keeps
+            the batched OpenFold3 call. Every registered model has a runner and can be run from
+            here (``cli.prediction.RUNNERS``); ``prediction_dir`` reads outputs you made instead.
         prediction_dir: With ``predictor``, the root that holds one output per sample ID (the
             file stem); the outputs are adopted into the store and the model never runs.
         prediction_binder_chain, prediction_target_chain: With ``predictor``, the chain IDs
@@ -1119,10 +1098,9 @@ def run_batch(
             ``refold``, ``score``, ``score-lock`` or ``refold-lock``. It is checked against what
             the model supports in the pre-flight check of every sample, for a run from here
             against what the runner of the model runs (``ValueError`` for another mode), and
-            recorded as
-            ``prediction_mode``. None takes ``openfold_mode`` for OpenFold3 run from here, the
-            ``default_mode`` of the runner for another model (boltz2 ``score``, af2 and protenix
-            ``predict``) and is "not known, not checked" for outputs read from
+            recorded as ``prediction_mode``. None takes ``openfold_mode`` for OpenFold3 run from
+            here, the ``default_mode`` of the runner for another model (boltz2 ``score``, af2 and
+            protenix ``predict``) and is "not known, not checked" for outputs read from
             ``prediction_dir``. Needs ``predictor``.
         prediction_cyclic, prediction_use_msa_server, prediction_conda_env,
         prediction_lock_threshold: The settings of ``predictor`` run from here, for every model
@@ -1352,14 +1330,11 @@ def run_batch(
                 row = _lost_sample_row(sid, error)
             finish(index, row)
     else:
-        # Parallel path: each worker is an independent OS process, so there are no
-        # shared variables and no shared file paths (each writes to its own sample
-        # directory). ``rows`` and the callbacks are only touched here, in the
-        # calling process, as ``as_completed`` delivers one result at a time.
+        # Parallel path: each worker is an OS process with its own sample directory. ``rows``
+        # and the callbacks are touched only here, in the calling process.
         futures = {}
-        # Workers started with "spawn" or "forkserver" do not inherit the handlers
-        # installed by the caller, so each configures logging itself. Without it
-        # their pipeline messages would never reach the per-sample log files.
+        # Workers started with "spawn" or "forkserver" do not inherit the caller's logging
+        # handlers, so each configures logging itself.
         with ProcessPoolExecutor(max_workers=n_workers, initializer=configure_logging) as pool:
             for index, input_path in enumerate(input_paths):
                 sid = input_path.stem
@@ -1733,7 +1708,7 @@ def main():
 
     # ------------------------------------------------------------------ References
     # Map each sample (by filename stem) to a native structure for DockQ.
-    # Supplying --reference-dir auto-enables the dockq metric.
+    # --reference-dir enables the dockq metric.
     reference_map: dict[str, Path] = {}
     selected_metrics = args.metrics
     if args.reference_dir is not None:
@@ -1789,8 +1764,8 @@ def main():
         sys.exit(1 if n_refused else 0)
 
     # ------------------------------------------------------------------ Run
-    # run_batch does the work; the callbacks print the progress lines. Started
-    # items are announced only in the sequential case, where one item runs at a time.
+    # run_batch does the work; the callbacks print the progress lines. Started items are
+    # announced only in the sequential case.
     t_batch_start = time.time()
     n_inputs = len(input_files)
     started = 0
@@ -1875,10 +1850,8 @@ def main():
     n_err = len(statuses) - n_ok - n_partial
 
     # ------------------------------------------------------------------ Write CSV
-    # Written here, in the main process, after run_batch returned (i.e. all workers
-    # are guaranteed to be done). There is exactly one writer and no worker can
-    # race against it.
-    # Collect the union of all column names (preserving insertion order via dict).
+    # Written in the main process after run_batch returned: one writer, all workers done.
+    # The columns are the union of all row keys, in insertion order.
     all_keys: dict[str, None] = {}
     for row in rows:
         all_keys.update(dict.fromkeys(row.keys()))
@@ -1899,8 +1872,8 @@ def main():
     print(f"  Results: {args.output_csv}")
     print(f"{'#' * 60}\n")
 
-    # Non-zero only when no sample completed cleanly, as before; a sample whose
-    # steps failed counts as not completed.
+    # Non-zero only when no sample completed cleanly; a sample with a failed step does not
+    # count as completed.
     sys.exit(1 if (n_err or n_partial) and n_ok == 0 else 0)
 
 
