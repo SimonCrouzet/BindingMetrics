@@ -770,3 +770,21 @@ class TestWhatRunsTheSuite:
 
         assert module.run_tests(test_type, verbose=True) == 0
         assert commands[0][-len(expected) :] == expected
+
+
+class TestTheDocumentation:
+    def test_the_testing_page_names_the_options_of_the_tiers_and_of_the_slow_guard(self):
+        text = (REPO / "docs" / "testing.md").read_text(encoding="utf-8")
+        for option in ("--full", "--gpu", "--tier-named", "--strict-slow", "--slow-seconds"):
+            assert f"`{option}`" in text, f"docs/testing.md does not describe {option}"
+        assert "tests/_tiers.py" in text
+
+    def test_no_page_gives_the_negative_expression_as_the_way_to_the_everyday_run(self):
+        pages = [REPO / "README.md", REPO / "CHANGELOG.md", *(REPO / "docs").glob("*.md")]
+        # scripts/run_tests.py names tier markers in its own expressions, on purpose
+        pages += [p for p in (REPO / "scripts").glob("*.py") if p.name != "run_tests.py"]
+        pages += [REPO / "tests" / "conftest.py", REPO / "tests" / "_tiers.py"]
+        offenders = [
+            p.name for p in pages if "not integration and not slow" in p.read_text(encoding="utf-8")
+        ]
+        assert offenders == []

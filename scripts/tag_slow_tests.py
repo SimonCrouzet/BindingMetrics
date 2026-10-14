@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Mark the tests named in a list of node ids with ``@pytest.mark.slow``.
 
-The everyday run of the suite leaves out the tests that take a second or more
-(``pytest -m "not gpu and not integration and not slow and not openfold"``), so a test that
-grows past that line has to be tagged. This script does the tagging from a list of pytest node
-ids instead of by hand, one id per line (the id of a case can hold blanks, so a line ends at a
-tab: a column of seconds after a tab is ignored, and so are blank lines and ``#`` comments)::
+The fast tier of the suite (a plain ``pytest``) leaves out the tests that take a second or
+more, so a test that grows past that line has to be tagged. This script does the tagging from a
+list of pytest node ids instead of by hand, one id per line (the id of a case can hold blanks, so
+a line ends at a tab: a column of seconds after a tab is ignored, and so are blank lines and
+``#`` comments)::
 
     python scripts/tag_slow_tests.py slow_tests.txt --dry-run
     python scripts/tag_slow_tests.py slow_tests.txt --collected collected.txt
 
-``--collected`` is the output of ``pytest --collect-only -q``. It is only read for a
-parametrised test of which some cases, not all, are in the list: the position of a case among
-the collected ones of its function is the position of its entry in the literal list of
-``@pytest.mark.parametrize``, and that entry gets ``marks=pytest.mark.slow``.
+``--collected`` is the output of ``pytest --collect-only -q --full --gpu``, which lists every
+case. It is only read for a parametrised test of which some cases, not all, are in the list: the
+position of a case among the collected ones of its function is the position of its entry in the
+literal list of ``@pytest.mark.parametrize``, and that entry gets ``marks=pytest.mark.slow``.
 
 What it does to a file, by editing the text and leaving the rest of it as it was (line
 endings, comments, formatting):
@@ -23,7 +23,7 @@ endings, comments, formatting):
 - a class gets the decorator instead of its methods when at least ``--class-share`` of its
   test methods are in the list (and at least two), none of its methods carries a speed marker
   and none is a partial case of a parametrisation: the few fast methods of such a class leave
-  the everyday run with the others;
+  the fast tier with the others;
 - a parametrised test of which only some cases are slow gets ``marks=pytest.mark.slow`` on
   those entries of its list (a plain value is wrapped in ``pytest.param``); when the
   parametrisation is not one literal list that the script can follow (a name, a comprehension,
@@ -609,7 +609,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--collected",
         type=Path,
-        help="output of `pytest --collect-only -q`, needed to mark single cases of a test",
+        help="output of `pytest --collect-only -q --full --gpu` (every case), needed to mark "
+        "single cases of a test",
     )
     parser.add_argument(
         "--class-share",
