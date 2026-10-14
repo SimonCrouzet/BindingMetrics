@@ -2876,6 +2876,26 @@ def _medoid_caveats(
     return list(dict.fromkeys(found))
 
 
+def _duplicate_warnings(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One sentence per content hash that two or more poses share, naming their ids.
+
+    The poses still count once each in the counts, the agreement block and the aggregates; the
+    sentence tells the reader that those numbers hold the same structure more than once. Rows
+    without a hash (a structure that could not be hashed) are not compared.
+    """
+    ids_by_hash: dict[str, list[str]] = {}
+    for row in rows:
+        digest = row.get("content_hash")
+        if isinstance(digest, str) and digest:
+            ids_by_hash.setdefault(digest, []).append(str(row["id"]))
+    return [
+        f"poses {', '.join(ids)} have the same structure content (content_hash {digest[:12]}); "
+        "each counts as a pose in the counts, the agreement and the aggregates"
+        for digest, ids in ids_by_hash.items()
+        if len(ids) > 1
+    ]
+
+
 def _collect_warnings(
     rows: Sequence[Mapping[str, Any]],
     representatives: Mapping[str, Any],
@@ -2889,6 +2909,7 @@ def _collect_warnings(
         if isinstance(frame, Mapping):
             warnings += [f"{row['id']}: {text}" for text in frame.get("warnings", ())]
     warnings += profile_warnings
+    warnings += _duplicate_warnings(rows)
     for key, reason in (representatives.get("reasons") or {}).items():
         warnings.append(f"no representative for {key!r}: {reason}")
     for group, caveat in _medoid_caveats(agreement, representatives):
