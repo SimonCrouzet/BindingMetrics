@@ -62,6 +62,7 @@ dependencies:
 
   # --- Dev ---
   - pytest>=7.0
+  - pytest-xdist>=3.0
   - ruff>=0.1
 
   # pip is used ONLY for the package itself (editable) and the two pip-only

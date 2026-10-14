@@ -41,9 +41,9 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
-    # The conda solve is the slow part on a cache miss; the suite itself is
-    # about three minutes.
-    timeout-minutes: 45
+    # The conda solve is the slow part on a cache miss. The suite is more than ten
+    # thousand tests and runs on every core of the runner (pytest-xdist).
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -80,7 +80,7 @@ jobs:
       # A plain pytest is the fast tier and would leave the slow ones out.
       - name: Run tests
         shell: bash -el {0}
-        run: pytest --full -v --durations=10
+        run: pytest --full -n auto -v --durations=10
 
       # The gpu tier is invisible to this workflow, so a test that fails to
       # collect there would go unnoticed. Collect-only proves the modules at

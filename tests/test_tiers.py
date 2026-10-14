@@ -738,7 +738,7 @@ class TestWhatRunsTheSuite:
         text = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         commands = re.findall(r"^\s*run:\s*(pytest\b.*)$", text, flags=re.MULTILINE)
         suite = [c for c in commands if ".py" not in c and "--collect-only" not in c]
-        assert suite == ["pytest --full -v --durations=10"]
+        assert suite == ["pytest --full -n auto -v --durations=10"]
         # -m gpu names a tier marker: it collects the GPU tests whatever the options
         assert [c for c in commands if "--collect-only" in c] == [
             'pytest -m "gpu" --collect-only -q'
