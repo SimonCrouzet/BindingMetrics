@@ -25,7 +25,7 @@ OpenMM builds the bonds of a residue from a table of standard residue names. A r
 
 1. **`load_structure`** (CIF input). The link rows of `_struct_conn` (`covale`, `disulf`, `modres`) are read through the author numbering, because OpenMM looks the partners up by label numbering while it keys the atoms by author numbering, and drops a row when the two differ. This needs gemmi. A residue that the file leaves without any bond is bonded by covalent radii, as the CONECT records of a PDB file would do. `save_cif` writes the restored residue number into `label_seq_id` and the `_struct_conn` rows, so a prepped file keeps its links on reload; where residues share a number (60 and 60A) the rows also carry the author partner columns and the insertion codes, and `label_seq_id` is `.` for those residues. 1QJB: HIS6 C to SEP7 N and the nine bonds inside SEP are present after loading the mmCIF, as after loading the PDB file.
 2. **`patch_cyclic_topology`** calls `reconstruct_nonstandard_residue_bonds` for every protein chain, the receptor included. It restores the bonds inside each residue that has none and the C(i) to N(i+1) peptide bond next to it when the two atoms are within 0.20 nm; a chain break is not bridged. A PDB file without CONECT records for the residue relies on this step.
-3. **`strip_heterogens`** keeps SEP, TPO and PTR in every chain, so an unselected chain is not cut at its phosphoserine.
+3. **`strip_heterogens`** keeps what `detect_chains` calls an amino acid in every chain (SEP, TPO and PTR, the D-amino acids and, with biotite installed, the peptide-linking components of the Chemical Component Dictionary), so an unselected chain is not cut at its phosphoserine or its D residues, and a third chain of D residues is reported as a dropped protein chain.
 
 A residue of the receptor that the force fields do not cover goes through the [GAFF2 route](#gaff2-route-for-other-non-canonical-residues) like one of the peptide. The charge calculation for P1L of 6SBA is repeated each time a system is built and takes minutes.
 
@@ -46,6 +46,8 @@ The relaxation and the interaction energy describe the peptide-receptor pair. A 
 AMBER ff14SB has no chirality-sensitive energy terms — bond lengths, angles, and torsion parameters are identical for D and L forms. The chirality is encoded entirely in the 3D coordinates, which are untouched.
 
 **Force field:** standard ff14SB templates used after rename. No custom XML needed.
+
+**Hydrogens in prep:** `Modeller.addHydrogens` has no definition for a D residue name. Both routes of `prep_structure` rename the D residues to their L templates while the hydrogens are added and give them their D names back. The hydrogens come from the heavy-atom geometry, which is the D geometry whatever the residue is called, so the HA of a D residue lies on the D side of the alpha carbon. A peptide made only of D residues is a protein chain for prep and for the heterogen strip, like a mixed one.
 
 **Ramachandran:** φ/ψ angles are negated before region classification, so a D-α-helix (φ ≈ +57°, ψ ≈ +47°) maps correctly to the L-α-helix basin (φ ≈ −57°, ψ ≈ −47°). The `per_residue` output includes an `is_d_aa` flag, and `n_d_residues` counts the D residues evaluated.
 
@@ -170,7 +172,7 @@ The following crosslink types raise `CyclizationError` with guidance when detect
 
 Phosphoserine (SEP), phosphothreonine (TPO) and phosphotyrosine (PTR), together with the phosaa protonation variants (S1P, T1P, Y1P, H1D, H2D, H1E, H2E), use the RESP-fitted `phosaa14SB.xml` that ships with openmmforcefields (Raguette et al., *J. Chem. Theory Comput.* 2024, 20, 7199). `core/phosaa.py` adapts its atom-type names to `amber14-all.xml` and changes no charge or bonded term. A phosphate monoester carries a net charge of −2. The GAFF2 route skips these residues on purpose: it builds residues in their neutral form and would protonate the phosphate to net 0.
 
-`core/phosaa.py` also registers hydrogen definitions, so `addHydrogens` places the hydrogens of a heavy-atom-only phospho residue. The relaxation, the interaction energy and prep use these parameters. In the metrics, the non-bridging phosphate oxygens O1P, O2P and O3P count as negative atoms in the salt-bridge and Coulomb tables (−2/3 e each) and as O(−) in the solvation parameters. The bundled example is the phosphopeptide of 1QJB (chain Q, SEP).
+`core/phosaa.py` also supplies hydrogen definitions, so `addHydrogens` places the hydrogens of a heavy-atom-only phospho residue: SEP gets H, HA, HB2 and HB3 whatever the pH, because the residue name sets the protonation of the phosphate (SEP, TPO and PTR are the dianions, S1P, T1P and Y1P the monoanions). The definitions are loaded for the duration of one `addHydrogens` call (`phosaa.hydrogen_definitions()`) and the earlier state is restored, so a structure prepared in a fresh process and one prepared after a cyclic peptide come out the same: 1QJB has 124 atoms in both. The relaxation, the interaction energy and prep use these parameters. In the metrics, the non-bridging phosphate oxygens O1P, O2P and O3P count as negative atoms in the salt-bridge and Coulomb tables (−2/3 e each) and as O(−) in the solvation parameters. The bundled example is the phosphopeptide of 1QJB (chain Q, SEP).
 
 ---
 

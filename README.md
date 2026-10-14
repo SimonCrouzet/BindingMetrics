@@ -754,7 +754,7 @@ The individual scoring tools take the binder chain as `--binder-chain` and the t
 | `sample_id`, `input`, `total_elapsed_s` | identifiers and wall time |
 | `provenance` | package version, git sha (when the package runs from its own checkout), Python, OS, OpenMM version, platform, seed; the installed OpenFold3 version, the checkpoint name and whether the MSA server was used when OpenFold3 ran |
 | `chains` | resolved chain IDs and residue counts |
-| `prep` | what preparation changed: `removed_heterogens`, `n_removed_waters`, `kept_nonstandard`, `n_missing_atoms_rebuilt`, `n_missing_residue_gaps`, `chain_breaks` (consecutive residues whose C and N atoms are more than 2 Å apart) and `ncaa_bond_order_source` for GAFF2 residues |
+| `prep` | what preparation changed: `removed_heterogens`, `n_removed_waters`, `kept_nonstandard`, `n_missing_atoms_rebuilt`, `n_missing_residue_gaps`, `chain_breaks` (consecutive residues whose C and N atoms are more than 2 Å apart), `missing_residues` (gaps and truncated chain ends, from SEQRES or `_entity_poly_seq` when the file has them) and `ncaa_bond_order_source` for GAFF2 residues |
 | `relax` | energies, RMSD and RMSF, the OpenMM `platform`, `dropped_protein_chains` (protein chains other than the peptide and the receptor, which the relaxation removes) and the structural QC: `qc_passed`, `qc_failed_checks` and (in the JSON) `qc_checks` |
 | `energy`, `interface`, `geometry`, `electrostatics`, `dockq`, `openfold` | one dict per metric: `{"skipped": True}` when it did not run, `{"error": message}` when it failed |
 | `prediction` | with `--predictor`: the confidence scores of the model's prediction, its EvoBind keys and `cache` (how the store served it) |
