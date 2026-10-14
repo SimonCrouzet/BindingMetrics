@@ -851,6 +851,46 @@ def _molprobity_score(
 # ---------------------------------------------------------------------------
 
 
+def _removed_from_inside_chain(residues_before: list, residues_after: list) -> list:
+    """Residues removed from inside a chain: in ``residues_before``, not in ``residues_after``.
+
+    Both lists hold ``(chain ID, residue ID, insertion code, residue name)`` in file order. A
+    removed residue is inside its chain when a residue that was kept comes before it and
+    another after it, so that removing it leaves a hole; a residue removed at an end of the
+    chain (a cap, a terminal ion) leaves none.
+    """
+    kept = set(residues_after)
+    removed_inside = []
+    for chain_id in dict.fromkeys(residue[0] for residue in residues_before):
+        chain = [residue for residue in residues_before if residue[0] == chain_id]
+        kept_positions = [i for i, residue in enumerate(chain) if residue in kept]
+        if not kept_positions:
+            continue
+        first, last = kept_positions[0], kept_positions[-1]
+        removed_inside += [
+            residue for i, residue in enumerate(chain) if first < i < last and residue not in kept
+        ]
+    return removed_inside
+
+
+def _residue_keys(topology) -> list:
+    """``(chain ID, residue ID, insertion code, residue name)`` of each residue, in order."""
+    return [
+        (r.chain.id, str(r.id), str(r.insertionCode or "").strip(), r.name)
+        for r in topology.residues()
+    ]
+
+
+def _hole_reason(removed: list) -> str:
+    """The sentence that says which residues were removed from inside the chain."""
+    names = ", ".join(
+        f"{name} {(number + insertion_code).strip()}" for _, number, insertion_code, name in removed
+    )
+    noun = "residue" if len(removed) == 1 else "residues"
+    verb = "was" if len(removed) == 1 else "were"
+    return f"modified {noun} {names} {verb} removed, so the chain has a hole"
+
+
 def _receptor_energy(
     chain_atoms,
     solvent_model: str = "obc2",
@@ -866,6 +906,11 @@ def _receptor_energy(
     Without PDBFixer the terminal oxygen of a chain is added here
     (``core.system.add_terminal_oxygens``), and a chain that still lacks atoms gives NaN
     with an ``error`` that says PDBFixer is needed (``pip install binding-metrics[structure]``).
+    With PDBFixer, a residue it removes from inside the chain (a modified residue it does
+    not replace, such as the IAM of 1XY4) would leave a hole whose two sides the force field
+    bonds by name, and the energy would be that of another molecule: the result is NaN, with
+    ``reason`` (and ``error``, the same sentence) naming the residues. A residue removed at an
+    end of the chain changes nothing.
 
     Stochastic steps (PDBFixer's rebuild of missing atoms and the jitter of new
     hydrogens) are seeded with ``random_seed``, so the same input gives the same
@@ -925,7 +970,12 @@ def _receptor_energy(
                 fixer.findMissingResidues()
                 fixer.findNonstandardResidues()
                 fixer.replaceNonstandardResidues()
+                residues_before = _residue_keys(fixer.topology)
                 fixer.removeHeterogens(keepWater=False)
+                holes = _removed_from_inside_chain(residues_before, _residue_keys(fixer.topology))
+                if holes:
+                    reason = _hole_reason(holes)
+                    return {**_nan, "error": reason, "reason": reason}
                 fixer.findMissingAtoms()
                 fixer.addMissingAtoms(seed=random_seed)
                 # Same call as PDBFixer.addMissingHydrogens(DEFAULT_PH), with the platform pinned.
@@ -1139,7 +1189,9 @@ def compute_receptor_quality(
             backbone_geometry: bad/total bonds+angles and %
             b_factors: mean/max/min/std, n_high_b_residues (>60 Å²)
             energy: energy_kJ_mol, energy_per_residue_kJ_mol, n_atoms_with_h,
-                error (None on success, else "ExceptionType: message")
+                error (None on success, else "ExceptionType: message"); when residues
+                were removed from inside the chain, NaN with ``reason`` (the same sentence
+                as ``error``) naming them
             molprobity_score (float): composite score (lower = better); NaN when
                 the clashscore, Ramachandran or rotamer term is undefined
                 (for example a chain without any χ1 residue)
