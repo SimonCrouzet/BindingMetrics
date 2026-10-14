@@ -368,8 +368,21 @@ class TestParseOnly:
         )
         out = tmp_path / "out"
         synth_of3.write_prediction(out, STEM, renamed)
-        block = pipeline(tmp_path / "run", predictor="of3", prediction_dir=out)["prediction"]
+        results = pipeline(tmp_path / "run", predictor="of3", prediction_dir=out)
+        block = results["prediction"]
         assert "evobind_error" in block and "adversarial_error" in block
+        assert [step for step, _ in _collect_failures(results)] == ["prediction"]
+
+        argv = [
+            "binding-metrics-run", "-i", str(EXAMPLE_1YCR), "-o", str(tmp_path / "cli"),
+            "--skip-prep", "--skip-relax", "--metrics", "openfold", "--openfold-conda-env", "",
+            "--peptide-chain", PEPTIDE_CHAIN, "--receptor-chain", RECEPTOR_CHAIN,
+            "--predictor", "of3", "--prediction-dir", str(out),
+        ]  # fmt: skip
+        monkeypatch.setattr(sys, "argv", argv)
+        with pytest.raises(SystemExit) as stop:
+            run.main()
+        assert stop.value.code == 1
 
     @pytest.mark.parametrize("model", sorted(PARSERS))
     def test_every_registered_adapter_runs_through_the_pipeline(self, tmp_path, monkeypatch, model):

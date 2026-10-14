@@ -58,7 +58,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from binding_metrics._constants import (
     DEFAULT_DEVICE,
@@ -1152,24 +1152,46 @@ def run_pipeline(
     return results
 
 
+#: Keys that the model step writes when a sub-step it was asked to run could not be computed,
+#: with the name the failure reason gives the sub-step.
+_SUBSTEP_ERRORS = (
+    ("evobind_error", "EvoBind score"),
+    ("adversarial_error", "EvoBind adversarial check"),
+)
+
+
+def _step_failure(res: Any) -> Optional[str]:
+    """The reason a metric step did not complete, or None when it did.
+
+    A step is failed when its result dict carries an ``error`` key, when a step that reports a
+    ``success`` flag (relaxation, energy) has ``success is False``, or when the model step
+    reports a sub-step it was asked to run in ``evobind_error`` or ``adversarial_error``.
+    ``{"skipped": True}`` steps and a check left out by the design-origin policy
+    (``adversarial_skipped``) are not failures. The reasons of one step are joined and cut to
+    200 characters.
+    """
+    if not isinstance(res, dict) or res.get("skipped"):
+        return None
+    reasons = []
+    if "error" in res:
+        reasons.append(str(res["error"]))
+    elif res.get("success") is False:
+        reasons.append(str(res.get("error_message") or "step reported success=False"))
+    reasons.extend(f"{label}: {res[key]}" for key, label in _SUBSTEP_ERRORS if res.get(key))
+    return "; ".join(reasons)[:200] if reasons else None
+
+
 def _collect_failures(results: dict) -> list:
     """Return ``(step, reason)`` for every metric step that did not complete.
 
-    A step counts as failed when its result dict carries an ``error`` key, or
-    when a step that reports a ``success`` flag (relaxation, energy) has
-    ``success is False``. Steps marked ``{"skipped": True}`` are not failures.
-    Used to make the pipeline exit non-zero instead of silently reporting
-    success when metrics could not be computed.
+    See ``_step_failure`` for what counts as failed. Used to make the pipeline exit non-zero
+    instead of silently reporting success when metrics could not be computed.
     """
     failures = []
     for step, res in results.items():
-        if not isinstance(res, dict) or res.get("skipped"):
-            continue
-        if "error" in res:
-            failures.append((step, str(res["error"])[:200]))
-        elif res.get("success") is False:
-            reason = res.get("error_message") or "step reported success=False"
-            failures.append((step, str(reason)[:200]))
+        reason = _step_failure(res)
+        if reason is not None:
+            failures.append((step, reason))
     return failures
 
 

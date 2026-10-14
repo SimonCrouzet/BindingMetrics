@@ -49,12 +49,15 @@ default ``<output-dir>/_predictions``): the model starts once for the prediction
 lacks, each sample reads its prediction from the store, and a second run over the same samples
 starts no model. ``--prediction-dir ROOT`` reads existing outputs instead, one per sample ID, and
 never runs the model. The columns are ``prediction_*`` (the only ``openfold_*`` column is
-``openfold_skipped``). A sample whose prediction failed is ``partial`` with ``prediction`` in
-``batch_failed_steps``; the others are not affected.
+``openfold_skipped``). A sample whose prediction failed, or whose EvoBind score or adversarial
+check could not be computed (``evobind_error``, ``adversarial_error`` in the block), is
+``partial`` with ``prediction`` in ``batch_failed_steps``; the others are not affected. A check
+left out by ``--designed-with`` is not a failure.
 
 The legacy batched OpenFold3 call (``--openfold-*`` without ``--predictor``) marks a sample it
-failed for ``partial`` with ``openfold`` in ``batch_failed_steps`` and the reason in
-``batch_failed_reasons``; a failure of the whole call marks every sample it covered.
+failed, or whose EvoBind sub-step failed, for ``partial`` with ``openfold`` in
+``batch_failed_steps`` and the reason in ``batch_failed_reasons``; a failure of the whole call
+marks every sample it covered.
 
 Concurrency model (--workers > 1)
 ----------------------------------
@@ -147,6 +150,7 @@ from binding_metrics.cli.run import (
     _label_independence,
     _merge_reason,
     _parse_metrics,
+    _step_failure,
     run_pipeline,
 )
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
@@ -671,12 +675,12 @@ def _run_batched_openfold(
             of_structure = of_metrics.get("structure_path")
             plddt = of_metrics.get("plddt_per_atom")
             if of_structure:
-                try:
-                    from binding_metrics.metrics.evobind import (
-                        compute_evobind_adversarial_check,
-                        compute_evobind_score,
-                    )
+                from binding_metrics.metrics.evobind import (
+                    compute_evobind_adversarial_check,
+                    compute_evobind_score,
+                )
 
+                try:
                     evobind = compute_evobind_score(
                         of_structure,
                         plddt_per_atom=plddt,
@@ -685,9 +689,13 @@ def _run_batched_openfold(
                     )
                     _merge_reason(of_metrics, evobind, "evobind")
                     of_metrics.update(evobind)
-                    if adversarial_skipped is not None:
-                        of_metrics["adversarial_skipped"] = adversarial_skipped
-                    else:
+                except Exception as e:  # noqa: BLE001 - per-score isolation; see evobind_error
+                    logger.warning("  %s: EvoBind score failed: %s", sid, e)
+                    of_metrics["evobind_error"] = str(e)
+                if adversarial_skipped is not None:
+                    of_metrics["adversarial_skipped"] = adversarial_skipped
+                else:
+                    try:
                         adversarial = compute_evobind_adversarial_check(
                             design_structure_path=sid_to_input[sid],
                             afm_structure_path=of_structure,
@@ -697,8 +705,9 @@ def _run_batched_openfold(
                         )
                         _merge_reason(of_metrics, adversarial, "evobind adversarial")
                         of_metrics.update(adversarial)
-                except Exception as e:  # noqa: BLE001 - per-sample isolation; see evobind_error
-                    of_metrics["evobind_error"] = str(e)
+                    except Exception as e:  # noqa: BLE001 - per-check isolation; see adversarial_error
+                        logger.warning("  %s: EvoBind adversarial check failed: %s", sid, e)
+                        of_metrics["adversarial_error"] = str(e)
             _label_independence(of_metrics, independent)
 
             for k, v in _flatten({"openfold": of_metrics}).items():
@@ -706,6 +715,9 @@ def _run_batched_openfold(
                     rows[idx][k] = v
 
             _update_sample_json(output_dir / sid, sid, of_metrics)
+            failure = _step_failure(of_metrics)
+            if failure is not None:
+                _mark_step_failed(rows[idx], "openfold", failure)
 
             logger.info(
                 "  %s: ipTM=%s, pLDDT=%s",
@@ -962,8 +974,9 @@ def _run_batched_prediction(
         _update_sample_json(
             output_dir / sid, sid, block, section="prediction", provenance=provenance or None
         )
-        if block.get("error"):
-            _mark_step_failed(rows[idx], "prediction", block["error"])
+        failure = _step_failure(block)
+        if failure is not None:
+            _mark_step_failed(rows[idx], "prediction", failure)
         logger.info(
             "  %s: ipTM=%s, pLDDT=%s",
             sid,
