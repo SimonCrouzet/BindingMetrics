@@ -783,7 +783,6 @@ class ImplicitRelaxation(Relaxer):
         from binding_metrics.core import phosaa
 
         phosaa.register(ff)
-        phosaa.ensure_hydrogen_definitions()
 
         # --- Non-standard residue patching (D-AAs and NMe-AAs, before H addition) ---
         from binding_metrics.core.nonstandard import (
@@ -940,7 +939,9 @@ class ImplicitRelaxation(Relaxer):
 
         seed = self.config.random_seed
         try:
-            with deterministic_hydrogen_placement(seed):
+            # The phospho definitions are loaded for these calls only: Modeller keeps them
+            # for the whole process, and they would change every later addHydrogens.
+            with deterministic_hydrogen_placement(seed), phosaa.hydrogen_definitions():
                 modeller.addHydrogens(ff, pH=self.config.ph, variants=addh_variants)
         except Exception as e:  # noqa: BLE001 - OpenMM raises many types; the retry below is logged
             logger.warning(
@@ -950,7 +951,7 @@ class ImplicitRelaxation(Relaxer):
                 e,
             )
             try:
-                with deterministic_hydrogen_placement(seed):
+                with deterministic_hydrogen_placement(seed), phosaa.hydrogen_definitions():
                     modeller.addHydrogens(pH=self.config.ph, variants=addh_variants)
             except Exception as e2:
                 logger.error("addHydrogens failed with and without the force field (%s; %s)", e, e2)
