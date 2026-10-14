@@ -109,7 +109,11 @@ from binding_metrics.cli.prediction import (
     scored_seed_kwargs,
     weights_description,
 )
-from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
+from binding_metrics.metrics._common import (
+    ChainAliasAction,
+    require_distinct_chains,
+    resolve_chain_role,
+)
 from binding_metrics.metrics.registry import get_metric
 from binding_metrics.preflight_cli import (
     ADVERSARIAL_CHECK,
@@ -579,7 +583,8 @@ def run_pipeline(
         ChainNotFoundError: a requested chain ID does not exist in the structure.
         IncompatibleInputError: the input cannot go through a requested step or model and
             ``on_incompatible`` is ``"error"``; nothing has run. A ``ValueError``.
-        ValueError: a chain is given through both spellings with different IDs,
+        ValueError: a chain is given through both spellings with different IDs, both chain
+            roles name one chain (whatever ``on_incompatible`` says),
             ``on_unmappable_residue`` is not ``"error"`` or ``"x"``, ``openfold_cyclic`` is
             not ``"auto"``, ``"on"``, ``"off"``, ``True`` or ``False``, ``predictor`` is not a
             registered model, or it has no runner and no ``prediction_dir`` is given.
@@ -588,6 +593,7 @@ def run_pipeline(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
+    require_distinct_chains(peptide_chain, receptor_chain)
     check_on_unmappable_residue(on_unmappable_residue)
     check_openfold_cyclic(openfold_cyclic)
     check_openfold_templates(openfold_templates)
@@ -1384,6 +1390,11 @@ def main():
 
     if not args.input.exists():
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        require_distinct_chains(args.peptide_chain, args.receptor_chain)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
     # A reference auto-enables DockQ; validate it exists up front.

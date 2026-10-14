@@ -212,8 +212,8 @@ class Violation:
         fix: What to do instead; ``preflight`` fills it in.
         subject: The step, for example ``predictor OpenFold3 0.5.0`` or ``metric 'omega'``;
             ``preflight`` fills it in.
-        kind: ``metric``, ``predictor`` or ``msa`` (an MSA policy the run would break), filled in
-            by ``preflight``.
+        kind: ``metric``, ``predictor``, ``msa`` (an MSA policy the run would break) or ``input``
+            (the chains of the run, see ``_check_chain_roles``), filled in by ``preflight``.
         name: The registry name of the step, filled in by ``preflight``.
     """
 
@@ -1649,7 +1649,7 @@ class PreflightReport:
 
     def policy_of(self, kind: str) -> str:
         """The policy that applies to a violation of ``kind`` (``metric``, ``predictor``,
-        ``design`` or ``msa``). A violation of kind ``msa`` is always an ``error``."""
+        ``design``, ``msa`` or ``input``). A violation of kind ``msa`` is always an ``error``."""
         if kind == "msa":
             return "error"
         if kind == "predictor":
@@ -2126,6 +2126,36 @@ def _msa_server_violation(step: _Step) -> Violation:
     )
 
 
+def _check_chain_roles(profile: InputProfile) -> list[Violation]:
+    """The violation of a receptor that is also a binder chain, or an empty list.
+
+    A step that scores the binder against the receptor would read one chain against itself: the
+    interface, the contacts and the energies would be those of the chain with its own atoms.
+    """
+    chain = profile.receptor_chain
+    if chain is None or chain not in profile.binder_chains:
+        return []
+    return [
+        Violation(
+            constraint="chain_roles",
+            fact=f"chain {chain!r} is named as the binder and as the receptor",
+            requirement="two different chains: one for the binder and one for the receptor",
+            reason=(
+                "The steps that score the binder against the receptor would compare the chain "
+                "with itself, so their contacts and energies would not describe an interface."
+            ),
+            fix=(
+                "name two different chains: peptide_chain (--peptide-chain) and receptor_chain "
+                "(--receptor-chain), or binder_chain and target_chain (--binder-chain and "
+                "--target-chain); leave one out to have it detected"
+            ),
+            subject="input chains",
+            kind="input",
+            name="chains",
+        )
+    ]
+
+
 #: The ``receptor_msa`` value for a receptor predicted from its own sequence, with no alignment;
 #: the word of ``binding_metrics.predictors._msa.SINGLE_SEQUENCE``, which imports this module.
 _SINGLE_SEQUENCE = "single"
@@ -2190,7 +2220,8 @@ def preflight(
 
     Reads declarations only: it never runs, prepares or instantiates a metric, a predictor or a
     runner. It collects every incompatibility, each with the fact found in the input, the
-    requirement, the step's own reason and a fix.
+    requirement, the step's own reason and a fix. A receptor chain that is also a binder chain
+    is one of them (kind ``input``, constraint ``chain_roles``) and follows ``policy``.
 
     Args:
         profile: The input, from ``profile_input``.
@@ -2292,7 +2323,7 @@ def preflight(
     effective_predictor_policy = predictor_policy or policy
     steps = _metric_steps(metrics) + _predictor_steps(predictor)
 
-    violations: list[Violation] = []
+    violations: list[Violation] = _check_chain_roles(profile)
     warnings: list[str] = []
     notes: list[str] = list(profile.notes)
     refused: set[tuple[str, str]] = set()
@@ -2395,6 +2426,9 @@ def preflight(
     for violation in violations:
         if violation.kind == "design":
             continue  # the sentence above says it, with what to do
+        if violation.kind == "input":
+            logger.warning("%s: %s; running anyway", violation.subject, violation.fact)
+            continue
         action = (
             "leaving it out" if report.policy_of(violation.kind) == "skip" else "running anyway"
         )

@@ -148,6 +148,23 @@ def resolve_chain_role(
     return chain
 
 
+def require_distinct_chains(peptide_chain: Optional[str], receptor_chain: Optional[str]) -> None:
+    """Raise ``ValueError`` when both chain roles name one chain.
+
+    A role left as None is detected later and is not checked. The pipeline and the batch call
+    this before any step runs; a metric that selects atoms by chain ID checks the same rule on the
+    chains of its structure (``polar_contacts.require_chain_pair``).
+
+    Raises:
+        ValueError: The peptide chain and the receptor chain are the same ID.
+    """
+    if peptide_chain is not None and peptide_chain == receptor_chain:
+        raise ValueError(
+            f"peptide chain and receptor chain are both {peptide_chain!r}; "
+            "name two different chains"
+        )
+
+
 class ChainAliasAction(argparse.Action):
     """Store a chain ID for an option that also has a role-alias spelling.
 

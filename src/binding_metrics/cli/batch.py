@@ -153,7 +153,11 @@ from binding_metrics.cli.run import (
     _step_failure,
     run_pipeline,
 )
-from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
+from binding_metrics.metrics._common import (
+    ChainAliasAction,
+    require_distinct_chains,
+    resolve_chain_role,
+)
 from binding_metrics.preflight_cli import (
     ADVERSARIAL_CHECK,
     BINDER_TYPE_CHOICES,
@@ -1197,8 +1201,9 @@ def run_batch(
             paths), ``n_workers`` below 1, an unknown ``on_error``, an unknown
             metric name, an ``on_unmappable_residue`` other than ``"error"`` or ``"x"``, a
             ``predictor`` that is not registered or has no runner and no ``prediction_dir``, or
-            a chain given through both spellings with different IDs, or an ``openfold_cyclic``
-            that is not ``"auto"``, ``"on"``, ``"off"``, ``True`` or ``False``.
+            a chain given through both spellings with different IDs, both chain roles naming one
+            chain, or an ``openfold_cyclic`` that is not ``"auto"``, ``"on"``, ``"off"``,
+            ``True`` or ``False``.
         Exception: whatever an item raised, when ``on_error="raise"``.
     """
     if n_workers < 1:
@@ -1216,6 +1221,7 @@ def run_batch(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
+    require_distinct_chains(peptide_chain, receptor_chain)
     check_on_unmappable_residue(on_unmappable_residue)
     check_openfold_cyclic(openfold_cyclic)
     check_openfold_templates(openfold_templates)
@@ -1710,6 +1716,12 @@ def main():
 
     args = parse_args_with_config(parser)
     check_prediction_args(parser, args)
+
+    try:
+        require_distinct_chains(args.peptide_chain, args.receptor_chain)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        sys.exit(1)
 
     if args.per_sample_log and args.log_file is not None:
         print(
