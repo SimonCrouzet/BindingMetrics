@@ -6,9 +6,9 @@ on ionisable residues across the peptide/receptor interface at pH 7:
     E = (k / ε) Σ q_i q_j / r_ij   over cross-chain charged-atom pairs with r_ij < cutoff
 
 with one uniform dielectric ε = 4 (the interior dielectric of a macromolecule,
-Krissinel & Henrick, J. Mol. Biol. 372:774-797, 2007). It is a heuristic ranking
-score: formal charges from residue names, no pKa shifts, no chain termini, no
-solvent screening, and a package-chosen 12 Å cutoff. Do not read it as a
+Krissinel & Henrick, J. Mol. Biol. 372:774-797, 2007). Limits: formal charges
+from residue names, no pKa shifts, no chain termini, no solvent screening, and a
+12 Å cutoff chosen by this package. The value ranks structures; it is not a
 binding free energy.
 
 Usage:
@@ -33,12 +33,11 @@ from binding_metrics.metrics._common import (
 from binding_metrics.metrics.polar_contacts import l_equivalent_residue_names
 from binding_metrics.utils import configure_logging
 
-# Formal partial charges assigned to ionisable atoms at pH 7, keyed by L-residue name
-# (D-amino acids are mapped to their L counterpart before the lookup).
-# Charges are split over resonance-equivalent atoms: the ARG guanidinium and the
-# HIP imidazolium (+1 each), the ASP/GLU carboxylate (-1), and the three non-bridging
-# oxygens of a phosphorylated residue, which carries net -2 in the AMBER phosaa
-# templates the relaxation step uses (core/phosaa.py). Plain HIS is neutral.
+# Formal charges of ionisable atoms at pH 7, keyed by L-residue name (D-amino acids
+# are mapped to their L counterpart first). Each charge is split over the
+# resonance-equivalent atoms: ARG guanidinium and HIP imidazolium +1, ASP/GLU
+# carboxylate -1, and -2 over the three non-bridging oxygens of a phosphorylated
+# residue (net -2 in the AMBER phosaa templates, core/phosaa.py). Plain HIS is neutral.
 _FORMAL_CHARGES: dict[tuple[str, str], float] = {
     ("LYS", "NZ"): +1.0,
     ("ARG", "NH1"): +0.5,
@@ -52,13 +51,13 @@ _FORMAL_CHARGES: dict[tuple[str, str], float] = {
     **{(res, atom): -2.0 / 3.0 for res in ("SEP", "TPO", "PTR") for atom in ("O1P", "O2P", "O3P")},
 }
 
-# Residues whose ionisation state is modelled or known to be neutral. An amino-acid
-# residue outside this set (an ncAA such as MLE or BMT) may carry a charge that
-# _FORMAL_CHARGES does not know; it is counted in ``n_residues_unrecognised``.
+# Residues whose ionisation state is modelled or neutral. An amino-acid residue outside
+# this set (an ncAA such as MLE or BMT) may carry a charge missing from _FORMAL_CHARGES;
+# it is counted in ``n_residues_unrecognised``.
 _RECOGNISED_RESIDUES = IONISATION_MODELLED_RESIDUES
 
 # Coulomb constant e²/(4πε₀) × N_A in kJ·Å/(mol·e²), shared with the energy and
-# salt-bridge modules. Assumes distances in Ångströms; returns energy in kJ/mol.
+# salt-bridge modules (distances in Å, energy in kJ/mol).
 _COULOMB_KJ_ANG_MOL: float = COULOMB_KJ_ANG_MOL_E2
 _KJ_TO_KCAL: float = KJ_TO_KCAL
 
@@ -131,13 +130,12 @@ def compute_coulomb_cross_chain(
 ) -> dict:
     """Compute simplified Coulomb cross-chain interaction energy.
 
-    Assigns formal charges to ionisable residue atoms at pH 7 and computes
-    a pairwise Coulomb sum between peptide and receptor charged atoms within
-    a distance cutoff. Uses a uniform dielectric constant. D-amino acids use
-    the charges of their L counterpart; phosphorylated SEP, TPO and PTR carry
-    -2 spread over their three non-bridging oxygens; histidine is neutral
-    unless it is named HIP (+1 over ND1 and NE2). Chain termini are not
-    charged.
+    Assigns formal charges to ionisable residue atoms at pH 7 and sums the
+    Coulomb terms between peptide and receptor charged atoms within a distance
+    cutoff, with a uniform dielectric constant. D-amino acids use the charges of
+    their L counterpart; phosphorylated SEP, TPO and PTR carry -2 spread over
+    their three non-bridging oxygens; histidine is neutral unless it is named
+    HIP (+1 over ND1 and NE2). Chain termini are not charged.
 
     Type: score
 
@@ -208,8 +206,8 @@ def compute_coulomb_cross_chain(
     }
 
     if peptide_chain is None or receptor_chain is None:
-        # The all-zero default is kept for callers that sum or rank on it; ``reason``
-        # tells a 0.0 that means "not evaluated" from a genuine 0.0.
+        # The all-zero default stays for callers that sum or rank on it; ``reason``
+        # distinguishes "not evaluated" from a computed 0.0.
         return {
             **_default,
             "reason": (
