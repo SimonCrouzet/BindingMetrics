@@ -5,6 +5,10 @@ name: Release
 # docker-publish.yml also reacts to v* tags and builds the semver-tagged images.
 # Both start with verify-ci.yml: the tag must be v plus the project version, and
 # ci.yml must have passed on the tagged commit.
+#
+# The order is verify, build, smoke, release. The smoke job installs the built
+# wheel on each declared Python version, and the release job attaches those same
+# files, so nothing is rebuilt between the test and the publication.
 on:
   push:
     tags:
@@ -21,22 +25,24 @@ jobs:
       contents: read
     uses: ./.github/workflows/verify-ci.yml
 
-  release:
-    name: Build and release
+  build:
+    name: Build sdist and wheel
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Creating a release is the only write this workflow performs. The build
-    # runs in the same job, so the write token is scoped to this job only.
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
+      # `python -m build` makes the sdist from the source tree and then the wheel
+      # from that sdist, so the wheel is what a build from the sdist produces.
       - name: Build sdist and wheel
         run: |
           python -m pip install build
@@ -72,6 +78,102 @@ jobs:
               raise SystemExit(f"tag {tag} does not match built version {version}")
           print(f"tag {tag} matches built version {version}")
           EOF
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  # The package is pure Python, so one wheel serves every version. The checkout
+  # supplies pyproject.toml, the list of console scripts; everything that runs is
+  # installed from the wheel into a virtualenv outside the source tree, in a
+  # directory that holds nothing of the checkout.
+  smoke:
+    name: Clean install (Python ${{ matrix.python-version }})
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: ${{ runner.temp }}/dist
+
+      - name: Install the wheel in a fresh virtualenv
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m venv "$RUNNER_TEMP/smoke-venv"
+          "$RUNNER_TEMP/smoke-venv/bin/python" -m pip install "$RUNNER_TEMP"/dist/*.whl
+
+      - name: Import the installed package
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$RUNNER_TEMP/smoke-venv/bin/python" -c "import binding_metrics; print(binding_metrics.__version__)"
+
+      # Only numpy is installed, so this also shows that no console script needs
+      # an optional dependency to print its usage.
+      - name: Run --help of every console script
+        working-directory: ${{ runner.temp }}
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          with open(Path(os.environ["GITHUB_WORKSPACE"]) / "pyproject.toml", "rb") as handle:
+              scripts = tomllib.load(handle)["project"]["scripts"]
+          if not scripts:
+              sys.exit("pyproject.toml lists no console scripts")
+          bin_dir = Path(os.environ["RUNNER_TEMP"]) / "smoke-venv" / "bin"
+          failed = []
+          for name in scripts:
+              try:
+                  result = subprocess.run(
+                      [bin_dir / name, "--help"], capture_output=True, encoding="utf-8", check=False
+                  )
+              except OSError as error:
+                  print(f"{name}: cannot run: {error}")
+                  failed.append(name)
+                  continue
+              print(f"{name} --help: exit {result.returncode}")
+              if result.returncode != 0:
+                  print(result.stderr[-2000:])
+                  failed.append(name)
+          if failed:
+              sys.exit("failed: " + ", ".join(failed))
+          PY
+
+  release:
+    name: Create the GitHub Release
+    needs: [verify, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Creating a release is the only write this workflow performs, so the write
+    # token is scoped to this job only. It checks out and builds nothing.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
 
       # gh is preinstalled on GitHub-hosted runners and reads GITHUB_TOKEN.
       # Tags containing a hyphen (v0.2.0-rc1) are marked as pre-releases.

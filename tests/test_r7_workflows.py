@@ -305,3 +305,157 @@ class TestCiRunOfTheTaggedCommit:
         result, _ = self._check(tmp_path, [_run()], gh_exit=1)
         assert result.returncode != 0
         assert "403" in result.stdout + result.stderr
+
+
+def _build_job_id(jobs: dict) -> str:
+    (job_id,) = [
+        job_id
+        for job_id, job in jobs.items()
+        if any("python -m build" in step.get("run", "") for step in job.get("steps", []))
+    ]
+    return job_id
+
+
+def _smoke_job(jobs: dict) -> dict:
+    (job,) = [job for job in jobs.values() if "strategy" in job]
+    return job
+
+
+class TestCleanInstallSmoke:
+    @staticmethod
+    def _jobs():
+        return _workflow("release.yml")["jobs"]
+
+    def test_the_release_publishes_the_files_the_smoke_job_installed(self):
+        jobs = self._jobs()
+        build_id = _build_job_id(jobs)
+        (release_id,) = [job_id for job_id, job in jobs.items() if _publishes(job)]
+        release = jobs[release_id]
+        assert release_id != build_id
+        assert not any("python -m build" in step.get("run", "") for step in release["steps"])
+        assert any(
+            step.get("uses", "").startswith("actions/download-artifact")
+            for step in release["steps"]
+        )
+        assert any(
+            step.get("uses", "").startswith("actions/upload-artifact")
+            for step in jobs[build_id]["steps"]
+        )
+
+    def test_the_order_is_verify_then_build_then_smoke_then_release(self):
+        jobs = self._jobs()
+        build_id = _build_job_id(jobs)
+        verify_id = next(job_id for job_id, job in jobs.items() if job.get("uses") == VERIFY_CALL)
+        smoke = _smoke_job(jobs)
+        (release_id,) = [job_id for job_id, job in jobs.items() if _publishes(job)]
+        assert verify_id in _needs(jobs[build_id])
+        assert {verify_id, build_id} <= set(_needs(smoke))
+        smoke_id = next(job_id for job_id, job in jobs.items() if job is smoke)
+        assert {verify_id, smoke_id} <= set(_needs(jobs[release_id]))
+
+    def test_the_matrix_is_every_python_version_the_project_declares(self):
+        project = _pyproject()
+        declared = {
+            c.rsplit("::", 1)[1].strip()
+            for c in project["classifiers"]
+            if c.startswith("Programming Language :: Python :: 3.")
+        }
+        assert declared, "pyproject.toml lists no Python 3.x classifier"
+        matrix = _smoke_job(self._jobs())["strategy"]["matrix"]["python-version"]
+        assert all(isinstance(version, str) for version in matrix), "unquoted 3.10 reads as 3.1"
+        assert set(matrix) == declared
+        lowest = project["requires-python"].removeprefix(">=").strip()
+        assert min(matrix, key=lambda v: tuple(map(int, v.split(".")))) == lowest
+
+    def test_one_failing_version_does_not_hide_the_others(self):
+        assert _smoke_job(self._jobs())["strategy"]["fail-fast"] is False
+
+    def test_the_virtualenv_and_every_command_on_it_are_outside_the_source_tree(self):
+        steps = _smoke_job(self._jobs())["steps"]
+        on_the_install = [s for s in steps if "smoke-venv" in s.get("run", "")]
+        assert len(on_the_install) == 3  # install, import, console scripts
+        for step in on_the_install:
+            assert "${{ runner.temp }}" in step["working-directory"], step
+            assert "GITHUB_WORKSPACE/smoke-venv" not in step["run"]
+        (create,) = [s for s in steps if "python -m venv" in s.get("run", "")]
+        assert '"$RUNNER_TEMP/smoke-venv"' in create["run"]
+
+    def test_the_wheel_is_installed_and_not_the_source_tree(self):
+        steps = _smoke_job(self._jobs())["steps"]
+        (install,) = [s for s in steps if " pip install " in s.get("run", "")]
+        assert "/dist/*.whl" in install["run"]
+        assert "pip install ." not in install["run"] and " -e " not in install["run"]
+
+    def test_the_installed_package_is_imported_and_its_version_printed(self, tmp_path):
+        pytest.importorskip("binding_metrics")
+        step = _step_with_run(_smoke_job(self._jobs()), "import binding_metrics")
+        venv_bin = tmp_path / "smoke-venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "python").write_text(
+            f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n', encoding="utf-8"
+        )
+        (venv_bin / "python").chmod(0o755)
+        result = _run_script(step, tmp_path, {"RUNNER_TEMP": str(tmp_path)}, tmp_path)
+        assert result.returncode == 0, result.stdout + result.stderr
+        import binding_metrics
+
+        assert result.stdout.strip() == binding_metrics.__version__
+
+    def _run_scripts_step(self, tmp_path, workspace, present, failing=()):
+        """Run the console-script step against stubs; return the process and the log."""
+        venv_bin = tmp_path / "temp" / "smoke-venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        log = tmp_path / "calls.txt"
+        for name in present:
+            stub = venv_bin / name
+            code = 1 if name in failing else 0
+            stub.write_text(
+                f'#!/bin/sh\necho "{name} $@" >> {shlex.quote(str(log))}\nexit {code}\n',
+                encoding="utf-8",
+            )
+            stub.chmod(0o755)
+        step = _step_with_run(_smoke_job(self._jobs()), "--help")
+        env = {"RUNNER_TEMP": str(tmp_path / "temp"), "GITHUB_WORKSPACE": str(workspace)}
+        result = _run_script(step, tmp_path, env, tmp_path)
+        calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        return result, calls
+
+    def test_every_console_script_of_pyproject_is_run_with_help(self, tmp_path):
+        names = list(_pyproject()["scripts"])
+        assert len(names) > 10
+        result, calls = self._run_scripts_step(tmp_path, REPO_ROOT, names)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert sorted(calls) == sorted(f"{name} --help" for name in names)
+
+    def test_the_scripts_come_from_the_pyproject_of_the_checkout(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "pyproject.toml").write_text(
+            '[project]\nname = "x"\nversion = "1"\n[project.scripts]\nx-one = "x:main"\n',
+            encoding="utf-8",
+        )
+        result, calls = self._run_scripts_step(tmp_path, workspace, ["x-one", "stray"])
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert calls == ["x-one --help"]
+
+    def test_a_script_that_is_missing_from_the_wheel_fails_the_job(self, tmp_path):
+        names = list(_pyproject()["scripts"])
+        result, calls = self._run_scripts_step(tmp_path, REPO_ROOT, names[1:])
+        assert result.returncode != 0
+        assert names[0] in result.stdout + result.stderr
+        assert len(calls) == len(names) - 1  # the others still ran
+
+    def test_a_script_whose_help_fails_fails_the_job(self, tmp_path):
+        names = list(_pyproject()["scripts"])
+        result, _ = self._run_scripts_step(tmp_path, REPO_ROOT, names, failing=[names[2]])
+        assert result.returncode != 0
+        assert names[2] in result.stdout + result.stderr
+
+    def test_a_pyproject_without_console_scripts_fails_the_job(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "pyproject.toml").write_text(
+            '[project]\nname = "x"\nversion = "1"\n[project.scripts]\n', encoding="utf-8"
+        )
+        result, _ = self._run_scripts_step(tmp_path, workspace, [])
+        assert result.returncode != 0
