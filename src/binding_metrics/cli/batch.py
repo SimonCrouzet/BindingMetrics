@@ -37,7 +37,8 @@ Configuration file:
 Sample status (CSV column ``batch_status``)
 -------------------------------------------
 ``ok`` (all steps completed), ``partial`` (the pipeline finished but a step
-failed; see ``batch_failed_steps`` and ``batch_failed_reasons``) or ``error``
+failed, or failed in part: an energy mode that failed beside one that succeeded keeps the
+values of the others; see ``batch_failed_steps`` and ``batch_failed_reasons``) or ``error``
 (the worker raised; see ``batch_error``). The exit code is non-zero only when
 no sample has status ``ok``.
 
@@ -291,8 +292,8 @@ def _run_one(
 
     * ``"ok"``: every requested step completed.
     * ``"partial"``: the pipeline finished but at least one step reported an
-      error or ``success=False`` (same rule as ``binding-metrics-run``). The
-      step names go to ``batch_failed_steps`` (``;``-joined) and
+      error, ``success=False`` or a non-empty ``error_message`` (same rule as
+      ``binding-metrics-run``). The step names go to ``batch_failed_steps`` (``;``-joined) and
       ``step: reason`` pairs to ``batch_failed_reasons`` (``|``-joined).
     * ``"error"``: the worker itself raised; the cause is in ``batch_error``.
     """

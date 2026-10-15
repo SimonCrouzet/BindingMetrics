@@ -221,7 +221,11 @@ class TestResultStatus:
         from binding_metrics.cli.run import _collect_failures
         from binding_metrics.poses.score import _result_status
 
-        assert bool(_collect_failures({"step": block})) == (_result_status(block).kind == "failed")
+        status = _result_status(block)
+        # A part that failed beside values that are valid (an error_message with a success) is
+        # partial in the row and a failure in the run; a reason alone is neither.
+        failed_part = status.kind == "caveat" and status.reason == block.get("error_message")
+        assert bool(_collect_failures({"step": block})) == (status.kind == "failed" or failed_part)
 
 
 # ---------------------------------------------------------------------------

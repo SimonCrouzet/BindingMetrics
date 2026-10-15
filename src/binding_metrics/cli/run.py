@@ -1167,11 +1167,13 @@ def _step_failure(res: Any) -> Optional[str]:
     """The reason a metric step did not complete, or None when it did.
 
     A step is failed when its result dict carries an ``error`` key, when a step that reports a
-    ``success`` flag (relaxation, energy) has ``success is False``, or when the model step
-    reports a sub-step it was asked to run in ``evobind_error`` or ``adversarial_error``.
-    ``{"skipped": True}`` steps and a check left out by the design-origin policy
-    (``adversarial_skipped``) are not failures. The reasons of one step are joined and cut to
-    200 characters.
+    ``success`` flag (relaxation, energy) has ``success is False``, when a step that did not
+    report ``success=False`` has a non-empty ``error_message`` (a requested energy mode failed
+    beside one that succeeded; the energy term of the receptor score failed), or when the model
+    step reports a sub-step it was asked to run in ``evobind_error`` or ``adversarial_error``.
+    ``{"skipped": True}`` steps, a ``reason`` alone and a check left out by the design-origin
+    policy (``adversarial_skipped``) are not failures. The reasons of one step are joined and
+    cut to 200 characters.
     """
     if not isinstance(res, dict) or res.get("skipped"):
         return None
@@ -1180,6 +1182,12 @@ def _step_failure(res: Any) -> Optional[str]:
         reasons.append(str(res["error"]))
     elif res.get("success") is False:
         reasons.append(str(res.get("error_message") or "step reported success=False"))
+    elif res.get("error_message"):
+        # A block that failed in part keeps success=True and the values it computed, and names
+        # what failed in error_message. poses.score._result_status reads this shape as partial
+        # too; it is not imported here because it also reads a bare ``reason`` as a caveat, and
+        # the run does not count that as a failure.
+        reasons.append(str(res["error_message"]))
     reasons.extend(f"{label}: {res[key]}" for key, label in _SUBSTEP_ERRORS if res.get(key))
     return "; ".join(reasons)[:200] if reasons else None
 
