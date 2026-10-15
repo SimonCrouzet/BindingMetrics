@@ -127,6 +127,67 @@ def _head_to_tail_bonds(topology, positions) -> list:
     return closures
 
 
+#: Carboxyl carbon of the side chain of the acids that the cyclic builders template as a lactam
+#: partner (``core.cyclic.patch_cyclic_topology``: ASPL, GLUL).
+_LACTAM_ACID_CARBONS = {"ASP": "CG", "GLU": "CD"}
+
+
+def _lactam_bonds(topology, positions) -> list:
+    """Lactam closures that ``topology`` does not bond, found by distance.
+
+    The closures are those of ``core.cyclic.detect_cyclization``, at its cut
+    (``core.cyclic._AMIDE_BOND_THRESH``, 0.20 nm): the NZ of a lysine with the carboxyl carbon of
+    an aspartate (CG) or glutamate (CD) of another residue or with the last carbon of the chain,
+    and the first nitrogen of the chain with such a carboxyl carbon. The head-to-tail pair is
+    left to :func:`_head_to_tail_bonds`, and a pair that the topology bonds to
+    :func:`_extract_custom_bonds`. A model output lists no bond for the closure, and without a
+    hint prep gives the acid its second oxygen and the lysine its third hydrogen.
+
+    Returns:
+        The tuples of :func:`_extract_custom_bonds`, the carbon first, one per closure.
+    """
+    from binding_metrics.core.cyclic import _AMIDE_BOND_THRESH, _dist, _find_atom, _pos_nm
+
+    pos = _pos_nm(positions)
+    bonded = {frozenset((bond.atom1.index, bond.atom2.index)) for bond in topology.bonds()}
+    closures = []
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        if len(residues) < 2:
+            continue
+        last_carbon, first_nitrogen = _find_atom(residues[-1], "C"), _find_atom(residues[0], "N")
+        carbons = [
+            (index, _find_atom(residue, _LACTAM_ACID_CARBONS[residue.name]))
+            for index, residue in enumerate(residues)
+            if residue.name in _LACTAM_ACID_CARBONS
+        ] + [(len(residues) - 1, last_carbon)]
+        nitrogens = [
+            (index, _find_atom(residue, "NZ"))
+            for index, residue in enumerate(residues)
+            if residue.name == "LYS"
+        ] + [(0, first_nitrogen)]
+        for carbon_index, carbon in carbons:
+            for nitrogen_index, nitrogen in nitrogens:
+                if carbon is None or nitrogen is None or carbon_index == nitrogen_index:
+                    continue
+                if carbon is last_carbon and nitrogen is first_nitrogen:
+                    continue  # the head-to-tail ring
+                if frozenset((carbon.index, nitrogen.index)) in bonded:
+                    continue
+                if _dist(pos, carbon.index, nitrogen.index) < _AMIDE_BOND_THRESH:
+                    closures.append(
+                        (
+                            chain.id,
+                            carbon_index,
+                            carbon.name,
+                            chain.id,
+                            nitrogen_index,
+                            nitrogen.name,
+                        )
+                    )
+    return closures
+
+
 def _readd_custom_bonds(topology, custom_bonds: list):
     """Re-add custom bonds to a post-PDBFixer topology by position."""
     if not custom_bonds:
@@ -1175,10 +1236,15 @@ def prep_structure(
     # Capture non-sequential intra-chain bonds (e.g. head-to-tail N→C) before
     # the PDBFixer round-trip drops them (PDBxFile.writeFile only writes SS bonds).
     # SS bonds are NOT captured here — they are re-detected from rebuilt geometry
-    # after addMissingAtoms via _rebuild_connect_records. A ring that the topology
-    # does not bond (a model output has no _struct_conn) is found by distance, so that
-    # prep takes the cyclic route and does not give the ring an OXT and an NH3+ end.
-    custom_bonds = _extract_custom_bonds(topology) + _head_to_tail_bonds(topology, positions)
+    # after addMissingAtoms via _rebuild_connect_records. A ring or a lactam that the
+    # topology does not bond (a model output has no _struct_conn) is found by distance, so
+    # that prep takes the cyclic route and does not give the ring an OXT and an NH3+ end, or
+    # the lactam a free carboxylate and a free amine.
+    custom_bonds = (
+        _extract_custom_bonds(topology)
+        + _head_to_tail_bonds(topology, positions)
+        + _lactam_bonds(topology, positions)
+    )
 
     # Residue numbers and chain IDs do not survive the PDBFixer round trip, so
     # read the numbering gaps and the caller's chain IDs off the input topology.
