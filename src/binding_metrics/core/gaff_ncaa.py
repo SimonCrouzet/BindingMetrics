@@ -69,6 +69,7 @@ References
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import logging
 import math
@@ -1255,6 +1256,10 @@ class NcaaTemplateList(list):
             ``"methyl-caps-v2"``: every external bond was capped by a methyl carbon, as
             for a residue without an N-CA-C=O backbone; the reason is logged.
             ``"uncapped-v2"``: the residue has no external bond.
+        failed_by_residue: ``{residue name: reason}`` for the residues whose template could
+            not be generated (the full exception text of the first instance). Such a residue is
+            left without a template, so the force field fails on it later with a message
+            about the topology; :func:`explain_missing_templates` adds this reason to it.
     """
 
     def __init__(self, *args):
@@ -1263,6 +1268,45 @@ class NcaaTemplateList(list):
         self.neutral_ionizable_groups: dict = {}
         self.bond_order_source_by_residue: dict = {}
         self.charge_scheme_by_residue: dict = {}
+        self.failed_by_residue: dict = {}
+
+
+#: Longest reason, in characters, that the message of :func:`explain_missing_templates` carries
+#: for one residue (an antechamber failure is several lines long; the log has all of it).
+_REASON_CHARS = 300
+
+
+def _one_line(reason: str) -> str:
+    text = " ".join(str(reason).split())
+    return text if len(text) <= _REASON_CHARS else text[: _REASON_CHARS - 3] + "..."
+
+
+@contextlib.contextmanager
+def explain_missing_templates(ncaa_templates):
+    """Name the residues whose GAFF2 template failed when the force field misses a template.
+
+    :func:`parameterize_ncaa_residues` skips a residue whose template fails and logs a warning.
+    The force field then raises ``ValueError: No template found for residue ...`` for the first
+    residue it cannot match, which is often a neighbour of the residue that failed. Inside this
+    context that ``ValueError`` is re-raised (chained to the original) with a first sentence
+    that names each failed residue and the reason, followed by the force-field text. Any other
+    exception, and a ``ValueError`` when no template failed, passes through unchanged.
+
+    Args:
+        ncaa_templates: The :class:`NcaaTemplateList` that ``parameterize_ncaa_residues``
+            returned (any object without ``failed_by_residue`` leaves the error unchanged).
+    """
+    try:
+        yield
+    except ValueError as exc:
+        failed = getattr(ncaa_templates, "failed_by_residue", None)
+        if not failed or "No template found" not in str(exc):
+            raise
+        reasons = "; ".join(f"{name}: {_one_line(reason)}" for name, reason in failed.items())
+        raise ValueError(
+            f"GAFF2 template generation failed for {', '.join(failed)} ({reasons}), so the "
+            f"force field has no template for the residue(s): {exc}"
+        ) from exc
 
 
 def parameterize_ncaa_residues(
@@ -1352,6 +1396,7 @@ def parameterize_ncaa_residues(
                 logger.warning("  [warning] GAFF NCAA template failed for '%s': %s", res.name, exc)
             else:
                 logger.debug("GAFF NCAA template failed for '%s': %s", res.name, exc)
+            ncaa_ffxmls.failed_by_residue.setdefault(res.name, str(exc))
             result = None
         if result is None:
             continue

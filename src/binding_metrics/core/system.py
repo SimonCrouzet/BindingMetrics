@@ -934,7 +934,10 @@ def _add_hydrogens_cyclic(
         patch_cyclic_topology,
         rename_disulfide_cys_to_cyx,
     )
-    from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
+    from binding_metrics.core.gaff_ncaa import (
+        explain_missing_templates,
+        parameterize_ncaa_residues,
+    )
     from binding_metrics.core.nonstandard import (
         _detect_nonstandard,
         _patch_nonstandard,
@@ -987,7 +990,11 @@ def _add_hydrogens_cyclic(
     addh_variants = (
         get_addh_variants(modeller.topology, bond_info, cyclic_chain) if bond_info else None
     )
-    with deterministic_hydrogen_placement(random_seed), phosaa.hydrogen_definitions():
+    with (
+        explain_missing_templates(ncaa_xmls),
+        deterministic_hydrogen_placement(random_seed),
+        phosaa.hydrogen_definitions(),
+    ):
         modeller.addHydrogens(
             ff,
             pH=ph,
