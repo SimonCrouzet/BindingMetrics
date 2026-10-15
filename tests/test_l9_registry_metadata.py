@@ -33,6 +33,7 @@ from binding_metrics.metrics.registry import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_1YCR = REPO_ROOT / "data" / "example_linear_p53_1YCR.pdb"
+ANGSTROM2_PER_NM2 = 100.0
 
 
 def _resolve(result, dotted_key: str):
@@ -408,10 +409,15 @@ class TestHeadlineKeysAreReal:
         assert get_metric(name).headline_key is None
         assert isinstance(trajectory_results[name], np.ndarray)
 
-    def test_trajectory_units_match_the_computed_magnitudes(self, trajectory_results):
-        """MDTraj returns nm^2: ~14.6 nm^2 is the same 1466 A^2 the static metric gives."""
+    def test_trajectory_units_match_the_computed_magnitudes(
+        self, trajectory_results, static_results
+    ):
+        """MDTraj returns nm^2: the buried area is that of the static metric (A^2) over 100."""
         buried_nm2 = float(trajectory_results["buried_sasa"][0])
         assert get_metric("buried_sasa").unit == "nm^2"
-        assert buried_nm2 == pytest.approx(14.66, abs=1.0)
+        static_angstrom2 = static_results["delta_sasa_static"]["delta_sasa"]
+        # the two engines use different radii tables: 1 nm^2 is 100 A^2 and the tolerance only
+        # has to stop a missing or doubled unit factor
+        assert buried_nm2 == pytest.approx(static_angstrom2 / ANGSTROM2_PER_NM2, rel=0.1)
         # Two identical frames do not drift.
         assert trajectory_results["receptor_drift"]["drift_aligned_mean"] == pytest.approx(0.0)
