@@ -361,14 +361,13 @@ def _residues_with_internal_bonds(topology) -> set:
 
 def _bond_bare_residues(
     topology, pos: np.ndarray, residues, existing: set, bonded_residues: set
-) -> set:
+) -> None:
     """Bond, by covalent radii, each residue of ``residues`` that has no internal bond.
 
     ``existing`` is the set of bonded atom-index pairs and is updated in place;
     ``bonded_residues`` holds the indices of the residues that already have an
-    internal bond. Returns the indices of the residues that gained a bond.
+    internal bond.
     """
-    restored: set = set()
     for res in residues:
         if res.index in bonded_residues:
             continue  # standard residue (or already reconstructed): leave alone
@@ -379,8 +378,6 @@ def _bond_bare_residues(
                 if key not in existing and _within_covalent_range(pos, atom_i, atom_j):
                     topology.addBond(atom_i, atom_j)
                     existing.add(key)
-                    restored.add(res.index)
-    return restored
 
 
 def reconstruct_intraresidue_bonds(
@@ -438,13 +435,16 @@ def reconstruct_nonstandard_residue_bonds(
 
       * the intra-residue bonds of each residue that has none (covalent-radius
         test, as in :func:`reconstruct_intraresidue_bonds`), and
-      * the peptide bond C(i)-N(i+1) at each junction where residue i or i+1 was
-        just restored, when the two atoms lie within ``_AMIDE_BOND_THRESH``. A
-        chain break is much longer than that, so it is not bridged.
+      * the peptide bond C(i)-N(i+1) at each junction of consecutive residues that
+        has none, when the two atoms lie within ``_AMIDE_BOND_THRESH``, whether or
+        not residue i or i+1 gained bonds in this call (``load_structure`` bonds the
+        inside of a bare residue but not its links). A chain break is much longer
+        than that, so it is not bridged.
 
-    Residues that already carry bonds are not touched, so the call is a no-op for a
-    fully standard structure. ``include_chain`` names a chain to repair even when
-    it holds no standard amino acid (a peptide made only of D-residues).
+    Residues that already carry bonds are not touched, and a junction that is
+    bonded is left alone, so the call is a no-op for a fully standard structure.
+    ``include_chain`` names a chain to repair even when it holds no standard amino
+    acid (a peptide made only of D-residues).
 
     Returns the number of bonds added.
     """
@@ -456,10 +456,8 @@ def reconstruct_nonstandard_residue_bonds(
         residues = list(chain.residues())
         if chain.id != include_chain and not any(r.name in STANDARD_AMINO_ACIDS for r in residues):
             continue
-        restored = _bond_bare_residues(topology, pos, residues, existing, bonded_residues)
+        _bond_bare_residues(topology, pos, residues, existing, bonded_residues)
         for previous, following in zip(residues, residues[1:]):
-            if previous.index not in restored and following.index not in restored:
-                continue
             c_atom, n_atom = _find_atom(previous, "C"), _find_atom(following, "N")
             if c_atom is None or n_atom is None:
                 continue
