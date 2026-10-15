@@ -9,12 +9,15 @@ success, with the contacts and the energy of the waters and the receptor instead
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 pytest.importorskip("openmm")
 pytest.importorskip("gemmi")
+struc = pytest.importorskip("biotite.structure")
 
 sys.path.insert(0, str(Path(__file__).parent))
+from biotite.structure.io import load_structure  # noqa: E402
 from conftest import requires_cuda  # noqa: E402
 
 from binding_metrics.metrics import energy  # noqa: E402
@@ -31,6 +34,24 @@ try:
 except ImportError:
     HAS_OMMFF = False
 requires_ommff = pytest.mark.skipif(not HAS_OMMFF, reason="openmmforcefields not installed")
+
+
+# compute_interaction_energy counts the peptide-receptor atom pairs closer than 8 angstrom
+CONTACT_CUTOFF_ANGSTROM = 8.0
+
+
+def _contact_pairs(path, peptide, receptor, cutoff_angstrom=CONTACT_CUTOFF_ANGSTROM):
+    """Pairs of one atom of each chain closer than the cutoff, from a distance matrix of the file.
+
+    The chain IDs are author IDs and the atoms are those of the amino-acid residues as they are in
+    the file, before hydrogens are added; waters that carry the chain ID are not part of a chain.
+    """
+    atoms = load_structure(path)
+    polymer = atoms[struc.filter_amino_acids(atoms)]
+    one = polymer.coord[polymer.chain_id == peptide].astype(np.float64)
+    other = polymer.coord[polymer.chain_id == receptor].astype(np.float64)
+    distances = np.linalg.norm(one[:, None, :] - other[None, :, :], axis=-1)
+    return int(np.count_nonzero(distances < cutoff_angstrom))
 
 
 class _StopError(Exception):
@@ -66,19 +87,23 @@ class TestChainSelection:
         # topology chain B is the peptide; the waters (chains C and D) are stripped
         assert call["peptide_chain"] == "B"
         assert call["chains"] == {"A": 165, "B": 11}
-        assert result["num_contacts"] == 2288
+        # the contacts are those of the peptide, not of the waters that share its chain ID
+        assert result["num_contacts"] == _contact_pairs(CWA, "C", "A")
 
     def test_1cwa_topology_id_gives_the_same_selection(self, builder_calls):
         by_author = _run(CWA, "C", "A")
         by_topology = _run(CWA, "B", "A")
         assert builder_calls[0] == builder_calls[1]
-        assert by_author["num_contacts"] == by_topology["num_contacts"] == 2288
+        assert by_author["num_contacts"] == by_topology["num_contacts"]
+        # both IDs give the contacts of the peptide
+        assert by_author["num_contacts"] == _contact_pairs(CWA, "C", "A")
         assert by_author["num_close_contacts"] == by_topology["num_close_contacts"]
 
     def test_auto_detection_is_unchanged(self, builder_calls):
         result = _run(CWA, None, None)
         assert builder_calls[0]["peptide_chain"] == "B"
-        assert result["num_contacts"] == 2288
+        # the detected pair is the peptide and the receptor
+        assert result["num_contacts"] == _contact_pairs(CWA, "C", "A")
 
     def test_3p8f_author_id_selects_the_peptide(self, builder_calls):
         result = _run(SFTI, "I", "A")
