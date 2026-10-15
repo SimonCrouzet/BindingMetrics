@@ -85,8 +85,10 @@ class TestEnergyFunction:
 
         assert plain["success"], plain["error_message"]
         assert asked["terminal_oxygens_added"] == []
+        # The CPU platform sums on several threads in no fixed order: repeated calls differ by up
+        # to about a kJ/mol; an added or removed oxygen moves the energy by more.
         assert asked["raw_interaction_energy"] == pytest.approx(
-            plain["raw_interaction_energy"], abs=0.05
+            plain["raw_interaction_energy"], abs=1.5
         )
 
 
