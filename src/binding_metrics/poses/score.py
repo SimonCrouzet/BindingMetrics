@@ -1271,12 +1271,80 @@ def _own_file(pose: Pose) -> Optional[str]:
     return str(path)
 
 
+def _label_asym_ids(atoms: Any) -> Optional[np.ndarray]:
+    """The ``label_asym_id`` of each atom for the file of :func:`_write_structure`, or None.
+
+    A deposited file puts the waters of a chain in a label chain of their own, and each other
+    heterogen too. The array has the author chain ID only: the waters and the ligands of a chain
+    carry the ID of its polymer. A residue goes to a label of its own when it is a water, or when
+    its name is neither an amino acid (``io.structures._amino_acid_names``) nor a capping group
+    and it has no peptide link to a neighbouring residue of the chain (C and N closer than
+    ``capabilities._AMIDE_BOND_THRESHOLD_ANGSTROM``), so that a modified residue between two
+    amino acids stays in its chain. One label holds the waters of a chain and one its other
+    heterogens, named by letters that no chain ID of the array uses. Returns None when no residue
+    goes to a label of its own.
+    """
+    import itertools
+    import string
+
+    import biotite.structure as struc
+
+    from binding_metrics.capabilities import _AMIDE_BOND_THRESHOLD_ANGSTROM
+    from binding_metrics.core.residues import TERMINAL_CAP_NAMES, WATER_NAMES_STRIP_HETEROGENS
+    from binding_metrics.io.structures import _amino_acid_names
+
+    starts = struc.get_residue_starts(atoms)
+    stops = np.append(starts[1:], atoms.array_length())
+    names = atoms.res_name[starts]
+    chains = atoms.chain_id[starts]
+    water = np.isin(names, sorted(WATER_NAMES_STRIP_HETEROGENS))
+    polymer_name = np.isin(names, sorted(_amino_acid_names() | TERMINAL_CAP_NAMES))
+    if not np.any(water | ~polymer_name):
+        return None
+
+    def first_atom(index: int, name: str) -> Optional[int]:
+        hit = np.flatnonzero(atoms.atom_name[starts[index] : stops[index]] == name)
+        return int(starts[index]) + int(hit[0]) if hit.size else None
+
+    linked = np.zeros(len(starts), dtype=bool)
+    for index in range(len(starts) - 1):
+        carbon, nitrogen = first_atom(index, "C"), first_atom(index + 1, "N")
+        if carbon is None or nitrogen is None or chains[index] != chains[index + 1]:
+            continue
+        if np.linalg.norm(atoms.coord[carbon] - atoms.coord[nitrogen]) < (
+            _AMIDE_BOND_THRESHOLD_ANGSTROM
+        ):
+            linked[index] = linked[index + 1] = True
+    separate = water | (~polymer_name & ~linked)
+    if not separate.any():
+        return None
+
+    taken = set(np.unique(atoms.chain_id).tolist())
+    candidates = (
+        "".join(letters)
+        for length in (1, 2)
+        for letters in itertools.product(string.ascii_uppercase, repeat=length)
+    )
+    group_label: dict[tuple, str] = {}
+    labels = atoms.chain_id.astype("U4")
+    for index in np.flatnonzero(separate):
+        group = (str(chains[index]), bool(water[index]))
+        if group not in group_label:
+            group_label[group] = next(c for c in candidates if c not in taken)
+            taken.add(group_label[group])
+        labels[starts[index] : stops[index]] = group_label[group]
+    return labels
+
+
 def _write_structure(atoms: Any, path: Path) -> None:
     """Write an ``AtomArray`` as mmCIF with biotite, in UTF-8.
 
     Adds the annotations that the array lacks, as neutral values: ``charge`` 0, so that the
     loader of the interface metrics finds the formal-charge column and does not warn, and
-    ``b_factor`` 0.0 and ``occupancy`` 1.0, which DockQ reads from the file.
+    ``b_factor`` 0.0 and ``occupancy`` 1.0, which DockQ reads from the file. The author chain ID
+    (``auth_asym_id``) is the chain ID of the array; the waters and the other heterogens get a
+    ``label_asym_id`` of their own (see :func:`_label_asym_ids`), as in a deposited file, so that
+    a reader that names the chains by label ID keeps them out of the polymer chains.
     """
     import io
 
@@ -1291,12 +1359,19 @@ def _write_structure(atoms: Any, path: Path) -> None:
             dtype, value = neutral[name]
             atoms.add_annotation(name, dtype=dtype)
             getattr(atoms, name)[:] = value
+    labels = _label_asym_ids(atoms)
+    labelled = atoms
+    if labels is not None:
+        labelled = atoms.copy()
+        labelled.chain_id = labels  # biotite writes the chain ID as label and author ID
     cif = pdbx.CIFFile()
     with warnings.catch_warnings():
         # the flag is what older biotite versions need to write the bond table; newer ones
         # always write it and deprecate the flag
         warnings.simplefilter("ignore", DeprecationWarning)
-        pdbx.set_structure(cif, atoms, include_bonds=atoms.bonds is not None)
+        pdbx.set_structure(cif, labelled, include_bonds=atoms.bonds is not None)
+    if labels is not None:
+        cif.block["atom_site"]["auth_asym_id"] = atoms.chain_id
     buffer = io.StringIO()
     cif.write(buffer)
     Path(path).write_text(buffer.getvalue(), encoding="utf-8")
