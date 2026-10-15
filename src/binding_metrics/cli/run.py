@@ -16,6 +16,21 @@ Usage:
 The results JSON carries a ``provenance`` block (package version, git sha, seed,
 platform) so a result can be tied to the code and settings that produced it.
 
+Structure prediction:
+    The ``openfold`` step runs OpenFold3 and writes ``results["openfold"]``. With
+    ``--predictor MODEL`` it reads the prediction of that model instead (af2, boltz2, of3 or
+    protenix), runs the model at most once for all the metrics that use it, and writes
+    ``results["prediction"]``. Every model can be run from here (af2 starts ColabFold); to
+    read an output you made instead, pass it with ``--prediction-dir DIR``. The finished
+    predictions are kept in ``--prediction-cache`` (default ``<output-dir>/predictions``) and a
+    repeated run reuses them; ``--rerun-predictions`` runs the model again.
+
+        binding-metrics-run --input complex.cif --output-dir results/ \\
+            --predictor boltz2 --prediction-conda-env boltz
+
+        binding-metrics-run --input complex.cif --output-dir results/ \\
+            --predictor boltz2 --prediction-dir boltz_out/
+
 Configuration file:
     --config run.toml supplies option defaults; flags on the command line override
     the file. Keys are the long option names (md-duration-ps or md_duration_ps):
@@ -45,17 +60,55 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
+from binding_metrics.capabilities import POLICIES, IncompatibleInputError
 from binding_metrics.cli import (
+    DEFAULT_OPENFOLD_TEMPLATES,
+    OPENFOLD_MODE_HELP,
     add_config_arg,
+    add_on_unmappable_residue_arg,
+    add_openfold_cyclic_arg,
+    add_openfold_no_msa_server_arg,
     add_openfold_seeds_arg,
+    add_openfold_templates_arg,
+    check_on_unmappable_residue,
+    check_openfold_cyclic,
+    check_openfold_templates,
     md_save_interval_for,
+    on_unmappable_residue_kwargs,
+    openfold_cyclic_kwargs,
+    openfold_msa_server_kwargs,
+    openfold_template_kwargs,
     parse_args_with_config,
 )
+from binding_metrics.cli import merge_reason as _merge_reason
 from binding_metrics.cli import seed_arg as _seed_arg
+from binding_metrics.cli.prediction import (
+    DEFAULT_CACHE_DIRNAME,
+    add_prediction_args,
+    check_prediction_args,
+    check_predictor,
+    check_weights_arg,
+    display_name,
+    make_store,
+    output_weights,
+    record_binder_cyclic,
+    record_templates,
+    run_single_prediction,
+    scored_seed_kwargs,
+    weights_description,
+)
 from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
 from binding_metrics.metrics.registry import get_metric
+from binding_metrics.preflight_cli import (
+    BINDER_TYPE_CHOICES,
+    MODEL_STEP,
+    add_preflight_args,
+    check_input,
+    model_step_of,
+    steps_that_run,
+)
 from binding_metrics.protocols.relaxer import Relaxer
-from binding_metrics.provenance import collect_provenance
+from binding_metrics.provenance import collect_provenance, conda_python_command
 from binding_metrics.utils import configure_logging
 
 # Named explicitly: ``python -m binding_metrics.cli.run`` executes this file as
@@ -135,21 +188,85 @@ def _require_chains_present(
     raise ChainNotFoundError(f"{named} not found; available: {listing}")
 
 
-def _merge_reason(target: dict, extra: dict, label: str) -> None:
-    """Move ``extra["reason"]`` into ``target["reason"]`` as ``"<label>: <reason>"``.
-
-    Metric dicts merged into one flat namespace (OpenFold, then the EvoBind
-    metrics that reuse its output) each carry an optional ``reason``; a plain
-    ``dict.update`` would let the last one erase the diagnosis of the first.
-    Reasons are joined with ``"; "``, and nothing is added when ``extra`` has none.
-    """
-    reason = extra.pop("reason", None)
-    if reason:
-        target["reason"] = "; ".join(filter(None, [target.get("reason"), f"{label}: {reason}"]))
-
-
 def _warn(msg: str) -> None:
     logger.warning("  [warning] %s", msg)
+
+
+def _check_preflight_options(binder_type: str, on_incompatible: str) -> None:
+    if binder_type not in BINDER_TYPE_CHOICES:
+        raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")
+    if on_incompatible not in POLICIES:
+        raise ValueError(f"on_incompatible must be one of {POLICIES}, got {on_incompatible!r}")
+
+
+def _run_preflight(
+    input_path: Path,
+    peptide_chain: Optional[str],
+    receptor_chain: Optional[str],
+    *,
+    binder_type: str,
+    on_incompatible: str,
+    metrics: frozenset,
+    skip_relax: bool,
+    relaxer: Optional[Relaxer],
+    reference_path: Optional[Path],
+    predictor: Optional[str],
+    prediction_dir: Optional[Path],
+    preflight_model: Optional[tuple],
+    include_plan: bool,
+    on_unmappable_residue: str,
+    prediction_mode: Optional[str] = None,
+    openfold_mode: str = "score",
+    prediction_weights: Optional[Path] = None,
+):
+    """The pre-flight check of one run, before anything is prepared, relaxed or predicted.
+
+    Resolves the chains as ``run_pipeline`` does (an unknown chain ID still raises
+    ``ChainNotFoundError``), lists the steps the run executes and checks them; see
+    ``binding_metrics.preflight_cli``. ``preflight_model`` is the model step that the caller
+    runs after this call (the batch), as ``(model, metric, adopted, mode)``.
+    """
+    from binding_metrics.io.structures import detect_chains_from_file
+    from binding_metrics.preflight_cli import PreflightOutcome
+
+    try:
+        chain_info = detect_chains_from_file(
+            input_path, peptide_chain=peptide_chain, receptor_chain=receptor_chain, verbose=False
+        )
+    except Exception as exc:  # noqa: BLE001 - the run reports an unreadable input itself, later
+        logger.debug("pre-flight: chain detection failed for %s: %s", input_path, exc)
+        return PreflightOutcome(
+            block={
+                "status": "not_checked",
+                "reason": f"the chains could not be detected: {exc}",
+                "policy": on_incompatible,
+                "report": None,
+            }
+        )
+    _require_chains_present(chain_info, peptide_chain, receptor_chain)
+    model = (
+        model_step_of(
+            predictor,
+            prediction_dir,
+            metrics,
+            prediction_mode=prediction_mode,
+            openfold_mode=openfold_mode,
+        )
+        or preflight_model
+    )
+    return check_input(
+        input_path,
+        chain_info["peptide_chain"],
+        chain_info["receptor_chain"],
+        binder_type=binder_type,
+        on_incompatible=on_incompatible,
+        steps=steps_that_run(metrics, skip_relax=skip_relax, custom_relaxer=relaxer is not None),
+        model=model,
+        reference_path=reference_path,
+        include_plan=include_plan,
+        on_unmappable_residue=on_unmappable_residue,
+        prediction_weights=prediction_weights,
+    )
 
 
 def _step(name: str) -> None:
@@ -187,6 +304,26 @@ def run_pipeline(
     binder_chain: Optional[str] = None,
     target_chain: Optional[str] = None,
     relaxer: Optional[Relaxer] = None,
+    on_unmappable_residue: str = "error",
+    predictor: Optional[str] = None,
+    prediction_dir: Optional[Path] = None,
+    prediction_binder_chain: Optional[str] = None,
+    prediction_target_chain: Optional[str] = None,
+    prediction_cache: Optional[Path] = None,
+    rerun_predictions: bool = False,
+    binder_type: str = "auto",
+    on_incompatible: str = "error",
+    preflight_only: bool = False,
+    preflight_model: Optional[tuple] = None,
+    openfold_cyclic: bool | str = "auto",
+    openfold_use_msa_server: bool = True,
+    prediction_mode: Optional[str] = None,
+    prediction_weights: Optional[Path] = None,
+    prediction_cyclic: Optional[bool | str] = None,
+    prediction_use_msa_server: bool = True,
+    prediction_conda_env: Optional[str] = None,
+    prediction_lock_threshold: Optional[float] = None,
+    openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -202,17 +339,115 @@ def run_pipeline(
             ``device`` and the chain IDs are not passed to it; ``random_seed`` still
             seeds prep and the energy step. Ignored when ``skip_relax`` is true.
         random_seed: Seed for hydrogen placement and MD; ``None`` for fresh randomness.
-        openfold_seeds: Seed values written to the OpenFold3 query JSON; ``None``
-            keeps the OpenFold default. Separate from ``random_seed``.
+        openfold_seeds: Seed values OpenFold3 samples with, written to its runner YAML; ``None``
+            keeps the default, 42. The sample scored is the first sample of the first seed
+            given. Separate from ``random_seed``.
+        openfold_use_msa_server: Whether the OpenFold3 step uses the ColabFold MSA server
+            (keyword-only, default True; ``--openfold-no-msa-server`` is False). With the server
+            off OpenFold3 runs with a dummy MSA that holds only the query sequence of each chain,
+            which lowers accuracy for a natural receptor; with ``openfold_templates="alignment"``
+            it also keeps the template alignments that the server would replace (issue #68). The
+            value is recorded as ``provenance["openfold3_use_msa_server"]`` when OpenFold3 is run
+            here, and is part of the key of the prediction store.
+        openfold_templates: How the template of each chain reaches OpenFold3 in ``score`` and
+            ``refold`` mode (keyword-only): ``"structure"`` (default) gives the template
+            CIF itself (OpenFold3's CIF Direct Template Mode, OpenFold3 0.4.2 or later), which
+            the ColabFold MSA server does not overwrite; ``"alignment"`` writes an A3M
+            self-alignment per chain, the way earlier versions did, which the server overwrites,
+            so with the server on (the default) the run has no template.
+            ``results["openfold"]["templates"]`` (``results["prediction"]["templates"]`` with
+            ``predictor``) says per chain whether OpenFold3 used it. OpenFold3 only: another
+            ``predictor`` with ``"alignment"`` raises ``ValueError``. Part of the prediction key.
+        on_unmappable_residue: What the OpenFold3 step does with a residue it cannot take
+            (keyword-only): ``"error"`` (default) records the step as failed before the model
+            starts, ``"x"`` sends an ``X`` in its place and logs a warning.
+        openfold_cyclic: Whether the binder chain of the OpenFold3 query gets ``"cyclic": true``
+            (keyword-only): ``"auto"`` (default) when the binder has a head-to-tail bond, standard
+            residues only, and the installed OpenFold3 is 0.4.5 or later, ``True`` (``"on"``)
+            always, ``False`` (``"off"``) never; see ``prepare_refolding_query``. OpenFold3 uses
+            the flag only to wrap the relative positions of the chain: it does not enforce the
+            closure bond and has published no accuracy benchmark for cyclic peptides, and with
+            modified residues the flag made the one complex tried worse. The block of the step
+            (``results["openfold"]``, or ``results["prediction"]`` with ``predictor``) gets
+            ``binder_cyclic`` (bool), and a ``reason`` when a head-to-tail binder was left
+            linear because it has modified residues or the OpenFold3 version is too old or
+            unreadable.
+        predictor: A key of ``binding_metrics.predictors.PARSERS`` (keyword-only). The
+            ``openfold`` step then reads that model's prediction through a
+            ``PredictionSession`` and writes ``results["prediction"]``; ``results["openfold"]``
+            is ``{"skipped": True}``. ``None`` (default) keeps the OpenFold3 step and
+            ``results["openfold"]``. Every registered model has a runner and can be run from here
+            (``cli.prediction.RUNNERS``); ``prediction_dir`` reads an output you made instead.
+        prediction_dir: With ``predictor``, the directory of an output you made; it is adopted
+            into the store and the model never runs (keyword-only).
+        prediction_binder_chain, prediction_target_chain: With ``predictor``, the chain IDs
+            inside the prediction when they differ from the input's (keyword-only).
+        prediction_cache: The prediction store; default ``<output_dir>/predictions``. A run
+            over the same input, options and model version finds its prediction there and
+            starts no model (keyword-only).
+        rerun_predictions: Run the prediction again although the store has it, once
+            (keyword-only). Outputs given as ``prediction_dir`` are never replaced.
+        binder_type, on_incompatible, preflight_only: The pre-flight check (keyword-only), see
+            ``--binder-type``, ``--on-incompatible`` and ``--preflight-only``. The check runs
+            first, before preparation, relaxation, any model run and any use of the prediction
+            store. ``preflight_only`` returns ``{"sample_id", "input", "preflight"}`` (with the
+            text of the plan under ``preflight["plan"]``) and does nothing else, whatever the
+            policy.
+        prediction_mode: How the model is used for the complex: ``predict``, ``refold``,
+            ``score`` or ``score-lock`` (keyword-only; ``--prediction-mode``). It is checked against
+            what the model supports in the pre-flight check, and for a run from here against what
+            its runner runs (``supported_modes``: of3 ``refold`` and ``score``, boltz2 all four,
+            af2 and protenix ``predict``; another one raises ``ValueError``), and recorded as
+            ``mode`` in ``results["prediction"]`` and ``results["preflight"]``. None takes
+            ``openfold_mode`` for OpenFold3 run from here, the ``default_mode`` of the runner for
+            another model (boltz2 ``score``, af2 and protenix ``predict``), and is "not known, not
+            checked" for an output read from ``prediction_dir``. Needs ``predictor``.
+        prediction_weights: Custom weights for the model, such as a fine-tuned checkpoint
+            (keyword-only; ``--prediction-weights``): a file for a model that takes a checkpoint
+            file, a directory for one whose weights are a directory. They apply to ``predictor``
+            run from here and to the OpenFold3 step without one (``--inference-ckpt-path``). The
+            path is checked before anything runs (it must exist and be the kind the model's
+            runner takes; a runner that takes no custom weights is refused by the pre-flight
+            check), the weights are identified by content (SHA-256, cached in the store root) in
+            the key of the prediction store, and the block of the step gets ``weights`` (``custom``,
+            ``name``, ``path``, ``kind``, ``sha256``, ``size``, ``n_files``) and the provenance
+            ``prediction_weights``. For an output read from ``prediction_dir`` the weights are
+            whatever made it: giving both raises ``ValueError``, and ``weights`` shows the
+            checkpoint that OpenFold3 recorded.
+        prediction_cyclic, prediction_use_msa_server, prediction_conda_env,
+        prediction_lock_threshold: The settings of ``predictor`` run from here, for every model
+            (keyword-only; ``--prediction-cyclic``, ``--prediction-no-msa-server``,
+            ``--prediction-conda-env``, ``--prediction-lock-threshold``). ``prediction_cyclic`` is
+            ``"auto"`` (the default when None), ``True`` (``"on"``) or ``False`` (``"off"``);
+            ``prediction_use_msa_server`` False runs without an MSA server; ``prediction_conda_env``
+            is the environment that has the model (None: its executable on PATH);
+            ``prediction_lock_threshold`` is the threshold of ``score-lock`` in angstrom (None: the
+            runner's own, 2.0 for Boltz-2). For ``predictor="of3"`` they are the settings of
+            ``openfold_cyclic``, ``openfold_use_msa_server`` and ``openfold_conda_env``: both
+            spellings with different values raise ``ValueError``; for another model the
+            ``openfold_*`` ones other than their defaults raise it, naming the ``prediction_*`` one.
+            A setting that the runner of the model has no keyword for (``prediction_cyclic`` for
+            ColabFold, the lock threshold outside ``score-lock``) raises it too, and so does a
+            mode the runner does not run. They are refused with ``prediction_dir``: the model is
+            not run.
+        preflight_model: For a caller that runs the model step itself after this call (the
+            batch): ``(model, metric, adopted, mode)``, so that its limits are checked here, first.
         The remaining arguments mirror the ``binding-metrics-run`` flags.
 
     Returns:
         Dict with ``sample_id``, ``input``, ``provenance`` (see
         ``binding_metrics.provenance.collect_provenance``), ``chains``, ``prep``,
         ``relax``, and one entry per metric (``energy``, ``interface``,
-        ``geometry``, ``electrostatics``, ``dockq``, ``openfold``). A metric that
-        did not run is ``{"skipped": True}``; one that failed is
-        ``{"error": message}``.
+        ``geometry``, ``electrostatics``, ``dockq``, ``openfold``), plus ``prediction`` when
+        ``predictor`` is given. A metric that did not run is ``{"skipped": True}``; one that
+        failed is ``{"error": message}``.
+
+        ``prediction`` holds the keys of ``binding_metrics.metrics.prediction.
+        summarize_prediction`` (``model`` first), the EvoBind keys (``evobind_score``,
+        ``delta_com_angstrom``, ...) and ``cache``: the counters of
+        ``PredictionSession.stats()`` (``runs`` is 1 when the model ran for this sample, 0
+        when the store or ``prediction_dir`` supplied it) and ``request_key``, the name of the
+        store entry.
 
         ``prep`` records what preparation changed: ``removed_heterogens``,
         ``n_removed_waters``, ``kept_nonstandard``, ``n_missing_atoms_rebuilt``,
@@ -221,6 +456,11 @@ def run_pipeline(
         ``dropped_protein_chains`` the protein chains, other than the peptide and
         the receptor, that the relaxation removed.
 
+        ``preflight`` holds the decision of the pre-flight check: ``status`` (``ok``,
+        ``warn``, ``skipped``, ``not_checked``), ``reason``, ``policy``, the steps left out
+        under ``--on-incompatible skip`` and the full report. A step that was left out is
+        ``{"skipped": True, "reason": ...}``.
+
         ``prep`` and ``relax`` carry ``ncaa_bond_order_source`` when non-canonical
         residues were parameterised: ``{residue name: "ccd" or "single_bonds"}``,
         where ``"single_bonds"`` marks a residue whose double bonds, aromatic
@@ -228,21 +468,96 @@ def run_pipeline(
 
     Raises:
         ChainNotFoundError: a requested chain ID does not exist in the structure.
-        ValueError: a chain is given through both spellings with different IDs.
+        IncompatibleInputError: the input cannot go through a requested step or model and
+            ``on_incompatible`` is ``"error"``; nothing has run. A ``ValueError``.
+        ValueError: a chain is given through both spellings with different IDs,
+            ``on_unmappable_residue`` is not ``"error"`` or ``"x"``, ``openfold_cyclic`` is
+            not ``"auto"``, ``"on"``, ``"off"``, ``True`` or ``False``, ``predictor`` is not a
+            registered model, or it has no runner and no ``prediction_dir`` is given.
     """
     peptide_chain = resolve_chain_role("peptide_chain", peptide_chain, "binder_chain", binder_chain)
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
+    check_on_unmappable_residue(on_unmappable_residue)
+    check_openfold_cyclic(openfold_cyclic)
+    check_openfold_templates(openfold_templates)
+    route = check_predictor(
+        predictor,
+        prediction_dir,
+        prediction_mode,
+        prediction_weights,
+        openfold_mode=openfold_mode,
+        openfold_cyclic=openfold_cyclic,
+        prediction_cyclic=prediction_cyclic,
+        openfold_use_msa_server=openfold_use_msa_server,
+        prediction_use_msa_server=prediction_use_msa_server,
+        openfold_conda_env=openfold_conda_env,
+        prediction_conda_env=prediction_conda_env,
+        prediction_lock_threshold=prediction_lock_threshold,
+        openfold_templates=openfold_templates,
+    )
+    if predictor is not None and prediction_dir is None:
+        # the --prediction-* spellings are merged into the settings of the run
+        openfold_cyclic, openfold_use_msa_server, openfold_conda_env = (
+            route.cyclic,
+            route.use_msa_server,
+            route.conda_env,
+        )
+    prediction_weights = check_weights_arg(prediction_weights, predictor)
+    _check_preflight_options(binder_type, on_incompatible)
+
     if sample_id is None:
         sample_id = input_path.stem
 
+    # Pre-flight: before the output directory, the provenance probe, prep, relaxation, any model
+    # run and the prediction store, so that a refused input costs nothing.
+    outcome = _run_preflight(
+        input_path,
+        peptide_chain,
+        receptor_chain,
+        binder_type=binder_type,
+        on_incompatible=on_incompatible,
+        metrics=metrics,
+        skip_relax=skip_relax,
+        relaxer=relaxer,
+        reference_path=reference_path,
+        predictor=predictor,
+        prediction_dir=prediction_dir,
+        preflight_model=preflight_model,
+        include_plan=preflight_only,
+        on_unmappable_residue=on_unmappable_residue,
+        prediction_mode=prediction_mode,
+        openfold_mode=openfold_mode,
+        prediction_weights=prediction_weights,
+    )
+    if preflight_only:
+        return {"sample_id": sample_id, "input": str(input_path), "preflight": outcome.block}
+    if outcome.error is not None:
+        raise outcome.error
+    # Steps left out under --on-incompatible skip
+    skipped_steps = outcome.skipped_steps
+    if "relax" in skipped_steps:
+        skip_relax = True
+    metrics = frozenset(metrics) - set(skipped_steps)
+    skipped_geometry = outcome.skipped_geometry
+
     output_dir.mkdir(parents=True, exist_ok=True)
+    runs_openfold3 = "openfold" in metrics and (
+        predictor is None or (predictor == "of3" and prediction_dir is None)
+    )
     results: dict = {
         "sample_id": sample_id,
         "input": str(input_path),
-        "provenance": collect_provenance(seed=random_seed),
+        "preflight": outcome.block,
+        "provenance": collect_provenance(
+            seed=random_seed,
+            openfold3=runs_openfold3,
+            openfold3_python_cmd=conda_python_command(openfold_conda_env),
+        ),
     }
+    if runs_openfold3:
+        results["provenance"]["openfold3_use_msa_server"] = bool(openfold_use_msa_server)
 
     # ---------------------------------------------------------- Chain detection
     from binding_metrics.io.structures import detect_chains_from_file
@@ -256,12 +571,6 @@ def run_pipeline(
     _require_chains_present(chain_info, peptide_chain, receptor_chain)
     peptide_chain = chain_info["peptide_chain"]  # auth_asym_id (biotite)
     receptor_chain = chain_info["receptor_chain"]
-    peptide_chain_label = chain_info["peptide_chain_label"]  # as OpenMM names it
-    receptor_chain_label = chain_info["receptor_chain_label"]
-    # The chain IDs OpenMM gives the input file. The two labels above become those of
-    # the prepped file below, which is another file with other names.
-    input_peptide_chain_label = peptide_chain_label
-    input_receptor_chain_label = receptor_chain_label
     results["chains"] = chain_info
 
     # ------------------------------------------------------------------- Prep
@@ -299,15 +608,13 @@ def run_pipeline(
                     **prep_report,
                 }
                 # save_cif preserves original auth IDs and aligns label IDs to match,
-                # so downstream OpenMM steps will see the original chain IDs.
-                # Re-detect from the cleaned file so peptide_chain_label is up-to-date.
-                prepped_chain_info = detect_chains_from_file(
+                # so downstream OpenMM steps will see the original chain IDs. This logs
+                # the chains of the prepped file.
+                detect_chains_from_file(
                     prepped_path,
                     peptide_chain=peptide_chain,
                     receptor_chain=receptor_chain,
                 )
-                peptide_chain_label = prepped_chain_info["peptide_chain_label"]
-                receptor_chain_label = prepped_chain_info["receptor_chain_label"]
         except Exception as e:  # noqa: BLE001 - per-step isolation; recorded in results["prep"]
             _warn(f"Prep failed: {e} — continuing with raw input")
             traceback.print_exc()
@@ -326,7 +633,7 @@ def run_pipeline(
         from binding_metrics.io.structures import load_structure
 
         _orig_topo, _orig_pos = load_structure(input_path)
-        cyclic_bond_hints = detect_cyclization(_orig_topo, _orig_pos, input_peptide_chain_label)
+        cyclic_bond_hints = detect_cyclization(_orig_topo, _orig_pos, peptide_chain)
         if cyclic_bond_hints:
             logger.info(
                 "  Cyclic bond hints from original file: %s",
@@ -354,8 +661,8 @@ def run_pipeline(
                 md_duration_ps=md_duration_ps,
                 md_save_interval_ps=md_save_interval_for(md_duration_ps),
                 device=device,
-                peptide_chain_id=peptide_chain_label,
-                receptor_chain_id=receptor_chain_label,
+                peptide_chain_id=peptide_chain,
+                receptor_chain_id=receptor_chain,
                 cyclic_bond_hints=cyclic_bond_hints or None,
                 # Auto-parameterise any non-canonical residue (e.g. cyclosporin's
                 # BMT/ABA) with GAFF2 ExternalBond templates so relaxation builds.
@@ -410,25 +717,12 @@ def run_pipeline(
         try:
             from binding_metrics.metrics.energy import compute_interaction_energy
 
-            # The energy reads the file through OpenMM, which names the chains as
-            # detect_chains_from_file reports for that file.
-            if relaxed_path == input_path:
-                openmm_peptide = input_peptide_chain_label
-                openmm_receptor = input_receptor_chain_label
-            else:
-                openmm_ids = detect_chains_from_file(
-                    relaxed_path,
-                    peptide_chain=peptide_chain,
-                    receptor_chain=receptor_chain,
-                    verbose=False,
-                )
-                openmm_peptide = openmm_ids["peptide_chain_label"]
-                openmm_receptor = openmm_ids["receptor_chain_label"]
-
+            # The energy reads the file through OpenMM and finds the chains by their author
+            # IDs, whichever IDs OpenMM gives them in that file.
             energy = compute_interaction_energy(
                 relaxed_path,
-                peptide_chain=openmm_peptide,
-                receptor_chain=openmm_receptor,
+                peptide_chain=working_peptide,
+                receptor_chain=working_receptor,
                 device=device,
                 sample_id=sample_id,
                 modes=energy_modes,
@@ -472,12 +766,28 @@ def run_pipeline(
                 compute_shape_complementarity,
             )
 
-            rama = compute_ramachandran(relaxed_path, chain=working_peptide)
-            omega = compute_omega_planarity(relaxed_path, chain=working_peptide)
-            sc = compute_shape_complementarity(
-                relaxed_path,
-                peptide_chain=working_peptide,
-                receptor_chain=working_receptor,
+            def left_out(name: str) -> dict:
+                return {"skipped": True, "reason": skipped_geometry[name]}
+
+            # a metric that the pre-flight check left out (--on-incompatible skip) is recorded
+            rama = (
+                left_out("ramachandran")
+                if "ramachandran" in skipped_geometry
+                else compute_ramachandran(relaxed_path, chain=working_peptide)
+            )
+            omega = (
+                left_out("omega")
+                if "omega" in skipped_geometry
+                else compute_omega_planarity(relaxed_path, chain=working_peptide)
+            )
+            sc = (
+                left_out("shape_complementarity")
+                if "shape_complementarity" in skipped_geometry
+                else compute_shape_complementarity(
+                    relaxed_path,
+                    peptide_chain=working_peptide,
+                    receptor_chain=working_receptor,
+                )
             )
             results["geometry"] = {
                 "ramachandran": rama,
@@ -537,7 +847,37 @@ def run_pipeline(
         results["dockq"] = {"skipped": True}
 
     # --------------------------------------------------------- OpenFold
-    if "openfold" in metrics:
+    if predictor is not None:
+        results["openfold"] = {"skipped": True}
+        if "openfold" in metrics:
+            _step(f"Structure prediction ({display_name(predictor)})")
+            results["prediction"], prediction_provenance = run_single_prediction(
+                predictor,
+                input_path,
+                output_dir,
+                sample_id,
+                binder_chain=peptide_chain,
+                receptor_chain=receptor_chain,
+                prediction_dir=prediction_dir,
+                prediction_binder_chain=prediction_binder_chain,
+                prediction_target_chain=prediction_target_chain,
+                prediction_cache=prediction_cache,
+                rerun_predictions=rerun_predictions,
+                openfold_mode=openfold_mode,
+                openfold_conda_env=openfold_conda_env,
+                openfold_seeds=openfold_seeds,
+                on_unmappable_residue=on_unmappable_residue,
+                openfold_cyclic=openfold_cyclic,
+                openfold_use_msa_server=openfold_use_msa_server,
+                prediction_mode=prediction_mode,
+                prediction_weights=prediction_weights,
+                prediction_lock_threshold=route.lock_threshold,
+                openfold_templates=openfold_templates,
+            )
+            results["provenance"].update(prediction_provenance)
+        else:
+            results["prediction"] = {"skipped": True}
+    elif "openfold" in metrics:
         _step("OpenFold3 confidence scoring")
         try:
             from binding_metrics.metrics.openfold import (
@@ -555,6 +895,17 @@ def run_pipeline(
             else:
                 of_dir = output_dir / "openfold"
                 seed_kwargs = {"seeds": tuple(openfold_seeds)} if openfold_seeds else {}
+                seed_kwargs.update(on_unmappable_residue_kwargs(on_unmappable_residue))
+                seed_kwargs.update(openfold_cyclic_kwargs(openfold_cyclic))
+                seed_kwargs.update(openfold_msa_server_kwargs(openfold_use_msa_server))
+                seed_kwargs.update(openfold_template_kwargs(openfold_templates))
+                weights_ref = None
+                if prediction_weights is not None:
+                    # hashed once, with the cache in the store root, like the --predictor route
+                    weights_ref = make_store(
+                        prediction_cache or output_dir / DEFAULT_CACHE_DIRNAME
+                    ).weights_reference(prediction_weights, expect="file")
+                    seed_kwargs["inference_ckpt_path"] = str(weights_ref.path)
                 if openfold_mode == "refold":
                     predictions_dir = run_openfold_refolding(
                         complex_structure_path=input_path,
@@ -565,12 +916,14 @@ def run_pipeline(
                         conda_env=openfold_conda_env,
                         **seed_kwargs,
                     )
+                    metrics_seed = scored_seed_kwargs(openfold_seeds, predictions_dir, sample_id)
                     of_metrics = compute_openfold_metrics(
                         output_dir=predictions_dir,
                         query_name=sample_id,
                         binder_chain=peptide_chain,
                         receptor_chain=receptor_chain,
                         reference_structure_path=input_path,
+                        **metrics_seed,
                     )
                 else:  # score (default)
                     predictions_dir = run_openfold_scoring(
@@ -582,12 +935,28 @@ def run_pipeline(
                         conda_env=openfold_conda_env,
                         **seed_kwargs,
                     )
+                    metrics_seed = scored_seed_kwargs(openfold_seeds, predictions_dir, sample_id)
                     of_metrics = compute_openfold_metrics(
                         output_dir=predictions_dir,
                         query_name=sample_id,
                         binder_chain=peptide_chain,
                         receptor_chain=receptor_chain,
+                        # OpenFold3 places the binder itself in score mode too (templates are
+                        # per chain), so the input pose is the reference in both modes
+                        reference_structure_path=input_path,
+                        **metrics_seed,
                     )
+                record_binder_cyclic(
+                    of_metrics, input_path, peptide_chain, openfold_cyclic, openfold_conda_env
+                )
+                record_templates(of_metrics, predictions_dir, sample_id)
+                recorded = output_weights(predictions_dir)
+                if weights_ref is not None:
+                    recorded["weights"] = weights_ref.to_dict()
+                weights = weights_description(recorded)
+                if weights is not None:
+                    of_metrics["weights"] = weights
+                    results["provenance"]["prediction_weights"] = weights
                 # EvoBind metrics — no extra model calls, reuse OF3 outputs
                 of_structure = of_metrics.get("structure_path")
                 plddt = of_metrics.get("plddt_per_atom")
@@ -636,6 +1005,12 @@ def run_pipeline(
             results["openfold"] = {"error": str(e)}
     else:
         results["openfold"] = {"skipped": True}
+
+    # A step that the pre-flight check left out (--on-incompatible skip) says why.
+    for step, reason in skipped_steps.items():
+        if step == MODEL_STEP:
+            step = "prediction" if predictor is not None else "openfold"
+        results[step] = {"skipped": True, "reason": reason}
 
     return results
 
@@ -800,9 +1175,7 @@ def main():
         "--openfold-mode",
         choices=["score", "refold"],
         default="score",
-        help="score: both chains as templates (confidence); "
-        "refold: binder predicted freely (refolding RMSD). "
-        "Default: score",
+        help=OPENFOLD_MODE_HELP,
     )
     openfold_group.add_argument(
         "--openfold-conda-env",
@@ -813,6 +1186,13 @@ def main():
         "the current environment if openfold3 is installed there.",
     )
     add_openfold_seeds_arg(openfold_group)
+    add_openfold_cyclic_arg(openfold_group)
+    add_openfold_no_msa_server_arg(openfold_group)
+    add_openfold_templates_arg(openfold_group)
+    add_on_unmappable_residue_arg(openfold_group)
+
+    add_prediction_args(parser)
+    add_preflight_args(parser)
 
     # Report
     report_group = parser.add_argument_group("Report")
@@ -841,6 +1221,7 @@ def main():
     add_config_arg(parser)
 
     args = parse_args_with_config(parser)
+    check_prediction_args(parser, args)
 
     if not args.input.exists():
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)
@@ -888,10 +1269,36 @@ def main():
                 openfold_conda_env=args.openfold_conda_env,
                 random_seed=args.random_seed,
                 openfold_seeds=args.openfold_seeds,
+                openfold_cyclic=args.openfold_cyclic,
+                openfold_use_msa_server=not args.openfold_no_msa_server,
+                on_unmappable_residue=args.on_unmappable_residue,
+                predictor=args.predictor,
+                prediction_dir=args.prediction_dir,
+                prediction_binder_chain=args.prediction_binder_chain,
+                prediction_target_chain=args.prediction_target_chain,
+                prediction_cache=args.prediction_cache,
+                rerun_predictions=args.rerun_predictions,
+                prediction_mode=args.prediction_mode,
+                prediction_weights=args.prediction_weights,
+                prediction_cyclic=args.prediction_cyclic,
+                prediction_use_msa_server=not args.prediction_no_msa_server,
+                prediction_conda_env=args.prediction_conda_env,
+                prediction_lock_threshold=args.prediction_lock_threshold,
+                openfold_templates=args.openfold_templates,
+                binder_type=args.binder_type,
+                on_incompatible=args.on_incompatible,
+                preflight_only=args.preflight_only,
             )
         except ChainNotFoundError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
+        except IncompatibleInputError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+        if args.preflight_only:
+            block = results["preflight"]
+            print(block.get("plan") or f"Pre-flight check: {block['status']}: {block['reason']}")
+            sys.exit(1 if block["status"] == "refused" else 0)
         results["total_elapsed_s"] = round(time.time() - t_total, 1)
 
         from binding_metrics.protocols.report import write_report

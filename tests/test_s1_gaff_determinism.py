@@ -28,7 +28,6 @@ openff_molecule = pytest.importorskip("openff.toolkit").Molecule
 DATA = Path(__file__).parent.parent / "data"
 CYCLOSPORIN_CIF = DATA / "example_ncaa_cyclosporin_1CWA.cif"
 SFTI1_CIF = DATA / "example_bicyclic_sfti1_3P8F.cif"
-P53_PDB = DATA / "example_linear_p53_1YCR.pdb"
 
 requires_antechamber = pytest.mark.skipif(
     shutil.which("antechamber") is None, reason="AmberTools (antechamber, sqm) not installed"
@@ -360,21 +359,21 @@ class TestTheSeedReachesTheTemplateBuild:
             prep_structure(topology, positions, random_seed=5)
         assert recorded_seed["random_seed"] == 5
 
-    def test_relaxation(self, recorded_seed):
+    def test_relaxation(self, recorded_seed, prepped_example_cif):
         from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
 
         config = RelaxationConfig(
             small_molecules="auto", random_seed=6, peptide_chain_id="B", receptor_chain_id="A"
         )
         with pytest.raises(TemplateStepReachedError):
-            ImplicitRelaxation(config)._setup_system(P53_PDB)
+            ImplicitRelaxation(config)._setup_system(prepped_example_cif)
         assert recorded_seed["random_seed"] == 6
 
-    def test_energy(self, recorded_seed):
+    def test_energy(self, recorded_seed, prepped_example_cif):
         from binding_metrics.io.structures import load_structure, strip_heterogens
         from binding_metrics.metrics.energy import _create_implicit_system
 
-        topology, positions = load_structure(P53_PDB)
+        topology, positions = load_structure(prepped_example_cif)
         topology, positions = strip_heterogens(topology, positions, "B", "A")
         with pytest.raises(TemplateStepReachedError):
             _create_implicit_system(topology, positions, peptide_chain="B", random_seed=7)
@@ -410,7 +409,7 @@ class TestExplicitSmallMoleculeRoute:
         return seen
 
     @staticmethod
-    def _setup(small_molecules, seed):
+    def _setup(small_molecules, seed, structure):
         from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig
 
         config = RelaxationConfig(
@@ -419,23 +418,25 @@ class TestExplicitSmallMoleculeRoute:
             peptide_chain_id="B",
             receptor_chain_id="A",
         )
-        ImplicitRelaxation(config)._setup_system(P53_PDB)
+        ImplicitRelaxation(config)._setup_system(structure)
 
-    def test_charges_are_set_before_the_generator_is_built(self, generator_inputs):
+    def test_charges_are_set_before_the_generator_is_built(
+        self, generator_inputs, prepped_example_cif
+    ):
         with pytest.raises(TemplateStepReachedError):
-            self._setup(["CCO", "c1ccccc1O"], seed=9)
+            self._setup(["CCO", "c1ccccc1O"], seed=9, structure=prepped_example_cif)
         assert generator_inputs["seeds"] == [9, 9]
         charges = generator_inputs["charges"]
         assert len(charges) == 2 and all(q is not None for q in charges)
 
-    def test_charges_the_user_gave_are_kept(self, generator_inputs):
+    def test_charges_the_user_gave_are_kept(self, generator_inputs, prepped_example_cif):
         from openff.units import Quantity, unit
 
         molecule = openff_molecule.from_smiles("CCO")
         given = Quantity(np.linspace(-0.02, 0.02, molecule.n_atoms), unit.elementary_charge)
         molecule.partial_charges = given
         with pytest.raises(TemplateStepReachedError):
-            self._setup([molecule], seed=9)
+            self._setup([molecule], seed=9, structure=prepped_example_cif)
         assert generator_inputs["seeds"] == []
         np.testing.assert_array_equal(generator_inputs["charges"][0].magnitude, given.magnitude)
 

@@ -232,7 +232,12 @@ def _md_table(headers: list[str], rows: list[list[str]]) -> str:
 
 
 def _flatten(results: dict) -> dict[str, Any]:
-    """Return a flat {column: value} dict suitable for one CSV row."""
+    """Return a flat {column: value} dict suitable for one CSV row.
+
+    Scalars and the scalars inside nested dicts become columns named by their path. List
+    and numpy array fields are left out (they stay in the JSON), so a per-atom pLDDT
+    array of thousands of values never becomes a truncated text cell.
+    """
     flat: dict[str, Any] = {
         "sample_id": results.get("sample_id"),
         "input": results.get("input"),
@@ -254,7 +259,9 @@ def _flatten(results: dict) -> dict[str, Any]:
                 continue  # skip list fields
             if isinstance(v, dict):
                 _add(f"{prefix}_{k}", v)
-            elif not isinstance(v, list):
+            elif not isinstance(v, (list, np.ndarray)):
+                # An array cell would be ``str(array)``, cut to "[1. 2. 3. ... 8. 9.]" for
+                # more than 1000 values. Arrays stay in the JSON, like the list fields.
                 flat[f"{prefix}_{k}"] = v
 
     for section in (
@@ -264,6 +271,7 @@ def _flatten(results: dict) -> dict[str, Any]:
         "geometry",
         "electrostatics",
         "openfold",
+        "prediction",
         "dockq",
     ):
         if section not in results:
@@ -300,12 +308,24 @@ def _flatten(results: dict) -> dict[str, Any]:
             # ramachandran_*".  Skip the intermediate sub-key and flatten each
             # sub-dict directly under "geometry_".
             for sub in ("ramachandran", "omega", "shape_complementarity"):
-                _add(section, sec_data.get(sub) or {})
+                sub_data = sec_data.get(sub) or {}
+                if sub_data.get("skipped"):
+                    # left out by the pre-flight check: one metric, not the whole step
+                    flat[f"{section}_{sub}_skipped"] = True
+                    flat[f"{section}_{sub}_reason"] = sub_data.get("reason")
+                    continue
+                _add(section, sub_data)
             for k in ("skipped", "error"):
                 if k in sec_data:
                     flat[f"{section}_{k}"] = sec_data[k]
         else:
             _add(section, sec_data)
+
+    preflight = results.get("preflight")
+    if isinstance(preflight, dict):
+        # The full report stays in the JSON; the row gets the decision and its reason.
+        flat["preflight_status"] = preflight.get("status")
+        flat["preflight_reason"] = preflight.get("reason")
 
     return flat
 
@@ -344,6 +364,29 @@ def _md_header(results: dict) -> str:
 
 def _is_skipped(section: dict | None) -> bool:
     return isinstance(section, dict) and section.get("skipped") is True
+
+
+def _md_preflight(pre: dict | None) -> str:
+    """The ``results["preflight"]`` block: the decision, what was left out, and the warnings."""
+    lines = ["## Pre-flight check\n"]
+    if not isinstance(pre, dict):
+        return lines[0] + "_Absent._\n"
+    lines.append(f"Status: `{pre.get('status')}` (policy: `{pre.get('policy')}`).\n")
+    if pre.get("reason"):
+        lines.append(f"{pre['reason']}\n")
+    skipped = dict(pre.get("skipped_steps") or {})
+    skipped.update({f"geometry.{k}": v for k, v in (pre.get("skipped_geometry") or {}).items()})
+    if skipped:
+        lines.append("Left out:\n")
+        lines.extend(f"- `{step}`: {reason}" for step, reason in skipped.items())
+        lines.append("")
+    report = pre.get("report") or {}
+    for title, key in (("Warnings", "warnings"), ("Notes", "notes")):
+        if report.get(key):
+            lines.append(f"{title}:\n")
+            lines.extend(f"- {text}" for text in report[key])
+            lines.append("")
+    return "\n".join(lines)
 
 
 def _md_cyclic(relax: dict | None) -> str | None:
@@ -459,10 +502,15 @@ def _md_interface(iface: dict | None) -> str:
             ],
         )
     )
-    # Per-residue buried SASA for peptide
-    peptide_chain = iface.get("peptide_chain", "B")
+    # Per-residue buried SASA for peptide. Without the chain the result names, no chain is
+    # guessed: the table is left out.
+    peptide_chain = iface.get("peptide_chain")
     pep_res = sorted(
-        [r for r in (iface.get("per_residue") or []) if r.get("chain") == peptide_chain],
+        [
+            r
+            for r in (iface.get("per_residue") or [])
+            if peptide_chain is not None and r.get("chain") == peptide_chain
+        ],
         key=lambda r: r.get("res_id", 0),
     )
     if pep_res:
@@ -569,19 +617,62 @@ def _md_electrostatics(elec: dict | None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _md_openfold(of: dict | None) -> str:
-    lines = ["## OpenFold\n"]
-    if _is_skipped(of):
-        return lines[0] + "_Skipped._\n"
-    if not of:
-        return lines[0] + "_Absent._\n"
+def _weights_label(weights: dict) -> str:
+    """One line for the weights of a prediction: custom ones by file name and hash prefix."""
+    name = weights.get("name") or weights.get("path") or "unnamed"
+    if weights.get("custom"):
+        digest = str(weights.get("sha256") or "")[:12]
+        return f"custom: {name} (sha256 {digest}…)" if digest else f"custom: {name}"
+    return f"default ({name})"
+
+
+def _templates_label(templates: dict) -> str:
+    """One line for what became of the templates, ``A: used, B: not used (cause)``.
+
+    ``templates`` is ``{chain ID: {"requested", "used", "cause", ...}}`` (see
+    ``binding_metrics.metrics._openfold_templates``). A chain that did not ask for one (the
+    binder of a ``refold`` run, a ``predict`` run) says so instead of ``not used``.
+    """
+    parts = []
+    for chain_id in sorted(templates, key=str):
+        record = templates[chain_id]
+        if not isinstance(record, dict):
+            continue
+        if record.get("used"):
+            parts.append(f"{chain_id}: used")
+        elif record.get("requested") is False:
+            parts.append(f"{chain_id}: none asked for")
+        else:
+            cause = record.get("cause")
+            parts.append(f"{chain_id}: not used ({cause})" if cause else f"{chain_id}: not used")
+    return ", ".join(parts)
+
+
+def _md_confidence_lines(section: dict, extra_rows: list[list[str]] | None = None) -> list[str]:
+    """The confidence table and the low-pLDDT warning shared by the OpenFold and prediction blocks.
+
+    ``section`` is a ``compute_openfold_metrics`` or ``summarize_prediction`` dict; its
+    values are read with ``get``, so a missing key shows as an em dash. ``extra_rows`` go
+    below the RMSD row (labelled "Refolding RMSD": the binder RMSD against the input, which in
+    a score run is the distance of OpenFold3's own pose from the input pose).
+    """
     rows = [
-        ["avg pLDDT", _fmt(of.get("avg_plddt"), 2)],
-        ["pTM", _fmt(of.get("ptm"), 3)],
-        ["ipTM", _fmt(of.get("iptm"), 3)],
-        ["gPDE", f"{_fmt(of.get('gpde'), 2)} Å"],
+        ["avg pLDDT", _fmt(section.get("avg_plddt"), 2)],
+        ["pTM", _fmt(section.get("ptm"), 3)],
+        ["ipTM", _fmt(section.get("iptm"), 3)],
+        ["gPDE", f"{_fmt(section.get('gpde'), 2)} Å"],
     ]
-    refold_rmsd = of.get("binder_ca_rmsd")
+    if "binder_cyclic" in section:  # whether the query sent the binder as `cyclic: true`
+        rows.append(["Binder sent as cyclic", "yes" if section["binder_cyclic"] else "no"])
+    templates = section.get("templates")
+    if isinstance(templates, dict) and templates:  # what OpenFold3 did with each template
+        label = _templates_label(templates)
+        if label:
+            rows.append(["Templates", label])
+    weights = section.get("weights")
+    if isinstance(weights, dict):  # custom weights by content, or the checkpoint the model names
+        rows.append(["Weights", _weights_label(weights)])
+    refold_rmsd = section.get("binder_ca_rmsd")
     try:
         import math
 
@@ -590,9 +681,10 @@ def _md_openfold(of: dict | None) -> str:
         _show_rmsd = False
     if _show_rmsd:
         rows.append(["Refolding RMSD", f"{_fmt(refold_rmsd, 2)} Å"])
-    lines.append(_md_table(["Metric", "Value"], rows))
+    rows.extend(extra_rows or [])
+    lines = [_md_table(["Metric", "Value"], rows)]
     # per-residue low pLDDT warning
-    plddt_per_res = of.get("binder_plddt_per_residue")
+    plddt_per_res = section.get("binder_plddt_per_residue")
     if plddt_per_res is not None:
         try:
             import numpy as np
@@ -604,6 +696,65 @@ def _md_openfold(of: dict | None) -> str:
                 lines.append(f"\n⚠️ **Low binder pLDDT (< 70):** {', '.join(low_strs)}")
         except (TypeError, ValueError, IndexError) as exc:  # values that are not numbers
             logger.debug("Per-residue pLDDT left out of the report: %s", exc)
+    return lines
+
+
+def _md_openfold(of: dict | None) -> str:
+    lines = ["## OpenFold\n"]
+    if _is_skipped(of):
+        return lines[0] + "_Skipped._\n"
+    if not of:
+        return lines[0] + "_Absent._\n"
+    lines.extend(_md_confidence_lines(of))
+    return "\n".join(lines) + "\n"
+
+
+def _prediction_display_name(model: Any) -> str | None:
+    """The report name of a model (``"Boltz-2"`` for ``"boltz2"``); the key itself if unknown."""
+    if not model:
+        return None
+    from binding_metrics.predictors.registry import PARSERS
+
+    spec = PARSERS.get(str(model))
+    return spec.display_name if spec is not None else str(model)
+
+
+def _md_prediction(pred: dict | None) -> str:
+    """The ``results["prediction"]`` block: the OpenFold table for any model, plus the extras.
+
+    Below the table it shows the interface PAE, the EvoBind score and the adversarial COM
+    displacement when they were computed, the reason a value is missing, and how the store
+    served the prediction (``cache``: runs, store hits, adopted outputs).
+    """
+    model_name = _prediction_display_name(pred.get("model")) if isinstance(pred, dict) else None
+    heading = "## Structure prediction" + (f" ({model_name})" if model_name else "")
+    lines = [heading + "\n"]
+    if _is_skipped(pred):
+        return lines[0] + "_Skipped._\n"
+    if not pred:
+        return lines[0] + "_Absent._\n"
+    if pred.get("error"):
+        return lines[0] + f"_Failed: {pred['error']}_\n"
+
+    extra_rows = []
+    for label, key, decimals, unit in (
+        ("Mean interface PAE", "mean_interface_pae", 2, " Å"),
+        ("EvoBind score", "evobind_score", 2, ""),
+        ("Adversarial ΔCOM", "delta_com_angstrom", 2, " Å"),
+    ):
+        value = pred.get(key)
+        if value is not None and not _is_nonfinite(value):
+            extra_rows.append([label, f"{_fmt(value, decimals)}{unit}"])
+    lines.extend(_md_confidence_lines(pred, extra_rows))
+
+    if pred.get("reason"):
+        lines.append(f"\n_Not computed: {pred['reason']}_")
+    cache = pred.get("cache")
+    if isinstance(cache, dict) and "runs" in cache:
+        lines.append(
+            f"\n_Prediction store: {cache.get('runs')} run(s), {cache.get('hits', 0)} store "
+            f"hit(s), {cache.get('adopted', 0)} adopted output(s)._"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -723,6 +874,7 @@ def _build_summary(results: dict) -> str:
     cyclic = _md_cyclic(results.get("relax"))
     sections = [
         _md_header(results),
+        *([_md_preflight(results["preflight"])] if "preflight" in results else []),
         _md_relax(results.get("relax")),
         *([] if cyclic is None else [cyclic]),
         _md_energy(results.get("energy")),
@@ -732,6 +884,8 @@ def _build_summary(results: dict) -> str:
     ]
     if "openfold" in results:
         sections.append(_md_openfold(results["openfold"]))
+    if "prediction" in results:
+        sections.append(_md_prediction(results["prediction"]))
     if "dockq" in results:
         sections.append(_md_dockq(results["dockq"]))
     sections.append(_md_scorecard(results))

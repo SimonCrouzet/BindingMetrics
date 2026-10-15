@@ -244,6 +244,7 @@ def load_structure(path: str | Path) -> tuple:
             if n_restored:
                 logger.debug("%s: restored %d _struct_conn bond(s)", path.name, n_restored)
             _bond_bare_residues(struct.topology, struct.positions)
+            attach_author_chain_ids(struct.topology, path)
         elif suffix == ".pdb":
             struct = PDBFile(str(path))
         else:
@@ -254,6 +255,206 @@ def load_structure(path: str | Path) -> tuple:
         raise ValueError(f"Failed to parse structure file {path}: {e}") from e
 
     return struct.topology, struct.positions
+
+
+#: Attribute that carries the author chain IDs on an OpenMM ``Topology``: a tuple with
+#: one ``(OpenMM chain ID, author chain ID)`` pair per chain, in chain order.
+_AUTHOR_IDS_ATTRIBUTE = "_binding_metrics_author_chain_ids"
+
+
+def attach_author_chain_ids(topology, source_path: str | Path) -> bool:
+    """Record on ``topology`` the author chain ID (``auth_asym_id``) of each of its chains.
+
+    OpenMM's ``PDBxFile`` names the chains of an mmCIF by ``label_asym_id`` when the
+    file has strictly more label IDs than author IDs (every water and ligand asym
+    unit has a label ID of its own), and by the author ID otherwise. The chain
+    options of the package, the metrics that read the file with biotite and the
+    results use the author ID, so the peptide of 1CWA is chain C for them and chain
+    B in the OpenMM topology. The topology keeps its own IDs, because the waters
+    of a chain share its author ID and renaming would merge them with the protein.
+    This function stores the author ID beside them; :func:`author_chain_ids` reads
+    it and :func:`openmm_chain_id` turns an author ID into the chain to look up.
+
+    Atoms are matched by ``Atom.id``, the ``_atom_site.id`` of the row an atom was read
+    from, which ``Modeller`` keeps, and must agree with the row on the element. A topology
+    that has lost atoms or chains since the file was read can still be annotated from it;
+    one that has gained atoms cannot, because ``Topology`` gives a new atom an ID of its
+    own that may be a row's. A PDB file needs no call: its chain IDs are the author IDs.
+
+    Args:
+        topology: OpenMM Topology read from ``source_path``.
+        source_path: The mmCIF file.
+
+    Returns:
+        True when the author IDs were recorded. False, with a log record, when gemmi
+        is not installed, the file cannot be read, or the atoms of the topology are not
+        those of the file; the author IDs are then taken to be the topology's own.
+    """
+    path = Path(source_path)
+    try:
+        import gemmi
+    except ImportError:
+        logger.info(
+            "gemmi is not installed: the chains of %s keep OpenMM's chain IDs, which are the "
+            "label IDs when the file has more label IDs than author IDs. Install with: "
+            "pip install binding-metrics[structure]",
+            path.name,
+        )
+        return False
+    try:
+        block = gemmi.cif.read(str(path))[0]
+        table = block.find("_atom_site.", ["id", "label_asym_id", "?auth_asym_id", "?type_symbol"])
+    except (RuntimeError, ValueError, IndexError) as exc:
+        logger.warning(
+            "cannot read the author chain IDs of %s (%s: %s)", path.name, type(exc).__name__, exc
+        )
+        return False
+    if not table:
+        return False
+    author_column = 2 if table.has_column(2) else 1  # PDBxFile falls back to label_asym_id too
+    site_of_atom = {
+        row.str(0): (row.str(author_column), row.str(3).upper() if table.has_column(3) else "")
+        for row in table
+    }
+
+    recorded = []
+    n_matched = 0
+    for chain in topology.chains():
+        authors = set()
+        for atom in chain.atoms():
+            site = site_of_atom.get(str(atom.id))
+            if site is None:
+                continue
+            symbol = atom.element.symbol.upper() if atom.element is not None else ""
+            if site[1] and symbol and site[1] != symbol:
+                # The same ID on another element: the atom is not one of this file's.
+                logger.warning(
+                    "atom %s of chain %s is %s in the topology and %s in %s: the topology was "
+                    "not read from this file, the author chain IDs are not recorded",
+                    atom.id,
+                    chain.id,
+                    symbol,
+                    site[1],
+                    path.name,
+                )
+                return False
+            authors.add(site[0])
+        if len(authors) > 1:
+            logger.warning(
+                "chain %s of the topology holds atoms of the author chains %s in %s: the author "
+                "IDs are not recorded",
+                chain.id,
+                ", ".join(sorted(authors)),
+                path.name,
+            )
+            return False
+        n_matched += bool(authors)
+        recorded.append((chain.id, authors.pop() if authors else chain.id))
+    if not n_matched:
+        return False
+    setattr(topology, _AUTHOR_IDS_ATTRIBUTE, tuple(recorded))
+    return True
+
+
+def _recorded_author_ids(topology) -> Optional[list[str]]:
+    """The author IDs that :func:`attach_author_chain_ids` stored, or None when none apply.
+
+    A record that no longer fits (another number of chains, or a chain that was renamed)
+    belongs to an earlier state of the topology and is ignored.
+    """
+    recorded = getattr(topology, _AUTHOR_IDS_ATTRIBUTE, None)
+    chains = list(topology.chains())
+    if recorded is None or len(recorded) != len(chains):
+        return None
+    if any(openmm_id != chain.id for (openmm_id, _), chain in zip(recorded, chains)):
+        return None
+    return [author_id for _, author_id in recorded]
+
+
+def author_chain_ids(topology) -> list[str]:
+    """Author chain ID of every chain of an OpenMM topology, in chain order.
+
+    The IDs come from :func:`attach_author_chain_ids` (``load_structure`` calls it for a
+    CIF). A topology without them, such as one read from a PDB file, gives the
+    chain's own ID, which is the author ID there.
+    """
+    recorded = _recorded_author_ids(topology)
+    return recorded if recorded is not None else [chain.id for chain in topology.chains()]
+
+
+def copy_author_chain_ids(source, target) -> None:
+    """Give ``target`` the author IDs of ``source``, matching the chains by ID in order.
+
+    For a topology that was built from ``source`` with ``Modeller`` or PDBFixer and
+    still carries the chain IDs of ``source``, some chains possibly removed. A chain of
+    ``target`` that matches none keeps its own ID as its author ID. Nothing is done when
+    ``source`` has no author IDs.
+    """
+    authors = _recorded_author_ids(source)
+    if authors is None:
+        return
+    pairs = [(chain.id, author) for chain, author in zip(source.chains(), authors)]
+    recorded = []
+    cursor = 0
+    for chain in target.chains():
+        match = next((k for k in range(cursor, len(pairs)) if pairs[k][0] == chain.id), None)
+        if match is None:
+            recorded.append((chain.id, chain.id))
+        else:
+            recorded.append((chain.id, pairs[match][1]))
+            cursor = match + 1
+    setattr(target, _AUTHOR_IDS_ATTRIBUTE, tuple(recorded))
+
+
+def openmm_chain_id(topology, author_id: str) -> Optional[str]:
+    """ID, in ``topology``, of the amino-acid chain that the author chain ID names.
+
+    A chain counts when it holds at least one amino-acid residue (the set of
+    :func:`detect_chains`). The waters and ligands that OpenMM splits off an author
+    chain are therefore never the answer: for 1CWA, author ID A is OpenMM chain A (the
+    protein) and not C (its waters), and author ID C is chain B (the peptide) and not D.
+
+    Args:
+        topology: OpenMM Topology; the author IDs come from :func:`author_chain_ids`.
+        author_id: The chain ID as the user gives it.
+
+    Returns:
+        The chain ID to look up in the topology, or None when no amino-acid chain has that
+        author ID.
+
+    Raises:
+        ValueError: If amino-acid residues of that author ID sit in chains with
+            different IDs in the topology, so that the chain is not determined.
+    """
+    amino_acids = _amino_acid_names()
+    holders: list[str] = []
+    for chain, author in zip(topology.chains(), author_chain_ids(topology)):
+        if author != author_id or chain.id in holders:
+            continue
+        if any(residue.name in amino_acids for residue in chain.residues()):
+            holders.append(chain.id)
+    if len(holders) > 1:
+        raise ValueError(
+            f"author chain {author_id!r} holds amino-acid residues in the topology chains "
+            f"{', '.join(map(repr, holders))}; name one of them by its topology ID"
+        )
+    return holders[0] if holders else None
+
+
+def topology_chain_id(topology, chain_id: Optional[str]):
+    """ID, in ``topology``, of the chain that a caller names; None when none is named.
+
+    The ID is read as an author ID first (:func:`openmm_chain_id`) and as an ID of a chain
+    of the topology when no amino-acid chain has it as author ID, so that the IDs of the
+    topology keep working and an unknown ID is handed on as given.
+
+    Call it once, where the caller's ID enters: the result is an ID of the topology, which
+    it would read as an author ID again. In a file whose label and author letters are
+    swapped (label A is author B, label B is author A) that is another chain.
+    """
+    if chain_id is None:
+        return None
+    return openmm_chain_id(topology, chain_id) or chain_id
 
 
 def detect_chains(topology) -> tuple[Optional[str], Optional[str]]:
@@ -497,17 +698,20 @@ def strip_heterogens(
             counts accumulate when one dict is passed to several calls. Keys:
 
             * ``removed_heterogens`` (list[str]): ``"NAME (chain X)"`` for each
-              removed non-water heterogen (ligands, ions, glycans).
+              removed non-water heterogen (ligands, ions, glycans). X is the author
+              chain ID (:func:`author_chain_ids`), also in the log lines.
             * ``n_removed_waters`` (int): water molecules removed.
 
             Behaviour is identical when ``report`` is None.
 
     Returns:
-        Tuple (topology, positions) with heterogens removed.
+        Tuple (topology, positions) with heterogens removed. The topology keeps the
+        author chain IDs of the one passed in.
     """
     import numpy as np
 
     protein_chain_ids = {c for c in (peptide_chain, receptor_chain) if c}
+    author_ids = author_chain_ids(topology)  # for the messages; the selection uses chain.id
     protein_pos = (
         np.array(
             [
@@ -532,7 +736,8 @@ def strip_heterogens(
             atoms_to_remove.extend(res.atoms())
             n_removed_waters += 1
             continue
-        removed_heterogens.append(f"{res.name} (chain {res.chain.id})")
+        author_id = author_ids[res.chain.index]
+        removed_heterogens.append(f"{res.name} (chain {author_id})")
         # Other heterogens: warn if close to protein (may be a cofactor/ion)
         res_pos = (
             np.array(
@@ -554,7 +759,7 @@ def strip_heterogens(
                     "Parametrize it via custom_bond_handler to keep it.",
                     res.name,
                     res.id,
-                    res.chain.id,
+                    author_id,
                     min_dist,
                 )
             else:
@@ -562,11 +767,11 @@ def strip_heterogens(
                     "  Removing distant heterogen %s%s (chain %s, %.1f Å from protein)",
                     res.name,
                     res.id,
-                    res.chain.id,
+                    author_id,
                     min_dist,
                 )
         else:
-            logger.info("  Removing heterogen %s%s (chain %s)", res.name, res.id, res.chain.id)
+            logger.info("  Removing heterogen %s%s (chain %s)", res.name, res.id, author_id)
         atoms_to_remove.extend(res.atoms())
 
     if report is not None:
@@ -578,6 +783,7 @@ def strip_heterogens(
 
         modeller = app.Modeller(topology, positions)
         modeller.delete(atoms_to_remove)
+        copy_author_chain_ids(topology, modeller.topology)
         topology, positions = modeller.topology, modeller.positions
 
     return topology, positions
@@ -630,11 +836,13 @@ def drop_other_protein_chains(
         peptide_chain: Peptide chain ID to keep.
         receptor_chain: Receptor chain ID to keep.
         report: Optional dict; ``dropped_protein_chains`` (list[str]) receives the
-            IDs of the removed chains, an empty list when none was removed. Lists
+            IDs of the removed chains, an empty list when none was removed. They are
+            author chain IDs (:func:`author_chain_ids`), as in the warning. Lists
             accumulate when one dict is passed to several calls.
 
     Returns:
-        Tuple (topology, positions) without the other protein chains.
+        Tuple (topology, positions) without the other protein chains, with the author
+        chain IDs of the topology passed in.
     """
     kept = {peptide_chain, receptor_chain}
     present = {chain.id for chain in topology.chains()}
@@ -644,12 +852,13 @@ def drop_other_protein_chains(
         return topology, positions
 
     amino_acids = _amino_acid_names()
+    author_ids = author_chain_ids(topology)  # for the messages; the selection uses chain.id
     atoms_to_remove = []
     dropped: list[str] = []
     for chain in topology.chains():
         if chain.id in kept or not any(res.name in amino_acids for res in chain.residues()):
             continue
-        dropped.append(chain.id)
+        dropped.append(author_ids[chain.index])
         atoms_to_remove.extend(atom for res in chain.residues() for atom in res.atoms())
 
     if report is not None:
@@ -657,17 +866,21 @@ def drop_other_protein_chains(
     if not dropped:
         return topology, positions
 
+    author_of = {}
+    for chain, author_id in zip(topology.chains(), author_ids):
+        author_of.setdefault(chain.id, author_id)
     logger.warning(
         "  Removing protein chain(s) %s: neither the peptide (%s) nor the receptor (%s). "
         "The energy and the relaxation describe the peptide-receptor pair only.",
         ", ".join(dropped),
-        peptide_chain,
-        receptor_chain,
+        author_of[peptide_chain],
+        author_of[receptor_chain],
     )
     from openmm import app
 
     modeller = app.Modeller(topology, positions)
     modeller.delete(atoms_to_remove)
+    copy_author_chain_ids(topology, modeller.topology)
     return modeller.topology, modeller.positions
 
 

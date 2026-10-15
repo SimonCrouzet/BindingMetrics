@@ -51,6 +51,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
+from binding_metrics.io.structures import topology_chain_id
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -427,10 +429,23 @@ def detect_nonstandard(topology, chain_id: str) -> NonstandardInfo:
 
     Args:
         topology: OpenMM Topology.
-        chain_id: Chain ID to scan.
+        chain_id: Chain ID to scan: the author ID for a topology read by
+            ``io.structures.load_structure`` from an mmCIF (the peptide of 1CWA is author
+            chain C and chain B of the topology, whose chain C holds waters), or the ID of
+            the chain in the topology (see ``io.structures.topology_chain_id``).
+            ``NonstandardInfo.chain_id`` is the ID in the topology.
 
     Returns:
         NonstandardInfo describing all detected non-standard residues.
+    """
+    return _detect_nonstandard(topology, topology_chain_id(topology, chain_id))
+
+
+def _detect_nonstandard(topology, chain_id: str) -> NonstandardInfo:
+    """:func:`detect_nonstandard` for an ID of the chain in the topology.
+
+    The relaxation, the energy and prep hold such IDs and call this: read as author IDs,
+    they would name another chain in a file whose label and author letters are swapped.
     """
     residues = _peptide_residues(topology, chain_id)
     d_list: list = []
@@ -477,6 +492,17 @@ def detect_nonstandard(topology, chain_id: str) -> NonstandardInfo:
 def patch_nonstandard(topology, positions, chain_id: str, info: NonstandardInfo):
     """Rename non-standard residues in the OpenMM topology for FF compatibility.
 
+    ``chain_id`` is read as for :func:`detect_nonstandard`; the rest of this text describes
+    :func:`_patch_nonstandard`, which does the work.
+    """
+    return _patch_nonstandard(topology, positions, topology_chain_id(topology, chain_id), info)
+
+
+def _patch_nonstandard(topology, positions, chain_id: str, info: NonstandardInfo):
+    """Rename non-standard residues in the OpenMM topology for FF compatibility.
+
+    ``chain_id`` is the ID of the chain in the topology (see :func:`_detect_nonstandard`).
+
     Must be called AFTER PDBFixer and BEFORE ``addHydrogens()``.
 
     D-amino acids
@@ -497,7 +523,7 @@ def patch_nonstandard(topology, positions, chain_id: str, info: NonstandardInfo)
     Args:
         topology: OpenMM Topology (heavy atoms only, post-PDBFixer).
         positions: Atom positions (OpenMM Quantity, nm).
-        chain_id: Chain ID of the peptide to patch.
+        chain_id: ID, in ``topology``, of the peptide chain to patch.
         info: NonstandardInfo from :func:`detect_nonstandard`.
 
     Returns:
@@ -588,15 +614,16 @@ def restore_nonstandard_names(
     Args:
         topology: OpenMM Topology that :func:`patch_nonstandard` renamed.
         info: NonstandardInfo from :func:`detect_nonstandard` on that chain.
-        chain_id: Chain the indices in ``info`` refer to. Defaults to
-            ``info.chain_id``.
+        chain_id: Chain the indices in ``info`` refer to, read as for
+            :func:`detect_nonstandard`. Defaults to ``info.chain_id``, which is an ID of the
+            topology and is used as it is.
 
     Returns:
         Number of residues whose original name was restored.
     """
     if info.is_empty:
         return 0
-    chain_id = info.chain_id if chain_id is None else chain_id
+    chain_id = info.chain_id if chain_id is None else topology_chain_id(topology, chain_id)
     if chain_id is None:
         raise ValueError("chain_id is required when info.chain_id is not set.")
     try:

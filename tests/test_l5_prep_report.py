@@ -167,10 +167,11 @@ class TestPrepStructureReport:
         assert cyclosporin_report["n_removed_waters"] == 144
         assert cyclosporin_report["removed_heterogens"] == []
         kept = cyclosporin_report["kept_nonstandard"]
+        # the peptide is author chain C (chain B in OpenMM's topology, whose label ID it is)
         assert sorted(set(kept)) == sorted(
-            {f"{n} (chain B)" for n in ("DAL", "MLE", "MVA", "BMT", "ABA", "SAR")}
+            {f"{n} (chain C)" for n in ("DAL", "MLE", "MVA", "BMT", "ABA", "SAR")}
         )
-        assert kept.count("MLE (chain B)") == 4
+        assert kept.count("MLE (chain C)") == 4
 
     def test_cyclosporin_has_no_gap(self, cyclosporin_report):
         assert cyclosporin_report["n_missing_residue_gaps"] == 0

@@ -46,12 +46,14 @@ from typing import Optional
 
 import numpy as np
 
+from binding_metrics.core.nonstandard import D_AA_MAP
 from binding_metrics.core.residues import (
     BACKBONE_HEAVY_ATOM_NAMES,
     CUSTOM_HYDROGEN_RESIDUES,
     CYSTEINE_NAMES,
     STANDARD_AMINO_ACIDS,
 )
+from binding_metrics.io.structures import author_chain_ids, topology_chain_id
 
 # ---------------------------------------------------------------------------
 # Threshold constants (nm)
@@ -68,6 +70,14 @@ _AMIDE_BOND_THRESH = 0.20
 #: leaves room for poor geometry while excluding the van der Waals contact of
 #: two unbonded sulfurs (0.36 nm).
 _DISULFIDE_THRESH = 0.26
+
+#: Residue names that can hold the sulfur of a disulfide: CYS, its AMBER disulfide form CYX,
+#: and the D-cysteine codes of ``core.nonstandard.D_AA_MAP`` (DCY). The latter is renamed to
+#: CYS by ``patch_nonstandard`` before ``patch_cyclic_topology`` runs, but the hints that
+#: ``binding-metrics-run`` takes from the raw input file still carry the original name.
+_DISULFIDE_RESIDUE_NAMES = CYSTEINE_NAMES | frozenset(
+    name for name, parent in D_AA_MAP.items() if parent == "CYS"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +313,11 @@ def _dist(pos: np.ndarray, i: int, j: int) -> float:
 
 
 def _peptide_residues(topology, chain_id: str):
-    """Return list of Residue objects for the given chain, ordered by index."""
+    """Return list of Residue objects for the given chain, ordered by index.
+
+    ``chain_id`` is the ID of the chain in ``topology``; see
+    :func:`binding_metrics.io.structures.topology_chain_id` for a chain ID that a user gave.
+    """
     for chain in topology.chains():
         if chain.id == chain_id:
             return list(chain.residues())
@@ -502,6 +516,20 @@ def _is_hydrocarbon_staple_bond(ai, aj) -> bool:
 def detect_cyclization(topology, positions, chain_id: str) -> list:
     """Detect all cyclizations in the peptide chain.
 
+    ``chain_id`` is the author chain ID, the one the chain options use, for a topology
+    from ``io.structures.load_structure`` of an mmCIF; the ID of the chain in the topology
+    is accepted as well (see ``io.structures.topology_chain_id``). The ``CyclicBondInfo``
+    entries carry the ID of the chain in the topology. 1CWA: ``"C"`` and ``"B"`` give the same
+    head-to-tail amide, where chain C of the topology holds waters.
+
+    The remaining text describes the detection itself, in :func:`_detect_cyclization`.
+    """
+    return _detect_cyclization(topology, positions, topology_chain_id(topology, chain_id))
+
+
+def _detect_cyclization(topology, positions, chain_id: str) -> list:
+    """Detect all cyclizations in the peptide chain ``chain_id`` of ``topology``.
+
     Uses two complementary strategies:
     1. Topology bonds — bonds already encoded in the loaded structure file
        (e.g. STRUCT_CONN records in CIF). Reliable even for strained/refold
@@ -515,7 +543,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
     Args:
         topology: OpenMM Topology (heavy atoms only, post-PDBFixer repair).
         positions: Corresponding atom positions (OpenMM Quantity or ndarray, nm).
-        chain_id: Chain ID of the peptide to examine.
+        chain_id: ID, in ``topology``, of the peptide chain to examine.
 
     Returns:
         List of CyclicBondInfo (one entry per detected bond). Empty list if the
@@ -529,6 +557,10 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
     residues = _peptide_residues(topology, chain_id)
     if len(residues) < 2:
         return []
+    chain_name = next(  # the name a user knows the chain by, for the warnings
+        (a for c, a in zip(topology.chains(), author_chain_ids(topology)) if c.id == chain_id),
+        chain_id,
+    )
 
     # Pre-build set of existing topology bonds for fast membership tests.
     existing_bonds: set = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
@@ -551,14 +583,14 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
     if n_first is None:
         warnings.warn(
             f"detect_cyclization: atom N not found on first residue "
-            f"{first.name}{first.id} (chain {chain_id}); "
+            f"{first.name}{first.id} (chain {chain_name}); "
             "head-to-tail amide and N-terminal lactam bonds may not be detected.",
             stacklevel=2,
         )
     if c_last is None:
         warnings.warn(
             f"detect_cyclization: atom C not found on last residue "
-            f"{last.name}{last.id} (chain {chain_id}); "
+            f"{last.name}{last.id} (chain {chain_name}); "
             "head-to-tail amide and C-terminal lactam bonds may not be detected.",
             stacklevel=2,
         )
@@ -588,13 +620,13 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
             detected_pairs.add((n_first.index, c_last.index))
 
     # ---- 2. Disulfide: SG — SG (all CYS pairs, supports multiple disulfides) ----
-    cys_residues = [(i, r) for i, r in enumerate(residues) if r.name == "CYS"]
+    cys_residues = [(i, r) for i, r in enumerate(residues) if r.name in _DISULFIDE_RESIDUE_NAMES]
     for i, (ri, res_i) in enumerate(cys_residues):
         sg_i = _find_atom(res_i, "SG")
         if sg_i is None:
             warnings.warn(
                 f"detect_cyclization: atom SG not found on CYS residue "
-                f"{res_i.name}{res_i.id} (chain {chain_id}, index {ri}); "
+                f"{res_i.name}{res_i.id} (chain {chain_name}, index {ri}); "
                 "disulfide bond may not be detected.",
                 stacklevel=2,
             )
@@ -604,7 +636,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
             if sg_j is None:
                 warnings.warn(
                     f"detect_cyclization: atom SG not found on CYS residue "
-                    f"{res_j.name}{res_j.id} (chain {chain_id}, index {rj}); "
+                    f"{res_j.name}{res_j.id} (chain {chain_name}, index {rj}); "
                     "disulfide bond may not be detected.",
                     stacklevel=2,
                 )
@@ -629,7 +661,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                 if cg is None:
                     warnings.warn(
                         f"detect_cyclization: atom CG not found on ASP residue "
-                        f"{res.name}{res.id} (chain {chain_id}, index {i}); "
+                        f"{res.name}{res.id} (chain {chain_name}, index {i}); "
                         "lactam_n_asp bond may not be detected.",
                         stacklevel=2,
                     )
@@ -660,7 +692,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                 if cd is None:
                     warnings.warn(
                         f"detect_cyclization: atom CD not found on GLU residue "
-                        f"{res.name}{res.id} (chain {chain_id}, index {i}); "
+                        f"{res.name}{res.id} (chain {chain_name}, index {i}); "
                         "lactam_n_glu bond may not be detected.",
                         stacklevel=2,
                     )
@@ -695,7 +727,7 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
                 if nz is None:
                     warnings.warn(
                         f"detect_cyclization: atom NZ not found on LYS residue "
-                        f"{res.name}{res.id} (chain {chain_id}, index {i}); "
+                        f"{res.name}{res.id} (chain {chain_name}, index {i}); "
                         "lactam_c_lys bond may not be detected.",
                         stacklevel=2,
                     )
@@ -936,7 +968,10 @@ def patch_cyclic_topology(topology, positions, chain_id: str, hints: list = None
     Args:
         topology: OpenMM Topology (heavy atoms only).
         positions: Atom positions (OpenMM Quantity, nm).
-        chain_id: Peptide chain ID.
+        chain_id: ID of the peptide chain in ``topology``. Unlike
+            :func:`detect_cyclization`, it is not read as an author ID: the relaxation,
+            the energy and prep call this with IDs of the topology, which an author ID of
+            the same letter would shadow in a file with swapped label and author letters.
         hints: Optional list of CyclicBondInfo detected from an earlier
             version of the structure (e.g. before PDBFixer stripped STRUCT_CONN
             records). Used as fallback when detection on the current topology
@@ -959,7 +994,7 @@ def patch_cyclic_topology(topology, positions, chain_id: str, hints: list = None
     # GAFF parameterisation; no-op for a fully standard structure.
     reconstruct_nonstandard_residue_bonds(topology, positions, include_chain=chain_id)
 
-    info_list = detect_cyclization(topology, positions, chain_id)
+    info_list = _detect_cyclization(topology, positions, chain_id)
     if not info_list and hints:
         info_list = hints
     if not info_list:

@@ -7,9 +7,28 @@ default literals (pH, device, MD duration, save interval) were replaced by the n
 constants in ``binding_metrics._constants``. New options may be added; an existing one
 must not change.
 
-Two deliberate edits since the capture: ``--peptide-chain`` and ``--receptor-chain`` gained
-the alias spellings ``--binder-chain`` and ``--target-chain``, and the ``--metrics`` help of
-``-batch`` lists ``dockq``, which the option already accepted.
+Four deliberate edits since the capture: ``--peptide-chain`` and ``--receptor-chain`` gained
+the alias spellings ``--binder-chain`` and ``--target-chain``, the ``--metrics`` help of
+``-batch`` lists ``dockq``, which the option already accepted, the ``--openfold-seeds``
+help of both commands no longer says that the seeds go to the query JSON (OpenFold3 does not
+read them there; they are written to its runner YAML) and says which sample is scored, and the
+``--openfold-mode`` help of both commands no longer says that ``score`` gives OpenFold3 both
+chains as templates "for the known conformation": a template carries the fold of one chain and
+no cross-chain geometry, so OpenFold3 places the binder itself (the help names ``binder_ca_rmsd``
+and ``delta_com_angstrom`` as the keys that say how far its pose is from the input pose). Two
+options were added to both commands and are recorded here from now on: ``--openfold-cyclic``
+and ``--openfold-no-msa-server``. Four more were added with the pre-flight check and are recorded
+the same way: ``--binder-type``, ``--on-incompatible``, ``--preflight-only`` and
+``--prediction-mode`` (the mode a model is used in: predict, refold, score or score-lock).
+``--prediction-weights`` (custom weights of the model) was added to both commands afterwards and
+is recorded the same way. When the runners of ColabFold, Boltz-2 and Protenix were registered, the
+``--openfold-seeds`` help gained a sentence on what the seeds mean for those runners, the
+``--prediction-mode`` help says what each runner can do and what its default is, and four options
+were added to both commands and are recorded here: ``--prediction-cyclic``,
+``--prediction-no-msa-server``, ``--prediction-conda-env`` and ``--prediction-lock-threshold``.
+The help of ``--openfold-cyclic`` and ``--prediction-cyclic`` then gained the rule that ``auto``
+leaves a head-to-tail binder with modified residues linear, and the one-complex measurement
+behind it.
 """
 
 import argparse
@@ -239,8 +258,13 @@ GOLDEN = {
                 None,
                 False,
                 "'score'",
-                "score: both chains as templates (confidence); "
-                "refold: binder predicted freely (refolding RMSD). "
+                "score: each chain is given its own structure from the "
+                "input as a template and OpenFold3 places the binder "
+                "itself, so its confidences refer to its own pose "
+                "(binder_ca_rmsd and delta_com_angstrom show how far it "
+                "is from the input pose); refold: only the receptor "
+                "is templated and the binder is predicted from its "
+                "sequence (binder_ca_rmsd is the refolding RMSD). "
                 "Default: score",
             ),
             "--openfold-conda-env": (
@@ -262,9 +286,203 @@ GOLDEN = {
                 "+",
                 False,
                 "None",
-                "Seed values written to the OpenFold3 query JSON "
-                "(default: the OpenFold module default, 42). The "
-                "first seed's first sample is scored.",
+                "Seed values OpenFold3 samples with, written to its runner "
+                "YAML (default: 42). It makes one seed_<value> directory "
+                "per seed; the first seed given, first sample, is scored. "
+                "With --predictor MODEL the seeds go to that model's runner"
+                " (ColabFold: consecutive integers from 0, default 0; "
+                "Boltz-2: exactly one, default 42; Protenix: default 101).",
+            ),
+            "--openfold-cyclic": (
+                "OpenFold",
+                None,
+                ["auto", "on", "off"],
+                None,
+                False,
+                "'auto'",
+                "Whether the binder chain of the OpenFold3 query gets 'cyclic: "
+                "true' (OpenFold3 >= 0.4.5). auto (default): when the binder "
+                "has a head-to-tail bond, consists of standard residues only "
+                "and the installed OpenFold3 is new enough; on: always; off: "
+                "never. OpenFold3 uses the flag only to wrap the relative "
+                "positions of the chain: it does not enforce the closure bond, "
+                "documents the flag only in an example query, and has published"
+                " no accuracy benchmark for cyclic peptides. It builds the wrap"
+                " from the token count of the chain and gives every atom of a "
+                "modified residue its own token: for 1CWA (D-amino acid, "
+                "N-methylated residues; one complex, three seeds) the flag "
+                "lowered ipTM from 0.91-0.92 to 0.78-0.81 and raised the binder"
+                " C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A, so auto leaves such"
+                " a binder linear (on forces the flag); for SFTI-1 (standard "
+                "residues; one seed) the flag closed the ring (C-N 7.40 A "
+                "without it, 1.38 A with it). Disulfide, lactam and staple "
+                "closures cannot be given to OpenFold3 and are not written.",
+            ),
+            "--openfold-no-msa-server": (
+                "OpenFold",
+                None,
+                None,
+                0,
+                False,
+                "False",
+                "Do not use the ColabFold MSA server for OpenFold3: it then "
+                "runs with a dummy MSA that holds only the query sequence of "
+                "each chain (OpenFold3's input reference suggests this for "
+                "MSA-free runs), which lowers accuracy for a natural receptor. "
+                "With --openfold-templates alignment the template alignments "
+                "written by the toolkit are no longer replaced by the server "
+                "(issue #68); the default, structure, keeps the template with "
+                "the server on too. One complex (1YCR, OpenFold3 0.5.0, one "
+                "seed), binder C-alpha RMSD against the crystal pose: 1.57 A "
+                "with the server and the template as a structure (the default), "
+                "1.62 A with the server and the template as an alignment (the "
+                "server replaces it: no template), 21.6 A with no MSA and no "
+                "template, 1.12 A with a working template and no MSA.",
+            ),
+            "--prediction-mode": (
+                "Prediction",
+                None,
+                ["predict", "refold", "score", "score-lock"],
+                None,
+                False,
+                "None",
+                "How the model is used for the complex: predict (sequences "
+                "only), refold (receptor templated, binder predicted "
+                "freely), score (every chain templated on its own, the pose"
+                " not given: re-docking) or score-lock (score, with the "
+                "pose pinned to the input). It is checked against what the "
+                "model supports and, for a run from here, against what its "
+                "runner can do (of3: refold, score; boltz2: all four; af2 "
+                "and protenix: predict), before anything runs, and "
+                "recorded. Default: the runner's own mode, that is for "
+                "--predictor of3 the value of --openfold-mode (score), "
+                "score for boltz2 and predict for af2 and protenix; for an "
+                "output read with --prediction-dir, not stated and not "
+                "checked. Needs --predictor.",
+            ),
+            "--prediction-cyclic": (
+                "Prediction",
+                None,
+                ["auto", "on", "off"],
+                None,
+                False,
+                "None",
+                "Whether the binder is given to the model as cyclic, for "
+                "--predictor MODEL run from here. auto (default): when the "
+                "binder has a head-to-tail bond (for OpenFold3 also only when "
+                "it consists of standard residues: with a D-amino acid and "
+                "N-methylated residues, 1CWA, the flag lowered ipTM from "
+                "0.91-0.92 to 0.78-0.81 in one complex, three seeds, so auto "
+                "leaves such a binder linear); on: always; off: never. "
+                "OpenFold3 (>= 0.4.5) and Boltz-2 get 'cyclic: true' on the "
+                "binder chain, which only wraps its relative positions and does"
+                " not enforce the closure bond; Protenix gets the head-to-tail "
+                "and disulfide bonds as covalent_bonds; ColabFold has no such "
+                "setting and refuses a value. For --predictor of3 it is the "
+                "setting of --openfold-cyclic (both given with different values"
+                " is an error). Needs --predictor.",
+            ),
+            "--prediction-no-msa-server": (
+                "Prediction",
+                None,
+                None,
+                0,
+                False,
+                "False",
+                "Do not use an MSA server, for --predictor MODEL run from "
+                "here: ColabFold runs single_sequence, Boltz-2 writes 'msa:"
+                " empty', Protenix runs with --use_msa false, OpenFold3 as "
+                "--openfold-no-msa-server. The accuracy for a natural "
+                "receptor drops; no sequence leaves the machine. Needs "
+                "--predictor.",
+            ),
+            "--prediction-conda-env": (
+                "Prediction",
+                "NAME",
+                None,
+                None,
+                False,
+                "None",
+                "Conda environment that has the model, for --predictor "
+                "MODEL run from here (conda run -n NAME). Default: the "
+                "model's executable on PATH, that is the current "
+                "environment; an empty string says the same. For "
+                "--predictor of3 it is the setting of --openfold-conda-env "
+                "(default openfold3) and wins over its default; both given "
+                "with different values is an error. Needs --predictor.",
+            ),
+            "--prediction-lock-threshold": (
+                "Prediction",
+                "ANGSTROM",
+                None,
+                None,
+                False,
+                "None",
+                "Only for --prediction-mode score-lock: how far, in "
+                "angstrom, a residue may move from the pinned template "
+                "before the model pulls it back (the threshold of the "
+                "forced template of Boltz-2). Default: 2.0, the choice of "
+                "the Boltz-2 runner (Boltz-2 documents none). A runner or a"
+                " mode that does not use it refuses it. Needs --predictor.",
+            ),
+            "--prediction-weights": (
+                "Prediction",
+                "PATH",
+                None,
+                None,
+                False,
+                "None",
+                "Custom weights for the model, for instance a fine-tuned "
+                "checkpoint: a file for a model that takes a checkpoint file "
+                "(OpenFold3: --inference-ckpt-path), a directory for a model "
+                "whose weights are a directory. It applies to --predictor "
+                "MODEL run from here and to the OpenFold3 step without "
+                "--predictor (binding-metrics-openfold names it --ckpt). The "
+                "weights are identified by content (SHA-256) in the key of "
+                "the prediction store and recorded in the results. A model "
+                "whose runner cannot take custom weights is refused before "
+                "anything runs. Cannot be combined with --prediction-dir: "
+                "the weights are whatever made that output. Default: the "
+                "model's own weights.",
+            ),
+            "--binder-type": (
+                "Pre-flight check",
+                None,
+                ["auto", "peptide", "miniprotein", "nanobody", "antibody"],
+                None,
+                False,
+                "'auto'",
+                "What the binder is, for the checks that depend on it. auto "
+                "(default) estimates it from the number of residues: at most "
+                "40 a peptide, at most 100 a miniprotein, longer unknown, "
+                "which skips the type checks. A nanobody or an antibody chain"
+                " is never guessed: name it.",
+            ),
+            "--on-incompatible": (
+                "Pre-flight check",
+                None,
+                ["error", "skip", "warn"],
+                None,
+                False,
+                "'error'",
+                "What to do when the input cannot go through a requested step"
+                " or model, found before anything runs. error (default): "
+                "refuse, listing every problem with its fix. skip: leave out "
+                "the incompatible steps, record why, and run the rest. warn: "
+                "log the problems and run everything. An output read with "
+                "--prediction-dir only warns.",
+            ),
+            "--preflight-only": (
+                "Pre-flight check",
+                None,
+                None,
+                0,
+                False,
+                "False",
+                "Print the pre-flight plan (what would run, what is "
+                "incompatible and why) and stop, without preparing, relaxing "
+                "or predicting anything. Exit status 1 when --on-incompatible"
+                " is error and something is refused.",
             ),
             "--format": (
                 "Report",
@@ -475,7 +693,14 @@ GOLDEN = {
                 None,
                 False,
                 "'score'",
-                "score: both chains as templates; refold: binder predicted freely. Default: score",
+                "score: each chain is given its own structure from the "
+                "input as a template and OpenFold3 places the binder "
+                "itself, so its confidences refer to its own pose "
+                "(binder_ca_rmsd and delta_com_angstrom show how far it "
+                "is from the input pose); refold: only the receptor "
+                "is templated and the binder is predicted from its "
+                "sequence (binder_ca_rmsd is the refolding RMSD). "
+                "Default: score",
             ),
             "--openfold-conda-env": (
                 "OpenFold",
@@ -493,9 +718,203 @@ GOLDEN = {
                 "+",
                 False,
                 "None",
-                "Seed values written to the OpenFold3 query JSON "
-                "(default: the OpenFold module default, 42). The "
-                "first seed's first sample is scored.",
+                "Seed values OpenFold3 samples with, written to its runner "
+                "YAML (default: 42). It makes one seed_<value> directory "
+                "per seed; the first seed given, first sample, is scored. "
+                "With --predictor MODEL the seeds go to that model's runner"
+                " (ColabFold: consecutive integers from 0, default 0; "
+                "Boltz-2: exactly one, default 42; Protenix: default 101).",
+            ),
+            "--openfold-cyclic": (
+                "OpenFold",
+                None,
+                ["auto", "on", "off"],
+                None,
+                False,
+                "'auto'",
+                "Whether the binder chain of the OpenFold3 query gets 'cyclic: "
+                "true' (OpenFold3 >= 0.4.5). auto (default): when the binder "
+                "has a head-to-tail bond, consists of standard residues only "
+                "and the installed OpenFold3 is new enough; on: always; off: "
+                "never. OpenFold3 uses the flag only to wrap the relative "
+                "positions of the chain: it does not enforce the closure bond, "
+                "documents the flag only in an example query, and has published"
+                " no accuracy benchmark for cyclic peptides. It builds the wrap"
+                " from the token count of the chain and gives every atom of a "
+                "modified residue its own token: for 1CWA (D-amino acid, "
+                "N-methylated residues; one complex, three seeds) the flag "
+                "lowered ipTM from 0.91-0.92 to 0.78-0.81 and raised the binder"
+                " C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A, so auto leaves such"
+                " a binder linear (on forces the flag); for SFTI-1 (standard "
+                "residues; one seed) the flag closed the ring (C-N 7.40 A "
+                "without it, 1.38 A with it). Disulfide, lactam and staple "
+                "closures cannot be given to OpenFold3 and are not written.",
+            ),
+            "--openfold-no-msa-server": (
+                "OpenFold",
+                None,
+                None,
+                0,
+                False,
+                "False",
+                "Do not use the ColabFold MSA server for OpenFold3: it then "
+                "runs with a dummy MSA that holds only the query sequence of "
+                "each chain (OpenFold3's input reference suggests this for "
+                "MSA-free runs), which lowers accuracy for a natural receptor. "
+                "With --openfold-templates alignment the template alignments "
+                "written by the toolkit are no longer replaced by the server "
+                "(issue #68); the default, structure, keeps the template with "
+                "the server on too. One complex (1YCR, OpenFold3 0.5.0, one "
+                "seed), binder C-alpha RMSD against the crystal pose: 1.57 A "
+                "with the server and the template as a structure (the default), "
+                "1.62 A with the server and the template as an alignment (the "
+                "server replaces it: no template), 21.6 A with no MSA and no "
+                "template, 1.12 A with a working template and no MSA.",
+            ),
+            "--prediction-mode": (
+                "Prediction",
+                None,
+                ["predict", "refold", "score", "score-lock"],
+                None,
+                False,
+                "None",
+                "How the model is used for the complex: predict (sequences "
+                "only), refold (receptor templated, binder predicted "
+                "freely), score (every chain templated on its own, the pose"
+                " not given: re-docking) or score-lock (score, with the "
+                "pose pinned to the input). It is checked against what the "
+                "model supports and, for a run from here, against what its "
+                "runner can do (of3: refold, score; boltz2: all four; af2 "
+                "and protenix: predict), before anything runs, and "
+                "recorded. Default: the runner's own mode, that is for "
+                "--predictor of3 the value of --openfold-mode (score), "
+                "score for boltz2 and predict for af2 and protenix; for an "
+                "output read with --prediction-dir, not stated and not "
+                "checked. Needs --predictor.",
+            ),
+            "--prediction-cyclic": (
+                "Prediction",
+                None,
+                ["auto", "on", "off"],
+                None,
+                False,
+                "None",
+                "Whether the binder is given to the model as cyclic, for "
+                "--predictor MODEL run from here. auto (default): when the "
+                "binder has a head-to-tail bond (for OpenFold3 also only when "
+                "it consists of standard residues: with a D-amino acid and "
+                "N-methylated residues, 1CWA, the flag lowered ipTM from "
+                "0.91-0.92 to 0.78-0.81 in one complex, three seeds, so auto "
+                "leaves such a binder linear); on: always; off: never. "
+                "OpenFold3 (>= 0.4.5) and Boltz-2 get 'cyclic: true' on the "
+                "binder chain, which only wraps its relative positions and does"
+                " not enforce the closure bond; Protenix gets the head-to-tail "
+                "and disulfide bonds as covalent_bonds; ColabFold has no such "
+                "setting and refuses a value. For --predictor of3 it is the "
+                "setting of --openfold-cyclic (both given with different values"
+                " is an error). Needs --predictor.",
+            ),
+            "--prediction-no-msa-server": (
+                "Prediction",
+                None,
+                None,
+                0,
+                False,
+                "False",
+                "Do not use an MSA server, for --predictor MODEL run from "
+                "here: ColabFold runs single_sequence, Boltz-2 writes 'msa:"
+                " empty', Protenix runs with --use_msa false, OpenFold3 as "
+                "--openfold-no-msa-server. The accuracy for a natural "
+                "receptor drops; no sequence leaves the machine. Needs "
+                "--predictor.",
+            ),
+            "--prediction-conda-env": (
+                "Prediction",
+                "NAME",
+                None,
+                None,
+                False,
+                "None",
+                "Conda environment that has the model, for --predictor "
+                "MODEL run from here (conda run -n NAME). Default: the "
+                "model's executable on PATH, that is the current "
+                "environment; an empty string says the same. For "
+                "--predictor of3 it is the setting of --openfold-conda-env "
+                "(default openfold3) and wins over its default; both given "
+                "with different values is an error. Needs --predictor.",
+            ),
+            "--prediction-lock-threshold": (
+                "Prediction",
+                "ANGSTROM",
+                None,
+                None,
+                False,
+                "None",
+                "Only for --prediction-mode score-lock: how far, in "
+                "angstrom, a residue may move from the pinned template "
+                "before the model pulls it back (the threshold of the "
+                "forced template of Boltz-2). Default: 2.0, the choice of "
+                "the Boltz-2 runner (Boltz-2 documents none). A runner or a"
+                " mode that does not use it refuses it. Needs --predictor.",
+            ),
+            "--prediction-weights": (
+                "Prediction",
+                "PATH",
+                None,
+                None,
+                False,
+                "None",
+                "Custom weights for the model, for instance a fine-tuned "
+                "checkpoint: a file for a model that takes a checkpoint file "
+                "(OpenFold3: --inference-ckpt-path), a directory for a model "
+                "whose weights are a directory. It applies to --predictor "
+                "MODEL run from here and to the OpenFold3 step without "
+                "--predictor (binding-metrics-openfold names it --ckpt). The "
+                "weights are identified by content (SHA-256) in the key of "
+                "the prediction store and recorded in the results. A model "
+                "whose runner cannot take custom weights is refused before "
+                "anything runs. Cannot be combined with --prediction-dir: "
+                "the weights are whatever made that output. Default: the "
+                "model's own weights.",
+            ),
+            "--binder-type": (
+                "Pre-flight check",
+                None,
+                ["auto", "peptide", "miniprotein", "nanobody", "antibody"],
+                None,
+                False,
+                "'auto'",
+                "What the binder is, for the checks that depend on it. auto "
+                "(default) estimates it from the number of residues: at most "
+                "40 a peptide, at most 100 a miniprotein, longer unknown, "
+                "which skips the type checks. A nanobody or an antibody chain"
+                " is never guessed: name it.",
+            ),
+            "--on-incompatible": (
+                "Pre-flight check",
+                None,
+                ["error", "skip", "warn"],
+                None,
+                False,
+                "'error'",
+                "What to do when the input cannot go through a requested step"
+                " or model, found before anything runs. error (default): "
+                "refuse, listing every problem with its fix. skip: leave out "
+                "the incompatible steps, record why, and run the rest. warn: "
+                "log the problems and run everything. An output read with "
+                "--prediction-dir only warns.",
+            ),
+            "--preflight-only": (
+                "Pre-flight check",
+                None,
+                None,
+                0,
+                False,
+                "False",
+                "Print the pre-flight plan (what would run, what is "
+                "incompatible and why) and stop, without preparing, relaxing "
+                "or predicting anything. Exit status 1 when --on-incompatible"
+                " is error and something is refused.",
             ),
             "--log-file": (
                 "Logging",

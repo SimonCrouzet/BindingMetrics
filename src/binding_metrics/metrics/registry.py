@@ -28,6 +28,11 @@ What a consumer may rely on
 * The metadata fields ``headline_key``, ``direction``, ``unit``, ``cost_class``,
   ``requires_extras`` and ``requires_gpu`` are optional. None (or an empty
   tuple) means "not declared", never a guess.
+* ``capabilities`` is an optional, keyword-only ``binding_metrics.capabilities.Capabilities``:
+  the inputs the metric cannot take (a receptor chain, a reference structure, a ring closure
+  its force field cannot patch), each with a sentence that says why. None declares no limit,
+  and a limit is declared only where the code of the metric shows it. ``preflight`` reads it
+  to refuse an input before anything runs.
 
 Building a call from a spec
 ---------------------------
@@ -40,7 +45,8 @@ other parameter keeps the function's own default. Inputs the spec does not
 declare are the caller's to supply: trajectory metrics also take a
 ``topology_path``, and the interface ones receive atom-index lists
 (``ligand_indices``, ``receptor_indices``) where static metrics take chain IDs;
-``evobind_score`` takes a ``plddt_per_atom`` array.
+``evobind_score`` takes a ``plddt_per_atom`` array, and ``prediction`` takes the
+``model`` and ``name`` of the prediction.
 
 Not registered: the ``run_openfold*`` and ``prepare_*`` functions (they start or
 prepare a model job and return no metric), the command-line ``main`` functions,
@@ -67,6 +73,13 @@ predicted_structure
     (for example ``plddt_per_atom`` from the ``openfold`` metric) that the
     caller passes as extra keyword arguments.
 
+prediction_dir
+    Reads the output directory of a structure-prediction model that has an adapter in
+    ``binding_metrics.predictors`` (``path_arg`` names the kwarg that receives the
+    directory). The caller also supplies ``model`` (a key of ``predictors.PARSERS``) and
+    ``name`` (the prediction name); ``interface_pae`` and ``openfold`` remain the OpenFold3
+    entries of ``openfold_json``.
+
 Chain modes
 -----------
 none        No chain arguments.
@@ -82,8 +95,10 @@ interface_2paths
 from __future__ import annotations
 
 import importlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Optional
+
+from binding_metrics.capabilities import Capabilities
 
 InputType = Literal[
     "static_structure",
@@ -92,6 +107,7 @@ InputType = Literal[
     "openfold_json",
     "atom_array",
     "predicted_structure",
+    "prediction_dir",
 ]
 ChainMode = Literal["none", "single", "interface", "interface_2paths"]
 Direction = Literal["higher_is_better", "lower_is_better"]
@@ -196,6 +212,11 @@ class MetricSpec:
     requires_gpu:
         True when the metric runs its heavy computation on a CUDA device by
         default. A scheduling hint, read before the function is imported.
+    capabilities:
+        The inputs the metric cannot take, as a ``Capabilities`` (keyword-only);
+        None declares no limit. Every limit carries a sentence that names the
+        code that enforces it. ``binding_metrics.capabilities.preflight`` compares
+        it with the input before the metric runs.
     binder_chain_arg:
         Name of the role-alias kwarg for the binder chain, ``"binder_chain"``,
         on a metric whose function accepts it; None where it does not (the
@@ -224,6 +245,9 @@ class MetricSpec:
     cost_class: Optional[CostClass] = None
     requires_extras: tuple[str, ...] = ()
     requires_gpu: bool = False
+    # Keyword-only, so a spec built positionally keeps its meaning. Declared before the two
+    # alias fields only because tests/test_w3b_registry_aliases.py pins those as the last two.
+    capabilities: Optional[Capabilities] = field(default=None, kw_only=True)
     binder_chain_arg: Optional[str] = None
     target_chain_arg: Optional[str] = None
 
@@ -250,6 +274,148 @@ class MetricSpec:
 
 
 # ---------------------------------------------------------------------------
+# Declared limits
+# ---------------------------------------------------------------------------
+#
+# Each entry states a limit that the code of the metric shows, and its ``reasons`` sentence names
+# that code (the function and what it does) and says what to do instead. A metric with no entry
+# has no limit that could be proved, not a proof that it has none: the ones considered and left
+# out are listed in docs/preflight.md. tests/test_pre_metric_limits.py runs the metrics on an
+# input that breaks the limit and pins the behaviour the sentence describes, so a metric that
+# starts to handle the input makes its test fail and the entry has to go.
+
+
+def _needs(need: str, why: str) -> Capabilities:
+    """A step that cannot run without ``need``; ``why`` says what the function does without it."""
+    return Capabilities(needs={need}, reasons={"needs": why})
+
+
+_NEEDS_A_RECEPTOR = {
+    "interface": _needs(
+        "receptor_chain",
+        "compute_interface_metrics measures the contact between two protein chains and raises "
+        "ValueError ('Chain auto-detection failed') when the structure has only one. Give a "
+        "complex with a receptor, or leave 'interface' out of the metric list.",
+    ),
+    "coulomb": _needs(
+        "receptor_chain",
+        "compute_coulomb_cross_chain sums the charge interactions between the binder and the "
+        "receptor, and for a structure with no receptor it returns 0.0 kJ/mol with no charged "
+        "pair, a value that reads as 'no interaction'. Give a complex with a receptor, or "
+        "leave 'coulomb' out of the metric list.",
+    ),
+    "shape_complementarity": _needs(
+        "receptor_chain",
+        "compute_shape_complementarity scores the fit of two surfaces and returns NaN with no "
+        "surface dots for a structure with no receptor. Give a complex with a receptor, or "
+        "leave 'shape_complementarity' out of the metric list.",
+    ),
+    "void_volume": _needs(
+        "receptor_chain",
+        "compute_buried_void_volume looks for cavities between the binder and the receptor and "
+        "returns NaN with the reason 'fewer than two protein chains' for a structure with only "
+        "one. Give a complex with a receptor, or leave 'void_volume' out of the metric list.",
+    ),
+    "delta_sasa_static": _needs(
+        "receptor_chain",
+        "compute_delta_sasa_static takes the area that the binder buries against the receptor, "
+        "and the receptor chain is a required argument (TypeError without it). Give a complex "
+        "with a receptor, or leave 'delta_sasa_static' out of the metric list.",
+    ),
+    "hbonds": _needs(
+        "receptor_chain",
+        "compute_hbonds counts the hydrogen bonds between the binder and the receptor, and the "
+        "receptor chain is a required argument (TypeError without it). Give a complex with a "
+        "receptor, or leave 'hbonds' out of the metric list.",
+    ),
+    "saltbridges": _needs(
+        "receptor_chain",
+        "compute_saltbridges counts the salt bridges between the binder and the receptor, and "
+        "the receptor chain is a required argument (TypeError without it). Give a complex with "
+        "a receptor, or leave 'saltbridges' out of the metric list.",
+    ),
+}
+
+# A structure that these steps cannot patch: core.cyclic.patch_cyclic_topology runs in both
+# (protocols/relaxation.py and metrics/energy.py call it without a switch) and raises
+# CyclizationError for a link that is none of the patterns below.
+_CLOSURES_THE_FORCE_FIELD_PATCHES = frozenset(
+    {"none", "head_to_tail", "disulfide", "lactam", "staple"}
+)
+
+
+def _force_field_closures(function: str, **more) -> Capabilities:
+    """The closure limit of a step that patches the cyclic topology, plus the rest of its limits."""
+    reasons = {
+        "closures": (
+            f"{function} patches the cyclic topology with core.cyclic.patch_cyclic_topology, "
+            "which raises CyclizationError for a link between two residues that is not a "
+            "head-to-tail amide, a disulfide, a lactam or a hydrocarbon staple (a thioether, "
+            "a macrolactone or a biaryl ether, for instance). Use a metric that needs no "
+            "force field (interface, delta_sasa_static, ...), or leave this one out."
+        ),
+        **more.pop("reasons", {}),
+    }
+    return Capabilities(closures=_CLOSURES_THE_FORCE_FIELD_PATCHES, reasons=reasons, **more)
+
+
+_NEEDS_A_REFERENCE = _needs(
+    "reference_structure",
+    "compute_dockq_metrics compares a model with a reference (native) complex, and the reference "
+    "path is a required argument. Provide the reference structure, or leave 'dockq' out of the "
+    "metric list.",
+)
+
+# Metrics of a prediction: they read what a structure-prediction model wrote and run no model.
+_NEEDS_A_PREDICTION = {
+    "openfold": _needs(
+        "predicted_structure",
+        "compute_openfold_metrics parses the output directory of an OpenFold3 run and runs no "
+        "model. Point it at a prediction, or leave 'openfold' out of the metric list.",
+    ),
+    "prediction": _needs(
+        "predicted_structure",
+        "compute_prediction_metrics reads the output directory of a registered structure-"
+        "prediction model and runs no model. Point it at a prediction, or leave 'prediction' "
+        "out of the metric list.",
+    ),
+    "interface_pae": Capabilities(
+        needs={"receptor_chain", "predicted_structure"},
+        reasons={
+            "needs": (
+                "compute_interface_pae slices the PAE matrix of an OpenFold3 confidences file "
+                "between the binder and the receptor, and both the receptor chain and the "
+                "confidences file are required arguments. Give both, or leave 'interface_pae' "
+                "out of the metric list."
+            )
+        },
+    ),
+    "evobind_score": Capabilities(
+        needs={"receptor_chain", "predicted_structure"},
+        reasons={
+            "needs": (
+                "compute_evobind_score divides the binder-to-interface distance by the binder "
+                "pLDDT, which only a structure-prediction model provides (evobind_score is None "
+                "without per-atom pLDDT), and the receptor chain is a required argument. Give "
+                "both, or leave 'evobind_score' out of the metric list."
+            )
+        },
+    ),
+    "evobind_adversarial": Capabilities(
+        needs={"receptor_chain", "predicted_structure"},
+        reasons={
+            "needs": (
+                "compute_evobind_adversarial_check compares the design with a second, predicted "
+                "structure of the same complex (a required argument) after superposing the "
+                "receptors, and the receptor chain is a required argument too. Give both, or "
+                "leave 'evobind_adversarial' out of the metric list."
+            )
+        },
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 #
@@ -263,6 +429,7 @@ METRICS: list[MetricSpec] = [
     # --- Static structure metrics -------------------------------------------
     MetricSpec(
         name="interface",
+        capabilities=_NEEDS_A_RECEPTOR["interface"],
         import_path="binding_metrics.metrics.interface:compute_interface_metrics",
         description="Binding interface: ΔSASA, ΔG_int, H-bonds, salt bridges (PISA approach)",
         input_type="static_structure",
@@ -279,6 +446,7 @@ METRICS: list[MetricSpec] = [
     ),
     MetricSpec(
         name="coulomb",
+        capabilities=_NEEDS_A_RECEPTOR["coulomb"],
         import_path="binding_metrics.metrics.electrostatics:compute_coulomb_cross_chain",
         description="Coulomb cross-chain interaction energy (formal charges, pH 7)",
         input_type="static_structure",
@@ -329,6 +497,7 @@ METRICS: list[MetricSpec] = [
     ),
     MetricSpec(
         name="shape_complementarity",
+        capabilities=_NEEDS_A_RECEPTOR["shape_complementarity"],
         import_path="binding_metrics.metrics.geometry:compute_shape_complementarity",
         description="Shape complementarity Sc (Lawrence & Colman 1993) via surface dots",
         input_type="static_structure",
@@ -347,6 +516,7 @@ METRICS: list[MetricSpec] = [
     ),
     MetricSpec(
         name="void_volume",
+        capabilities=_NEEDS_A_RECEPTOR["void_volume"],
         import_path="binding_metrics.metrics.geometry:compute_buried_void_volume",
         description="Buried void volume at the interface (grid flood-fill)",
         input_type="static_structure",
@@ -382,6 +552,7 @@ METRICS: list[MetricSpec] = [
     ),
     MetricSpec(
         name="delta_sasa_static",
+        capabilities=_NEEDS_A_RECEPTOR["delta_sasa_static"],
         import_path="binding_metrics.metrics.sasa:compute_delta_sasa_static",
         description="Buried SASA on binding for one static structure (biotite, probe 1.4 Å)",
         input_type="static_structure",
@@ -420,6 +591,7 @@ METRICS: list[MetricSpec] = [
     ),
     MetricSpec(
         name="evobind_adversarial",
+        capabilities=_NEEDS_A_PREDICTION["evobind_adversarial"],
         import_path="binding_metrics.metrics.evobind:compute_evobind_adversarial_check",
         description=(
             "EvoBind adversarial check: binder centre-of-mass shift between two "
@@ -446,6 +618,7 @@ METRICS: list[MetricSpec] = [
     # the extra arrays the function needs.
     MetricSpec(
         name="hbonds",
+        capabilities=_NEEDS_A_RECEPTOR["hbonds"],
         import_path="binding_metrics.metrics.polar_contacts:compute_hbonds",
         description="Cross-chain H-bonds (Baker-Hubbard): count and distance/angle-weighted energy",
         input_type="atom_array",
@@ -464,6 +637,7 @@ METRICS: list[MetricSpec] = [
     ),
     MetricSpec(
         name="saltbridges",
+        capabilities=_NEEDS_A_RECEPTOR["saltbridges"],
         import_path="binding_metrics.metrics.polar_contacts:compute_saltbridges",
         description="Cross-chain salt bridges: residue-pair count, bidentate count, Coulomb energy",
         input_type="atom_array",
@@ -482,6 +656,7 @@ METRICS: list[MetricSpec] = [
     ),
     MetricSpec(
         name="evobind_score",
+        capabilities=_NEEDS_A_PREDICTION["evobind_score"],
         import_path="binding_metrics.metrics.evobind:compute_evobind_score",
         description=(
             "EvoBind primary score: binder-to-interface distance divided by binder "
@@ -508,6 +683,7 @@ METRICS: list[MetricSpec] = [
     # DockQ performs its own automatic optimal chain-mapping search.
     MetricSpec(
         name="dockq",
+        capabilities=_NEEDS_A_REFERENCE,
         import_path="binding_metrics.metrics.dockq:compute_dockq_metrics",
         description="Reference-based CAPRI accuracy: DockQ, fnat, fnonnat, i-RMSD, L-RMSD",
         input_type="static_structure",
@@ -691,6 +867,7 @@ METRICS: list[MetricSpec] = [
     # per-entry in the manifest under the "md" key and forwarded to RelaxationConfig.
     MetricSpec(
         name="md_implicit",
+        capabilities=_force_field_closures("run_implicit_relaxation"),
         import_path="binding_metrics.protocols.relaxation:run_implicit_relaxation",
         description=(
             "Implicit solvent MD relaxation (AMBER ff14SB + OBC2/GBn2): "
@@ -710,6 +887,19 @@ METRICS: list[MetricSpec] = [
     # (the default ``modes`` include a short MD run, hence md_simulation).
     MetricSpec(
         name="structure_interaction_energy",
+        capabilities=_force_field_closures(
+            "compute_interaction_energy",
+            needs={"receptor_chain"},
+            reasons={
+                "needs": (
+                    "compute_interaction_energy decomposes the energy into complex, binder and "
+                    "receptor, and for a structure with only one protein chain it returns "
+                    "success=False with the error 'Could not identify two protein chains'. Give "
+                    "a complex with a receptor, or leave "
+                    "'structure_interaction_energy' out of the metric list."
+                )
+            },
+        ),
         import_path="binding_metrics.metrics.energy:compute_interaction_energy",
         description=(
             "Peptide-receptor interaction energy of one structure by subsystem "
@@ -735,6 +925,7 @@ METRICS: list[MetricSpec] = [
     # --- OpenFold metrics ---------------------------------------------------
     MetricSpec(
         name="openfold",
+        capabilities=_NEEDS_A_PREDICTION["openfold"],
         import_path="binding_metrics.metrics.openfold:compute_openfold_metrics",
         description="Parse OpenFold3 output: pLDDT, pAE, pTM, ipTM, GPDE, has_clash",
         input_type="openfold_json",
@@ -748,7 +939,27 @@ METRICS: list[MetricSpec] = [
         requires_extras=("biotite",),
     ),
     MetricSpec(
+        name="prediction",
+        capabilities=_NEEDS_A_PREDICTION["prediction"],
+        import_path="binding_metrics.metrics.prediction:compute_prediction_metrics",
+        description=(
+            "Confidence metrics of a structure prediction from a registered model: "
+            "pLDDT, pTM, ipTM, PAE, PDE, binder pLDDT, interface PAE and PDE"
+        ),
+        input_type="prediction_dir",
+        chain_mode="none",
+        binder_chain_arg="binder_chain",
+        target_chain_arg="target_chain",
+        formats=(),
+        path_arg="prediction_dir",
+        # Bundle: pLDDT and ipTM are higher-is-better, PDE and PAE lower-is-better; the
+        # scales of pLDDT and ipTM differ between models.
+        cost_class="model",
+        requires_extras=("biotite",),
+    ),
+    MetricSpec(
         name="interface_pae",
+        capabilities=_NEEDS_A_PREDICTION["interface_pae"],
         import_path="binding_metrics.metrics.openfold:compute_interface_pae",
         description="Binder x receptor PAE slice from OpenFold3 confidences: mean and max",
         input_type="openfold_json",

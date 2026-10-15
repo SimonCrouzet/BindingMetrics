@@ -77,9 +77,9 @@ def test_every_alias_a_function_accepts_is_declared(spec):
 @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
 def test_alias_fields_follow_the_roles_of_the_spec(spec):
     """Declared only for a role the metric has; the index-based trajectory metrics have none."""
-    # ``openfold`` is registered with chain_mode "none" (it parses a directory) but its
-    # function takes optional binder and receptor chains.
-    takes_chains_despite_mode = spec.name == "openfold"
+    # ``openfold`` and ``prediction`` are registered with chain_mode "none" (they parse a
+    # directory) but their functions take optional binder and receptor chains.
+    takes_chains_despite_mode = spec.name in ("openfold", "prediction")
     if spec.binder_chain_arg:
         assert _has_binder_role(spec) or takes_chains_despite_mode, spec.name
     if spec.target_chain_arg:

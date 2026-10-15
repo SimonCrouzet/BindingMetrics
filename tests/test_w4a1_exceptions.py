@@ -212,4 +212,6 @@ class TestOpenfold:
         for step in ("binder pLDDT", "interface PDE", "interface PAE", "binder RMSD"):
             assert any(f"{step} skipped" in message for message in messages), step
         assert all(Path(w.filename) == Path(__file__) for w in record)
-        assert metrics["reason"].count(";") == 3
+        # the four skipped steps, and first the token layout that the 12-token matrices do not fit
+        assert metrics["reason"].startswith("token layout not built")
+        assert metrics["reason"].count(";") == 4
