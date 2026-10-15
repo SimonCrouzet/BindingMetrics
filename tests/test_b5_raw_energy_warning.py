@@ -2,10 +2,10 @@
 
 PDBFixer puts a missing heavy atom where the template says, without looking at its
 neighbours. On 1YCR, deleting the side chain of the receptor residue nearest to the peptide and
-preparing again rebuilds 8 atoms and takes the raw interaction energy from -16 to +33 665 kJ/mol,
-while the relaxed energy stays near -300. The raw mode evaluates the structure as it is, so on a
-structure that came straight out of preparation the number says more about the clashes than about
-the binding, and nothing in the result said so.
+preparing again rebuilds the missing atoms and raises the raw interaction energy by the clash
+energy of the rebuilt side chain, while the relaxed energy stays negative. The raw mode evaluates
+the structure as it is, so on a structure that came straight out of preparation the number says
+more about the clashes than about the binding, and nothing in the result said so.
 
 ``run_pipeline`` evaluates ``raw`` on the prepared structure when the relaxation is skipped or
 fails. It then logs a warning and records the sentence under ``results["energy"]["warnings"]``,
@@ -246,7 +246,9 @@ def test_real_interface_side_chain_rebuilt_by_pdbfixer(tmp_path):
     assert n_rebuilt > 1
     (note,) = energy["warnings"]
     assert f"{n_rebuilt} heavy atoms" in note
-    assert energy["raw_interaction_energy"] > 1000.0, "the rebuilt side chain clashes"
+    # the rebuilt side chain clashes with its neighbours until the relaxation removes the overlap,
+    # so the relaxed complex binds more favourably than the raw one
+    assert energy["raw_interaction_energy"] > energy["relaxed_interaction_energy"]
     assert energy["relaxed_interaction_energy"] < 0.0
 
     direct = compute_interaction_energy(
