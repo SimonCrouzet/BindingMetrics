@@ -96,11 +96,11 @@ def image_selection(traj, atom_indices):
     """Copy of one selection with every molecule whole and the molecules gathered.
 
     For a selection that is not split into receptor and ligand, such as the protein atoms of a
-    complex. The copy holds the selected atoms, in the order given. When the trajectory has a
-    cell, the largest molecule of the copy (the lowest first atom index among equals) is the
-    anchor and the other molecules go to the image next to it, with the rule and the limit of
-    ``image_complex``. Without a cell, or with an empty selection, the atoms are returned as
-    stored.
+    complex. The copy holds the selected atoms in file order (``atom_slice`` sorts them). When
+    the trajectory has a cell, the largest molecule of the copy (the lowest first atom index
+    among equals) is the anchor and the other molecules go to the image next to it, with the
+    rule and the limit of ``image_complex``. Without a cell, or with an empty selection, the
+    atoms are returned as stored.
 
     Args:
         traj: ``mdtraj.Trajectory``.
