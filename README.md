@@ -155,17 +155,17 @@ Pre-built images are available on Docker Hub (requires [NVIDIA Container Toolkit
 
 | Tag | Contents |
 |---|---|
-| `latest` | the `environment.yml` environment (OpenMM with CUDA 12.4, the dependencies of the `all` extra and the GAFF2 stack) as of the newest stable release tag |
-| `main` | the same environment as of the last push to `main` |
-| `full` | Everything in the `main` image + OpenFold3 conda env |
-| `<version>`, `<version>-full`, `<major>.<minor>`, `<major>.<minor>-full` | the same two images, built when a `v*` tag is pushed |
+| `latest` | the full image of the newest stable release: the `environment.yml` environment (OpenMM with CUDA 12.4, the dependencies of the `all` extra and the GAFF2 stack) and the OpenFold3 conda env |
+| `latest-base` | the base image of the newest stable release: the `environment.yml` environment without OpenFold3 |
+| `<major>.<minor>`, `<major>.<minor>-base` | the full and the base image of the newest release of that minor version, built when a `v*` tag is pushed |
+| `main`, `main-base` | the full and the base image as of the last push to `main` |
 
 ```bash
-# Base image (no OpenFold3)
+# Full image (with OpenFold3)
 docker pull simoncrouzet/binding-metrics:latest
 
-# Full image (with OpenFold3)
-docker pull simoncrouzet/binding-metrics:full
+# Base image (no OpenFold3)
+docker pull simoncrouzet/binding-metrics:latest-base
 ```
 
 **OpenFold3 weights and kernel cache.** The model weights (~2.3 GB) are not included in the image, and Triton compiles the kernels of OpenFold3 on first use. Bind-mount both to host directories so they persist across container runs:
@@ -177,7 +177,7 @@ docker run -it --gpus all --shm-size=8g \
     -v ~/.openfold-weights:/root/.openfold3 \
     -v ~/.of3-triton-cache:/tmp/triton_cache \
     -v /path/to/your/structures:/data \
-    simoncrouzet/binding-metrics:full bash
+    simoncrouzet/binding-metrics:latest bash
 ```
 
 The first run downloads the default checkpoint (`openbind-2025-06-30-174k`, the OpenBind-0 weights of openfold3 0.5) and compiles the kernels. The second mount is the `TRITON_CACHE_DIR` that the image sets. A volume that holds Preview2 weights (`of3-p2-*.pt`) keeps them, but they do not load into openfold3 0.5: the entrypoint downloads the OpenBind-0 file next to them. The `binding-metrics` conda env is activated on shell start.
@@ -194,11 +194,11 @@ Running the base image:
 ```bash
 docker run --gpus all --rm \
     -v /path/to/your/structures:/data \
-    simoncrouzet/binding-metrics:latest \
+    simoncrouzet/binding-metrics:latest-base \
     binding-metrics-relax --input /data/complex.cif --output /data/relaxed.cif
 ```
 
-Build locally with `docker build --target base -t simoncrouzet/binding-metrics:latest .` (or `--target full`). GitHub Actions rebuilds and pushes the images on every push to `main` (tags `main` and `full`) and on version tags (`v*`), which push `<version>`, `<major>.<minor>` and their `-full` images and, for a stable version, `latest`. A version tag is published only when it is `v` plus the `pyproject.toml` version and `ci.yml` has passed on the tagged commit; `latest` is the last release and `main` follows the main branch.
+Build locally with `docker build --target full -t simoncrouzet/binding-metrics:latest .` or `docker build --target base -t simoncrouzet/binding-metrics:latest-base .`. GitHub Actions rebuilds and pushes both images on every push to `main` (tags `main` and `main-base`) and on version tags (`v*`), which push `<major>.<minor>` and `<major>.<minor>-base` and, for a stable version, `latest` and `latest-base`. A version tag is published only when it is `v` plus the `pyproject.toml` version and `ci.yml` has passed on the tagged commit; `latest` and `latest-base` follow the last release and `main` and `main-base` follow the main branch.
 
 ### OpenFold3 (optional)
 
