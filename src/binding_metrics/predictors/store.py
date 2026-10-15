@@ -232,8 +232,10 @@ class PredictionRequest:
         content_hashes: Role to the SHA-256 of the file's content, filled in from ``input_path``
             and ``extra_files`` (the input file has the role ``"input"``).
 
-    A request needs an input file or sequences (otherwise every request of a model would share
-    one key). Treat it as immutable; ``with_model_version`` and ``for_adoption`` return changed
+    ``sequences``, ``extra_files`` and ``options`` accept ``None`` for the empty mapping: the
+    request has the same attributes and the same key as one made without the argument. A request
+    needs an input file or sequences (otherwise every request of a model would share one key).
+    Treat it as immutable; ``with_model_version`` and ``for_adoption`` return changed
     copies. Two requests are equal when their key and name are equal. It can be pickled, so
     batch workers can be sent one.
 
@@ -250,12 +252,12 @@ class PredictionRequest:
     input_path: Optional[Path] = None
     binder_chain: Optional[str] = None
     receptor_chain: Optional[str] = None
-    sequences: Mapping[str, str] = field(default_factory=dict)
-    extra_files: Mapping[str, Path] = field(default_factory=dict)
+    sequences: Optional[Mapping[str, str]] = field(default_factory=dict)
+    extra_files: Optional[Mapping[str, Path]] = field(default_factory=dict)
     seeds: Sequence[int] = (42,)
     num_samples: int = 5
     model_version: str = ""
-    options: Mapping[str, Any] = field(default_factory=dict)
+    options: Optional[Mapping[str, Any]] = field(default_factory=dict)
     weights: Optional[str | Path | WeightsRef] = None
     content_hashes: Mapping[str, str] = field(init=False, default_factory=dict, repr=False)
     adoption_name: Optional[str] = field(init=False, default=None, repr=False)
@@ -278,8 +280,14 @@ class PredictionRequest:
             raise ValueError(f"num_samples must be a positive integer, got {self.num_samples!r}")
 
         input_path = None if self.input_path is None else Path(self.input_path)
-        sequences = {str(chain): str(sequence) for chain, sequence in dict(self.sequences).items()}
-        extra_files = {str(role): Path(path) for role, path in dict(self.extra_files).items()}
+        sequences = {
+            str(chain): str(sequence)
+            for chain, sequence in dict({} if self.sequences is None else self.sequences).items()
+        }
+        extra_files = {
+            str(role): Path(path)
+            for role, path in dict({} if self.extra_files is None else self.extra_files).items()
+        }
         if input_path is None and not sequences:
             raise ValueError("a prediction request needs an input file or sequences")
         if _INPUT_ROLE in extra_files:
@@ -295,7 +303,7 @@ class PredictionRequest:
         put("sequences", sequences)
         put("extra_files", extra_files)
         put("seeds", tuple(int(seed) for seed in self.seeds))
-        put("options", _plain_options(self.options))
+        put("options", _plain_options({} if self.options is None else self.options))
         put("model_version", str(self.model_version or ""))
         put("content_hashes", hashes)
         if self.weights is not None and not isinstance(self.weights, WeightsRef):
