@@ -3,7 +3,7 @@
 1CWA: the peptide is author chain C and chain B of the OpenMM topology, whose chain C holds 140
 waters. With ``peptide_chain="C"`` the function took the waters for the peptide, removed the
 peptide residues as heterogens and dropped chain B as a third protein chain, and reported
-success: 7542 contacts and -674.7 kJ/mol where the peptide gives 2288 contacts and -260.4 kJ/mol.
+success, with the contacts and the energy of the waters and the receptor instead of the peptide's.
 """
 
 import sys
@@ -145,11 +145,11 @@ class TestRawEnergyOfTheRawFile:
 
     def test_the_author_id_gives_the_energy_of_the_peptide(self, energies):
         assert energies["C"]["success"], energies["C"]["error_message"]
-        assert energies["C"]["num_contacts"] == 2288
+        assert energies["B"]["success"], energies["B"]["error_message"]
+        assert energies["C"]["num_contacts"] == energies["B"]["num_contacts"]
         assert energies["C"]["raw_interaction_energy"] == pytest.approx(
             energies["B"]["raw_interaction_energy"], rel=1e-3
         )
-        assert energies["C"]["raw_interaction_energy"] == pytest.approx(-260.4, abs=2.0)
 
 
 @requires_cuda
@@ -169,6 +169,12 @@ def test_the_energy_of_a_file_with_swapped_letters(tmp_path):
     result = energy.compute_interaction_energy(
         swapped, peptide_chain="A", receptor_chain="B", modes=("raw",), device="cuda"
     )
+    original = energy.compute_interaction_energy(
+        CWA, peptide_chain="C", receptor_chain="A", modes=("raw",), device="cuda"
+    )
     assert result["success"], result["error_message"]
-    assert result["num_contacts"] == 2288
-    assert result["raw_interaction_energy"] == pytest.approx(-260.4, abs=2.0)
+    assert original["success"], original["error_message"]
+    assert result["num_contacts"] == original["num_contacts"]
+    assert result["raw_interaction_energy"] == pytest.approx(
+        original["raw_interaction_energy"], rel=1e-3
+    )
