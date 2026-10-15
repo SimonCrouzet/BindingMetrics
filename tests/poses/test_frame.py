@@ -39,9 +39,7 @@ DATA = Path(__file__).resolve().parents[2] / "data"
 YCR = DATA / "example_linear_p53_1YCR.pdb"
 SFTI = DATA / "example_bicyclic_sfti1_3P8F.cif"
 
-# MDM2 residues within 4.5 angstrom of the crystal peptide.
-YCR_SITE = [25, 26, 50, 51, 54, 57, 58, 61, 62, 67, 70, 71, 72, 73, 75, 91, 93, 94, 96, 99, 100]
-YCR_SITE += [104]
+SITE_CUTOFF_ANGSTROM = 4.5  # the default of FrameOptions.site_cutoff_angstrom
 
 
 # ---------------------------------------------------------------------------
@@ -55,9 +53,30 @@ def _load(path):
     return load_structure(path)
 
 
+def brute_force_site(atoms, cutoff_angstrom=SITE_CUTOFF_ANGSTROM):
+    """Numbers of the MDM2 residues (chain A) with a heavy atom near the p53 peptide (chain B).
+
+    The binding site of 1YCR at ``cutoff_angstrom``, from the full distance matrix between the
+    heavy atoms of the two chains.
+    """
+    heavy = ~np.isin(atoms.element, ["H", "D"]) & struc.filter_amino_acids(atoms)
+    receptor = atoms[heavy & (atoms.chain_id == "A")]
+    peptide = atoms[heavy & (atoms.chain_id == "B")]
+    distances = np.linalg.norm(
+        receptor.coord[:, None, :].astype(np.float64) - peptide.coord[None, :, :], axis=-1
+    )
+    near = (distances <= cutoff_angstrom).any(axis=1)
+    return sorted({int(number) for number in receptor.res_id[near]})
+
+
 @pytest.fixture(scope="module")
 def ycr():
     return _load(YCR)
+
+
+@pytest.fixture(scope="module")
+def ycr_site(ycr):
+    return brute_force_site(ycr)
 
 
 @pytest.fixture(scope="module")
@@ -537,9 +556,11 @@ class TestRenumberedConstructs:
         assert result.receptor_rmsd_angstrom == pytest.approx(0.0, abs=1e-4)
         assert result.transform.allclose(Transform(*random_rigid(31)).inverse(), atol=1e-5)
 
-    def test_the_site_region_is_in_reference_numbering(self, renumbered, ycr_reference):
+    def test_the_site_region_is_in_reference_numbering(self, renumbered, ycr_reference, ycr_site):
         result = superpose_receptor(renumbered, ycr_reference)
-        assert result.region_n_residues["site"] == 22 and result.region_n_paired["site"] == 22
+        # every site residue of the reference is paired although the pose is numbered from 1
+        assert result.region_n_residues["site"] == len(ycr_site)
+        assert result.region_n_paired["site"] == len(ycr_site)
         assert region(result, "site") == pytest.approx(0.0, abs=1e-4)
 
     def test_the_note_says_why_number_pairing_did_not_apply(self, renumbered, ycr_reference):
@@ -909,17 +930,23 @@ class TestRegions:
         assert set(with_binder.region_rmsd_angstrom) == {"all", "site"}
         assert set(without.region_rmsd_angstrom) == {"all"}
 
-    def test_the_site_is_the_residues_near_the_reference_peptide(self, ycr_reference):
+    def test_the_site_is_the_residues_near_the_reference_peptide(
+        self, ycr, ycr_reference, ycr_site
+    ):
         prepared = prepare_reference(ycr_reference)
-        assert [key.number for key in prepared.site] == YCR_SITE
+        # the site is the set of residues of the distance matrix, at the default and at a cutoff
+        assert [key.number for key in prepared.site] == ycr_site
         assert all(key.chain == "A" for key in prepared.site)
         tighter = prepare_reference(ycr_reference, site_cutoff_angstrom=3.5)
-        assert 0 < len(tighter.site) < 22 and set(tighter.site) < set(prepared.site)
+        assert [key.number for key in tighter.site] == brute_force_site(ycr, 3.5)
+        assert 0 < len(tighter.site) < len(prepared.site) and set(tighter.site) < set(prepared.site)
 
     def test_the_site_cutoff_is_an_option(self, ycr, ycr_reference):
         wide = superpose_receptor(ycr, ycr_reference, options={"site_cutoff_angstrom": 6.0})
         narrow = superpose_receptor(ycr, ycr_reference, options={"site_cutoff_angstrom": 3.5})
-        assert wide.region_n_residues["site"] > 22 > narrow.region_n_residues["site"]
+        # the option reaches the site of each result
+        assert wide.region_n_residues["site"] == len(brute_force_site(ycr, 6.0))
+        assert narrow.region_n_residues["site"] == len(brute_force_site(ycr, 3.5))
 
     def test_regions_use_alpha_carbons_whatever_the_fit_atoms(self, ycr, ycr_reference):
         pose = moved(ycr, *random_rigid(51))
@@ -947,22 +974,24 @@ class TestFitOptions:
         pose.coord[move] = ((pose.coord[move] - centre) @ rotation.T + centre).astype(np.float32)
         return pose
 
-    def test_fitting_the_site_only_gives_a_local_frame(self, ycr, ycr_reference):
-        pose = self.hinge(ycr, YCR_SITE)
+    def test_fitting_the_site_only_gives_a_local_frame(self, ycr, ycr_reference, ycr_site):
+        pose = self.hinge(ycr, ycr_site)
         everywhere = superpose_receptor(pose, ycr_reference)
         local = superpose_receptor(pose, ycr_reference, options={"frame_residues": "site"})
         assert everywhere.ok and local.ok
-        assert local.n_fit_residues == 22 and everywhere.n_fit_residues == 85
+        # the local fit uses the site residues alone, the global one every receptor residue
+        assert local.n_fit_residues == len(ycr_site) and everywhere.n_fit_residues == 85
         assert region(local, "site") == pytest.approx(0.0, abs=1e-4)
         assert local.receptor_rmsd_angstrom == pytest.approx(0.0, abs=1e-4)
         assert region(everywhere, "site") > 0.3  # the global fit is pulled by the hinge
         assert region(local, "all") > region(everywhere, "all")  # and the rest moved instead
 
-    def test_fitting_a_named_residue_set(self, ycr):
-        reference = Reference(YCR, "A", "B", residue_sets={"core": [("A", n) for n in YCR_SITE]})
-        pose = self.hinge(ycr, YCR_SITE)
+    def test_fitting_a_named_residue_set(self, ycr, ycr_site):
+        reference = Reference(YCR, "A", "B", residue_sets={"core": [("A", n) for n in ycr_site]})
+        pose = self.hinge(ycr, ycr_site)
         result = superpose_receptor(pose, reference, options={"frame_residues": "core"})
-        assert result.n_fit_residues == 22 and region(result, "core") == pytest.approx(
+        # the fit uses the named set alone
+        assert result.n_fit_residues == len(ycr_site) and region(result, "core") == pytest.approx(
             0.0, abs=1e-4
         )
 
@@ -1126,8 +1155,8 @@ class TestPickling:
     @pytest.mark.parametrize(
         "clone", [lambda o: pickle.loads(pickle.dumps(o)), copy.deepcopy, copy.copy]
     )
-    def test_a_frame_result_survives_with_every_value(self, ycr, ycr_reference, clone):
-        reference = Reference(YCR, "A", "B", residue_sets={"core": [("A", n) for n in YCR_SITE]})
+    def test_a_frame_result_survives_with_every_value(self, ycr, ycr_reference, ycr_site, clone):
+        reference = Reference(YCR, "A", "B", residue_sets={"core": [("A", n) for n in ycr_site]})
         result = superpose_receptor(moved(ycr, *random_rigid(91)), reference)
         again = clone(result)
         assert again is not result and again.ok

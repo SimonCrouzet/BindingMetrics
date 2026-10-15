@@ -13,7 +13,7 @@ from binding_metrics.poses.frame import Transform
 from binding_metrics.poses.reference import Reference, ResidueKey
 from binding_metrics.poses.score import score_pose_set
 from binding_metrics.testing import make_synthetic_poses
-from tests.poses.test_frame import consecutive, drop
+from tests.poses.test_frame import brute_force_site, consecutive, drop
 
 struc = pytest.importorskip("biotite.structure")
 
@@ -22,8 +22,11 @@ YCR = DATA / "example_linear_p53_1YCR.pdb"
 SFTI = DATA / "example_bicyclic_sfti1_3P8F.cif"
 CYCLOSPORIN = DATA / "example_ncaa_cyclosporin_1CWA.cif"
 
-# MDM2 residues within 4.5 angstrom of the crystal peptide (design note, section 1.2).
-EPITOPE = [25, 26, 50, 51, 54, 57, 58, 61, 62, 67, 70, 71, 72, 73, 75, 91, 93, 94, 96, 99, 100, 104]
+
+@pytest.fixture(scope="module")
+def epitope():
+    """MDM2 residues within 4.5 angstrom of the crystal peptide, from the distance matrix."""
+    return brute_force_site(load_structure(YCR))
 
 
 @pytest.fixture(scope="module")
@@ -32,8 +35,8 @@ def synthetic():
 
 
 @pytest.fixture(scope="module")
-def reference():
-    return Reference(YCR, "A", "B", residue_sets={"epitope": [ResidueKey("A", n) for n in EPITOPE]})
+def reference(epitope):
+    return Reference(YCR, "A", "B", residue_sets={"epitope": [ResidueKey("A", n) for n in epitope]})
 
 
 def renumbered(pose):
@@ -54,7 +57,9 @@ def renumbered_poses(synthetic):
 
 class TestExplicitReference:
     @pytest.mark.slow
-    def test_a_pose_renumbered_from_1_is_paired_by_sequence(self, renumbered_poses, reference):
+    def test_a_pose_renumbered_from_1_is_paired_by_sequence(
+        self, renumbered_poses, reference, epitope
+    ):
         result = score_pose_set(renumbered_poses, "B", "A", reference=reference)
         assert result["references"]["implicit"] is False
         assert result["references"]["metrics_frame_variant"] == "reference"
@@ -65,7 +70,8 @@ class TestExplicitReference:
             assert (frame["n_paired"], frame["paired_fraction"]) == (85, 1.0)
             assert frame["receptor_rmsd_angstrom"] < 1e-3
             assert set(frame["region_rmsd_angstrom"]) == {"all", "site", "epitope"}
-            assert frame["region_n_paired"]["epitope"] == 22
+            # the named set is paired in full although the pose is numbered from 1
+            assert frame["region_n_paired"]["epitope"] == len(epitope)
 
     @pytest.mark.slow
     def test_the_agreement_does_not_depend_on_the_reference_or_the_numbering(
@@ -83,7 +89,9 @@ class TestExplicitReference:
         result = score_pose_set(synthetic.poses[:2], "B", "A", reference=reference)
         assert result["poses"][0]["frame"]["pairing"] == "number"
 
-    def test_a_trimmed_receptor_is_paired_on_what_it_has(self, renumbered_poses, reference):
+    def test_a_trimmed_receptor_is_paired_on_what_it_has(
+        self, renumbered_poses, reference, epitope
+    ):
         atoms = renumbered_poses[1].atoms()
         atoms = drop(drop(atoms, "A", range(1, 6)), "A", range(40, 44))
         trimmed = DockedPose.from_atoms(atoms, id="a_trimmed", backend="backend_a")
@@ -97,7 +105,7 @@ class TestExplicitReference:
         assert frame["paired_fraction"] == pytest.approx(76 / 85)
         assert frame["receptor_rmsd_angstrom"] < 1e-3
         # the epitope residues that the pose lost are not counted as paired
-        assert frame["region_n_paired"]["epitope"] < 22
+        assert frame["region_n_paired"]["epitope"] < len(epitope)
         assert result.row("a_trimmed")["hbonds"]["hbonds"] >= 0
 
     def test_the_reference_numbering_reaches_the_labels_of_the_metrics(
@@ -133,7 +141,7 @@ class TestExplicitReference:
         assert (frame["pairing"], frame["n_paired"]) == ("map", 85)
         assert result["parameters"]["residue_maps"][pose.id][0] == [["A", 1, ""], ["A", 25, ""]]
 
-    def test_the_fit_can_be_restricted_to_a_residue_set(self, synthetic, reference):
+    def test_the_fit_can_be_restricted_to_a_residue_set(self, synthetic, reference, epitope):
         result = score_pose_set(
             synthetic.poses[:2],
             "B",
@@ -141,7 +149,8 @@ class TestExplicitReference:
             reference=reference,
             options={"frame": {"frame_residues": "epitope"}},
         )
-        assert result["poses"][0]["frame"]["n_fit_residues"] == 22
+        # the fit uses the named set alone
+        assert result["poses"][0]["frame"]["n_fit_residues"] == len(epitope)
 
     def test_the_transform_places_the_receptor_on_the_reference(self, synthetic, reference):
         result = score_pose_set(synthetic.poses[3:4], "B", "A", reference=reference)
@@ -201,10 +210,10 @@ def moved_crystal():
 
 
 @pytest.fixture(scope="module")
-def variants(moved_crystal):
+def variants(moved_crystal, epitope):
     return {
         "strict": Reference(
-            YCR, "A", "B", residue_sets={"epitope": [ResidueKey("A", n) for n in EPITOPE]}
+            YCR, "A", "B", residue_sets={"epitope": [ResidueKey("A", n) for n in epitope]}
         ),
         "loose": Reference(YCR, "A", "B"),
         "moved": Reference(ExperimentalPose.from_atoms(moved_crystal), "A", "B"),
