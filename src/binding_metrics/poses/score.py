@@ -1082,7 +1082,8 @@ def _result_status(block: Any) -> _ResultStatus:
     * a ``reason``: the metric could not compute some of its values (``caveat``).
 
     ``reason`` of the returned status is the sentence for the row's ``reasons``. The single run
-    counts the ``failed`` shapes as failures too (``binding_metrics.cli.run._collect_failures``).
+    counts the ``failed`` shapes and the ``error_message`` caveat as failures
+    (``binding_metrics.cli.run._collect_failures``); a ``reason`` alone is no failure there.
     """
     if not isinstance(block, Mapping):
         return _RESULT_OK
