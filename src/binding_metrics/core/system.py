@@ -784,26 +784,33 @@ def add_terminal_oxygens(topology, positions) -> tuple:
     PDBFixer does this in prep; this is the same step for a caller that cannot use it. OXT is
     the third substituent of the carbonyl carbon: it lies in the plane of CA, C and O,
     1.25 A from C, opposite the bisector of the C-CA and C-O bonds. Only the atom and its
-    bond are added; hydrogens and every other missing atom are left to the caller.
+    bond are added; hydrogens and every other missing atom are left to the caller. A chain
+    whose last residue has no CA or no O has no such plane and is left open, so that
+    :func:`require_closed_c_termini` names it.
 
     Args:
         topology: OpenMM Topology.
         positions: Positions of its atoms (Quantity).
 
     Returns:
-        ``(topology, positions)``: the arguments when no chain is open, otherwise a copy of
-        the topology with the OXT atoms and their positions (a Quantity in nm).
+        ``(topology, positions)``: the arguments when no chain can be completed, otherwise a
+        copy of the topology with the OXT atoms and their positions (a Quantity in nm).
     """
     import numpy as np
 
     open_ends = find_open_c_termini(topology)
-    if not open_ends:
-        return topology, positions
     last_residues = {
         chain.id: list(chain.residues())[-1]
         for chain in topology.chains()
         if any(chain.id == chain_id for chain_id, _, _ in open_ends)
     }
+    last_residues = {
+        chain_id: residue
+        for chain_id, residue in last_residues.items()
+        if {"CA", "O"} <= {atom.name for atom in residue.atoms()}
+    }
+    if not last_residues:
+        return topology, positions
     xyz_nm = np.array(positions.value_in_unit(unit.nanometer))
 
     copy = Topology()
