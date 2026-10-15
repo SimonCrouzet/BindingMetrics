@@ -5,9 +5,10 @@ Scans --input-dir for .cif / .pdb / .mmcif files, runs the full pipeline on each
 and intermediate files are written to sub-directories inside --output-dir.
 
 The file stem is the sample ID: it names the sample's directory, report and log. Two inputs with
-the same stem (``a/sample.pdb`` and ``b/sample.pdb`` found by ``--glob``, or ``sample.pdb`` and
-``sample.cif``) end the run with a usage error (exit code 2) that lists every shared ID with its
-paths, before any directory is created or any sample runs.
+the same stem, case ignored (``a/sample.pdb`` and ``b/sample.pdb`` found by ``--glob``,
+``sample.pdb`` and ``sample.cif``, or ``Sample.pdb`` and ``sample.pdb``), end the run with a usage
+error (exit code 2) that lists every shared ID with its paths, before any directory is created or
+any sample runs.
 
 Usage:
     binding-metrics-batch \\
@@ -201,22 +202,28 @@ def _build_reference_map(reference_dir: Path) -> dict[str, Path]:
 
 
 def _check_unique_sample_ids(input_paths: Sequence[Path]) -> None:
-    """Raise ``ValueError`` when two inputs have the same sample ID, the file stem.
+    """Raise ``ValueError`` when two inputs have the same sample ID, the file stem, up to case.
 
     The ID names the output directory, the report, the log and the key of the prediction
     store and of the prediction directory, so a shared stem (``a/sample.pdb`` and
     ``b/sample.pdb``, or ``sample.pdb`` and ``sample.cif``) makes two samples write the same
-    files. The message lists every shared ID with all the paths that carry it.
+    files. The stems are compared case-folded (``str.casefold``) on every file system: a
+    case-insensitive one (the default of Windows and macOS) gives ``Sample`` and ``sample`` one
+    output directory, and the IDs of a batch should name the same outputs wherever it runs. The
+    message lists every shared ID with all the paths that carry it.
     """
     paths_by_id: dict[str, list[Path]] = {}
     for path in input_paths:
-        paths_by_id.setdefault(path.stem, []).append(path)
-    shared = {sid: paths for sid, paths in paths_by_id.items() if len(paths) > 1}
+        paths_by_id.setdefault(path.stem.casefold(), []).append(path)
+    shared = [paths for paths in paths_by_id.values() if len(paths) > 1]
     if not shared:
         return
-    lines = ["Sample IDs (the file stems) must be unique; these belong to several inputs:"]
-    for sid, paths in shared.items():
-        lines.append(f"  {sid}")
+    lines = [
+        "Sample IDs (the file stems) must be unique, whatever their case; "
+        "these belong to several inputs:"
+    ]
+    for paths in shared:
+        lines.append("  " + ", ".join(dict.fromkeys(path.stem for path in paths)))
         lines.extend(f"    {path}" for path in paths)
     lines.append("Rename the files that share a stem or run them as separate batches.")
     raise ValueError("\n".join(lines))
@@ -1073,8 +1080,9 @@ def run_batch(
 
     Args:
         paths: Structure files (CIF or PDB). The sample ID of each is its file
-            stem, which must be unique in the batch: two paths with the same stem raise
-            ``ValueError`` before anything is created or run.
+            stem, which must be unique in the batch, case ignored: two paths with the same
+            stem, ``Sample.pdb`` and ``sample.cif`` included, raise ``ValueError`` before
+            anything is created or run.
         output_dir: Directory for the per-sample sub-directories; created when missing.
         metrics: Names from ``KNOWN_METRICS``. ``openfold`` runs once for all
             samples after the others, as in the CLI, so the ``openfold_*`` columns
@@ -1198,8 +1206,8 @@ def run_batch(
         ... )
 
     Raises:
-        ValueError: two paths with the same file stem (the message lists each shared ID with its
-            paths), ``n_workers`` below 1, an unknown ``on_error``, an unknown
+        ValueError: two paths with the same file stem, case ignored (the message lists each shared
+            ID with its paths), ``n_workers`` below 1, an unknown ``on_error``, an unknown
             metric name, an ``on_unmappable_residue`` other than ``"error"`` or ``"x"``, a
             ``predictor`` that is not registered or has no runner and no ``prediction_dir``, or
             a chain given through both spellings with different IDs, both chain roles naming one
