@@ -73,7 +73,7 @@ class TestAgainstTheCommittedFile:
         assert document["tolerance"] == {
             "rtol": golden.RTOL,
             "atol": golden.ATOL,
-            "overrides": golden.TOLERANCE_OVERRIDES,
+            "overrides": {k: list(v) for k, v in golden.TOLERANCE_OVERRIDES.items()},
         }
         assert document["ignored"] == list(golden.IGNORED)
         assert "regen_pose_golden.py --write" in document["regenerate"]

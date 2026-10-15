@@ -27,11 +27,11 @@ reference structures (``IGNORED``).
 The result is flattened to ``dotted.path[index]`` leaves. Booleans, integers, strings and None
 must be equal and of the same type. A float agrees when
 ``|live - golden| <= atol + rtol * |golden|`` (the rule of ``numpy.isclose``), with
-``rtol = atol = 1e-6`` unless a pattern of ``TOLERANCE_OVERRIDES`` names the path (none is
-needed today). The default is far above the rounding noise of the computation (about 1e-12
-relative) and far below any change of an algorithm: a flipped surface sampling point moves a
-buried area by 0.1 square angstrom, 1e-4 relative. A leaf that exists on one side only, or a
-list of another length, is a mismatch. Key order is checked by
+``rtol = atol = 1e-6`` unless a pattern of ``TOLERANCE_OVERRIDES`` names the path (the
+omega angles have one). The default is far above the rounding noise of the float64
+computations (about 1e-12 relative) and far below any change of an algorithm: a flipped surface
+sampling point moves a buried area by 0.1 square angstrom, 1e-4 relative. A leaf that exists on
+one side only, or a list of another length, is a mismatch. Key order is checked by
 ``tests/poses/test_contract_result.py``, not here.
 
 Golden files are written with floats rounded to 10 significant digits and values below 1e-12
@@ -56,7 +56,11 @@ ATOL = 1e-6
 #: ``{path pattern: (rtol, atol)}`` for a value that needs more than the default. A pattern is
 #: matched with ``fnmatch.fnmatchcase`` against the leaf path, ``*`` matching any characters.
 #: Each entry needs a comment that says why the value is noisier than the rest.
-TOLERANCE_OVERRIDES: dict[str, tuple[float, float]] = {}
+TOLERANCE_OVERRIDES: dict[str, tuple[float, float]] = {
+    # Torsion angles in degrees from float32 coordinates: the last digits depend on the CPU
+    # (differences up to 2e-5 degree between two machines).
+    "poses*.omega.*": (1e-6, 1e-4),
+}
 
 #: Leaf paths (``fnmatch`` patterns) that describe the run or the machine, not the result.
 IGNORED = (
@@ -244,7 +248,11 @@ def golden_document(case: GoldenCase, result: Any) -> dict:
         "name": case.name,
         "description": case.description,
         "regenerate": "python scripts/regen_pose_golden.py --write",
-        "tolerance": {"rtol": RTOL, "atol": ATOL, "overrides": TOLERANCE_OVERRIDES},
+        "tolerance": {
+            "rtol": RTOL,
+            "atol": ATOL,
+            "overrides": {pattern: list(pair) for pattern, pair in TOLERANCE_OVERRIDES.items()},
+        },
         "ignored": list(IGNORED),
         "result": canonical(strip_ignored(result.to_dict())),
     }

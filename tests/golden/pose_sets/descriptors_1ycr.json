@@ -3,7 +3,7 @@
   "name": "descriptors_1ycr",
   "description": "score_pose_set on the crystal peptide of 1YCR and the same peptide shifted 6 angstrom along (2/3, -1/3, 2/3), identity frame, with the 4.5 angstrom epitope and the buried-area interface as residue sets, the crystal peptide as partner and the metric delta_sasa_static.",
   "regenerate": "python scripts/regen_pose_golden.py --write",
-  "tolerance": {"rtol": 1e-06, "atol": 1e-06, "overrides": {}},
+  "tolerance": {"rtol": 1e-06, "atol": 1e-06, "overrides": {"poses*.omega.*": [1e-06, 0.0001]}},
   "ignored": ["package_version", "timing*", "provenance*", "references.*.path"],
   "result": {
     "schema": "binding_metrics.pose_set_result",
