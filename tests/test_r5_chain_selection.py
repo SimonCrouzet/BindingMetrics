@@ -13,6 +13,11 @@ import pytest
 pytest.importorskip("biotite")
 pytest.importorskip("hydride")
 
+from _reference_contacts import (  # noqa: E402
+    coulomb_reference,
+    hbond_reference,
+    salt_bridge_reference,
+)
 from conftest import DATA_DIR  # noqa: E402
 
 from binding_metrics.cli.run import ChainNotFoundError  # noqa: E402
@@ -27,6 +32,9 @@ from binding_metrics.metrics.polar_contacts import (  # noqa: E402
 P53_MDM2 = DATA_DIR / "example_linear_p53_1YCR.pdb"
 CYCLOSPORIN = DATA_DIR / "example_ncaa_cyclosporin_1CWA.cif"
 
+# The package sums float32 coordinates, the references float64 ones.
+RELATIVE = 1e-5
+
 
 @pytest.fixture(scope="module")
 def p53_atoms():
@@ -36,8 +44,11 @@ def p53_atoms():
 class TestCoulombChains:
     def test_two_present_chains_keep_the_energy(self):
         result = compute_coulomb_cross_chain(P53_MDM2, "B", "A")
-        assert result["coulomb_energy_kJ"] == pytest.approx(-91.58941, abs=1e-4)
-        assert result["n_charged_pairs"] == 16
+        energy, n_pairs = coulomb_reference(P53_MDM2, "B", "A")
+        # The reference must hold pairs, or the zeros of a wrongly refused selection would match it.
+        assert n_pairs > 0
+        assert result["coulomb_energy_kJ"] == pytest.approx(energy, rel=RELATIVE)
+        assert result["n_charged_pairs"] == n_pairs
         assert "reason" not in result
 
     @pytest.mark.parametrize("peptide, receptor", [("missing", "A"), ("B", "missing")])
@@ -115,8 +126,13 @@ class TestPolarContactChains:
     def test_two_present_chains_keep_the_counts(self, p53_atoms):
         hbonds = compute_hbonds(p53_atoms.copy(), "B", "A")
         saltbridges = compute_saltbridges(p53_atoms.copy(), "B", "A")
-        assert hbonds["hbonds"] == 3
-        assert saltbridges["saltbridges"] == 2
+        hbond_count, _ = hbond_reference(p53_atoms, "B", "A")
+        saltbridge_count, _ = salt_bridge_reference(p53_atoms, "B", "A")
+        # The reference must hold bonds, or the zeros of a wrongly refused selection would match it.
+        assert hbond_count > 0
+        assert saltbridge_count > 0
+        assert hbonds["hbonds"] == hbond_count
+        assert saltbridges["saltbridges"] == saltbridge_count
 
     def test_hetero_ignore_judges_the_chains_that_are_left(self):
         atoms = load_biotite_structure(CYCLOSPORIN)
@@ -168,4 +184,8 @@ class TestElectrostaticsCommandLine:
             ],
         )
         electrostatics.main()
-        assert "coulomb_energy_kJ: -91.5894" in capsys.readouterr().out
+        energy, _ = coulomb_reference(P53_MDM2, "B", "A")
+        lines = capsys.readouterr().out.splitlines()
+        printed = [line for line in lines if line.strip().startswith("coulomb_energy_kJ:")]
+        assert len(printed) == 1
+        assert float(printed[0].split(":")[1]) == pytest.approx(energy, rel=RELATIVE)
