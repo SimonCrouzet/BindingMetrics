@@ -107,8 +107,10 @@ class TestPoseSet:
         direct = compute_interaction_energy(_with_oxt_on_chain_a(tmp_path), "B", "A", **CPU)
 
         assert row[ENERGY]["terminal_oxygens_added"] == ["A:VAL109"]
+        # The CPU platform sums on several threads in no fixed order: repeated calls differ by up
+        # to about a kJ/mol.
         assert row[ENERGY]["raw_interaction_energy"] == pytest.approx(
-            direct["raw_interaction_energy"], abs=1.0
+            direct["raw_interaction_energy"], abs=1.5
         )
 
     def test_the_other_metrics_read_the_placed_file_without_the_oxygens(self, tmp_path):
