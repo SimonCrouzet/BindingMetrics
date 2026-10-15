@@ -304,10 +304,12 @@ class PeptideBindingProtocol(BaseProtocol):
         )
         _require_frames(interaction_energy)
 
+        # mdtraj keeps the atoms of a slice in file order and warns about a descending list, which
+        # the concatenation is when the ligand chain follows the receptor chains in the file.
         rmsd = calculate_rmsd(
             traj_path,
             topology_path,
-            atom_indices=ligand_indices + receptor_indices,
+            atom_indices=sorted(ligand_indices + receptor_indices),
         )
         _require_frames(rmsd)
 
