@@ -23,7 +23,9 @@ from binding_metrics.poses.frame import place_in_reference_frame, superpose_rece
 from binding_metrics.poses.reference import Partner, Reference, ResidueKey
 from binding_metrics.poses.score import DescriptorOptions, PoseSetResult, score_pose_set
 from binding_metrics.testing import make_synthetic_poses
+from tests.poses.test_descriptors import burial_by_biotite
 from tests.poses.test_frame import consecutive, drop
+from tests.test_l1_solvation import polymer_atoms, read_atoms
 
 pytest.importorskip("biotite.structure")
 
@@ -125,9 +127,12 @@ class TestBlocks:
             ]
             for row in result["poses"]
         }
-        # the pose with no shift is the crystal peptide: its partner area is 662.3 A^2 on 1YCR
-        # and the fraction is exactly one
-        assert shared["backend_a-s1"] == pytest.approx(662.3, abs=0.5)
+        # the pose with no shift is the crystal peptide: it shares the area that the peptide buries
+        # on the receptor of 1YCR, recomputed from the file, and the fraction is exactly one. The
+        # poses are in random frames, so a few sampling points of 0.13 square angstrom can flip:
+        # hence the absolute tolerance.
+        crystal_area = burial_by_biotite(polymer_atoms(read_atoms(YCR)), "A", "B").sum()
+        assert shared["backend_a-s1"] == pytest.approx(crystal_area, abs=0.5)
         fractions = [
             row["descriptors"]["reference"]["partners"]["crystal_peptide"][
                 "shared_fraction_of_partner"

@@ -21,7 +21,10 @@ import numpy as np
 import pytest
 
 from binding_metrics.poses.score import SCHEMA, SCHEMA_VERSION
+from binding_metrics.testing.synthetic import bundled_complex_path
 from tests.golden import pose_set_cases as golden
+from tests.poses.test_descriptors import burial_by_biotite
+from tests.test_l1_solvation import polymer_atoms, read_atoms
 
 pytest.importorskip("biotite.structure")
 
@@ -170,14 +173,21 @@ class TestSyntheticGoldenAgainstTheConstruction:
             by_id[pose_id]["partners"]["crystal_peptide"]["shared_buried_area_angstrom2"]
             for pose_id in sorted(by_id)
         ]
-        # a1 sits on the crystal peptide, and the area they share falls as the offset grows
-        assert shared[0] == pytest.approx(662.335, abs=0.5)
+        # a1 sits on the crystal peptide: it shares the area that the peptide buries on the
+        # receptor, recomputed from the file. The poses are in random frames, so a few
+        # sampling points of 0.13 square angstrom can flip: hence the absolute tolerance.
+        atoms = polymer_atoms(read_atoms(bundled_complex_path()))
+        crystal_area = burial_by_biotite(atoms, "A", "B").sum()
+        assert shared[0] == pytest.approx(crystal_area, abs=0.5)
+        # and the area they share falls as the offset grows
         assert shared[0] > shared[1] > shared[2] > shared[3]
         assert shared[3] > shared[4] > shared[5]
 
     def test_an_interface_residue_set_equal_to_the_interface_is_covered_completely(self, result):
         block = result["poses"][0]["descriptors"]["reference"]["sets"]["crystal_interface"]
-        assert (block["n_set"], block["n_overlap"], block["jaccard"]) == (25, 25, 1.0)
+        n_set = len(golden.CRYSTAL_INTERFACE)
+        assert (block["n_set"], block["n_overlap"], block["n_interface"]) == (n_set, n_set, n_set)
+        assert block["jaccard"] == 1.0
 
 
 # ---------------------------------------------------------------------------
