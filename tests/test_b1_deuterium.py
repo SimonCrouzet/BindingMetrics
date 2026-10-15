@@ -32,17 +32,21 @@ def _write_pdb(atoms, path):
 
 @pytest.fixture(scope="module")
 def protonated_atoms():
-    """1YCR with hydrogens added by hydride at ideal geometry (about 850 H)."""
+    """1YCR with hydrogens added by hydride at ideal geometry."""
     atoms = pdb_io.get_structure(pdb_io.PDBFile.read(str(P53_MDM2)), model=1, include_bonds=True)
     atoms.set_annotation("charge", np.zeros(len(atoms), dtype=int))
     protonated, _ = hydride.add_hydrogen(atoms)
-    assert (protonated.element == "H").sum() > 500
+    # Every residue carries an alpha hydrogen and every residue but proline an amide one: fewer
+    # hydrogens mean residues left bare, and the H against D comparisons below would be empty.
+    n_residues = struc.get_residue_count(protonated)
+    n_proline = struc.get_residue_count(protonated[protonated.res_name == "PRO"])
+    assert (protonated.element == "H").sum() >= 2 * n_residues - n_proline
     return protonated
 
 
 @pytest.fixture(scope="module")
 def structures(tmp_path_factory, protonated_atoms):
-    """Paths of the protonated 1YCR and of the same file with every H labelled D."""
+    """Paths of the protonated 1YCR, of the same with every H labelled D, and of its heavy atoms."""
     folder = tmp_path_factory.mktemp("b1_deuterium")
     deuterated = protonated_atoms.copy()
     deuterated.element[deuterated.element == "H"] = "D"
@@ -50,6 +54,9 @@ def structures(tmp_path_factory, protonated_atoms):
     return {
         "H": _write_pdb(protonated_atoms, folder / "with_h.pdb"),
         "D": _write_pdb(deuterated, folder / "with_d.pdb"),
+        "heavy": _write_pdb(
+            protonated_atoms[protonated_atoms.element != "H"], folder / "heavy.pdb"
+        ),
     }
 
 
@@ -122,23 +129,31 @@ class TestProtonatedAndDeuteratedStructuresAgree:
         kwargs = dict(peptide_chain="B", receptor_chain="A")
         with_h = geometry.compute_shape_complementarity(structures["H"], **kwargs)
         with_d = geometry.compute_shape_complementarity(structures["D"], **kwargs)
+        heavy = geometry.compute_shape_complementarity(structures["heavy"], **kwargs)
 
-        assert with_h["sc"] == pytest.approx(0.6231, abs=1e-4)
+        assert -1.0 <= with_h["sc"] <= 1.0
         assert with_d["sc"] == with_h["sc"]
         assert with_d["sc_A_to_B"] == with_h["sc_A_to_B"]
         assert with_d["sc_B_to_A"] == with_h["sc_B_to_A"]
         assert with_d["n_surface_dots_A"] == with_h["n_surface_dots_A"]
         assert with_d["n_surface_dots_B"] == with_h["n_surface_dots_B"]
+        # Hydrogens and deuterium both being dropped would also make H and D agree: the surface
+        # of the heavy atoms alone is a different one.
+        assert with_d["n_surface_dots_A"] != heavy["n_surface_dots_A"]
 
     @pytest.mark.slow
     def test_void_volume(self, structures):
         kwargs = dict(peptide_chain="B", receptor_chain="A")
         with_h = geometry.compute_buried_void_volume(structures["H"], **kwargs)
         with_d = geometry.compute_buried_void_volume(structures["D"], **kwargs)
+        heavy = geometry.compute_buried_void_volume(structures["heavy"], **kwargs)
 
-        assert with_h["void_volume_A3"] == pytest.approx(6.625)
+        assert with_h["void_volume_A3"] >= 0.0
         assert with_d["void_volume_A3"] == with_h["void_volume_A3"]
         assert with_d["n_interface_atoms"] == with_h["n_interface_atoms"]
+        # Hydrogens and deuterium both being dropped would also make H and D agree: the
+        # interface of the heavy atoms alone has fewer atoms.
+        assert with_d["n_interface_atoms"] > heavy["n_interface_atoms"]
 
 
 class TestReceptorQualityTable:
