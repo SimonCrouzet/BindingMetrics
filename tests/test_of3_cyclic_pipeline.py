@@ -196,7 +196,7 @@ class TestLegacyOpenFoldStep:
             "binder_cyclic: chain C is closed head to tail but has modified residues "
             "(ABA, BMT, DAL, MLE, MVA, SAR)"
         )
-        assert "one complex" in block["reason"] and "--openfold-cyclic on" in block["reason"]
+        assert "--openfold-cyclic on" in block["reason"]
 
     @pytest.mark.parametrize("mode", ["score", "refold"])
     def test_a_linear_binder_is_recorded_as_not_cyclic(self, tmp_path, monkeypatch, mode):
@@ -290,6 +290,7 @@ class TestPredictorPath:
             in (block["reason"])
         )
 
+    @pytest.mark.slow
     def test_the_request_key_follows_the_choice(self, tmp_path, monkeypatch):
         StubOpenFold(monkeypatch)
         store = tmp_path / "shared"

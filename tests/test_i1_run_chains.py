@@ -37,6 +37,7 @@ def recorded_energy_chains(monkeypatch):
 class TestSkippedPrepAndRelax:
     """The metrics read the raw input, whose biotite chain IDs are the author IDs."""
 
+    @pytest.mark.slow
     def test_biotite_metrics_find_the_author_chains(self, tmp_path):
         results = run_pipeline(
             BICYCLIC_CIF,
@@ -64,6 +65,7 @@ class TestSkippedPrepAndRelax:
         assert (call["peptide"], call["receptor"]) == ("I", "A")
 
 
+@pytest.mark.slow
 class TestPreppedFile:
     def test_energy_reads_the_prepped_file_through_its_own_names(
         self, tmp_path, recorded_energy_chains

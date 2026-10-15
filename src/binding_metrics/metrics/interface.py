@@ -10,14 +10,14 @@ Areas come from the Shrake-Rupley algorithm (J. Mol. Biol. 79:351-371, 1973)
 as implemented in biotite, with a 1.4 Å water probe and biotite's
 single-radius van der Waals table by element (documented there as Mantina et
 al., J. Phys. Chem. A 113:5806-5812, 2009; 1.8 Å for an element without an
-entry). Water and monoatomic ions are not part of the surface.
+entry, deuterium taking the radius of hydrogen). Water and monoatomic ions are not part of the
+surface.
 
 The areas are heavy-atom areas: hydrogen and deuterium atoms are dropped before
-the surface is built (``hydrogens="ignore"``, the default). The atomic solvation
-parameters describe the accessible area of heavy atoms, and PISA reports buried
-area on heavy atoms, so the buried area, the polar/apolar partition and ΔG_int
-do not depend on how the input was protonated. ``hydrogens="keep"`` puts the H
-atoms back into the surface.
+the surface is built (``hydrogens="ignore"``, the default), as the atomic
+solvation parameters and PISA refer to heavy atoms. The buried area, the
+polar/apolar partition and ΔG_int then do not depend on how the input was
+protonated. ``hydrogens="keep"`` puts the H atoms back into the surface.
 
 Usage:
     binding-metrics-interface --input complex.cif --design-chain A
@@ -47,26 +47,22 @@ from binding_metrics.utils import configure_logging
 
 logger = logging.getLogger(__name__)
 
+# Names the feature in the install hint when biotite is missing.
+_BIOTITE_PURPOSE = "interface metrics"
+
 _HETERO_MODES = ("ignore", "keep")
 _HYDROGEN_MODES = ("ignore", "keep")
 
 # Hydrogen and its isotope deuterium: the elements that ``hydrogens="ignore"`` drops.
 _HYDROGEN_ELEMENTS = ("H", "D")
 
-# Polymer residues that biotite's CCD-based amino-acid filter does not know are
-# the AMBER/OpenMM protonation variants (AMBER_VARIANTS_OUTSIDE_CCD) and the
-# terminal capping groups (TERMINAL_CAP_NAMES). Structures that come from MD or
-# from other modelling tools carry them, and dropping them would remove residues
-# of the chain instead of the surrounding solvent.
-
 # Atomic solvation parameters of Eisenberg & McLachlan, Nature 319:199-203 (1986).
-# The published values (cal/mol/Å² of accessible area; positive = exposing the atom
-# to water is unfavorable) are, with their standard errors:
+# Published values (cal/mol/Å² of accessible area; positive = exposure to water is
+# unfavorable), with standard errors, as tabulated in Table 1 of Krissinel & Henrick,
+# J. Mol. Biol. 372:774-797 (2007):
 #     C +16 (2), S +21 (10), neutral O/N -6 (4), charged O(-) -24 (10), charged N(+) -50 (9)
-# as tabulated for the same reference in Table 1 of Krissinel & Henrick, J. Mol. Biol.
-# 372:774-797 (2007). ΔG_int below is the solvation part of binding, so each value enters
-# with the opposite sign and per Å² of BURIED area (kcal/mol/Å²; negative = burial is
-# favorable, positive = burial is unfavorable).
+# ΔG_int is the solvation part of binding, so each value enters with the opposite sign
+# and per Å² of BURIED area (kcal/mol/Å²; negative = burial is favorable).
 _SOLVATION_PARAMS: dict[str, float] = {
     "C": -0.016,
     "S": -0.021,
@@ -83,15 +79,6 @@ _KCAL_TO_KJ = KCAL_TO_KJ
 SASA_POINT_NUMBER = 960
 
 
-def _import_biotite():
-    """Lazy import of required biotite modules."""
-    struc, pdbx, pdb_io = import_biotite("interface metrics")
-    from biotite.structure.info import vdw_radius_single
-    from biotite.structure.sasa import sasa as biotite_sasa
-
-    return struc, pdbx, pdb_io, biotite_sasa, vdw_radius_single
-
-
 def load_biotite_structure(cif_path: str | Path):
     """Load a PDB or CIF file as a biotite AtomArray.
 
@@ -101,12 +88,12 @@ def load_biotite_structure(cif_path: str | Path):
     Returns:
         biotite AtomArray
     """
-    return load_structure(cif_path, charge=True, purpose="interface metrics")
+    return load_structure(cif_path, charge=True, purpose=_BIOTITE_PURPOSE)
 
 
 def _amino_acid_mask(atoms) -> np.ndarray:
     """Atoms of amino-acid residues: CCD peptide-linking residues plus AMBER variants."""
-    struc, _, _, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     res_names = np.char.upper(np.char.strip(atoms.res_name.astype(str)))
     return struc.filter_amino_acids(atoms) | np.isin(res_names, list(AMBER_VARIANTS_OUTSIDE_CCD))
 
@@ -115,9 +102,9 @@ def filter_hetero_atoms(atoms, hetero: Literal["ignore", "keep"] = "ignore"):
     """Apply the heteroatom policy of the structure-based metrics.
 
     Waters, ions, ligands and glycans often carry the chain ID of the protein
-    chain they sit next to. Selecting atoms by chain ID alone then counts them
-    as protein atoms, and biotite reports NaN SASA for waters and monoatomic
-    ions, which turned every area sum into NaN.
+    chain they sit next to, so selecting atoms by chain ID alone counts them as
+    protein atoms; biotite reports NaN SASA for waters and monoatomic ions,
+    which makes every area sum NaN.
 
     Args:
         atoms: biotite AtomArray.
@@ -145,12 +132,11 @@ def filter_hetero_atoms(atoms, hetero: Literal["ignore", "keep"] = "ignore"):
 def filter_hydrogens(atoms, hydrogens: Literal["ignore", "keep"] = "ignore"):
     """Apply the hydrogen policy of the area-based interface metrics.
 
-    The Eisenberg-McLachlan parameters describe the accessible area of heavy
-    atoms, and PISA computes buried area on heavy atoms. With explicit
-    hydrogens the surface of a carbon or nitrogen is partly taken by its
-    attached H atoms, which carry no parameter, so the area of the
-    parameterised atoms shrinks while the total still counts the H atoms.
-    Dropping them makes the areas independent of how the input was protonated.
+    The Eisenberg-McLachlan parameters and PISA refer to the area of heavy
+    atoms. With explicit hydrogens, part of the surface of a carbon or nitrogen
+    belongs to its attached H atoms, which carry no parameter, so the area of
+    the parameterised atoms shrinks while the total still counts the H atoms.
+    Dropping them makes the areas independent of the input protonation.
 
     Args:
         atoms: biotite AtomArray.
@@ -179,8 +165,9 @@ def detect_interface_chains(
     A chain is a protein chain if it has amino-acid atoms: standard, D- and
     other non-canonical peptide-linking residues (biotite's
     ``filter_amino_acids``) and the AMBER protonation variants. Waters, ions and
-    ligands that share a chain ID are not counted towards its size. The smallest
-    protein chain is taken as the peptide, the largest as receptor.
+    ligands that share a chain ID are not counted towards its size. A chain is
+    measured in residues, a residue being a (number, insertion code) pair. The
+    smallest protein chain is taken as the peptide, the largest as receptor.
 
     Args:
         atoms: biotite AtomArray
@@ -193,7 +180,9 @@ def detect_interface_chains(
     protein_chains = []
     for chain_id in np.unique(amino_acid_atoms.chain_id):
         chain_atoms = amino_acid_atoms[amino_acid_atoms.chain_id == chain_id]
-        protein_chains.append((chain_id, len(np.unique(chain_atoms.res_id))))
+        # 52 and 52A are two residues: count (number, insertion code) pairs.
+        n_residues = len(set(zip(chain_atoms.res_id.tolist(), chain_atoms.ins_code.tolist())))
+        protein_chains.append((chain_id, n_residues))
 
     if not protein_chains:
         return None, None
@@ -218,6 +207,8 @@ def _get_vdw_radii(atoms, vdw_fn) -> np.ndarray:
     radii = []
     for atom in atoms:
         element = str(atom.element).strip()
+        if element == "D":  # the table has no entry for deuterium
+            element = "H"
         r = vdw_fn(element)
         radii.append(r if r is not None else 1.8)
     return np.array(radii, dtype=float)
@@ -288,26 +279,36 @@ def _apolar_mask(atoms) -> np.ndarray:
 def _collect_per_residue(chain_atoms, buried_sasa: np.ndarray, threshold: float) -> list[dict]:
     """Aggregate per-atom buried SASA into per-residue metrics.
 
+    A residue is the triple (chain, residue number, insertion code), so 52 and
+    52A are two residues. Its ``residue`` label is "NAME:CHAIN:NUM" with the
+    insertion code appended to the number when there is one ("ALA:A:52A").
+
     Args:
         chain_atoms: biotite AtomArray for one chain
         buried_sasa: per-atom buried SASA array (Å²)
         threshold: minimum residue total buried SASA (Å²) to include
 
     Returns:
-        List of dicts with buried_sasa, delta_g_res, polar_area, apolar_area
-        for each residue whose buried SASA meets the threshold.
+        List of dicts with residue, chain, res_name, res_id, ins_code (empty
+        string when the residue has none), buried_sasa, delta_g_res,
+        polar_area and apolar_area for each residue whose buried SASA meets
+        the threshold.
     """
     res_data: dict[tuple, dict] = {}
     gamma_per_atom = _gamma_array(chain_atoms)
 
     for atom, bsasa, gamma in zip(chain_atoms, buried_sasa, gamma_per_atom):
-        key = (str(atom.chain_id), int(atom.res_id), str(atom.ins_code).strip())
+        chain_id = str(atom.chain_id)
+        res_name = str(atom.res_name).strip()
+        ins_code = str(atom.ins_code).strip()
+        key = (chain_id, int(atom.res_id), ins_code)
         if key not in res_data:
             res_data[key] = {
-                "residue": f"{str(atom.res_name).strip()}:{str(atom.chain_id)}:{atom.res_id}",
-                "chain": str(atom.chain_id),
-                "res_name": str(atom.res_name).strip(),
+                "residue": f"{res_name}:{chain_id}:{atom.res_id}{ins_code}",
+                "chain": chain_id,
+                "res_name": res_name,
                 "res_id": int(atom.res_id),
+                "ins_code": ins_code,
                 "buried_sasa": 0.0,
                 "delta_g_res": 0.0,
                 "polar_area": 0.0,
@@ -347,11 +348,10 @@ def compute_interface_metrics(
     counting. The solvation binding energy (ΔG_int) is the sum over atoms of
     an atomic solvation parameter times the atom's buried area, with the five
     Eisenberg & McLachlan (1986) atom types (C, S, neutral N/O, charged O(-),
-    charged N(+)) as used in PISA (Krissinel & Henrick, 2007). ΔG_int is only
-    the solvation term: PISA adds explicit hydrogen-bond and salt-bridge terms,
-    which are reported here as separate keys. The parameters are not fitted to
-    this package's data, so read ΔG_int as a relative score between designs of
-    one target, not as an absolute affinity.
+    charged N(+)) as used in PISA (Krissinel & Henrick, 2007). ΔG_int is the
+    solvation term only; the hydrogen-bond and salt-bridge terms of PISA are
+    separate keys here. It compares designs of one target and is not an
+    absolute affinity.
 
     Args:
         cif_path: Path to CIF structure file
@@ -365,20 +365,18 @@ def compute_interface_metrics(
         hetero: "ignore" (default) keeps only the polymer before the chain
             selection (see :func:`filter_hetero_atoms`), so waters, ions,
             ligands and glycans that carry a protein chain ID are dropped.
-            "keep" uses every atom with the chain ID as before; atoms without
-            a defined SASA (water, ions) then count as zero area instead of
-            turning the sums into NaN.
+            "keep" uses every atom with the chain ID; atoms without a defined
+            SASA (water, ions) count as zero area.
         binder_chain: Alias of ``design_chain``; different IDs in both raise
             ``ValueError``.
         target_chain: Alias of ``receptor_chain``, same rule.
         hydrogens: "ignore" (default) drops hydrogen and deuterium atoms
             before the per-atom areas are computed, so every area, the
-            polar/apolar partition and ΔG_int refer to heavy atoms whatever the
-            protonation of the input (see :func:`filter_hydrogens`). "keep"
-            uses the atoms left by the ``hetero`` filter; the total area then
-            includes the H atoms, which are in neither the polar nor the
-            apolar mask. Hydrogen-bond and salt-bridge counts do not depend on
-            this setting.
+            polar/apolar partition and ΔG_int refer to heavy atoms (see
+            :func:`filter_hydrogens`). "keep" uses the atoms left by the
+            ``hetero`` filter; the total area then includes the H atoms, which
+            are in neither the polar nor the apolar mask. Hydrogen-bond and
+            salt-bridge counts do not depend on this setting.
 
     Returns:
         Dictionary with keys:
@@ -410,11 +408,14 @@ def compute_interface_metrics(
         Interface residues:
             n_interface_residues_peptide (int)
             n_interface_residues_receptor (int)
-            interface_residues_peptide (list[str]): "RES:CHAIN:NUM" labels
+            interface_residues_peptide (list[str]): "RES:CHAIN:NUM" labels,
+                with the insertion code appended to NUM when the residue has
+                one ("ALA:A:52A")
             interface_residues_receptor (list[str])
             per_residue (list[dict]): per interface residue —
-                residue, chain, res_name, res_id, buried_sasa,
-                delta_g_res, polar_area, apolar_area
+                residue, chain, res_name, res_id, ins_code (empty string when
+                there is none), buried_sasa, delta_g_res, polar_area,
+                apolar_area
 
         Interactions (heuristic ranking scores, see ``polar_contacts``):
             hbonds (int): cross-chain hydrogen bonds
@@ -435,7 +436,9 @@ def compute_interface_metrics(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
-    _, _, _, sasa_fn, vdw_fn = _import_biotite()
+    import_biotite(_BIOTITE_PURPOSE)
+    from biotite.structure.info import vdw_radius_single as vdw_fn
+    from biotite.structure.sasa import sasa as sasa_fn
 
     cif_path = Path(cif_path)
     atoms = load_biotite_structure(cif_path)
@@ -510,8 +513,8 @@ def compute_interface_metrics(
         result["reason"] = f"SASA computation failed: {type(e).__name__}: {e}"
         return result
 
-    # Split complex SASA back by chain — complex_atoms preserves the original
-    # atom ordering so chain submasks correctly select the respective atoms.
+    # complex_atoms keeps the original atom order, so the chain masks select each
+    # chain's atoms in the complex SASA.
     sasa_pep_in_cpx = sasa_cpx[complex_atoms.chain_id == design_chain]
     sasa_rec_in_cpx = sasa_cpx[complex_atoms.chain_id == receptor_chain]
 

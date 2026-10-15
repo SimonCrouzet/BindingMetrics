@@ -16,7 +16,7 @@ from binding_metrics.metrics import openfold
 from binding_metrics.metrics.prediction import compute_prediction_metrics, summarize_prediction
 from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.protenix import ProtenixParser
-from binding_metrics.predictors.record import PredictionRecord
+from binding_metrics.predictors.record import PredictedPose
 from binding_metrics.predictors.registry import PARSERS
 from binding_metrics.predictors.session import PredictionSession
 from binding_metrics.predictors.store import PredictionRequest, PredictionStore
@@ -47,7 +47,7 @@ class TestTheDefault:
         class Plain(synth_stub.StubParser):
             pass
 
-        record = PredictionRecord("stub", "q", avg_plddt=80.0)
+        record = PredictedPose("stub", "q", avg_plddt=80.0)
         assert PredictionParser.complete(Plain(), record) is record
         assert record.reasons == [] and record.tokens is None
 
@@ -323,5 +323,5 @@ class TestOpenFold3Path:
         for spec in PARSERS.values():
             cls = spec.load()
             if cls.complete is PredictionParser.complete:
-                record = PredictionRecord(cls.name, "q")
+                record = PredictedPose(cls.name, "q")
                 assert cls().complete(record) is record

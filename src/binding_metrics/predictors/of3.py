@@ -1,10 +1,7 @@
 """Adapter for the output of OpenFold3 (``run_openfold predict``).
 
-Layout checked against the released source of OpenFold3 v0.5.0 (2026-08-21), against the 0.3
-and 0.4 outputs this toolkit parsed before, and against real output of OpenFold3 0.5.0: the
-adapter read every file of the runs made on 2026-10-01 (1YCR, the cyclosporin of 1CWA and the
-bicyclic SFTI-1 of 3P8F; OpenBind-0 checkpoint, no MSA, one GPU) without change. The layout did
-not change between 0.4.0 and 0.5.0. A run of 0.5.0 writes
+Layout of the released OpenFold3 v0.5.0 (2026-08-21); the layout is the same as in 0.4.0, and
+the adapter also reads the 0.3 and 0.4 outputs. A run of 0.5.0 writes
 
     {prediction_dir}/{query}/seed_{S}/{query}_seed_{S}_sample_{k}_model.{cif|cif.gz|pdb}
     {prediction_dir}/{query}/seed_{S}/{query}_seed_{S}_sample_{k}_confidences_aggregated.json
@@ -14,16 +11,14 @@ not change between 0.4.0 and 0.5.0. A run of 0.5.0 writes
         inference_query_set.json, model_config.json and the directory msas/
 
 ``.cif`` and ``.json`` are the defaults of the run. The runner YAML (``output_writer_settings``)
-also gave ``.cif.gz`` with ``.npz`` and ``.pdb`` with ``.json``; the adapter read both, for 1YCR
-(one run of each). A real file of 1YCR holds 817 pLDDT values and 98 x 98 ``pae`` and ``pde`` (85
-and 13 tokens, one per residue).
+also gives ``.cif.gz`` with ``.npz`` and ``.pdb`` with ``.json``.
 
 * ``S`` is a seed value chosen by OpenFold3, not a position; ``seed_index`` is the 1-based
   position of the seed directory in numeric order of ``S`` (``seed_9`` before ``seed_10``).
   ``k`` counts samples from 1 and is not a ranking. ``record.extras["seed_value"]`` is the
   ``S`` of the directory the files were read from, and nothing else gives it:
   ``experiment_config.json`` lists the ``seeds`` of the runner YAML and does not record a seed
-  that OpenFold3 generated (observed on 0.5.0: ``--num_model_seeds=1`` wrote the directory
+  that OpenFold3 generated (on 0.5.0, ``--num_model_seeds=1`` wrote the directory
   ``seed_2746317213`` and the config says ``seeds: [42]`` and ``num_seeds: null``).
 * The aggregated file holds ``avg_plddt``, ``gpde``, ``ptm``, ``iptm``, ``disorder``,
   ``has_clash``, ``sample_ranking_score`` and the dictionaries ``chain_ptm``,
@@ -50,25 +45,19 @@ and 13 tokens, one per residue).
   rule never applies and the two cysteines of a disulfide are one token each. The structure
   file is written from that atom array (``core/runners/writer.py``, line 108), so the atoms
   of the file are in token order. The ``hetero`` flag of the file is not part of the rule:
-  UNK has it set and is one token. ``pae`` and ``pde`` have one row per token, so they are
-  larger than the residue count when a modified residue or ligand is present, and the chain
-  and residue of a token need the structure, which parsing does not open: ``load`` leaves
-  ``record.tokens`` None and :meth:`OpenFold3Parser.complete` builds the layout with
-  :func:`token_layout`. ``compute_prediction_metrics``, ``compute_openfold_metrics`` and
-  ``PredictionSession.record`` call it; a record that only went through ``load`` has the
+  UNK has it set and is one token.
+* ``pae`` and ``pde`` have one row per token, so they are larger than the residue count when a
+  modified residue or ligand is present. The chain and residue of a token need the structure,
+  which parsing does not open: ``load`` leaves ``record.tokens`` None and
+  :meth:`OpenFold3Parser.complete` builds the layout with :func:`token_layout`.
+  ``compute_prediction_metrics``, ``compute_openfold_metrics`` and
+  ``PredictionSession.record`` call it. A record that only went through ``load`` has the
   interface statistics only when the matrix size equals the residue count, and so has a
   record whose matrices have one row per residue although the rule gives more tokens (it keeps
-  ``tokens`` None and gets no reason, because the sizes agree).
-  Checked on 58 sample files of OpenFold3 0.5.0 runs (2026-10-01): 44 of 1YCR and of the
-  bicyclic SFTI-1 of 3P8F, which have standard residues only, and 14 of the cyclosporin 1CWA.
-  The rule gives the size of ``pae`` and ``pde`` in every file; the interface values of the 44
-  files of standard residues are the same with the layout and without it, and the 14 files of
-  1CWA go from NaN to finite values. 1CWA has 240 tokens: 165 for the receptor, 73 for the
-  heavy atoms of the nine modified residues of the binder (D-Ala, N-methyl-Leu,
-  N-methyl-Val, MeBmt, Abu, Sar) and 2 for its Val and Ala; 1YCR and 3P8F have one token
-  per residue. A ligand whose name is in the standard set (a free amino acid) is the one
-  case that the structure file cannot tell from a residue; the rule then counts too few
-  tokens, never too many, so the size check of :func:`token_layout` refuses it.
+  ``tokens`` None and gets no reason, because the sizes agree). A ligand whose name is in the
+  standard set (a free amino acid) is the one case that the structure file cannot tell from a
+  residue; the rule then counts too few tokens, never too many, so the size check of
+  :func:`token_layout` refuses it.
 * ``record.extras["templates"]`` says what became of the templates of the query, chain by chain
   (:func:`_template_extras`): OpenFold3 0.5.0 goes on without a template that it cannot use
   and exits with status 0, so the output alone does not say whether a ``score`` run had one.
@@ -77,11 +66,16 @@ and 13 tokens, one per residue).
 * ``<prediction_dir>/experiment_config.json`` records the checkpoint of the run
   (``inference_ckpt_path``, ``inference_ckpt_name``) and the user-default ``runner.yml`` that
   was merged; they go to ``record.extras`` as ``inference_ckpt_path``, ``inference_ckpt_name``
-  and ``user_default_runner_yaml``. Which weights produced a prediction is otherwise not
-  visible in the output files, and Preview2 and OpenBind-0 outputs share one layout.
+  and ``user_default_runner_yaml``. Nothing else in the output files says which weights
+  produced a prediction, and Preview2 and OpenBind-0 outputs share one layout.
 * A query that fails inside OpenFold3 leaves no confidence files and the process still exits
   with status 0; the run's ``summary.txt`` and ``logs/predict_err_rank<N>.log`` say why, and
   the reason is added to ``record.reasons``.
+
+Status. Read without change: all files of OpenFold3 0.5.0 runs on 1YCR, the cyclosporin of 1CWA
+and the bicyclic SFTI-1 of 3P8F (OpenBind-0 checkpoint, no MSA); ``.cif.gz`` with ``.npz`` and
+``.pdb`` with ``.json`` on 1YCR. The token rule gave the size of ``pae`` and ``pde`` in all 58
+sample files checked.
 
 The module imports numpy only (the runner module is imported when a failed query has to be
 explained); the structure file is not opened while parsing, and is read through
@@ -98,12 +92,24 @@ from typing import Optional
 import numpy as np
 
 from binding_metrics.capabilities import Capabilities, check_openfold3_residues
+from binding_metrics.predictors._renamed import deprecated_name_getattr
 from binding_metrics.predictors.base import PredictionParser
-from binding_metrics.predictors.record import PredictionFiles, PredictionRecord, TokenLayout
+from binding_metrics.predictors.record import (
+    PredictedPose,
+    PredictionFiles,
+    SampleRef,
+    TokenLayout,
+)
+
+#: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
+__getattr__ = deprecated_name_getattr(__name__)
 
 logger = logging.getLogger(__name__)
 
 _NAN = float("nan")
+
+#: Bound on the samples ``list_samples`` returns, as in the base class.
+_MAX_SAMPLES = 1000
 
 #: Residue names that OpenFold3 tokenises as one token per residue: ``STANDARD_RESIDUES_3`` of
 #: ``openfold3/core/data/resources/residues.py`` (v0.5.0, line 96): the 20 amino acids and UNK,
@@ -293,25 +299,23 @@ class OpenFold3Parser(PredictionParser):
     display_name = "OpenFold3"
     family = "af3"
 
-    # The inputs OpenFold3 0.5.0 can be given, from its source (tag v0.5.0): the closure limit
-    # from openfold3/core/utils/relpos.py and the query schema, the residue limit from the rule of
-    # this package's own query builder (binding_metrics.metrics._openfold_run), imported when the
-    # check runs. Not declared because nothing shows it: a limit on the binder size or on a binder
-    # of several chains.
-    # Modes (v0.5.0 source, checked against the clone on 2026-10-01): predict, refold and score
-    # are supported, score-lock is not. The template pair features are multiplied by a same-chain
-    # mask when they are built (openfold3/core/data/primitives/featurization/template.py,
-    # create_template_distogram and create_template_unit_vector; the call is in
+    # Limits of OpenFold3 0.5.0, from its source (tag v0.5.0): the closure limit from
+    # openfold3/core/utils/relpos.py and the query schema, the residue limit from the rule of this
+    # package's own query builder (binding_metrics.metrics._openfold_run), imported when the check
+    # runs. No limit is declared on the binder size or on a binder of several chains.
+    # Modes: predict, refold and score are supported; score-lock and refold-lock are not, because
+    # a template guides the fold of a chain and nothing forces it. The template pair features are
+    # multiplied by a same-chain mask when they are built
+    # (openfold3/core/data/primitives/featurization/template.py, create_template_distogram and
+    # create_template_unit_vector; the call is in
     # openfold3/core/data/pipelines/featurization/template.py) and again in the embedder
     # (openfold3/core/model/feature_embedders/template_embedders.py, _embed_feats), so a template
-    # gives the fold of each chain and never the pose between chains; a multi-chain CIF template
+    # gives the fold of each chain and never the pose between chains. A multi-chain CIF template
     # gives one chain (docs/source/template_how_to.md, "CIF Direct Mode"); the only constraint is
     # the pocket constraint, documented for small-molecule ligands (docs/source/
     # input_format_reference.md, section 4).
     # The head-to-tail caveat rests on relpos.py (cyclic_offset takes the number of tokens of the
-    # chain), tokenization.py (a modified residue is one token per atom) and on the real runs of
-    # 0.5.0 of 2026-10-01: one complex per case (1CWA with nine modified residues, three seeds;
-    # SFTI-1 of 3P8F, one seed), no MSA, so one example of each and not a benchmark.
+    # chain) and tokenization.py (a modified residue is one token per atom).
     capabilities = Capabilities(
         closures={"none", "head_to_tail"},
         modes={"predict", "refold", "score"},
@@ -328,6 +332,17 @@ class OpenFold3Parser(PredictionParser):
                 "small-molecule ligands only (docs/source/input_format_reference.md, section 4), "
                 "and its use for a peptide binder was not confirmed. Use 'score' (the model "
                 "re-docks the chains) or 'refold', or a model that pins the pose."
+            ),
+            "modes:refold-lock": (
+                "OpenFold3 0.5.0 cannot force a template, it only guides it per chain. A template "
+                "enters the network as features of one chain (create_template_distogram and "
+                "create_template_unit_vector take a same-chain mask in openfold3/core/data/"
+                "primitives/featurization/template.py, and a multi-chain CIF template gives one "
+                "chain, docs/source/template_how_to.md), and the sources checked have no setting "
+                "that holds the template coordinates in the output, as the `force: true` and "
+                "`threshold` of a Boltz-2 template do. In 'refold' the receptor template guides "
+                "the fold and the receptor may move. Use 'refold', or a model that forces a "
+                "template."
             ),
             "closures": (
                 "OpenFold3 0.5.0 takes one kind of ring closure: `cyclic: true` on a protein chain "
@@ -350,18 +365,10 @@ class OpenFold3Parser(PredictionParser):
                 "the number of tokens of the chain, and OpenFold3 makes a modified residue one "
                 "token per heavy atom (tokenize_atom_array in openfold3/core/data/primitives/"
                 "structure/tokenization.py), so the offsets between the tokens of one modified "
-                "residue change from 0 to wrapped values (checked on that function with a toy "
-                "chain). Runs of OpenFold3 0.5.0 without an MSA gave one example of each case, "
-                "not a benchmark: for the standard-residue binder of SFTI-1 (3P8F, one seed) the "
-                "flag closed the ring (C-N 1.38 A with it, 7.40 A without); for the cyclosporin of "
-                "1CWA, which has nine modified residues (three seeds), the ring was closed without "
-                "the flag (C-N 1.0-1.3 A) and the prediction was worse with it (ipTM 0.78-0.81 "
-                "against 0.91-0.92, binder RMSD against the input 3.0-4.8 A against 0.5-0.7 A). "
-                "The change of the offsets may be the reason; no ablation of the model was done, "
-                "so the cause is not established. The query builders of this package therefore "
-                'write the flag with binder_cyclic="auto" (the default) only for a binder of '
-                "standard residues that is closed head to tail (a protonation or cross-link "
-                "variant counts as standard), when OpenFold3 is 0.4.5 or later; "
+                "residue change from 0 to wrapped values. The query builders of this package "
+                'therefore write the flag with binder_cyclic="auto" (the default) only for a '
+                "binder of standard residues that is closed head to tail (a protonation or "
+                "cross-link variant counts as standard), when OpenFold3 is 0.4.5 or later; "
                 "binder_cyclic=True (`--openfold-cyclic on`) writes it for any binder and "
                 "binder_cyclic=False (`--openfold-cyclic off`) never does."
             ),
@@ -426,14 +433,14 @@ class OpenFold3Parser(PredictionParser):
         name: str,
         seed_index: int = 1,
         sample: int = 1,
-    ) -> PredictionRecord:
+    ) -> PredictedPose:
         """Read the aggregated and full confidence files into a record.
 
         A missing file leaves its values at NaN (None for an array) and adds a reason; a
         corrupt file raises. ``avg_plddt`` falls back to the mean of the per-atom pLDDT when
         the aggregated file does not give it. ``gpde`` comes from the aggregated file only.
         """
-        record = PredictionRecord(
+        record = PredictedPose(
             self.name,
             name,
             seed_index=seed_index,
@@ -492,7 +499,38 @@ class OpenFold3Parser(PredictionParser):
             record.extras["seed_value"] = located.parent.name[len("seed_") :]
         return record
 
-    def complete(self, record: PredictionRecord) -> PredictionRecord:
+    def list_samples(self, prediction_dir: str | Path, name: str) -> list[SampleRef]:
+        """The samples present, in seed order and sample order, with ``sample_ranking_score``.
+
+        Only the ``*_confidences_aggregated.json`` files are read, one small file per sample.
+        The default implementation parses every sample, which also reads the full confidence
+        file (``pae`` and ``pde`` as text, a matrix of tokens by tokens each) and the run's
+        configuration and template files. A sample whose aggregated file is missing has a NaN
+        ranking score, as in the parsed record; the arrays are not opened, so a corrupt full
+        confidence file is found by ``load`` and not here.
+        """
+        directory = Path(prediction_dir)
+        refs: list[SampleRef] = []
+        seed_index = 0
+        while len(refs) < _MAX_SAMPLES:
+            seed_index += 1
+            sample = 0
+            found_in_seed = False
+            while len(refs) < _MAX_SAMPLES:
+                sample += 1
+                files = self.find_files(directory, name, seed_index=seed_index, sample=sample)
+                if not files.has_output():
+                    break
+                found_in_seed = True
+                score = _NAN
+                if files.scores is not None:
+                    score = parse_aggregated_confidences(files.scores)["sample_ranking_score"]
+                refs.append(SampleRef(seed_index, sample, score))
+            if not found_in_seed:
+                break
+        return refs
+
+    def complete(self, record: PredictedPose) -> PredictedPose:
         """Attach the token layout, which needs the structure file.
 
         ``record.tokens`` becomes :func:`token_layout` of the record, so that the interface PAE
@@ -545,12 +583,12 @@ class _PerResidueMatrixError(ValueError):
     """The matrices have one row per residue, which is not the tokenisation of OpenFold3 0.5.0."""
 
 
-def _say(record: PredictionRecord, reason: str) -> None:
+def _say(record: PredictedPose, reason: str) -> None:
     if reason not in record.reasons:  # keeps ``complete`` idempotent
         record.reasons.append(reason)
 
 
-def token_layout(record: PredictionRecord) -> TokenLayout:
+def token_layout(record: PredictedPose) -> TokenLayout:
     """The token layout of an OpenFold3 record, from its structure and the rule of the tokenizer.
 
     ``pae`` and ``pde`` have one row per token. A residue named in ``STANDARD_RESIDUE_NAMES`` is
@@ -605,7 +643,7 @@ def _residue_runs(atoms) -> tuple[np.ndarray, np.ndarray]:
     return starts, np.append(starts[1:], n_atoms)
 
 
-def _layout_of(record: PredictionRecord, atoms) -> TokenLayout:
+def _layout_of(record: PredictedPose, atoms) -> TokenLayout:
     """:func:`token_layout` for the atoms of ``record`` that the caller has already read."""
     if record.pae is None and record.pde is None:
         raise ValueError("the record has neither a PAE nor a PDE matrix to lay tokens over")
@@ -671,7 +709,7 @@ def _layout_of(record: PredictionRecord, atoms) -> TokenLayout:
     return layout
 
 
-def _check_chain_names(record: PredictionRecord, token_chain_ids: np.ndarray) -> None:
+def _check_chain_names(record: PredictedPose, token_chain_ids: np.ndarray) -> None:
     """Refuse a structure whose chains are not those that the confidences name.
 
     The model numbers the chains 1, 2, ... in the sorted order of their chain IDs (``asym_id``)

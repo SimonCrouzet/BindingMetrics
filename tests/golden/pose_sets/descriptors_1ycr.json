@@ -1,0 +1,639 @@
+{
+  "golden_format": 1,
+  "name": "descriptors_1ycr",
+  "description": "score_pose_set on the crystal peptide of 1YCR and the same peptide shifted 6 angstrom along (2/3, -1/3, 2/3), identity frame, with the 4.5 angstrom epitope and the buried-area interface as residue sets, the crystal peptide as partner and the metric delta_sasa_static.",
+  "regenerate": "python scripts/regen_pose_golden.py --write",
+  "tolerance": {"rtol": 1e-06, "atol": 1e-06, "overrides": {"poses*.omega.*": [1e-06, 0.0001], "aggregates*.omega.*": [1e-06, 0.0001]}},
+  "ignored": ["package_version", "timing*", "provenance*", "references.*.path"],
+  "result": {
+    "schema": "binding_metrics.pose_set_result",
+    "schema_version": 1,
+    "construct": "1ycr-descriptors",
+    "binder_chain": "B",
+    "target_chain": "A",
+    "input_key": "b67677be45b2ff01bc271f1a00e0bf89e1fedc4615b03b05abe0629a106d4cab",
+    "parameters": {
+      "options": {
+        "frame": {
+          "pairing": "auto",
+          "frame_atoms": "ca",
+          "frame_residues": null,
+          "outliers": null,
+          "min_frame_residues": 10,
+          "min_frame_fraction": 0.5,
+          "min_sequence_identity": 0.8,
+          "min_pair_fraction": 0.9,
+          "site_cutoff_angstrom": 4.5,
+          "iqr_threshold": 1.5,
+          "iqr_max_iterations": 10,
+          "iqr_min_deviation_angstrom": 0.01,
+          "alignment_matrix": "BLOSUM62",
+          "alignment_gap_penalty": [-10, -1],
+          "renumber_receptor": true,
+          "metrics_frame": "reference"
+        },
+        "agreement": {
+          "kind": "ca",
+          "cluster_cutoffs_angstrom": [1.0, 2.0],
+          "linkage": "complete",
+          "symmetry": "standard",
+          "cyclic_shift": "off",
+          "residue_pairing": "auto",
+          "expected_closures": null,
+          "exclude_closure_mismatch": false,
+          "contact_cutoff_angstrom": 5.0,
+          "min_shared_atom_fraction": 0.8,
+          "shape_rmsd": true
+        },
+        "aggregation": {"min_n_ok": 1, "reason_policy": "exclude"},
+        "representative": {"confidence_key": "ranking_score", "confidence_direction": null},
+        "descriptors": {"interface_threshold_angstrom2": 0.5, "clash_cutoffs_angstrom": [2.2, 3.0], "shell_angstrom": 4.0, "max_unmapped_fraction": 0.5, "probe_radius": 1.4}
+      },
+      "metrics": ["delta_sasa_static"],
+      "metric_scope": {"delta_sasa_static": "all"},
+      "metric_kwargs": {},
+      "aggregate": ["mean", "std", "min", "max", "median"],
+      "group_by": ["backend"],
+      "representative": "medoid",
+      "heavy": "representative",
+      "preflight": "error",
+      "residue_maps": {},
+      "residue_table": false,
+      "include_transform": true
+    },
+    "references": {
+      "implicit": false,
+      "implicit_pose_id": null,
+      "metrics_frame_variant": "reference",
+      "variants": {
+        "reference": {
+          "content_hash": "7f51ad706754e1e1f0e0476040ad059f56e3ac5d73168a753a272aad61bf018e",
+          "reference": {
+            "schema": "binding_metrics.reference",
+            "schema_version": 1,
+            "name": "reference",
+            "structure": {"kind": "experimental", "chain_map": {}, "content_hash": "3f33ed8467fc26eea6c9c3283cbd3393dc26bddd644f4bf96ca21e6d0958a74b"},
+            "receptor_chain": "A",
+            "binder_chain": "B",
+            "residue_map": [],
+            "residue_sets": {
+              "crystal_interface": [["A", 25, ""], ["A", 26, ""], ["A", 49, ""], ["A", 50, ""], ["A", 51, ""], ["A", 54, ""], ["A", 57, ""], ["A", 58, ""], ["A", 61, ""], ["A", 62, ""], ["A", 67, ""], ["A", 70, ""], ["A", 71, ""], ["A", 72, ""], ["A", 73, ""], ["A", 75, ""], ["A", 86, ""], ["A", 91, ""], ["A", 93, ""], ["A", 94, ""], ["A", 96, ""], ["A", 99, ""], ["A", 100, ""], ["A", 103, ""], ["A", 104, ""]],
+              "epitope": [["A", 25, ""], ["A", 26, ""], ["A", 50, ""], ["A", 51, ""], ["A", 54, ""], ["A", 57, ""], ["A", 58, ""], ["A", 61, ""], ["A", 62, ""], ["A", 67, ""], ["A", 70, ""], ["A", 71, ""], ["A", 72, ""], ["A", 73, ""], ["A", 75, ""], ["A", 91, ""], ["A", 93, ""], ["A", 94, ""], ["A", 96, ""], ["A", 99, ""], ["A", 100, ""], ["A", 104, ""]]
+            },
+            "partners": {"crystal_peptide": {"structure": {"kind": "experimental", "chain_map": {}, "content_hash": "3f33ed8467fc26eea6c9c3283cbd3393dc26bddd644f4bf96ca21e6d0958a74b"}, "chains": ["B"]}}
+          }
+        }
+      }
+    },
+    "preflight": {
+      "policy": "error",
+      "predictor_policy": "error",
+      "mode": null,
+      "compatible": true,
+      "profile": {
+        "binder_chains": ["B"],
+        "receptor_chain": "A",
+        "n_binder_residues": 13,
+        "binder_type": "peptide",
+        "binder_type_source": "estimated",
+        "closures": ["none"],
+        "closure_bonds": [],
+        "residue_classes": ["canonical"],
+        "residue_names": {"canonical": ["ASN", "ASP", "GLU", "LEU", "LYS", "PHE", "PRO", "SER", "THR", "TRP"]},
+        "residue_labels": {"canonical": ["GLU 17", "THR 18", "PHE 19", "SER 20", "ASP 21", "LEU 22", "TRP 23", "LYS 24", "LEU 25", "LEU 26", "PRO 27", "GLU 28", "ASN 29"]},
+        "chain_ids": ["A", "B"],
+        "other_protein_chains": ["A"],
+        "notes": ["the structure has no bond table, so hydrocarbon staples and other side-chain cross-links were not looked for"]
+      },
+      "metrics_requested": ["delta_sasa_static"],
+      "metrics_to_run": ["delta_sasa_static"],
+      "metrics_skipped": [],
+      "predictors": [],
+      "predictor_usable": true,
+      "violations": [],
+      "warnings": [],
+      "notes": ["the structure has no bond table, so hydrocarbon staples and other side-chain cross-links were not looked for"]
+    },
+    "poses": [
+      {
+        "id": "crystal-s1",
+        "kind": "docked",
+        "content_hash": "3f33ed8467fc26eea6c9c3283cbd3393dc26bddd644f4bf96ca21e6d0958a74b",
+        "provenance": {"backend": "crystal", "seed": 1, "offset_angstrom": 0.0, "rotation_degrees": 0.0, "synthetic": true},
+        "native": {"ranking_score": 0.55},
+        "status": "ok",
+        "reason": null,
+        "reasons": {},
+        "independent_of_design": null,
+        "profile": {
+          "n_binder_residues": 13,
+          "binder_type": "peptide",
+          "closures": ["none"],
+          "closure_bonds": [],
+          "residue_classes": ["canonical"],
+          "residue_names": {},
+          "notes": ["the structure has no bond table, so hydrocarbon staples and other side-chain cross-links were not looked for"],
+          "closures_as_expected": true,
+          "differs_from_first": []
+        },
+        "frame": {
+          "status": "ok",
+          "reason": null,
+          "pairing": "number",
+          "n_receptor_residues_pose": 85,
+          "n_receptor_residues_reference": 85,
+          "n_paired": 85,
+          "paired_fraction": 1.0,
+          "sequence_identity": 1.0,
+          "alignment_ambiguous": false,
+          "n_fit_residues": 85,
+          "n_fit_atoms": 85,
+          "n_rejected": 0,
+          "receptor_rmsd_angstrom": 0.0,
+          "region_rmsd_angstrom": {"all": 0.0, "site": 0.0, "crystal_interface": 0.0, "epitope": 0.0},
+          "region_n_residues": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_n_paired": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_reasons": {},
+          "warnings": [],
+          "transform": {"rotation": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], "translation": [0.0, 0.0, 0.0]},
+          "variant": "reference"
+        },
+        "delta_sasa_static": {"delta_sasa": 1465.720581, "sasa_peptide": 1616.008667, "sasa_receptor": 5293.208008, "sasa_complex": 5443.496094},
+        "descriptors": {
+          "reference": {
+            "sets": {
+              "crystal_interface": {"n_set": 25, "n_set_mapped": 25, "n_interface": 25, "n_overlap": 25, "covered_fraction": 1.0, "interface_in_set_fraction": 1.0, "jaccard": 1.0, "receptor_buried_area_in_set_angstrom2": 662.0975357, "receptor_buried_area_in_set_fraction": 0.999641533},
+              "epitope": {"n_set": 22, "n_set_mapped": 22, "n_interface": 25, "n_overlap": 22, "covered_fraction": 1.0, "interface_in_set_fraction": 0.88, "jaccard": 0.88, "receptor_buried_area_in_set_angstrom2": 655.8078052, "receptor_buried_area_in_set_fraction": 0.9901452345}
+            },
+            "partners": {
+              "crystal_peptide": {
+                "min_distance_angstrom": 0.0,
+                "clash_atoms": {"2.2": 113, "3.0": 113},
+                "clash_pairs": {"2.2": 349, "3.0": 773},
+                "shell_fraction": 1.0,
+                "shared_buried_area_angstrom2": 662.3349609,
+                "partner_buried_area_angstrom2": 662.3349609,
+                "pose_buried_area_angstrom2": 662.3349609,
+                "shared_fraction_of_partner": 1.0,
+                "overlap_volume_angstrom3": 4504.29044
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "decoy_6A-s1",
+        "kind": "docked",
+        "content_hash": "ae02d582cc4448f8f2ac39455201e470f2f9462315e7757416ca628de050d59a",
+        "provenance": {"backend": "decoy_6A", "seed": 1, "offset_angstrom": 6.0, "rotation_degrees": 0.0, "synthetic": true},
+        "native": {"ranking_score": 0.6},
+        "status": "ok",
+        "reason": null,
+        "reasons": {},
+        "independent_of_design": null,
+        "profile": {
+          "n_binder_residues": 13,
+          "binder_type": "peptide",
+          "closures": ["none"],
+          "closure_bonds": [],
+          "residue_classes": ["canonical"],
+          "residue_names": {},
+          "notes": ["the structure has no bond table, so hydrocarbon staples and other side-chain cross-links were not looked for"],
+          "closures_as_expected": true,
+          "differs_from_first": []
+        },
+        "frame": {
+          "status": "ok",
+          "reason": null,
+          "pairing": "number",
+          "n_receptor_residues_pose": 85,
+          "n_receptor_residues_reference": 85,
+          "n_paired": 85,
+          "paired_fraction": 1.0,
+          "sequence_identity": 1.0,
+          "alignment_ambiguous": false,
+          "n_fit_residues": 85,
+          "n_fit_atoms": 85,
+          "n_rejected": 0,
+          "receptor_rmsd_angstrom": 0.0,
+          "region_rmsd_angstrom": {"all": 0.0, "site": 0.0, "crystal_interface": 0.0, "epitope": 0.0},
+          "region_n_residues": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_n_paired": {"all": 85, "site": 22, "crystal_interface": 25, "epitope": 22},
+          "region_reasons": {},
+          "warnings": [],
+          "transform": {"rotation": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], "translation": [0.0, 0.0, 0.0]},
+          "variant": "reference"
+        },
+        "delta_sasa_static": {"delta_sasa": 1449.679565, "sasa_peptide": 1616.008667, "sasa_receptor": 5293.208008, "sasa_complex": 5459.537109},
+        "descriptors": {
+          "reference": {
+            "sets": {
+              "crystal_interface": {
+                "n_set": 25,
+                "n_set_mapped": 25,
+                "n_interface": 22,
+                "n_overlap": 19,
+                "covered_fraction": 0.76,
+                "interface_in_set_fraction": 0.8636363636,
+                "jaccard": 0.6785714286,
+                "receptor_buried_area_in_set_angstrom2": 569.5754605,
+                "receptor_buried_area_in_set_fraction": 0.9673439316
+              },
+              "epitope": {
+                "n_set": 22,
+                "n_set_mapped": 22,
+                "n_interface": 22,
+                "n_overlap": 17,
+                "covered_fraction": 0.7727272727,
+                "interface_in_set_fraction": 0.7727272727,
+                "jaccard": 0.6296296296,
+                "receptor_buried_area_in_set_angstrom2": 568.0659252,
+                "receptor_buried_area_in_set_fraction": 0.9647801979
+              }
+            },
+            "partners": {
+              "crystal_peptide": {
+                "min_distance_angstrom": 0.6637420262,
+                "clash_atoms": {"2.2": 32, "3.0": 47},
+                "clash_pairs": {"2.2": 95, "3.0": 210},
+                "shell_fraction": 0.6637168142,
+                "shared_buried_area_angstrom2": 371.247406,
+                "partner_buried_area_angstrom2": 662.3349609,
+                "pose_buried_area_angstrom2": 588.8034668,
+                "shared_fraction_of_partner": 0.5605130756,
+                "overlap_volume_angstrom3": 654.1026429
+              }
+            }
+          }
+        }
+      }
+    ],
+    "agreement": {
+      "status": "ok",
+      "reason": null,
+      "kind": "ca",
+      "linkage": "complete",
+      "pose_ids": ["crystal-s1", "decoy_6A-s1"],
+      "groups": {"crystal-s1": "crystal", "decoy_6A-s1": "decoy_6A"},
+      "excluded": {},
+      "expected_closures": [],
+      "rmsd": {
+        "ca": {
+          "matrix": {"name": "rmsd_ca", "unit": "angstrom", "direction": "distance", "pose_ids": ["crystal-s1", "decoy_6A-s1"], "matrix": [[0.0, 5.999999902], [5.999999902, 0.0]], "undefined_pairs": []},
+          "statistics": {
+            "n_poses": 2,
+            "overall": {"n_pairs": 1, "n_defined": 1, "min": 5.999999902, "mean": 5.999999902, "max": 5.999999902, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]},
+            "within": {
+              "crystal": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'crystal' has 1)"},
+              "decoy_6A": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'decoy_6A' has 1)"}
+            },
+            "between": {"crystal|decoy_6A": {"n_pairs": 1, "n_defined": 1, "min": 5.999999902, "mean": 5.999999902, "max": 5.999999902, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]}},
+            "between_reason": null
+          }
+        },
+        "backbone": {
+          "matrix": {"name": "rmsd_backbone", "unit": "angstrom", "direction": "distance", "pose_ids": ["crystal-s1", "decoy_6A-s1"], "matrix": [[0.0, 5.999999914], [5.999999914, 0.0]], "undefined_pairs": []},
+          "statistics": {
+            "n_poses": 2,
+            "overall": {"n_pairs": 1, "n_defined": 1, "min": 5.999999914, "mean": 5.999999914, "max": 5.999999914, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]},
+            "within": {
+              "crystal": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'crystal' has 1)"},
+              "decoy_6A": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'decoy_6A' has 1)"}
+            },
+            "between": {"crystal|decoy_6A": {"n_pairs": 1, "n_defined": 1, "min": 5.999999914, "mean": 5.999999914, "max": 5.999999914, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]}},
+            "between_reason": null
+          }
+        },
+        "heavy": {
+          "matrix": {"name": "rmsd_heavy", "unit": "angstrom", "direction": "distance", "pose_ids": ["crystal-s1", "decoy_6A-s1"], "matrix": [[0.0, 5.999999973], [5.999999973, 0.0]], "undefined_pairs": []},
+          "statistics": {
+            "n_poses": 2,
+            "overall": {"n_pairs": 1, "n_defined": 1, "min": 5.999999973, "mean": 5.999999973, "max": 5.999999973, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]},
+            "within": {
+              "crystal": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'crystal' has 1)"},
+              "decoy_6A": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'decoy_6A' has 1)"}
+            },
+            "between": {"crystal|decoy_6A": {"n_pairs": 1, "n_defined": 1, "min": 5.999999973, "mean": 5.999999973, "max": 5.999999973, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]}},
+            "between_reason": null
+          }
+        }
+      },
+      "shape_rmsd": {
+        "ca": {
+          "matrix": {"name": "rmsd_ca", "unit": "angstrom", "direction": "distance", "pose_ids": ["crystal-s1", "decoy_6A-s1"], "matrix": [[0.0, 8.767777526e-07], [8.767777526e-07, 0.0]], "undefined_pairs": []},
+          "statistics": {
+            "n_poses": 2,
+            "overall": {"n_pairs": 1, "n_defined": 1, "min": 8.767777526e-07, "mean": 8.767777526e-07, "max": 8.767777526e-07, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]},
+            "within": {
+              "crystal": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'crystal' has 1)"},
+              "decoy_6A": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'decoy_6A' has 1)"}
+            },
+            "between": {"crystal|decoy_6A": {"n_pairs": 1, "n_defined": 1, "min": 8.767777526e-07, "mean": 8.767777526e-07, "max": 8.767777526e-07, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]}},
+            "between_reason": null
+          }
+        },
+        "backbone": {
+          "matrix": {"name": "rmsd_backbone", "unit": "angstrom", "direction": "distance", "pose_ids": ["crystal-s1", "decoy_6A-s1"], "matrix": [[0.0, 7.308031731e-07], [7.308031731e-07, 0.0]], "undefined_pairs": []},
+          "statistics": {
+            "n_poses": 2,
+            "overall": {"n_pairs": 1, "n_defined": 1, "min": 7.308031731e-07, "mean": 7.308031731e-07, "max": 7.308031731e-07, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]},
+            "within": {
+              "crystal": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'crystal' has 1)"},
+              "decoy_6A": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'decoy_6A' has 1)"}
+            },
+            "between": {"crystal|decoy_6A": {"n_pairs": 1, "n_defined": 1, "min": 7.308031731e-07, "mean": 7.308031731e-07, "max": 7.308031731e-07, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]}},
+            "between_reason": null
+          }
+        },
+        "heavy": {
+          "matrix": {"name": "rmsd_heavy", "unit": "angstrom", "direction": "distance", "pose_ids": ["crystal-s1", "decoy_6A-s1"], "matrix": [[0.0, 7.846442056e-07], [7.846442056e-07, 0.0]], "undefined_pairs": []},
+          "statistics": {
+            "n_poses": 2,
+            "overall": {"n_pairs": 1, "n_defined": 1, "min": 7.846442056e-07, "mean": 7.846442056e-07, "max": 7.846442056e-07, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]},
+            "within": {
+              "crystal": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'crystal' has 1)"},
+              "decoy_6A": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'decoy_6A' has 1)"}
+            },
+            "between": {"crystal|decoy_6A": {"n_pairs": 1, "n_defined": 1, "min": 7.846442056e-07, "mean": 7.846442056e-07, "max": 7.846442056e-07, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]}},
+            "between_reason": null
+          }
+        }
+      },
+      "unknown_residues": [],
+      "closure_mismatch_pairs": [],
+      "medoids": {
+        "overall": {"pose_id": "crystal-s1", "sum_distance_angstrom": 5.999999902, "mean_distance_angstrom": 5.999999902, "tied_with": ["decoy_6A-s1"], "n_poses": 2, "excluded": []},
+        "per_group": {
+          "crystal": {"pose_id": "crystal-s1", "sum_distance_angstrom": null, "mean_distance_angstrom": null, "tied_with": [], "n_poses": 1, "excluded": [], "reason": "one pose: it is its own medoid and has no distance to compare"},
+          "decoy_6A": {"pose_id": "decoy_6A-s1", "sum_distance_angstrom": null, "mean_distance_angstrom": null, "tied_with": [], "n_poses": 1, "excluded": [], "reason": "one pose: it is its own medoid and has no distance to compare"}
+        },
+        "between_groups": {"crystal|decoy_6A": {"medoid_a": "crystal-s1", "medoid_b": "decoy_6A-s1", "distance_angstrom": 5.999999902}}
+      },
+      "clusters": {
+        "1.0": {"cutoff_angstrom": 1.0, "linkage": "complete", "n_clusters": 2, "sizes": [1, 1], "largest_cluster_fraction": 0.5, "labels": {"crystal-s1": 0, "decoy_6A-s1": 1}, "clusters": [["crystal-s1"], ["decoy_6A-s1"]], "mixed_clusters": [], "n_undefined_pairs": 0},
+        "2.0": {"cutoff_angstrom": 2.0, "linkage": "complete", "n_clusters": 2, "sizes": [1, 1], "largest_cluster_fraction": 0.5, "labels": {"crystal-s1": 0, "decoy_6A-s1": 1}, "clusters": [["crystal-s1"], ["decoy_6A-s1"]], "mixed_clusters": [], "n_undefined_pairs": 0}
+      },
+      "spread": {
+        "all": {
+          "pose_ids": ["crystal-s1", "decoy_6A-s1"],
+          "reference_id": "crystal-s1",
+          "positions": [
+            {"binder_index": 1, "chain": "B", "number": 17, "icode": "", "residue": "GLU", "n_poses": 2, "spread_angstrom": 3.000000636},
+            {"binder_index": 2, "chain": "B", "number": 18, "icode": "", "residue": "THR", "n_poses": 2, "spread_angstrom": 2.999999364},
+            {"binder_index": 3, "chain": "B", "number": 19, "icode": "", "residue": "PHE", "n_poses": 2, "spread_angstrom": 2.999999364},
+            {"binder_index": 4, "chain": "B", "number": 20, "icode": "", "residue": "SER", "n_poses": 2, "spread_angstrom": 3.0},
+            {"binder_index": 5, "chain": "B", "number": 21, "icode": "", "residue": "ASP", "n_poses": 2, "spread_angstrom": 3.0},
+            {"binder_index": 6, "chain": "B", "number": 22, "icode": "", "residue": "LEU", "n_poses": 2, "spread_angstrom": 3.0},
+            {"binder_index": 7, "chain": "B", "number": 23, "icode": "", "residue": "TRP", "n_poses": 2, "spread_angstrom": 3.0},
+            {"binder_index": 8, "chain": "B", "number": 24, "icode": "", "residue": "LYS", "n_poses": 2, "spread_angstrom": 3.0},
+            {"binder_index": 9, "chain": "B", "number": 25, "icode": "", "residue": "LEU", "n_poses": 2, "spread_angstrom": 3.0},
+            {"binder_index": 10, "chain": "B", "number": 26, "icode": "", "residue": "LEU", "n_poses": 2, "spread_angstrom": 3.0},
+            {"binder_index": 11, "chain": "B", "number": 27, "icode": "", "residue": "PRO", "n_poses": 2, "spread_angstrom": 3.0},
+            {"binder_index": 12, "chain": "B", "number": 28, "icode": "", "residue": "GLU", "n_poses": 2, "spread_angstrom": 3.0},
+            {"binder_index": 13, "chain": "B", "number": 29, "icode": "", "residue": "ASN", "n_poses": 2, "spread_angstrom": 3.0}
+          ],
+          "mean_spread_angstrom": 2.999999951,
+          "excluded": {}
+        },
+        "per_group": {
+          "crystal": {"pose_ids": ["crystal-s1"], "reference_id": "crystal-s1", "positions": [], "mean_spread_angstrom": null, "excluded": {}, "reason": "needs at least 2 usable poses (got 1)"},
+          "decoy_6A": {"pose_ids": ["decoy_6A-s1"], "reference_id": "decoy_6A-s1", "positions": [], "mean_spread_angstrom": null, "excluded": {}, "reason": "needs at least 2 usable poses (got 1)"}
+        }
+      },
+      "contacts": {
+        "definition": "residue pairs with two heavy atoms closer than cutoff_angstrom; the interface is the residues in those pairs; receptor residues in the numbering of the reference when frame.renumber_receptor is true",
+        "cutoff_angstrom": 5.0,
+        "excluded": {},
+        "interface_jaccard": {
+          "all": {
+            "matrix": {"name": "jaccard_interface", "unit": null, "direction": "similarity", "pose_ids": ["crystal-s1", "decoy_6A-s1"], "matrix": [[1.0, 0.54], [0.54, 1.0]], "undefined_pairs": []},
+            "statistics": {
+              "n_poses": 2,
+              "overall": {"n_pairs": 1, "n_defined": 1, "min": 0.54, "mean": 0.54, "max": 0.54, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]},
+              "within": {
+                "crystal": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'crystal' has 1)"},
+                "decoy_6A": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'decoy_6A' has 1)"}
+              },
+              "between": {"crystal|decoy_6A": {"n_pairs": 1, "n_defined": 1, "min": 0.54, "mean": 0.54, "max": 0.54, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]}},
+              "between_reason": null
+            }
+          },
+          "receptor": {
+            "matrix": {"name": "jaccard_interface_receptor", "unit": null, "direction": "similarity", "pose_ids": ["crystal-s1", "decoy_6A-s1"], "matrix": [[1.0, 0.4324324324], [0.4324324324, 1.0]], "undefined_pairs": []},
+            "statistics": {
+              "n_poses": 2,
+              "overall": {"n_pairs": 1, "n_defined": 1, "min": 0.4324324324, "mean": 0.4324324324, "max": 0.4324324324, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]},
+              "within": {
+                "crystal": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'crystal' has 1)"},
+                "decoy_6A": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'decoy_6A' has 1)"}
+              },
+              "between": {"crystal|decoy_6A": {"n_pairs": 1, "n_defined": 1, "min": 0.4324324324, "mean": 0.4324324324, "max": 0.4324324324, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]}},
+              "between_reason": null
+            }
+          },
+          "binder": {
+            "matrix": {"name": "jaccard_interface_binder", "unit": null, "direction": "similarity", "pose_ids": ["crystal-s1", "decoy_6A-s1"], "matrix": [[1.0, 0.8461538462], [0.8461538462, 1.0]], "undefined_pairs": []},
+            "statistics": {
+              "n_poses": 2,
+              "overall": {"n_pairs": 1, "n_defined": 1, "min": 0.8461538462, "mean": 0.8461538462, "max": 0.8461538462, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]},
+              "within": {
+                "crystal": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'crystal' has 1)"},
+                "decoy_6A": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'decoy_6A' has 1)"}
+              },
+              "between": {"crystal|decoy_6A": {"n_pairs": 1, "n_defined": 1, "min": 0.8461538462, "mean": 0.8461538462, "max": 0.8461538462, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]}},
+              "between_reason": null
+            }
+          }
+        },
+        "contact_map_jaccard": {
+          "matrix": {"name": "contact_map_jaccard", "unit": null, "direction": "similarity", "pose_ids": ["crystal-s1", "decoy_6A-s1"], "matrix": [[1.0, 0.2608695652], [0.2608695652, 1.0]], "undefined_pairs": []},
+          "statistics": {
+            "n_poses": 2,
+            "overall": {"n_pairs": 1, "n_defined": 1, "min": 0.2608695652, "mean": 0.2608695652, "max": 0.2608695652, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]},
+            "within": {
+              "crystal": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'crystal' has 1)"},
+              "decoy_6A": {"n_pairs": 0, "n_defined": 0, "min": null, "mean": null, "max": null, "min_pair": null, "max_pair": null, "reason": "needs at least 2 poses (group 'decoy_6A' has 1)"}
+            },
+            "between": {"crystal|decoy_6A": {"n_pairs": 1, "n_defined": 1, "min": 0.2608695652, "mean": 0.2608695652, "max": 0.2608695652, "min_pair": ["crystal-s1", "decoy_6A-s1"], "max_pair": ["crystal-s1", "decoy_6A-s1"]}},
+            "between_reason": null
+          }
+        }
+      }
+    },
+    "aggregates": {
+      "crystal": {
+        "delta_sasa_static.delta_sasa": {"mean": 1465.720581, "std": null, "min": 1465.720581, "max": 1465.720581, "median": 1465.720581, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "delta_sasa_static.sasa_complex": {"mean": 5443.496094, "std": null, "min": 5443.496094, "max": 5443.496094, "median": 5443.496094, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "delta_sasa_static.sasa_peptide": {"mean": 1616.008667, "std": null, "min": 1616.008667, "max": 1616.008667, "median": 1616.008667, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "delta_sasa_static.sasa_receptor": {"mean": 5293.208008, "std": null, "min": 5293.208008, "max": 5293.208008, "median": 5293.208008, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.clash_atoms.2.2": {"mean": 113.0, "std": null, "min": 113.0, "max": 113.0, "median": 113.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.clash_atoms.3.0": {"mean": 113.0, "std": null, "min": 113.0, "max": 113.0, "median": 113.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.clash_pairs.2.2": {"mean": 349.0, "std": null, "min": 349.0, "max": 349.0, "median": 349.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.clash_pairs.3.0": {"mean": 773.0, "std": null, "min": 773.0, "max": 773.0, "median": 773.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.min_distance_angstrom": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.overlap_volume_angstrom3": {"mean": 4504.29044, "std": null, "min": 4504.29044, "max": 4504.29044, "median": 4504.29044, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.partner_buried_area_angstrom2": {"mean": 662.3349609, "std": null, "min": 662.3349609, "max": 662.3349609, "median": 662.3349609, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.pose_buried_area_angstrom2": {"mean": 662.3349609, "std": null, "min": 662.3349609, "max": 662.3349609, "median": 662.3349609, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.shared_buried_area_angstrom2": {"mean": 662.3349609, "std": null, "min": 662.3349609, "max": 662.3349609, "median": 662.3349609, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.shared_fraction_of_partner": {"mean": 1.0, "std": null, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.shell_fraction": {"mean": 1.0, "std": null, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.covered_fraction": {"mean": 1.0, "std": null, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.interface_in_set_fraction": {"mean": 1.0, "std": null, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.jaccard": {"mean": 1.0, "std": null, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.n_interface": {"mean": 25.0, "std": null, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.n_overlap": {"mean": 25.0, "std": null, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.n_set": {"mean": 25.0, "std": null, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.n_set_mapped": {"mean": 25.0, "std": null, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.receptor_buried_area_in_set_angstrom2": {"mean": 662.0975357, "std": null, "min": 662.0975357, "max": 662.0975357, "median": 662.0975357, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.receptor_buried_area_in_set_fraction": {"mean": 0.999641533, "std": null, "min": 0.999641533, "max": 0.999641533, "median": 0.999641533, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.covered_fraction": {"mean": 1.0, "std": null, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.interface_in_set_fraction": {"mean": 0.88, "std": null, "min": 0.88, "max": 0.88, "median": 0.88, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.jaccard": {"mean": 0.88, "std": null, "min": 0.88, "max": 0.88, "median": 0.88, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.n_interface": {"mean": 25.0, "std": null, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.n_overlap": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.n_set": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.n_set_mapped": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.receptor_buried_area_in_set_angstrom2": {"mean": 655.8078052, "std": null, "min": 655.8078052, "max": 655.8078052, "median": 655.8078052, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.receptor_buried_area_in_set_fraction": {"mean": 0.9901452345, "std": null, "min": 0.9901452345, "max": 0.9901452345, "median": 0.9901452345, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.n_fit_atoms": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.n_fit_residues": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.n_paired": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.n_receptor_residues_pose": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.n_receptor_residues_reference": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.n_rejected": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.paired_fraction": {"mean": 1.0, "std": null, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.receptor_rmsd_angstrom": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_paired.all": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_paired.crystal_interface": {"mean": 25.0, "std": null, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_paired.epitope": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_paired.site": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_residues.all": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_residues.crystal_interface": {"mean": 25.0, "std": null, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_residues.epitope": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_residues.site": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_rmsd_angstrom.all": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_rmsd_angstrom.crystal_interface": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_rmsd_angstrom.epitope": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_rmsd_angstrom.site": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.sequence_identity": {"mean": 1.0, "std": null, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "native.ranking_score": {"mean": 0.55, "std": null, "min": 0.55, "max": 0.55, "median": 0.55, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}}
+      },
+      "decoy_6A": {
+        "delta_sasa_static.delta_sasa": {"mean": 1449.679565, "std": null, "min": 1449.679565, "max": 1449.679565, "median": 1449.679565, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "delta_sasa_static.sasa_complex": {"mean": 5459.537109, "std": null, "min": 5459.537109, "max": 5459.537109, "median": 5459.537109, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "delta_sasa_static.sasa_peptide": {"mean": 1616.008667, "std": null, "min": 1616.008667, "max": 1616.008667, "median": 1616.008667, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "delta_sasa_static.sasa_receptor": {"mean": 5293.208008, "std": null, "min": 5293.208008, "max": 5293.208008, "median": 5293.208008, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.clash_atoms.2.2": {"mean": 32.0, "std": null, "min": 32.0, "max": 32.0, "median": 32.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.clash_atoms.3.0": {"mean": 47.0, "std": null, "min": 47.0, "max": 47.0, "median": 47.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.clash_pairs.2.2": {"mean": 95.0, "std": null, "min": 95.0, "max": 95.0, "median": 95.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.clash_pairs.3.0": {"mean": 210.0, "std": null, "min": 210.0, "max": 210.0, "median": 210.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.min_distance_angstrom": {"mean": 0.6637420262, "std": null, "min": 0.6637420262, "max": 0.6637420262, "median": 0.6637420262, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.overlap_volume_angstrom3": {"mean": 654.1026429, "std": null, "min": 654.1026429, "max": 654.1026429, "median": 654.1026429, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.partner_buried_area_angstrom2": {"mean": 662.3349609, "std": null, "min": 662.3349609, "max": 662.3349609, "median": 662.3349609, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.pose_buried_area_angstrom2": {"mean": 588.8034668, "std": null, "min": 588.8034668, "max": 588.8034668, "median": 588.8034668, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.shared_buried_area_angstrom2": {"mean": 371.247406, "std": null, "min": 371.247406, "max": 371.247406, "median": 371.247406, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.shared_fraction_of_partner": {"mean": 0.5605130756, "std": null, "min": 0.5605130756, "max": 0.5605130756, "median": 0.5605130756, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.partners.crystal_peptide.shell_fraction": {"mean": 0.6637168142, "std": null, "min": 0.6637168142, "max": 0.6637168142, "median": 0.6637168142, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.covered_fraction": {"mean": 0.76, "std": null, "min": 0.76, "max": 0.76, "median": 0.76, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.interface_in_set_fraction": {"mean": 0.8636363636, "std": null, "min": 0.8636363636, "max": 0.8636363636, "median": 0.8636363636, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.jaccard": {"mean": 0.6785714286, "std": null, "min": 0.6785714286, "max": 0.6785714286, "median": 0.6785714286, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.n_interface": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.n_overlap": {"mean": 19.0, "std": null, "min": 19.0, "max": 19.0, "median": 19.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.n_set": {"mean": 25.0, "std": null, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.n_set_mapped": {"mean": 25.0, "std": null, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.receptor_buried_area_in_set_angstrom2": {"mean": 569.5754605, "std": null, "min": 569.5754605, "max": 569.5754605, "median": 569.5754605, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.crystal_interface.receptor_buried_area_in_set_fraction": {"mean": 0.9673439316, "std": null, "min": 0.9673439316, "max": 0.9673439316, "median": 0.9673439316, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.covered_fraction": {"mean": 0.7727272727, "std": null, "min": 0.7727272727, "max": 0.7727272727, "median": 0.7727272727, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.interface_in_set_fraction": {"mean": 0.7727272727, "std": null, "min": 0.7727272727, "max": 0.7727272727, "median": 0.7727272727, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.jaccard": {"mean": 0.6296296296, "std": null, "min": 0.6296296296, "max": 0.6296296296, "median": 0.6296296296, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.n_interface": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.n_overlap": {"mean": 17.0, "std": null, "min": 17.0, "max": 17.0, "median": 17.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.n_set": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.n_set_mapped": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.receptor_buried_area_in_set_angstrom2": {"mean": 568.0659252, "std": null, "min": 568.0659252, "max": 568.0659252, "median": 568.0659252, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "descriptors.reference.sets.epitope.receptor_buried_area_in_set_fraction": {"mean": 0.9647801979, "std": null, "min": 0.9647801979, "max": 0.9647801979, "median": 0.9647801979, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.n_fit_atoms": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.n_fit_residues": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.n_paired": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.n_receptor_residues_pose": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.n_receptor_residues_reference": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.n_rejected": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.paired_fraction": {"mean": 1.0, "std": null, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.receptor_rmsd_angstrom": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_paired.all": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_paired.crystal_interface": {"mean": 25.0, "std": null, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_paired.epitope": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_paired.site": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_residues.all": {"mean": 85.0, "std": null, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_residues.crystal_interface": {"mean": 25.0, "std": null, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_residues.epitope": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_n_residues.site": {"mean": 22.0, "std": null, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_rmsd_angstrom.all": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_rmsd_angstrom.crystal_interface": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_rmsd_angstrom.epitope": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.region_rmsd_angstrom.site": {"mean": 0.0, "std": null, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "frame.sequence_identity": {"mean": 1.0, "std": null, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}},
+        "native.ranking_score": {"mean": 0.6, "std": null, "min": 0.6, "max": 0.6, "median": 0.6, "n_ok": 1, "n_total": 1, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {"std": "needs at least 2 values"}}
+      },
+      "all": {
+        "delta_sasa_static.delta_sasa": {"mean": 1457.700073, "std": 11.34271093, "min": 1449.679565, "max": 1465.720581, "median": 1457.700073, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.sasa_complex": {"mean": 5451.516602, "std": 11.34271093, "min": 5443.496094, "max": 5459.537109, "median": 5451.516602, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.sasa_peptide": {"mean": 1616.008667, "std": 0.0, "min": 1616.008667, "max": 1616.008667, "median": 1616.008667, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "delta_sasa_static.sasa_receptor": {"mean": 5293.208008, "std": 0.0, "min": 5293.208008, "max": 5293.208008, "median": 5293.208008, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_atoms.2.2": {"mean": 72.5, "std": 57.27564928, "min": 32.0, "max": 113.0, "median": 72.5, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_atoms.3.0": {"mean": 80.0, "std": 46.66904756, "min": 47.0, "max": 113.0, "median": 80.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_pairs.2.2": {"mean": 222.0, "std": 179.6051224, "min": 95.0, "max": 349.0, "median": 222.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.clash_pairs.3.0": {"mean": 491.5, "std": 398.1011178, "min": 210.0, "max": 773.0, "median": 491.5, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.min_distance_angstrom": {"mean": 0.3318710131, "std": 0.4693364877, "min": 0.0, "max": 0.6637420262, "median": 0.3318710131, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.overlap_volume_angstrom3": {"mean": 2579.196541, "std": 2722.4939, "min": 654.1026429, "max": 4504.29044, "median": 2579.196541, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.partner_buried_area_angstrom2": {"mean": 662.3349609, "std": 0.0, "min": 662.3349609, "max": 662.3349609, "median": 662.3349609, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.pose_buried_area_angstrom2": {"mean": 625.5692139, "std": 51.99461814, "min": 588.8034668, "max": 662.3349609, "median": 625.5692139, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.shared_buried_area_angstrom2": {"mean": 516.7911835, "std": 205.829984, "min": 371.247406, "max": 662.3349609, "median": 516.7911835, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.shared_fraction_of_partner": {"mean": 0.7802565378, "std": 0.3107641845, "min": 0.5605130756, "max": 1.0, "median": 0.7802565378, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.partners.crystal_peptide.shell_fraction": {"mean": 0.8318584071, "std": 0.2377881211, "min": 0.6637168142, "max": 1.0, "median": 0.8318584071, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.covered_fraction": {"mean": 0.88, "std": 0.1697056275, "min": 0.76, "max": 1.0, "median": 0.88, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.interface_in_set_fraction": {"mean": 0.9318181818, "std": 0.09642365198, "min": 0.8636363636, "max": 1.0, "median": 0.9318181818, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.jaccard": {"mean": 0.8392857143, "std": 0.2272843225, "min": 0.6785714286, "max": 1.0, "median": 0.8392857143, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_interface": {"mean": 23.5, "std": 2.121320344, "min": 22.0, "max": 25.0, "median": 23.5, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_overlap": {"mean": 22.0, "std": 4.242640687, "min": 19.0, "max": 25.0, "median": 22.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_set": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.n_set_mapped": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.receptor_buried_area_in_set_angstrom2": {"mean": 615.8364981, "std": 65.42298677, "min": 569.5754605, "max": 662.0975357, "median": 615.8364981, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.crystal_interface.receptor_buried_area_in_set_fraction": {"mean": 0.9834927323, "std": 0.02283785294, "min": 0.9673439316, "max": 0.999641533, "median": 0.9834927323, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.covered_fraction": {"mean": 0.8863636364, "std": 0.1607060866, "min": 0.7727272727, "max": 1.0, "median": 0.8863636364, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.interface_in_set_fraction": {"mean": 0.8263636364, "std": 0.07585327289, "min": 0.7727272727, "max": 0.88, "median": 0.8263636364, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.jaccard": {"mean": 0.7548148148, "std": 0.1770385867, "min": 0.6296296296, "max": 0.88, "median": 0.7548148148, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_interface": {"mean": 23.5, "std": 2.121320344, "min": 22.0, "max": 25.0, "median": 23.5, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_overlap": {"mean": 19.5, "std": 3.535533906, "min": 17.0, "max": 22.0, "median": 19.5, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_set": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.n_set_mapped": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.receptor_buried_area_in_set_angstrom2": {"mean": 611.9368652, "std": 62.04287834, "min": 568.0659252, "max": 655.8078052, "median": 611.9368652, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "descriptors.reference.sets.epitope.receptor_buried_area_in_set_fraction": {"mean": 0.9774627162, "std": 0.01793578939, "min": 0.9647801979, "max": 0.9901452345, "median": 0.9774627162, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_fit_atoms": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_fit_residues": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_paired": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_receptor_residues_pose": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_receptor_residues_reference": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.n_rejected": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.paired_fraction": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.receptor_rmsd_angstrom": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.all": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.crystal_interface": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.epitope": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_paired.site": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.all": {"mean": 85.0, "std": 0.0, "min": 85.0, "max": 85.0, "median": 85.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.crystal_interface": {"mean": 25.0, "std": 0.0, "min": 25.0, "max": 25.0, "median": 25.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.epitope": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_n_residues.site": {"mean": 22.0, "std": 0.0, "min": 22.0, "max": 22.0, "median": 22.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.all": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.crystal_interface": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.epitope": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.region_rmsd_angstrom.site": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}},
+        "frame.sequence_identity": {"mean": 1.0, "std": 0.0, "min": 1.0, "max": 1.0, "median": 1.0, "n_ok": 2, "n_total": 2, "complete": true, "reasons": {}, "caveats": {}, "statistic_reasons": {}}
+      }
+    },
+    "representatives": {"crystal": "crystal-s1", "decoy_6A": "decoy_6A-s1", "all": "crystal-s1", "rule": "medoid", "reasons": {}},
+    "warnings": [],
+    "nonfinite_fields": []
+  }
+}

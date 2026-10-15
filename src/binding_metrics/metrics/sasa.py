@@ -7,24 +7,135 @@ static function uses biotite. Both implement the Shrake-Rupley algorithm
 The static function reports the buried area of heavy atoms by default
 (``hydrogens="ignore"``), the convention of PISA and of the atomic solvation
 parameters used for ΔG_int in ``interface``. The trajectory functions do not
-filter hydrogens: they use the atoms of the trajectory and of the index lists as
-given.
+filter hydrogens: they use the atoms of the index lists as given. Their areas are
+in nm^2 (mdtraj); the static function reports Å^2.
+
+A trajectory that stores a unit cell is imaged first (``_periodic.image_complex``): molecules
+are made whole and the ligand is placed next to the receptor, so the areas do not depend on
+the periodic image in which either partner was written. A trajectory without a unit cell is
+used as stored.
 """
 
 import logging
+import warnings
 from pathlib import Path
 from typing import Literal, Optional
 
 import numpy as np
 
 from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
+from binding_metrics.metrics._periodic import has_unit_cell, image_complex
 
 logger = logging.getLogger(__name__)
 
-try:
-    import mdtraj as md
-except ImportError:
-    md = None
+
+def _import_mdtraj():
+    """Import mdtraj for the trajectory functions; the static function never needs it.
+
+    A module-level import would load mdtraj for every caller of
+    ``compute_delta_sasa_static``, including a pose-set call on the ``static`` extra.
+    """
+    try:
+        import mdtraj
+    except ImportError as exc:
+        raise ImportError(
+            "mdtraj is required for SASA calculations. "
+            "Install with: pip install binding-metrics[analysis]"
+        ) from exc
+    return mdtraj
+
+
+def _check_selections(
+    function_name: str,
+    ligand_indices: list[int],
+    receptor_indices: list[int],
+    on_empty: str,
+) -> None:
+    """Refuse overlapping index lists and report empty ones.
+
+    An atom in both lists would be counted in the ligand term, the receptor term and once in
+    the complex, so overlapping lists raise ``ValueError``. An empty list gives a buried area
+    of zero ("nothing was evaluated"); ``on_empty`` selects a ``RuntimeWarning`` or a
+    ``ValueError``. ``stacklevel=4`` attributes the warning to the caller of the public
+    function (this function, ``_interface_sasa_nm2``, the public function, its caller).
+    """
+    from binding_metrics.metrics.rmsd import _check_on_empty
+
+    _check_on_empty(on_empty)
+    shared = sorted(set(ligand_indices) & set(receptor_indices))
+    if shared:
+        raise ValueError(
+            f"{function_name}: ligand_indices and receptor_indices share {len(shared)} "
+            f"atom(s), first {shared[:5]}; the selections must be disjoint"
+        )
+    empty = [
+        name
+        for name, indices in (
+            ("ligand_indices", ligand_indices),
+            ("receptor_indices", receptor_indices),
+        )
+        if len(indices) == 0
+    ]
+    if empty:
+        message = (
+            f"{function_name}: {' and '.join(empty)} contain no atoms; the buried area is "
+            "zero because nothing was evaluated"
+        )
+        if on_empty == "raise":
+            raise ValueError(message)
+        warnings.warn(message, RuntimeWarning, stacklevel=4)
+
+
+def _interface_sasa_nm2(
+    function_name: str,
+    trajectory_path: str | Path,
+    topology_path: str | Path,
+    ligand_indices: list[int],
+    receptor_indices: list[int],
+    probe_radius: float,
+    on_empty: str,
+) -> dict[str, np.ndarray]:
+    """Per-frame SASA in nm^2 of the ligand, the receptor and their complex.
+
+    The complex is the union of the two index lists. Atoms outside both (the water and
+    ions of a solvated trajectory) are left out of every term; with them in, the complex
+    term would hold the outer surface of the solvent box and the buried area would be
+    negative.
+
+    With a unit cell, the areas are taken on the imaged complex of ``image_complex``, which
+    holds the two selections only; the index lists are then positions in that copy.
+    """
+    md = _import_mdtraj()
+    _check_selections(function_name, ligand_indices, receptor_indices, on_empty)
+
+    traj = md.load(str(trajectory_path), top=str(topology_path))
+    if len(ligand_indices) and len(receptor_indices) and has_unit_cell(traj):
+        traj, ligand_indices, receptor_indices = image_complex(
+            traj, ligand_indices, receptor_indices
+        )
+
+    def total_sasa(atom_indices) -> np.ndarray:
+        sliced = traj.atom_slice(atom_indices)
+        # One frame per call: mdtraj 1.11.1 computes the areas of a frame from state left by the
+        # previous frame of the same OpenMP thread, so a multi-frame call depends on the frame
+        # order and on the thread count.
+        return np.array(
+            [
+                md.shrake_rupley(sliced[i], probe_radius=probe_radius).sum()
+                for i in range(sliced.n_frames)
+            ]
+        )
+
+    sasa_ligand = total_sasa(ligand_indices)
+    sasa_receptor = total_sasa(receptor_indices)
+    sasa_complex = total_sasa(sorted(set(ligand_indices) | set(receptor_indices)))
+
+    return {
+        "ligand": sasa_ligand,
+        "receptor": sasa_receptor,
+        "complex": sasa_complex,
+        "buried": sasa_ligand + sasa_receptor - sasa_complex,
+    }
 
 
 def calculate_buried_sasa(
@@ -33,13 +144,21 @@ def calculate_buried_sasa(
     ligand_indices: list[int],
     receptor_indices: list[int],
     probe_radius: float = 0.14,
+    *,
+    on_empty: Literal["warn", "raise"] = "warn",
 ) -> np.ndarray:
     """Calculate buried solvent accessible surface area upon binding.
 
-    The buried SASA is computed as:
-        SASA_buried = SASA_ligand_alone + SASA_receptor_alone - SASA_complex
+    SASA_buried = SASA_ligand_alone + SASA_receptor_alone - SASA_complex
 
-    Hydrogens are not filtered here, unlike in ``compute_delta_sasa_static``.
+    The complex is the ligand and receptor atoms only; other atoms of the trajectory
+    (water, ions) are ignored, so a solvated trajectory gives the same area as a dry one.
+    Hydrogens are not filtered, unlike in ``compute_delta_sasa_static``.
+
+    When the trajectory stores a unit cell (orthorhombic or triclinic), molecules are made
+    whole and the ligand is placed in the periodic image next to the receptor before the
+    areas are taken, so the result does not depend on the image in which either partner was
+    written; without a cell the stored coordinates are used.
 
     Args:
         trajectory_path: Path to trajectory file (DCD, XTC, etc.)
@@ -47,35 +166,28 @@ def calculate_buried_sasa(
         ligand_indices: Atom indices of the ligand
         receptor_indices: Atom indices of the receptor
         probe_radius: Probe radius in nm (default 0.14 nm = 1.4 A)
+        on_empty: What to do when ``ligand_indices`` or ``receptor_indices`` is empty.
+            "warn" (default) emits a ``RuntimeWarning`` naming the empty selection and
+            returns zeros ("nothing evaluated"); "raise" raises ``ValueError``.
 
     Returns:
-        Array of buried SASA values (in nm^2) for each frame
+        Array of buried SASA values (in nm^2, not Angstrom^2: multiply by 100 for A^2)
+        for each frame
 
     Raises:
         ImportError: If mdtraj is not installed
+        ValueError: If the two index lists share an atom, if ``on_empty`` is not "warn"
+            or "raise", or is "raise" and a selection is empty.
     """
-    if md is None:
-        raise ImportError(
-            "mdtraj is required for SASA calculations. "
-            "Install with: pip install binding-metrics[analysis]"
-        )
-
-    traj = md.load(str(trajectory_path), top=str(topology_path))
-
-    sasa_complex = md.shrake_rupley(traj, probe_radius=probe_radius)
-    sasa_complex_total = sasa_complex.sum(axis=1)
-
-    ligand_traj = traj.atom_slice(ligand_indices)
-    sasa_ligand = md.shrake_rupley(ligand_traj, probe_radius=probe_radius)
-    sasa_ligand_total = sasa_ligand.sum(axis=1)
-
-    receptor_traj = traj.atom_slice(receptor_indices)
-    sasa_receptor = md.shrake_rupley(receptor_traj, probe_radius=probe_radius)
-    sasa_receptor_total = sasa_receptor.sum(axis=1)
-
-    buried_sasa = sasa_ligand_total + sasa_receptor_total - sasa_complex_total
-
-    return buried_sasa
+    return _interface_sasa_nm2(
+        "calculate_buried_sasa",
+        trajectory_path,
+        topology_path,
+        ligand_indices,
+        receptor_indices,
+        probe_radius,
+        on_empty,
+    )["buried"]
 
 
 def calculate_interface_sasa(
@@ -84,8 +196,12 @@ def calculate_interface_sasa(
     ligand_indices: list[int],
     receptor_indices: list[int],
     probe_radius: float = 0.14,
+    *,
+    on_empty: Literal["warn", "raise"] = "warn",
 ) -> dict[str, np.ndarray]:
     """Calculate per-component SASA values at the interface.
+
+    The complex is the ligand and receptor atoms only, as in ``calculate_buried_sasa``.
 
     Args:
         trajectory_path: Path to trajectory file
@@ -93,39 +209,26 @@ def calculate_interface_sasa(
         ligand_indices: Atom indices of the ligand
         receptor_indices: Atom indices of the receptor
         probe_radius: Probe radius in nm
+        on_empty: As in ``calculate_buried_sasa``.
 
     Returns:
-        Dictionary with per-frame SASA arrays of shape (n_frames,) in nm^2:
-        "ligand" and "receptor" (each alone), "complex", and "buried"
-        (ligand + receptor - complex)
+        Dictionary with per-frame SASA arrays of shape (n_frames,) in nm^2 (multiply
+        by 100 for A^2): "ligand" and "receptor" (each alone), "complex" (ligand and
+        receptor atoms together), and "buried" (ligand + receptor - complex)
+
+    Raises:
+        ImportError: If mdtraj is not installed
+        ValueError: As in ``calculate_buried_sasa``.
     """
-    if md is None:
-        raise ImportError(
-            "mdtraj is required for SASA calculations. "
-            "Install with: pip install binding-metrics[analysis]"
-        )
-
-    traj = md.load(str(trajectory_path), top=str(topology_path))
-
-    sasa_complex = md.shrake_rupley(traj, probe_radius=probe_radius)
-    sasa_complex_total = sasa_complex.sum(axis=1)
-
-    ligand_traj = traj.atom_slice(ligand_indices)
-    sasa_ligand = md.shrake_rupley(ligand_traj, probe_radius=probe_radius)
-    sasa_ligand_total = sasa_ligand.sum(axis=1)
-
-    receptor_traj = traj.atom_slice(receptor_indices)
-    sasa_receptor = md.shrake_rupley(receptor_traj, probe_radius=probe_radius)
-    sasa_receptor_total = sasa_receptor.sum(axis=1)
-
-    buried = sasa_ligand_total + sasa_receptor_total - sasa_complex_total
-
-    return {
-        "ligand": sasa_ligand_total,
-        "receptor": sasa_receptor_total,
-        "complex": sasa_complex_total,
-        "buried": buried,
-    }
+    return _interface_sasa_nm2(
+        "calculate_interface_sasa",
+        trajectory_path,
+        topology_path,
+        ligand_indices,
+        receptor_indices,
+        probe_radius,
+        on_empty,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -146,15 +249,13 @@ def compute_delta_sasa_static(
 ) -> dict:
     """Compute delta SASA (buried surface area on binding) for a static structure.
 
-    Uses biotite's SASA implementation, which does not require a trajectory.
-    Suitable for evaluating single energy-minimized or predicted structures.
+    Uses biotite's SASA implementation; no trajectory is needed.
 
-    The buried area is defined as:
-        delta_SASA = SASA(peptide alone) + SASA(receptor alone) - SASA(complex)
+    delta_SASA = SASA(peptide alone) + SASA(receptor alone) - SASA(complex)
 
     Positive values indicate surface buried upon binding. The areas are
-    heavy-atom areas unless ``hydrogens="keep"``, so ``delta_sasa`` is the same
-    number as in ``interface.compute_interface_metrics`` and does not depend on
+    heavy-atom areas unless ``hydrogens="keep"``, so ``delta_sasa`` equals the
+    value from ``interface.compute_interface_metrics`` and does not depend on
     the protonation of the input.
 
     Args:
@@ -171,13 +272,10 @@ def compute_delta_sasa_static(
             selection (see ``interface.filter_hetero_atoms``), so waters,
             ions, ligands and glycans that carry a protein chain ID are
             dropped. "keep" uses every atom with the chain ID; atoms without
-            a defined SASA (water, ions) then count as zero area instead of
-            turning the sums into NaN.
+            a defined SASA (water, ions) count as zero area.
         hydrogens: "ignore" (default) drops hydrogen and deuterium atoms
-            before the areas are computed, so the buried area refers to heavy
-            atoms whatever the protonation of the input (see
-            ``interface.filter_hydrogens``). "keep" includes them in the
-            surface.
+            before the areas are computed (see ``interface.filter_hydrogens``).
+            "keep" includes them.
 
     Returns:
         Dictionary with keys:
@@ -232,6 +330,8 @@ def compute_delta_sasa_static(
         radii = []
         for atom in atom_array:
             element = str(atom.element).strip()
+            if element == "D":  # the table has no entry for deuterium
+                element = "H"
             r = vdw_radius_single(element)
             radii.append(r if r is not None else 1.8)
         return np.array(radii, dtype=float)

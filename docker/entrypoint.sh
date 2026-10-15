@@ -1,5 +1,5 @@
 #!/bin/bash
-# Entrypoint for binding-metrics :full image.
+# Entrypoint for the binding-metrics full image.
 # Ensures the OpenFold3 default checkpoint is present before running the user command.
 #
 # openfold3 >= 0.5.0 loads the OpenBind-0 checkpoint (of3-ob-2025-06-30-174k.pt) by default and
@@ -46,7 +46,7 @@ fail_setup() {
     echo "          -e BINDING_METRICS_SKIP_WEIGHTS_CHECK=1 \\"
     echo "          -e HOME=/root \\"
     echo "          -v ~/.openfold-weights:/root/.openfold3 \\"
-    echo "          simoncrouzet/binding-metrics:full bash"
+    echo "          simoncrouzet/binding-metrics:latest bash"
     echo "      # inside the container:"
     echo "      conda run -n openfold3 --no-capture-output setup_openfold --non-interactive"
     echo "$BANNER"

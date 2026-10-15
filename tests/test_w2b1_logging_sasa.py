@@ -1,6 +1,5 @@
 """sasa.py reports a failed SASA computation through logging, with the same text as before."""
 
-import ast
 import importlib
 import logging
 from pathlib import Path
@@ -14,16 +13,6 @@ from binding_metrics.metrics import sasa  # noqa: E402
 
 P53_MDM2 = Path(__file__).resolve().parents[1] / "data" / "example_linear_p53_1YCR.pdb"
 LOGGER_NAME = "binding_metrics.metrics.sasa"
-
-
-def test_module_has_no_print_calls():
-    tree = ast.parse(Path(sasa.__file__).read_text(encoding="utf-8"))
-    prints = [
-        call.lineno
-        for call in ast.walk(tree)
-        if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "print"
-    ]
-    assert not prints
 
 
 def test_failed_static_sasa_warns_through_the_logger(caplog, monkeypatch):

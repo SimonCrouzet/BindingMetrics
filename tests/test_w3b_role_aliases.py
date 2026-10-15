@@ -190,10 +190,12 @@ def _aliased(case):
     return chains
 
 
+@pytest.mark.slow
 def test_alias_gives_the_same_result_as_the_old_names(case):
     _assert_same(case.call(**_aliased(case)), case.call(**_legacy(case)))
 
 
+@pytest.mark.slow
 def test_alias_and_old_name_with_the_same_id_are_accepted(case):
     both = {**_legacy(case), **_aliased(case)}
     _assert_same(case.call(**both), case.call(**_legacy(case)))

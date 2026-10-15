@@ -17,6 +17,7 @@ import pytest
 pytest.importorskip("biotite")
 
 import biotite.structure as struc  # noqa: E402
+import biotite.structure.io as struc_io  # noqa: E402
 import biotite.structure.io.pdb as pdb_io  # noqa: E402
 
 from binding_metrics.metrics import receptor_quality as rq  # noqa: E402
@@ -345,6 +346,7 @@ class TestClashscoreCovalentAndHbondPairs:
         # C...O radii sum 3.22 A: 2.7 A overlaps by 0.52 A; only N/O pairs are H-bond candidates
         assert rq._clashscore(_pair(2.7, elements=("C", "O")))["n_clashes"] == 1
 
+    @pytest.mark.slow
     def test_vectorised_count_matches_the_pair_loop_when_exemptions_are_off(self):
         rng = np.random.default_rng(3)
         xyz = rng.uniform(0.0, 10.0, size=(300, 3))
@@ -381,40 +383,117 @@ def _amino_acid_chain(filename, chain):
     return atoms[struc.filter_amino_acids(atoms) & (atoms.chain_id == chain)]
 
 
+# The rules of ``_clashscore`` as its docstring states them.
+CLASH_OVERLAP_ANGSTROM = 0.4  # radii sum minus distance, at least
+HBOND_FLOOR_ANGSTROM = 2.5  # N/O pairs from this distance on are hydrogen bonds
+BOND_SEPARATION = 3  # atoms within this many covalent bonds are not scored
+PEPTIDE_BOND_MAX_ANGSTROM = 2.0  # C-N of consecutive residues (1.33 A, 1.44 A in a ring)
+
+
+def _within_bonds(neighbours, start, end, separation):
+    """True when ``end`` is reached from ``start`` by at most ``separation`` bonds."""
+    frontier, seen = {start}, {start}
+    for _ in range(separation):
+        frontier = {j for i in frontier for j in neighbours.get(i, ())} - seen
+        if end in frontier:
+            return True
+        seen |= frontier
+    return False
+
+
+def _clash_counts_by_pair_loop(filename, chain):
+    """Clashing atom pairs of an amino-acid chain, counted a second way from the file.
+
+    Returns ``(pairs without the exemptions, pairs with them, heavy atoms)``. Every heavy-atom
+    pair is tested for the overlap of the radii, in one distance matrix. Pairs in one residue or
+    in neighbouring residues are never scored. The exemptions are the N/O pairs at the hydrogen
+    bond distance and the pairs within three covalent bonds; the bonds are those biotite reads
+    from the file (residue templates and the link records of the file), plus the peptide bonds,
+    which a numbering gap leaves out of the template bonds.
+    """
+    atoms = struc_io.load_structure(DATA_DIR / filename, model=1, include_bonds=True)
+    heavy = ~np.isin(atoms.element, ["H", "D"])
+    atoms = atoms[heavy & struc.filter_amino_acids(atoms) & (atoms.chain_id == chain)]
+    n = atoms.array_length()
+    coords = atoms.coord.astype(np.float64)
+    distances = np.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=-1)
+
+    radii = np.array([rq._vdw(element) for element in atoms.element])
+    scored = radii[:, None] + radii[None, :] - distances >= CLASH_OVERLAP_ANGSTROM
+
+    triples = list(zip(atoms.chain_id.tolist(), atoms.res_id.tolist(), atoms.ins_code.tolist()))
+    rank_of = {triple: rank for rank, triple in enumerate(sorted(set(triples)))}
+    rank = np.array([rank_of[triple] for triple in triples])
+    number = atoms.res_id.astype(np.int64)
+    same_chain = atoms.chain_id[:, None] == atoms.chain_id[None, :]
+    rank_step = np.abs(rank[:, None] - rank[None, :])
+    number_step = np.abs(number[:, None] - number[None, :])
+    neighbouring = same_chain & ((rank_step == 0) | ((rank_step == 1) & (number_step <= 1)))
+    pairs = np.argwhere(np.triu(scored & ~neighbouring, k=1))
+
+    polar = np.isin(atoms.element, ["N", "O"])
+    hydrogen_bonded = polar[:, None] & polar[None, :] & (distances >= HBOND_FLOOR_ANGSTROM)
+
+    neighbours = {}
+    for i, j, _ in atoms.bonds.as_array():
+        neighbours.setdefault(int(i), set()).add(int(j))
+        neighbours.setdefault(int(j), set()).add(int(i))
+    bounds = [*struc.get_residue_starts(atoms), n]
+    residues = list(zip(bounds[:-1], bounds[1:]))
+    for before, after in zip(residues[:-1], residues[1:]):
+        carbon = [i for i in range(*before) if atoms.atom_name[i] == "C"]
+        nitrogen = [i for i in range(*after) if atoms.atom_name[i] == "N"]
+        if carbon and nitrogen and distances[carbon[0], nitrogen[0]] <= PEPTIDE_BOND_MAX_ANGSTROM:
+            neighbours.setdefault(carbon[0], set()).add(nitrogen[0])
+            neighbours.setdefault(nitrogen[0], set()).add(carbon[0])
+
+    remaining = [
+        (i, j)
+        for i, j in pairs.tolist()
+        if not hydrogen_bonded[i, j] and not _within_bonds(neighbours, i, j, BOND_SEPARATION)
+    ]
+    return len(pairs), len(remaining), n
+
+
 class TestClashscoreBundledStructures:
-    # (file, chain, earlier count, count now, what the earlier pairs were)
+    # (file, chain): the pairs that the exemptions take out
     @pytest.mark.parametrize(
-        "filename, chain, legacy, current",
+        "filename, chain",
         [
-            # SFTI-1: head-to-tail closure (GLY1 N - ASP14 C 1.44 A) and CYS3-CYS11 disulfide
-            ("example_bicyclic_sfti1_3P8F.cif", "I", 7, 0),
-            # trypsin: 3 disulfides, 2 numbering gaps (149, 218), 19 N/O hydrogen bonds;
-            # THR62 O - ARG84 NH2 at 2.28 A remains
-            ("example_bicyclic_sfti1_3P8F.cif", "A", 34, 1),
-            # somatostatin lactam GLU4 CD - LYS10 NZ (1.89 A) and CYS2-CYS12 disulfide
-            ("example_lactam_somatostatin_1XY4.cif", "A", 6, 0),
+            # SFTI-1: head-to-tail closure and the CYS3-CYS11 disulfide
+            ("example_bicyclic_sfti1_3P8F.cif", "I"),
+            # trypsin: 3 disulfides, 2 numbering gaps (149, 218) and N/O hydrogen bonds; two pairs
+            # stay, THR62 O - ARG84 NH2 and ASP60B C - GLY60D N (residues 60B and 60D are two
+            # apart, 60C lies between, so they are not neighbours of one number)
+            ("example_bicyclic_sfti1_3P8F.cif", "A"),
+            # somatostatin lactam GLU4 CD - LYS10 NZ and the CYS2-CYS12 disulfide
+            ("example_lactam_somatostatin_1XY4.cif", "A"),
             # cyclosporin head-to-tail closure and a BMT OG1...O hydrogen bond
-            ("example_ncaa_cyclosporin_1CWA.cif", "C", 6, 0),
-            # hydrocarbon staple 0EH20 CAT = MK827 CE (1.39 A)
-            ("example_staple_3V3B.pdb", "C", 3, 0),
+            ("example_ncaa_cyclosporin_1CWA.cif", "C"),
+            # hydrocarbon staple 0EH20 CAT = MK827 CE
+            ("example_staple_3V3B.pdb", "C"),
         ],
     )
-    def test_covalent_links_and_hydrogen_bonds_are_no_longer_clashes(
-        self, filename, chain, legacy, current
-    ):
+    def test_covalent_links_and_hydrogen_bonds_are_no_longer_clashes(self, filename, chain):
+        legacy, current, _ = _clash_counts_by_pair_loop(filename, chain)
         atoms = _amino_acid_chain(filename, chain)
+        # with the exemptions off the links and hydrogen bonds count, with them only the rest
         assert rq._clashscore(atoms, **_LEGACY)["n_clashes"] == legacy
         assert rq._clashscore(atoms)["n_clashes"] == current
 
     def test_sfti1_bicycle_scores_zero_and_is_reported_through_the_public_api(self, monkeypatch):
         _fake_energy(monkeypatch)
-        path = DATA_DIR / "example_bicyclic_sfti1_3P8F.cif"
+        filename = "example_bicyclic_sfti1_3P8F.cif"
+        path = DATA_DIR / filename
+        legacy, current, n_heavy = _clash_counts_by_pair_loop(filename, "I")
         now = rq.compute_receptor_quality(path, receptor_chain="I")["models"][0]
         before = rq.compute_receptor_quality(path, receptor_chain="I", exclude_bonded=False)[
             "models"
         ][0]
-        assert now["clashes"]["clashscore"] == 0.0
-        assert before["clashes"]["clashscore"] == pytest.approx(1000.0 * 7 / 105)
+        assert current == 0
+        # the score is the count of pairs per 1000 heavy atoms, with and without the exemptions
+        assert now["clashes"]["clashscore"] == pytest.approx(1000.0 * current / n_heavy)
+        assert before["clashes"]["clashscore"] == pytest.approx(1000.0 * legacy / n_heavy)
         assert now["molprobity_score"] < before["molprobity_score"]
 
 
@@ -635,6 +714,7 @@ class TestReceptorEnergySeeding:
 
         assert rq.DEFAULT_RANDOM_SEED == DEFAULT_RANDOM_SEED
 
+    @pytest.mark.slow
     def test_repeated_calls_give_identical_energy(self):
         pytest.importorskip("openmm")
         atoms = _helix(6)
@@ -645,6 +725,7 @@ class TestReceptorEnergySeeding:
         assert first["energy_kJ_mol"] == pytest.approx(second["energy_kJ_mol"], rel=1e-6)
         assert first["n_atoms_with_h"] == second["n_atoms_with_h"]
 
+    @pytest.mark.slow
     def test_explicit_seed_is_repeatable_and_leaves_the_global_rng_alone(self):
         import random
 

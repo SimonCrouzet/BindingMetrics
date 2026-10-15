@@ -11,15 +11,15 @@ Supported cyclization types (detected by inter-atom distance on heavy atoms):
     hydrocarbon_staple : all-carbon side-chain cross-link (Aileron-type staple)
 
 The two ``lactam_sc_*`` types are side-chain-to-side-chain lactam bridges
-(e.g. the i,i+4 Lys–Asp/Glu staples used to pre-organise α-helices). Both
-partners are internal residues; they reuse the same ASPL/GLUL/LYSL templates
-as the terminal lactams, differing only in the atoms that form the closure.
+(e.g. the i,i+4 Lys–Asp/Glu staples of α-helices). Both partners are internal
+residues; they reuse the ASPL/GLUL/LYSL templates of the terminal lactams and
+differ only in the atoms that form the closure.
 
 ``hydrocarbon_staple`` covers all-hydrocarbon staples (e.g. the S5/R8 olefin
 residues MK8/0EH joined by ring-closing metathesis). The staple residues are
-non-canonical and parameterised by :mod:`binding_metrics.core.gaff_ncaa`; the
-GAFF↔GAFF cross-link is covered by GAFF's own terms, so no template is needed
-and detection only has to recognise (not reject) it.
+parameterised by :mod:`binding_metrics.core.gaff_ncaa` and the GAFF–GAFF
+cross-link is covered by GAFF's own terms, so no template is needed and
+detection only has to recognise it.
 
 Unsupported cyclization types (raises CyclizationError with guidance):
     - Thioether bridges (non-disulfide S-C)
@@ -27,14 +27,12 @@ Unsupported cyclization types (raises CyclizationError with guidance):
     - Biaryl ethers (vancomycin-type)
     - Any other non-standard crosslink
 
-Lactam residue templates (ASPL, GLUL, LYSL) use approximate AMBER-analog
-charges derived from the nearest ASN/GLN ff14SB analogs. For high-accuracy
-MD (production runs, free-energy calculations), recompute RESP charges with
-a quantum chemistry program and supply custom XML via custom_bond_handler.
+Lactam residue templates (ASPL, GLUL, LYSL) carry approximate charges taken
+from the ASN/GLN ff14SB analogs. For production MD or free-energy work, supply
+RESP charges as custom XML via custom_bond_handler.
 
-Usage (via RelaxationConfig):
-    >>> config = RelaxationConfig(is_cyclic=True)
-    >>> relaxer = ImplicitRelaxation(config)
+Usage (the closures are detected from the structure; there is no cyclic flag):
+    >>> relaxer = ImplicitRelaxation(RelaxationConfig())
     >>> result = relaxer.run(Path("cyclic_peptide_complex.cif"), Path("out/"))
 """
 
@@ -52,6 +50,7 @@ from binding_metrics.core.residues import (
     CUSTOM_HYDROGEN_RESIDUES,
     CYSTEINE_NAMES,
     STANDARD_AMINO_ACIDS,
+    residue_label,
 )
 from binding_metrics.io.structures import author_chain_ids, topology_chain_id
 
@@ -124,13 +123,14 @@ class CyclicBondInfo:
 
     Attributes:
         cyclic_type: One of 'head_to_tail', 'disulfide', 'lactam_n_asp',
-            'lactam_n_glu', 'lactam_c_lys'.
+            'lactam_n_glu', 'lactam_c_lys', 'lactam_sc_lys_asp',
+            'lactam_sc_lys_glu', 'hydrocarbon_staple'.
         atom1_id: (chain_id, residue_index_in_chain, atom_name) for atom 1.
         atom2_id: Same for atom 2.
         omega_ids: 4-tuple of (chain_id, res_idx, atom_name) for the ω
-            dihedral across the closure bond (C–N amide or C–S–S–C for
-            disulfide). Used for dihedral restraints during MD warmup.
-            None for disulfide (no ω dihedral).
+            dihedral across the amide closure bond. Used for dihedral
+            restraints during MD warmup. None for disulfide and
+            hydrocarbon_staple.
         extra_ff_xmls: List of AMBER-format XML strings to load into the
             ForceField for lactam residue templates (ASPL, GLUL, LYSL).
     """
@@ -144,9 +144,8 @@ class CyclicBondInfo:
 
 # ---------------------------------------------------------------------------
 # Lactam residue XML templates
-# Charges: approximate AMBER-analog values derived from ASN/GLN/neutral-LYS
-# ff14SB; adjusted so each residue is exactly neutral. Suitable for
-# scoring and exploratory MD. Recompute RESP charges for production work.
+# Charges: approximate values from the ASN/GLN/neutral-LYS ff14SB residues,
+# adjusted so each residue is exactly neutral.
 # ---------------------------------------------------------------------------
 
 # ASPL – ASP with sidechain CG acting as amide carbonyl, OD1 as amide O.
@@ -362,14 +361,13 @@ def _residues_with_internal_bonds(topology) -> set:
 
 def _bond_bare_residues(
     topology, pos: np.ndarray, residues, existing: set, bonded_residues: set
-) -> set:
+) -> None:
     """Bond, by covalent radii, each residue of ``residues`` that has no internal bond.
 
     ``existing`` is the set of bonded atom-index pairs and is updated in place;
     ``bonded_residues`` holds the indices of the residues that already have an
-    internal bond. Returns the indices of the residues that gained a bond.
+    internal bond.
     """
-    restored: set = set()
     for res in residues:
         if res.index in bonded_residues:
             continue  # standard residue (or already reconstructed): leave alone
@@ -380,8 +378,6 @@ def _bond_bare_residues(
                 if key not in existing and _within_covalent_range(pos, atom_i, atom_j):
                     topology.addBond(atom_i, atom_j)
                     existing.add(key)
-                    restored.add(res.index)
-    return restored
 
 
 def reconstruct_intraresidue_bonds(
@@ -390,21 +386,19 @@ def reconstruct_intraresidue_bonds(
     """Add missing intra-residue covalent bonds for residues that have none.
 
     OpenMM's ``createStandardBonds`` (run when a structure is loaded) only builds
-    bonds for residues whose *load-time* name is a recognised standard type.  A
-    non-standard residue (a D-amino acid, an N-methylated residue, or an exotic
-    building block such as BMT/ABA in cyclosporin) is therefore left with **no**
-    intra-residue bonds.  Downstream this breaks:
+    bonds for residues whose *load-time* name is a recognised standard type, so a
+    non-standard residue (a D-amino acid, an N-methylated residue, a building
+    block such as BMT/ABA in cyclosporin) has no intra-residue bonds. That breaks
 
       * ``ForceField`` template matching for a D-residue renamed to its standard
         L counterpart ("atoms match ALA, but the bonds are different"), and
-      * GAFF2 parameterisation / custom-XML template matching for NCAA residues
-        (the molecule graph built from topology bonds is disconnected).
+      * GAFF2 parameterisation and custom-XML template matching for NCAA residues
+        (the molecule graph built from the topology bonds is disconnected).
 
-    This restores those bonds geometrically (element-aware covalent-radius test),
-    operating **only** on residues in ``chain_id`` that currently have zero
-    intra-residue bonds — so standard residues (already bonded) and inter-residue
-    backbone / cyclic-closure bonds are never touched.  It is a no-op for a fully
-    standard peptide (e.g. 3P8F), whose residues already carry their bonds.
+    The bonds are restored geometrically (element-aware covalent-radius test),
+    only for residues in ``chain_id`` that have zero intra-residue bonds, so
+    standard residues and inter-residue backbone or cyclic-closure bonds are
+    never touched. It is a no-op for a fully standard peptide.
 
     ``residues`` (keyword-only), when given, replaces the lookup of ``chain_id``:
     it is the list of residues to repair, for a topology in which two chains share
@@ -432,7 +426,7 @@ def reconstruct_nonstandard_residue_bonds(
     preceding residue's C to its N. ``PDBxFile`` takes the peptide bond from the
     ``struct_conn`` ``covale`` rows, but it looks the partners up by
     ``label_seq_id`` while it keys atoms by ``auth_seq_id``, so the row is dropped
-    whenever the two numberings differ (6SBA, most deposited entries). The
+    whenever the two numberings differ (most deposited entries). The
     neighbouring standard residue then has an unsatisfied ``ExternalBond`` and
     ``createSystem`` reports "bonds are different" for it, not for the residue
     that lacks the bond.
@@ -441,13 +435,16 @@ def reconstruct_nonstandard_residue_bonds(
 
       * the intra-residue bonds of each residue that has none (covalent-radius
         test, as in :func:`reconstruct_intraresidue_bonds`), and
-      * the peptide bond C(i)-N(i+1) at each junction where residue i or i+1 was
-        just restored, when the two atoms lie within ``_AMIDE_BOND_THRESH``. A
-        chain break is much longer than that, so it is not bridged.
+      * the peptide bond C(i)-N(i+1) at each junction of consecutive residues that
+        has none, when the two atoms lie within ``_AMIDE_BOND_THRESH``, whether or
+        not residue i or i+1 gained bonds in this call (``load_structure`` bonds the
+        inside of a bare residue but not its links). A chain break is much longer
+        than that, so it is not bridged.
 
-    Residues that already carry bonds are not touched, so the call is a no-op for a
-    fully standard structure. ``include_chain`` names a chain to repair even when
-    it holds no standard amino acid (a peptide made only of D-residues).
+    Residues that already carry bonds are not touched, and a junction that is
+    bonded is left alone, so the call is a no-op for a fully standard structure.
+    ``include_chain`` names a chain to repair even when it holds no standard amino
+    acid (a peptide made only of D-residues).
 
     Returns the number of bonds added.
     """
@@ -459,10 +456,8 @@ def reconstruct_nonstandard_residue_bonds(
         residues = list(chain.residues())
         if chain.id != include_chain and not any(r.name in STANDARD_AMINO_ACIDS for r in residues):
             continue
-        restored = _bond_bare_residues(topology, pos, residues, existing, bonded_residues)
+        _bond_bare_residues(topology, pos, residues, existing, bonded_residues)
         for previous, following in zip(residues, residues[1:]):
-            if previous.index not in restored and following.index not in restored:
-                continue
             c_atom, n_atom = _find_atom(previous, "C"), _find_atom(following, "N")
             if c_atom is None or n_atom is None:
                 continue
@@ -519,10 +514,8 @@ def detect_cyclization(topology, positions, chain_id: str) -> list:
     ``chain_id`` is the author chain ID, the one the chain options use, for a topology
     from ``io.structures.load_structure`` of an mmCIF; the ID of the chain in the topology
     is accepted as well (see ``io.structures.topology_chain_id``). The ``CyclicBondInfo``
-    entries carry the ID of the chain in the topology. 1CWA: ``"C"`` and ``"B"`` give the same
-    head-to-tail amide, where chain C of the topology holds waters.
-
-    The remaining text describes the detection itself, in :func:`_detect_cyclization`.
+    entries carry the ID of the chain in the topology. The detection itself is described
+    in :func:`_detect_cyclization`.
     """
     return _detect_cyclization(topology, positions, topology_chain_id(topology, chain_id))
 
@@ -562,7 +555,6 @@ def _detect_cyclization(topology, positions, chain_id: str) -> list:
         chain_id,
     )
 
-    # Pre-build set of existing topology bonds for fast membership tests.
     existing_bonds: set = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
 
     def _bonded(a, b) -> bool:
@@ -573,7 +565,7 @@ def _detect_cyclization(topology, positions, chain_id: str) -> list:
         return _bonded(a, b) or _dist(pos, a.index, b.index) < thresh
 
     results: list = []
-    # Track detected atom-index pairs so the unsupported scan ignores them.
+    # Atom-index pairs already claimed; the scan for unsupported bonds skips them.
     detected_pairs: set = set()
 
     first, last = residues[0], residues[-1]
@@ -661,7 +653,7 @@ def _detect_cyclization(topology, positions, chain_id: str) -> list:
                 if cg is None:
                     warnings.warn(
                         f"detect_cyclization: atom CG not found on ASP residue "
-                        f"{res.name}{res.id} (chain {chain_name}, index {i}); "
+                        f"{residue_label(res)} (chain {chain_name}, index {i}); "
                         "lactam_n_asp bond may not be detected.",
                         stacklevel=2,
                     )
@@ -692,7 +684,7 @@ def _detect_cyclization(topology, positions, chain_id: str) -> list:
                 if cd is None:
                     warnings.warn(
                         f"detect_cyclization: atom CD not found on GLU residue "
-                        f"{res.name}{res.id} (chain {chain_name}, index {i}); "
+                        f"{residue_label(res)} (chain {chain_name}, index {i}); "
                         "lactam_n_glu bond may not be detected.",
                         stacklevel=2,
                     )
@@ -727,7 +719,7 @@ def _detect_cyclization(topology, positions, chain_id: str) -> list:
                 if nz is None:
                     warnings.warn(
                         f"detect_cyclization: atom NZ not found on LYS residue "
-                        f"{res.name}{res.id} (chain {chain_name}, index {i}); "
+                        f"{residue_label(res)} (chain {chain_name}, index {i}); "
                         "lactam_c_lys bond may not be detected.",
                         stacklevel=2,
                     )
@@ -801,17 +793,13 @@ def _detect_cyclization(topology, positions, chain_id: str) -> list:
 
     # ---- 5. Classify remaining non-sequential intra-chain topology bonds ----
     #
-    # Read from the topology (which reflects STRUCT_CONN covale entries from the
-    # CIF) rather than scanning atom-pair distances.  Distance scanning produces
-    # false positives for close but non-covalent contacts such as tight backbone
-    # geometry (e.g. THR1.N — PRO2.CB at 1.79 Å, five bonds apart) and is
-    # unreliable for structures with steric clashes or poor geometry.
+    # Read from the topology (STRUCT_CONN covale entries of a CIF) instead of
+    # scanning atom-pair distances, which gives false positives for close
+    # non-covalent contacts (e.g. THR1.N – PRO2.CB at 1.79 Å, five bonds apart).
     #
-    # An all-carbon side-chain cross-link is a hydrocarbon staple: the staple
-    # residues are parameterised by GAFF (core.gaff_ncaa) and the cross-link is
-    # covered by GAFF's own terms, so it is recognised rather than rejected.
-    # Any other unrecognised cross-link (thioether S–C, macrolactone O–C,
-    # biaryl ether …) still raises CyclizationError.
+    # An all-carbon side-chain cross-link is a hydrocarbon staple and is
+    # recognised. Any other unrecognised cross-link (thioether S–C,
+    # macrolactone O–C, biaryl ether ...) raises CyclizationError.
     local_of = {r.index: i for i, r in enumerate(residues)}
     for bond in topology.bonds():
         ai, aj = bond.atom1, bond.atom2
@@ -986,12 +974,11 @@ def patch_cyclic_topology(topology, positions, chain_id: str, hints: list = None
     except ImportError as e:
         raise ImportError("OpenMM is required for cyclic peptide patching.") from e
 
-    # Restore the bonds of any non-standard residue that lost them at load time
-    # (D-amino acids, N-methyl residues, exotic NCAA building blocks), with the
-    # peptide bonds on either side. Every protein chain is repaired, not only the
-    # peptide: a receptor residue such as S-palmitoyl-cysteine breaks template
-    # matching of its neighbours the same way. Needed before template matching /
-    # GAFF parameterisation; no-op for a fully standard structure.
+    # Restore the bonds of non-standard residues that lost them at load time
+    # (D-amino acids, N-methyl residues, NCAA building blocks), with the peptide
+    # bonds on either side. Every protein chain is repaired: a receptor residue such
+    # as S-palmitoyl-cysteine breaks the template matching of its neighbours the same
+    # way. Needed before template matching and GAFF parameterisation.
     reconstruct_nonstandard_residue_bonds(topology, positions, include_chain=chain_id)
 
     info_list = _detect_cyclization(topology, positions, chain_id)
@@ -1001,7 +988,7 @@ def patch_cyclic_topology(topology, positions, chain_id: str, hints: list = None
         return topology, positions, []
 
     for info in info_list:
-        # Residue list must be re-fetched after each patch (atom indices shift)
+        # Re-fetched after each patch: atom indices shift.
         residues = _peptide_residues(topology, chain_id)
 
         if info.cyclic_type == "head_to_tail":
@@ -1057,7 +1044,6 @@ def patch_cyclic_topology(topology, positions, chain_id: str, hints: list = None
                 topology, positions, residues, info, app
             )
 
-    # Verify all closure atoms are still findable after patches
     residues = _peptide_residues(topology, chain_id)
     for info in info_list:
         _refresh_indices(info, residues, chain_id)
@@ -1069,8 +1055,8 @@ def _patch_head_to_tail(topology, positions, residues, app):
     """Remove OXT / extra terminal H from linear-peptide artefacts, add N–C bond."""
     first, last = residues[0], residues[-1]
 
-    # Atoms to remove: OXT on last residue (added by PDBFixer treating it as linear)
-    # and any pre-existing terminal H atoms (H1/H2/H3) on first residue's N.
+    # Remove the OXT that PDBFixer adds to the last residue (it treats the chain as
+    # linear) and any terminal H1/H2/H3 on the N of the first.
     to_remove = []
     for atom in last.atoms():
         if atom.name == "OXT":
@@ -1084,13 +1070,12 @@ def _patch_head_to_tail(topology, positions, residues, app):
         modeller.delete(to_remove)
         topology, positions = modeller.topology, modeller.positions
 
-    # Re-find atoms after potential deletion
     residues = _peptide_residues(topology, residues[0].chain.id)
     first, last = residues[0], residues[-1]
     n_first = _find_atom(first, "N")
     c_last = _find_atom(last, "C")
 
-    # Add bond only if not already present (e.g. read directly from CIF CONECT)
+    # The bond may already be present (read from CIF CONECT).
     if n_first and c_last:
         already_bonded = any(
             (b.atom1.index == n_first.index and b.atom2.index == c_last.index)
@@ -1108,8 +1093,7 @@ def _patch_disulfide(topology, positions, residues, ri: int, rj: int, app):
     res_i = residues[ri]
     res_j = residues[rj]
 
-    # Remove HG (thiol proton) if present — PDBFixer may have added it
-    to_remove = []
+    to_remove = []  # the thiol proton HG, which PDBFixer may have added
     for res in (res_i, res_j):
         for atom in res.atoms():
             if atom.name == "HG":
@@ -1119,13 +1103,11 @@ def _patch_disulfide(topology, positions, residues, ri: int, rj: int, app):
         modeller.delete(to_remove)
         topology, positions = modeller.topology, modeller.positions
 
-    # Rename CYS → CYX (ff14SB has a CYX template for disulfide Cys)
     chain_id = residues[0].chain.id
     residues = _peptide_residues(topology, chain_id)
     for idx in (ri, rj):
-        residues[idx].name = "CYX"
+        residues[idx].name = "CYX"  # ff14SB has a CYX template for disulfide Cys
 
-    # Add SG–SG bond (only if not already present)
     sg_i = _find_atom(residues[ri], "SG")
     sg_j = _find_atom(residues[rj], "SG")
     if sg_i and sg_j:
@@ -1153,19 +1135,16 @@ def _patch_lactam_n(
     """Rename ASP/GLU → ASPL/GLUL, remove free carboxylate O, add CG/CD–N bond."""
     sc_res = residues[sc_res_idx]
 
-    # Remove OD2/OE2 (leaves only the amide O)
-    to_remove = [a for a in sc_res.atoms() if a.name == od_name]
+    to_remove = [a for a in sc_res.atoms() if a.name == od_name]  # leaves the amide O
     if to_remove:
         modeller = app.Modeller(topology, positions)
         modeller.delete(to_remove)
         topology, positions = modeller.topology, modeller.positions
 
-    # Rename residue
     chain_id = residues[0].chain.id
     residues = _peptide_residues(topology, chain_id)
     residues[sc_res_idx].name = new_res_name
 
-    # Add sidechain-C — N(first) bond (only if not already present)
     sc_atom = _find_atom(residues[sc_res_idx], sc_atom_name)
     n_first = _find_atom(residues[0], "N")
     if sc_atom and n_first:
@@ -1185,8 +1164,7 @@ def _patch_lactam_c_lys(topology, positions, residues, lys_idx: int, app):
     lys_res = residues[lys_idx]
     last = residues[-1]
 
-    # Remove OXT from C-terminal residue and extra amine protons (HZ2, HZ3)
-    to_remove = []
+    to_remove = []  # OXT of the C-terminal residue and the amine protons HZ2, HZ3
     for atom in last.atoms():
         if atom.name == "OXT":
             to_remove.append(atom)
@@ -1203,7 +1181,6 @@ def _patch_lactam_c_lys(topology, positions, residues, lys_idx: int, app):
     residues = _peptide_residues(topology, chain_id)
     residues[lys_idx].name = "LYSL"
 
-    # Add NZ — C(last) bond (only if not already present)
     nz = _find_atom(residues[lys_idx], "NZ")
     c_last = _find_atom(residues[-1], "C")
     if nz and c_last:
@@ -1231,18 +1208,16 @@ def _patch_lactam_sidechain(
 ):
     """Patch a side-chain-to-side-chain lactam (LYS NZ — ASP CG / GLU CD).
 
-    Renames LYS → LYSL (removing the extra amine protons HZ2/HZ3, keeping NZ
-    as the amide nitrogen) and ASP/GLU → ASPL/GLUL (removing the free
-    carboxylate oxygen OD2/OE2), then adds the NZ–CG/CD closure bond. Both
-    residues stay internal to the chain, so no terminal atoms (OXT, H1/H2/H3)
-    are touched — unlike the terminal lactams.
+    Renames LYS → LYSL (removing the amine protons HZ2/HZ3, keeping NZ as the
+    amide nitrogen) and ASP/GLU → ASPL/GLUL (removing the free carboxylate
+    oxygen OD2/OE2), then adds the NZ–CG/CD closure bond. Both residues are
+    internal, so no terminal atoms (OXT, H1/H2/H3) are touched.
     """
     lys_res = residues[lys_idx]
     acid_res = residues[acid_idx]
 
-    # Remove extra amine protons on the LYS NZ and the free carboxylate O.
-    # (Structures are heavy-atom-only at this stage, so these are usually
-    # absent; the removal is defensive for pre-protonated inputs.)
+    # Structures are heavy-atom-only at this stage, so these atoms are usually absent;
+    # the removal covers pre-protonated inputs.
     to_remove = []
     for atom in lys_res.atoms():
         if atom.name in ("HZ2", "HZ3"):
@@ -1255,13 +1230,11 @@ def _patch_lactam_sidechain(
         modeller.delete(to_remove)
         topology, positions = modeller.topology, modeller.positions
 
-    # Rename both residues to their lactam templates.
     chain_id = residues[0].chain.id
     residues = _peptide_residues(topology, chain_id)
     residues[lys_idx].name = "LYSL"
     residues[acid_idx].name = new_acid_name
 
-    # Add NZ — CG/CD bond (only if not already present).
     nz = _find_atom(residues[lys_idx], "NZ")
     c_atom = _find_atom(residues[acid_idx], acid_atom_name)
     if nz and c_atom:
@@ -1279,12 +1252,11 @@ def _patch_lactam_sidechain(
 def _patch_hydrocarbon_staple(topology, positions, residues, info, app):
     """Ensure the all-carbon staple cross-link bond is present in the topology.
 
-    Nothing else is patched: the staple residues (e.g. MK8/0EH) are exotic
-    non-canonical amino acids parameterised by
-    :func:`binding_metrics.core.gaff_ncaa.parameterize_ncaa_residues`, and the
-    GAFF↔GAFF cross-link bond is covered by GAFF's own class-based terms. We
-    only guarantee the bond exists (it normally arrives via CONECT / STRUCT_CONN)
-    so GAFF caps and parameterises it — no residue rename or atom removal.
+    Nothing else is patched: the staple residues (e.g. MK8/0EH) are parameterised
+    by :func:`binding_metrics.core.gaff_ncaa.parameterize_ncaa_residues` and the
+    GAFF–GAFF cross-link is covered by GAFF's own class-based terms. The bond
+    normally arrives via CONECT / STRUCT_CONN; it is added here when missing so
+    that GAFF caps and parameterises it. No residue is renamed and no atom removed.
     """
     ri, name1 = info.atom1_id[1], info.atom1_id[2]
     rj, name2 = info.atom2_id[1], info.atom2_id[2]
@@ -1306,9 +1278,8 @@ def _patch_hydrocarbon_staple(topology, positions, residues, info, app):
 
 def _refresh_indices(info: CyclicBondInfo, residues: list, chain_id: str) -> CyclicBondInfo:
     """Return a new CyclicBondInfo with atom_ids still valid (indices unchanged)."""
-    # atom1_id and atom2_id store (chain_id, res_idx_in_chain, atom_name)
-    # residue indices are stable after deletion (we re-fetch the list each time).
-    # Just verify atoms are still present; no-op if so.
+    # Residue indices within the chain are stable after deletions; this only
+    # verifies that the closure atoms are still present.
     ri1, name1 = info.atom1_id[1], info.atom1_id[2]
     ri2, name2 = info.atom2_id[1], info.atom2_id[2]
     if _find_atom(residues[ri1], name1) is None or _find_atom(residues[ri2], name2) is None:
@@ -1372,10 +1343,10 @@ def resolve_omega_atoms(topology, bond_info: CyclicBondInfo, chain_id: str) -> O
 def _internal_h_list(res_name: str):
     """Return [(h_name, parent_name), ...] for an *internal* residue (non-terminal).
 
-    OpenMM's addHydrogens uses the ``terminal`` field on each H definition to
-    decide whether to add that H in N-terminal/C-terminal/internal contexts.
-    The list-format variant bypasses position-based N/C-terminal detection and
-    lets us specify exactly which H atoms to add.
+    OpenMM's addHydrogens uses the ``terminal`` field of each H definition to
+    decide whether to add that H in an N-terminal, C-terminal or internal
+    residue. The list-format variant bypasses the position-based terminal
+    detection and fixes exactly which H atoms are added.
 
     Returns None if the residue has no entry in OpenMM's hydrogen definitions
     (addHydrogens won't touch it anyway in that case).
@@ -1383,11 +1354,10 @@ def _internal_h_list(res_name: str):
     from openmm.app import modeller as _modeller_mod
     from openmm.app.modeller import Modeller
 
-    # Ensure OpenMM's built-in hydrogen definitions are loaded into
-    # Modeller._residueHydrogens. The private loader is named
-    # _loadStandardHydrogenDefinitions in OpenMM >= 8.2 but does not exist in
-    # 8.1.x, where addHydrogens lazy-loads the bundled data/hydrogens.xml via the
-    # public loadHydrogenDefinitions(). Replicate that portably across versions.
+    # Load OpenMM's built-in hydrogen definitions into Modeller._residueHydrogens.
+    # The private loader _loadStandardHydrogenDefinitions exists in OpenMM >= 8.2
+    # only; 8.1.x lazy-loads the bundled data/hydrogens.xml through the public
+    # loadHydrogenDefinitions().
     if hasattr(Modeller, "_loadStandardHydrogenDefinitions"):
         Modeller._loadStandardHydrogenDefinitions()
     elif not getattr(Modeller, "_hasLoadedStandardHydrogens", False):
@@ -1402,10 +1372,9 @@ def _internal_h_list(res_name: str):
         if res_name == "CYX":
             cys_list = _internal_h_list("CYS")
             return [(n, p) for n, p in (cys_list or []) if n != "HG"]
-        # Lactam residues are not in OpenMM's hydrogen definitions, so
-        # addHydrogens would add no H to them.  Derive the H list from the
-        # parent amino acid, dropping the H atoms on the atoms consumed by the
-        # side-chain amide (carboxylate O for ASPL/GLUL; two of the three amine
+        # Lactam residues are not in OpenMM's hydrogen definitions. Derive the H list
+        # from the parent amino acid, dropping the H atoms on the atoms consumed by
+        # the side-chain amide (carboxylate O for ASPL/GLUL; two of the three amine
         # protons for LYSL, whose NZ keeps a single amide HZ1).
         _lactam_parent = {
             "ASPL": ("ASP", {"HD2"}),
@@ -1416,12 +1385,10 @@ def _internal_h_list(res_name: str):
             parent, drop = _lactam_parent[res_name]
             base = _internal_h_list(parent) or []
             return [(n, p) for n, p in base if n not in drop]
-        # N-methylated residues (NMG/NMA/MVA/MLE) are not in OpenMM's hydrogen
-        # definitions either.  Their backbone N is tertiary (bonded to the
-        # N-methyl carbon CN instead of an amide H), so derive the H list from
-        # the parent amino acid, drop the backbone amide H, and add the three
-        # N-methyl protons on CN.  This lets addHydrogens build the full
-        # heavy+H residue so the NMG/NMA/MVA/MLE FF template matches.
+        # N-methylated residues (NMG/NMA/MVA/MLE) are not in the definitions either.
+        # Their backbone N is tertiary (bonded to the N-methyl carbon CN, no amide H):
+        # take the parent amino acid's list, drop the backbone H and add the three
+        # N-methyl protons on CN, so that the residue matches its force-field template.
         _nme_parent = {
             "NMG": "GLY",
             "NMA": "ALA",
@@ -1445,14 +1412,12 @@ def _internal_h_list(res_name: str):
 def get_addh_variants(topology, bond_info_list: list, chain_id: str) -> list:
     """Build the ``variants`` list for ``modeller.addHydrogens()`` for cyclic topologies.
 
-    When a cyclic peptide closure bond is present, the first and/or last residue
-    in the chain must be treated as *internal* (no N/C terminal protons) by
-    ``addHydrogens``. OpenMM's default heuristic uses chain position (first/last)
-    to assign N/C-terminal protons regardless of the actual bond connectivity.
-
-    We override this by passing an explicit list of ``(atom_name, parent_name)``
-    tuples for each closure residue, so ``addHydrogens`` adds only the H atoms
-    that belong on an internal residue (amide H on N; no H1/H2/H3).
+    With a cyclic closure bond, the first and/or last residue of the chain is
+    *internal* (no N/C terminal protons) for ``addHydrogens``, but OpenMM assigns
+    terminal protons by chain position whatever the bond connectivity. An explicit
+    list of ``(atom_name, parent_name)`` tuples for each closure residue makes
+    ``addHydrogens`` add only the H atoms of an internal residue (amide H on N; no
+    H1/H2/H3).
 
     Args:
         topology: OpenMM Topology (after ``patch_cyclic_topology``; before H addition).
@@ -1490,13 +1455,11 @@ def get_addh_variants(topology, bond_info_list: list, chain_id: str) -> list:
                 variants[last.index] = h_last
         # disulfide: CYX residues need explicit variants — handled below.
 
-    # CYX, the custom lactam residues (ASPL/GLUL/LYSL) and the N-methylated
-    # residues (NMG/NMA/MVA/MLE) are not in Modeller._residueHydrogens, so
-    # addHydrogens would add no H to them.  Provide explicit internal-form H
-    # specs.  Scan ALL residues (not just the cyclic chain) so inter-chain
-    # disulfide partners (e.g. a receptor CYS renamed to CYX) are also covered.
-    # Only override None entries so the head_to_tail/lactam terminal
-    # assignments above are not disturbed.
+    # CYX, the lactam residues (ASPL/GLUL/LYSL) and the N-methylated residues
+    # (NMG/NMA/MVA/MLE) are not in Modeller._residueHydrogens, so they get explicit
+    # internal-form H specs. All residues are scanned, not only the cyclic chain, to
+    # cover inter-chain disulfide partners (a receptor CYS renamed to CYX). Only
+    # None entries are overridden, which keeps the terminal assignments above.
     for res in topology.residues():
         if res.name in CUSTOM_HYDROGEN_RESIDUES and variants[res.index] is None:
             h_spec = _internal_h_list(res.name)

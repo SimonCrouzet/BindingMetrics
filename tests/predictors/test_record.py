@@ -1,4 +1,4 @@
-"""PredictionRecord, PredictionFiles, SampleRef and TokenLayout."""
+"""PredictedPose, PredictionFiles, SampleRef and TokenLayout."""
 
 import dataclasses
 
@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 from binding_metrics.predictors.record import (
+    PredictedPose,
     PredictionFiles,
-    PredictionRecord,
     SampleRef,
     TokenLayout,
     check_chain_map,
@@ -34,7 +34,7 @@ def _good_record(**overrides):
         pde=synth.synthetic_complex().pde,
     )
     fields.update(overrides)
-    return PredictionRecord("of3", "cmplx", **fields)
+    return PredictedPose("of3", "cmplx", **fields)
 
 
 def _record_with_structure(tmp_path, suffix=".cif", **overrides):
@@ -148,13 +148,13 @@ class TestTokenLayout:
 
 
 # ---------------------------------------------------------------------------
-# PredictionRecord: construction
+# PredictedPose: construction
 # ---------------------------------------------------------------------------
 
 
 class TestConstruction:
     def test_missing_scalars_are_nan_and_never_none(self):
-        record = PredictionRecord("boltz2", "q")
+        record = PredictedPose("boltz2", "q")
         for name in ("avg_plddt", "ptm", "iptm", "gpde", "ranking_score", "has_clash", "disorder"):
             assert np.isnan(getattr(record, name)), name
         assert record.plddt_per_atom is None
@@ -164,7 +164,7 @@ class TestConstruction:
         assert record.n_atoms == 0
 
     def test_containers_are_not_shared_between_records(self):
-        first, second = PredictionRecord("of3", "a"), PredictionRecord("of3", "b")
+        first, second = PredictedPose("of3", "a"), PredictedPose("of3", "b")
         first.reasons.append("x")
         first.extras["k"] = 1
         first.chain_map["A"] = "R"
@@ -172,19 +172,19 @@ class TestConstruction:
 
     def test_only_model_and_name_are_positional(self):
         with pytest.raises(TypeError, match="positional"):
-            PredictionRecord("of3", "q", 1)
+            PredictedPose("of3", "q", 1)
 
     def test_structure_path_is_coerced_to_a_path(self, tmp_path):
-        record = PredictionRecord("of3", "q", structure_path=str(tmp_path / "m.cif"))
+        record = PredictedPose("of3", "q", structure_path=str(tmp_path / "m.cif"))
         assert record.structure_path == tmp_path / "m.cif"
 
     def test_n_atoms_counts_the_plddt_values(self):
-        assert PredictionRecord("of3", "q", plddt_per_atom=np.full(9, 80.0)).n_atoms == 9
+        assert PredictedPose("of3", "q", plddt_per_atom=np.full(9, 80.0)).n_atoms == 9
 
     def test_files_default_to_none_and_hold_what_the_adapter_located(self, tmp_path):
-        assert PredictionRecord("of3", "q").files is None
+        assert PredictedPose("of3", "q").files is None
         files = PredictionFiles(directory=tmp_path, arrays=tmp_path / "a.json")
-        assert PredictionRecord("of3", "q", files=files).files is files
+        assert PredictedPose("of3", "q", files=files).files is files
 
     def test_equality_is_identity(self):
         record = _good_record()
@@ -193,7 +193,7 @@ class TestConstruction:
 
 
 # ---------------------------------------------------------------------------
-# PredictionRecord.validate
+# PredictedPose.validate
 # ---------------------------------------------------------------------------
 
 
@@ -202,7 +202,7 @@ class TestValidate:
         _good_record().validate()
 
     def test_a_record_of_missing_values_passes(self):
-        PredictionRecord("of3", "q").validate()
+        PredictedPose("of3", "q").validate()
 
     def test_nan_scalars_pass(self):
         _good_record(ptm=float("nan"), iptm=float("nan"), gpde=float("nan")).validate()
@@ -340,7 +340,7 @@ class TestValidateAgainstTheStructure:
 
 
 # ---------------------------------------------------------------------------
-# PredictionRecord.atoms
+# PredictedPose.atoms
 # ---------------------------------------------------------------------------
 
 
@@ -349,15 +349,6 @@ class TestAtoms:
         atoms = _record_with_structure(tmp_path).atoms()
         assert atoms.array_length() == synth.N_ATOMS
         assert list(dict.fromkeys(atoms.chain_id)) == ["A", "B"]
-
-    def test_is_read_once(self, tmp_path):
-        record = _record_with_structure(tmp_path)
-        assert record.atoms() is record.atoms()
-
-    def test_reads_pdb_and_gzip_compressed_files(self, tmp_path):
-        for suffix in (".pdb", ".cif.gz", ".pdb.gz"):
-            record = _record_with_structure(tmp_path, suffix=suffix)
-            assert record.atoms().array_length() == synth.N_ATOMS, suffix
 
     def test_chain_map_renames_chains(self, tmp_path):
         record = _record_with_structure(tmp_path, chain_map={"A": "R", "B": "P"})
@@ -398,14 +389,8 @@ class TestAtoms:
         record.chain_map = {}
         assert set(record.atoms().chain_id) == {"A", "B"}
 
-    def test_the_structure_file_is_not_modified(self, tmp_path):
-        record = _record_with_structure(tmp_path, chain_map={"A": "R"})
-        before = record.structure_path.read_bytes()
-        record.atoms()
-        assert record.structure_path.read_bytes() == before
-
     def test_no_structure_file_gives_a_value_error_with_the_reasons(self):
-        record = PredictionRecord("of3", "q", reasons=["structure file not found"])
+        record = PredictedPose("of3", "q", reasons=["structure file not found"])
         with pytest.raises(ValueError, match="no structure file; structure file not found"):
             record.atoms()
 

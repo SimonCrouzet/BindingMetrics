@@ -3,7 +3,7 @@
 ``compute_prediction_metrics`` reads the output directory of a registered model
 (``binding_metrics.predictors.PARSERS``) and returns the summary; it is the registered
 metric ``prediction``. ``summarize_prediction`` turns a
-``binding_metrics.predictors.PredictionRecord`` into the result dictionary that
+``binding_metrics.predictors.PredictedPose`` into the result dictionary that
 ``compute_openfold_metrics`` has always returned, plus a ``model`` key: the scalar scores,
 per-residue pLDDT of the binder, interface PDE and PAE statistics and the binder C-alpha
 RMSD against a reference. It reads only the record, so the analysis is the same for every
@@ -29,8 +29,12 @@ from binding_metrics.predictors._confidence import (
     _interface_pde_stats,
     _load_atoms,
 )
-from binding_metrics.predictors.record import PredictionRecord
+from binding_metrics.predictors._renamed import deprecated_name_getattr
+from binding_metrics.predictors.record import PredictedPose
 from binding_metrics.predictors.registry import get_parser
+
+#: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
+__getattr__ = deprecated_name_getattr(__name__)
 
 _NAN = float("nan")
 
@@ -96,7 +100,7 @@ def compute_prediction_metrics(
     )
 
 
-def _token_ranges(record: PredictionRecord) -> Optional[dict[str, tuple[int, int]]]:
+def _token_ranges(record: PredictedPose) -> Optional[dict[str, tuple[int, int]]]:
     """Token ranges by the user's chain IDs, or None for one token per residue.
 
     A record with a ``TokenLayout`` says which tokens belong to which chain, so the
@@ -114,7 +118,7 @@ def _token_ranges(record: PredictionRecord) -> Optional[dict[str, tuple[int, int
     }
 
 
-def _seed_value_of(record: PredictionRecord) -> Optional[int]:
+def _seed_value_of(record: PredictedPose) -> Optional[int]:
     """The seed value of the record's seed directory (``record.extras["seed_value"]``), or None.
 
     OpenFold3 and Protenix name a seed directory after the seed that produced it, and their
@@ -125,7 +129,7 @@ def _seed_value_of(record: PredictionRecord) -> Optional[int]:
 
 
 def summarize_prediction(
-    record: PredictionRecord,
+    record: PredictedPose,
     *,
     include_matrices: bool = False,
     reference_structure_path: Optional[str | Path] = None,
@@ -219,7 +223,6 @@ def summarize_prediction(
         "chain_ptm": record.chain_ptm,
         "chain_pair_iptm": record.chain_pair_iptm,
         "bespoke_iptm": record.extras.get("bespoke_iptm", {}),
-        # Per-atom data
         "plddt_per_atom": plddt_arr,
         "n_atoms": record.n_atoms,
         "pde": record.pde if include_matrices else None,
@@ -238,21 +241,17 @@ def summarize_prediction(
         "pae_interface": None,
         # Refolding RMSD (populated when binder_chain + reference_structure_path)
         "binder_ca_rmsd": _NAN,
-        # Timing
         "timing": record.timing,
         # The seed behind the sample (appended, so the order of the older keys is unchanged)
         "seed_value": _seed_value_of(record),
     }
 
-    # --- Per-chain structural analysis ---
-    # Requires binder_chain; uses the predicted structure.
     if binder_chain is not None and record.structure_path is None:
         reasons.append("structure file not found; per-chain values not computed")
     if binder_chain is not None and record.structure_path is not None:
         try:
             pred_atoms = record.atoms()
 
-            # Per-residue binder pLDDT
             if plddt_arr is not None:
                 try:
                     per_res = _binder_plddt_per_residue(plddt_arr, pred_atoms, binder_chain)
@@ -268,7 +267,6 @@ def summarize_prediction(
                 reasons.append("binder pLDDT: no per-atom pLDDT in the confidences file")
 
             if receptor_chain is not None:
-                # Interface PDE statistics (binder x receptor token block)
                 if record.pde is not None:
                     try:
                         pde_stats = _interface_pde_stats(
@@ -290,7 +288,6 @@ def summarize_prediction(
                 elif arrays_read and "pde" not in record.not_provided:
                     reasons.append("interface PDE: no PDE matrix in the confidences file")
 
-                # Interface PAE statistics (binder x receptor token block)
                 if record.pae is not None:
                     try:
                         pae_stats = _interface_pae_stats(
@@ -312,7 +309,6 @@ def summarize_prediction(
                 elif arrays_read and "pae" not in record.not_provided:
                     reasons.append("interface PAE: no PAE matrix in the confidences file")
 
-            # Binder C-alpha RMSD vs. reference structure
             if reference_structure_path is not None:
                 try:
                     ref_atoms = _load_atoms(Path(reference_structure_path))

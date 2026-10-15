@@ -10,16 +10,19 @@ The receptor chain is identified as the largest protein chain by residue count.
 This module is self-contained and does not depend on the main pipeline.
 
 The validation terms follow MolProbity (Chen et al. 2010, Acta Cryst. D66:12-21;
-Williams et al. 2018, Protein Sci. 27:293-315) but are lighter approximations:
-the clashscore counts heavy-atom overlaps only (no hydrogens), the rotamer term
-is a chi1-only check, and the composite score is therefore indicative rather than
-comparable to published MolProbity values.
+Williams et al. 2018, Protein Sci. 27:293-315) with simplifications: the clashscore
+counts heavy-atom overlaps only (no hydrogens) and the rotamer term checks chi1 only,
+so the composite score is not comparable to published MolProbity values.
 
 Usage:
     binding-metrics-receptor-quality --input receptor.pdb
     binding-metrics-receptor-quality --input complex.cif --receptor-chain A
     binding-metrics-receptor-quality --input ensemble.pdb --output results.csv
     binding-metrics-receptor-quality --input ensemble.pdb --output results.json
+    binding-metrics-receptor-quality --input ensemble.pdb --output results.json --nonfinite null
+
+``--nonfinite null`` writes a NaN or infinity of the JSON as ``null`` and lists the paths in
+``nonfinite_fields``; the default ``keep`` writes the tokens ``NaN`` and ``Infinity``.
 """
 
 import argparse
@@ -31,7 +34,7 @@ from typing import Optional
 
 import numpy as np
 
-from binding_metrics._constants import DEFAULT_RANDOM_SEED
+from binding_metrics._constants import DEFAULT_DEVICE, DEFAULT_PH, DEFAULT_RANDOM_SEED
 from binding_metrics.metrics._common import (
     ChainAliasAction,
     import_biotite,
@@ -40,13 +43,12 @@ from binding_metrics.metrics._common import (
 )
 from binding_metrics.utils import configure_logging
 
+# Names the feature in the install hint when biotite is missing.
+_BIOTITE_PURPOSE = "receptor quality metrics"
+
 # ---------------------------------------------------------------------------
 # Lazy imports
 # ---------------------------------------------------------------------------
-
-
-def _import_biotite():
-    return import_biotite("receptor quality metrics")
 
 
 def _import_scipy():
@@ -82,8 +84,8 @@ def _import_openmm():
 
 def _load_all_models(path: Path) -> list:
     """Load all models from a PDB or CIF file as a list of AtomArrays."""
-    struc, _, _ = _import_biotite()
-    structure = load_structure(path, model=None, purpose="receptor quality metrics")
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
+    structure = load_structure(path, model=None, purpose=_BIOTITE_PURPOSE)
 
     if isinstance(structure, struc.AtomArrayStack):
         return [structure[i] for i in range(structure.shape[0])]
@@ -96,8 +98,11 @@ def _load_all_models(path: Path) -> list:
 
 
 def _detect_receptor_chain(atoms) -> Optional[str]:
-    """Return chain ID of the largest protein chain (by residue count)."""
-    struc, _, _ = _import_biotite()
+    """Return chain ID of the largest protein chain (by residue count).
+
+    A residue is a (number, insertion code) pair, so 52 and 52A count twice.
+    """
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     aa_mask = struc.filter_amino_acids(atoms)
     aa_atoms = atoms[aa_mask]
     chain_ids = sorted(set(aa_atoms.chain_id))
@@ -108,13 +113,9 @@ def _detect_receptor_chain(atoms) -> Optional[str]:
     best_chain, best_count = None, 0
     for cid in chain_ids:
         cid_mask = aa_atoms.chain_id == cid
+        # 52 and 52A are two residues: count (number, insertion code) pairs.
         n_res = len(
-            set(
-                zip(
-                    aa_atoms.chain_id[cid_mask],
-                    aa_atoms.res_id[cid_mask],
-                )
-            )
+            set(zip(aa_atoms.res_id[cid_mask].tolist(), aa_atoms.ins_code[cid_mask].tolist()))
         )
         if n_res > best_count:
             best_count, best_chain = n_res, cid
@@ -131,7 +132,7 @@ def _iter_residues(atoms):
 
     Uses biotite's get_residue_starts for correct residue boundaries.
     """
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     starts = struc.get_residue_starts(atoms)
     for i, start in enumerate(starts):
         end = int(starts[i + 1]) if i + 1 < len(starts) else len(atoms)
@@ -145,6 +146,11 @@ def _iter_residues(atoms):
 # VDW radii
 # ---------------------------------------------------------------------------
 
+# Bondi radii in Å (J. Phys. Chem. 68, 441, 1964) of the heavy atoms, for the clash score only
+# (hydrogens are not scored, so there is no entry for them). Other tables: the same Bondi values
+# with hydrogen at 1.20 Å for the shape complementarity and the void volume
+# (`geometry._BONDI_VDW_RADII`), and biotite's (hydrogen 1.10 Å, bromine 1.83 Å) for the SASA,
+# interface and pose-descriptor metrics.
 _VDW_RADII: dict[str, float] = {
     "C": 1.70,
     "N": 1.55,
@@ -160,6 +166,7 @@ _VDW_RADII: dict[str, float] = {
 
 
 def _vdw(element: str) -> float:
+    """Bondi radius in Å of a heavy-atom element symbol, 1.80 Å when the table lacks it."""
     return _VDW_RADII.get(element.strip().upper(), 1.80)
 
 
@@ -174,7 +181,7 @@ def _ramachandran(chain_atoms) -> dict:
     Each residue with both phi and psi is placed in a favoured, allowed or
     outlier region of the Ramachandran plot (``geometry._classify_ramachandran``;
     D-residues are scored on the mirrored plot). The regions are simplified
-    boxes, not the density contours of MolProbity's Top8000 data (Lovell et al.
+    boxes; MolProbity uses density contours from the Top8000 data (Lovell et al.
     2003, Proteins 50:437; Williams et al. 2018).
 
     Returns:
@@ -184,9 +191,9 @@ def _ramachandran(chain_atoms) -> dict:
         when nothing could be evaluated.
     """
     from binding_metrics.core.nonstandard import is_d_residue
-    from binding_metrics.metrics.geometry import _classify_ramachandran
+    from binding_metrics.metrics.geometry import _amino_acid_residue_rows, _classify_ramachandran
 
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     _empty = {
         "favoured_pct": np.nan,
         "allowed_pct": np.nan,
@@ -205,14 +212,13 @@ def _ramachandran(chain_atoms) -> dict:
 
     phi_deg = np.degrees(phi_rad)
     psi_deg = np.degrees(psi_rad)
-    ca_atoms = chain_atoms[chain_atoms.atom_name == "CA"]
     counts = {"favoured": 0, "allowed": 0, "outlier": 0}
 
-    for i, ca in enumerate(ca_atoms):
-        if i >= len(phi_deg):
-            break
-        phi, psi = float(phi_deg[i]), float(psi_deg[i])
-        res_name = str(ca.res_name).strip()
+    # one row per residue of the array: caps and residues without a C-alpha have a row too
+    rows, first_atoms = _amino_acid_residue_rows(chain_atoms, len(phi_deg))
+    for row, first_atom in zip(rows, first_atoms):
+        phi, psi = float(phi_deg[row]), float(psi_deg[row])
+        res_name = str(chain_atoms.res_name[first_atom]).strip()
         region = _classify_ramachandran(phi, psi, is_d=is_d_residue(res_name))
         if region is None:
             continue
@@ -257,9 +263,9 @@ _COVALENT_DEFAULT_RADIUS = 1.0
 _COVALENT_TOLERANCE_ANGSTROM = 0.4
 
 # Peptide bond between residues that follow each other in the chain. Read off
-# the coordinates rather than from residue numbers, so that numbering gaps
-# (chymotrypsin numbering skips 149 and 218) do not turn a peptide bond into a
-# clash. Same value as the amide threshold in ``core.cyclic``.
+# the coordinates, not the residue numbers, so that numbering gaps (chymotrypsin
+# numbering skips 149 and 218) do not turn a peptide bond into a clash. Same value
+# as the amide threshold in ``core.cyclic``.
 _PEPTIDE_BOND_MAX_ANGSTROM = 2.0
 
 # Longest distance at which two atoms of residues that are not sequence
@@ -308,7 +314,7 @@ def _covalent_reach(
     """
     from scipy import sparse
 
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     n_atoms = len(heavy)
     starts = struc.get_residue_starts(heavy)
     residue_of = np.zeros(n_atoms, dtype=np.int64)
@@ -364,6 +370,27 @@ def _covalent_reach(
     return reach.tocsr()
 
 
+def _neighbouring_residues(atoms, i: np.ndarray, j: np.ndarray) -> np.ndarray:
+    """True for the atom pairs (i, j) in one residue or in neighbouring residues of a chain.
+
+    A residue is a (chain, number, insertion code) triple. Two residues are
+    neighbours when they are consecutive among the residues of the array,
+    sorted by chain, number and insertion code, and their numbers differ by at
+    most one. For numbers without insertion codes this is the difference of
+    numbers; with them, 52 and 53 are not neighbours when 52A lies between.
+    """
+    chain_ids = atoms.chain_id
+    res_ids = atoms.res_id.astype(np.int64)
+    triples = list(zip(chain_ids.tolist(), res_ids.tolist(), atoms.ins_code.tolist()))
+    rank_of = {triple: rank for rank, triple in enumerate(sorted(set(triples)))}
+    ranks = np.array([rank_of[triple] for triple in triples], dtype=np.int64)
+
+    rank_step = np.abs(ranks[i] - ranks[j])
+    number_step = np.abs(res_ids[i] - res_ids[j])
+    same_chain = chain_ids[i] == chain_ids[j]
+    return same_chain & ((rank_step == 0) | ((rank_step == 1) & (number_step <= 1)))
+
+
 def _clashscore(
     chain_atoms,
     clash_cutoff: float = 0.4,
@@ -374,16 +401,17 @@ def _clashscore(
 
     Two heavy atoms clash when the sum of their van der Waals radii exceeds
     their distance by at least ``clash_cutoff`` Å (the 0.4 Å of Word et al. 1999;
-    Chen et al. 2010). This is not MolProbity's clashscore: MolProbity adds
-    hydrogens with Reduce and evaluates all-atom contacts with Probe
-    (Williams et al. 2018), which also resolves hydrogen bonds from the
-    hydrogen position. Here hydrogens are ignored, so the value is an
-    approximation that is usually higher than MolProbity's for the same model.
+    Chen et al. 2010). This is a heavy-atom approximation of MolProbity's
+    clashscore, which adds hydrogens with Reduce and evaluates all-atom contacts
+    with Probe (Williams et al. 2018).
 
     A pair is not scored when
 
-    - both atoms lie in the same residue or in residues whose numbers differ by
-      at most one (same chain), as before;
+    - both atoms lie in the same residue or in neighbouring residues of one
+      chain; neighbours follow each other in the sequence of (number,
+      insertion code) pairs and have numbers that differ by at most one, so
+      52 and 52A are neighbours, and so are 52A and 53, but 52 and 53 are not
+      when 52A lies between them;
     - ``exclude_bonded`` is true and the atoms are separated by at most three
       covalent bonds, following the peptide bond by coordinates, and disulfide,
       head-to-tail, lactam, staple and similar links by distance (see
@@ -391,8 +419,8 @@ def _clashscore(
     - ``exempt_hbond_pairs`` is true and the pair is N/O to N/O at
       2.5 Å or more (a hydrogen bond, not an overlap).
 
-    With both switches off the result equals the earlier definition, which
-    counted disulfides, cyclic closures and N...O hydrogen bonds as clashes.
+    With both switches off, disulfides, cyclic closures and N...O hydrogen bonds
+    count as clashes.
 
     Returns:
         ``clashscore`` (float, NaN below two heavy atoms), ``n_clashes`` (int)
@@ -427,13 +455,11 @@ def _clashscore(
     n_clashes = 0
     if len(pairs) > 0:
         i, j = pairs[:, 0], pairs[:, 1]
-        chain_ids = heavy.chain_id
-        res_ids = heavy.res_id.astype(np.int64)
         coords64 = coords.astype(np.float64)
         distances = np.linalg.norm(coords64[i] - coords64[j], axis=1)
         radii = np.array([_vdw(e) for e in heavy_elements])
 
-        neighbours = (chain_ids[i] == chain_ids[j]) & (np.abs(res_ids[i] - res_ids[j]) <= 1)
+        neighbours = _neighbouring_residues(heavy, i, j)
         is_clash = ~neighbours & (radii[i] + radii[j] - distances >= clash_cutoff)
 
         if exempt_hbond_pairs:
@@ -533,15 +559,15 @@ def _rotamer_quality(chain_atoms) -> dict:
     more than 40° from the nearest canonical rotamer position (g−/g+/trans).
     Residues without χ1 (GLY, ALA) are skipped.
 
-    Note: this is a χ1-only approximation. Full rotamer validation requires
-    the backbone-dependent Dunbrack rotamer library (Shapovalov & Dunbrack 2011,
-    Structure 19:844; used by MolProbity via Lovell et al. 2000, Proteins 40:389).
+    χ1 only. Full rotamer validation uses a backbone-dependent rotamer library
+    (Shapovalov & Dunbrack 2011, Structure 19:844; used by MolProbity via
+    Lovell et al. 2000, Proteins 40:389).
 
     Returns:
         ``outlier_count`` and ``n_evaluated`` (int), ``outlier_pct`` (float,
         NaN when no residue has a χ1), and ``reason`` (str) only in that case.
     """
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
 
     n_evaluated = 0
     n_outliers = 0
@@ -553,7 +579,6 @@ def _rotamer_quality(chain_atoms) -> dict:
         if not all(k in atoms for k in ("N", "CA", "CB", terminal)):
             continue
 
-        # Dihedral N-CA-CB-X
         chi1_rad = float(
             struc.dihedral(
                 atoms["N"],
@@ -624,10 +649,10 @@ def _ideal_cbeta(n: np.ndarray, ca: np.ndarray, c: np.ndarray) -> Optional[np.nd
 def _cbeta_deviations(chain_atoms, threshold: float = 0.25) -> dict:
     """Count Cβ deviations > threshold Å from their ideal backbone-derived position.
 
-    Follows MolProbity convention: deviations > 0.25 Å indicate backbone distortion
-    (Lovell et al. 2003, Proteins 50:437). GLY is skipped (no Cβ). MolProbity
-    derives the ideal Cβ from the side-chain-dependent Cα geometry; here it comes
-    from the backbone N, CA, C with tetrahedral geometry, so values differ slightly.
+    MolProbity convention: a deviation > 0.25 Å indicates backbone distortion
+    (Lovell et al. 2003, Proteins 50:437). GLY is skipped (no Cβ). The ideal Cβ is
+    built from the backbone N, CA, C with tetrahedral geometry; MolProbity derives
+    it from the side-chain-dependent Cα geometry, so values differ slightly.
 
     Returns:
         ``cb_deviation_count`` and ``cb_n_evaluated`` (int), ``cb_deviation_pct``
@@ -724,7 +749,6 @@ def _backbone_geometry(chain_atoms) -> dict:
     for i, r in enumerate(residues):
         r_next = residues[i + 1] if i + 1 < len(residues) else None
 
-        # Intra-residue backbone bonds
         for (a1, a2), (ideal, thresh) in _INTRA_BONDS.items():
             if a1 in r and a2 in r:
                 d = float(np.linalg.norm(r[a2] - r[a1]))
@@ -732,7 +756,6 @@ def _backbone_geometry(chain_atoms) -> dict:
                 if abs(d - ideal) > thresh:
                     bad_bonds += 1
 
-        # Inter-residue peptide C–N bond
         if r_next and "C" in r and "N" in r_next:
             d = float(np.linalg.norm(r_next["N"] - r["C"]))
             if d < _PEPTIDE_BOND_MAX:
@@ -741,7 +764,6 @@ def _backbone_geometry(chain_atoms) -> dict:
                 if abs(d - ideal) > thresh:
                     bad_bonds += 1
 
-        # Intra-residue backbone angles
         for (a1, a2, a3), (ideal, thresh) in _INTRA_ANGLES.items():
             if all(k in r for k in (a1, a2, a3)):
                 ang = _angle_deg(r[a1], r[a2], r[a3])
@@ -750,7 +772,6 @@ def _backbone_geometry(chain_atoms) -> dict:
                     if abs(ang - ideal) > thresh:
                         bad_angles += 1
 
-        # Inter-residue backbone angles (spanning peptide bond)
         if r_next:
             # CA–C–N: current CA and C, next N
             if all(k in r for k in ("CA", "C")) and "N" in r_next:
@@ -803,10 +824,9 @@ def _molprobity_score(
     a single score on a scale similar to X-ray resolution (lower = better).
     Penalty terms activate above baseline noise levels (0.2% rama, 2% rotamer).
 
-    Note: rotamer term uses simplified χ1 classification, not the full Dunbrack
-    library, and the clashscore counts heavy-atom overlaps only (Williams et al.
-    2018 describe the all-atom original), so the score is indicative rather than
-    directly comparable to published MolProbity values.
+    The rotamer term is a χ1-only classification and the clashscore counts
+    heavy-atom overlaps only, so the score is not comparable to published
+    MolProbity values.
 
     Returns NaN when any input is not finite.
     """
@@ -825,10 +845,76 @@ def _molprobity_score(
 # ---------------------------------------------------------------------------
 
 
+def _removed_from_inside_chain(residues_before: list, residues_after: list) -> list:
+    """Residues removed from inside a chain: in ``residues_before``, not in ``residues_after``.
+
+    Both lists hold ``(chain ID, residue ID, insertion code, residue name)`` in file order. A
+    removed residue is inside its chain when a residue that was kept comes before it and
+    another after it, so that removing it leaves a hole; a residue removed at an end of the
+    chain (a cap, a terminal ion) leaves none.
+    """
+    kept = set(residues_after)
+    removed_inside = []
+    for chain_id in dict.fromkeys(residue[0] for residue in residues_before):
+        chain = [residue for residue in residues_before if residue[0] == chain_id]
+        kept_positions = [i for i, residue in enumerate(chain) if residue in kept]
+        if not kept_positions:
+            continue
+        first, last = kept_positions[0], kept_positions[-1]
+        removed_inside += [
+            residue for i, residue in enumerate(chain) if first < i < last and residue not in kept
+        ]
+    return removed_inside
+
+
+def _residue_keys(topology) -> list:
+    """``(chain ID, residue ID, insertion code, residue name)`` of each residue, in order."""
+    return [
+        (r.chain.id, str(r.id), str(r.insertionCode or "").strip(), r.name)
+        for r in topology.residues()
+    ]
+
+
+def _hole_reason(removed: list) -> str:
+    """The sentence that says which residues were removed from inside the chain."""
+    names = ", ".join(
+        f"{name} {(number + insertion_code).strip()}" for _, number, insertion_code, name in removed
+    )
+    noun = "residue" if len(removed) == 1 else "residues"
+    verb = "was" if len(removed) == 1 else "were"
+    return f"modified {noun} {names} {verb} removed, so the chain has a hole"
+
+
+def _failed_energy(text: str) -> dict:
+    """The energy term when it could not be computed: NaN values, ``error`` and ``reason``."""
+    return {
+        "energy_kJ_mol": np.nan,
+        "energy_per_residue_kJ_mol": np.nan,
+        "n_atoms_with_h": None,
+        "error": text,
+        "reason": text,
+    }
+
+
+def _energy_failure(model_results: list) -> Optional[str]:
+    """The sentence that names the models whose energy term failed, or None if none did."""
+    models_by_error: dict[str, list] = {}
+    for model in model_results:
+        error = model["energy"].get("error")
+        if error:
+            models_by_error.setdefault(error, []).append(str(model["model_index"]))
+    if not models_by_error:
+        return None
+    return "; ".join(
+        f"energy of {'model' if len(models) == 1 else 'models'} {', '.join(models)}: {error}"
+        for error, models in models_by_error.items()
+    )
+
+
 def _receptor_energy(
     chain_atoms,
     solvent_model: str = "obc2",
-    device: str = "cuda",
+    device: str = DEFAULT_DEVICE,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
     """Compute absolute AMBER ff14SB potential energy for a receptor chain.
@@ -837,23 +923,30 @@ def _receptor_energy(
     adds hydrogens, builds an AMBER ff14SB + implicit solvent system, and
     evaluates potential energy at the input geometry (no minimization).
 
+    Without PDBFixer the terminal oxygen of a chain is added here
+    (``core.system.add_terminal_oxygens``), and a chain that still lacks atoms gives NaN
+    with an ``error`` that says PDBFixer is needed (``pip install binding-metrics[structure]``).
+    With PDBFixer, a residue it removes from inside the chain (a modified residue it does
+    not replace, such as the IAM of 1XY4) would leave a hole whose two sides the force field
+    bonds by name, and the energy would be that of another molecule: the result is NaN, with
+    an ``error`` that names the residues. A residue removed at an end of the chain is not a
+    hole. Every failure returns NaN with ``error`` and ``reason``, the same sentence.
+
     Stochastic steps (PDBFixer's rebuild of missing atoms and the jitter of new
     hydrogens) are seeded with ``random_seed``, so the same input gives the same
     energy; ``None`` leaves them unseeded. With ``device="cuda"`` the final
     single-point evaluation uses mixed precision, which is not bit-reproducible.
     """
-    _nan = {
-        "energy_kJ_mol": np.nan,
-        "energy_per_residue_kJ_mol": np.nan,
-        "n_atoms_with_h": None,
-        "error": None,
-    }
-
     try:
         openmm, unit, ForceField, Modeller, PDBFile, Simulation = _import_openmm()
-        from binding_metrics.core.system import deterministic_hydrogen_placement
+        from binding_metrics.core._platform import usable_platform
+        from binding_metrics.core.system import (
+            add_terminal_oxygens,
+            create_system_respecting_chain_breaks,
+            deterministic_hydrogen_placement,
+        )
     except ImportError as e:
-        return {**_nan, "error": str(e)}
+        return _failed_energy(str(e))
 
     try:
         from pdbfixer import PDBFixer
@@ -863,9 +956,9 @@ def _receptor_energy(
         has_pdbfixer = False
 
     try:
-        _, _, pdb_io = _import_biotite()
+        _, _, pdb_io = import_biotite(_BIOTITE_PURPOSE)
     except ImportError as e:
-        return {**_nan, "error": str(e)}
+        return _failed_energy(str(e))
 
     tmp_path = None
     try:
@@ -891,34 +984,41 @@ def _receptor_energy(
                 fixer.findMissingResidues()
                 fixer.findNonstandardResidues()
                 fixer.replaceNonstandardResidues()
+                residues_before = _residue_keys(fixer.topology)
                 fixer.removeHeterogens(keepWater=False)
+                holes = _removed_from_inside_chain(residues_before, _residue_keys(fixer.topology))
+                if holes:
+                    return _failed_energy(_hole_reason(holes))
                 fixer.findMissingAtoms()
                 fixer.addMissingAtoms(seed=random_seed)
-                # Same call as PDBFixer.addMissingHydrogens(7.4), with the platform pinned.
+                # Same call as PDBFixer.addMissingHydrogens(DEFAULT_PH), with the platform pinned.
                 mod = Modeller(fixer.topology, fixer.positions)
-                mod.addHydrogens(pH=7.4, platform=placement_platform)
+                mod.addHydrogens(pH=DEFAULT_PH, platform=placement_platform)
             else:
+                # Complete the chain as far as Modeller needs (the terminal oxygen) and add the
+                # same hydrogens as the PDBFixer branch, so the energy does not depend on whether
+                # PDBFixer is installed.
                 pdb = PDBFile(str(tmp_path))
-                ff_tmp = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
-                mod = Modeller(pdb.topology, pdb.positions)
-                mod.addHydrogens(ff_tmp, pH=7.4, platform=placement_platform)
+                mod = Modeller(*add_terminal_oxygens(pdb.topology, pdb.positions))
+                mod.addHydrogens(pH=DEFAULT_PH, platform=placement_platform)
         topology, positions = mod.topology, mod.positions
 
         ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml", gb_file)
-        system = ff.createSystem(
+        # A gap in the chain (an unresolved loop) is left unbonded: bonded by name, its two
+        # ends sit far from the bond length and add thousands of kJ/mol of stretch energy.
+        system, topology = create_system_respecting_chain_breaks(
+            ff,
             topology,
+            positions,
             nonbondedMethod=openmm.app.NoCutoff,
             constraints=openmm.app.HBonds,
         )
 
         platform = openmm.Platform.getPlatformByName("CPU")
         props = {}
-        if device == "cuda":
-            try:
-                platform = openmm.Platform.getPlatformByName("CUDA")
-                props = {"CudaPrecision": "mixed"}
-            except openmm.OpenMMException:
-                pass  # no CUDA platform registered: evaluate on the CPU platform
+        if device == "cuda" and usable_platform("CUDA"):
+            platform = openmm.Platform.getPlatformByName("CUDA")
+            props = {"CudaPrecision": "mixed"}
 
         integrator = openmm.VerletIntegrator(0.001 * unit.picoseconds)
         sim = Simulation(topology, system, integrator, platform, props)
@@ -927,7 +1027,7 @@ def _receptor_energy(
         energy = state.getPotentialEnergy().value_in_unit(unit.kilojoules_per_mole)
 
         if not np.isfinite(energy):
-            return {**_nan, "error": "non-finite energy (likely severe clashes)"}
+            return _failed_energy("non-finite energy (likely severe clashes)")
 
         n_res = topology.getNumResidues()
         return {
@@ -941,7 +1041,13 @@ def _receptor_energy(
         # Broad on purpose: PDBFixer, OpenMM and the force field raise many exception
         # types on unusual input, so a failure is recorded in ``error`` instead of
         # aborting the other terms.
-        return {**_nan, "error": f"{type(e).__name__}: {e}"}
+        error = f"{type(e).__name__}: {e}"
+        if not has_pdbfixer and isinstance(e, ValueError):
+            error += (
+                " PDBFixer rebuilds the missing atoms of a chain and is not installed "
+                "(pip install binding-metrics[structure])."
+            )
+        return _failed_energy(error)
 
     finally:
         if tmp_path is not None:
@@ -964,7 +1070,7 @@ def _score_model(
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
 ) -> dict:
     """Compute all quality metrics for one model."""
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
 
     aa_mask = struc.filter_amino_acids(atoms)
     rec_mask = aa_mask & (atoms.chain_id == receptor_chain)
@@ -981,16 +1087,11 @@ def _score_model(
             "cbeta": {},
             "backbone_geometry": {},
             "b_factors": {"available": False},
-            "energy": {
-                "energy_kJ_mol": np.nan,
-                "energy_per_residue_kJ_mol": np.nan,
-                "n_atoms_with_h": None,
-                "error": "no receptor atoms found",
-            },
+            "energy": _failed_energy("no receptor atoms found"),
             "molprobity_score": np.nan,
         }
 
-    n_res = len(set(zip(rec_atoms.chain_id, rec_atoms.res_id)))
+    n_res = len(set(zip(rec_atoms.chain_id, rec_atoms.res_id, rec_atoms.ins_code)))
     elements = np.array([str(a.element).strip().upper() for a in rec_atoms])
     n_heavy = int(np.sum(~np.isin(elements, ["H", "D", ""])))
 
@@ -1046,7 +1147,7 @@ def compute_receptor_quality(
     receptor_chain: Optional[str] = None,
     clash_cutoff: float = 0.4,
     solvent_model: str = "obc2",
-    device: str = "cuda",
+    device: str = DEFAULT_DEVICE,
     *,
     exclude_bonded: bool = True,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
@@ -1068,13 +1169,11 @@ def compute_receptor_quality(
         exclude_bonded: Leave covalently linked atom pairs (disulfides, cyclic
             closures, lactams, staples, peptide bonds across numbering gaps) and
             N/O hydrogen-bond pairs out of the clash count (default True). False
-            restores the earlier count, which scored them as clashes.
+            counts them as clashes.
         random_seed: Seed for the stochastic steps of the energy term
             (hydrogen placement and PDBFixer's rebuild of missing atoms).
             Defaults to the package-wide ``DEFAULT_RANDOM_SEED`` so repeated
-            calls agree; ``None`` gives fresh randomness. The energy is a single
-            point at the input geometry, so it is the term most exposed to the
-            hydrogen jitter.
+            calls agree; ``None`` gives fresh randomness.
         target_chain: Alias of ``receptor_chain``; different IDs in both raise
             ``ValueError``.
 
@@ -1093,13 +1192,21 @@ def compute_receptor_quality(
             backbone_geometry: bad/total bonds+angles and %
             b_factors: mean/max/min/std, n_high_b_residues (>60 Å²)
             energy: energy_kJ_mol, energy_per_residue_kJ_mol, n_atoms_with_h,
-                error (None on success, else "ExceptionType: message")
+                error (None on success, else "ExceptionType: message"); on failure the
+                values are NaN and ``reason`` repeats ``error``; when residues were removed
+                from inside the chain, ``error`` names them
             molprobity_score (float): composite score (lower = better); NaN when
                 the clashscore, Ramachandran or rotamer term is undefined
                 (for example a chain without any χ1 residue)
 
             Every term dict above carries a ``reason`` string only when its
             value could not be computed; the value then keeps its NaN sentinel.
+
+        error_message (str): present only when the energy term failed, naming the
+            models ("energy of model 1: ..."). It is the shape of a metric that failed
+            in part, so ``score_pose_set`` marks the pose ``partial`` and keeps the other
+            terms in its aggregates. The block has no top-level ``reason``, which would
+            exclude all of them.
 
         Aggregate summary (mean over models):
             summary (dict) — all scalar metrics averaged; best_model_index
@@ -1142,12 +1249,16 @@ def compute_receptor_quality(
         for idx, atoms in enumerate(all_models)
     ]
 
-    return {
+    result = {
         "receptor_chain": str(receptor_chain),
         "n_models": len(model_results),
         "models": model_results,
         "summary": _aggregate_summary(model_results),
     }
+    energy_failure = _energy_failure(model_results)
+    if energy_failure:
+        result["error_message"] = energy_failure
+    return result
 
 
 def _aggregate_summary(model_results: list) -> dict:
@@ -1211,37 +1322,29 @@ def _model_to_csv_row(filename: str, receptor_chain: str, m: dict) -> dict:
         "model_index": m.get("model_index"),
         "n_residues": m.get("n_residues"),
         "n_heavy_atoms": m.get("n_heavy_atoms"),
-        # Ramachandran
         "rama_favoured_pct": r.get("favoured_pct"),
         "rama_allowed_pct": r.get("allowed_pct"),
         "rama_outlier_pct": r.get("outlier_pct"),
         "rama_outlier_count": r.get("outlier_count"),
         "rama_favoured_count": r.get("favoured_count"),
         "rama_n_evaluated": r.get("n_evaluated"),
-        # Clashscore
         "clashscore": c.get("clashscore"),
         "n_clashes": c.get("n_clashes"),
-        # Rotamers
         "rotamer_outlier_count": ro.get("outlier_count"),
         "rotamer_outlier_pct": ro.get("outlier_pct"),
         "rotamer_n_evaluated": ro.get("n_evaluated"),
-        # Cβ deviations
         "cbeta_dev_count": cb.get("cb_deviation_count"),
         "cbeta_n_evaluated": cb.get("cb_n_evaluated"),
         "cbeta_dev_pct": cb.get("cb_deviation_pct"),
-        # Backbone geometry
         "bad_bonds": bg.get("bad_bonds"),
         "total_bonds": bg.get("total_bonds"),
         "bad_bonds_pct": bg.get("bad_bonds_pct"),
         "bad_angles": bg.get("bad_angles"),
         "total_angles": bg.get("total_angles"),
         "bad_angles_pct": bg.get("bad_angles_pct"),
-        # MolProbity
         "molprobity_score": m.get("molprobity_score"),
-        # Energy
         "energy_kJ_mol": e.get("energy_kJ_mol"),
         "energy_per_residue_kJ_mol": e.get("energy_per_residue_kJ_mol"),
-        # B-factors
         "b_factor_mean": b.get("mean_b_factor"),
         "b_factor_max": b.get("max_b_factor"),
         "b_factor_std": b.get("std_b_factor"),
@@ -1296,7 +1399,7 @@ def main():
         "--clash-cutoff", type=float, default=0.4, help="VDW overlap threshold in Å (default 0.4)"
     )
     parser.add_argument("--solvent-model", choices=["obc2", "gbn2"], default="obc2")
-    parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
+    parser.add_argument("--device", choices=["cuda", "cpu"], default=DEFAULT_DEVICE)
     parser.add_argument(
         "--output",
         "-o",
@@ -1304,8 +1407,10 @@ def main():
         default=None,
         help="Write results to file. Extension determines format: .csv or .json",
     )
+    from binding_metrics._jsonutil import add_nonfinite_arg, strict_json_text
     from binding_metrics.cli import add_log_file_arg, add_random_seed_arg
 
+    add_nonfinite_arg(parser)
     add_random_seed_arg(parser, "hydrogen placement and atom rebuilding in the energy term")
     add_log_file_arg(parser)
     args = parser.parse_args()
@@ -1415,8 +1520,14 @@ def main():
             if suffix == ".csv":
                 _write_csv(result, args.output)
             else:
+                text = None
+                if args.nonfinite == "null":
+                    text = strict_json_text(result, indent=2, default=_json_default)
                 with open(args.output, "w", encoding="utf-8") as f:
-                    json.dump(result, f, indent=2, default=_json_default)
+                    if text is None:
+                        json.dump(result, f, indent=2, default=_json_default)
+                    else:
+                        f.write(text)
             print(f"\n  Results written to: {args.output}")
 
 

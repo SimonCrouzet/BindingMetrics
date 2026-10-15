@@ -11,12 +11,6 @@ EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example_linear_p53_1
 class TestReceptorDrift:
     """Tests for compute_receptor_drift."""
 
-    def test_import_function(self):
-        """Should be able to import compute_receptor_drift."""
-        from binding_metrics.metrics.rmsd import compute_receptor_drift
-
-        assert callable(compute_receptor_drift)
-
     def test_requires_mdtraj(self):
         """Should raise ImportError if mdtraj is not installed."""
         from binding_metrics.metrics import rmsd

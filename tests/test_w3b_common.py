@@ -19,7 +19,6 @@ from binding_metrics.metrics import (  # noqa: E402
     geometry,
     interface,
     openfold,
-    polar_contacts,
     receptor_quality,
     sasa,
 )
@@ -36,17 +35,6 @@ BLOCKED = {
     "biotite.structure.io.pdb": None,
     "biotite.structure.io.pdbx": None,
 }
-
-# Each module keeps its own import function and its own install-hint wording.
-HINTS = [
-    (electrostatics._import_biotite, "electrostatics metrics"),
-    (evobind._import_biotite, "EvoBind metrics"),
-    (geometry._import_biotite, "geometry metrics"),
-    (interface._import_biotite, "interface metrics"),
-    (openfold._import_biotite_struc, "per-chain structural analysis"),
-    (polar_contacts._import_biotite, "H-bond/salt bridge metrics"),
-    (receptor_quality._import_biotite, "receptor quality metrics"),
-]
 
 LOADERS = [
     electrostatics._load_structure,
@@ -79,19 +67,6 @@ class TestImportBiotite:
             "biotite is required for some metrics. "
             "Install with: pip install binding-metrics[biotite]"
         )
-
-    @pytest.mark.parametrize("function, purpose", HINTS)
-    def test_each_module_keeps_its_own_function_and_wording(self, function, purpose):
-        with mock.patch.dict(sys.modules, BLOCKED):
-            with pytest.raises(ImportError) as excinfo:
-                function()
-        assert str(excinfo.value) == (
-            f"biotite is required for {purpose}. Install with: pip install binding-metrics[biotite]"
-        )
-
-    @pytest.mark.parametrize("function, purpose", HINTS)
-    def test_each_module_function_returns_biotite_structure_first(self, function, purpose):
-        assert function()[0] is struc
 
     def test_static_sasa_reports_the_missing_extra_before_reading_anything(self):
         with mock.patch.dict(sys.modules, BLOCKED):

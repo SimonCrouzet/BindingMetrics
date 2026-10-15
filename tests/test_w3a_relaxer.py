@@ -9,6 +9,7 @@ from binding_metrics.cli.run import _collect_failures, run_pipeline
 from binding_metrics.protocols import relaxation
 from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationResult
 from binding_metrics.protocols.relaxer import Relaxer
+from tests.test_l9_registry_contract import buried_area_by_biotite
 
 EXAMPLE_1YCR = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
 
@@ -92,8 +93,10 @@ class TestInjectedRelaxer:
     def test_downstream_metrics_read_the_relaxed_structure(self, tmp_path):
         relaxer = RecordingRelaxer()
         results = self._run(tmp_path, relaxer, metrics=frozenset({"interface"}))
-        # MDM2 (A) and the p53 peptide (B) bury about 1500 A^2 at their interface.
-        assert 800.0 < results["interface"]["delta_sasa"] < 3000.0
+        # the stub relaxer returns the input: the area is that of MDM2 (A) and the peptide (B)
+        assert results["interface"]["delta_sasa"] == pytest.approx(
+            buried_area_by_biotite(EXAMPLE_1YCR, "A", "B"), rel=1e-4
+        )
 
     def test_a_failed_relaxation_is_reported_and_the_pipeline_continues(self, tmp_path):
         results = self._run(

@@ -164,8 +164,8 @@ def add_openfold_no_msa_server_arg(parser) -> None:
     """Add ``--openfold-no-msa-server`` to an argparse parser or group.
 
     The OpenFold3 step uses the ColabFold MSA server unless this is given. Without it OpenFold3
-    has no computed MSA (a dummy MSA that holds only the query sequence is written for each chain,
-    as OpenFold3's input reference suggests). The template is kept either way with the default
+    has no computed MSA: a dummy MSA that holds only the query sequence is written for each chain
+    (as OpenFold3's input reference suggests). The template is kept either way with the default
     ``--openfold-templates structure``; with ``alignment`` only the run without the server keeps
     it, because the server replaces the template alignments that the toolkit writes (issue #68).
     """
@@ -175,14 +175,10 @@ def add_openfold_no_msa_server_arg(parser) -> None:
         help=(
             "Do not use the ColabFold MSA server for OpenFold3: it then runs with a dummy MSA "
             "that holds only the query sequence of each chain (OpenFold3's input reference "
-            "suggests this for MSA-free runs), which lowers accuracy for a natural receptor. "
+            "suggests this for MSA-free runs). "
             "With --openfold-templates alignment the template alignments written by the toolkit "
             "are no longer replaced by the server (issue #68); the default, structure, keeps the "
-            "template with the server on too. One complex (1YCR, OpenFold3 0.5.0, one seed), "
-            "binder C-alpha RMSD against the crystal pose: 1.57 A with the server and the "
-            "template as a structure (the default), 1.62 A with the server and the template as "
-            "an alignment (the server replaces it: no template), 21.6 A with no MSA and no "
-            "template, 1.12 A with a working template and no MSA."
+            "template with the server on too."
         ),
     )
 
@@ -190,8 +186,8 @@ def add_openfold_no_msa_server_arg(parser) -> None:
 def openfold_msa_server_kwargs(use_msa_server: bool) -> dict:
     """The keyword argument for an OpenFold3 run function, only when the server is off.
 
-    The default (server on) is left out so that a function that predates the option, or a test
-    double that replaces it, is called exactly as before.
+    The default (server on) is left out, so a run function that lacks the keyword, or a test
+    double, is called unchanged.
     """
     return {} if use_msa_server else {"use_msa_server": False}
 
@@ -209,9 +205,9 @@ def add_openfold_templates_arg(parser) -> None:
     How the template of each chain reaches OpenFold3 in ``score`` and ``refold`` mode. The
     default, ``structure``, gives the template CIF itself (OpenFold3's CIF Direct Template Mode,
     OpenFold3 0.4.2 or later), which the ColabFold MSA server does not overwrite. ``alignment``
-    writes an A3M self-alignment per chain, the way earlier versions did it; the server
-    overwrites it, so with the server on (also the default) the run has no template. The setting
-    is OpenFold3's: there is no ``--prediction-templates``.
+    writes an A3M self-alignment per chain; the server overwrites it, so with the server on (also
+    the default) the run has no template. The setting is OpenFold3's: there is no
+    ``--prediction-templates``.
     """
     parser.add_argument(
         "--openfold-templates",
@@ -247,8 +243,8 @@ def check_openfold_templates(value) -> str:
 def openfold_template_kwargs(value) -> dict:
     """The keyword argument for an OpenFold3 run function, only when it is not the default.
 
-    The default is left out so that a function that predates the option, or a test double that
-    replaces it, is called exactly as before.
+    The default is left out, so a run function that lacks the keyword, or a test double, is
+    called unchanged.
     """
     resolved = check_openfold_templates(value)
     return {} if resolved == DEFAULT_OPENFOLD_TEMPLATES else {"template_mode": resolved}
@@ -278,11 +274,8 @@ def add_openfold_cyclic_arg(parser) -> None:
             "the chain: it does not enforce the closure bond, documents the flag only in an "
             "example query, and has published no accuracy benchmark for cyclic peptides. It "
             "builds the wrap from the token count of the chain and gives every atom of a "
-            "modified residue its own token: for 1CWA (D-amino acid, N-methylated residues; one "
-            "complex, three seeds) the flag lowered ipTM from 0.91-0.92 to 0.78-0.81 and raised "
-            "the binder C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A, so auto leaves such a binder "
-            "linear (on forces the flag); for SFTI-1 (standard residues; one seed) the flag "
-            "closed the ring (C-N 7.40 A without it, 1.38 A with it). Disulfide, lactam and "
+            "modified residue its own token, so auto leaves a binder with modified residues "
+            "linear (on forces the flag). Disulfide, lactam and "
             "staple closures cannot be given to OpenFold3 and are not written."
         ),
     )
@@ -311,8 +304,8 @@ def check_openfold_cyclic(value) -> bool | str:
 def openfold_cyclic_kwargs(value) -> dict:
     """The keyword argument for an OpenFold3 run function, only when it is not ``"auto"``.
 
-    The default is left out so that a function that predates the option, or a test double
-    that replaces it, is called exactly as before.
+    The default is left out, so a run function that lacks the keyword, or a test double, is
+    called unchanged.
     """
     resolved = check_openfold_cyclic(value)
     return {} if resolved == "auto" else {"binder_cyclic": resolved}
@@ -356,8 +349,8 @@ def add_on_unmappable_residue_arg(parser) -> None:
 def on_unmappable_residue_kwargs(value: str) -> dict:
     """The keyword argument for an OpenFold3 run function, only when it is not the default.
 
-    The default is left out so that a function that predates the option, or a test double
-    that replaces it, is called exactly as before.
+    The default is left out, so a run function that lacks the keyword, or a test double, is
+    called unchanged.
     """
     return {} if value == "error" else {"on_unmappable_residue": value}
 
@@ -381,15 +374,14 @@ _SMALL_MOLECULES_CHOICES = ("auto", "none")
 def small_molecules_arg(value: str):
     """Parse ``--small-molecules``: ``"auto"``, or ``"none"`` (returned as ``None``).
 
-    Any other string is rejected. ``RelaxationConfig.small_molecules`` iterates
-    a string it does not recognise character by character and treats each
-    character as a SMILES, so a typo such as ``aut`` would register methane
-    and other fragments as "small molecules" instead of failing. Explicit
-    SMILES lists are a Python-API feature (``RelaxationConfig(small_molecules=[...])``)
-    and are not accepted on the command line.
+    Any other string is rejected: ``RelaxationConfig.small_molecules`` iterates a string it does
+    not recognise character by character and treats each character as a SMILES, so a typo such
+    as ``aut`` would register methane and other fragments as "small molecules" instead of
+    failing. Explicit SMILES lists are a Python-API feature
+    (``RelaxationConfig(small_molecules=[...])``) and are not accepted on the command line.
 
-    Use as ``type=small_molecules_arg`` in an argparse argument; the value is
-    matched case-insensitively.
+    Use as ``type=small_molecules_arg`` in an argparse argument; the value is matched
+    case-insensitively.
 
     Raises:
         argparse.ArgumentTypeError: for anything but ``auto`` / ``none``.

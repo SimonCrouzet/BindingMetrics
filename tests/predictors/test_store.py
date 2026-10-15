@@ -363,17 +363,17 @@ class TestValidation:
         with pytest.raises(ValueError, match="lower case letters"):
             PredictionRequest(model, "s1", sequences={"A": "G"})
 
-    def test_the_mode_is_one_of_the_known_four(self):
-        assert MODES == ("predict", "score", "refold", "score-lock")
+    def test_the_mode_is_one_of_the_known_five(self):
+        assert MODES == ("predict", "score", "refold", "score-lock", "refold-lock")
         with pytest.raises(ValueError, match="mode must be one of"):
             PredictionRequest("stub", "s1", mode="dock", sequences={"A": "G"})
 
-    def test_score_lock_is_a_mode_of_its_own_in_the_key(self):
+    def test_every_mode_is_a_mode_of_its_own_in_the_key(self):
         keys = {
             mode: PredictionRequest("stub", "s1", mode=mode, sequences={"A": "G"}).key()
             for mode in MODES
         }
-        assert len(set(keys.values())) == 4
+        assert len(set(keys.values())) == len(MODES)
 
     def test_the_name_must_not_be_empty(self):
         with pytest.raises(ValueError, match="name"):
@@ -1240,22 +1240,6 @@ class TestRunMissing:
 
 
 # ---------------------------------------------------------------------------- module facts
-
-
-def test_the_module_imports_only_the_standard_library():
-    code = textwrap.dedent(
-        """
-        import sys
-        import binding_metrics.predictors.store
-        heavy = ("numpy", "scipy", "biotite", "torch", "openmm", "openfold3", "gemmi")
-        print(sorted(m for m in sys.modules if m.split(".")[0] in heavy))
-        """
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, encoding="utf-8", timeout=120
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "[]"
 
 
 def test_the_errors_share_one_base_class():

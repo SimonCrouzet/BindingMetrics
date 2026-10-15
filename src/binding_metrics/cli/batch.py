@@ -1,9 +1,14 @@
 """Run the binding-metrics pipeline on all structures in a directory.
 
-Scans --input-dir for .cif / .pdb / .mmcif files, runs the full pipeline on
-each one (optionally in parallel), and aggregates all results into a single CSV.
-Per-sample JSON reports and intermediate files are written to sub-directories
-inside --output-dir.
+Scans --input-dir for .cif / .pdb / .mmcif files, runs the full pipeline on each one
+(optionally in parallel), and aggregates all results into a single CSV. Per-sample JSON reports
+and intermediate files are written to sub-directories inside --output-dir.
+
+The file stem is the sample ID: it names the sample's directory, report and log. Two inputs with
+the same stem, case ignored (``a/sample.pdb`` and ``b/sample.pdb`` found by ``--glob``,
+``sample.pdb`` and ``sample.cif``, or ``Sample.pdb`` and ``sample.pdb``), end the run with a usage
+error (exit code 2) that lists every shared ID with its paths, before any directory is created or
+any sample runs.
 
 Usage:
     binding-metrics-batch \\
@@ -12,8 +17,7 @@ Usage:
         --workers 4 \\
         [all the same options as binding-metrics-run]
 
-Every CSV row ends with ``provenance_*`` columns (package version, git sha,
-seed, platform) that tie the row to the code and settings that produced it.
+Every CSV row ends with ``provenance_*`` columns (package version, git sha, seed, platform).
 
 Configuration file:
     --config batch.toml supplies option defaults; flags on the command line
@@ -34,7 +38,8 @@ Configuration file:
 Sample status (CSV column ``batch_status``)
 -------------------------------------------
 ``ok`` (all steps completed), ``partial`` (the pipeline finished but a step
-failed; see ``batch_failed_steps`` and ``batch_failed_reasons``) or ``error``
+failed, or failed in part: an energy mode that failed beside one that succeeded keeps the
+values of the others; see ``batch_failed_steps`` and ``batch_failed_reasons``) or ``error``
 (the worker raised; see ``batch_error``). The exit code is non-zero only when
 no sample has status ``ok``.
 
@@ -43,37 +48,35 @@ Structure prediction (--predictor MODEL)
 Like the batched OpenFold3 call, the prediction step runs once for all samples after the
 workers, in the main process. The samples share one prediction store (``--prediction-cache``,
 default ``<output-dir>/_predictions``): the model starts once for the predictions the store
-lacks, each sample then reads its prediction from the store, and a second run over the same
-samples starts no model. ``--prediction-dir ROOT`` reads existing outputs instead, one per
-sample ID, and never runs the model. The columns are ``prediction_*`` (the only ``openfold_*``
-column is ``openfold_skipped``). A sample whose prediction failed is ``partial`` with
-``prediction`` in ``batch_failed_steps``; the others are not affected.
+lacks, each sample reads its prediction from the store, and a second run over the same samples
+starts no model. ``--prediction-dir ROOT`` reads existing outputs instead, one per sample ID, and
+never runs the model. The columns are ``prediction_*`` (the only ``openfold_*`` column is
+``openfold_skipped``). A sample whose prediction failed, or whose EvoBind score or adversarial
+check could not be computed (``evobind_error``, ``adversarial_error`` in the block), is
+``partial`` with ``prediction`` in ``batch_failed_steps``; the others are not affected. A check
+left out by ``--designed-with`` is not a failure.
 
 The legacy batched OpenFold3 call (``--openfold-*`` without ``--predictor``) marks a sample it
-failed for ``partial`` with ``openfold`` in ``batch_failed_steps`` and the reason in
-``batch_failed_reasons``; a failure of the whole call marks every sample it covered.
+failed, or whose EvoBind sub-step failed, for ``partial`` with ``openfold`` in
+``batch_failed_steps`` and the reason in ``batch_failed_reasons``; a failure of the whole call
+marks every sample it covered.
 
 Concurrency model (--workers > 1)
 ----------------------------------
-Workers are OS processes (ProcessPoolExecutor), not threads. This means:
+Workers are OS processes (ProcessPoolExecutor), not threads:
 
-  * No shared memory — each worker has its own address space. There are no
-    shared variables and no risk of race conditions between workers.
+  * Each worker has its own address space; nothing is shared.
 
-  * No concurrent file writes — each worker is given a unique output directory
-    ({output-dir}/{sample_id}/). Workers never write to the same path.
+  * Each worker writes to its own output directory ({output-dir}/{sample_id}/) and logs to
+    {output-dir}/{sample_id}/{sample_id}.log. Workers never write to the same path.
 
-  * The aggregated CSV is written by the main process only after all workers
-    have finished, so it is always written by a single writer.
-
-  * Per-sample logs are written inside each sample's own output directory
-    ({output-dir}/{sample_id}/{sample_id}.log), again unique per worker.
+  * The main process writes the aggregated CSV once, after all workers have finished.
 
 Note on GPU parallelism:
-    Each worker process initialises its own CUDA context. Running N workers
-    on a single GPU will divide VRAM by N and is likely to cause
-    out-of-memory errors. Use --device cpu when --workers > 1 unless you
-    have dedicated GPUs (one per worker).
+    CUDA is the default device. Each worker process initialises its own CUDA
+    context, so N workers on a single GPU divide its VRAM by N and can run out
+    of memory. Use one worker per GPU, or --device cpu when several workers
+    must share one GPU.
 """
 
 import argparse
@@ -91,7 +94,15 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
-from binding_metrics.capabilities import POLICIES, IncompatibleInputError
+from binding_metrics._jsonutil import add_nonfinite_arg, check_nonfinite
+from binding_metrics.capabilities import (
+    DEFAULT_DESIGN_POLICY,
+    DEFAULT_MSA_POLICY,
+    POLICIES,
+    IncompatibleInputError,
+    check_design_origin,
+    design_origin,
+)
 from binding_metrics.cli import (
     DEFAULT_OPENFOLD_TEMPLATES,
     OPENFOLD_MODE_HELP,
@@ -139,13 +150,21 @@ from binding_metrics.cli.run import (
     ALL_METRICS,
     KNOWN_METRICS,
     _collect_failures,
+    _label_independence,
     _merge_reason,
     _parse_metrics,
+    _step_failure,
     run_pipeline,
 )
-from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
+from binding_metrics.metrics._common import (
+    ChainAliasAction,
+    require_distinct_chains,
+    resolve_chain_role,
+)
 from binding_metrics.preflight_cli import (
+    ADVERSARIAL_CHECK,
     BINDER_TYPE_CHOICES,
+    NO_DESIGN_SOURCE_MESSAGE,
     add_preflight_args,
     check_input,
     model_step_of,
@@ -165,11 +184,10 @@ _STRUCTURE_SUFFIXES = {".cif", ".pdb", ".mmcif"}
 def _build_reference_map(reference_dir: Path) -> dict[str, Path]:
     """Map native structures in *reference_dir* by filename stem, for DockQ.
 
-    Each sample input is later matched to its reference by stem (e.g. an input
-    ``target1.cif`` pairs with a reference ``target1.pdb``). Only files with a
-    recognised structure suffix are included. If two references share a stem
-    (e.g. ``target1.pdb`` and ``target1.cif``), the first in sorted order wins,
-    so the mapping is deterministic.
+    A sample input matches its reference by stem (an input ``target1.cif`` pairs with a
+    reference ``target1.pdb``). Only files with a recognised structure suffix are included. Of
+    two references with the same stem (``target1.pdb`` and ``target1.cif``) the first in sorted
+    order wins, so the mapping is deterministic.
 
     Args:
         reference_dir: Directory containing native/reference structures.
@@ -184,11 +202,38 @@ def _build_reference_map(reference_dir: Path) -> dict[str, Path]:
     return refs
 
 
-def _provenance_columns(provenance: dict) -> dict:
-    """Flatten a provenance block into ``provenance_<key>`` CSV columns.
+def _check_unique_sample_ids(input_paths: Sequence[Path]) -> None:
+    """Raise ``ValueError`` when two inputs have the same sample ID, the file stem, up to case.
 
-    ``report._flatten`` only knows the metric sections, so the block is
-    flattened here. The columns come after every existing one.
+    The ID names the output directory, the report, the log and the key of the prediction
+    store and of the prediction directory, so a shared stem (``a/sample.pdb`` and
+    ``b/sample.pdb``, or ``sample.pdb`` and ``sample.cif``) makes two samples write the same
+    files. The stems are compared case-folded (``str.casefold``) on every file system: a
+    case-insensitive one (the default of Windows and macOS) gives ``Sample`` and ``sample`` one
+    output directory, and the IDs of a batch should name the same outputs wherever it runs. The
+    message lists every shared ID with all the paths that carry it.
+    """
+    paths_by_id: dict[str, list[Path]] = {}
+    for path in input_paths:
+        paths_by_id.setdefault(path.stem.casefold(), []).append(path)
+    shared = [paths for paths in paths_by_id.values() if len(paths) > 1]
+    if not shared:
+        return
+    lines = [
+        "Sample IDs (the file stems) must be unique, whatever their case; "
+        "these belong to several inputs:"
+    ]
+    for paths in shared:
+        lines.append("  " + ", ".join(dict.fromkeys(path.stem for path in paths)))
+        lines.extend(f"    {path}" for path in paths)
+    lines.append("Rename the files that share a stem or run them as separate batches.")
+    raise ValueError("\n".join(lines))
+
+
+def _provenance_columns(provenance: dict) -> dict:
+    """Flatten a provenance block into ``provenance_<key>`` CSV columns, after every existing one.
+
+    ``report._flatten`` only knows the metric sections.
     """
     return {f"provenance_{key}": value for key, value in provenance.items()}
 
@@ -196,9 +241,8 @@ def _provenance_columns(provenance: dict) -> dict:
 def _resolve_log_path(sample_output_dir: Path, sid: str, log_file: Optional[Path]) -> Path:
     """Return the file a worker logs to.
 
-    Without ``--log-file`` every sample gets ``{sample_dir}/{sid}.log``; this is
-    what ``--per-sample-log`` asks for, so the flag needs no separate branch.
-    An explicit ``--log-file`` wins and all samples share it.
+    ``{sample_dir}/{sid}.log`` without ``--log-file`` (what ``--per-sample-log`` asks for); an
+    explicit ``--log-file`` wins and all samples share it.
     """
     return Path(log_file) if log_file else sample_output_dir / f"{sid}.log"
 
@@ -237,25 +281,30 @@ def _run_one(
     preflight_model: Optional[tuple] = None,
     on_unmappable_residue: str = "error",
     prediction_weights: Optional[Path] = None,
+    designed_with=None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
+    preflight_msa: Optional[tuple] = None,
+    nonfinite: str = "keep",
 ) -> dict:
     """Run the pipeline for a single structure and return a flat results dict.
 
-    ``binder_chain`` and ``target_chain`` are keyword-only aliases of
-    ``peptide_chain`` and ``receptor_chain``; both spellings with different IDs
-    make the sample an ``"error"`` row, like any other pipeline failure. With
-    ``raise_errors`` an exception from the pipeline is re-raised instead of
-    becoming an ``"error"`` row. An input that the pre-flight check refuses
-    (``on_incompatible="error"``) is such an error row: ``batch_error`` and
-    ``preflight_reason`` carry the reason and nothing was prepared or run.
-    ``preflight_model`` is the whole-batch model step of this sample, as ``(model, metric,
-    adopted)``, so that its limits are checked here, before this worker does anything.
+    ``binder_chain`` and ``target_chain`` are keyword-only aliases of ``peptide_chain`` and
+    ``receptor_chain``; both spellings with different IDs give an ``"error"`` row. With
+    ``raise_errors`` an exception from the pipeline is re-raised instead of becoming an
+    ``"error"`` row. An input that the pre-flight check refuses (``on_incompatible="error"``)
+    is an error row: ``batch_error`` and ``preflight_reason`` carry the reason and nothing was
+    prepared or run. ``preflight_model`` is the whole-batch model step of this sample, as
+    ``(model, metric, adopted)``, checked here before the worker does anything;
+    ``preflight_msa`` is ``(msa_policy, uses_msa_server, receptor_msa)`` of that step.
+    ``nonfinite`` is the mode of the report of the sample (``write_report``): ``"keep"`` or
+    ``"null"``.
 
     The row carries ``batch_status``:
 
     * ``"ok"``: every requested step completed.
     * ``"partial"``: the pipeline finished but at least one step reported an
-      error or ``success=False`` (same rule as ``binding-metrics-run``). The
-      step names go to ``batch_failed_steps`` (``;``-joined) and
+      error, ``success=False`` or a non-empty ``error_message`` (same rule as
+      ``binding-metrics-run``). The step names go to ``batch_failed_steps`` (``;``-joined) and
       ``step: reason`` pairs to ``batch_failed_reasons`` (``|``-joined).
     * ``"error"``: the worker itself raised; the cause is in ``batch_error``.
     """
@@ -309,10 +358,13 @@ def _run_one(
                 preflight_model=preflight_model,
                 on_unmappable_residue=on_unmappable_residue,
                 prediction_weights=prediction_weights,
+                designed_with=designed_with,
+                design_policy=design_policy,
+                preflight_msa=preflight_msa,
             )
             results["total_elapsed_s"] = round(time.time() - t0, 1)
 
-            write_report(results, sample_output_dir, sid, fmt="json")
+            write_report(results, sample_output_dir, sid, fmt="json", nonfinite=nonfinite)
 
     except Exception as e:
         if raise_errors:
@@ -377,7 +429,6 @@ def _detect_sample_chains(
         if input_path is None:
             continue
 
-        # Detect chains from the input file (same logic as run_pipeline)
         try:
             chain_info = detect_chains_from_file(
                 input_path,
@@ -406,17 +457,20 @@ def _model_step_allowed(
     on_incompatible: str,
     on_unmappable_residue: str = "error",
     prediction_weights: Optional[Path] = None,
+    msa_policy: str = DEFAULT_MSA_POLICY,
+    msa_server: Optional[bool] = None,
 ) -> tuple[bool, str]:
     """Whether the whole-batch model step may run for one sample, and why not.
 
     The worker of the sample has already checked the model (``preflight_model``): under ``error``
-    it refused the sample, so it is not here, and under ``warn`` it logged the problems. What
-    is left is ``skip``, where the sample's model step is dropped and the reason recorded. The
-    check runs again here, before any request is built or the store touched, so that the
-    whole-batch step never depends on what the worker did.
+    it refused the sample, so it is not here, and under ``warn`` it logged the problems. What is
+    left is ``skip``: the sample's model step is dropped and the reason recorded. The check runs
+    again here, before any request is built or the store touched, so the whole-batch step does
+    not depend on the worker. A forbidden MSA server (``msa_policy`` ``forbid-server`` with
+    ``msa_server`` True) is refused under ``warn`` too.
     """
-    if on_incompatible == "warn":
-        return True, ""
+    if on_incompatible == "warn" and msa_policy == DEFAULT_MSA_POLICY:
+        return True, ""  # a forbidden MSA server is refused under warn as well
     outcome = check_input(
         input_path,
         pchain,
@@ -427,12 +481,31 @@ def _model_step_allowed(
         model=model,
         on_unmappable_residue=on_unmappable_residue,
         prediction_weights=prediction_weights,
+        msa_policy=msa_policy,
+        msa_server=msa_server,
     )
     if outcome.refused or not outcome.model_usable:
         reason = outcome.block["reason"] or outcome.block["status"]
         logger.warning("  %s: left out of the model step by the pre-flight check: %s", sid, reason)
         return False, reason
     return True, ""
+
+
+def _design_decision(
+    designed_with, design_policy: str, model: str
+) -> tuple[Optional[str], Optional[bool]]:
+    """What the design origin does to the adversarial check of the whole-batch model step.
+
+    Returns ``(reason, independent)``: the reason the check is left out for ``model`` (None when
+    it runs) and whether ``model`` is independent of the design (None when no source is known).
+    The answer does not depend on the sample, so a step asks once. A refusal (``error``) is the
+    worker's, which has already made the sample an error row.
+    """
+    decision = check_design_origin(
+        designed_with, [ADVERSARIAL_CHECK], [model], policy=design_policy
+    )
+    reason = "; ".join(decision.reason(check, model) for check in decision.skipped) or None
+    return reason, decision.independent(model)
 
 
 # ---------------------------------------------------------------------------
@@ -471,24 +544,30 @@ def _run_batched_openfold(
     prediction_weights: Optional[Path] = None,
     prediction_cache: Optional[Path] = None,
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+    designed_with=None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
+    nonfinite: str = "keep",
 ) -> None:
     """Run OpenFold3 on all successful samples in a single subprocess.
 
-    Modifies *rows* in-place, merging OF3 and EvoBind metrics into each
-    sample's flat dict.  Also updates each sample's JSON report on disk.
-    ``openfold_seeds`` are the seeds OpenFold3 samples with (written to its runner YAML); ``None``
-    keeps the default, 42. ``openfold_cyclic`` decides, sample by sample, whether the binder gets
-    ``"cyclic": true``; each sample's block records ``binder_cyclic``. ``openfold_use_msa_server``
-    False runs OpenFold3 without the ColabFold MSA server; each row records it as
+    Modifies *rows* in place, merging OpenFold3 and EvoBind metrics into each sample's flat dict,
+    and updates each sample's JSON report on disk (``nonfinite`` is the mode of that write, see
+    ``_update_sample_json``). ``openfold_seeds`` are the seeds OpenFold3 samples with (written to
+    its runner YAML); ``None`` keeps the default, 42.
+    ``openfold_cyclic`` decides, sample by sample, whether the binder gets ``"cyclic": true``;
+    each sample's block records ``binder_cyclic``. ``openfold_use_msa_server`` False runs
+    OpenFold3 without the ColabFold MSA server; each row records it as
     ``provenance_openfold3_use_msa_server``. ``prediction_weights`` (a checkpoint file) is passed
     to OpenFold3 as ``inference_ckpt_path`` for the whole batch, hashed once with the cache in
-    ``prediction_cache`` (default ``<output_dir>/_predictions``) and recorded in each block as
+    ``prediction_cache`` (default ``<output_dir>/_predictions``), and recorded in each block as
     ``weights`` and in the row as ``provenance_prediction_weights_*``. ``on_unmappable_residue``
-    is passed to the query preparation of every sample; a residue OpenFold3 cannot take then
-    stops the whole
-    batch call (the error names each such residue) before the model starts. A sample that the
-    pre-flight check leaves out (``on_incompatible="skip"``) gets ``openfold_skipped`` and the
-    reason in ``openfold_reason`` and is not part of the call.
+    is passed to the query preparation of every sample; a residue OpenFold3 cannot take stops the
+    whole batch call before the model starts (the error names each such residue). A sample that
+    the pre-flight check leaves out (``on_incompatible="skip"``) gets ``openfold_skipped`` and the
+    reason in ``openfold_reason`` and is not part of the call. ``designed_with`` and
+    ``design_policy`` decide whether the adversarial check runs (it is left out, with
+    ``openfold_adversarial_skipped`` in the row, when the design pipeline ran OpenFold3 itself)
+    and add ``openfold_independent_of_design`` when the design source is known.
     """
     from binding_metrics.metrics.openfold import (
         _BatchSample,
@@ -497,7 +576,8 @@ def _run_batched_openfold(
     )
     from binding_metrics.protocols.report import _flatten
 
-    # Build list of eligible samples (succeeded, have chain info)
+    adversarial_skipped, independent = _design_decision(designed_with, design_policy, "of3")
+
     samples: list[_BatchSample] = []
     # Map query_name → row index for merging results back
     sid_to_row_idx: dict[str, int] = {}
@@ -569,7 +649,7 @@ def _run_batched_openfold(
             **openfold_template_kwargs(openfold_templates),
         )
     except Exception as e:  # noqa: BLE001 - the batch call spawns a subprocess; see openfold_error
-        # Warning level keeps the line on stdout, where it was printed before.
+        # Warning level keeps the line on stdout.
         logger.warning("  [ERROR] Batched OpenFold failed: %s", e)
         import traceback
 
@@ -579,7 +659,6 @@ def _run_batched_openfold(
             _mark_step_failed(rows[idx], "openfold", str(e))
         return
 
-    # Extract per-sample metrics and merge into rows
     for s in samples:
         sid = s.query_name
         idx = sid_to_row_idx[sid]
@@ -614,12 +693,12 @@ def _run_batched_openfold(
             of_structure = of_metrics.get("structure_path")
             plddt = of_metrics.get("plddt_per_atom")
             if of_structure:
-                try:
-                    from binding_metrics.metrics.evobind import (
-                        compute_evobind_adversarial_check,
-                        compute_evobind_score,
-                    )
+                from binding_metrics.metrics.evobind import (
+                    compute_evobind_adversarial_check,
+                    compute_evobind_score,
+                )
 
+                try:
                     evobind = compute_evobind_score(
                         of_structure,
                         plddt_per_atom=plddt,
@@ -628,25 +707,35 @@ def _run_batched_openfold(
                     )
                     _merge_reason(of_metrics, evobind, "evobind")
                     of_metrics.update(evobind)
-                    adversarial = compute_evobind_adversarial_check(
-                        design_structure_path=sid_to_input[sid],
-                        afm_structure_path=of_structure,
-                        binder_chain=pchain,
-                        receptor_chain=rchain,
-                        afm_plddt_per_atom=plddt,
-                    )
-                    _merge_reason(of_metrics, adversarial, "evobind adversarial")
-                    of_metrics.update(adversarial)
-                except Exception as e:  # noqa: BLE001 - per-sample isolation; see evobind_error
+                except Exception as e:  # noqa: BLE001 - per-score isolation; see evobind_error
+                    logger.warning("  %s: EvoBind score failed: %s", sid, e)
                     of_metrics["evobind_error"] = str(e)
+                if adversarial_skipped is not None:
+                    of_metrics["adversarial_skipped"] = adversarial_skipped
+                else:
+                    try:
+                        adversarial = compute_evobind_adversarial_check(
+                            design_structure_path=sid_to_input[sid],
+                            afm_structure_path=of_structure,
+                            binder_chain=pchain,
+                            receptor_chain=rchain,
+                            afm_plddt_per_atom=plddt,
+                        )
+                        _merge_reason(of_metrics, adversarial, "evobind adversarial")
+                        of_metrics.update(adversarial)
+                    except Exception as e:  # noqa: BLE001 - per-check isolation; see adversarial_error
+                        logger.warning("  %s: EvoBind adversarial check failed: %s", sid, e)
+                        of_metrics["adversarial_error"] = str(e)
+            _label_independence(of_metrics, independent)
 
-            # Flatten OF3 metrics into the row
             for k, v in _flatten({"openfold": of_metrics}).items():
                 if k.startswith("openfold_"):
                     rows[idx][k] = v
 
-            # Update per-sample JSON report on disk
-            _update_sample_json(output_dir / sid, sid, of_metrics)
+            _update_sample_json(output_dir / sid, sid, of_metrics, nonfinite=nonfinite)
+            failure = _step_failure(of_metrics)
+            if failure is not None:
+                _mark_step_failed(rows[idx], "openfold", failure)
 
             logger.info(
                 "  %s: ipTM=%s, pLDDT=%s",
@@ -667,14 +756,19 @@ def _update_sample_json(
     of_metrics: dict,
     section: str = "openfold",
     provenance: Optional[dict] = None,
+    nonfinite: str = "keep",
 ) -> None:
     """Merge one step's results into an existing per-sample JSON report.
 
     ``section`` is the key the block is written to (``"openfold"`` or ``"prediction"``);
-    ``provenance`` adds keys to the report's provenance block.
+    ``provenance`` adds keys to the report's provenance block. ``nonfinite_fields`` is brought
+    up to date: the entries of the replaced block go, and the NaN and infinite values of the new
+    block are listed. With ``nonfinite="null"`` the report is written as strict JSON: those values
+    are ``null``, and the paths listed by an earlier null report stay.
     """
     import json
 
+    from binding_metrics._jsonutil import nonfinite_paths, strict_json_text
     from binding_metrics.protocols.report import _json_default
 
     json_path = sample_dir / f"{sid}_results.json"
@@ -685,7 +779,18 @@ def _update_sample_json(
         data[section] = of_metrics
         if provenance:
             data.setdefault("provenance", {}).update(provenance)
-        json_path.write_text(json.dumps(data, indent=2, default=_json_default), encoding="utf-8")
+        if nonfinite == "null":
+            listed = data.get("nonfinite_fields")
+            data["nonfinite_fields"] = [
+                path
+                for path in (listed if isinstance(listed, list) else [])
+                if path != section and not path.startswith((f"{section}.", f"{section}["))
+            ]
+            text = strict_json_text(data, indent=2, default=_json_default)
+        else:
+            data["nonfinite_fields"] = nonfinite_paths(data)
+            text = json.dumps(data, indent=2, default=_json_default)
+        json_path.write_text(text, encoding="utf-8")
     except Exception as e:  # noqa: BLE001 - non-critical, the CSV row has the data anyway
         logger.warning("  %s: could not update %s: %s", sid, json_path.name, e)
 
@@ -735,6 +840,11 @@ def _run_batched_prediction(
     prediction_weights: Optional[Path] = None,
     prediction_lock_threshold: Optional[float] = None,
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+    designed_with=None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
+    prediction_msa_policy: str = DEFAULT_MSA_POLICY,
+    prediction_receptor_msa: Optional[str | Path] = None,
+    nonfinite: str = "keep",
 ) -> None:
     """The ``--predictor`` step of a batch: every sample through one shared prediction store.
 
@@ -749,12 +859,21 @@ def _run_batched_prediction(
     Modifies *rows* in place: the ``prediction_*`` columns, ``provenance_openfold3_*`` when
     OpenFold3 was run, and, for a sample whose prediction failed, ``batch_status`` "partial"
     with the step named in ``batch_failed_steps``. Also writes ``prediction`` into each
-    sample's JSON report. A failed prediction of one sample, or of the whole batch call,
-    never stops the others. A sample that the pre-flight check leaves out
-    (``on_incompatible="skip"``, the limits of the model) is dropped before its request is built,
+    sample's JSON report (``nonfinite`` is the mode of that write, see ``_update_sample_json``).
+    A failed prediction of one sample, or of the whole batch call, never stops the others. A
+    sample that the pre-flight check leaves out (``on_incompatible="skip"``, the limits of the
+    model) is dropped before its request is built,
     with ``prediction_skipped`` and the reason in the row, and does not fail the batch.
+    ``designed_with`` and ``design_policy`` decide whether the adversarial check runs (it is left
+    out, with ``prediction_adversarial_skipped`` in the row, when the design pipeline ran
+    ``predictor`` itself) and add ``prediction_independent_of_design`` when the source is known.
+    ``prediction_msa_policy`` and ``prediction_receptor_msa`` are the MSA policy and the receptor's
+    alignment of every request (the same file for every sample); they reach the runner only when
+    they are not at their default.
     """
     from binding_metrics.protocols.report import _flatten
+
+    adversarial_skipped, independent = _design_decision(designed_with, design_policy, predictor)
 
     candidates = _detect_sample_chains(
         rows, sid_to_input, peptide_chain, receptor_chain, "prediction"
@@ -774,6 +893,8 @@ def _run_batched_prediction(
             on_incompatible,
             on_unmappable_residue,
             prediction_weights,
+            prediction_msa_policy,
+            None if adopted else bool(openfold_use_msa_server),
         )
         if allowed:
             eligible.append(entry)
@@ -782,7 +903,7 @@ def _run_batched_prediction(
         for key, value in _flatten({"prediction": block}).items():
             if key.startswith("prediction_"):
                 rows[idx][key] = value
-        _update_sample_json(output_dir / sid, sid, block, section="prediction")
+        _update_sample_json(output_dir / sid, sid, block, section="prediction", nonfinite=nonfinite)
     if not eligible:
         logger.info("  [skip] No eligible samples for the batched prediction.")
         return
@@ -828,6 +949,8 @@ def _run_batched_prediction(
                     prediction_weights=weights_ref,
                     prediction_lock_threshold=prediction_lock_threshold,
                     openfold_templates=openfold_templates,
+                    prediction_msa_policy=prediction_msa_policy,
+                    prediction_receptor_msa=prediction_receptor_msa,
                 )
             except Exception as e:  # noqa: BLE001 - one unreadable input must not stop the batch
                 logger.warning(
@@ -837,7 +960,7 @@ def _run_batched_prediction(
         if requests and not adopt:
             make_session(store, runner, rerun=rerun_predictions).prefetch(requests.values())
     except Exception as e:  # noqa: BLE001 - the batch call starts a model; see prediction_error
-        # Warning level keeps the line on stdout, where the OpenFold step printed its own.
+        # Warning level keeps the line on stdout.
         logger.warning("  [ERROR] Batched %s prediction failed: %s", display_name(predictor), e)
         traceback.print_exc()
         for sid in requests:
@@ -872,21 +995,29 @@ def _run_batched_prediction(
                 mode=mode,
                 default_chain_map=None if adopt else runner_chain_map(runner, requests[sid]),
                 runner=runner,
+                adversarial_skipped=adversarial_skipped,
             )
             block = outcomes[sid][0]
             if predictor == "of3" and not adopt and not block.get("error"):
                 record_binder_cyclic(block, input_path, pchain, openfold_cyclic, openfold_conda_env)
         block, provenance = outcomes[sid]
+        _label_independence(block, independent)
         for key, value in _flatten({"prediction": block}).items():
             if key.startswith("prediction_"):
                 rows[idx][key] = value
         for key, value in provenance.items():
             _add_provenance(rows[idx], key, value)
         _update_sample_json(
-            output_dir / sid, sid, block, section="prediction", provenance=provenance or None
+            output_dir / sid,
+            sid,
+            block,
+            section="prediction",
+            provenance=provenance or None,
+            nonfinite=nonfinite,
         )
-        if block.get("error"):
-            _mark_step_failed(rows[idx], "prediction", block["error"])
+        failure = _step_failure(block)
+        if failure is not None:
+            _mark_step_failed(rows[idx], "prediction", failure)
         logger.info(
             "  %s: ipTM=%s, pLDDT=%s",
             sid,
@@ -963,6 +1094,11 @@ def run_batch(
     prediction_conda_env: Optional[str] = None,
     prediction_lock_threshold: Optional[float] = None,
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+    designed_with: Optional[str | Sequence[str]] = None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
+    prediction_msa_policy: str = DEFAULT_MSA_POLICY,
+    prediction_receptor_msa: Optional[str | Path] = None,
+    nonfinite: str = "keep",
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -974,7 +1110,9 @@ def run_batch(
 
     Args:
         paths: Structure files (CIF or PDB). The sample ID of each is its file
-            stem, so two paths with the same stem would share a directory.
+            stem, which must be unique in the batch, case ignored: two paths with the same
+            stem, ``Sample.pdb`` and ``sample.cif`` included, raise ``ValueError`` before
+            anything is created or run.
         output_dir: Directory for the per-sample sub-directories; created when missing.
         metrics: Names from ``KNOWN_METRICS``. ``openfold`` runs once for all
             samples after the others, as in the CLI, so the ``openfold_*`` columns
@@ -1004,10 +1142,10 @@ def run_batch(
             given (see ``--openfold-seeds``).
         openfold_use_msa_server: Whether OpenFold3 uses the ColabFold MSA server (default True;
             ``--openfold-no-msa-server`` is False). With the server off OpenFold3 runs with a dummy
-            MSA that holds only the query sequence of each chain, which lowers accuracy for a
-            natural receptor; with ``openfold_templates="alignment"`` it also keeps the template
-            alignments that the server would replace (issue #68). Each row that OpenFold3 was run
-            for records it as ``provenance_openfold3_use_msa_server``.
+            MSA that holds only the query sequence of each chain; with
+            ``openfold_templates="alignment"`` it also keeps the template alignments that the
+            server would replace. Each row that OpenFold3 was run for records it as
+            ``provenance_openfold3_use_msa_server``.
         openfold_cyclic: ``"auto"`` (default), ``True`` (``"on"``) or ``False`` (``"off"``):
             whether the binder chain of each OpenFold3 query gets ``"cyclic": true`` (see
             ``--openfold-cyclic``). The ``openfold_*`` (or ``prediction_*``) columns then
@@ -1021,11 +1159,10 @@ def run_batch(
             whether OpenFold3 used each template.
         predictor: A key of ``binding_metrics.predictors.PARSERS`` (keyword-only). The
             ``openfold`` step then runs as the prediction step of every sample through one
-            shared prediction store and fills the ``prediction_*`` columns instead of the
-            ``openfold_*`` ones; ``None`` (default) keeps the batched OpenFold3 call. Like
-            ``openfold`` it runs once for all samples after the others. Every registered model
-            has a runner and can be run from here (``cli.prediction.RUNNERS``); ``prediction_dir``
-            reads outputs you made instead.
+            shared prediction store, once for all samples after the others, and fills the
+            ``prediction_*`` columns instead of the ``openfold_*`` ones; ``None`` (default) keeps
+            the batched OpenFold3 call. Every registered model has a runner and can be run from
+            here (``cli.prediction.RUNNERS``); ``prediction_dir`` reads outputs you made instead.
         prediction_dir: With ``predictor``, the root that holds one output per sample ID (the
             file stem); the outputs are adopted into the store and the model never runs.
         prediction_binder_chain, prediction_target_chain: With ``predictor``, the chain IDs
@@ -1042,12 +1179,12 @@ def run_batch(
             it does not stop the batch. Under ``"skip"`` the incompatible steps of a sample are
             recorded as skipped with their reason and the rest runs.
         prediction_mode: How the model is used for the complex (``--prediction-mode``): ``predict``,
-            ``refold``, ``score`` or ``score-lock``. It is checked against what the model supports
-            in the pre-flight check of every sample, for a run from here against what the runner
-            of the model runs (``ValueError`` for another mode), and recorded as
-            ``prediction_mode``. None takes ``openfold_mode`` for OpenFold3 run from here, the
-            ``default_mode`` of the runner for another model (boltz2 ``score``, af2 and protenix
-            ``predict``) and is "not known, not checked" for outputs read from
+            ``refold``, ``score``, ``score-lock`` or ``refold-lock``. It is checked against what
+            the model supports in the pre-flight check of every sample, for a run from here
+            against what the runner of the model runs (``ValueError`` for another mode), and
+            recorded as ``prediction_mode``. None takes ``openfold_mode`` for OpenFold3 run from
+            here, the ``default_mode`` of the runner for another model (boltz2 ``score``, af2 and
+            protenix ``predict``) and is "not known, not checked" for outputs read from
             ``prediction_dir``. Needs ``predictor``.
         prediction_cyclic, prediction_use_msa_server, prediction_conda_env,
         prediction_lock_threshold: The settings of ``predictor`` run from here, for every model
@@ -1056,6 +1193,12 @@ def run_batch(
             ``run_pipeline``: for ``predictor="of3"`` they are the settings of ``openfold_cyclic``,
             ``openfold_use_msa_server`` and ``openfold_conda_env``, and a setting that the model's
             runner has no keyword for raises ``ValueError``.
+        prediction_msa_policy, prediction_receptor_msa: The MSA policy of ``predictor`` run from
+            here (``--prediction-msa-policy``, ``--prediction-receptor-msa``), with the meaning
+            and the checks they have in ``run_pipeline``. Under ``"forbid-server"`` every
+            sample is checked with the server setting of the run and a sample that would use the
+            server is an error row whatever ``on_incompatible`` says. The receptor MSA is one
+            file (or ``"single"``) for every sample of the batch.
         prediction_weights: Custom weights for the model, such as a fine-tuned checkpoint
             (``--prediction-weights``): a file or a directory, as the model's runner takes it. They
             apply to ``predictor`` run from here and to the batched OpenFold3 step
@@ -1067,6 +1210,18 @@ def run_batch(
         preflight_only: Check every sample and return one row each (``preflight_status``,
             ``preflight_reason``, ``preflight_plan``) without preparing, relaxing or predicting
             anything and without creating ``output_dir``.
+        designed_with, design_policy: The pipeline that made the designed binders and what to do
+            about it (``--designed-with`` and ``--design-policy``), with the meaning they have in
+            ``run_pipeline``. The EvoBind adversarial check of the model step is left out of
+            every sample (``design_policy="skip"``, the default) when the design pipeline ran
+            the model itself; the rows get ``<step>_adversarial_skipped`` and
+            ``<step>_independent_of_design`` (``<step>`` is ``prediction`` or ``openfold``).
+            With ``"error"`` every sample is an error row; ``on_incompatible`` does not change
+            the rule. The loud warning is logged once for the batch and once in each sample's log.
+        nonfinite: How the per-sample JSON reports write a NaN or infinity (keyword-only, as
+            ``--nonfinite``): ``"keep"`` (default) writes the tokens ``NaN`` and ``Infinity``;
+            ``"null"`` writes ``null`` and lists the paths in ``nonfinite_fields``, so that a
+            strict JSON parser reads them. The CSV rows do not depend on it.
 
     Returns:
         One flat row per path, in the order of ``paths`` whatever the number of
@@ -1085,15 +1240,18 @@ def run_batch(
         ... )
 
     Raises:
-        ValueError: ``n_workers`` below 1, an unknown ``on_error``, an unknown
+        ValueError: two paths with the same file stem, case ignored (the message lists each shared
+            ID with its paths), ``n_workers`` below 1, an unknown ``on_error``, an unknown
             metric name, an ``on_unmappable_residue`` other than ``"error"`` or ``"x"``, a
             ``predictor`` that is not registered or has no runner and no ``prediction_dir``, or
-            a chain given through both spellings with different IDs, or an ``openfold_cyclic``
-            that is not ``"auto"``, ``"on"``, ``"off"``, ``True`` or ``False``.
+            a chain given through both spellings with different IDs, both chain roles naming one
+            chain, or an ``openfold_cyclic`` that is not ``"auto"``, ``"on"``, ``"off"``,
+            ``True`` or ``False``, or a ``nonfinite`` other than ``"keep"`` and ``"null"``.
         Exception: whatever an item raised, when ``on_error="raise"``.
     """
     if n_workers < 1:
         raise ValueError(f"n_workers must be at least 1, got {n_workers}")
+    check_nonfinite(nonfinite)
     if on_error not in ("record", "raise"):
         raise ValueError(f"on_error must be 'record' or 'raise', got {on_error!r}")
     selected = frozenset(metrics)
@@ -1107,6 +1265,7 @@ def run_batch(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
+    require_distinct_chains(peptide_chain, receptor_chain)
     check_on_unmappable_residue(on_unmappable_residue)
     check_openfold_cyclic(openfold_cyclic)
     check_openfold_templates(openfold_templates)
@@ -1124,7 +1283,10 @@ def run_batch(
         prediction_conda_env=prediction_conda_env,
         prediction_lock_threshold=prediction_lock_threshold,
         openfold_templates=openfold_templates,
+        prediction_msa_policy=prediction_msa_policy,
+        prediction_receptor_msa=prediction_receptor_msa,
     )
+    preflight_msa = None  # (policy, uses a server) of the model step, for the pre-flight check
     if predictor is not None and prediction_dir is None:
         # the --prediction-* spellings are merged into the settings of the run
         openfold_cyclic, openfold_use_msa_server, openfold_conda_env = (
@@ -1132,13 +1294,22 @@ def run_batch(
             route.use_msa_server,
             route.conda_env,
         )
+        preflight_msa = (
+            prediction_msa_policy,
+            bool(openfold_use_msa_server),
+            prediction_receptor_msa,
+        )
     prediction_weights = check_weights_arg(prediction_weights, predictor)
     if binder_type not in BINDER_TYPE_CHOICES:
         raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")
     if on_incompatible not in POLICIES:
         raise ValueError(f"on_incompatible must be one of {POLICIES}, got {on_incompatible!r}")
+    if design_policy not in POLICIES:
+        raise ValueError(f"design_policy must be one of {POLICIES}, got {design_policy!r}")
+    design_origin(designed_with)  # TypeError for a value that is no source
 
     input_paths = [Path(p) for p in paths]
+    _check_unique_sample_ids(input_paths)
     output_dir = Path(output_dir)
     references = references or {}
     if references:
@@ -1160,6 +1331,11 @@ def run_batch(
             prediction_weights=prediction_weights,
             binder_type=binder_type,
             on_incompatible=on_incompatible,
+            designed_with=designed_with,
+            design_policy=design_policy,
+            prediction_msa_policy=prediction_msa_policy,
+            prediction_receptor_msa=prediction_receptor_msa,
+            preflight_msa=preflight_msa,
         )
     output_dir.mkdir(parents=True, exist_ok=True)
     # Strip openfold from per-worker metrics: it runs as a single batched
@@ -1177,6 +1353,15 @@ def run_batch(
         if want_openfold
         else None
     )
+    if want_openfold and designed_with is None:
+        logger.info(NO_DESIGN_SOURCE_MESSAGE)
+    elif want_openfold:
+        # one loud line for the batch; each sample's worker logs the same in its own log
+        model_name = predictor or "of3"
+        for text in check_design_origin(
+            designed_with, [ADVERSARIAL_CHECK], [model_name], policy=design_policy
+        ).warnings:
+            logger.warning("%s", text)
 
     common_kwargs = dict(
         output_dir=output_dir,
@@ -1201,6 +1386,10 @@ def run_batch(
         preflight_model=preflight_model,
         on_unmappable_residue=on_unmappable_residue,
         prediction_weights=prediction_weights,
+        designed_with=designed_with,
+        design_policy=design_policy,
+        preflight_msa=preflight_msa,
+        nonfinite=nonfinite,
     )
     if on_error == "raise":
         common_kwargs["raise_errors"] = True
@@ -1235,14 +1424,11 @@ def run_batch(
                 row = _lost_sample_row(sid, error)
             finish(index, row)
     else:
-        # Parallel path: each worker is an independent OS process, so there are no
-        # shared variables and no shared file paths (each writes to its own sample
-        # directory). ``rows`` and the callbacks are only touched here, in the
-        # calling process, as ``as_completed`` delivers one result at a time.
+        # Parallel path: each worker is an OS process with its own sample directory. ``rows``
+        # and the callbacks are touched only here, in the calling process.
         futures = {}
-        # Workers started with "spawn" or "forkserver" do not inherit the handlers
-        # installed by the caller, so each configures logging itself. Without it
-        # their pipeline messages would never reach the per-sample log files.
+        # Workers started with "spawn" or "forkserver" do not inherit the caller's logging
+        # handlers, so each configures logging itself.
         with ProcessPoolExecutor(max_workers=n_workers, initializer=configure_logging) as pool:
             for index, input_path in enumerate(input_paths):
                 sid = input_path.stem
@@ -1294,6 +1480,11 @@ def run_batch(
             prediction_weights=prediction_weights,
             prediction_lock_threshold=route.lock_threshold,
             openfold_templates=openfold_templates,
+            designed_with=designed_with,
+            design_policy=design_policy,
+            prediction_msa_policy=prediction_msa_policy,
+            prediction_receptor_msa=prediction_receptor_msa,
+            nonfinite=nonfinite,
         )
     elif want_openfold:
         _run_batched_openfold(
@@ -1313,6 +1504,9 @@ def run_batch(
             prediction_weights=prediction_weights,
             prediction_cache=prediction_cache,
             openfold_templates=openfold_templates,
+            designed_with=designed_with,
+            design_policy=design_policy,
+            nonfinite=nonfinite,
         )
     return finished
 
@@ -1334,6 +1528,11 @@ def _preflight_only_rows(
     binder_type: str,
     on_incompatible: str,
     prediction_weights: Optional[Path] = None,
+    designed_with=None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
+    prediction_msa_policy: str = DEFAULT_MSA_POLICY,
+    prediction_receptor_msa: Optional[str | Path] = None,
+    preflight_msa: Optional[tuple] = None,
 ) -> list[dict]:
     """One row per sample with the pre-flight decision and nothing else (``--preflight-only``).
 
@@ -1342,6 +1541,13 @@ def _preflight_only_rows(
     ``"ok"``.
     """
     rows = []
+    # The server setting of the run, merged from its two spellings by the caller: the argument
+    # check of each sample reads it (a receptor MSA with the server on is refused for OpenFold3),
+    # in the spelling that the model takes (the --openfold-* one is refused for another model).
+    server = True if preflight_msa is None else bool(preflight_msa[1])
+    server_settings = {"prediction_use_msa_server": server}
+    if predictor == "of3":
+        server_settings["openfold_use_msa_server"] = server
     for input_path in input_paths:
         sid = input_path.stem
         row: dict = {"sample_id": sid, "input": str(input_path)}
@@ -1364,6 +1570,12 @@ def _preflight_only_rows(
                 binder_type=binder_type,
                 on_incompatible=on_incompatible,
                 preflight_only=True,
+                designed_with=designed_with,
+                design_policy=design_policy,
+                prediction_msa_policy=prediction_msa_policy,
+                prediction_receptor_msa=prediction_receptor_msa,
+                preflight_msa=preflight_msa,
+                **server_settings,
             )
             block = results["preflight"]
             row["preflight_status"] = block["status"]
@@ -1415,7 +1627,8 @@ def main():
         type=int,
         default=1,
         help="Number of parallel worker processes (default: 1). "
-        "Use --device cpu when workers > 1 on a single GPU.",
+        "Each worker opens its own CUDA context: use one worker per GPU, "
+        "or --device cpu when workers share a GPU.",
     )
     parser.add_argument(
         "--glob",
@@ -1434,6 +1647,7 @@ def main():
         "Supplying this auto-enables the 'dockq' metric. "
         "Requires: pip install DockQ",
     )
+    add_nonfinite_arg(parser)
 
     # Forwarded single-run options
     parser.add_argument(
@@ -1551,6 +1765,12 @@ def main():
     args = parse_args_with_config(parser)
     check_prediction_args(parser, args)
 
+    try:
+        require_distinct_chains(args.peptide_chain, args.receptor_chain)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        sys.exit(1)
+
     if args.per_sample_log and args.log_file is not None:
         print(
             "warning: --per-sample-log is ignored because --log-file was given; "
@@ -1564,9 +1784,6 @@ def main():
         sys.exit(1)
 
     output_dir: Path = args.output_dir or args.output_csv.parent
-    if not args.preflight_only:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ Collect inputs
     if args.glob:
@@ -1581,6 +1798,15 @@ def main():
     if not input_files:
         print(f"ERROR: no structure files found in {args.input_dir}", file=sys.stderr)
         sys.exit(1)
+    try:
+        _check_unique_sample_ids(input_files)
+    except ValueError as error:
+        parser.error(str(error))
+
+    # Directories are created only after the input list has passed the checks above.
+    if not args.preflight_only:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'#' * 60}")
     print("  binding-metrics-batch")
@@ -1592,7 +1818,7 @@ def main():
 
     # ------------------------------------------------------------------ References
     # Map each sample (by filename stem) to a native structure for DockQ.
-    # Supplying --reference-dir auto-enables the dockq metric.
+    # --reference-dir enables the dockq metric.
     reference_map: dict[str, Path] = {}
     selected_metrics = args.metrics
     if args.reference_dir is not None:
@@ -1626,6 +1852,18 @@ def main():
             on_unmappable_residue=args.on_unmappable_residue,
             binder_type=args.binder_type,
             on_incompatible=args.on_incompatible,
+            designed_with=args.designed_with,
+            design_policy=args.design_policy,
+            openfold_conda_env=args.openfold_conda_env,
+            openfold_cyclic=args.openfold_cyclic,
+            openfold_use_msa_server=not args.openfold_no_msa_server,
+            openfold_templates=args.openfold_templates,
+            prediction_cyclic=args.prediction_cyclic,
+            prediction_use_msa_server=not args.prediction_no_msa_server,
+            prediction_conda_env=args.prediction_conda_env,
+            prediction_lock_threshold=args.prediction_lock_threshold,
+            prediction_msa_policy=args.prediction_msa_policy,
+            prediction_receptor_msa=args.prediction_receptor_msa,
             preflight_only=True,
         )
         for row in rows:
@@ -1636,8 +1874,8 @@ def main():
         sys.exit(1 if n_refused else 0)
 
     # ------------------------------------------------------------------ Run
-    # run_batch does the work; the callbacks print the progress lines. Started
-    # items are announced only in the sequential case, where one item runs at a time.
+    # run_batch does the work; the callbacks print the progress lines. Started items are
+    # announced only in the sequential case.
     t_batch_start = time.time()
     n_inputs = len(input_files)
     started = 0
@@ -1703,14 +1941,19 @@ def main():
         prediction_use_msa_server=not args.prediction_no_msa_server,
         prediction_conda_env=args.prediction_conda_env,
         prediction_lock_threshold=args.prediction_lock_threshold,
+        prediction_msa_policy=args.prediction_msa_policy,
+        prediction_receptor_msa=args.prediction_receptor_msa,
         openfold_templates=args.openfold_templates,
         binder_type=args.binder_type,
         on_incompatible=args.on_incompatible,
+        designed_with=args.designed_with,
+        design_policy=args.design_policy,
         random_seed=args.random_seed,
         log_file=args.log_file,
         n_workers=args.workers,
         on_start=announce_start if args.workers == 1 else None,
         on_result=report_finished,
+        nonfinite=args.nonfinite,
     )
     statuses = [row.get("batch_status", "ok") for row in rows]
     n_ok = statuses.count("ok")
@@ -1718,10 +1961,8 @@ def main():
     n_err = len(statuses) - n_ok - n_partial
 
     # ------------------------------------------------------------------ Write CSV
-    # Written here, in the main process, after run_batch returned (i.e. all workers
-    # are guaranteed to be done). There is exactly one writer and no worker can
-    # race against it.
-    # Collect the union of all column names (preserving insertion order via dict).
+    # Written in the main process after run_batch returned: one writer, all workers done.
+    # The columns are the union of all row keys, in insertion order.
     all_keys: dict[str, None] = {}
     for row in rows:
         all_keys.update(dict.fromkeys(row.keys()))
@@ -1742,8 +1983,8 @@ def main():
     print(f"  Results: {args.output_csv}")
     print(f"{'#' * 60}\n")
 
-    # Non-zero only when no sample completed cleanly, as before; a sample whose
-    # steps failed counts as not completed.
+    # Non-zero only when no sample completed cleanly; a sample with a failed step does not
+    # count as completed.
     sys.exit(1 if (n_err or n_partial) and n_ok == 0 else 0)
 
 

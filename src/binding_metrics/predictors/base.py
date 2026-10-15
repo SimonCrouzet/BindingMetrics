@@ -1,4 +1,4 @@
-"""The contract of a predictor adapter: from the files of one model to a ``PredictionRecord``.
+"""The contract of a predictor adapter: from the files of one model to a ``PredictedPose``.
 
 An adapter reads the output that one model wrote and never runs the model (runners are
 separate and optional). It has two abstract steps: ``find_files`` locates the files of one
@@ -37,13 +37,17 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, ClassVar, Mapping, Optional
 
+from binding_metrics.predictors._renamed import deprecated_name_getattr
 from binding_metrics.predictors.record import (
+    PredictedPose,
     PredictionFiles,
-    PredictionRecord,
     SampleRef,
     _not_provided_problems,
     check_chain_map,
 )
+
+#: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
+__getattr__ = deprecated_name_getattr(__name__)
 
 #: The two families of confidence outputs. ``af2``: one token per residue (AlphaFold2,
 #: ColabFold, AlphaFold-Multimer). ``af3``: one token per standard residue and one per heavy
@@ -63,7 +67,7 @@ class PredictionParser(ABC):
     any number of predictions.
     """
 
-    #: Registry key and ``PredictionRecord.model`` value, lower case (``"of3"``, ``"boltz2"``).
+    #: Registry key and ``PredictedPose.model`` value, lower case (``"of3"``, ``"boltz2"``).
     name: ClassVar[str]
     #: Name for reports (``"OpenFold3"``).
     display_name: ClassVar[str]
@@ -75,7 +79,7 @@ class PredictionParser(ABC):
     #: ``binding_metrics.capabilities.preflight`` reads the value to refuse an input the model
     #: cannot handle before anything runs.
     capabilities: ClassVar[Optional[Any]] = None
-    #: Names of the ``PredictionRecord`` fields the model never provides (AlphaFold2 and
+    #: Names of the ``PredictedPose`` fields the model never provides (AlphaFold2 and
     #: ColabFold write no ``pde``): ``load`` copies them to ``record.not_provided``, and
     #: ``summarize_prediction`` gives no reason for them. Anything a model writes and a file
     #: lacks is still explained. Only fields listed in ``record._PROVIDABLE`` are accepted.
@@ -113,7 +117,7 @@ class PredictionParser(ABC):
         name: str,
         seed_index: int = 1,
         sample: int = 1,
-    ) -> PredictionRecord:
+    ) -> PredictedPose:
         """Read the located files into a record (see the module docstring for the rules)."""
 
     def load(
@@ -124,7 +128,7 @@ class PredictionParser(ABC):
         seed_index: int = 1,
         sample: int = 1,
         chain_map: Optional[Mapping[str, str]] = None,
-    ) -> PredictionRecord:
+    ) -> PredictedPose:
         """Find and parse one sample.
 
         Args:
@@ -152,7 +156,7 @@ class PredictionParser(ABC):
             record.chain_map = checked_map
         return record
 
-    def complete(self, record: PredictionRecord) -> PredictionRecord:
+    def complete(self, record: PredictedPose) -> PredictedPose:
         """Finish a record whose remaining fields need the structure file.
 
         Parsing must not open the structure (it imports no biotite), so a model whose PAE and

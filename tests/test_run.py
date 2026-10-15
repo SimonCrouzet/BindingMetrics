@@ -414,6 +414,7 @@ class TestPrepReport:
         assert prep["ph"] == 7.4 and prep["keep_water"] is False
         assert prep["output"].endswith("_cleaned.cif")
 
+    @pytest.mark.slow
     def test_real_prep_of_p53_mdm2(self, tmp_path):
         pytest.importorskip("pdbfixer")
         results = run_pipeline(EXAMPLE_1YCR, tmp_path, skip_relax=True, metrics=frozenset())

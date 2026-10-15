@@ -16,12 +16,6 @@ requires_biotite = pytest.mark.skipif(
 class TestCoulombCrossChain:
     """Tests for compute_coulomb_cross_chain."""
 
-    def test_import_function(self):
-        """Should be able to import compute_coulomb_cross_chain."""
-        from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
-
-        assert callable(compute_coulomb_cross_chain)
-
     def test_requires_biotite_import(self):
         """Module should raise ImportError if biotite is not available."""
         import sys
@@ -37,10 +31,10 @@ class TestCoulombCrossChain:
                 "biotite.structure.io.pdb": None,
             },
         ):
-            from binding_metrics.metrics.electrostatics import _import_biotite
+            from binding_metrics.metrics.electrostatics import compute_coulomb_cross_chain
 
             with pytest.raises(ImportError, match="biotite"):
-                _import_biotite()
+                compute_coulomb_cross_chain(EXAMPLE_PDB_PATH, "B", "A")
 
     @requires_biotite
     def test_with_example_pdb(self):

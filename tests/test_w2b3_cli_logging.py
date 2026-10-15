@@ -7,6 +7,7 @@ console handlers (``configure_logging``), so the text on stdout/stderr and in a
 """
 
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -285,6 +286,7 @@ class TestLogToFile:
 
 
 class TestRunAsModule:
+    @pytest.mark.slow
     def test_python_dash_m_shows_the_progress_lines(self, tmp_path):
         """``python -m binding_metrics.cli.run`` runs the file as ``__main__``."""
         import subprocess
@@ -296,6 +298,9 @@ class TestRunAsModule:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            # The text is read as UTF-8 whatever locale runs the tests: under LC_ALL=C the
+            # child would write ASCII, with "?" for the dash.
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             timeout=300,
         )
         assert proc.returncode == 0, proc.stderr
@@ -515,6 +520,7 @@ class TestBatchedOpenFoldMessages:
 
 
 class TestBatchAsModule:
+    @pytest.mark.slow
     def test_python_dash_m_writes_the_per_sample_log(self, tmp_path):
         """``python -m binding_metrics.cli.batch`` runs the file as ``__main__``."""
         import shutil
@@ -549,6 +555,7 @@ class TestCheckEnvMain:
         from binding_metrics.cli import check_env
 
         monkeypatch.setattr(check_env, "CHECKS", checks)
+        monkeypatch.setattr(sys, "argv", ["binding-metrics-check-env"])
         with pytest.raises(SystemExit) as exc:
             check_env.main()
         return exc.value.code

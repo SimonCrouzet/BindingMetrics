@@ -7,6 +7,7 @@ coloured pass/fail indicators and detailed diagnostics on failure.
 Exit code is 0 if all checks pass, 1 otherwise.
 """
 
+import argparse
 import subprocess
 import sys
 
@@ -57,12 +58,11 @@ def _warn(msg: str) -> None:
 def _report_openfold_readiness(python_cmd: list[str], where: str) -> bool:
     """Say which openfold3 version is installed and whether its default checkpoint is on disk.
 
-    Importing ``openfold3`` says little: since 0.5.0 it refuses to run without the OpenBind-0
-    checkpoint (``of3-ob-2025-06-30-174k.pt``), and Preview2 weights of a 0.4.x install do not
-    load into it. ``python_cmd`` starts the interpreter of the installation, for the version;
-    the checkpoint folder is read from ``$OPENFOLD_CACHE`` (default ``~/.openfold3``), which a
-    ``conda run`` of the same user shares. Returns False when openfold3 >= 0.5 has no default
-    checkpoint to load, since every run would stop there.
+    openfold3 0.5.0 and later refuse to run without the OpenBind-0 checkpoint
+    (``of3-ob-2025-06-30-174k.pt``), and Preview2 weights of a 0.4.x install do not load into it.
+    ``python_cmd`` starts the interpreter of the installation, for the version; the checkpoint
+    folder is read from ``$OPENFOLD_CACHE`` (default ``~/.openfold3``), which a ``conda run`` of
+    the same user shares. Returns False when openfold3 >= 0.5 has no default checkpoint to load.
     """
     from binding_metrics.metrics import _openfold_run as run
 
@@ -390,8 +390,28 @@ CHECKS: list[tuple[str, object]] = [
 # ---------------------------------------------------------------------------
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    return argparse.ArgumentParser(
+        prog="binding-metrics-check-env",
+        description=(
+            "Check that the environment can run BindingMetrics. The checks run one after "
+            "the other and each prints what it found:\n"
+            "  OpenMM     openmm.testInstallation in a subprocess (the platform it uses, CUDA "
+            "or CPU)\n"
+            "  MDTraj     a small trajectory operation in a subprocess\n"
+            "  OpenFold3  openfold3 in this environment or in the conda env 'openfold3', and "
+            "its checkpoint\n"
+            "\n"
+            "The command takes no other argument. Exit status 0 when every check passes, "
+            "1 otherwise."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
 def main() -> None:
     configure_logging()
+    _build_parser().parse_args()
     print(f"\n{BOLD}{'=' * 56}{RESET}")
     print(f"{BOLD}  BindingMetrics — environment check{RESET}")
     print(f"{BOLD}{'=' * 56}{RESET}")

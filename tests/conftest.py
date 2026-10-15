@@ -1,6 +1,7 @@
 """Pytest configuration and shared fixtures."""
 
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -8,15 +9,36 @@ import pytest
 # Allow `from conftest import ...` in test files
 sys.path.insert(0, str(Path(__file__).parent))
 
+from _tiers import (  # noqa: E402 - needs the line above
+    GPU,
+    HEAVY,
+    TIER_MARKERS,
+    TierCounts,
+    TierRequest,
+    describe,
+    is_named,
+    kind_of,
+    named_targets,
+)
+
 # ---------------------------------------------------------------------------
 # GPU / CUDA availability
 # ---------------------------------------------------------------------------
 
 try:
-    import openmm as _openmm
+    # OpenMM 8.2 emits DeprecationWarning ("builtin type SwigPyPacked has no __module__
+    # attribute") while its SWIG extension is created. Where that warning is an error
+    # (python -W error::DeprecationWarning) the interpreter segfaults inside the import, so
+    # the import is done with the warning ignored and the suite can run with warnings as errors.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        import openmm as _openmm  # noqa: F401 - imported here, under the filter above
 
-    _openmm.Platform.getPlatformByName("CUDA")
-    HAS_CUDA = True
+    from binding_metrics.core._platform import usable_platform
+
+    # A CUDA device is usable when a context can be created on the platform: the plugin
+    # registers the platform on a machine without a visible device too.
+    HAS_CUDA = usable_platform("CUDA")
 except Exception:  # noqa: BLE001 - probe: whatever the failure, there is no usable CUDA here
     HAS_CUDA = False
 
@@ -26,9 +48,10 @@ def requires_cuda(item):
 
     Applies both halves deliberately:
 
-    - the ``gpu`` marker, so ``-m "not gpu"`` deselects it. This is what makes
-      the GPU tier addressable as a set — CI cannot run these, but it can still
-      collect them to prove they import.
+    - the ``gpu`` marker, so that neither the default tier nor ``--full`` runs it
+      and ``--gpu`` (or ``-m gpu``) selects it. This is what makes the GPU tier
+      addressable as a set — CI cannot run these, but it can still collect them
+      to prove they import.
     - ``skipif``, so that selecting the gpu tier on a machine without a device
       skips cleanly instead of erroring.
 
@@ -43,6 +66,205 @@ def requires_cuda(item):
 
 # Best available OpenMM platform: CUDA if available, otherwise CPU
 BEST_PLATFORM = "CUDA" if HAS_CUDA else "CPU"
+
+
+# ---------------------------------------------------------------------------
+# Options: the test tiers and the guard against untagged slow tests
+# ---------------------------------------------------------------------------
+
+# The fast tier leaves out whatever carries one of these markers (docs/testing.md), so a test
+# that grows slow and has none of them silently lengthens the everyday run. The guard lists such
+# tests at the end of a session. It only reports unless --strict-slow is given, because a duration
+# depends on the load of the machine (a run with -n inflates the times of the heavy tests).
+SPEED_MARKERS = TIER_MARKERS
+SLOW_CALL_SECONDS = 2.0
+
+
+def pytest_addoption(parser):
+    tiers = parser.getgroup("tiers", "test tiers (rules in tests/_tiers.py)")
+    tiers.addoption(
+        "--full",
+        action="store_true",
+        default=False,
+        help="also run the slow, integration and openfold tests: every test but the GPU ones. "
+        "Without it only the tests that carry none of slow, integration, openfold and gpu run",
+    )
+    tiers.addoption(
+        "--gpu",
+        action="store_true",
+        default=False,
+        help="also run the tests that carry the gpu marker (they skip without a CUDA device); "
+        "--full --gpu runs every test",
+    )
+    tiers.addoption(
+        "--tier-named",
+        action="store_true",
+        default=False,
+        help="apply the tier to the test files and node ids named on the command line too, "
+        "which otherwise run whatever their tier (for a script that names the files to run)",
+    )
+    guard = parser.getgroup("slow-guard", "untagged slow tests")
+    guard.addoption(
+        "--strict-slow",
+        action="store_true",
+        default=False,
+        help="fail the run when a test without a speed marker (slow, integration, openfold, gpu) "
+        "takes --slow-seconds or more",
+    )
+    guard.addoption(
+        "--slow-seconds",
+        type=float,
+        default=SLOW_CALL_SECONDS,
+        metavar="SECONDS",
+        help="duration of the call of a test from which it should carry a speed marker "
+        f"(default {SLOW_CALL_SECONDS})",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test tiers: the fast tier by default, --full and --gpu for the rest
+# ---------------------------------------------------------------------------
+
+
+class _TierSelection:
+    """Leaves out of the run the tests that its tier does not include (tests/_tiers.py).
+
+    The hook wraps the others, so it sees the tests that ``-k`` and ``-m`` leave and counts what
+    the tier holds back from those. A pytest-xdist worker collects and applies the same rule to
+    the same command line, so every worker ends with the same list; the controller never collects,
+    so it prints the line about the tier from the counts that the workers hand over at the end.
+    """
+
+    def __init__(self, config):
+        self.request = TierRequest(
+            full=config.getoption("--full"),
+            gpu=config.getoption("--gpu"),
+            tier_named=config.getoption("--tier-named"),
+            markexpr=config.option.markexpr,
+            named=named_targets(config.args, config.invocation_params.dir),
+        )
+        self.counts: TierCounts | None = None
+        self.printed = False
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_collection_modifyitems(self, config, items):
+        collected = len(items)
+        named = set()
+        if self.request.named and not self.request.chosen_by_hand:
+            named = {id(i) for i in items if is_named(str(i.path), i.nodeid, self.request.named)}
+        outcome = yield
+        if outcome.excinfo is not None:
+            return
+        kept, held = [], {HEAVY: [], GPU: []}
+        for item in items:
+            kind = kind_of(mark.name for mark in item.iter_markers())
+            if self.request.holds_back(kind, id(item) in named):
+                held[kind].append(item)
+            else:
+                kept.append(item)
+        deselected = held[HEAVY] + held[GPU]
+        if deselected:
+            config.hook.pytest_deselected(items=deselected)
+            items[:] = kept
+        self.counts = TierCounts(collected, len(items), len(held[HEAVY]), len(held[GPU]))
+        if hasattr(config, "workeroutput"):
+            config.workeroutput["tier_counts"] = self.counts.as_dict()
+
+    def pytest_report_collectionfinish(self, config):
+        if self.counts is None or hasattr(config, "workerinput"):
+            return None
+        self.printed = True
+        return describe(self.request, self.counts)
+
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_testnodedown(self, node, error):
+        counts = (getattr(node, "workeroutput", None) or {}).get("tier_counts")
+        if counts and self.counts is None:
+            self.counts = TierCounts(**counts)
+
+    def pytest_terminal_summary(self, terminalreporter, config):
+        if self.counts is not None and not self.printed and not hasattr(config, "workerinput"):
+            self.printed = True
+            terminalreporter.write_line(describe(self.request, self.counts))
+
+
+# ---------------------------------------------------------------------------
+# Guard against untagged slow tests
+# ---------------------------------------------------------------------------
+
+
+class _SlowGuard:
+    """Collects the tests that took long and carry no speed marker, from their reports.
+
+    The reports are what a pytest-xdist worker sends to the controller, which is the process
+    that runs this plugin, so the list is complete with ``-n``. Only the call of a test counts:
+    a fixture shared by a module is billed to the first test that uses it, and tagging that test
+    would only move the cost to the next one. The markers are read from ``report.keywords``,
+    which has the name of every marker of the test, its class and its module.
+    """
+
+    def __init__(self, config):
+        self.strict = config.getoption("--strict-slow")
+        self.threshold_seconds = config.getoption("--slow-seconds")
+        self.untagged: dict[str, float] = {}
+
+    def pytest_runtest_logreport(self, report):
+        if report.when != "call" or report.outcome not in ("passed", "failed"):
+            return
+        if report.duration < self.threshold_seconds:
+            return
+        if any(marker in report.keywords for marker in SPEED_MARKERS):
+            return
+        self.untagged[report.nodeid] = report.duration
+
+    def pytest_terminal_summary(self, terminalreporter):
+        if not self.untagged:
+            return
+        terminalreporter.section("untagged slow tests")
+        count = len(self.untagged)
+        noun, pronoun = ("test", "it") if count == 1 else ("tests", "them")
+        terminalreporter.write_line(
+            f"{count} {noun} took {self.threshold_seconds:g} s or more without any of "
+            f"{', '.join(SPEED_MARKERS)}, so the fast tier does not leave {pronoun} out. "
+            "scripts/tag_slow_tests.py tags a list of node ids."
+        )
+        for nodeid, seconds in sorted(self.untagged.items(), key=lambda item: -item[1]):
+            terminalreporter.write_line(f"{seconds:8.2f} s  {nodeid}")
+        if self.strict:
+            terminalreporter.write_line("--strict-slow: the run fails.", red=True)
+
+    @pytest.hookimpl(trylast=True)
+    def pytest_sessionfinish(self, session, exitstatus):
+        if self.strict and self.untagged and exitstatus == pytest.ExitCode.OK:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_configure(config):
+    config.pluginmanager.register(_TierSelection(config), "test-tiers")
+    # A pytest-xdist worker has no terminal; its reports reach the controller's guard.
+    if not hasattr(config, "workerinput"):
+        config.pluginmanager.register(_SlowGuard(config), "slow-guard")
+
+
+# ---------------------------------------------------------------------------
+# Area tags
+# ---------------------------------------------------------------------------
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    """Tag every test with the areas of the code its file exercises.
+
+    ``pytest -m poses`` or ``-m "poses or preflight"`` then runs a part of the suite. The areas
+    come from the imports of the test file (tests/_areas.py), so nothing is written by hand and a
+    new test file is tagged when it is collected. ``tryfirst`` puts the tags on before pytest
+    applies ``-m``. Each area is registered in pyproject.toml, which ``--strict-markers`` needs.
+    """
+    from _areas import areas_of_test_file
+
+    for item in items:
+        for area in sorted(areas_of_test_file(Path(str(item.path)))):
+            item.add_marker(area)
 
 
 @pytest.fixture(autouse=True)
@@ -64,8 +286,12 @@ def _restore_package_logging():
                 lg.removeHandler(handler)
 
 
+# The bundled example structures, located from this file and not from the working directory:
+# a test that builds the path as Path("data/...") skips when pytest runs from another directory.
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
 # Path to real example PDB for integration tests
-EXAMPLE_PDB_PATH = Path(__file__).parent.parent / "data" / "example_linear_p53_1YCR.pdb"
+EXAMPLE_PDB_PATH = DATA_DIR / "example_linear_p53_1YCR.pdb"
 
 
 @pytest.fixture

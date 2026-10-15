@@ -1,8 +1,7 @@
 """Provenance for result files: which code, seed and machine produced them.
 
-``collect_provenance`` returns a small JSON-serialisable dict that the
-pipeline attaches to its results (``results["provenance"]``), so a result file
-can be tied back to the code and settings that produced it.
+``collect_provenance`` returns a small JSON-serialisable dict that the pipeline attaches to its
+results (``results["provenance"]``).
 
 Schema (``schema_version`` 1)::
 
@@ -12,21 +11,20 @@ Schema (``schema_version`` 1)::
         "git_sha": "eff961f...",        # HEAD of the source checkout, else None
         "python": "3.12.3",
         "os": "Linux-6.18-x86_64-...",  # platform.platform()
-        "openmm_version": "8.2",        # None when OpenMM is not importable
+        "openmm_version": "8.2.0",      # installed distribution (not imported); None if absent
         "platform": "CUDA",             # compute platform reported by the caller, else None
         "seed": 1,                      # random seed of the run; None = fresh randomness
     }
 
-Two optional keys describe a run that used OpenFold3. They are absent from a block that
-was not asked for them, and adding them needs no schema bump:
+Two optional keys describe a run that used OpenFold3. They are absent from a block that was not
+asked for them, and adding them needs no schema bump:
 
-* ``openfold3_version``: the installed ``openfold3`` distribution version (None when it is
-  not installed or cannot be read), added by ``collect_provenance(openfold3=True)``. It
-  describes the installation that the run would use, so a pipeline asks for it only when
-  it starts OpenFold3 itself and not when it reads the output of an earlier run.
+* ``openfold3_version``: the installed ``openfold3`` distribution version (None when it is not
+  installed or cannot be read), added by ``collect_provenance(openfold3=True)``. A pipeline asks
+  for it only when it starts OpenFold3 itself, not when it reads the output of an earlier run.
 * ``openfold3_checkpoint``: the file name of the checkpoint that produced the prediction
-  (``inference_ckpt_name`` in the record extras of the ``of3`` adapter). The pipeline adds
-  it after it has read the prediction; nothing here can know it earlier.
+  (``inference_ckpt_name`` in the record extras of the ``of3`` adapter). The pipeline adds it
+  after it has read the prediction.
 
 Collection is best effort: a field that cannot be determined is ``None`` and
 nothing here raises.
@@ -101,11 +99,21 @@ def _git_sha() -> Optional[str]:
 
 
 def _openmm_version() -> Optional[str]:
-    try:
-        import openmm
+    """Version of the installed OpenMM distribution, read from its metadata; None if absent.
 
-        return str(openmm.__version__)
-    except Exception:  # noqa: BLE001 - OpenMM missing or broken; None is the record
+    Not imported: loading OpenMM takes about a second, and the static metrics (and so every
+    pose-set call) work without it. The metadata gives the release number, ``8.2.0`` for the conda
+    build whose library reports ``8.2`` as ``__version__``.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return str(version("openmm"))
+        except PackageNotFoundError:
+            logger.debug("OpenMM version unavailable: no 'openmm' distribution is installed")
+            return None
+    except Exception:  # noqa: BLE001 - unreadable metadata; None is the record
         logger.debug("OpenMM version unavailable", exc_info=True)
         return None
 

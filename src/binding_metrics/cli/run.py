@@ -13,8 +13,10 @@ Usage:
         [--random-seed 1] \\
         [--device cuda]
 
-The results JSON carries a ``provenance`` block (package version, git sha, seed,
-platform) so a result can be tied to the code and settings that produced it.
+The results JSON carries a ``provenance`` block (package version, git sha, seed, platform).
+It writes a NaN or infinity as the token ``NaN`` or ``Infinity``, and ``nonfinite_fields`` lists
+the paths; ``--nonfinite null`` writes ``null`` instead, for parsers that accept only standard
+JSON.
 
 Structure prediction:
     The ``openfold`` step runs OpenFold3 and writes ``results["openfold"]``. With
@@ -30,6 +32,13 @@ Structure prediction:
 
         binding-metrics-run --input complex.cif --output-dir results/ \\
             --predictor boltz2 --prediction-dir boltz_out/
+
+Design origin:
+    --designed-with {boltzgen,bindcraft,colabdesign} names the pipeline that made the binder.
+    When the model of the run is one that pipeline ran itself (BoltzGen: Boltz-2; BindCraft and
+    ColabDesign: AlphaFold2, --predictor af2), the EvoBind adversarial check is left out with a
+    warning and the rest runs (--design-policy skip, the default; warn runs it and marks the
+    result, error refuses). --on-incompatible does not change this.
 
 Configuration file:
     --config run.toml supplies option defaults; flags on the command line override
@@ -52,7 +61,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from binding_metrics._constants import (
     DEFAULT_DEVICE,
@@ -60,7 +69,14 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
-from binding_metrics.capabilities import POLICIES, IncompatibleInputError
+from binding_metrics._jsonutil import add_nonfinite_arg
+from binding_metrics.capabilities import (
+    DEFAULT_DESIGN_POLICY,
+    DEFAULT_MSA_POLICY,
+    POLICIES,
+    IncompatibleInputError,
+    design_origin,
+)
 from binding_metrics.cli import (
     DEFAULT_OPENFOLD_TEMPLATES,
     OPENFOLD_MODE_HELP,
@@ -97,11 +113,18 @@ from binding_metrics.cli.prediction import (
     scored_seed_kwargs,
     weights_description,
 )
-from binding_metrics.metrics._common import ChainAliasAction, resolve_chain_role
+from binding_metrics.metrics._common import (
+    ChainAliasAction,
+    ChainNotFoundError,
+    require_distinct_chains,
+    resolve_chain_role,
+)
 from binding_metrics.metrics.registry import get_metric
 from binding_metrics.preflight_cli import (
+    ADVERSARIAL_CHECK,
     BINDER_TYPE_CHOICES,
     MODEL_STEP,
+    NO_DESIGN_SOURCE_MESSAGE,
     add_preflight_args,
     check_input,
     model_step_of,
@@ -154,10 +177,6 @@ REFERENCE_METRICS = _steps_taking_a_path({"dockq": ("dockq",)})
 KNOWN_METRICS = ALL_METRICS | REFERENCE_METRICS
 
 
-class ChainNotFoundError(ValueError):
-    """A chain ID requested by the caller does not exist in the structure."""
-
-
 def _require_chains_present(
     chain_info: dict, peptide_chain: Optional[str], receptor_chain: Optional[str]
 ) -> None:
@@ -192,11 +211,33 @@ def _warn(msg: str) -> None:
     logger.warning("  [warning] %s", msg)
 
 
-def _check_preflight_options(binder_type: str, on_incompatible: str) -> None:
+def _raw_energy_note(n_rebuilt: int) -> str:
+    """The sentence for a raw interaction energy of a structure PDBFixer rebuilt atoms of.
+
+    PDBFixer places a missing heavy atom from a template without checking its neighbours, so
+    overlaps between the two chains can dominate the raw energy.
+    """
+    plural = "" if n_rebuilt == 1 else "s"
+    return (
+        f"raw interaction energy of the prepared structure, in which PDBFixer rebuilt "
+        f"{n_rebuilt} heavy atom{plural} without checking for clashes: overlaps can dominate "
+        "the raw value; use the relaxed mode for an energy that means something"
+    )
+
+
+def _check_preflight_options(
+    binder_type: str,
+    on_incompatible: str,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
+    designed_with=None,
+) -> None:
     if binder_type not in BINDER_TYPE_CHOICES:
         raise ValueError(f"binder_type must be one of {BINDER_TYPE_CHOICES}, got {binder_type!r}")
     if on_incompatible not in POLICIES:
         raise ValueError(f"on_incompatible must be one of {POLICIES}, got {on_incompatible!r}")
+    if design_policy not in POLICIES:
+        raise ValueError(f"design_policy must be one of {POLICIES}, got {design_policy!r}")
+    design_origin(designed_with)  # TypeError for a value that is no source
 
 
 def _run_preflight(
@@ -218,6 +259,11 @@ def _run_preflight(
     prediction_mode: Optional[str] = None,
     openfold_mode: str = "score",
     prediction_weights: Optional[Path] = None,
+    designed_with=None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
+    msa_policy: str = DEFAULT_MSA_POLICY,
+    msa_server: Optional[bool] = None,
+    receptor_msa: Optional[str | Path] = None,
 ):
     """The pre-flight check of one run, before anything is prepared, relaxed or predicted.
 
@@ -266,7 +312,28 @@ def _run_preflight(
         include_plan=include_plan,
         on_unmappable_residue=on_unmappable_residue,
         prediction_weights=prediction_weights,
+        designed_with=designed_with,
+        design_policy=design_policy,
+        msa_policy=msa_policy,
+        msa_server=msa_server,
+        receptor_msa=receptor_msa,
     )
+
+
+def _label_independence(block: dict, independent: Optional[bool]) -> None:
+    """Add ``independent_of_design`` to the block of the model step when the design is known.
+
+    True when the model of the run is not one the design pipeline ran itself, False when it is.
+    Nothing is added without a known design source, nor to the block of a step that was left out
+    or failed.
+    """
+    if (
+        independent is not None
+        and isinstance(block, dict)
+        and not block.get("skipped")
+        and not block.get("error")
+    ):
+        block["independent_of_design"] = independent
 
 
 def _step(name: str) -> None:
@@ -324,6 +391,11 @@ def run_pipeline(
     prediction_conda_env: Optional[str] = None,
     prediction_lock_threshold: Optional[float] = None,
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
+    designed_with: Optional[str | Sequence[str]] = None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
+    prediction_msa_policy: str = DEFAULT_MSA_POLICY,
+    prediction_receptor_msa: Optional[str | Path] = None,
+    preflight_msa: Optional[tuple] = None,
 ) -> dict:
     """Run the full pipeline and return a results dict.
 
@@ -344,11 +416,11 @@ def run_pipeline(
             given. Separate from ``random_seed``.
         openfold_use_msa_server: Whether the OpenFold3 step uses the ColabFold MSA server
             (keyword-only, default True; ``--openfold-no-msa-server`` is False). With the server
-            off OpenFold3 runs with a dummy MSA that holds only the query sequence of each chain,
-            which lowers accuracy for a natural receptor; with ``openfold_templates="alignment"``
-            it also keeps the template alignments that the server would replace (issue #68). The
-            value is recorded as ``provenance["openfold3_use_msa_server"]`` when OpenFold3 is run
-            here, and is part of the key of the prediction store.
+            off OpenFold3 runs with a dummy MSA that holds only the query sequence of each chain;
+            with ``openfold_templates="alignment"`` it also keeps the template alignments that
+            the server would replace. The value is recorded as
+            ``provenance["openfold3_use_msa_server"]`` when OpenFold3 is run here, and is part of
+            the key of the prediction store.
         openfold_templates: How the template of each chain reaches OpenFold3 in ``score`` and
             ``refold`` mode (keyword-only): ``"structure"`` (default) gives the template
             CIF itself (OpenFold3's CIF Direct Template Mode, OpenFold3 0.4.2 or later), which
@@ -365,13 +437,11 @@ def run_pipeline(
             (keyword-only): ``"auto"`` (default) when the binder has a head-to-tail bond, standard
             residues only, and the installed OpenFold3 is 0.4.5 or later, ``True`` (``"on"``)
             always, ``False`` (``"off"``) never; see ``prepare_refolding_query``. OpenFold3 uses
-            the flag only to wrap the relative positions of the chain: it does not enforce the
-            closure bond and has published no accuracy benchmark for cyclic peptides, and with
-            modified residues the flag made the one complex tried worse. The block of the step
-            (``results["openfold"]``, or ``results["prediction"]`` with ``predictor``) gets
-            ``binder_cyclic`` (bool), and a ``reason`` when a head-to-tail binder was left
-            linear because it has modified residues or the OpenFold3 version is too old or
-            unreadable.
+            the flag only to wrap the relative positions of the chain and does not enforce the
+            closure bond. The block of the step (``results["openfold"]``, or
+            ``results["prediction"]`` with ``predictor``) gets ``binder_cyclic`` (bool), and a
+            ``reason`` when a head-to-tail binder was left linear because it has modified
+            residues or the OpenFold3 version is too old or unreadable.
         predictor: A key of ``binding_metrics.predictors.PARSERS`` (keyword-only). The
             ``openfold`` step then reads that model's prediction through a
             ``PredictionSession`` and writes ``results["prediction"]``; ``results["openfold"]``
@@ -394,10 +464,11 @@ def run_pipeline(
             text of the plan under ``preflight["plan"]``) and does nothing else, whatever the
             policy.
         prediction_mode: How the model is used for the complex: ``predict``, ``refold``,
-            ``score`` or ``score-lock`` (keyword-only; ``--prediction-mode``). It is checked against
-            what the model supports in the pre-flight check, and for a run from here against what
-            its runner runs (``supported_modes``: of3 ``refold`` and ``score``, boltz2 all four,
-            af2 and protenix ``predict``; another one raises ``ValueError``), and recorded as
+            ``score``, ``score-lock`` or ``refold-lock`` (keyword-only; ``--prediction-mode``). It
+            is checked against what the model supports in the pre-flight check, and for a run from
+            here against what its runner runs (``supported_modes``: of3 ``refold`` and ``score``,
+            boltz2 ``predict``, ``refold``, ``score`` and ``score-lock``, af2 and protenix
+            ``predict``; another one raises ``ValueError``), and recorded as
             ``mode`` in ``results["prediction"]`` and ``results["preflight"]``. None takes
             ``openfold_mode`` for OpenFold3 run from here, the ``default_mode`` of the runner for
             another model (boltz2 ``score``, af2 and protenix ``predict``), and is "not known, not
@@ -421,17 +492,48 @@ def run_pipeline(
             ``"auto"`` (the default when None), ``True`` (``"on"``) or ``False`` (``"off"``);
             ``prediction_use_msa_server`` False runs without an MSA server; ``prediction_conda_env``
             is the environment that has the model (None: its executable on PATH);
-            ``prediction_lock_threshold`` is the threshold of ``score-lock`` in angstrom (None: the
-            runner's own, 2.0 for Boltz-2). For ``predictor="of3"`` they are the settings of
-            ``openfold_cyclic``, ``openfold_use_msa_server`` and ``openfold_conda_env``: both
+            ``prediction_lock_threshold`` is the threshold of the lock modes (``score-lock``,
+            ``refold-lock``) in angstrom (None: the runner's own, 2.0 for Boltz-2). For
+            ``predictor="of3"`` they are the settings of ``openfold_cyclic``,
+            ``openfold_use_msa_server`` and ``openfold_conda_env``: both
             spellings with different values raise ``ValueError``; for another model the
             ``openfold_*`` ones other than their defaults raise it, naming the ``prediction_*`` one.
             A setting that the runner of the model has no keyword for (``prediction_cyclic`` for
-            ColabFold, the lock threshold outside ``score-lock``) raises it too, and so does a
+            ColabFold, the lock threshold outside the lock modes) raises it too, and so does a
             mode the runner does not run. They are refused with ``prediction_dir``: the model is
             not run.
         preflight_model: For a caller that runs the model step itself after this call (the
             batch): ``(model, metric, adopted, mode)``, so that its limits are checked here, first.
+        prediction_msa_policy, prediction_receptor_msa: The MSA policy of ``predictor`` run from
+            here (keyword-only; ``--prediction-msa-policy``, ``--prediction-receptor-msa``).
+            ``prediction_msa_policy`` is ``"default"`` or ``"forbid-server"``, under which no
+            sequence may be sent to an MSA server: the run then needs
+            ``prediction_use_msa_server=False`` and a receptor MSA, and the pre-flight check
+            refuses a run that would use the server under every ``on_incompatible`` value.
+            ``prediction_receptor_msa`` is the path of the receptor's alignment, or ``"single"``
+            for a receptor predicted from its own sequence; it is identified by content in the
+            key of the prediction. Both are passed to the runner only when they are not at their
+            default, and a runner whose ``make_request`` has no such setting raises
+            ``ValueError`` that names the option and the model. Refused with ``prediction_dir``
+            and without ``predictor``.
+        preflight_msa: For a caller that runs the model step itself after this call (the batch):
+            ``(msa_policy, uses_msa_server)`` of that step, so that the policy is checked here
+            with ``preflight_model``; a third element, the receptor MSA of that step (a path,
+            ``"single"`` or None), tells the check whether the target has an MSA. Without it a
+            run with ``predictor`` takes the first two from ``prediction_msa_policy`` and the
+            merged ``prediction_use_msa_server``.
+        designed_with, design_policy: The pipeline that made the designed binder and what to do
+            about it (keyword-only; ``--designed-with`` and ``--design-policy``).
+            ``designed_with`` is ``"boltzgen"`` (Boltz-2), ``"bindcraft"`` or ``"colabdesign"``
+            (AlphaFold2, ``af2``), in any case, or a list of the registry names of the models the
+            design ran. When the model step runs one of them, ``design_policy`` ``"skip"``
+            (default) leaves the EvoBind adversarial check out, warns loudly and runs the rest;
+            ``"warn"`` runs it and warns; ``"error"`` raises ``IncompatibleInputError`` before
+            anything runs. ``on_incompatible`` does not change this rule. The block of the model
+            step (``results["prediction"]`` or ``results["openfold"]``) gets
+            ``independent_of_design`` (False for such a model, True for another) and, for a check
+            left out, ``adversarial_skipped`` with the reason. Without ``designed_with`` nothing
+            is decided and the output is unchanged.
         The remaining arguments mirror the ``binding-metrics-run`` flags.
 
     Returns:
@@ -451,10 +553,15 @@ def run_pipeline(
 
         ``prep`` records what preparation changed: ``removed_heterogens``,
         ``n_removed_waters``, ``kept_nonstandard``, ``n_missing_atoms_rebuilt``,
-        ``n_missing_residue_gaps`` and ``chain_breaks`` (see
+        ``n_missing_residue_gaps``, ``chain_breaks`` and ``missing_residues`` (see
         ``core.system.prep_structure``). ``relax`` lists under
         ``dropped_protein_chains`` the protein chains, other than the peptide and
         the receptor, that the relaxation removed.
+
+        ``energy`` gets ``warnings``, a list of sentences, when ``raw`` is among the
+        ``energy_modes``, the energy reads the prepared structure (the relaxation was skipped
+        or failed) and preparation rebuilt heavy atoms; the sentence gives their number and
+        the same text is logged as a warning. The energies are not changed.
 
         ``preflight`` holds the decision of the pre-flight check: ``status`` (``ok``,
         ``warn``, ``skipped``, ``not_checked``), ``reason``, ``policy``, the steps left out
@@ -466,11 +573,19 @@ def run_pipeline(
         where ``"single_bonds"`` marks a residue whose double bonds, aromatic
         rings and hydrogen count are unreliable.
 
+        ``relax`` also carries ``ncaa_charge_scheme`` when non-canonical residues were
+        parameterised: ``{residue name: scheme}``, the way the AM1-BCC charges of the
+        residue were computed (``"ace-nme-caps-v2"``: on the residue capped with ACE and
+        NME, see ``core.gaff_ncaa``). It carries ``qc_warnings``, the comma-joined keys of
+        the advisory QC findings (``chain_break_closed``, ``ca_ca_distance``), which never
+        change ``qc_passed``.
+
     Raises:
         ChainNotFoundError: a requested chain ID does not exist in the structure.
         IncompatibleInputError: the input cannot go through a requested step or model and
             ``on_incompatible`` is ``"error"``; nothing has run. A ``ValueError``.
-        ValueError: a chain is given through both spellings with different IDs,
+        ValueError: a chain is given through both spellings with different IDs, both chain
+            roles name one chain (whatever ``on_incompatible`` says),
             ``on_unmappable_residue`` is not ``"error"`` or ``"x"``, ``openfold_cyclic`` is
             not ``"auto"``, ``"on"``, ``"off"``, ``True`` or ``False``, ``predictor`` is not a
             registered model, or it has no runner and no ``prediction_dir`` is given.
@@ -479,6 +594,7 @@ def run_pipeline(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
+    require_distinct_chains(peptide_chain, receptor_chain)
     check_on_unmappable_residue(on_unmappable_residue)
     check_openfold_cyclic(openfold_cyclic)
     check_openfold_templates(openfold_templates)
@@ -496,6 +612,8 @@ def run_pipeline(
         prediction_conda_env=prediction_conda_env,
         prediction_lock_threshold=prediction_lock_threshold,
         openfold_templates=openfold_templates,
+        prediction_msa_policy=prediction_msa_policy,
+        prediction_receptor_msa=prediction_receptor_msa,
     )
     if predictor is not None and prediction_dir is None:
         # the --prediction-* spellings are merged into the settings of the run
@@ -504,11 +622,18 @@ def run_pipeline(
             route.use_msa_server,
             route.conda_env,
         )
+        if preflight_msa is None:
+            preflight_msa = (prediction_msa_policy, bool(openfold_use_msa_server))
     prediction_weights = check_weights_arg(prediction_weights, predictor)
-    _check_preflight_options(binder_type, on_incompatible)
+    _check_preflight_options(binder_type, on_incompatible, design_policy, designed_with)
 
     if sample_id is None:
         sample_id = input_path.stem
+
+    # the batch runs the model step itself and tells the receptor MSA of that step with the policy
+    receptor_msa = prediction_receptor_msa
+    if receptor_msa is None and preflight_msa is not None and len(preflight_msa) > 2:
+        receptor_msa = preflight_msa[2]
 
     # Pre-flight: before the output directory, the provenance probe, prep, relaxation, any model
     # run and the prediction store, so that a refused input costs nothing.
@@ -530,6 +655,11 @@ def run_pipeline(
         prediction_mode=prediction_mode,
         openfold_mode=openfold_mode,
         prediction_weights=prediction_weights,
+        designed_with=designed_with,
+        design_policy=design_policy,
+        msa_policy=DEFAULT_MSA_POLICY if preflight_msa is None else preflight_msa[0],
+        msa_server=None if preflight_msa is None else preflight_msa[1],
+        receptor_msa=receptor_msa,
     )
     if preflight_only:
         return {"sample_id": sample_id, "input": str(input_path), "preflight": outcome.block}
@@ -541,6 +671,9 @@ def run_pipeline(
         skip_relax = True
     metrics = frozenset(metrics) - set(skipped_steps)
     skipped_geometry = outcome.skipped_geometry
+    adversarial_skipped = outcome.skipped_checks.get(ADVERSARIAL_CHECK)
+    if designed_with is None and MODEL_STEP in metrics:
+        logger.info(NO_DESIGN_SOURCE_MESSAGE)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     runs_openfold3 = "openfold" in metrics and (
@@ -607,9 +740,8 @@ def run_pipeline(
                     "keep_water": keep_water,
                     **prep_report,
                 }
-                # save_cif preserves original auth IDs and aligns label IDs to match,
-                # so downstream OpenMM steps will see the original chain IDs. This logs
-                # the chains of the prepped file.
+                # save_cif keeps the original auth IDs, so downstream OpenMM steps see the
+                # original chain IDs. This call logs the chains of the prepped file.
                 detect_chains_from_file(
                     prepped_path,
                     peptide_chain=peptide_chain,
@@ -640,8 +772,8 @@ def run_pipeline(
                 [b.cyclic_type for b in cyclic_bond_hints],
             )
     except Exception as e:  # noqa: BLE001 - the hints are best effort; the failure is logged
-        # Without them relaxation detects cyclisation from the prepped file, which may
-        # have lost the STRUCT_CONN records. Debug level keeps the CLI output unchanged.
+        # Without them relaxation detects cyclisation from the prepped file, which may have
+        # lost the STRUCT_CONN records.
         logger.debug("Cyclic bond hints unavailable from %s: %s", input_path, e)
 
     relaxed_path: Optional[Path] = None
@@ -705,10 +837,9 @@ def run_pipeline(
         )
         results["relax"] = {"skipped": True}
 
-    # The metrics below read ``relaxed_path``. Those that use biotite name the chains
-    # by author ID. The input has its own author IDs; a prepped or relaxed file is
-    # written from the input CIF with those author IDs restored and repeated as its
-    # label IDs. So the author IDs of the input name the chains in every case.
+    # The metrics below read ``relaxed_path``. A prepped or relaxed file keeps the author chain
+    # IDs of the input (repeated as its label IDs), so the author IDs of the input name the
+    # chains in every case.
     working_peptide, working_receptor = peptide_chain, receptor_chain
 
     # ------------------------------------------------------------------ Energy
@@ -730,6 +861,13 @@ def run_pipeline(
                 random_seed=random_seed,
             )
             results["energy"] = energy
+            # The raw mode reads the structure as it is. When the relaxation was skipped or
+            # failed, that is the prepared file, and the atoms PDBFixer rebuilt may overlap.
+            n_rebuilt = results["prep"].get("n_missing_atoms_rebuilt", 0)
+            if "raw" in energy_modes and relaxed_path == prepped_path != input_path and n_rebuilt:
+                note = _raw_energy_note(n_rebuilt)
+                energy["warnings"] = [*energy.get("warnings", []), note]
+                _warn(note)
         except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results["energy"]
             _warn(f"Energy computation failed: {e}")
             traceback.print_exc()
@@ -830,10 +968,9 @@ def run_pipeline(
             try:
                 from binding_metrics.metrics.dockq import compute_dockq_metrics
 
-                # Score the prediction *as submitted* (original input coordinates)
-                # against the reference: CAPRI evaluates the predicted coordinates,
-                # so we deliberately use input_path, not the prepped/relaxed pose
-                # (prep + MD would move atoms and confound the accuracy measure).
+                # Score the prediction as submitted (original input coordinates) against the
+                # reference: CAPRI evaluates the predicted coordinates, so input_path is used,
+                # not the prepped or relaxed pose (prep and MD would move atoms).
                 dockq = compute_dockq_metrics(input_path, reference_path)
                 results["dockq"] = dockq
                 score = dockq.get("dockq")
@@ -873,7 +1010,11 @@ def run_pipeline(
                 prediction_weights=prediction_weights,
                 prediction_lock_threshold=route.lock_threshold,
                 openfold_templates=openfold_templates,
+                adversarial_skipped=adversarial_skipped,
+                prediction_msa_policy=prediction_msa_policy,
+                prediction_receptor_msa=prediction_receptor_msa,
             )
+            _label_independence(results["prediction"], outcome.independent_of_design)
             results["provenance"].update(prediction_provenance)
         else:
             results["prediction"] = {"skipped": True}
@@ -957,7 +1098,7 @@ def run_pipeline(
                 if weights is not None:
                     of_metrics["weights"] = weights
                     results["provenance"]["prediction_weights"] = weights
-                # EvoBind metrics — no extra model calls, reuse OF3 outputs
+                # EvoBind metrics reuse the OF3 outputs (no extra model call)
                 of_structure = of_metrics.get("structure_path")
                 plddt = of_metrics.get("plddt_per_atom")
                 if of_structure:
@@ -980,23 +1121,26 @@ def run_pipeline(
                         _warn(f"EvoBind score failed: {e}")
                         of_metrics["evobind_error"] = str(e)
 
-                    # Adversarial check: does the OF3 prediction agree with the
-                    # input design pose? Large ΔCOM = OF3 places the binder
-                    # elsewhere → design pose not supported by the prediction.
-                    try:
-                        adversarial = compute_evobind_adversarial_check(
-                            design_structure_path=input_path,
-                            afm_structure_path=of_structure,
-                            binder_chain=peptide_chain,
-                            receptor_chain=receptor_chain,
-                            afm_plddt_per_atom=plddt,
-                        )
-                        _merge_reason(of_metrics, adversarial, "evobind adversarial")
-                        of_metrics.update(adversarial)
-                    except Exception as e:  # noqa: BLE001 - per-check isolation; see adversarial_error
-                        _warn(f"EvoBind adversarial check failed: {e}")
-                        of_metrics["adversarial_error"] = str(e)
+                    # Adversarial check: compares the OF3 prediction with the input design pose
+                    # (ΔCOM of the binder).
+                    if adversarial_skipped is not None:
+                        of_metrics["adversarial_skipped"] = adversarial_skipped
+                    else:
+                        try:
+                            adversarial = compute_evobind_adversarial_check(
+                                design_structure_path=input_path,
+                                afm_structure_path=of_structure,
+                                binder_chain=peptide_chain,
+                                receptor_chain=receptor_chain,
+                                afm_plddt_per_atom=plddt,
+                            )
+                            _merge_reason(of_metrics, adversarial, "evobind adversarial")
+                            of_metrics.update(adversarial)
+                        except Exception as e:  # noqa: BLE001 - per-check isolation; see adversarial_error
+                            _warn(f"EvoBind adversarial check failed: {e}")
+                            of_metrics["adversarial_error"] = str(e)
 
+                _label_independence(of_metrics, outcome.independent_of_design)
                 results["openfold"] = of_metrics
 
         except Exception as e:  # noqa: BLE001 - per-metric isolation; recorded in results
@@ -1015,24 +1159,54 @@ def run_pipeline(
     return results
 
 
+#: Keys that the model step writes when a sub-step it was asked to run could not be computed,
+#: with the name the failure reason gives the sub-step.
+_SUBSTEP_ERRORS = (
+    ("evobind_error", "EvoBind score"),
+    ("adversarial_error", "EvoBind adversarial check"),
+)
+
+
+def _step_failure(res: Any) -> Optional[str]:
+    """The reason a metric step did not complete, or None when it did.
+
+    A step is failed when its result dict carries an ``error`` key, when a step that reports a
+    ``success`` flag (relaxation, energy) has ``success is False``, when a step that did not
+    report ``success=False`` has a non-empty ``error_message`` (a requested energy mode failed
+    beside one that succeeded; the energy term of the receptor score failed), or when the model
+    step reports a sub-step it was asked to run in ``evobind_error`` or ``adversarial_error``.
+    ``{"skipped": True}`` steps, a ``reason`` alone and a check left out by the design-origin
+    policy (``adversarial_skipped``) are not failures. The reasons of one step are joined and
+    cut to 200 characters.
+    """
+    if not isinstance(res, dict) or res.get("skipped"):
+        return None
+    reasons = []
+    if "error" in res:
+        reasons.append(str(res["error"]))
+    elif res.get("success") is False:
+        reasons.append(str(res.get("error_message") or "step reported success=False"))
+    elif res.get("error_message"):
+        # A block that failed in part keeps success=True and the values it computed, and names
+        # what failed in error_message. poses.score._result_status reads this shape as partial
+        # too; it is not imported here because it also reads a bare ``reason`` as a caveat, and
+        # the run does not count that as a failure.
+        reasons.append(str(res["error_message"]))
+    reasons.extend(f"{label}: {res[key]}" for key, label in _SUBSTEP_ERRORS if res.get(key))
+    return "; ".join(reasons)[:200] if reasons else None
+
+
 def _collect_failures(results: dict) -> list:
     """Return ``(step, reason)`` for every metric step that did not complete.
 
-    A step counts as failed when its result dict carries an ``error`` key, or
-    when a step that reports a ``success`` flag (relaxation, energy) has
-    ``success is False``. Steps marked ``{"skipped": True}`` are not failures.
-    Used to make the pipeline exit non-zero instead of silently reporting
-    success when metrics could not be computed.
+    See ``_step_failure`` for what counts as failed. Used to make the pipeline exit non-zero
+    instead of silently reporting success when metrics could not be computed.
     """
     failures = []
     for step, res in results.items():
-        if not isinstance(res, dict) or res.get("skipped"):
-            continue
-        if "error" in res:
-            failures.append((step, str(res["error"])[:200]))
-        elif res.get("success") is False:
-            reason = res.get("error_message") or "step reported success=False"
-            failures.append((step, str(reason)[:200]))
+        reason = _step_failure(res)
+        if reason is not None:
+            failures.append((step, reason))
     return failures
 
 
@@ -1215,6 +1389,7 @@ def main():
         dest="summary_format",
         help="Summary format (default: md)",
     )
+    add_nonfinite_arg(report_group)
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(report_group)
@@ -1225,6 +1400,11 @@ def main():
 
     if not args.input.exists():
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        require_distinct_chains(args.peptide_chain, args.receptor_chain)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
     # A reference auto-enables DockQ; validate it exists up front.
@@ -1284,10 +1464,14 @@ def main():
                 prediction_use_msa_server=not args.prediction_no_msa_server,
                 prediction_conda_env=args.prediction_conda_env,
                 prediction_lock_threshold=args.prediction_lock_threshold,
+                prediction_msa_policy=args.prediction_msa_policy,
+                prediction_receptor_msa=args.prediction_receptor_msa,
                 openfold_templates=args.openfold_templates,
                 binder_type=args.binder_type,
                 on_incompatible=args.on_incompatible,
                 preflight_only=args.preflight_only,
+                designed_with=args.designed_with,
+                design_policy=args.design_policy,
             )
         except ChainNotFoundError as e:
             print(f"ERROR: {e}", file=sys.stderr)
@@ -1310,6 +1494,7 @@ def main():
             fmt=args.fmt,
             summary=args.summary,
             summary_format=args.summary_format,
+            nonfinite=args.nonfinite,
         )
 
         failures = _collect_failures(results)

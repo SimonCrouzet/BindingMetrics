@@ -106,7 +106,8 @@ class TestDetectChainsLogging:
     expected_lines = [
         "  Chain detection (example_bicyclic_sfti1_3P8F.cif):",
         "    chain I: 14 residues  ← peptide [auto]",
-        "    chain A: 227 residues  ← receptor [auto]",
+        # 227 residue numbers, 241 residues: 60A-60I, 184A and others carry insertion codes
+        "    chain A: 241 residues  ← receptor [auto]",
     ]
 
     @pytest.fixture(autouse=True)
@@ -216,6 +217,7 @@ def _relaxer(**overrides):
     return ImplicitRelaxation(RelaxationConfig(**settings))
 
 
+@pytest.mark.slow
 class TestSetupSystemLogging:
     """The linear-peptide path of ``_setup_system`` (1YCR, no GPU needed)."""
 

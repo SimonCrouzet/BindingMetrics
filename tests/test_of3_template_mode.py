@@ -5,7 +5,7 @@ chain, protein chains only) gives the template CIF itself; the ColabFold MSA ser
 alignment path and leaves CIF paths alone (``colabfold_msa_server.py``), so ``structure`` is the
 default and ``alignment`` stays available. Nothing here runs
 OpenFold3: the query builders, the request key and the command line are the real code, the model is
-a stub. What OpenFold3 does with such a query is in the validation runs of the documentation.
+a stub.
 """
 
 import argparse

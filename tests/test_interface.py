@@ -1,17 +1,17 @@
 """Tests for interface analysis metrics (SASA, ΔG_int, H-bonds, salt bridges)."""
 
 import importlib.util
-from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import DATA_DIR
 
 HAS_BIOTITE = importlib.util.find_spec("biotite") is not None
 
 requires_biotite = pytest.mark.skipif(not HAS_BIOTITE, reason="biotite not installed")
 
 # CIF fixture shared with other integration tests
-EXAMPLE_CIF = Path("data/example_linear_p53_1YCR.pdb")
+EXAMPLE_CIF = DATA_DIR / "example_linear_p53_1YCR.pdb"
 
 
 class TestDetectInterfaceChains:

@@ -7,6 +7,7 @@ installed. The end-to-end run is exercised only when the DockQ CLI is on PATH.
 import shutil
 
 import pytest
+from conftest import DATA_DIR
 
 from binding_metrics.metrics.dockq import (
     _parse_dockq_json,
@@ -127,9 +128,7 @@ class TestComputeDockqEndToEnd:
     """Full DockQ run — a perfect self-comparison must score 1.0."""
 
     def test_identical_structure_scores_one(self):
-        from pathlib import Path
-
-        example = Path("data/example_linear_p53_1YCR.pdb")
+        example = DATA_DIR / "example_linear_p53_1YCR.pdb"
         if not example.exists():
             pytest.skip("no example complex available")
         out = compute_dockq_metrics(example, example)

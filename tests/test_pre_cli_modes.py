@@ -57,6 +57,9 @@ class TestTheOption:
         ):
             assert part in text
         assert "score-lock (score, with the pose pinned to the input)" in text
+        # argparse may break the printed help at the hyphen of a mode name: read the text itself
+        unwrapped = self._parser()._option_string_actions["--prediction-mode"].help
+        assert "refold-lock (refold, with the receptor pinned to the input" in unwrapped
         assert "for --predictor of3 the value of --openfold-mode" in text
         # the default of a run from here is the mode of its runner
         assert "score for boltz2 and predict for af2 and protenix" in text
@@ -202,7 +205,7 @@ class TestAnOutputMadeElsewhere:
         )
         block = results["preflight"]
         assert block["status"] == "warn" and block["mode"] == "score-lock"
-        assert "force: true" in block["reason"] and "measured once" in block["reason"]
+        assert "force: true" in block["reason"] and "not reproduced exactly" in block["reason"]
         assert results["prediction"]["mode"] == "score-lock"
         assert results["prediction"]["model"] == "boltz2" and "error" not in results["prediction"]
 

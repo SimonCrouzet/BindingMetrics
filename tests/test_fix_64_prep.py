@@ -57,6 +57,7 @@ def _delete_residue(topology, positions, chain_id, index_in_chain, source):
     return modeller.topology, modeller.positions
 
 
+@pytest.mark.slow
 class TestPrepReport:
     def test_1cwa_kept_residues_are_in_author_chain_c(self, skip_hydrogens):
         topology, positions = _load(CWA)

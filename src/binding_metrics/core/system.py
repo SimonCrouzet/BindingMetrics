@@ -7,12 +7,13 @@ import tempfile
 from typing import Literal, Optional
 
 import openmm.unit as unit
-from openmm.app import ForceField, Modeller, PDBFile
+from openmm.app import Element, ForceField, Modeller, PDBFile, Topology
 
 from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,  # re-exported: callers import it from here
 )
+from binding_metrics.core import phosaa
 from binding_metrics.core.forcefields import get_forcefield
 from binding_metrics.core.residues import (
     AMBER_PROTONATION_VARIANTS,
@@ -23,8 +24,16 @@ from binding_metrics.core.residues import (
     TERMINAL_CAP_NAMES,
     WATER_NAMES_ALL,
     WATER_NAMES_PDB_AMBER,
+    residue_label,
+    residue_number,
 )
-from binding_metrics.io.structures import author_chain_ids, copy_author_chain_ids
+from binding_metrics.io.structures import (
+    _amino_acid_names,
+    author_chain_ids,
+    copy_author_chain_ids,
+    has_alpha_carbon,
+    sequence_records,
+)
 from binding_metrics.utils import add_to_report, extend_report
 
 log = logging.getLogger(__name__)
@@ -88,6 +97,97 @@ def _extract_custom_bonds(topology) -> list:
     return bonds
 
 
+def _head_to_tail_bonds(topology, positions) -> list:
+    """Head-to-tail closures that ``topology`` does not bond, found by distance.
+
+    A chain of two or more residues whose last carbon lies closer than
+    ``core.cyclic._AMIDE_BOND_THRESH`` (0.20 nm, the cut of ``detect_cyclization``) to its
+    first nitrogen is a ring, and a model output lists no bond for it. A chain that already
+    has the bond is left to :func:`_extract_custom_bonds`.
+
+    Returns:
+        The tuples of :func:`_extract_custom_bonds`, one per such chain.
+    """
+    from binding_metrics.core.cyclic import _AMIDE_BOND_THRESH, _dist, _find_atom, _pos_nm
+
+    pos = _pos_nm(positions)
+    bonded = {frozenset((bond.atom1.index, bond.atom2.index)) for bond in topology.bonds()}
+    closures = []
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        if len(residues) < 2:
+            continue
+        nitrogen, carbon = _find_atom(residues[0], "N"), _find_atom(residues[-1], "C")
+        if nitrogen is None or carbon is None:
+            continue
+        if frozenset((nitrogen.index, carbon.index)) in bonded:
+            continue
+        if _dist(pos, carbon.index, nitrogen.index) < _AMIDE_BOND_THRESH:
+            closures.append((chain.id, len(residues) - 1, "C", chain.id, 0, "N"))
+    return closures
+
+
+#: Carboxyl carbon of the side chain of the acids that the cyclic builders template as a lactam
+#: partner (``core.cyclic.patch_cyclic_topology``: ASPL, GLUL).
+_LACTAM_ACID_CARBONS = {"ASP": "CG", "GLU": "CD"}
+
+
+def _lactam_bonds(topology, positions) -> list:
+    """Lactam closures that ``topology`` does not bond, found by distance.
+
+    The closures are those of ``core.cyclic.detect_cyclization``, at its cut
+    (``core.cyclic._AMIDE_BOND_THRESH``, 0.20 nm): the NZ of a lysine with the carboxyl carbon of
+    an aspartate (CG) or glutamate (CD) of another residue or with the last carbon of the chain,
+    and the first nitrogen of the chain with such a carboxyl carbon. The head-to-tail pair is
+    left to :func:`_head_to_tail_bonds`, and a pair that the topology bonds to
+    :func:`_extract_custom_bonds`. A model output lists no bond for the closure, and without a
+    hint prep gives the acid its second oxygen and the lysine its third hydrogen.
+
+    Returns:
+        The tuples of :func:`_extract_custom_bonds`, the carbon first, one per closure.
+    """
+    from binding_metrics.core.cyclic import _AMIDE_BOND_THRESH, _dist, _find_atom, _pos_nm
+
+    pos = _pos_nm(positions)
+    bonded = {frozenset((bond.atom1.index, bond.atom2.index)) for bond in topology.bonds()}
+    closures = []
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        if len(residues) < 2:
+            continue
+        last_carbon, first_nitrogen = _find_atom(residues[-1], "C"), _find_atom(residues[0], "N")
+        carbons = [
+            (index, _find_atom(residue, _LACTAM_ACID_CARBONS[residue.name]))
+            for index, residue in enumerate(residues)
+            if residue.name in _LACTAM_ACID_CARBONS
+        ] + [(len(residues) - 1, last_carbon)]
+        nitrogens = [
+            (index, _find_atom(residue, "NZ"))
+            for index, residue in enumerate(residues)
+            if residue.name == "LYS"
+        ] + [(0, first_nitrogen)]
+        for carbon_index, carbon in carbons:
+            for nitrogen_index, nitrogen in nitrogens:
+                if carbon is None or nitrogen is None or carbon_index == nitrogen_index:
+                    continue
+                if carbon is last_carbon and nitrogen is first_nitrogen:
+                    continue  # the head-to-tail ring
+                if frozenset((carbon.index, nitrogen.index)) in bonded:
+                    continue
+                if _dist(pos, carbon.index, nitrogen.index) < _AMIDE_BOND_THRESH:
+                    closures.append(
+                        (
+                            chain.id,
+                            carbon_index,
+                            carbon.name,
+                            chain.id,
+                            nitrogen_index,
+                            nitrogen.name,
+                        )
+                    )
+    return closures
+
+
 def _readd_custom_bonds(topology, custom_bonds: list):
     """Re-add custom bonds to a post-PDBFixer topology by position."""
     if not custom_bonds:
@@ -122,6 +222,48 @@ def _readd_custom_bonds(topology, custom_bonds: list):
                 an2,
             )
     return topology
+
+
+def _drop_duplicate_bonds(topology) -> tuple:
+    """Return ``topology`` with every bond listed once, and the number of bonds dropped.
+
+    ``PDBFixer.addMissingAtoms`` lists twice each bond that touches a residue the
+    standard table does not know (the peptide bonds on either side of a
+    phosphoserine or an N-methylated residue). OpenMM turns the second copy into one
+    more harmonic bond term, and the GAFF2 cap logic into a second cap on the same
+    carbon.
+
+    A bond is identified by its two atoms, in either order. The first listing is kept
+    with its type and order; the others keep their relative order. OpenMM has no call
+    that removes a bond, so a topology with a duplicate is rebuilt through the public
+    interface with the same chains, residues (numbers and insertion codes), atoms
+    (indices and IDs) and box. A topology without a duplicate is returned as it is.
+    """
+    seen: set = set()
+    unique_bonds = []
+    for bond in topology.bonds():
+        pair = frozenset((bond.atom1.index, bond.atom2.index))
+        if pair not in seen:
+            seen.add(pair)
+            unique_bonds.append(bond)
+    n_dropped = topology.getNumBonds() - len(unique_bonds)
+    if not n_dropped:
+        return topology, 0
+
+    cleaned = Topology()
+    cleaned.setPeriodicBoxVectors(topology.getPeriodicBoxVectors())
+    new_atom = {}
+    for chain in topology.chains():
+        new_chain = cleaned.addChain(chain.id)
+        for residue in chain.residues():
+            new_residue = cleaned.addResidue(
+                residue.name, new_chain, residue.id, residue.insertionCode
+            )
+            for atom in residue.atoms():
+                new_atom[atom] = cleaned.addAtom(atom.name, atom.element, new_residue, atom.id)
+    for bond in unique_bonds:
+        cleaned.addBond(new_atom[bond.atom1], new_atom[bond.atom2], bond.type, bond.order)
+    return cleaned, n_dropped
 
 
 def _rebuild_connect_records(fixer) -> None:
@@ -209,19 +351,16 @@ def _topology_to_fixer(topology, positions) -> "PDBFixer":
 _PEPTIDE_BOND_MAX_ANGSTROM = 2.0
 
 
-def _count_residue_gaps(topology, positions) -> int:
-    """Count places where a chain skips residues (unresolved loops).
+def _numbering_gaps(topology, positions):
+    """Yield ``(chain, residue before, residue after, n_missing)`` for each numbering gap.
 
     A gap is a pair of consecutive amino-acid residues in one chain whose residue
-    numbers jump by more than 1 and whose C and N atoms are not bonded. The
-    distance test keeps a chain that is merely renumbered from being counted.
-    When the C or N atom is absent, or sits at the origin as a placeholder, the
-    numbering jump alone decides.
-
-    Call it on the topology as loaded from the file. PDBFixer's own
-    ``missingResidues`` cannot serve: it reads the sequence records of the input
-    file, which the topology-to-CIF round trip in :func:`_topology_to_fixer` does
-    not carry, and that round trip also renumbers residues from 1 in each chain.
+    numbers jump by more than 1 and whose C and N atoms are not bonded; ``n_missing``
+    is the number of residue numbers skipped. A residue with an insertion code shares
+    the number of its predecessor (60, 60A, 60B, 61), so it never makes a jump. The
+    distance test keeps a chain that is merely renumbered from being counted. When the
+    C or N atom is absent, or sits at the origin as a placeholder, the numbering jump
+    alone decides.
     """
     import numpy as np
 
@@ -235,13 +374,12 @@ def _count_residue_gaps(topology, positions) -> int:
             return None
         return xyz * 10.0
 
-    n_gaps = 0
     for chain in topology.chains():
         previous = None
         for res in chain.residues():
-            atoms = {a.name: a.index for a in res.atoms()}
-            if "CA" not in atoms:
+            if not has_alpha_carbon(res):
                 continue  # water, ion, ligand or nucleotide
+            atoms = {a.name: a.index for a in res.atoms()}
             if previous is not None:
                 try:
                     jump = int(res.id) - int(previous[0].id)
@@ -256,35 +394,27 @@ def _count_residue_gaps(topology, positions) -> int:
                         and np.linalg.norm(c_xyz - n_xyz) < _PEPTIDE_BOND_MAX_ANGSTROM
                     )
                     if not bonded:
-                        n_gaps += 1
+                        yield chain, previous[0], res, jump - 1
             previous = (res, atoms)
-    return n_gaps
 
 
-def find_chain_breaks(topology, positions) -> list:
-    """Find consecutive residues of one chain that are too far apart to be bonded.
+def _count_residue_gaps(topology, positions) -> int:
+    """Count places where a chain skips residues (unresolved loops).
 
-    OpenMM bonds every residue to the next one in the chain by name
-    (``createStandardBonds``), whatever the distance, and so does the relaxation,
-    which then closes the gap by stretching the two ends together. A chain break
-    caused by an unresolved loop or a segment that a model placed elsewhere thus
-    disappears from the result without a message. This lists them: residues i and
-    i+1 of a chain (amino acids or capping groups, waters and ligands in between
-    skipped) whose C(i) and N(i+1) atoms are more than
-    ``_PEPTIDE_BOND_MAX_ANGSTROM`` (2.0 A, against 1.33 A for an amide bond) apart.
-    A pair where either atom is missing or sits at the origin as a placeholder cannot
-    be judged and is not listed.
-
-    Returns:
-        A list with one dict per break: ``chain`` (the author chain ID of a topology read
-        from an mmCIF, see ``io.structures.author_chain_ids``, otherwise the chain ID),
-        ``residue_before`` and ``residue_after`` (residue numbers as strings) and
-        ``c_n_distance_angstrom``.
+    See :func:`_numbering_gaps` for what counts. Call it on the topology as loaded
+    from the file. PDBFixer's own ``missingResidues`` cannot serve: it reads the
+    sequence records of the input file, which the topology-to-CIF round trip in
+    :func:`_topology_to_fixer` does not carry, and that round trip also renumbers
+    residues from 1 in each chain.
     """
+    return sum(1 for _ in _numbering_gaps(topology, positions))
+
+
+def _chain_breaks(topology, positions):
+    """Yield ``(chain, residue before, residue after, distance in A)`` for each chain break."""
     import numpy as np
 
     coords_nm = np.array(positions.value_in_unit(unit.nanometer))
-    author_ids = author_chain_ids(topology)
 
     def _atom_angstrom(atoms: dict, name: str):
         index = atoms.get(name)
@@ -292,7 +422,6 @@ def find_chain_breaks(topology, positions) -> list:
             return None
         return coords_nm[index] * 10.0
 
-    breaks = []
     for chain in topology.chains():
         previous = None
         for res in chain.residues():
@@ -305,16 +434,332 @@ def find_chain_breaks(topology, positions) -> list:
                 if c_xyz is not None and n_xyz is not None:
                     distance = float(np.linalg.norm(c_xyz - n_xyz))
                     if distance > _PEPTIDE_BOND_MAX_ANGSTROM:
-                        breaks.append(
-                            {
-                                "chain": author_ids[chain.index],
-                                "residue_before": str(previous[0].id),
-                                "residue_after": str(res.id),
-                                "c_n_distance_angstrom": round(distance, 2),
-                            }
-                        )
+                        yield chain, previous[0], res, distance
             previous = (res, atoms)
-    return breaks
+
+
+def find_chain_breaks(topology, positions) -> list:
+    """Find consecutive residues of one chain that are too far apart to be bonded.
+
+    OpenMM bonds every residue to the next one in the chain by name
+    (``createStandardBonds``), whatever the distance, so a system built from such a
+    topology pulls the two ends of an unresolved loop together. This lists the breaks:
+    residues i and i+1 of a chain (amino acids or capping groups; waters and ligands
+    in between are skipped) whose C(i) and N(i+1) atoms are more than
+    ``_PEPTIDE_BOND_MAX_ANGSTROM`` (2.0 A; an amide bond is 1.33 A) apart. A pair
+    where either atom is missing or sits at the origin as a placeholder cannot be
+    judged and is not listed. :func:`create_system_respecting_chain_breaks` leaves
+    such a pair unbonded.
+
+    Returns:
+        A list with one dict per break: ``chain`` (the author chain ID of a topology read
+        from an mmCIF, see ``io.structures.author_chain_ids``, otherwise the chain ID),
+        ``residue_before`` and ``residue_after`` (residue numbers as strings, with the insertion
+        code appended when there is one: ``"60B"``) and
+        ``c_n_distance_angstrom``.
+    """
+    author_ids = author_chain_ids(topology)
+    return [
+        {
+            "chain": author_ids[chain.index],
+            "residue_before": residue_number(before),
+            "residue_after": residue_number(after),
+            "c_n_distance_angstrom": round(distance, 2),
+        }
+        for chain, before, after, distance in _chain_breaks(topology, positions)
+    ]
+
+
+def _topology_without_bonds(topology, dropped_pairs: set):
+    """Copy of ``topology`` without the bonds whose atom indices are in ``dropped_pairs``.
+
+    ``dropped_pairs`` holds ``frozenset({index, index})`` entries. Atoms, residues and
+    chains keep their order, IDs and indices, so positions fit the copy, and so do the
+    author chain IDs that :func:`binding_metrics.io.structures.author_chain_ids` reads.
+    """
+    copy = Topology()
+    copy.setPeriodicBoxVectors(topology.getPeriodicBoxVectors())
+    new_atoms: dict = {}
+    for chain in topology.chains():
+        new_chain = copy.addChain(chain.id)
+        for residue in chain.residues():
+            new_residue = copy.addResidue(
+                residue.name, new_chain, residue.id, residue.insertionCode
+            )
+            for atom in residue.atoms():
+                charge = getattr(atom, "formalCharge", None)  # absent before OpenMM 8.1
+                extra = {} if charge is None else {"formalCharge": charge}
+                new_atoms[atom.index] = copy.addAtom(
+                    atom.name, atom.element, new_residue, atom.id, **extra
+                )
+    for bond in topology.bonds():
+        if frozenset((bond.atom1.index, bond.atom2.index)) not in dropped_pairs:
+            copy.addBond(
+                new_atoms[bond.atom1.index], new_atoms[bond.atom2.index], bond.type, bond.order
+            )
+    copy_author_chain_ids(topology, copy)
+    return copy
+
+
+def _templates_of_bonded_topology(forcefield, topology, unbonded) -> dict:
+    """``{residue of unbonded: name of the template its residue matches in topology}``.
+
+    ``ignoreExternalBonds=True`` makes templates that differ only by an external bond
+    match the same residue: a cysteine in a disulfide bond fits CYM as well as CYX, and
+    OpenMM then refuses to choose. Every residue is therefore tied to the template that
+    it matches in ``topology``, bond across the break included, where the match is the
+    one ``createSystem`` has always made. Empty when a residue has no template yet (one
+    that a template generator will write), and OpenMM then chooses for all of them.
+    """
+    try:
+        templates = forcefield.getMatchingTemplates(topology)
+    except ValueError:
+        return {}
+    return {new: old.name for new, old in zip(unbonded.residues(), templates)}
+
+
+def create_system_respecting_chain_breaks(
+    forcefield, topology, positions, *, warn: bool = True, **create_system_kwargs
+) -> tuple:
+    """Build the ``System`` of ``topology`` without a bond across a chain break.
+
+    OpenMM bonds each residue to the next one of its chain by name, whatever the
+    distance, so ``forcefield.createSystem(topology)`` pulls the two ends of an
+    unresolved loop together, and the residues beside the gap can come out with an
+    inverted C-alpha. For an input with a break (:func:`find_chain_breaks`) this builds
+    the system from a copy of the topology without the C-N bond across each break, with
+    ``ignoreExternalBonds=True`` (the two ends lack their partner). Every residue keeps
+    the template it has in the bonded topology (see
+    :func:`_templates_of_bonded_topology`), so each end carries the template of an
+    internal residue (amide N-H and C=O, internal charges); the approximation reaches
+    only the two residues beside the gap. The two ends then interact as any two
+    non-bonded atoms, with no exclusion.
+
+    An input without a break goes to ``createSystem`` unchanged, with the same
+    topology object, so OpenMM keeps checking the bonds of every residue.
+
+    Args:
+        forcefield: OpenMM ``ForceField`` with every template the topology needs.
+        topology: OpenMM ``Topology``, with hydrogens when the force field needs them.
+        positions: Positions of the atoms (a ``Quantity``); they decide what a break is.
+        warn: Log each break at warning level; ``False`` logs at info level, for a
+            caller that builds many systems from one structure and has said it already.
+        **create_system_kwargs: Passed to ``forcefield.createSystem``.
+
+    Returns:
+        ``(system, topology)``. The topology is the argument when there is no break
+        and the copy without the bonds across the breaks otherwise; use it with the
+        system (a structural QC that reads its bonds must not find a bond that the
+        system does not have).
+    """
+    breaks = list(_chain_breaks(topology, positions))
+    if not breaks:
+        return forcefield.createSystem(topology, **create_system_kwargs), topology
+
+    author_ids = author_chain_ids(topology)
+    dropped_pairs = set()
+    for chain, before, after, distance in breaks:
+        c_index = next(a.index for a in before.atoms() if a.name == "C")
+        n_index = next(a.index for a in after.atoms() if a.name == "N")
+        dropped_pairs.add(frozenset((c_index, n_index)))
+        log.log(
+            logging.WARNING if warn else logging.INFO,
+            "Chain break in chain %s: residues %s and %s are %.2f A apart (C to N); "
+            "the two are not bonded in the system.",
+            author_ids[chain.index],
+            residue_number(before),
+            residue_number(after),
+            distance,
+        )
+    unbonded = _topology_without_bonds(topology, dropped_pairs)
+    create_system_kwargs["ignoreExternalBonds"] = True
+    create_system_kwargs["residueTemplates"] = _templates_of_bonded_topology(
+        forcefield, topology, unbonded
+    )
+    return forcefield.createSystem(unbonded, **create_system_kwargs), unbonded
+
+
+#: ``detected_by`` of a ``find_missing_residues`` entry that the sequence records of the
+#: input file gave: the SEQRES of a PDB file and the ``_entity_poly_seq`` of an mmCIF.
+_SEQUENCE_RECORD_SOURCES = ("SEQRES", "_entity_poly_seq")
+
+
+def _missing_entry(
+    chain: str,
+    kind: str,
+    detected_by: str,
+    n_residues: Optional[int],
+    before=None,
+    after=None,
+    terminus: Optional[str] = None,
+    sequence_positions: Optional[list] = None,
+) -> dict:
+    return {
+        "chain": chain,
+        "kind": kind,
+        "terminus": terminus,
+        "n_residues": n_residues,
+        "residue_before": None if before is None else residue_number(before),
+        "residue_after": None if after is None else residue_number(after),
+        "sequence_positions": sequence_positions,
+        "detected_by": detected_by,
+    }
+
+
+def _missing_from_records(chain, author_id: str, record) -> Optional[list]:
+    """The entries of one chain whose sequence record is known, or None when it cannot serve.
+
+    The positions of the modelled residues in the sequence must increase along the chain;
+    a chain whose numbering runs backwards (a circular permutation) is left to the
+    numbering.
+    """
+    placed = [
+        (residue, position)
+        for residue, position in zip(chain.residues(), record.positions)
+        if position is not None
+    ]
+    if not placed:
+        return []
+    positions = [position for _, position in placed]
+    if any(later <= earlier for earlier, later in zip(positions, positions[1:])):
+        return None
+
+    source = record.source
+    entries = []
+    if positions[0] > 1:
+        entries.append(
+            _missing_entry(
+                author_id,
+                "terminal_tail",
+                source,
+                positions[0] - 1,
+                after=placed[0][0],
+                terminus="N",
+                sequence_positions=[1, positions[0] - 1],
+            )
+        )
+    for (before, first), (after, last) in zip(placed, placed[1:]):
+        if last - first > 1:
+            entries.append(
+                _missing_entry(
+                    author_id,
+                    "gap",
+                    source,
+                    last - first - 1,
+                    before=before,
+                    after=after,
+                    sequence_positions=[first + 1, last - 1],
+                )
+            )
+    n_sequence = len(record.residues)
+    if positions[-1] < n_sequence:
+        entries.append(
+            _missing_entry(
+                author_id,
+                "terminal_tail",
+                source,
+                n_sequence - positions[-1],
+                before=placed[-1][0],
+                terminus="C",
+                sequence_positions=[positions[-1] + 1, n_sequence],
+            )
+        )
+    return entries
+
+
+def find_missing_residues(topology, positions) -> list:
+    """List the residues a model is missing: unresolved loops and truncated chain ends.
+
+    Nothing is rebuilt: invented coordinates for a loop or tail would enter the
+    interaction energy, the shape complementarity and the surface areas. This only
+    reports.
+
+    Where ``io.structures.load_structure`` recorded the sequence of a chain (SEQRES of a
+    PDB file, ``_entity_poly_seq`` of an mmCIF) the chain is compared with it: the
+    positions of the sequence that no residue occupies are missing, at the ends of the
+    chain (terminal tails) and between two modelled residues (gaps). Without a record
+    only gaps can be found, from the residue numbers and the geometry of the model:
+
+    * the numbers jump by more than 1 and the C and N atoms of the two neighbours are not
+      bonded (``"numbering"``). Residues with insertion codes share a number (60, 60A,
+      60B, 61), so they never make a jump, and a renumbered chain whose atoms are bonded
+      is not a gap;
+    * the numbers are consecutive but the neighbours are more than 2.0 A apart
+      (``"chain_break"``): a break of unknown size, which :func:`find_chain_breaks` lists
+      as well. A chain with a sequence record is not searched for it, because its
+      numbering is complete.
+
+    Only chains of amino acids are searched.
+
+    Returns:
+        A list of dicts, chains in order and each chain from its N- to its C-terminus.
+        Each has the keys ``chain`` (author chain ID), ``kind`` (``"gap"`` or
+        ``"terminal_tail"``), ``terminus`` (``"N"`` or ``"C"`` for a tail, else None),
+        ``n_residues`` (None for a chain break of unknown size), ``residue_before`` and
+        ``residue_after`` (the modelled neighbours as residue numbers with their insertion
+        code; None on the side of a tail that has no neighbour), ``sequence_positions``
+        (``[first, last]`` in the sequence record, else None) and ``detected_by``
+        (``"SEQRES"``, ``"_entity_poly_seq"``, ``"numbering"`` or ``"chain_break"``).
+    """
+    author_ids = author_chain_ids(topology)
+    records = sequence_records(topology)
+
+    # Per chain, the gaps by the residue after them, in chain order. A numbering gap
+    # replaces the chain break at the same place: it knows how many residues are missing.
+    found: dict[int, dict[int, dict]] = {}
+    for chain, before, after, _ in _chain_breaks(topology, positions):
+        found.setdefault(chain.index, {})[after.index] = _missing_entry(
+            author_ids[chain.index], "gap", "chain_break", None, before=before, after=after
+        )
+    for chain, before, after, n_skipped in _numbering_gaps(topology, positions):
+        found.setdefault(chain.index, {})[after.index] = _missing_entry(
+            author_ids[chain.index], "gap", "numbering", n_skipped, before=before, after=after
+        )
+
+    missing = []
+    for chain in topology.chains():
+        record = records[chain.index]
+        from_records = (
+            _missing_from_records(chain, author_ids[chain.index], record)
+            if record is not None
+            else None
+        )
+        if from_records is not None:
+            missing.extend(from_records)
+        else:
+            missing.extend(entry for _, entry in sorted(found.get(chain.index, {}).items()))
+    return missing
+
+
+def _describe_missing(entry: dict) -> str:
+    n_residues = entry["n_residues"]
+    if entry["kind"] == "terminal_tail":
+        first, last = entry["sequence_positions"]
+        return (
+            f"{n_residues} at the {entry['terminus']}-terminus (sequence positions {first}-{last})"
+        )
+    return f"{n_residues} between residues {entry['residue_before']} and {entry['residue_after']}"
+
+
+def _warn_missing_residues(missing: list) -> None:
+    """One warning per chain for the entries ``find_missing_residues`` found.
+
+    A chain break of unknown size has its own warning (``prep_structure`` logs every break
+    it finds), so it is not repeated here.
+    """
+    by_chain: dict[str, list] = {}
+    for entry in missing:
+        if entry["detected_by"] != "chain_break":
+            by_chain.setdefault(entry["chain"], []).append(entry)
+    for chain_id, entries in by_chain.items():
+        sources = sorted({e["detected_by"] for e in entries})
+        log.warning(
+            "Missing residues in chain %s: %s. Found from %s. The residues are not in the "
+            "model and prep does not rebuild them.",
+            chain_id,
+            "; ".join(_describe_missing(e) for e in entries),
+            " and ".join("the residue numbers" if s == "numbering" else s for s in sources),
+        )
 
 
 def find_open_c_termini(topology) -> list:
@@ -389,6 +834,80 @@ def require_closed_c_termini(topology, chain_names: Optional[dict] = None) -> No
     )
 
 
+#: Distance from the carbonyl carbon to each oxygen of a carboxylate (nm): 1.25 A, the C-O
+#: length of a delocalised carboxylate (Engh and Huber, Acta Cryst. A47, 392-400, 1991).
+_CARBOXYLATE_C_O_NM = 0.125
+
+
+def add_terminal_oxygens(topology, positions) -> tuple:
+    """Give each chain listed by :func:`find_open_c_termini` its terminal oxygen (OXT).
+
+    PDBFixer does this in prep; this is the same step for a caller that cannot use it. OXT is
+    the third substituent of the carbonyl carbon: it lies in the plane of CA, C and O,
+    1.25 A from C, opposite the bisector of the C-CA and C-O bonds. Only the atom and its
+    bond are added; hydrogens and every other missing atom are left to the caller. A chain
+    whose last residue has no CA or no O has no such plane and is left open, so that
+    :func:`require_closed_c_termini` names it.
+
+    Args:
+        topology: OpenMM Topology.
+        positions: Positions of its atoms (Quantity).
+
+    Returns:
+        ``(topology, positions)``: the arguments when no chain can be completed, otherwise a
+        copy of the topology with the OXT atoms and their positions (a Quantity in nm).
+    """
+    import numpy as np
+
+    open_ends = find_open_c_termini(topology)
+    last_residues = {
+        chain.id: list(chain.residues())[-1]
+        for chain in topology.chains()
+        if any(chain.id == chain_id for chain_id, _, _ in open_ends)
+    }
+    last_residues = {
+        chain_id: residue
+        for chain_id, residue in last_residues.items()
+        if {"CA", "O"} <= {atom.name for atom in residue.atoms()}
+    }
+    if not last_residues:
+        return topology, positions
+    xyz_nm = np.array(positions.value_in_unit(unit.nanometer))
+
+    copy = Topology()
+    copy.setPeriodicBoxVectors(topology.getPeriodicBoxVectors())
+    new_atoms: dict = {}
+    new_xyz: list = []
+    oxygens: list = []  # (carbon, new OXT atom)
+    for chain in topology.chains():
+        new_chain = copy.addChain(chain.id)
+        for residue in chain.residues():
+            new_residue = copy.addResidue(
+                residue.name, new_chain, residue.id, residue.insertionCode
+            )
+            for atom in residue.atoms():
+                new_atoms[atom.index] = copy.addAtom(atom.name, atom.element, new_residue, atom.id)
+                new_xyz.append(xyz_nm[atom.index])
+            if last_residues.get(chain.id) is residue:
+                by_name = {atom.name: atom.index for atom in residue.atoms()}
+                carbon, alpha, oxygen = (xyz_nm[by_name[name]] for name in ("C", "CA", "O"))
+                to_alpha = (alpha - carbon) / np.linalg.norm(alpha - carbon)
+                to_oxygen = (oxygen - carbon) / np.linalg.norm(oxygen - carbon)
+                outward = -(to_alpha + to_oxygen)
+                outward /= np.linalg.norm(outward)
+                new_atom = copy.addAtom("OXT", Element.getBySymbol("O"), new_residue)
+                new_xyz.append(carbon + _CARBOXYLATE_C_O_NM * outward)
+                oxygens.append((new_atoms[by_name["C"]], new_atom))
+    for bond in topology.bonds():
+        copy.addBond(
+            new_atoms[bond.atom1.index], new_atoms[bond.atom2.index], bond.type, bond.order
+        )
+    for carbon_atom, oxt in oxygens:
+        copy.addBond(carbon_atom, oxt)
+    copy_author_chain_ids(topology, copy)
+    return copy, unit.Quantity(np.array(new_xyz), unit.nanometer)
+
+
 def _add_hydrogens_cyclic(
     topology,
     positions,
@@ -404,8 +923,8 @@ def _add_hydrogens_cyclic(
     fails when the N is already bonded to the C-terminus carbon.  This function
     uses the cyclic-aware ForceField templates instead.
 
-    ``report``, when given, receives ``ncaa_bond_order_source`` (see
-    ``prep_structure``) for the residues that needed a GAFF template.
+    ``report``, when given, receives ``ncaa_bond_order_source`` and ``ncaa_charge_scheme``
+    (see ``prep_structure``) for the residues that needed a GAFF template.
     """
     from openmm.app import ForceField, Modeller
 
@@ -415,7 +934,10 @@ def _add_hydrogens_cyclic(
         patch_cyclic_topology,
         rename_disulfide_cys_to_cyx,
     )
-    from binding_metrics.core.gaff_ncaa import parameterize_ncaa_residues
+    from binding_metrics.core.gaff_ncaa import (
+        explain_missing_templates,
+        parameterize_ncaa_residues,
+    )
     from binding_metrics.core.nonstandard import (
         _detect_nonstandard,
         _patch_nonstandard,
@@ -428,13 +950,10 @@ def _add_hydrogens_cyclic(
 
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
 
-    # Phosphorylated residues → AMBER phosaa params (net −2), not GAFF.
-    from binding_metrics.core import phosaa
-
+    # Phosphorylated residues use the AMBER phosaa parameters (net -2), not GAFF.
     phosaa.register(ff)
-    phosaa.ensure_hydrogen_definitions()
 
-    # D-amino-acid / N-methyl rename first (e.g. DAL→ALA, SAR→NMG) so their
+    # D-amino-acid / N-methyl rename first (e.g. DAL->ALA, SAR->NMG) so their
     # standard/curated templates match; must precede patch_cyclic_topology.
     ns_info = _detect_nonstandard(topology, cyclic_chain)
     if not ns_info.is_empty:
@@ -463,12 +982,19 @@ def _add_hydrogens_cyclic(
     sources = getattr(ncaa_xmls, "bond_order_source_by_residue", {})
     if report is not None and sources:
         report.setdefault("ncaa_bond_order_source", {}).update(sources)
+    schemes = getattr(ncaa_xmls, "charge_scheme_by_residue", {})
+    if report is not None and schemes:
+        report.setdefault("ncaa_charge_scheme", {}).update(schemes)
 
     modeller = Modeller(topology, positions)
     addh_variants = (
         get_addh_variants(modeller.topology, bond_info, cyclic_chain) if bond_info else None
     )
-    with deterministic_hydrogen_placement(random_seed):
+    with (
+        explain_missing_templates(ncaa_xmls),
+        deterministic_hydrogen_placement(random_seed),
+        phosaa.hydrogen_definitions(),
+    ):
         modeller.addHydrogens(
             ff,
             pH=ph,
@@ -482,17 +1008,71 @@ def _add_hydrogens_cyclic(
     return modeller.topology, modeller.positions
 
 
+def _rename_d_residues_to_l(topology) -> list:
+    """Rename the D-amino-acid residues of ``topology`` to their L templates, in place.
+
+    ``Modeller.addHydrogens`` places hydrogens by residue name and its definitions have no
+    D-amino acid (DAL, DPN, ...), so the linear route of :func:`prep_structure` gave such
+    residues no hydrogen. The cyclic route renames them (``core.nonstandard``, DAL to ALA)
+    and so does this, with the same table. The hydrogens are placed from the heavy-atom
+    geometry, which is the D geometry whatever the name, and the force field of the short
+    minimization has no energy term that tells L from D at the alpha carbon.
+
+    A residue read under its D name never got the bonds of its L template
+    (``createStandardBonds`` knows the L names only), which ``addHydrogens`` needs to find
+    the neighbours of a parent atom, so they are added.
+
+    Returns:
+        ``[(residue index, D name), ...]`` for :func:`_restore_d_residue_names`.
+    """
+    from binding_metrics.core.nonstandard import D_AA_MAP, _add_standard_intraresidue_bonds
+
+    renamed = []
+    for residue in topology.residues():
+        l_name = D_AA_MAP.get(residue.name)
+        if l_name is None:
+            continue
+        renamed.append((residue.index, residue.name))
+        residue.name = l_name
+        _add_standard_intraresidue_bonds(topology, residue)
+    return renamed
+
+
+def _restore_d_residue_names(topology, renamed: list) -> None:
+    """Give the residues listed by :func:`_rename_d_residues_to_l` their D names back.
+
+    ``addHydrogens`` adds hydrogens to residues and no residue, so the indices still fit; it
+    may rename a residue to a protonation variant of its L name (HIS to HIE), which is
+    accepted. Anything else means the topology was edited in between, and the residue keeps
+    its name with a warning.
+    """
+    from binding_metrics.core.nonstandard import _PATCHED_NAME_VARIANTS, D_AA_MAP
+
+    residues = list(topology.residues())
+    for index, d_name in renamed:
+        l_name = D_AA_MAP[d_name]
+        allowed = {l_name} | _PATCHED_NAME_VARIANTS.get(l_name, frozenset())
+        if index >= len(residues) or residues[index].name not in allowed:
+            log.warning(
+                "Residue index %d: expected %s, found %s; the name %s was not restored.",
+                index,
+                l_name,
+                "no residue" if index >= len(residues) else residues[index].name,
+                d_name,
+            )
+            continue
+        residues[index].name = d_name
+
+
 def _hydrogen_placement_platform():
     """The Reference platform: double-precision, single-threaded, deterministic.
 
     ``addHydrogens`` runs a short energy minimization to settle the new
-    hydrogens. On a fast platform (CUDA/OpenCL) the reduction order is not
-    deterministic, so that minimization lands in a marginally different spot each
-    run — hydrogens on rotatable groups shift by up to ~0.25 Å, which is enough
-    to tip the downstream main minimization into a different basin and change the
-    reported energy by hundreds of kJ/mol. Running the tiny H minimization on the
-    Reference platform makes prep bit-reproducible regardless of installed
-    hardware; it is cheap (a few dozen steps on one small system).
+    hydrogens. On CUDA or OpenCL the reduction order is not deterministic, so the
+    minimization ends in a slightly different place on each run (hydrogens on
+    rotatable groups move). The Reference platform makes prep reproducible
+    whatever hardware is installed; the minimization is a few dozen steps on one
+    small system.
     """
     from openmm import Platform
 
@@ -505,17 +1085,13 @@ def deterministic_hydrogen_placement(seed: Optional[int] = DEFAULT_RANDOM_SEED):
 
     ``Modeller.addHydrogens`` offsets every new hydrogen by
     ``0.05 nm * Vec3(random(), random(), random())`` drawn from Python's global
-    ``random`` module, which nobody seeds. Identical input therefore yields a
-    slightly different structure on every run, and hence a different minimum:
-    1YCR has been observed anywhere between about -14.0k and -14.6k kJ/mol
-    across runs. For a tool whose output is a QC *measurement*, that
-    irreproducibility is a defect in its own right.
+    ``random`` module, so identical input otherwise gives a slightly different
+    structure, and a different minimum, on every run.
 
-    Seeding fixes the placement so the same input gives the same answer. The
-    previous RNG state is restored on exit, so seeding here never perturbs
-    randomness elsewhere in the caller's process. Pass ``seed=None`` to leave
-    the global RNG untouched and get fresh randomness (opt-in via the configs'
-    ``random_seed``).
+    The seed is applied to that global RNG for the block and the previous state is
+    restored on exit, so randomness elsewhere in the caller's process is unaffected.
+    ``seed=None`` leaves the global RNG untouched (fresh randomness; opt-in via the
+    configs' ``random_seed``).
 
     The same block also seeds any other OpenMM ``Modeller`` step that draws from
     the global ``random`` module, notably the ion placement in
@@ -539,23 +1115,19 @@ def repair_ca_hydrogen_chirality(topology, positions, verbose: bool = True):
     """Move Cα hydrogens that hydrogen addition placed on the wrong face.
 
     ``Modeller.addHydrogens`` seeds each new hydrogen at a 0.1 nm base vector
-    plus ``0.05 nm * Vec3(random(), random(), random())`` drawn from Python's
-    *unseeded* global ``random``, then relaxes the hydrogens with every heavy
-    atom frozen (``setParticleMass(i, 0)``). When the jitter pushes HA across
-    the N/CA/C plane, that frozen-heavy-atom relaxation cannot bring it back:
-    HA settles into the wrong-side minimum and prep emits a Cα whose HA and CB
-    share a face, which is chemically impossible.
+    plus ``0.05 nm * Vec3(random(), random(), random())`` from Python's global
+    ``random``, then relaxes the hydrogens with every heavy atom frozen
+    (``setParticleMass(i, 0)``). When the jitter pushes HA across the N/CA/C
+    plane, that relaxation cannot bring it back and the Cα ends with HA and CB on
+    the same face. A later minimization then inverts the stereocenter: the bad HA
+    carries most of the Cα angle strain, ``constraints=HBonds`` fixes the CA-HA
+    length, and ff14SB has no improper on Cα, so only CB can move through the plane.
 
-    Left alone, this silently inverts the stereocenter downstream: the bad HA
-    contributes almost all of the Cα's angle strain, ``constraints=HBonds``
-    fixes the CA-HA length so the minimizer cannot relieve it by moving HA, and
-    ff14SB has no improper on Cα — so the only path left is pushing CB through
-    the plane. Observed on roughly one prep in six of the 3P8F example.
-
-    For any tetrahedral Cα, CB and HA lie on opposite sides of the N/CA/C
-    plane. That holds for L- and D-amino acids alike, so this repair reads the
-    correct side off the actual CB position and is handedness-agnostic (safe for
-    D-residues). It is a no-op on correct structures.
+    For any tetrahedral Cα, CB and HA lie on opposite sides of the N/CA/C plane,
+    for L- and D-amino acids alike. The repair reads the correct side off the CB
+    position, so it does not depend on handedness. It is a no-op on correct
+    structures. HA is moved to the fourth tetrahedral vertex, ``_CA_HA_BOND_NM``
+    from Cα.
     """
     import numpy as np
     from openmm import Vec3, unit
@@ -577,7 +1149,7 @@ def repair_ca_hydrogen_chirality(topology, positions, verbose: bool = True):
         if norm < _DEGENERATE_TRIPOD_NORM:
             continue  # degenerate planar tripod
         pos[idx["HA"]] = ca - u / norm * _CA_HA_BOND_NM  # ideal 4th tetrahedral vertex
-        repaired.append(f"{res.name}{res.id}/{res.chain.id}")
+        repaired.append(f"{residue_label(res)}/{res.chain.id}")
 
     if repaired and verbose:
         log.info("  Repaired %d wrong-side Cα hydrogen(s): %s", len(repaired), ", ".join(repaired))
@@ -623,9 +1195,8 @@ def prep_structure(
               removed non-water heterogen (free ligands, additives, glycans). Here
               and in ``kept_nonstandard`` and ``chain_breaks``, X is the author chain
               ID of a topology read from an mmCIF (``load_structure`` records it; see
-              ``io.structures.author_chain_ids``), where OpenMM's own ID is the label
-              ID for a file with more label IDs than author IDs: the peptide of 1CWA
-              is chain C, not B.
+              ``io.structures.author_chain_ids``); OpenMM's own ID is the label ID
+              for a file with more label IDs than author IDs.
             * ``n_removed_waters`` (int): water molecules removed (0 when
               ``keep_water`` is True).
             * ``kept_nonstandard`` (list[str]): non-standard residues and metal
@@ -633,18 +1204,31 @@ def prep_structure(
             * ``n_missing_atoms_rebuilt`` (int): heavy atoms PDBFixer added,
               including atoms deleted as origin placeholders and terminal OXT.
             * ``n_missing_residue_gaps`` (int): chain positions where residues
-              are unresolved and were left as a gap, not rebuilt.
+              are unresolved and were left as a gap, not rebuilt. Terminal tails
+              are not counted.
+            * ``missing_residues`` (list[dict]): the residues the input lacks, each as
+              ``{"chain", "kind", "terminus", "n_residues", "residue_before",
+              "residue_after", "sequence_positions", "detected_by"}`` (see
+              :func:`find_missing_residues`): a gap or a terminal tail, found from the
+              SEQRES or ``_entity_poly_seq`` records of the input file when it has them
+              and from the residue numbers and chain breaks otherwise. Prep logs a
+              warning for each chain and rebuilds nothing.
             * ``chain_breaks`` (list[dict]): consecutive residues of one chain whose C
               and N atoms are more than 2.0 A apart in the input, each as ``{"chain",
               "residue_before", "residue_after", "c_n_distance_angstrom"}`` (see
               :func:`find_chain_breaks`). Prep leaves them as they are; the
-              relaxation bonds the two residues anyway.
+              relaxation and the energy steps leave the two residues unbonded
+              (:func:`create_system_respecting_chain_breaks`).
             * ``ncaa_bond_order_source`` (dict[str, str]): for a cyclic peptide
               with non-canonical residues that needed a GAFF template, the
               source of each residue's bond orders, ``"ccd"`` (Chemical
               Component Dictionary) or ``"single_bonds"`` (the residue is not in
               the dictionary or disagrees with it, so double bonds, aromatic
               rings and the hydrogen count are unreliable). Absent otherwise.
+            * ``ncaa_charge_scheme`` (dict[str, str]): for the same residues,
+              ``"<cap kind>-v<version>"`` of each template, for example
+              ``"ace-nme-caps-v2"`` (``gaff_ncaa.CHARGE_SCHEME_VERSION``). Absent
+              otherwise.
 
             Behaviour is identical when ``report`` is None.
 
@@ -659,8 +1243,15 @@ def prep_structure(
     # Capture non-sequential intra-chain bonds (e.g. head-to-tail N→C) before
     # the PDBFixer round-trip drops them (PDBxFile.writeFile only writes SS bonds).
     # SS bonds are NOT captured here — they are re-detected from rebuilt geometry
-    # after addMissingAtoms via _rebuild_connect_records.
-    custom_bonds = _extract_custom_bonds(topology)
+    # after addMissingAtoms via _rebuild_connect_records. A ring or a lactam that the
+    # topology does not bond (a model output has no _struct_conn) is found by distance, so
+    # that prep takes the cyclic route and does not give the ring an OXT and an NH3+ end, or
+    # the lactam a free carboxylate and a free amine.
+    custom_bonds = (
+        _extract_custom_bonds(topology)
+        + _head_to_tail_bonds(topology, positions)
+        + _lactam_bonds(topology, positions)
+    )
 
     # Residue numbers and chain IDs do not survive the PDBFixer round trip, so
     # read the numbering gaps and the caller's chain IDs off the input topology.
@@ -668,10 +1259,22 @@ def prep_structure(
     input_author_ids = author_chain_ids(topology)  # the names a user knows the chains by
     n_residue_gaps = _count_residue_gaps(topology, positions)
     chain_breaks = find_chain_breaks(topology, positions)
+    missing_residues = find_missing_residues(topology, positions)
+    _warn_missing_residues(missing_residues)
+    # A gap that the sequence records show and the numbering does not (a chain renumbered
+    # after its loop was cut out) is unresolved all the same.
+    n_residue_gaps = max(
+        n_residue_gaps,
+        sum(
+            1
+            for entry in missing_residues
+            if entry["kind"] == "gap" and entry["detected_by"] in _SEQUENCE_RECORD_SOURCES
+        ),
+    )
     for gap in chain_breaks:
         log.warning(
             "Chain break in chain %s: residues %s and %s are %.2f A apart (C to N). "
-            "Relaxation bonds them, which closes the gap by pulling the two segments together.",
+            "The relaxation and the energy steps leave the two residues unbonded.",
             gap["chain"],
             gap["residue_before"],
             gap["residue_after"],
@@ -710,23 +1313,30 @@ def prep_structure(
     #   • Everything else (free ligands, crystallographic additives, glycans
     #     in their own chain …)             → remove
     fixer.findMissingAtoms()
-    # Seeded: addMissingAtoms minimizes rebuilt atoms with a stochastic
-    # integrator, so an unseeded call makes prep irreproducible for any
-    # structure with missing side-chain atoms. addMissingAtoms(seed=None) leaves
-    # the integrator unseeded (fresh randomness), matching random_seed=None.
+    # addMissingAtoms minimizes rebuilt atoms with a stochastic integrator, so it is
+    # seeded; seed=None leaves it unseeded, matching random_seed=None.
     n_atoms_before_rebuild = fixer.topology.getNumAtoms()
     fixer.addMissingAtoms(seed=random_seed)
     n_atoms_rebuilt = fixer.topology.getNumAtoms() - n_atoms_before_rebuild
+    # PDBFixer lists the bonds next to a non-standard residue twice; the cyclic and
+    # GAFF2 steps below read the bond list, so it is cleaned before they run.
+    fixer.topology, n_duplicate_bonds = _drop_duplicate_bonds(fixer.topology)
+    if n_duplicate_bonds:
+        log.debug("Dropped %d bond(s) that PDBFixer listed twice", n_duplicate_bonds)
 
     # Detect and register all non-standard bonds from the rebuilt geometry
     # (SS bonds, CYS→CYX rename). Must run after addMissingAtoms so that
     # zero-coord placeholder atoms are in their correct positions.
     _rebuild_connect_records(fixer)
 
+    # A chain is a protein chain when it holds a residue of the AMBER standard set or an
+    # amino acid by the definition every chain detector uses, which has the D-amino
+    # acids: a peptide made only of D residues has no standard one.
+    amino_acids = _amino_acid_names()
     protein_chains: set = set()
     for chain in fixer.topology.chains():
         for res in chain.residues():
-            if res.name in AMBER_STANDARD_RESIDUES:
+            if res.name in AMBER_STANDARD_RESIDUES or res.name in amino_acids:
                 protein_chains.add(chain.id)
                 break
 
@@ -775,6 +1385,7 @@ def prep_structure(
         add_to_report(report, "n_missing_atoms_rebuilt", n_atoms_rebuilt)
         add_to_report(report, "n_missing_residue_gaps", n_residue_gaps)
         extend_report(report, "chain_breaks", chain_breaks)
+        extend_report(report, "missing_residues", missing_residues)
 
     # Chains that keep at least one residue, by the caller's ID. Modeller.delete drops
     # a chain that ends up empty (the water chains of a PDB file) and keeps the order.
@@ -804,10 +1415,9 @@ def prep_structure(
             chain.id = chain_id
 
     if custom_bonds:
-        # Use cyclic-aware H placement: patch_cyclic_topology (called inside)
-        # removes C-terminal OXT that PDBFixer added, adds the N-C closure bond,
-        # then uses cyclic FF templates for addHydrogens.  Do NOT restore bonds
-        # here — patch_cyclic_topology detects and adds the bond itself.
+        # Cyclic-aware H placement: patch_cyclic_topology (called inside) removes the
+        # C-terminal OXT that PDBFixer added and adds the N-C closure bond, then
+        # addHydrogens uses the cyclic templates. The bonds are not restored here.
         result_topo, result_pos = _add_hydrogens_cyclic(
             fixer.topology,
             fixer.positions,
@@ -820,14 +1430,15 @@ def prep_structure(
         # Inline of PDBFixer.addMissingHydrogens so we can pin the H-placement
         # minimization to the deterministic Reference platform (the method itself
         # exposes no platform argument).
+        d_residues = _rename_d_residues_to_l(fixer.topology)
         _h_modeller = Modeller(fixer.topology, fixer.positions)
-        with deterministic_hydrogen_placement(random_seed):
+        with deterministic_hydrogen_placement(random_seed), phosaa.hydrogen_definitions():
             _h_modeller.addHydrogens(pH=ph, platform=_hydrogen_placement_platform())
+        # The topology that leaves prep keeps the input names, as in the cyclic route.
+        _restore_d_residue_names(_h_modeller.topology, d_residues)
         result_topo, result_pos = _h_modeller.topology, _h_modeller.positions
 
-    # addHydrogens jitters new H randomly and relaxes them with the heavy atoms
-    # frozen, which intermittently strands a Cα H on the wrong face; left in
-    # place it inverts the stereocenter during minimization.
+    # See repair_ca_hydrogen_chirality.
     result_pos = repair_ca_hydrogen_chirality(result_topo, result_pos)
 
     copy_author_chain_ids(topology, result_topo)
@@ -947,14 +1558,15 @@ def get_system_info(modeller: Modeller) -> dict:
         modeller: Prepared Modeller object
 
     Returns:
-        Dictionary with system information
+        Dictionary with ``n_atoms``, ``n_residues``, ``n_chains``, ``n_waters``,
+        ``n_ions`` and ``box_size_nm`` (the diagonal of the box vectors in nm, or
+        None without a box).
     """
     topology = modeller.topology
     n_atoms = topology.getNumAtoms()
     n_residues = topology.getNumResidues()
     n_chains = topology.getNumChains()
 
-    # Count water molecules and ions
     n_waters = 0
     n_ions = 0
 
@@ -964,7 +1576,6 @@ def get_system_info(modeller: Modeller) -> dict:
         elif residue.name in ION_NAMES_COMMON:
             n_ions += 1
 
-    # Get box vectors
     box_vectors = modeller.topology.getPeriodicBoxVectors()
     if box_vectors is not None:
         box_size = [v[i].value_in_unit(unit.nanometer) for i, v in enumerate(box_vectors)]

@@ -78,6 +78,7 @@ class TestARefusedSampleDoesNotStopTheBatch:
         assert rows["single"]["batch_status"] == "error"
         assert rows["single"]["preflight_status"] == "refused"
 
+    @pytest.mark.slow
     def test_skip_records_the_left_out_step_and_the_row_is_ok(self, tmp_path, inputs):
         rows = by_sample(
             batch_of(

@@ -157,6 +157,7 @@ class TestWithoutConda:
         self, no_conda, monkeypatch, capsys
     ):
         monkeypatch.setattr(check_env, "CHECKS", [("OpenFold3", check_env._check_openfold)])
+        monkeypatch.setattr(sys, "argv", ["binding-metrics-check-env"])
         with pytest.raises(SystemExit) as info:
             check_env.main()
         assert info.value.code == 1

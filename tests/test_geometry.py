@@ -46,12 +46,6 @@ def _find_native_example(*pdb_id_tokens):
 class TestRamachandran:
     """Tests for compute_ramachandran."""
 
-    def test_import_function(self):
-        """Should be able to import compute_ramachandran."""
-        from binding_metrics.metrics.geometry import compute_ramachandran
-
-        assert callable(compute_ramachandran)
-
     def test_returns_expected_keys(self):
         """Result dict should have all required keys."""
         _skip_if_no_biotite()
@@ -144,31 +138,6 @@ class TestRamachandran:
             expected_pct = 100.0 * result["ramachandran_outlier_count"] / n_eval
             assert result["ramachandran_outlier_pct"] == pytest.approx(expected_pct, abs=0.1)
 
-    def test_classify_ramachandran_favoured_alpha(self):
-        """Alpha-helix region should be classified as favoured."""
-        from binding_metrics.metrics.geometry import _classify_ramachandran
-
-        # Canonical alpha helix
-        assert _classify_ramachandran(-60.0, -45.0) == "favoured"
-
-    def test_classify_ramachandran_favoured_beta(self):
-        """Beta-sheet region should be classified as favoured."""
-        from binding_metrics.metrics.geometry import _classify_ramachandran
-
-        assert _classify_ramachandran(-120.0, 130.0) == "favoured"
-
-    def test_classify_ramachandran_outlier(self):
-        """Upper-right quadrant (rarely observed) should be outlier."""
-        from binding_metrics.metrics.geometry import _classify_ramachandran
-
-        assert _classify_ramachandran(60.0, 150.0) == "outlier"
-
-    def test_classify_ramachandran_nan(self):
-        """NaN input (terminus) should return None."""
-        from binding_metrics.metrics.geometry import _classify_ramachandran
-
-        assert _classify_ramachandran(np.nan, np.nan) is None
-
 
 # ---------------------------------------------------------------------------
 # Omega planarity tests
@@ -177,12 +146,6 @@ class TestRamachandran:
 
 class TestOmegaPlanarity:
     """Tests for compute_omega_planarity."""
-
-    def test_import_function(self):
-        """Should be able to import compute_omega_planarity."""
-        from binding_metrics.metrics.geometry import compute_omega_planarity
-
-        assert callable(compute_omega_planarity)
 
     def test_returns_expected_keys(self):
         """Result dict should have all required keys."""
@@ -275,12 +238,7 @@ class TestOmegaPlanarity:
 class TestShapeComplementarity:
     """Tests for compute_shape_complementarity."""
 
-    def test_import_function(self):
-        """Should be able to import compute_shape_complementarity."""
-        from binding_metrics.metrics.geometry import compute_shape_complementarity
-
-        assert callable(compute_shape_complementarity)
-
+    @pytest.mark.slow
     def test_returns_expected_keys(self):
         """Result dict should have all required keys."""
         _skip_if_no_biotite()
@@ -303,6 +261,7 @@ class TestShapeComplementarity:
         }
         assert expected.issubset(set(result.keys()))
 
+    @pytest.mark.slow
     def test_sc_is_finite_on_real_example(self):
         """The real complex must yield a finite Sc, not a silent NaN.
 
@@ -326,6 +285,7 @@ class TestShapeComplementarity:
         assert result["n_surface_dots_A"] > 0
         assert result["n_surface_dots_B"] > 0
 
+    @pytest.mark.slow
     def test_sc_value_in_range(self):
         """Sc score should be in [-1, 1]."""
         _skip_if_no_biotite()
@@ -340,6 +300,7 @@ class TestShapeComplementarity:
         if not np.isnan(result["sc"]):
             assert -1.0 <= result["sc"] <= 1.0
 
+    @pytest.mark.slow
     def test_sc_is_mean_of_directional(self):
         """Sc should equal mean of sc_A_to_B and sc_B_to_A."""
         _skip_if_no_biotite()
@@ -355,6 +316,7 @@ class TestShapeComplementarity:
             expected_sc = (result["sc_A_to_B"] + result["sc_B_to_A"]) / 2.0
             assert result["sc"] == pytest.approx(expected_sc, abs=1e-6)
 
+    @pytest.mark.slow
     def test_surface_dots_positive(self):
         """Should generate surface dots for interface atoms."""
         _skip_if_no_biotite()
@@ -370,6 +332,7 @@ class TestShapeComplementarity:
             assert result["n_surface_dots_A"] > 0
             assert result["n_surface_dots_B"] > 0
 
+    @pytest.mark.slow
     def test_per_dot_scores_are_arrays(self):
         """per_dot_scores_A and _B should be numpy arrays."""
         _skip_if_no_biotite()
@@ -397,6 +360,7 @@ class TestShapeComplementarity:
 
         assert np.isnan(result["sc"])
 
+    @pytest.mark.slow
     def test_auto_chain_detection(self):
         """Auto-detection should give same result as explicit chains."""
         _skip_if_no_biotite()
@@ -424,8 +388,10 @@ class TestShapeComplementarity:
     @pytest.mark.parametrize(
         "tokens,lo,hi",
         [
-            (("1YCR",), 0.50, 0.80),  # p53 peptide - MDM2 (linear peptide)
-            (("3P8F",), 0.55, 0.85),  # SFTI-1 bicyclic peptide
+            pytest.param(
+                ("1YCR",), 0.50, 0.80, marks=pytest.mark.slow
+            ),  # p53 peptide - MDM2 (linear peptide)
+            pytest.param(("3P8F",), 0.55, 0.85, marks=pytest.mark.slow),  # SFTI-1 bicyclic peptide
             (("1CWA",), 0.55, 0.85),  # cyclosporin (ncAA macrocycle)
         ],
     )
@@ -453,7 +419,7 @@ class TestShapeComplementarity:
         assert result["n_surface_dots_A"] > 0
         assert result["n_surface_dots_B"] > 0
 
-    def test_facing_slabs_are_complementary(self):
+    def test_facing_slabs_are_complementary(self, tmp_path):
         """Two facing atom slabs in vdW contact must give a high positive Sc.
 
         A cheap, self-contained calibration case: two multi-layer slabs whose
@@ -464,8 +430,6 @@ class TestShapeComplementarity:
         smoothed surface normal of the contact face is well defined.
         """
         _skip_if_no_biotite()
-        import tempfile
-
         import biotite.structure as struc
         import biotite.structure.io.pdb as pdb_io
 
@@ -495,17 +459,17 @@ class TestShapeComplementarity:
         arr.atom_name = np.array(["C"] * len(coords))
         arr.element = np.array(["C"] * len(coords))
 
-        with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as fh:
-            pf = pdb_io.PDBFile()
-            pf.set_structure(arr)
-            pf.write(fh.name)
-            result = compute_shape_complementarity(fh.name, peptide_chain="A", receptor_chain="B")
+        slabs = tmp_path / "slabs.pdb"
+        pf = pdb_io.PDBFile()
+        pf.set_structure(arr)
+        pf.write(str(slabs))
+        result = compute_shape_complementarity(slabs, peptide_chain="A", receptor_chain="B")
 
-        if not np.isnan(result["sc"]):
-            assert result["sc"] > 0.7, (
-                f"Complementary facing slabs scored Sc={result['sc']:.3f}; "
-                "sign convention or normals are wrong"
-            )
+        assert np.isfinite(result["sc"]), result.get("reason")
+        assert result["sc"] > 0.7, (
+            f"Complementary facing slabs scored Sc={result['sc']:.3f}; "
+            "sign convention or normals are wrong"
+        )
 
     def test_fibonacci_sphere(self):
         """Fibonacci sphere points should be unit vectors."""
@@ -524,12 +488,6 @@ class TestShapeComplementarity:
 
 class TestBuriedVoidVolume:
     """Tests for compute_buried_void_volume."""
-
-    def test_import_function(self):
-        """Should be able to import compute_buried_void_volume."""
-        from binding_metrics.metrics.geometry import compute_buried_void_volume
-
-        assert callable(compute_buried_void_volume)
 
     def test_returns_expected_keys(self):
         """Result dict should have all required keys."""
@@ -730,5 +688,6 @@ class TestClassifyRamachandran:
     def test_nan_returns_none(self):
         from binding_metrics.metrics.geometry import _classify_ramachandran
 
+        assert _classify_ramachandran(np.nan, np.nan) is None
         assert _classify_ramachandran(np.nan, -45.0) is None
         assert _classify_ramachandran(-60.0, np.nan) is None

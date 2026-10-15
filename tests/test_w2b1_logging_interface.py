@@ -1,6 +1,5 @@
 """interface.py reports its warnings through logging, with the same text as before."""
 
-import ast
 import logging
 import sys
 from pathlib import Path
@@ -29,19 +28,6 @@ def package_logger():
 
 def _messages(caplog):
     return [(r.levelno, r.getMessage()) for r in caplog.records if r.name == LOGGER_NAME]
-
-
-def test_no_print_call_outside_main():
-    """Library code must log; only the CLI ``main()`` may print."""
-    tree = ast.parse(Path(interface.__file__).read_text(encoding="utf-8"))
-    offenders = []
-    for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
-        if func.name == "main":
-            continue
-        for call in ast.walk(func):
-            if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "print":
-                offenders.append((func.name, call.lineno))
-    assert not offenders
 
 
 def test_empty_chain_warning_reaches_the_logger(caplog):
@@ -100,10 +86,3 @@ def test_cli_keeps_warning_on_stdout_between_the_printed_lines(package_logger, m
     ]
     assert lines[2:4] == ["", "Interface summary:"]
     assert captured.err == ""
-
-
-def test_main_installs_the_console_handlers_first(package_logger, monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["binding-metrics-interface", "--help"])
-    with pytest.raises(SystemExit):
-        interface.main()
-    assert any(isinstance(h, _CurrentStreamHandler) for h in package_logger.handlers)

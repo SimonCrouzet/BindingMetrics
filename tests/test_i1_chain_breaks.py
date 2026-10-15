@@ -107,6 +107,7 @@ class TestFindChainBreaks:
         assert (gap["residue_before"], gap["residue_after"]) == ("22", "23")
 
 
+@pytest.mark.slow
 class TestPrepReportsChainBreaks:
     def test_report_key_is_an_empty_list_for_an_unbroken_input(self):
         pytest.importorskip("pdbfixer")
@@ -142,6 +143,7 @@ class TestPrepReportsChainBreaks:
 
 
 class TestRelaxationWarns:
+    @pytest.mark.slow
     def test_the_setup_warns_and_keeps_going(self, tmp_path, caplog):
         pytest.importorskip("pdbfixer")
         from binding_metrics.core.system import prep_structure

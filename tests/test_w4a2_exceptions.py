@@ -74,7 +74,25 @@ class TestProvenance:
         assert "package version unavailable" in caplog.text
 
     def test_missing_openmm_gives_none_and_a_debug_record(self, monkeypatch, caplog):
-        monkeypatch.setitem(sys.modules, "openmm", None)
+        import importlib.metadata as metadata
+
+        def absent(name):
+            raise metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(metadata, "version", absent)
+        with caplog.at_level(logging.DEBUG, logger="binding_metrics.provenance"):
+            prov = collect_provenance()
+
+        assert prov["openmm_version"] is None
+        assert "OpenMM version unavailable" in caplog.text
+
+    def test_unreadable_openmm_metadata_gives_none_and_a_debug_record(self, monkeypatch, caplog):
+        import importlib.metadata as metadata
+
+        def broken(name):
+            raise ValueError("malformed metadata")
+
+        monkeypatch.setattr(metadata, "version", broken)
         with caplog.at_level(logging.DEBUG, logger="binding_metrics.provenance"):
             prov = collect_provenance()
 
@@ -448,12 +466,15 @@ class TestSimulationPlatform:
         import openmm
         from openmm import Platform
 
+        from binding_metrics.core import _platform
+
         def only_cpu(name):
             if name != "CPU":
                 raise openmm.OpenMMException(f"There is no registered Platform called {name}")
             return "cpu-platform"
 
         monkeypatch.setattr(Platform, "getPlatformByName", only_cpu)
+        monkeypatch.setattr(_platform, "_create_probe_context", lambda platform: None)
 
         assert self._simulation()._get_platform() == "cpu-platform"
 
@@ -461,12 +482,15 @@ class TestSimulationPlatform:
         import openmm
         from openmm import Platform
 
+        from binding_metrics.core import _platform
+
         def only_reference(name):
             if name != "Reference":
                 raise openmm.OpenMMException(f"There is no registered Platform called {name}")
             return "reference-platform"
 
         monkeypatch.setattr(Platform, "getPlatformByName", only_reference)
+        monkeypatch.setattr(_platform, "_create_probe_context", lambda platform: None)
 
         assert self._simulation()._get_platform() == "reference-platform"
 

@@ -101,6 +101,7 @@ class TestExamples:
         topology, _ = _load(STAPLE)
         assert find_open_c_termini(topology) == []
 
+    @pytest.mark.slow
     def test_the_prepped_example_is_closed(self, prepped_example_cif):
         topology, _ = load_structure(prepped_example_cif)
         assert find_open_c_termini(topology) == []
@@ -164,6 +165,7 @@ class TestRefusedBeforeTheForceField:
         )
         assert "chain B ends in VAL244" in result["error_message"]
 
+    @pytest.mark.slow
     def test_the_pipeline_with_skip_prep_says_so(self, tmp_path):
         pytest.importorskip("biotite")
         from binding_metrics.cli.run import run_pipeline

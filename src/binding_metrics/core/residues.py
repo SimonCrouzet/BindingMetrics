@@ -1,10 +1,9 @@
 """Residue, water and backbone-atom name sets shared by the package.
 
 Pure Python with no third-party imports, so the module loads without OpenMM,
-biotite or numpy. The sets below look alike on purpose in places (a protonation
-variant list and its subset that biotite does not know); each constant says what
-it is for, and two sets that differ only in a few names stay separate so that
-neither consumer changes behaviour.
+biotite or numpy (the two label functions at the end only read the attributes of an
+OpenMM residue). Sets that differ in a few names are kept apart, each for its
+consumer.
 """
 
 #: The 20 canonical L-amino acids (three-letter PDB codes).
@@ -19,9 +18,8 @@ AMBER_PROTONATION_VARIANTS: frozenset[str] = frozenset(
 )
 
 #: AMBER protonation variants that biotite's CCD-based ``filter_amino_acids``
-#: does not treat as amino acids, so a polymer selection has to add them.
-#: Smaller than ``AMBER_PROTONATION_VARIANTS`` because the CCD lists HIP, CYM,
-#: GLH and LYN as peptide-linking components, so biotite already keeps those.
+#: does not treat as amino acids, so a polymer selection has to add them. The
+#: CCD lists HIP, CYM, GLH and LYN as peptide-linking components.
 AMBER_VARIANTS_OUTSIDE_CCD: frozenset[str] = frozenset({"HID", "HIE", "HIN", "CYX", "ASH"})
 
 #: Terminal capping groups of a peptide chain (acetyl, N-methylamide, amide).
@@ -60,10 +58,7 @@ VARIANT_TO_PARENT_RESIDUE: dict[str, str] = {
 }
 
 #: Water residue names of PDB files (HOH) and AMBER-prepared files (WAT). The
-#: gemmi-based structure comparison skips exactly these two; the wider
-#: solvent-name sets used by the structure preparation (TIP3, SOL, H2O, ...)
-#: are separate because adding a name here would change which atoms the
-#: comparison RMSD uses.
+#: gemmi-based structure comparison skips exactly these two.
 WATER_NAMES_PDB_AMBER: frozenset[str] = frozenset({"HOH", "WAT"})
 
 #: Lactam-bridge residues whose templates ``core.cyclic`` loads (ASPL, GLUL and
@@ -147,3 +142,17 @@ CUSTOM_HYDROGEN_RESIDUES: frozenset[str] = (
 
 #: Backbone heavy atoms of an amino-acid residue: N, CA, C and the carbonyl O.
 BACKBONE_HEAVY_ATOM_NAMES: frozenset[str] = frozenset({"N", "CA", "C", "O"})
+
+
+def residue_number(residue) -> str:
+    """Number of an OpenMM residue with its insertion code appended: ``"60B"``.
+
+    OpenMM keeps the insertion code apart from ``Residue.id``, so ``f"{residue.id}"`` names
+    residues 60 and 60A alike. Without a code the result is ``residue.id``.
+    """
+    return f"{residue.id}{str(getattr(residue, 'insertionCode', '') or '').strip()}"
+
+
+def residue_label(residue) -> str:
+    """Name and number of an OpenMM residue as the logs and results print them: ``"ASP60B"``."""
+    return f"{residue.name}{residue_number(residue)}"

@@ -1,24 +1,20 @@
-"""What a model or a metric can take as input, and a check of an input against it.
+"""Declared limits of a model or a metric, and a check of an input against them.
 
-Some steps cannot handle some inputs: a structure-prediction model that reads a cyclic binder as
-a linear chain, a metric that only makes sense for a peptide, a metric that needs a receptor
-chain. Without a check the run either fails late or returns numbers for the wrong molecule. This
-module lets a step declare its limits (``Capabilities``), describes the input once
-(``InputProfile``, made by ``profile_input``) and compares the two before anything expensive
-starts.
+``Capabilities`` states what a step accepts, ``InputProfile`` (made by ``profile_input``)
+describes the input once, and ``preflight`` compares the two before anything expensive starts.
+Without the check a run fails late or returns numbers for the wrong molecule: a cyclic binder
+read as a linear chain, a peptide-only metric on a protein, a metric that needs a receptor chain.
 
-Three rules keep it safe to add to the existing pipeline:
-
-* every field of ``Capabilities`` defaults to "no constraint", so a step that declares nothing is
-  never refused;
-* a constraint carries one human sentence in ``reasons`` that says why it holds and what to do
-  instead, and it must be backed by code or by the documentation of the model it describes;
-* an input the check cannot classify (a binder type that cannot be estimated) never blocks: the
+* Every field of ``Capabilities`` defaults to "no constraint": a step that declares nothing is
+  never refused.
+* A constraint carries a sentence in ``reasons`` that says why it holds and what to do instead,
+  backed by code or by the documentation of the model it describes.
+* An input the check cannot classify (a binder type that cannot be estimated) never blocks: the
   checks that depend on it are skipped and the profile says so.
 
-Importing the module needs the standard library and the two pure residue tables of
-``binding_metrics.core``. numpy and biotite are imported when an input is profiled, and OpenMM
-is never imported: the ring closures are found on the biotite structure (``detect_closures``).
+Importing the module needs the standard library and the two residue tables of
+``binding_metrics.core``. numpy and biotite are imported when an input is profiled. OpenMM is
+never imported: ``detect_closures`` finds the ring closures on the biotite structure.
 """
 
 from __future__ import annotations
@@ -53,20 +49,30 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "BINDER_TYPES",
     "CLOSURE_FAMILIES",
+    "DEFAULT_DESIGN_POLICY",
+    "DEFAULT_MSA_POLICY",
+    "DESIGN_SOURCE_PREDICTORS",
+    "INDEPENDENCE_DEPENDENT_CHECKS",
+    "LOCK_MODES",
     "MODES",
+    "MSA_POLICIES",
     "NEEDS",
     "POLICIES",
     "RESIDUE_CLASSES",
     "Capabilities",
     "Closure",
     "ClosureEnd",
+    "DesignOrigin",
+    "DesignOriginCheck",
     "IncompatibleInputError",
     "InputProfile",
     "PreflightReport",
     "Violation",
+    "check_design_origin",
     "check_openfold3_residues",
     "check_weights_path",
     "classify_residue",
+    "design_origin",
     "detect_closures",
     "estimate_binder_type",
     "preflight",
@@ -109,18 +115,24 @@ RESIDUE_CLASSES: tuple[str, ...] = (
 NEEDS: tuple[str, ...] = ("receptor_chain", "reference_structure", "predicted_structure", "gpu")
 
 #: How a structure-prediction model is used for a complex, the vocabulary of
-#: ``Capabilities.modes``. ``predict``: from sequences only. ``refold``: the receptor is given as
-#: a template and the binder is predicted freely. ``score``: every chain is given its own
-#: structure as a template and the relative pose of the chains is NOT given, so the model
-#: re-docks them. ``score-lock``: ``score`` with the relative pose of the chains pinned to the
-#: input, by a forced template, constraints or both.
-MODES: tuple[str, ...] = ("predict", "refold", "score", "score-lock")
+#: ``Capabilities.modes``. ``predict``: sequences only. ``refold``: the receptor is a template and
+#: the binder is predicted freely. ``score``: every chain is a template of its own structure and
+#: their relative pose is not given, so the model re-docks them. ``score-lock``: ``score`` with
+#: the relative pose pinned to the input by a forced template, constraints or both.
+#: ``refold-lock``: ``refold`` with the receptor pinned to the input by a forced template.
+MODES: tuple[str, ...] = ("predict", "refold", "score", "score-lock", "refold-lock")
+
+#: The modes that pin part of the input with a forced template, and so take a lock threshold.
+LOCK_MODES: tuple[str, ...] = ("score-lock", "refold-lock")
 
 _MODE_TEXT = {
     "predict": "predict (sequences only)",
     "refold": "refold (receptor templated, binder predicted freely)",
     "score": "score (every chain templated on its own, the pose not given)",
     "score-lock": "score-lock (score, with the pose of the chains pinned to the input)",
+    "refold-lock": (
+        "refold-lock (refold, with the receptor pinned to the input by a forced template)"
+    ),
 }
 
 _FAMILY_TEXT = {
@@ -200,7 +212,8 @@ class Violation:
         fix: What to do instead; ``preflight`` fills it in.
         subject: The step, for example ``predictor OpenFold3 0.5.0`` or ``metric 'omega'``;
             ``preflight`` fills it in.
-        kind: ``metric`` or ``predictor``, filled in by ``preflight``.
+        kind: ``metric``, ``predictor``, ``msa`` (an MSA policy the run would break) or ``input``
+            (the chains of the run, see ``_check_chain_roles``), filled in by ``preflight``.
         name: The registry name of the step, filled in by ``preflight``.
     """
 
@@ -269,26 +282,24 @@ class Capabilities:
         multi_chain_binder: False refuses a binder that spans several chains.
         needs: What the step cannot run without, a subset of ``NEEDS``. ``receptor_chain`` is met
             by a receptor given or by any other protein chain in the structure.
-        modes: The ways a model can be used that it supports, a subset of ``MODES`` (``predict``,
-            ``refold``, ``score``, ``score-lock``; see ``MODES``). Empty declares nothing and
-            refuses nothing. A non-empty set that leaves a mode out refuses a request for it and
-            needs ``reasons["modes"]`` (or ``"modes:<mode>"``) naming what is not supported and
-            why; the full set declares full support and refuses nothing. Partial or unreliable
-            support of a listed mode is a caveat, ``caveats["modes:<mode>"]``, which applies to a
-            request for that mode whether or not ``modes`` is declared.
+        modes: The modes the model supports, a subset of ``MODES``. Empty declares nothing and
+            refuses nothing, and so does the full set. A non-empty set that leaves a mode out
+            refuses a request for it and needs ``reasons["modes"]`` (or ``"modes:<mode>"``).
+            Partial or unreliable support of a listed mode is a caveat,
+            ``caveats["modes:<mode>"]``, which applies to a request for that mode whether or not
+            ``modes`` is declared.
         extra_checks: Functions ``profile -> violations`` for a limit that the sets above cannot
             state, such as the residue names a model's query builder can express. Each returns
-            ``Violation`` objects with ``fact``, ``requirement`` and a ``reason`` that says why and
-            what to do instead. A function reuses the code that enforces the limit at run time
-            rather than copying its rules, and imports it when called, so declaring the check
-            costs nothing at import.
+            ``Violation`` objects with ``fact``, ``requirement`` and a ``reason``. A function
+            reuses the code that enforces the limit at run time and imports it when called, so
+            declaring the check costs nothing at import.
         reasons: One sentence per constraint saying why it holds and what to do instead. Keys are
             the field name (``"closures"``), or field and value (``"closures:disulfide"``) for a
             sentence about one value; the second form is looked up first. A constraint without a
             ``reasons`` entry under its field name is rejected when the object is built.
         caveats: One sentence per input value that is accepted but was never validated, keyed
-            ``"<field>:<value>"`` (fields ``binder_types``, ``closures``, ``residue_classes``).
-            ``preflight`` reports it as a warning when the input has that value.
+            ``"<field>:<value>"`` (fields ``binder_types``, ``closures``, ``residue_classes``,
+            ``modes``). ``preflight`` reports it as a warning when the input has that value.
         version: The version of the model or metric the limits were checked against (shown in the
             messages, for example ``"0.5.0"``); empty when not applicable.
     """
@@ -347,6 +358,19 @@ class Capabilities:
                 )
         object.__setattr__(self, "reasons", MappingProxyType(reasons))
         object.__setattr__(self, "caveats", MappingProxyType(caveats))
+
+    def __getstate__(self) -> dict:
+        """The state for pickle and deepcopy: the read-only mapping views as plain dicts."""
+        state = dict(self.__dict__)
+        state["reasons"] = dict(state["reasons"])
+        state["caveats"] = dict(state["caveats"])
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        state = dict(state)
+        state["reasons"] = MappingProxyType(state["reasons"])
+        state["caveats"] = MappingProxyType(state["caveats"])
+        self.__dict__.update(state)
 
     def constrained_fields(self) -> tuple[str, ...]:
         """Names of the fields that differ from "no constraint"."""
@@ -584,10 +608,10 @@ def classify_residue(res_name: str, *, is_amino_acid: bool = True) -> Optional[s
 # Ring closures of a binder (biotite, no OpenMM)
 # ---------------------------------------------------------------------------
 
-# Cut-offs in angstrom. They equal the nanometre values of ``core.cyclic`` (``_AMIDE_BOND_THRESH``
-# 0.20 nm and ``_DISULFIDE_THRESH`` 0.26 nm; a test checks the equality), so that this detector and
+# Cut-offs in angstrom, equal to the nanometre values of ``core.cyclic`` (``_AMIDE_BOND_THRESH``
+# 0.20 nm, ``_DISULFIDE_THRESH`` 0.26 nm; a test checks the equality), so that this detector and
 # ``core.cyclic.detect_cyclization`` agree on the same coordinates. Amide C-N is 1.33 A (Engh and
-# Huber, Acta Cryst. A47, 392, 1991) and a disulfide S-S 2.03 A; the margin absorbs the stretched
+# Huber, Acta Cryst. A47, 392, 1991), disulfide S-S 2.03 A; the margin absorbs the stretched
 # closure bonds of predicted models.
 _AMIDE_BOND_THRESHOLD_ANGSTROM = 2.0
 _DISULFIDE_THRESHOLD_ANGSTROM = 2.6
@@ -865,18 +889,16 @@ def _closures_of(view: _ChainView, notes: Optional[list[str]] = None) -> list[Cl
 def detect_closures(atoms: AtomArray, chain_id: str) -> list[Closure]:
     """The covalent ring closures of a chain, found on a biotite structure without OpenMM.
 
-    It is the light counterpart of ``core.cyclic.detect_cyclization`` and finds the same
-    closures on the same coordinates: head-to-tail amide (C of the last residue to N of the
-    first), disulfide (SG to SG), the lactams (Asp CG or Glu CD to the N-terminus, Lys NZ to the
-    C-terminus, Lys NZ to an Asp or Glu side chain), and, from the bond table of the structure,
-    hydrocarbon staples and other cross-links. A pair counts as linked when the bond table lists
-    it or the atoms are closer than 2.0 A (2.6 A for SG-SG), so a strained model that has no
-    bond record is still found. A test compares the two detectors on the bundled examples.
+    Light counterpart of ``core.cyclic.detect_cyclization``; a test compares the two on the
+    bundled examples. It finds the head-to-tail amide (C of the last residue to N of the first),
+    the disulfide (SG to SG; residues CYS, CYX or DCY), the lactams (Asp CG or Glu CD to the
+    N-terminus, Lys NZ to the C-terminus, Lys NZ to an Asp or Glu side chain) and, from the bond
+    table of the structure, hydrocarbon staples and other cross-links. A pair counts as linked
+    when the bond table lists it or the atoms are closer than 2.0 A (2.6 A for SG-SG), so a
+    strained model without a bond record is still found.
 
-    It differs on one point: only the amino-acid residues of the chain are looked at, so the
-    waters and the ligands that share the chain ID of an author-numbered file cannot shift the
-    first or last residue. Both detectors take a disulfide between cysteines named CYS, CYX or
-    DCY.
+    Only the amino-acid residues of the chain are read, so the waters and ligands that share the
+    chain ID of an author-numbered file cannot shift the first or last residue.
 
     Args:
         atoms: A biotite ``AtomArray``. With a bond table (``include_bonds=True`` when read) the
@@ -896,14 +918,12 @@ def detect_closures(atoms: AtomArray, chain_id: str) -> list[Closure]:
 # The input profile
 # ---------------------------------------------------------------------------
 
-#: A binder of at most this many residues is called a peptide. The line is a length convention,
-#: the one the US FDA uses to separate peptides from proteins (21 CFR 600.3(h)(6): a protein is
-#: an amino-acid polymer of more than 40 residues), not a physical boundary.
+#: A binder of at most this many residues is called a peptide. The line is a length convention of
+#: the US FDA (21 CFR 600.3(h)(6): a protein has more than 40 residues).
 PEPTIDE_MAX_RESIDUES = 40
 #: A binder of more than ``PEPTIDE_MAX_RESIDUES`` and at most this many residues is called a
-#: miniprotein. 100 is a convention of this package: it keeps miniproteins apart from the single
-#: domain antibodies (nanobodies, about 110 to 130 residues), which size alone cannot tell from
-#: any other domain of that length.
+#: miniprotein. 100 is a convention of this package; nanobodies (about 110 to 130 residues) lie
+#: above it, and size cannot tell a longer chain from any other domain.
 MINIPROTEIN_MAX_RESIDUES = 100
 
 
@@ -911,16 +931,20 @@ def estimate_binder_type(n_residues: int) -> str:
     """The binder type a size class suggests: peptide, miniprotein, or ``unknown``.
 
     Up to ``PEPTIDE_MAX_RESIDUES`` residues is a ``peptide``, up to ``MINIPROTEIN_MAX_RESIDUES``
-    a ``miniprotein``. A longer chain could be a nanobody, an antibody chain or any other
-    protein, and size cannot tell them apart, so the answer is ``unknown``. A nanobody or an
-    antibody is only ever set by the caller. ``unknown`` never refuses an input: the checks that
-    depend on the binder type are skipped and the report says so.
+    a ``miniprotein``. A longer chain gives ``unknown``: size does not separate a nanobody, an
+    antibody chain and any other protein. A nanobody or an antibody is only ever set by the
+    caller. ``unknown`` never refuses an input: the checks that depend on the binder type are
+    skipped and the report says so.
     """
     if n_residues <= PEPTIDE_MAX_RESIDUES:
         return "peptide"
     if n_residues <= MINIPROTEIN_MAX_RESIDUES:
         return "miniprotein"
     return "unknown"
+
+
+#: The fields of ``InputProfile`` that hold read-only mapping views.
+_PROFILE_MAPPING_FIELDS = ("residue_names", "residue_labels")
 
 
 @dataclass(frozen=True)
@@ -989,6 +1013,19 @@ class InputProfile:
         if self.binder_type != "unknown" and self.binder_type not in BINDER_TYPES:
             raise ValueError(f"binder_type {self.binder_type!r} is not one of {BINDER_TYPES}")
 
+    def __getstate__(self) -> dict:
+        """The state for pickle and deepcopy: the read-only mapping views as plain dicts."""
+        state = dict(self.__dict__)
+        for name in _PROFILE_MAPPING_FIELDS:
+            state[name] = dict(state[name])
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        state = dict(state)
+        for name in _PROFILE_MAPPING_FIELDS:
+            state[name] = MappingProxyType(state[name])
+        self.__dict__.update(state)
+
     @property
     def binder_chain(self) -> str:
         """The first binder chain."""
@@ -1051,7 +1088,6 @@ def _read_atoms(structure) -> Any:
         suffixes = [suffix.lower() for suffix in path.suffixes]
         gzipped = suffixes[-1:] == [".gz"]
         extension = suffixes[-2] if gzipped and len(suffixes) > 1 else (suffixes or [""])[-1]
-        # a plain file is opened by biotite as before; a gzip is decompressed into a text stream
         stream = gzip.open(path, "rt", encoding="utf-8", errors="replace") if gzipped else None
         try:
             source = stream if gzipped else str(path)
@@ -1178,16 +1214,15 @@ _AMINO_ACID_CLASSES = ("canonical", "d_amino", "n_methyl", "phospho", "other_nca
 def check_openfold3_residues(profile: InputProfile) -> list[Violation]:
     """The binder residues that the OpenFold3 query builder cannot express.
 
-    It asks the builder itself: ``metrics._openfold_run._residue_letter_and_ccd`` maps a residue
+    Asks the builder itself: ``metrics._openfold_run._residue_letter_and_ccd`` maps a residue
     name to a one-letter code and, for a D-amino acid or a modified residue, to the Chemical
     Component Dictionary code written into ``non_canonical_residues``. A name it cannot map is
-    what ``_extract_query_chain`` reports as an ``UnmappableResidueError``, and the ``reason`` of
-    the violation is the text of that error, so a run that gets past the check and one that does
-    not say the same thing. Caps, ligands, waters and ions are left out of the query by the
-    builder and are not checked.
+    what ``_extract_query_chain`` reports as an ``UnmappableResidueError``; the ``reason`` of the
+    violation is the text of that error. Caps, ligands, waters and ions are not checked: the
+    builder leaves them out of the query.
 
-    The builder is imported when the check runs, which needs biotite (or gemmi) for the CCD
-    lookup. This is the ``extra_checks`` entry of the OpenFold3 adapter.
+    The builder is imported when the check runs and needs biotite (or gemmi) for the CCD lookup.
+    This is the ``extra_checks`` entry of the OpenFold3 adapter.
 
     Args:
         profile: The input; ``residue_labels`` gives the residues, ``residue_names`` is used when
@@ -1238,6 +1273,336 @@ def check_openfold3_residues(profile: InputProfile) -> list[Violation]:
 #: What ``preflight`` does with an incompatibility: raise, leave the step out, or log and go on.
 POLICIES: tuple[str, ...] = ("error", "skip", "warn")
 
+#: The MSA policies of a prediction request. ``default`` leaves the use of an MSA server to the
+#: runner's own setting. ``forbid-server`` says that no sequence may be sent to an MSA server:
+#: the request must give the receptor's MSA (or ask for a single sequence) and switch the server
+#: off, and ``preflight`` refuses a run that would use one under every ``POLICIES`` value. The
+#: pieces a runner needs for it are in ``binding_metrics.predictors._msa``.
+MSA_POLICIES: tuple[str, ...] = ("default", "forbid-server")
+
+#: The policy of a request that does not name one; it adds nothing to the key of the request.
+DEFAULT_MSA_POLICY = "default"
+
+# ---------------------------------------------------------------------------
+# Design origin
+# ---------------------------------------------------------------------------
+
+#: The default of ``design_policy``: a check that would compare a design with the model that made
+#: it is left out, with a loud warning, and the rest of the run goes on.
+DEFAULT_DESIGN_POLICY = "skip"
+
+#: Design pipeline (lower case) -> the registry names of the prediction models it runs itself:
+#: BoltzGen is mapped to Boltz-2, BindCraft and ColabDesign to AlphaFold2, which this package
+#: runs as ``af2`` (ColabFold). To support another pipeline add a row; a caller can also name the
+#: models directly (``design_origin``). A source that is not in the table is never refused.
+DESIGN_SOURCE_PREDICTORS: dict[str, frozenset[str]] = {
+    "boltzgen": frozenset({"boltz2"}),
+    "bindcraft": frozenset({"af2"}),
+    "colabdesign": frozenset({"af2"}),
+}
+
+#: The registry metrics whose value means "a model other than the designer agrees", each with a
+#: sentence that says why independence matters. ``evobind_adversarial`` compares the design pose
+#: with a second prediction of the same complex and reads a large shift of the binder centre of
+#: mass as disagreement (Bryant et al. 2025). The confidence metrics (``prediction``,
+#: ``openfold``, ``interface_pae``, ``evobind_score``) are not listed: each reports one model's
+#: confidence in its own structure and claims no agreement of a second model.
+INDEPENDENCE_DEPENDENT_CHECKS: dict[str, str] = {
+    "evobind_adversarial": (
+        "it asks whether a model other than the designer puts the binder where the design has "
+        "it, and a model that made or filtered the design agrees with it in part because the "
+        "design was selected for that model"
+    ),
+}
+
+
+def _check_design_policy(design_policy: str) -> None:
+    if design_policy not in POLICIES:
+        raise ValueError(f"design_policy must be one of {POLICIES}, got {design_policy!r}")
+
+
+def _model_label(name: str) -> str:
+    """The display name of a registered prediction model (``Boltz-2`` for ``boltz2``)."""
+    from binding_metrics.predictors.registry import PARSERS
+
+    spec = PARSERS.get(name)
+    return spec.display_name if spec is not None else name
+
+
+def _models_text(names: Iterable[str]) -> str:
+    return " and ".join(_model_label(name) for name in sorted(names))
+
+
+@dataclass(frozen=True)
+class DesignOrigin:
+    """The pipeline that made a designed binder, as far as the check can use it.
+
+    Attributes:
+        source: The design pipeline in lower case when it is in ``DESIGN_SOURCE_PREDICTORS``,
+            the name as given when it is not, None when only model names were given.
+        predictors: The registry names (lower case) of the prediction models that the pipeline
+            ran itself; empty when they are not known.
+    """
+
+    source: Optional[str] = None
+    predictors: frozenset[str] = frozenset()
+
+    @property
+    def known(self) -> bool:
+        """True when the models that the pipeline ran itself are known."""
+        return bool(self.predictors)
+
+    def shares_model_with(self, predictor: Optional[str]) -> bool:
+        """True when ``predictor`` (a registry name, any case) is a model the pipeline ran."""
+        return isinstance(predictor, str) and predictor.strip().casefold() in self.predictors
+
+    def phrase(self) -> str:
+        """The origin as a clause for a sentence, for example ``the design was made with
+        boltzgen, which ran Boltz-2 itself``."""
+        models = _models_text(self.predictors)
+        if self.source:
+            return f"the design was made with {self.source}, which ran {models} itself"
+        return f"the design pipeline ran {models} itself"
+
+    def short(self) -> str:
+        """The origin as a noun phrase: ``boltzgen, which ran Boltz-2 itself``."""
+        if not self.known:
+            return f"{self.source or 'a source'}, which is not known"
+        return f"{self.source or 'a pipeline'}, which ran {_models_text(self.predictors)} itself"
+
+    def to_dict(self) -> dict:
+        """JSON-ready form."""
+        return {"source": self.source, "predictors": sorted(self.predictors)}
+
+
+def design_origin(design_source: Any) -> DesignOrigin:
+    """Resolve a ``design_source`` argument.
+
+    Args:
+        design_source: None (no source), a ``DesignOrigin``, a design pipeline by name in any
+            case (``"BoltzGen"``; the names are the keys of ``DESIGN_SOURCE_PREDICTORS``), or the
+            models the pipeline ran itself as a list, tuple or set of registry names
+            (``("boltz2",)``). A name that is not in the table gives an origin with no models,
+            which no check can use; it is never an error.
+
+    Raises:
+        TypeError: ``design_source`` is none of these, or a collection holds a non-string.
+    """
+    if design_source is None:
+        return DesignOrigin()
+    if isinstance(design_source, DesignOrigin):
+        return design_source
+    if isinstance(design_source, str):
+        name = design_source.strip()
+        models = DESIGN_SOURCE_PREDICTORS.get(name.casefold())
+        if models is None:
+            return DesignOrigin(name or None)
+        return DesignOrigin(name.casefold(), frozenset(m.casefold() for m in models))
+    if isinstance(design_source, (list, tuple, set, frozenset)):
+        names = list(design_source)
+        if not all(isinstance(name, str) for name in names):
+            raise TypeError(f"design_source models must be strings, got {design_source!r}")
+        return DesignOrigin(None, frozenset(n.strip().casefold() for n in names if n.strip()))
+    raise TypeError(
+        "design_source must be None, a design pipeline name, or a list of the model names the "
+        f"design ran itself, got {type(design_source).__name__}"
+    )
+
+
+@dataclass(frozen=True)
+class DesignOriginCheck:
+    """What the origin of a design does to the checks that rest on independence.
+
+    Made by ``check_design_origin``; ``preflight`` folds it into its report.
+
+    Attributes:
+        origin: The resolved ``DesignOrigin``.
+        given: True when a design source was passed (known or not).
+        policy: ``error``, ``skip`` or ``warn``.
+        checks: The requested checks that rest on independence (``INDEPENDENCE_DEPENDENT_CHECKS``).
+        models: The models that make the second structure of those checks (registry names, lower
+            case).
+        violations: One per check and model that the design ran itself, kind ``design``.
+        warnings: The loud sentences: one per such pair under ``skip`` and ``warn``, and one for
+            a source that is not in the table.
+        notes: What was not checked and why (no source given, no model named). ``preflight``
+            logs them, and puts them in its report only when a source was given.
+        skipped: The checks that are left out: policy ``skip``, and every model that makes their
+            second structure is one the design ran itself.
+    """
+
+    origin: DesignOrigin
+    given: bool
+    policy: str
+    checks: tuple[str, ...] = ()
+    models: tuple[str, ...] = ()
+    violations: tuple[Violation, ...] = ()
+    warnings: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+    skipped: tuple[str, ...] = ()
+
+    def independent(self, predictor: Optional[str]) -> Optional[bool]:
+        """Whether ``predictor`` is independent of the design: None when the models that the
+        design ran are not known or ``predictor`` is not named."""
+        if not self.origin.known or not isinstance(predictor, str) or not predictor.strip():
+            return None
+        return not self.origin.shares_model_with(predictor)
+
+    def reason(self, check: str, predictor: str) -> str:
+        """The fact that makes ``check`` circular on a structure from ``predictor``."""
+        return _design_fact(self.origin, check, predictor.strip().casefold())
+
+    def to_dict(self) -> dict:
+        """JSON-ready form, the ``design`` block of ``PreflightReport.to_dict``."""
+        action = {"skip": "skipped", "warn": "run", "error": "refused"}[self.policy]
+        circular = [m for m in self.models if self.origin.shares_model_with(m)]
+        return {
+            "source": self.origin.source,
+            "known": self.origin.known,
+            "predictors": sorted(self.origin.predictors),
+            "policy": self.policy,
+            "models": list(self.models),
+            "not_independent": circular,
+            "checks": [
+                {"check": c, "model": m, "action": action, "reason": self.reason(c, m)}
+                for c in self.checks
+                for m in circular
+            ],
+        }
+
+
+def _design_fact(origin: DesignOrigin, check: str, model: str) -> str:
+    return (
+        f"{origin.phrase()}, and the second structure of {check!r} comes from {_model_label(model)}"
+    )
+
+
+def _other_models_text(origin: DesignOrigin) -> str:
+    from binding_metrics.predictors.registry import PARSERS
+
+    others = [
+        f"{spec.display_name} ({name})"
+        for name, spec in sorted(PARSERS.items())
+        if name not in origin.predictors
+    ]
+    if not others:
+        return "another model"
+    return ", ".join(others[:-1]) + (" or " if len(others) > 1 else "") + others[-1]
+
+
+def _design_sentence(policy: str, origin: DesignOrigin, check: str, model: str) -> str:
+    """The loud warning for one check on a structure from ``model``: which check, why, how to
+    change it."""
+    label = _model_label(model)
+    if policy == "warn":
+        return (
+            f"{check} runs on a {label} structure although {origin.phrase()}; its agreement "
+            "is in part due to the design having been selected for that model, so read the "
+            "result as not independent of the design"
+        )
+    return (
+        f"{check} is skipped because {origin.phrase()}, so a {label} structure agrees with the "
+        f"design in part because the design was selected for that model; predict with "
+        f"{_other_models_text(origin)} instead, or "
+        "pass design_policy='warn' (--design-policy warn) to run it anyway"
+    )
+
+
+def check_design_origin(
+    design_source: Any,
+    checks: Iterable[str],
+    models: Iterable[str],
+    *,
+    policy: str = DEFAULT_DESIGN_POLICY,
+) -> DesignOriginCheck:
+    """Decide what a design's origin does to the checks that rest on independence.
+
+    A check in ``INDEPENDENCE_DEPENDENT_CHECKS`` compares the design with a structure from
+    ``models``; it is circular when one of those models is a model that the design pipeline ran
+    itself. This function needs no structure, so a caller that has none (a batch step after the
+    workers, a pose set) can call it directly; ``preflight`` calls it for its metrics and
+    predictors.
+
+    Args:
+        design_source: See ``design_origin``. None says nothing is known: nothing is decided and
+            a check that rests on independence gets a note.
+        checks: Metric names; those not in ``INDEPENDENCE_DEPENDENT_CHECKS`` are ignored.
+        models: The models that make the second structure (registry names, any case).
+        policy: ``skip`` (default) leaves a circular check out and warns loudly, ``warn`` runs it
+            and warns, ``error`` is the signal for the caller to refuse.
+
+    Returns:
+        The ``DesignOriginCheck``. An unknown source adds a warning and nothing else.
+
+    Raises:
+        ValueError: ``policy`` is not one of ``POLICIES``.
+        TypeError: ``design_source`` is of a type ``design_origin`` does not take.
+    """
+    _check_design_policy(policy)
+    origin = design_origin(design_source)
+    given = design_source is not None
+    checks = [checks] if isinstance(checks, str) else checks
+    models = [models] if isinstance(models, str) else models
+    wanted = tuple(dict.fromkeys(c for c in checks if c in INDEPENDENCE_DEPENDENT_CHECKS))
+    named = tuple(
+        dict.fromkeys(m.strip().casefold() for m in models if isinstance(m, str) and m.strip())
+    )
+    violations: list[Violation] = []
+    warnings: list[str] = []
+    notes: list[str] = []
+    if given and not origin.known:
+        shown = origin.source or repr(design_source)
+        warnings.append(
+            f"design source {shown!r} is not one of {', '.join(DESIGN_SOURCE_PREDICTORS)}, so "
+            "independence from the design was not checked; name the models the design ran "
+            "(design_source=('boltz2',), for example) to check it"
+        )
+    elif not given and wanted:
+        notes.append(
+            f"independence from the design was not checked for {_join(wanted)}: no design "
+            "source was given (design_source, --designed-with)"
+        )
+    elif origin.known and wanted and not named:
+        notes.append(
+            f"independence from the design was not checked for {_join(wanted)}: the model that "
+            "makes the second structure was not named"
+        )
+    circular = [m for m in named if origin.shares_model_with(m)]
+    for check in wanted:
+        for model in circular:
+            violations.append(
+                Violation(
+                    constraint="design_origin",
+                    fact=_design_fact(origin, check, model),
+                    requirement="a second structure from a model that the design did not run",
+                    reason=INDEPENDENCE_DEPENDENT_CHECKS[check],
+                    fix=(
+                        f"predict the complex with {_other_models_text(origin)}; or pass "
+                        "design_policy='warn' (--design-policy warn) to run the check anyway "
+                        "and label the result"
+                    ),
+                    subject=f"metric {check!r}",
+                    kind="design",
+                    name=check,
+                )
+            )
+            if policy != "error":
+                warnings.append(_design_sentence(policy, origin, check, model))
+    skipped: tuple[str, ...] = ()
+    if policy == "skip" and origin.known and named and len(circular) == len(named):
+        skipped = wanted
+    return DesignOriginCheck(
+        origin=origin,
+        given=given,
+        policy=policy,
+        checks=wanted,
+        models=named,
+        violations=tuple(violations),
+        warnings=tuple(warnings),
+        notes=tuple(notes),
+        skipped=skipped,
+    )
+
 
 @dataclass(frozen=True)
 class PreflightReport:
@@ -1261,6 +1626,11 @@ class PreflightReport:
             empty when it is the same.
         mode: The mode the predictors were asked to run in, one of ``MODES``; None when the
             caller did not say (an output whose making is not known).
+        design: What the origin of the design did to the checks that rest on independence
+            (``check_design_origin``); None when no design source was given. Its violations
+            (kind ``design``) are also in ``violations``, and its loud sentences in ``warnings``.
+        msa_policy: The MSA policy the predictors were checked against, one of ``MSA_POLICIES``.
+            A violation of it (kind ``msa``) is refused whatever ``policy`` says.
     """
 
     policy: str
@@ -1274,10 +1644,19 @@ class PreflightReport:
     predictor_usable: bool = True
     predictor_policy: str = ""
     mode: Optional[str] = None
+    design: Optional[DesignOriginCheck] = None
+    msa_policy: str = DEFAULT_MSA_POLICY
 
     def policy_of(self, kind: str) -> str:
-        """The policy that applies to a violation of ``kind`` (``metric`` or ``predictor``)."""
-        return (self.predictor_policy or self.policy) if kind == "predictor" else self.policy
+        """The policy that applies to a violation of ``kind`` (``metric``, ``predictor``,
+        ``design``, ``msa`` or ``input``). A violation of kind ``msa`` is always an ``error``."""
+        if kind == "msa":
+            return "error"
+        if kind == "predictor":
+            return self.predictor_policy or self.policy
+        if kind == "design":
+            return self.design.policy if self.design is not None else DEFAULT_DESIGN_POLICY
+        return self.policy
 
     @property
     def compatible(self) -> bool:
@@ -1301,6 +1680,8 @@ class PreflightReport:
         policy = self.policy
         if self.predictor_policy and self.predictor_policy != self.policy:
             policy = f"{self.policy}, predictor: {self.predictor_policy}"
+        if self.design is not None:
+            policy = f"{policy}, design: {self.design.policy}"
         if not n:
             heading = f"Pre-flight check: the input fits everything requested (policy: {policy})."
         elif self.refused:
@@ -1316,6 +1697,10 @@ class PreflightReport:
         lines = [heading, f"Input: {self.profile.describe()}"]
         if self.mode is not None:
             lines.append(f"Mode: {_MODE_TEXT[self.mode]}")
+        if self.msa_policy != DEFAULT_MSA_POLICY:
+            lines.append(f"MSA policy: {self.msa_policy} (no MSA server may be called)")
+        if self.design is not None:
+            lines.append(f"Design origin: {self.design.origin.short()}")
         if not self.refused:
             runs = [f"metrics {_join(self.metrics_to_run)}"] if self.metrics_requested else []
             runs += [f"predictor {label}" for label in self.predictors if self.predictor_usable]
@@ -1337,8 +1722,12 @@ class PreflightReport:
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
-        """JSON-ready form, for ``results["preflight"]``."""
-        return {
+        """JSON-ready form, for ``results["preflight"]``.
+
+        The key ``design`` is present only when a design source was given, and ``msa_policy`` only
+        when it is not the default.
+        """
+        data = {
             "policy": self.policy,
             "predictor_policy": self.predictor_policy or self.policy,
             "mode": self.mode,
@@ -1350,7 +1739,9 @@ class PreflightReport:
                 {
                     "name": name,
                     "reasons": [
-                        v.fact for v in self.violations if v.kind == "metric" and v.name == name
+                        v.fact
+                        for v in self.violations
+                        if v.kind in ("metric", "design") and v.name == name
                     ],
                 }
                 for name in self.skipped_metrics
@@ -1361,6 +1752,11 @@ class PreflightReport:
             "warnings": list(self.warnings),
             "notes": list(self.notes),
         }
+        if self.design is not None:
+            data["design"] = self.design.to_dict()
+        if self.msa_policy != DEFAULT_MSA_POLICY:
+            data["msa_policy"] = self.msa_policy
+        return data
 
 
 class IncompatibleInputError(ValueError):
@@ -1706,6 +2102,101 @@ def _check_weights(
         )
 
 
+def _msa_server_violation(step: _Step) -> Violation:
+    """The violation of the policy ``forbid-server`` by a run of ``step`` that uses a server."""
+    return Violation(
+        constraint="msa_policy",
+        fact="the run would use an MSA server",
+        requirement="msa_policy 'forbid-server': no sequence is sent to an MSA server",
+        reason=(
+            "The policy forbids the server and the run would use it. It is refused under every "
+            "--on-incompatible value: warn would run the model and send the sequences out, and "
+            "skip would drop the step the policy was set for."
+        ),
+        fix=(
+            "pass use_msa_server=False together with the MSA of the receptor (receptor_msa=PATH) "
+            "or receptor_msa='single' for a single-sequence receptor (on the command line: "
+            "--prediction-no-msa-server with --prediction-receptor-msa PATH or "
+            "--prediction-receptor-msa single); or set msa_policy='default' "
+            "(--prediction-msa-policy default) to allow the server"
+        ),
+        subject=step.subject,
+        kind="msa",
+        name=step.name,
+    )
+
+
+def _check_chain_roles(profile: InputProfile) -> list[Violation]:
+    """The violation of a receptor that is also a binder chain, or an empty list.
+
+    A step that scores the binder against the receptor would read one chain against itself: the
+    interface, the contacts and the energies would be those of the chain with its own atoms.
+    """
+    chain = profile.receptor_chain
+    if chain is None or chain not in profile.binder_chains:
+        return []
+    return [
+        Violation(
+            constraint="chain_roles",
+            fact=f"chain {chain!r} is named as the binder and as the receptor",
+            requirement="two different chains: one for the binder and one for the receptor",
+            reason=(
+                "The steps that score the binder against the receptor would compare the chain "
+                "with itself, so their contacts and energies would not describe an interface."
+            ),
+            fix=(
+                "name two different chains: peptide_chain (--peptide-chain) and receptor_chain "
+                "(--receptor-chain), or binder_chain and target_chain (--binder-chain and "
+                "--target-chain); leave one out to have it detected"
+            ),
+            subject="input chains",
+            kind="input",
+            name="chains",
+        )
+    ]
+
+
+#: The ``receptor_msa`` value for a receptor predicted from its own sequence, with no alignment;
+#: the word of ``binding_metrics.predictors._msa.SINGLE_SEQUENCE``, which imports this module.
+_SINGLE_SEQUENCE = "single"
+
+#: The caveat of a prediction whose target has neither a template nor an MSA, see
+#: ``_target_is_unconstrained``.
+_TARGET_UNCONSTRAINED_CAVEAT = (
+    "the target fold is unconstrained (no template and no MSA), so the binder placement and the "
+    "confidence scores say little: give the target as a template (--prediction-mode refold or "
+    "score), give a receptor MSA (--prediction-receptor-msa PATH), or leave the MSA server on if "
+    "the sequence may be sent out"
+)
+
+
+def _target_is_unconstrained(
+    mode: Optional[str],
+    msa_server: Optional[bool],
+    receptor_msa: Optional[str | os.PathLike],
+) -> bool:
+    """True when a prediction is planned with no template for the target and no target MSA.
+
+    A caveat, not a violation: no source says that the input cannot be given. It holds when both
+    of these do:
+
+    * ``mode`` is ``predict``, the only mode with no template on the target (``refold``,
+      ``score``, ``refold-lock`` and ``score-lock`` template or pin it);
+    * there is no target MSA: ``msa_server`` is False (the MSA server is off) and ``receptor_msa``
+      is None or the word ``"single"``. A given alignment (the path of a file, a ``str`` or a
+      ``Path``, even one called ``single``) and a server search both count as an MSA.
+
+    A caller that does not say (``mode`` or ``msa_server`` None) is never told its target is
+    unconstrained. The binder type plays no part.
+    """
+    if mode != "predict" or msa_server is not False:
+        return False
+    given_alignment = receptor_msa is not None and not (
+        isinstance(receptor_msa, str) and receptor_msa == _SINGLE_SEQUENCE
+    )
+    return not given_alignment
+
+
 def preflight(
     profile: InputProfile,
     metrics: Iterable[Any] = (),
@@ -1718,12 +2209,19 @@ def preflight(
     runnable: Optional[Collection[str]] = None,
     weights: Optional[str | os.PathLike] = None,
     weights_kinds: Optional[Mapping[str, str]] = None,
+    design_source: Any = None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
+    prediction_models: Optional[Collection[str]] = None,
+    msa_policy: str = DEFAULT_MSA_POLICY,
+    msa_server: Optional[bool] = None,
+    receptor_msa: Optional[str | os.PathLike] = None,
 ) -> PreflightReport:
     """Check an input against the limits of every requested metric and predictor, before any run.
 
-    Call it first: it reads declarations only and never runs, prepares or instantiates a metric,
-    a predictor or a runner. It collects every incompatibility, not the first one, each with the
-    fact found in the input, the requirement, the step's own reason and a fix.
+    Reads declarations only: it never runs, prepares or instantiates a metric, a predictor or a
+    runner. It collects every incompatibility, each with the fact found in the input, the
+    requirement, the step's own reason and a fix. A receptor chain that is also a binder chain
+    is one of them (kind ``input``, constraint ``chain_roles``) and follows ``policy``.
 
     Args:
         profile: The input, from ``profile_input``.
@@ -1731,50 +2229,87 @@ def preflight(
             attribute (a ``MetricSpec``). A name the registry does not know has no declared limit.
         predictor: None, a registered predictor name (``"of3"``), an adapter or runner (class or
             instance) with a ``capabilities`` attribute, a ``Capabilities``, or a list of these.
-            When it is refused, the message lists the other registered predictors that accept the
-            input.
-        policy: ``error`` (default) raises ``IncompatibleInputError`` when anything is
-            incompatible, so nothing runs. ``skip`` leaves out each metric that has a violation
-            (``report.metrics_to_run`` holds the rest) and marks a refused predictor
-            ``report.predictor_usable=False``. ``warn`` logs every violation and lets everything
-            run.
-        predictor_policy: The policy for the violations of the predictors, when it is not the
-            one of the metrics; None uses ``policy``. A caller that only reads a prediction made
-            elsewhere passes ``warn``, because what the model was given is not known.
+            A refusal lists the other registered predictors that accept the input.
+        policy: ``error`` (default) raises ``IncompatibleInputError`` on any incompatibility, so
+            nothing runs. ``skip`` leaves out each metric that has a violation
+            (``report.metrics_to_run`` holds the rest) and sets ``report.predictor_usable=False``
+            for a refused predictor. ``warn`` logs every violation and lets everything run.
+        predictor_policy: The policy for the violations of the predictors; None uses ``policy``.
+            A caller that only reads a prediction made elsewhere passes ``warn``, because what
+            the model was given is not known.
         provided: What the caller makes available among ``NEEDS`` besides the receptor chain,
             for example ``{"reference_structure", "gpu"}``; None leaves those needs unchecked and
             the report says so.
-        mode: The mode the predictors are asked to run in, one of ``MODES``. A predictor that
-            declares ``modes`` without it is refused (constraint ``modes``) and its fix lists the
-            models that declare the mode, then those with no declaration; a caveat for the mode
-            is a warning. None does not say: the mode is not checked.
-        runnable: The names of the predictors that can be run from here; a model outside it
-            that the fix offers is marked as readable only. None leaves the fix unmarked.
-        weights: Custom weights (``--prediction-weights``) that the run will give the model. The
-            path must exist and be readable (``check_weights_path``). A predictor whose runner
-            does not take custom weights is refused (constraint ``weights``, with a fix that
-            names the runners that do), and one that does gets a note: the limits it declares
-            come from its input format and architecture, and its caveats about accuracy and
-            published benchmarks refer to the standard weights. The declared hard limits stay in
-            force.
+        mode: The mode the predictors are asked to run in, one of ``MODES``; None skips the mode
+            check. A predictor that declares ``modes`` without it is refused (constraint
+            ``modes``) and its fix lists the models that declare the mode, then those with no
+            declaration. A caveat for the mode is a warning.
+        runnable: The names of the predictors that can be run from here; a model outside it that
+            the fix offers is marked as readable only. None leaves the fix unmarked.
+        weights: Custom weights (``--prediction-weights``) that the run gives the model. The path
+            must exist and be readable (``check_weights_path``). A predictor whose runner does not
+            take custom weights is refused (constraint ``weights``, with a fix that names the
+            runners that do). A predictor whose runner does gets a note: its declared limits come
+            from its input format and architecture and stay in force, and its caveats about
+            accuracy and published benchmarks refer to the standard weights.
         weights_kinds: Model name to the kind of weights its runner takes (``"file"`` or
             ``"directory"``), for the models whose runner supports custom weights
-            (``cli.prediction.runner_weights_kinds`` reads it from the runner registry). None
-            says the caller does not know: the weights are not checked against the runners and the
-            report says so.
+            (``cli.prediction.runner_weights_kinds`` reads it from the runner registry). None:
+            the weights are not checked against the runners and the report says so.
+        design_source: The pipeline that made the designed binder: a name from
+            ``DESIGN_SOURCE_PREDICTORS`` in any case (``"boltzgen"``, ``"bindcraft"``,
+            ``"colabdesign"``), or the registry names of the models it ran itself
+            (``("boltz2",)``), see ``design_origin``. A metric of
+            ``INDEPENDENCE_DEPENDENT_CHECKS`` (``evobind_adversarial``) gets a violation of kind
+            ``design`` for each model that makes its second structure and that the pipeline ran
+            itself; ``design_policy`` handles it. A source that is not in the table gives a
+            warning and never blocks. None checks nothing, and logs at INFO level that
+            independence was not checked when such a metric is requested.
+        design_policy: What to do with a check that would read a structure from a model that the
+            design ran itself, whatever ``policy`` says. ``skip`` (default) leaves the check out
+            of ``report.metrics_to_run`` when every model that makes its second structure is such
+            a model, and puts one warning in ``report.warnings`` and the log. ``warn`` runs it and
+            warns the same way. ``error`` raises ``IncompatibleInputError``.
+        prediction_models: The registry names of the models that make the second structures of
+            the checks; None takes the names of ``predictor``. A pose set passes the back-ends of
+            its poses, which are not checked against the limits of a model.
+        msa_policy: One of ``MSA_POLICIES``. ``default`` checks nothing. ``forbid-server`` says
+            that no sequence may leave the machine for an MSA server (see
+            ``binding_metrics.predictors._msa``).
+        msa_server: Whether the run of the predictors would use an MSA server; None when the
+            caller does not know or the model is not run (an output made elsewhere). Under
+            ``forbid-server``, True gives a violation of the constraint ``msa_policy`` for each
+            predictor (kind ``msa``, fact "the run would use an MSA server"). It is refused under
+            every ``policy``: ``skip`` or ``warn`` would drop the step the policy was set for or
+            send the sequences out. None adds a note that the policy was not checked.
+        receptor_msa: The receptor MSA of the request: None (no source), the word ``"single"`` (the
+            receptor is predicted from its own sequence) or the path of an alignment. Read only
+            by the target caveat (see Returns).
 
     Returns:
-        The ``PreflightReport``. Soft warnings for inputs a step accepts but never validated are
-        in ``report.warnings`` whatever the policy.
+        The ``PreflightReport``. Warnings for inputs a step accepts but never validated are in
+        ``report.warnings`` whatever the policy; ``report.design`` is set when a
+        ``design_source`` was given.
+
+        Each predictor gets a warning when ``mode`` is ``predict`` (no template on the target),
+        ``msa_server`` is False and ``receptor_msa`` is None or ``"single"`` (no target MSA
+        either): the target fold is unconstrained (``_target_is_unconstrained``). It is a warning
+        under every ``policy``, never a violation, and is absent when an alignment is given, the
+        server is on, the mode templates or pins the target, or ``mode`` or ``msa_server`` is
+        None. A pose set does not trigger it: ``score_pose_set`` reads predictions made elsewhere
+        and names no predictor, mode or MSA.
 
     Raises:
-        IncompatibleInputError: Policy ``error`` and at least one violation. Subclass of
+        IncompatibleInputError: Policy ``error`` and at least one violation, or ``design_policy``
+            ``error`` and a check on a model that the design ran itself. Subclass of
             ``ValueError``.
-        ValueError: ``policy`` or ``predictor_policy`` is not one of ``POLICIES``, ``mode`` is
-            not one of ``MODES``, or ``weights`` does not exist, cannot be read or is not the kind
-            a runner takes (``check_weights_path``).
+        ValueError: ``policy``, ``predictor_policy`` or ``design_policy`` is not one of
+            ``POLICIES``, ``mode`` is not one of ``MODES``, ``msa_policy`` is not one of
+            ``MSA_POLICIES``, or ``weights`` does not exist, cannot be read or is not the kind a
+            runner takes (``check_weights_path``).
+        TypeError: ``design_source`` is of a type ``design_origin`` does not take, or a
+            ``capabilities`` attribute is neither None nor a ``Capabilities``.
         KeyError: A predictor name that is not registered.
-        TypeError: A ``capabilities`` attribute that is neither None nor a ``Capabilities``.
     """
     if policy not in POLICIES:
         raise ValueError(f"policy must be one of {POLICIES}, got {policy!r}")
@@ -1782,10 +2317,13 @@ def preflight(
         raise ValueError(f"predictor_policy must be one of {POLICIES}, got {predictor_policy!r}")
     if mode is not None and mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+    if msa_policy not in MSA_POLICIES:
+        raise ValueError(f"msa_policy must be one of {MSA_POLICIES}, got {msa_policy!r}")
+    _check_design_policy(design_policy)
     effective_predictor_policy = predictor_policy or policy
     steps = _metric_steps(metrics) + _predictor_steps(predictor)
 
-    violations: list[Violation] = []
+    violations: list[Violation] = _check_chain_roles(profile)
     warnings: list[str] = []
     notes: list[str] = list(profile.notes)
     refused: set[tuple[str, str]] = set()
@@ -1807,6 +2345,25 @@ def preflight(
     if weights is not None:
         _check_weights(steps, weights, weights_kinds, violations, notes, refused)
 
+    if msa_policy != DEFAULT_MSA_POLICY:
+        for step in steps:
+            if step.kind != "predictor":
+                continue
+            if msa_server is None:
+                notes.append(
+                    f"msa_policy '{msa_policy}' was not checked against {step.subject}: the "
+                    "caller did not say whether the run uses an MSA server"
+                )
+            elif msa_server:
+                violations.append(_msa_server_violation(step))
+
+    if _target_is_unconstrained(mode, msa_server, receptor_msa):
+        warnings += [
+            f"{step.subject}: {_TARGET_UNCONSTRAINED_CAVEAT}"
+            for step in steps
+            if step.kind == "predictor"
+        ]
+
     typed = [s.subject for s in steps if s.capabilities and s.capabilities.binder_types]
     if profile.binder_type == "unknown" and typed:
         notes.append(
@@ -1824,10 +2381,22 @@ def preflight(
             )
 
     requested = tuple(s.name for s in steps if s.kind == "metric")
+    design = check_design_origin(
+        design_source,
+        requested,
+        [s.name for s in steps if s.kind == "predictor"]
+        if prediction_models is None
+        else prediction_models,
+        policy=design_policy,
+    )
+    violations += design.violations
+    warnings += design.warnings
+    if design.given:
+        notes += design.notes  # without a source the report stays as it was; the log says it
+    left_out = set(design.skipped)
     if policy == "skip":
-        to_run = tuple(name for name in requested if ("metric", name) not in refused)
-    else:
-        to_run = requested
+        left_out |= {name for kind, name in refused if kind == "metric"}
+    to_run = tuple(name for name in requested if name not in left_out)
     usable = not (
         effective_predictor_policy == "skip" and any(kind == "predictor" for kind, _ in refused)
     )
@@ -1845,10 +2414,21 @@ def preflight(
         predictor_usable=usable,
         predictor_policy=predictor_policy or "",
         mode=mode,
+        design=design if design.given else None,
+        msa_policy=msa_policy,
     )
     if report.refused:
         raise IncompatibleInputError(report)
+    for text in design.warnings:
+        logger.warning("design origin: %s", text)
+    for text in design.notes:
+        logger.info("%s", text)
     for violation in violations:
+        if violation.kind == "design":
+            continue  # the sentence above says it, with what to do
+        if violation.kind == "input":
+            logger.warning("%s: %s; running anyway", violation.subject, violation.fact)
+            continue
         action = (
             "leaving it out" if report.policy_of(violation.kind) == "skip" else "running anyway"
         )

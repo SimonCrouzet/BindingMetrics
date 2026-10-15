@@ -10,6 +10,7 @@ pytest.importorskip("biotite")
 
 import biotite.structure as struc  # noqa: E402
 import biotite.structure.io.pdb as pdb_io  # noqa: E402
+from _reference_contacts import coulomb_reference  # noqa: E402
 
 from binding_metrics.metrics.electrostatics import (  # noqa: E402
     _FORMAL_CHARGES,
@@ -160,10 +161,16 @@ class TestCoverageCounters:
         assert result["n_ionisable_residues_seen"] == 3  # LYS, DAS, SEP
         assert result["n_residues_unrecognised"] == 3  # MLE, BMT, ABA
 
-    def test_bundled_p53_mdm2_energy_is_unchanged(self):
-        result = compute_coulomb_cross_chain(DATA / "example_linear_p53_1YCR.pdb")
-        assert result["coulomb_energy_kJ"] == pytest.approx(-91.58911325183033, rel=1e-9)
-        assert result["n_charged_pairs"] == 16
+    def test_bundled_p53_mdm2_energy_matches_the_sum_over_the_file(self):
+        path = DATA / "example_linear_p53_1YCR.pdb"
+        result = compute_coulomb_cross_chain(path)  # chains auto-detected
+        # The sum is symmetric in the two chains, so the roles need not be matched.
+        energy, n_pairs = coulomb_reference(path, "B", "A")
+        # The reference must hold pairs, or a charge table that missed them would match it.
+        assert n_pairs > 0
+        # The package sums float32 coordinates, the reference float64 ones.
+        assert result["coulomb_energy_kJ"] == pytest.approx(energy, rel=1e-5)
+        assert result["n_charged_pairs"] == n_pairs
         assert result["n_residues_unrecognised"] == 0
         assert result["n_ionisable_residues_seen"] > 0
 

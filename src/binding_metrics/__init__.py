@@ -1,11 +1,9 @@
 """BindingMetrics: GPU-compatible binding metrics evaluation through MD simulations.
 
 The public names listed in ``__all__`` are loaded on first access (PEP 562), so
-``import binding_metrics`` does not import OpenMM and the static, single-structure
-metrics work on an install without it. ``from binding_metrics import X``,
-``binding_metrics.X`` and ``from binding_metrics import *`` behave as before. A
-name whose optional dependency is missing raises an ``ImportError`` that names the
-extra to install.
+``import binding_metrics`` does not import OpenMM and the static, single-structure metrics work
+on an install without it. A name whose optional dependency is missing raises an ``ImportError``
+that names the extra to install.
 """
 
 import importlib
@@ -65,11 +63,10 @@ def _import_module(module_name: str, attribute: str):
 def _lazy_exports(package: str, exports: dict[str, str], namespace: dict):
     """Build the module-level ``__getattr__`` and ``__dir__`` of a package (PEP 562).
 
-    ``exports`` maps each public name to the module that defines it. The first
-    access imports that module and caches the value in ``namespace`` (the package's
-    ``globals()``). Names that are not exports fall back to the package's own
-    submodules, so ``package.submodule`` still resolves without an explicit import,
-    as it did when the ``__init__`` files imported everything at load time.
+    ``exports`` maps each public name to the module that defines it. The first access imports
+    that module and caches the value in ``namespace`` (the package's ``globals()``). Names that
+    are not exports fall back to the package's own submodules, so ``package.submodule`` resolves
+    without an explicit import.
     """
 
     def module_getattr(name: str):

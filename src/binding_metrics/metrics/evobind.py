@@ -14,7 +14,7 @@ Two main metrics:
 2. Adversarial check (two predictions, e.g. OpenFold3 vs AlphaFold-Multimer):
        adversarial_score = mean_if_dist × (100 / pLDDT_pep_afm) × ΔCOM
    where ΔCOM is the peptide centre-of-mass displacement (Å) after receptor
-   Cα superposition.  Low score → two models agree on binding pose → reliable.
+   Cα superposition.  A low score means the two models agree on the binding pose.
 
 Usage:
     from binding_metrics.metrics.evobind import (
@@ -59,6 +59,8 @@ Usage:
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NamedTuple, Optional, Union
 
@@ -67,16 +69,15 @@ import numpy as np
 from binding_metrics.core.residues import VARIANT_TO_PARENT_RESIDUE
 from binding_metrics.metrics._common import import_biotite, load_structure, resolve_chain_role
 from binding_metrics.predictors._confidence import _binder_plddt_per_residue, _residue_index
-from binding_metrics.predictors.record import PredictionRecord
+from binding_metrics.predictors._renamed import deprecated_name_getattr
+from binding_metrics.predictors.record import PredictedPose
+
+#: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
+__getattr__ = deprecated_name_getattr(__name__)
 
 # ---------------------------------------------------------------------------
 # Internal helpers: coordinate extraction
 # ---------------------------------------------------------------------------
-
-
-def _import_biotite():
-    struc, pdbx, _ = import_biotite("EvoBind metrics")
-    return struc, pdbx
 
 
 def _load_atoms(path: Path):
@@ -169,8 +170,7 @@ def _resname_mismatch_fraction(atoms_a, atoms_b) -> float:
     return float(np.mean([a != b for a, b in zip(_canonical(atoms_a), _canonical(atoms_b))]))
 
 
-# The per-residue mean lives with the other model-agnostic confidence helpers. It is
-# kept under its old name here because callers and tests import it from this module.
+# Alias: callers and tests import the name from this module.
 _per_residue_plddt = _binder_plddt_per_residue
 
 
@@ -318,12 +318,57 @@ def _pair_residues(
 # ---------------------------------------------------------------------------
 
 
+#: One entry of ``receptor_interface_residues``: a residue number (every residue with that
+#: number, whatever its insertion code), a label such as "52A" (that residue only; "52" is the
+#: residue 52 without a code), or a ``(number, insertion code)`` pair.
+InterfaceResidue = Union[int, str, tuple[int, str]]
+
+
+def _interface_residue_mask(rec_cb, selection: Sequence[InterfaceResidue]) -> np.ndarray:
+    """Boolean mask over the receptor residues (one atom each) named by ``selection``.
+
+    Raises:
+        ValueError: If an entry is none of an int, a label such as "52A" or a
+            ``(number, insertion code)`` pair.
+    """
+    numbers: set[int] = set()
+    labelled: set[tuple[int, str]] = set()
+    for entry in selection:
+        if isinstance(entry, (int, np.integer)) and not isinstance(entry, bool):
+            numbers.add(int(entry))
+            continue
+        if isinstance(entry, str):
+            match = re.fullmatch(r"\s*(-?\d+)\s*(\S?)\s*", entry)
+            pair = (int(match.group(1)), match.group(2)) if match else None
+        elif isinstance(entry, (tuple, list)) and len(entry) == 2:
+            number, ins_code = entry
+            valid = isinstance(number, (int, np.integer)) and not isinstance(number, bool)
+            pair = (int(number), str(ins_code or "").strip()) if valid else None
+        else:
+            pair = None
+        if pair is None or len(pair[1]) > 1:
+            raise ValueError(
+                f"receptor_interface_residues entry {entry!r} is not a residue number, a label "
+                "such as '52A' or a (number, insertion code) pair"
+            )
+        labelled.add(pair)
+
+    ins_codes = [str(code).strip() for code in rec_cb.ins_code]
+    return np.array(
+        [
+            int(number) in numbers or (int(number), code) in labelled
+            for number, code in zip(rec_cb.res_id, ins_codes)
+        ],
+        dtype=bool,
+    )
+
+
 def _score_from_atoms(
     atoms,
     plddt_per_atom: Optional[np.ndarray],
     binder_chain: str,
     receptor_chain: str,
-    receptor_interface_residues: Optional[list[int]],
+    receptor_interface_residues: Optional[Sequence[InterfaceResidue]],
     interface_cutoff_angstrom: float,
 ) -> dict:
     """Primary EvoBind score of a structure that is already loaded.
@@ -345,14 +390,13 @@ def _score_from_atoms(
     rec_cb_coords = rec_cb.coord
     rec_res_ids = rec_cb.res_id  # one per residue by construction of _cb_atoms
 
-    # Determine receptor interface residues
     interface_fallback_used = False
     if receptor_interface_residues is not None:
-        if_mask = np.isin(rec_res_ids, receptor_interface_residues)
+        if_mask = _interface_residue_mask(rec_cb, receptor_interface_residues)
         if not if_mask.any():
             raise ValueError(
                 f"None of receptor_interface_residues {list(receptor_interface_residues)} "
-                f"is a residue number of receptor chain '{receptor_chain}'."
+                f"is a residue of receptor chain '{receptor_chain}'."
             )
     else:
         if_mask = _auto_interface_mask(rec_cb_coords, pep_cb_coords, interface_cutoff_angstrom)
@@ -364,7 +408,6 @@ def _score_from_atoms(
 
     rec_if_coords = rec_cb_coords[if_mask]
 
-    # Asymmetric mean-closest distances
     pep_min_dists = _pairwise_min_dists(pep_cb_coords, rec_if_coords)
     rec_min_dists = _pairwise_min_dists(rec_if_coords, pep_cb_coords)
 
@@ -414,16 +457,15 @@ def _adversarial_from_atoms(
     whatever model made it. ``adversary_label`` is how error messages and the
     ``reason`` name that second structure.
     """
-    struc, _ = _import_biotite()
+    struc, _, _ = import_biotite("EvoBind metrics")
 
-    # --- Receptor Cα superposition: place design into the AFM coordinate frame ---
-    # Match by residue number and insertion code — the two structures may cover different
-    # sequence extents (e.g. a cropped design vs a full-length OF3 prediction).
+    # Receptor Cα superposition places the design in the AFM frame. Residues are matched by
+    # number and insertion code because the structures may cover different sequence extents.
     design_rec_ca = _ca_atoms(design_atoms, receptor_chain)
     afm_rec_ca = _ca_atoms(adversary_atoms, receptor_chain)
 
     # A number-and-code pairing that names other residues (a design numbered 25-109 against a
-    # prediction renumbered from 1) is caught by the residue names and replaced by a
+    # prediction renumbered from 1) is detected by the residue names and replaced by a
     # positional pairing when the chains have the same length.
     receptor_pairs = _pair_residues(
         design_rec_ca,
@@ -458,7 +500,7 @@ def _adversarial_from_atoms(
             f"No Cα atoms found for binder chain '{binder_chain}' in {adversary_label} structure."
         )
 
-    # For CoM: pair the binder residues the same way as the receptor ones.
+    # The binder residues for the centre of mass are paired like the receptor ones.
     binder_pairs = _pair_residues(
         design_pep_ca,
         afm_pep_ca,
@@ -474,15 +516,13 @@ def _adversarial_from_atoms(
     binder_pairing = binder_pairs.pairing
     binder_mismatch = binder_pairs.mismatch_fraction
 
-    # Apply receptor superposition transform to design binder Cα
     design_pep_ca_in_afm_frame = transform.apply(design_pep_ca_matched).coord
 
-    # Centre-of-mass displacement
     design_com = design_pep_ca_in_afm_frame.mean(axis=0)
     afm_com = afm_pep_ca_matched.coord.mean(axis=0)
     delta_com = float(np.linalg.norm(design_com - afm_com))
 
-    # --- Interface residues from the design structure ---
+    # Interface residues come from the design structure.
     design_pep_cb = _cb_atoms(design_atoms, binder_chain)
     design_rec_cb = _cb_atoms(design_atoms, receptor_chain)
 
@@ -514,7 +554,7 @@ def _adversarial_from_atoms(
             if design_key in if_keys
         }
 
-    # Map those interface residues (number and insertion code) to the AFM structure
+    # Map the interface residues (number and insertion code) to the AFM structure.
     afm_rec_cb = _cb_atoms(adversary_atoms, receptor_chain)
     if afm_rec_cb.array_length() == 0:
         raise ValueError(
@@ -537,7 +577,6 @@ def _adversarial_from_atoms(
         )
     afm_pep_cb_coords = afm_pep_cb.coord
 
-    # AFM interface distances
     afm_pep_min_dists = _pairwise_min_dists(afm_pep_cb_coords, afm_rec_if_coords)
     afm_rec_min_dists = _pairwise_min_dists(afm_rec_if_coords, afm_pep_cb_coords)
 
@@ -589,7 +628,7 @@ def compute_evobind_score(
     plddt_per_atom: Optional[np.ndarray],
     binder_chain: str,
     receptor_chain: Optional[str] = None,
-    receptor_interface_residues: Optional[list[int]] = None,
+    receptor_interface_residues: Optional[Sequence[InterfaceResidue]] = None,
     interface_cutoff_angstrom: float = 8.0,
     *,
     target_chain: Optional[str] = None,
@@ -603,8 +642,7 @@ def compute_evobind_score(
     distance to the receptor interface Cβ atoms (Å), and ``mean_pLDDT_pep``
     is the mean per-residue pLDDT of the binder chain [0–100].
 
-    Dividing by pLDDT/100 (dimensionless confidence) keeps the score in Å
-    and penalises low-confidence predictions.  Lower score → better.
+    Dividing by pLDDT/100 keeps the unit in Å. Lower is better.
 
     Args:
         structure_path: Path to the predicted CIF or PDB file.
@@ -613,10 +651,13 @@ def compute_evobind_score(
         binder_chain: Chain ID of the designed binder/peptide.
         receptor_chain: Chain ID of the receptor/target. Required, through
             this parameter or ``target_chain``.
-        receptor_interface_residues: Explicit list of receptor residue numbers
-            that define the binding interface. If None the interface is
-            auto-detected as receptor residues whose Cβ lies within
-            ``interface_cutoff_angstrom`` Å of any binder Cβ.
+        receptor_interface_residues: Explicit list of receptor residues that
+            define the binding interface. An int is a residue number and selects
+            every residue with it, so 52 selects 52 and 52A; a string such as
+            "52A" selects that residue only, and "52" the residue 52 without an
+            insertion code; a ``(52, "A")`` pair means the same as "52A". If None
+            the interface is auto-detected as receptor residues whose Cβ lies
+            within ``interface_cutoff_angstrom`` Å of any binder Cβ.
         interface_cutoff_angstrom: Distance cutoff (Å) for auto-detection
             (default 8.0, matching the EvoBind CB-contact threshold).
         target_chain: Alias of ``receptor_chain``; different IDs in both raise
@@ -685,9 +726,8 @@ def compute_evobind_adversarial_check(
     """EvoBind adversarial check: consistency between two structure predictions.
 
     Compares a design-model prediction (e.g., OpenFold3 in design-scoring mode)
-    against an independent multimer prediction (e.g., AlphaFold-Multimer or
-    a second OpenFold3 run).  Agreement between the two indicates the predicted
-    binding pose is robust and not a model artefact.
+    against a second multimer prediction (e.g., AlphaFold-Multimer or a second
+    OpenFold3 run).
 
     The combined adversarial score from EvoBind is:
         adversarial_score = mean_if_dist × (100 / pLDDT_pep_afm) × ΔCOM
@@ -697,9 +737,9 @@ def compute_evobind_adversarial_check(
     model, and ``ΔCOM`` is the Euclidean distance (Å) between the peptide
     centres of mass after superposing the receptor Cα atoms.
 
-    Low adversarial score → consistent predictions → reliable design.
-    High ΔCOM with high mean_if_dist → the second model places the peptide
-    far from the interface, indicating a hallucinated binding pose.
+    A low score means the two predictions agree on the pose. A high ΔCOM together
+    with a high mean_if_dist means the second model places the peptide away from
+    the interface.
 
     Args:
         design_structure_path: Path to the first prediction (design/reference),
@@ -798,8 +838,8 @@ def compute_evobind_adversarial_check(
 
 
 def compute_evobind_adversarial_from_records(
-    design: Union[PredictionRecord, str, Path],
-    adversary: PredictionRecord,
+    design: Union[PredictedPose, str, Path],
+    adversary: PredictedPose,
     binder_chain: str,
     receptor_chain: Optional[str] = None,
     *,
@@ -810,25 +850,23 @@ def compute_evobind_adversarial_from_records(
     """EvoBind adversarial check between two predictions read by the predictor adapters.
 
     Same computation as :func:`compute_evobind_adversarial_check`, but the two structures
-    come from ``PredictionRecord`` objects, so the second prediction can be made by any
+    come from ``PredictedPose`` objects, so the second prediction can be made by any
     model with an adapter and its per-atom pLDDT travels with it. Chain IDs are the
     USER's IDs: each record renames the chains of its file through its ``chain_map``
     (``get_parser(model).load(directory, name, chain_map={"B": "P"})``), so a receptor
     that one model calls ``A`` and another ``B`` needs no argument here.
 
-    The score divides by the adversary's pLDDT, and pLDDT is calibrated per model, so
+    The score divides by the adversary's pLDDT, which is calibrated per model, so
     compare ``evobind_adversarial_score`` between designs only when the same adversary
-    model made the second prediction. When the adversary was run in OpenFold3 score mode
-    each chain was given its own structure from the design as a template, so the folds of the
-    chains agree with the design in part by construction; the relative pose of binder and
-    receptor is not templated (OpenFold3 places the binder itself), so ``delta_com_angstrom``
-    tests the pose. An adversary that is independent of the design is a sequence-only prediction.
+    model made the second prediction. In OpenFold3 score mode each chain is templated with
+    its structure from the design; the relative pose of binder and receptor is not. A
+    sequence-only prediction is independent of the design.
 
     Args:
-        design: The first prediction, or the input pose. A ``PredictionRecord`` (its
+        design: The first prediction, or the input pose. A ``PredictedPose`` (its
             ``chain_map`` applies) or the path of a structure file (chain IDs as in
             the file).
-        adversary: The second prediction, a ``PredictionRecord``. Its
+        adversary: The second prediction, a ``PredictedPose``. Its
             ``plddt_per_atom`` (0 to 100, in the atom order of its structure file)
             gives the pLDDT-weighted score.
         binder_chain: Chain ID of the binder in both structures, after ``chain_map``.
@@ -857,7 +895,7 @@ def compute_evobind_adversarial_from_records(
             appended), or its mean binder pLDDT is zero or not finite.
 
     Raises:
-        TypeError: If ``adversary`` is not a ``PredictionRecord``, or ``design`` is neither
+        TypeError: If ``adversary`` is not a ``PredictedPose``, or ``design`` is neither
             a record nor a path.
         ValueError: If a record has no structure file, a chain is not in a structure, the
             pLDDT array does not have one value per atom of the adversary structure, or
@@ -869,13 +907,13 @@ def compute_evobind_adversarial_from_records(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
     )
-    if not isinstance(adversary, PredictionRecord):
+    if not isinstance(adversary, PredictedPose):
         raise TypeError(
-            "adversary must be a PredictionRecord (get_parser(model).load(...)); "
+            "adversary must be a PredictedPose (get_parser(model).load(...)); "
             f"got {type(adversary).__name__}. For two structure files use "
             "compute_evobind_adversarial_check."
         )
-    if isinstance(design, PredictionRecord):
+    if isinstance(design, PredictedPose):
         design_atoms = design.atoms()
         design_model: Optional[str] = design.model
         design_note = f"chains after the chain_map of the {design.model} record"
@@ -885,7 +923,7 @@ def compute_evobind_adversarial_from_records(
         design_note = "chain IDs as in the file"
     else:
         raise TypeError(
-            f"design must be a PredictionRecord or a structure path, got {type(design).__name__}"
+            f"design must be a PredictedPose or a structure path, got {type(design).__name__}"
         )
     adversary_atoms = adversary.atoms()
 
@@ -918,23 +956,23 @@ def compute_evobind_adversarial_from_records(
 
 
 def compute_evobind_score_from_record(
-    record: PredictionRecord,
+    record: PredictedPose,
     binder_chain: str,
     receptor_chain: Optional[str] = None,
     *,
-    receptor_interface_residues: Optional[list[int]] = None,
+    receptor_interface_residues: Optional[Sequence[InterfaceResidue]] = None,
     interface_cutoff_angstrom: float = 8.0,
     target_chain: Optional[str] = None,
 ) -> dict:
     """Primary EvoBind score of a prediction read by a predictor adapter.
 
     Same computation as :func:`compute_evobind_score`, with the structure and the per-atom
-    pLDDT taken from a ``PredictionRecord``, so the prediction can come from any model with
+    pLDDT taken from a ``PredictedPose``, so the prediction can come from any model with
     an adapter. Chain IDs are the USER's IDs: the record renames the chains of its file
     through its ``chain_map`` (``get_parser(model).load(directory, name, chain_map=...)``).
 
-    The score divides by the binder pLDDT of the model that made the prediction, and pLDDT
-    is calibrated per model, so compare ``evobind_score`` between designs only when the same
+    The score divides by the binder pLDDT of the model that made the prediction, which is
+    calibrated per model, so compare ``evobind_score`` between designs only when the same
     model made the predictions.
 
     Args:
@@ -943,8 +981,9 @@ def compute_evobind_score_from_record(
         binder_chain: Chain ID of the binder, after ``chain_map``.
         receptor_chain: Chain ID of the receptor, after ``chain_map``. Required, through
             this parameter or ``target_chain``.
-        receptor_interface_residues: Receptor residue numbers that define the interface;
-            see :func:`compute_evobind_score`.
+        receptor_interface_residues: Receptor residues that define the interface (numbers,
+            labels such as "52A" or ``(number, insertion code)`` pairs); see
+            :func:`compute_evobind_score`.
         interface_cutoff_angstrom: Distance cutoff (Å) for the automatic interface
             (default 8.0).
         target_chain: Alias of ``receptor_chain``; different IDs in both raise
@@ -957,7 +996,7 @@ def compute_evobind_score_from_record(
         adapter's own reasons appended).
 
     Raises:
-        TypeError: If ``record`` is not a ``PredictionRecord``.
+        TypeError: If ``record`` is not a ``PredictedPose``.
         ValueError: If the record has no structure file, a chain is not in the structure,
             the pLDDT array does not have one value per atom, or for any of the reasons
             listed for :func:`compute_evobind_score`.
@@ -968,9 +1007,9 @@ def compute_evobind_score_from_record(
     receptor_chain = resolve_chain_role(
         "receptor_chain", receptor_chain, "target_chain", target_chain, required=True
     )
-    if not isinstance(record, PredictionRecord):
+    if not isinstance(record, PredictedPose):
         raise TypeError(
-            "record must be a PredictionRecord (get_parser(model).load(...)); "
+            "record must be a PredictedPose (get_parser(model).load(...)); "
             f"got {type(record).__name__}. For a structure file use compute_evobind_score."
         )
     atoms = record.atoms()

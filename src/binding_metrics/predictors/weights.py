@@ -1,11 +1,11 @@
-"""Custom model weights as part of a prediction request: what they are, and a hash that is cheap.
+"""Custom model weights in a prediction request: ``WeightsRef`` and a cached content hash.
 
-A fine-tuned model is a different model. The prediction store keys a request by everything that
-changes the output, so the weights a run used must be in the key, by content: a moved or renamed
-identical file gives the same key, and a changed file another. This module turns a path into a
-``WeightsRef`` (path, kind, SHA-256, size) and keeps the hashing affordable.
+The prediction store keys a request by everything that changes the output, so the weights a run
+used are in the key by content: a moved or renamed identical file gives the same key, a changed
+file another. This module turns a path into a ``WeightsRef`` (path, kind, SHA-256, size). It
+imports the standard library only.
 
-Public names and signatures (the module imports the standard library only)::
+Public names and signatures::
 
     WEIGHTS_KINDS = ("file", "directory")
 
@@ -17,23 +17,22 @@ Public names and signatures (the module imports the standard library only)::
 
     weights_reference(path, *, cache_dir=None, expect=None) -> WeightsRef
 
-What is hashed. A file is hashed by content. A directory is described by a manifest, the sorted
-list of ``(relative path, size, SHA-256)`` of every file below it, and its digest is the SHA-256
-of the canonical JSON of that list, so renaming, adding, removing or changing any file changes it
-while the directory's own location does not. The size of a directory is the total of its files.
+Hash. A file is hashed by content. A directory is described by a manifest, the sorted list of
+``(relative path, size, SHA-256)`` of every file below it, and its digest is the SHA-256 of the
+canonical JSON of that list. Renaming, adding, removing or changing a file changes the digest;
+the directory's own location does not. The size of a directory is the total of its files.
 
-The hash cache. A checkpoint of 2 GB is not read again on every run. With ``cache_dir`` (the
-prediction store root, see ``PredictionStore.weights_reference``) the SHA-256 of each file is kept
-in ``<cache_dir>/.weights-sha256.json`` under ``(absolute path, size, mtime_ns)``: a file with
+Hash cache. With ``cache_dir`` (the prediction store root, see
+``PredictionStore.weights_reference``) the SHA-256 of each file is kept in
+``<cache_dir>/.weights-sha256.json`` under ``(absolute path, size, mtime_ns)``, and a file with
 the same three values is not read again. The file is written atomically (a temporary file
 renamed over it) while holding an advisory lock (``fcntl.flock``) on ``.weights-sha256.lock``,
 and merged with what another process wrote meanwhile. A corrupt or unreadable cache is ignored
-and rebuilt; a store on a read-only file system hashes every time and says nothing.
+and rebuilt; on a read-only file system every run hashes again, silently.
 
-Limit of the cache. A file edited in place with an unchanged size AND an unchanged ``mtime_ns``
-is not detected: its old hash is used. That needs the modification time to be reset on purpose
-(``os.utime``, ``touch -r``, a copy that preserves it over a same-sized edit); an editor, a
-download and a training run all change it. Delete ``.weights-sha256.json`` to force a re-read.
+Limit. A file edited in place with an unchanged size and an unchanged ``mtime_ns`` (the time was
+reset with ``os.utime`` or ``touch -r``) keeps its old hash. Delete ``.weights-sha256.json`` to
+force a re-read.
 """
 
 from __future__ import annotations

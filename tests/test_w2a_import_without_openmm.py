@@ -98,14 +98,37 @@ _SCRIPT = textwrap.dedent(
         assert D_AA_MAP is same_map and D_AA_MAP
 
 
+    def buried_area(path, chain_a, chain_b):
+        # sasa(A) + sasa(B) - sasa(A + B) of the heavy atoms of two chains, from biotite alone
+        import biotite.structure as struc
+        import biotite.structure.io.pdb as pdb_io
+        import numpy as np
+        from biotite.structure.info import vdw_radius_single
+
+        atoms = pdb_io.get_structure(pdb_io.PDBFile.read(path), model=1)
+        atoms = atoms[struc.filter_amino_acids(atoms) & (atoms.element != "H")]
+
+        def area(selection):
+            radii = np.array([vdw_radius_single(str(e).strip()) or 1.8 for e in selection.element])
+            per_atom = struc.sasa(selection, probe_radius=1.4, vdw_radii=radii, point_number=960)
+            return float(np.nansum(per_atom))
+
+        first = atoms[atoms.chain_id == chain_a]
+        second = atoms[atoms.chain_id == chain_b]
+        return area(first) + area(second) - area(first + second)
+
+
     @check
     def interface_metrics_run():
         from binding_metrics import compute_interface_metrics
 
         metrics = compute_interface_metrics(EXAMPLE)
-        # MDM2 (A) - p53 peptide (B): about 1500 A^2 buried on a 5400 A^2 receptor.
         assert (metrics["receptor_chain"], metrics["peptide_chain"]) == ("A", "B")
-        assert 800.0 < metrics["delta_sasa"] < 3000.0, metrics["delta_sasa"]
+        expected = buried_area(EXAMPLE, "A", "B")
+        # the buried area is what biotite gives for the two chains, alone and together
+        assert abs(metrics["delta_sasa"] - expected) <= 1e-4 * expected, (
+            metrics["delta_sasa"], expected,
+        )
         assert metrics["delta_g_int"] < 0.0
         assert metrics["hbonds"] >= 1
 

@@ -3,18 +3,21 @@
 1CWA: the peptide is author chain C and chain B of the OpenMM topology, whose chain C holds 140
 waters. With ``peptide_chain="C"`` the function took the waters for the peptide, removed the
 peptide residues as heterogens and dropped chain B as a third protein chain, and reported
-success: 7542 contacts and -674.7 kJ/mol where the peptide gives 2288 contacts and -260.4 kJ/mol.
+success, with the contacts and the energy of the waters and the receptor instead of the peptide's.
 """
 
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 pytest.importorskip("openmm")
 pytest.importorskip("gemmi")
+struc = pytest.importorskip("biotite.structure")
 
 sys.path.insert(0, str(Path(__file__).parent))
+from biotite.structure.io import load_structure  # noqa: E402
 from conftest import requires_cuda  # noqa: E402
 
 from binding_metrics.metrics import energy  # noqa: E402
@@ -31,6 +34,24 @@ try:
 except ImportError:
     HAS_OMMFF = False
 requires_ommff = pytest.mark.skipif(not HAS_OMMFF, reason="openmmforcefields not installed")
+
+
+# compute_interaction_energy counts the peptide-receptor atom pairs closer than 8 angstrom
+CONTACT_CUTOFF_ANGSTROM = 8.0
+
+
+def _contact_pairs(path, peptide, receptor, cutoff_angstrom=CONTACT_CUTOFF_ANGSTROM):
+    """Pairs of one atom of each chain closer than the cutoff, from a distance matrix of the file.
+
+    The chain IDs are author IDs and the atoms are those of the amino-acid residues as they are in
+    the file, before hydrogens are added; waters that carry the chain ID are not part of a chain.
+    """
+    atoms = load_structure(path)
+    polymer = atoms[struc.filter_amino_acids(atoms)]
+    one = polymer.coord[polymer.chain_id == peptide].astype(np.float64)
+    other = polymer.coord[polymer.chain_id == receptor].astype(np.float64)
+    distances = np.linalg.norm(one[:, None, :] - other[None, :, :], axis=-1)
+    return int(np.count_nonzero(distances < cutoff_angstrom))
 
 
 class _StopError(Exception):
@@ -66,19 +87,23 @@ class TestChainSelection:
         # topology chain B is the peptide; the waters (chains C and D) are stripped
         assert call["peptide_chain"] == "B"
         assert call["chains"] == {"A": 165, "B": 11}
-        assert result["num_contacts"] == 2288
+        # the contacts are those of the peptide, not of the waters that share its chain ID
+        assert result["num_contacts"] == _contact_pairs(CWA, "C", "A")
 
     def test_1cwa_topology_id_gives_the_same_selection(self, builder_calls):
         by_author = _run(CWA, "C", "A")
         by_topology = _run(CWA, "B", "A")
         assert builder_calls[0] == builder_calls[1]
-        assert by_author["num_contacts"] == by_topology["num_contacts"] == 2288
+        assert by_author["num_contacts"] == by_topology["num_contacts"]
+        # both IDs give the contacts of the peptide
+        assert by_author["num_contacts"] == _contact_pairs(CWA, "C", "A")
         assert by_author["num_close_contacts"] == by_topology["num_close_contacts"]
 
     def test_auto_detection_is_unchanged(self, builder_calls):
         result = _run(CWA, None, None)
         assert builder_calls[0]["peptide_chain"] == "B"
-        assert result["num_contacts"] == 2288
+        # the detected pair is the peptide and the receptor
+        assert result["num_contacts"] == _contact_pairs(CWA, "C", "A")
 
     def test_3p8f_author_id_selects_the_peptide(self, builder_calls):
         result = _run(SFTI, "I", "A")
@@ -123,7 +148,8 @@ class TestChainSelection:
             ["binding-metrics-energy", "--input", str(CWA), "--output", str(tmp_path / "e.csv")]
             + ["--peptide-chain", "C", "--receptor-chain", "A", "--modes", "raw"],
         )
-        energy.main()
+        with pytest.raises(SystemExit):  # the stubbed builder stops the only sample
+            energy.main()
         assert builder_calls[0]["peptide_chain"] == "B"
 
 
@@ -144,11 +170,11 @@ class TestRawEnergyOfTheRawFile:
 
     def test_the_author_id_gives_the_energy_of_the_peptide(self, energies):
         assert energies["C"]["success"], energies["C"]["error_message"]
-        assert energies["C"]["num_contacts"] == 2288
+        assert energies["B"]["success"], energies["B"]["error_message"]
+        assert energies["C"]["num_contacts"] == energies["B"]["num_contacts"]
         assert energies["C"]["raw_interaction_energy"] == pytest.approx(
             energies["B"]["raw_interaction_energy"], rel=1e-3
         )
-        assert energies["C"]["raw_interaction_energy"] == pytest.approx(-260.4, abs=2.0)
 
 
 @requires_cuda
@@ -168,6 +194,12 @@ def test_the_energy_of_a_file_with_swapped_letters(tmp_path):
     result = energy.compute_interaction_energy(
         swapped, peptide_chain="A", receptor_chain="B", modes=("raw",), device="cuda"
     )
+    original = energy.compute_interaction_energy(
+        CWA, peptide_chain="C", receptor_chain="A", modes=("raw",), device="cuda"
+    )
     assert result["success"], result["error_message"]
-    assert result["num_contacts"] == 2288
-    assert result["raw_interaction_energy"] == pytest.approx(-260.4, abs=2.0)
+    assert original["success"], original["error_message"]
+    assert result["num_contacts"] == original["num_contacts"]
+    assert result["raw_interaction_energy"] == pytest.approx(
+        original["raw_interaction_energy"], rel=1e-3
+    )

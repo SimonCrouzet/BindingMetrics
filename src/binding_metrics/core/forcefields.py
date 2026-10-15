@@ -50,7 +50,7 @@ FORCEFIELD_CONFIGS: dict[str, ForceFieldConfig] = {
 
 
 def __getattr__(name: str):
-    """Resolve ``ForceField``, which this module used to import at load time (PEP 562)."""
+    """Resolve ``ForceField`` lazily (PEP 562); ``from ... import ForceField`` keeps working."""
     if name == "ForceField":
         from openmm.app import ForceField
 

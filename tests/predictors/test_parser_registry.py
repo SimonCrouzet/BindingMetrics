@@ -174,10 +174,10 @@ class TestPackageExports:
             "OpenFold3Runner",
             "PARSERS",
             "ParserSpec",
+            "PredictedPose",
             "PredictionFailedError",
             "PredictionFiles",
             "PredictionParser",
-            "PredictionRecord",
             "PredictionRequest",
             "PredictionRunner",
             "PredictionSession",
@@ -188,6 +188,9 @@ class TestPackageExports:
             "StoredPrediction",
             "TokenLayout",
             "get_parser",
+            "prediction_manifest",
+            "receptor_forced",
+            "receptor_templated",
             "register_parser",
         }
 

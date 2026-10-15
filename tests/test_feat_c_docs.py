@@ -73,6 +73,8 @@ def test_every_documented_option_is_an_option_of_both_commands(module, monkeypat
 
 
 CONDITIONAL_KEYS = {"evobind_error", "adversarial_error", "reason"}
+# present only when --designed-with is given (tests/test_m5_design_origin_cli.py runs them)
+DESIGN_KEYS = {"adversarial_skipped", "independent_of_design"}
 # read from the files that OpenFold3 writes next to its output, which the stand-in does not write
 FILE_DEPENDENT_KEYS = {"templates"}
 
@@ -109,7 +111,7 @@ def test_every_documented_key_is_in_a_real_block(tmp_path, monkeypatch):
     unmatched = [
         name
         for name in documented
-        if name not in CONDITIONAL_KEYS | FILE_DEPENDENT_KEYS
+        if name not in CONDITIONAL_KEYS | FILE_DEPENDENT_KEYS | DESIGN_KEYS
         and not fnmatch.filter(list(block), name)
     ]
     assert not unmatched, f"documented but not in results['prediction']: {unmatched}"
@@ -145,7 +147,7 @@ def test_the_keys_that_appear_only_on_failure_are_documented_and_real(tmp_path, 
         tmp_path / "run", prediction_dir=out
     )  # the chains are not renamed back
     assert CONDITIONAL_KEYS <= set(block)
-    assert CONDITIONAL_KEYS <= set(_documented_keys())
+    assert CONDITIONAL_KEYS | DESIGN_KEYS <= set(_documented_keys())
 
 
 def test_the_templates_key_is_documented_and_real_for_an_output_that_has_the_files(

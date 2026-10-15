@@ -1,37 +1,31 @@
 """AMBER phosaa parameterisation of phosphorylated residues, adapted to amber14-all.
 
-Why this exists
----------------
 Phosphorylated residues (SEP/TPO/PTR and the phospho-His / mono-protonated
-variants) carry a net −2 (or −1) phosphate. The generic GAFF NCAA path
-(:mod:`binding_metrics.core.gaff_ncaa`) perceives every exotic residue at
-*neutral* charge, so on a phosphate it adds O–H / P–H protons and returns a
-**net-zero** residue — silently destroying the modification's defining negative
-charge (verified: 1QJB SEP came out at net 0 with four spurious H instead of
-−2). ``phosaa`` is AMBER's purpose-built, RESP-fitted parameter set for exactly
-these residues, and is the correct source.
+variants) carry a net -2 (or -1) phosphate. The generic GAFF route
+(:mod:`binding_metrics.core.gaff_ncaa`) perceives a residue at neutral charge
+and would return it net-neutral, so these residues use the AMBER phosaa
+parameter set (RESP charges) instead.
 
-``openmmforcefields`` ships ``phosaa14SB.xml``, but two things stop it loading
-against this codebase's ``amber14-all.xml`` base:
+``openmmforcefields`` ships ``phosaa14SB.xml``, which does not load against
+``amber14-all.xml`` as it is:
 
-1. Its residue templates reference **bare** ff14SB atom-type *names*
-   (``N``/``CX``/``2C``/…) that ``amber14-all`` exposes only under the
-   ``protein-`` prefix.
+1. Its residue templates reference bare ff14SB atom-type names
+   (``N``/``CX``/``2C``/...) that ``amber14-all`` exposes under the ``protein-``
+   prefix.
 2. It references the phosphorus type ``P`` without defining it (``P`` normally
    comes from the nucleic-acid parameters, absent from ``amber14-all``).
 
-Crucially, its bonded and nonbonded blocks are keyed by atom **class**, and
-``amber14-all``'s protein types already use the bare class names (``protein-N``
-has class ``N``), so those parameters are directly compatible. This module
-therefore adapts the shipped file rather than re-deriving anything:
+Its bonded and nonbonded blocks are keyed by atom class, and the ``amber14-all``
+protein types use the same class names, so those blocks are compatible. This
+module adapts the shipped file:
 
-* remap each phospho template's base-type references ``X`` → ``protein-X``
-  (leaving phosaa's own phosphate types ``OX``/``OZ``/… and ``P`` untouched),
-* inject the missing ``P`` atom type + its Lennard-Jones parameters, copied
-  verbatim from the bare ``ff14SB.xml``.
+* remap each phospho template's base-type references ``X`` -> ``protein-X``
+  (phosaa's own phosphate types ``OX``/``OZ``/... and ``P`` stay);
+* inject the missing ``P`` atom type and its Lennard-Jones parameters, copied
+  from the bare ``ff14SB.xml``.
 
-All charges, bonded terms and phosphate LJ values are phosaa's own, unchanged —
-only atom-type *names* are rewritten, which does not affect the physics.
+Charges, bonded terms and phosphate LJ values are phosaa's own; only atom-type
+names are rewritten.
 
 References
 ----------
@@ -47,6 +41,7 @@ References
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 import xml.etree.ElementTree as ET
@@ -80,8 +75,7 @@ def phospho_residue_names() -> frozenset:
 
 
 def _is_hydrogen_type(type_name: str) -> bool:
-    """True for an AMBER hydrogen atom type (names start with H; phosaa's own
-    phosphate types are all O/C, so this is unambiguous within a phospho template)."""
+    """True for an AMBER hydrogen atom type (names start with H; phosaa phosphate types are O/C)."""
     return type_name.startswith("H")
 
 
@@ -132,10 +126,9 @@ def build_adapter_ffxml() -> str:
 def build_hydrogen_definitions_xml() -> str:
     """Return an OpenMM hydrogen-definitions XML for the phospho residues.
 
-    Derived directly from the phospho templates: each hydrogen (type name starts
-    with 'H') is emitted with the heavy atom it is bonded to. Lets
-    ``Modeller.addHydrogens`` place H on heavy-atom-only phospho inputs, which it
-    cannot otherwise do (the residues are not in its standard definitions).
+    Each hydrogen of a phospho template (type name starts with 'H') is emitted with
+    the heavy atom it is bonded to, so that ``Modeller.addHydrogens`` can place H on
+    phospho residues that carry heavy atoms only.
     """
     phosaa = ET.parse(_phosaa_source()).getroot()
     out = ET.Element("Residues")
@@ -178,11 +171,49 @@ def register(ff) -> None:
             pass
 
 
+@contextlib.contextmanager
+def hydrogen_definitions():
+    """Let ``Modeller.addHydrogens`` place the hydrogens of the phospho residues in the block.
+
+    The definitions are process-global state of ``Modeller``. Inside the block they are
+    loaded; on exit each phospho residue goes back to its earlier definition, or to none,
+    also when the block raises. ``Modeller._residueHydrogens`` is private to OpenMM, which
+    has no call that removes a definition.
+
+    The hydrogens of a residue do not depend on the pH: the residue name sets the
+    protonation of the phosphate (SEP, TPO and PTR are the dianions with no phosphate
+    hydrogen, S1P, T1P and Y1P the monoanions with H1P).
+    """
+    from openmm.app import Modeller
+
+    names = phospho_residue_names()
+    earlier = {name: Modeller._residueHydrogens.get(name) for name in names}
+    path = _write_temp(build_hydrogen_definitions_xml(), ".xml")
+    try:
+        Modeller.loadHydrogenDefinitions(path)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    try:
+        yield
+    finally:
+        for name, definition in earlier.items():
+            if definition is None:
+                Modeller._residueHydrogens.pop(name, None)
+            else:
+                Modeller._residueHydrogens[name] = definition
+
+
 _hydrogen_definitions_loaded = False
 
 
 def ensure_hydrogen_definitions() -> None:
-    """Register phospho-residue hydrogen definitions with Modeller (idempotent)."""
+    """Register phospho-residue hydrogen definitions with Modeller for the rest of the process.
+
+    Idempotent. Prefer :func:`hydrogen_definitions`, which restores the earlier state.
+    """
     global _hydrogen_definitions_loaded
     if _hydrogen_definitions_loaded:
         return

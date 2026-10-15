@@ -125,8 +125,41 @@ def test_unparseable_git_output_gives_none(monkeypatch):
     assert collect_provenance()["git_sha"] is None
 
 
+def _openmm_distribution(monkeypatch, version):
+    """Make the metadata of the ``openmm`` distribution say ``version``, or say it is absent."""
+    import importlib.metadata as metadata
+
+    real = metadata.version
+
+    def fake(name):
+        if name.lower() == "openmm":
+            if version is None:
+                raise metadata.PackageNotFoundError(name)
+            return version
+        return real(name)
+
+    monkeypatch.setattr(metadata, "version", fake)
+
+
 def test_openmm_missing_gives_none(monkeypatch):
+    _openmm_distribution(monkeypatch, None)
+    assert collect_provenance()["openmm_version"] is None
+
+
+def test_openmm_version_is_the_distribution_version_and_openmm_is_not_imported(monkeypatch):
     import sys
 
-    monkeypatch.setitem(sys.modules, "openmm", None)  # makes `import openmm` raise
-    assert collect_provenance()["openmm_version"] is None
+    _openmm_distribution(monkeypatch, "9.9.1")
+    monkeypatch.setitem(sys.modules, "openmm", None)  # an `import openmm` would now raise
+    assert collect_provenance()["openmm_version"] == "9.9.1"
+
+
+def test_openmm_version_of_the_installed_distribution_is_a_release_string():
+    import importlib.metadata as metadata
+
+    try:
+        installed = metadata.version("openmm")
+    except metadata.PackageNotFoundError:
+        assert collect_provenance()["openmm_version"] is None
+    else:
+        assert collect_provenance()["openmm_version"] == installed

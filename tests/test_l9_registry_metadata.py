@@ -33,6 +33,7 @@ from binding_metrics.metrics.registry import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_1YCR = REPO_ROOT / "data" / "example_linear_p53_1YCR.pdb"
+ANGSTROM2_PER_NM2 = 100.0
 
 
 def _resolve(result, dotted_key: str):
@@ -41,6 +42,15 @@ def _resolve(result, dotted_key: str):
     for part in dotted_key.split("."):
         value = value[part]
     return value
+
+
+def _defined_extras() -> set[str] | None:
+    """The extras that ``pyproject.toml`` defines; None when the file is not next to the tests."""
+    pyproject = REPO_ROOT / "pyproject.toml"
+    if not pyproject.exists():
+        return None
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    return set(data["project"]["optional-dependencies"])
 
 
 # ---------------------------------------------------------------------------
@@ -80,26 +90,35 @@ class TestMetadataValues:
         assert spec.cost_class is None
 
     @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_direction_is_from_the_allowed_set(self, spec):
-        assert spec.direction is None or spec.direction in DIRECTIONS
+    def test_the_metadata_values_are_well_formed(self, spec):
+        """One case per metric; a failure lists every field that is wrong.
 
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_unit_is_from_the_allowed_set(self, spec):
-        assert spec.unit is None or spec.unit in KNOWN_UNITS
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_every_registered_metric_declares_a_cost_class(self, spec):
-        assert spec.cost_class in COST_CLASSES
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_requires_extras_is_a_tuple_of_names(self, spec):
-        assert isinstance(spec.requires_extras, tuple)
-        assert all(isinstance(e, str) and e for e in spec.requires_extras)
-        assert len(set(spec.requires_extras)) == len(spec.requires_extras)
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_requires_gpu_is_a_bool(self, spec):
-        assert isinstance(spec.requires_gpu, bool)
+        ``direction`` and ``unit`` are unset or from the documented sets, every metric
+        declares a ``cost_class``, ``requires_extras`` is a tuple of distinct non-empty
+        names that ``pyproject.toml`` defines as extras, and ``requires_gpu`` is a bool.
+        """
+        problems = []
+        if spec.direction is not None and spec.direction not in DIRECTIONS:
+            problems.append(f"direction {spec.direction!r} is not in DIRECTIONS")
+        if spec.unit is not None and spec.unit not in KNOWN_UNITS:
+            problems.append(f"unit {spec.unit!r} is not in KNOWN_UNITS")
+        if spec.cost_class not in COST_CLASSES:
+            problems.append(f"cost_class {spec.cost_class!r} is not in COST_CLASSES")
+        extras = spec.requires_extras
+        if not isinstance(extras, tuple):
+            problems.append(f"requires_extras has type {type(extras).__name__}, not tuple")
+        else:
+            if not all(isinstance(e, str) and e for e in extras):
+                problems.append(f"requires_extras holds a non-name: {extras!r}")
+            if len(set(extras)) != len(extras):
+                problems.append(f"requires_extras repeats a name: {extras!r}")
+            defined = _defined_extras()
+            unknown = [e for e in extras if defined is not None and e not in defined]
+            if unknown:
+                problems.append(f"not in [project.optional-dependencies]: {unknown}")
+        if not isinstance(spec.requires_gpu, bool):
+            problems.append(f"requires_gpu has type {type(spec.requires_gpu).__name__}, not bool")
+        assert not problems, f"{spec.name}: " + "; ".join(problems)
 
     def test_allowed_sets_are_ascii(self):
         for value in (*DIRECTIONS, *COST_CLASSES, *KNOWN_UNITS):
@@ -108,40 +127,49 @@ class TestMetadataValues:
 
 class TestMetadataConsistency:
     @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_headline_key_comes_with_a_direction_or_a_unit(self, spec):
+    def test_the_fields_agree_with_each_other(self, spec):
+        """One case per metric; a failure lists every disagreement.
+
+        * A ``headline_key`` comes with a ``direction`` or a ``unit``.
+        * A metric that runs on a CUDA device by default builds a force-field system, so its
+          ``cost_class`` is ``structural`` or ``md``.
+        * Trajectory and simulation inputs cost ``md``.
+        * ``chain_mode`` matches the chain arguments the spec declares.
+        * A ``secondary_path_arg`` exists only for the two-path mode.
+        """
+        problems = []
         if spec.headline_key is not None:
-            assert spec.headline_key.strip()
-            assert spec.direction or spec.unit, f"{spec.name}: headline_key without direction/unit"
+            if not spec.headline_key.strip():
+                problems.append("headline_key is blank")
+            if not (spec.direction or spec.unit):
+                problems.append("headline_key without direction or unit")
+        if spec.requires_gpu and spec.cost_class not in ("structural", "md"):
+            problems.append(f"requires_gpu with cost_class {spec.cost_class!r}")
+        if spec.input_type in ("trajectory", "md_simulation") and spec.cost_class != "md":
+            problems.append(f"{spec.input_type} input with cost_class {spec.cost_class!r}")
 
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_gpu_metrics_are_not_static(self, spec):
-        """A metric that runs on a CUDA device by default builds a force-field system."""
-        if spec.requires_gpu:
-            assert spec.cost_class in ("structural", "md")
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_trajectory_and_simulation_inputs_are_md_cost(self, spec):
-        if spec.input_type in ("trajectory", "md_simulation"):
-            assert spec.cost_class == "md"
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_chain_mode_matches_declared_chain_args(self, spec):
         chain_args = [spec.chain_arg, spec.peptide_chain_arg, spec.receptor_chain_arg]
         if spec.chain_mode == "none":
-            assert not any(chain_args)
+            consistent = not any(chain_args)
         elif spec.chain_mode == "single":
-            assert spec.chain_arg
-            assert not (spec.peptide_chain_arg or spec.receptor_chain_arg)
+            consistent = bool(spec.chain_arg) and not (
+                spec.peptide_chain_arg or spec.receptor_chain_arg
+            )
         elif spec.chain_mode == "interface":
-            assert spec.peptide_chain_arg or spec.receptor_chain_arg
-            assert not spec.chain_arg
+            consistent = bool(spec.peptide_chain_arg or spec.receptor_chain_arg) and not (
+                spec.chain_arg
+            )
         else:
-            assert spec.chain_mode == "interface_2paths"
-            assert not spec.chain_arg
+            consistent = spec.chain_mode == "interface_2paths" and not spec.chain_arg
+        if not consistent:
+            problems.append(f"chain_mode {spec.chain_mode!r} does not match {chain_args}")
 
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_secondary_path_only_for_two_path_modes(self, spec):
-        assert bool(spec.secondary_path_arg) == (spec.chain_mode == "interface_2paths")
+        if bool(spec.secondary_path_arg) != (spec.chain_mode == "interface_2paths"):
+            problems.append(
+                f"secondary_path_arg {spec.secondary_path_arg!r} with chain_mode "
+                f"{spec.chain_mode!r}"
+            )
+        assert not problems, f"{spec.name}: " + "; ".join(problems)
 
     def test_energy_style_headlines_prefer_lower(self):
         """Interaction and Coulomb energies are negative when attractive."""
@@ -175,20 +203,6 @@ class TestMetadataConsistency:
 
 
 class TestRequiresExtras:
-    @staticmethod
-    def _defined_extras() -> set[str]:
-        pyproject = REPO_ROOT / "pyproject.toml"
-        if not pyproject.exists():
-            pytest.skip("pyproject.toml not found")
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        return set(data["project"]["optional-dependencies"])
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_extras_are_defined_in_pyproject(self, spec):
-        defined = self._defined_extras()
-        unknown = [e for e in spec.requires_extras if e not in defined]
-        assert not unknown, f"{spec.name}: not in [project.optional-dependencies]: {unknown}"
-
     def test_dockq_metric_needs_the_dockq_extra(self):
         assert "dockq" in get_metric("dockq").requires_extras
 
@@ -395,10 +409,15 @@ class TestHeadlineKeysAreReal:
         assert get_metric(name).headline_key is None
         assert isinstance(trajectory_results[name], np.ndarray)
 
-    def test_trajectory_units_match_the_computed_magnitudes(self, trajectory_results):
-        """MDTraj returns nm^2: ~14.6 nm^2 is the same 1466 A^2 the static metric gives."""
+    def test_trajectory_units_match_the_computed_magnitudes(
+        self, trajectory_results, static_results
+    ):
+        """MDTraj returns nm^2: the buried area is that of the static metric (A^2) over 100."""
         buried_nm2 = float(trajectory_results["buried_sasa"][0])
         assert get_metric("buried_sasa").unit == "nm^2"
-        assert buried_nm2 == pytest.approx(14.66, abs=1.0)
+        static_angstrom2 = static_results["delta_sasa_static"]["delta_sasa"]
+        # the two engines use different radii tables: 1 nm^2 is 100 A^2 and the tolerance only
+        # has to stop a missing or doubled unit factor
+        assert buried_nm2 == pytest.approx(static_angstrom2 / ANGSTROM2_PER_NM2, rel=0.1)
         # Two identical frames do not drift.
         assert trajectory_results["receptor_drift"]["drift_aligned_mean"] == pytest.approx(0.0)

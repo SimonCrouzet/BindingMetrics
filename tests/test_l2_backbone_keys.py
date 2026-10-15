@@ -1,11 +1,13 @@
 """Additive keys of the backbone-geometry metrics: cis count and ring-closure flags.
 
-Reference values for the bundled examples. For a head-to-tail ring the closing
-amide is one of the evaluated bonds (``tests/test_w3b_cyclic_dihedrals.py``).
+The expected omega values of the bundled examples are recomputed with
+``biotite.structure.dihedral_backbone`` on the same file. For a head-to-tail ring the
+closing amide is one of the evaluated bonds (``tests/test_w3b_cyclic_dihedrals.py``).
 """
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 pytest.importorskip("biotite")
@@ -13,6 +15,12 @@ pytest.importorskip("biotite")
 from binding_metrics.metrics.geometry import (  # noqa: E402
     compute_omega_planarity,
     compute_ramachandran,
+)
+from tests.test_w3b_cyclic_dihedrals import (  # noqa: E402
+    CIS_OMEGA_DEG,
+    OMEGA_OUTLIER_DEG,
+    backbone_angles_deg,
+    deviation_from_trans_deg,
 )
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -68,12 +76,16 @@ class TestClosureFlags:
 class TestCisCount:
     def test_cis_proline_is_counted_and_stays_an_outlier(self):
         result = compute_omega_planarity(_need(SFTI1), chain="I")
-        assert result["omega_cis_count"] == 1
-        # the outlier rule is unchanged: the cis bond still counts as an outlier
-        # (the second outlier is the closing amide, 15.7 degrees from trans)
-        assert result["omega_outlier_count"] == 2
-        cis = [r for r in result["per_residue"] if abs(r["omega"]) < 30.0]
-        assert len(cis) == 1
+        _, _, reference = backbone_angles_deg(SFTI1, "I", ring=True)
+        cis_bonds = np.abs(reference) < CIS_OMEGA_DEG
+        assert cis_bonds.sum() == 1  # the cis proline
+        assert result["omega_cis_count"] == cis_bonds.sum()
+        # the outlier rule is unchanged: the cis bond still counts as an outlier, next to the
+        # bonds that are more than the cut-off from trans
+        outliers = deviation_from_trans_deg(reference) > OMEGA_OUTLIER_DEG
+        assert result["omega_outlier_count"] == outliers.sum()
+        cis = [r for r in result["per_residue"] if abs(r["omega"]) < CIS_OMEGA_DEG]
+        assert len(cis) == cis_bonds.sum()
         assert cis[0]["is_outlier"] is True
 
     @pytest.mark.parametrize("path, chain", [(P53, "B"), (CYCLOSPORIN, "C"), (SOMATOSTATIN, "A")])
@@ -90,24 +102,35 @@ class TestCisCount:
 
 
 class TestExistingKeysUnchanged:
+    # The reference is computed from the same file on the machine that runs the test: torsions
+    # come from float32 coordinates and differ by up to 2e-5 degree between machines.
     def test_sfti1_omega(self):
-        """13 sequential bonds plus the closing bond (15.7 degrees off trans)."""
+        """13 sequential bonds plus the closing bond."""
         result = compute_omega_planarity(_need(SFTI1), chain="I")
-        assert result["omega_mean_dev"] == pytest.approx(17.427454, abs=1e-5)
-        assert result["omega_max_dev"] == pytest.approx(177.129636, abs=1e-5)
-        assert result["omega_outlier_fraction"] == pytest.approx(2 / 14)
-        assert result["omega_outlier_count"] == 2
-        assert result["n_bonds_evaluated"] == 14
+        _, _, reference = backbone_angles_deg(SFTI1, "I", ring=True)
+        deviations = deviation_from_trans_deg(reference)
+        n_outliers = int((deviations > OMEGA_OUTLIER_DEG).sum())
+        # the statistics cover the 13 sequential bonds and the closing one, none left out
+        assert result["omega_mean_dev"] == pytest.approx(deviations.mean(), abs=1e-3)
+        assert result["omega_max_dev"] == pytest.approx(deviations.max(), abs=1e-3)
+        assert result["omega_outlier_fraction"] == pytest.approx(n_outliers / len(deviations))
+        assert result["omega_outlier_count"] == n_outliers
+        assert result["n_bonds_evaluated"] == len(deviations)
         sequential = [r["deviation"] for r in result["per_residue"][:-1]]
-        assert sum(sequential) / 13 == pytest.approx(17.558478, abs=1e-5)
+        assert len(sequential) == len(deviations) - 1
+        assert sum(sequential) / len(sequential) == pytest.approx(deviations[:-1].mean(), abs=1e-3)
 
     def test_cyclosporin_omega(self):
-        """10 sequential bonds plus the closing bond (6.4 degrees off trans)."""
+        """10 sequential bonds plus the closing bond."""
         result = compute_omega_planarity(_need(CYCLOSPORIN), chain="C")
-        assert result["omega_mean_dev"] == pytest.approx(3.301306, abs=1e-5)
-        assert result["omega_outlier_count"] == 0
+        _, _, reference = backbone_angles_deg(CYCLOSPORIN, "C", ring=True)
+        deviations = deviation_from_trans_deg(reference)
+        # the statistics cover the 10 sequential bonds and the closing one, none left out
+        assert result["omega_mean_dev"] == pytest.approx(deviations.mean(), abs=1e-3)
+        assert result["omega_outlier_count"] == (deviations > OMEGA_OUTLIER_DEG).sum()
         sequential = [r["deviation"] for r in result["per_residue"][:-1]]
-        assert sum(sequential) / 10 == pytest.approx(2.992090, abs=1e-5)
+        assert len(sequential) == len(deviations) - 1
+        assert sum(sequential) / len(sequential) == pytest.approx(deviations[:-1].mean(), abs=1e-3)
 
     def test_ramachandran_percentages_still_sum_to_100(self):
         result = compute_ramachandran(_need(P53), chain="B")

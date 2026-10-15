@@ -168,6 +168,7 @@ class TestRelaxationDropsTheBystander:
         result = RelaxationResult(sample_id="x", success=True, dropped_protein_chains=["C"])
         assert result.to_dict()["dropped_protein_chains"] == ["C"]
 
+    @pytest.mark.slow
     def test_the_system_is_built_from_the_pair_only(self, prepped_pair, tmp_path):
         """A 3-chain file gives the system of the 2-chain file, and the run says what it dropped."""
         from binding_metrics.protocols.relaxation import ImplicitRelaxation, RelaxationConfig

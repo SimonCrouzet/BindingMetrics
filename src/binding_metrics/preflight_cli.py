@@ -2,21 +2,25 @@
 
 ``check_input`` profiles one structure, lists the steps that the run would execute as registry
 metrics and predictors, and hands them to ``binding_metrics.capabilities.preflight``. It runs
-first, before preparation, relaxation, any model run and any touch of the prediction store.
-What comes back is a ``PreflightOutcome``: the block for ``results["preflight"]``, the steps to
-leave out under ``--on-incompatible skip``, and the error to raise under ``error``.
+first, before preparation, relaxation, any model run and any touch of the prediction store, and
+returns a ``PreflightOutcome``: the block for ``results["preflight"]``, the steps to leave out
+under ``--on-incompatible skip``, and the error to raise under ``error``.
 
 Rules the hooks follow:
 
-* The steps checked are the ones the run will execute: ``relax`` (``md_implicit``), ``energy``,
+* The steps checked are the ones the run executes: ``relax`` (``md_implicit``), ``energy``,
   ``interface``, ``geometry`` (its three metrics one by one), ``electrostatics`` and the model
   step (the ``openfold`` metric for the OpenFold3 step, ``prediction`` for ``--predictor``).
   ``dockq`` is not checked: without a reference the pipeline already skips it and says so.
 * A model whose output was made elsewhere (``--prediction-dir``) gets the policy ``warn``: what
-  it was given is not known, so its limits never refuse an input that may have been predicted
-  correctly.
-* An input that cannot be profiled runs as it did before, with a warning and the status
-  ``skipped`` in the block: a failed check is not an incompatibility.
+  it was given is not known, so its limits never refuse an input.
+* The EvoBind adversarial check runs inside the model step. With ``--designed-with`` it is checked
+  as the registry metric ``evobind_adversarial`` against the design, and left out
+  (``--design-policy skip``, the default) when the model of the run is one that the named
+  pipeline ran itself. ``--on-incompatible`` does not change that rule. Without
+  ``--designed-with`` the check is not listed in the report.
+* An input that cannot be profiled runs as before, with a warning and the status ``skipped`` in
+  the block: a failed check is not an incompatibility.
 """
 
 from __future__ import annotations
@@ -30,10 +34,15 @@ from typing import Any, Optional
 
 from binding_metrics.capabilities import (
     BINDER_TYPES,
+    DEFAULT_DESIGN_POLICY,
+    DEFAULT_MSA_POLICY,
+    DESIGN_SOURCE_PREDICTORS,
+    INDEPENDENCE_DEPENDENT_CHECKS,
     POLICIES,
     IncompatibleInputError,
     PreflightReport,
     check_openfold3_residues,
+    design_origin,
     preflight,
     profile_input,
 )
@@ -41,8 +50,10 @@ from binding_metrics.capabilities import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "ADVERSARIAL_CHECK",
     "BINDER_TYPE_CHOICES",
     "MODEL_STEP",
+    "NO_DESIGN_SOURCE_MESSAGE",
     "PIPELINE_STEP_METRICS",
     "PreflightOutcome",
     "add_preflight_args",
@@ -57,6 +68,17 @@ BINDER_TYPE_CHOICES: tuple[str, ...] = ("auto", *BINDER_TYPES)
 
 #: The pipeline step that runs a structure-prediction model (its name in ``--metrics``).
 MODEL_STEP = "openfold"
+
+#: The registry name of the EvoBind adversarial check, which the model step runs on the input pose
+#: and the prediction. It rests on the prediction being independent of the design.
+ADVERSARIAL_CHECK = "evobind_adversarial"
+
+#: What a run with a model step logs (INFO, once) when no design source was given.
+NO_DESIGN_SOURCE_MESSAGE = (
+    "independence of the folding model from the design was not checked because no design source "
+    "was given; name the pipeline that made the binder with --designed-with "
+    f"{{{','.join(DESIGN_SOURCE_PREDICTORS)}}} (designed_with= in Python)"
+)
 
 #: Pipeline step -> the registry metrics it runs, for the steps whose limits are checked.
 PIPELINE_STEP_METRICS: dict[str, tuple[str, ...]] = {
@@ -91,6 +113,32 @@ def add_preflight_args(parser) -> None:
             "before anything runs. error (default): refuse, listing every problem with its fix. "
             "skip: leave out the incompatible steps, record why, and run the rest. warn: log "
             "the problems and run everything. An output read with --prediction-dir only warns."
+        ),
+    )
+    group.add_argument(
+        "--designed-with",
+        type=str.casefold,
+        choices=tuple(DESIGN_SOURCE_PREDICTORS),
+        default=None,
+        help=(
+            "The pipeline that made the designed binder. The EvoBind adversarial check asks "
+            "whether a model other than the designer places the binder where the design has it, "
+            "and a model that the pipeline ran itself agrees with it in part because the design "
+            "was selected for that model: BoltzGen ran Boltz-2, BindCraft and ColabDesign ran "
+            "AlphaFold2 (--predictor af2). The check is then handled by --design-policy. Without "
+            "this option nothing is decided and a run with a model step logs that independence "
+            "was not checked."
+        ),
+    )
+    group.add_argument(
+        "--design-policy",
+        choices=POLICIES,
+        default=DEFAULT_DESIGN_POLICY,
+        help=(
+            "What to do with the adversarial check when the model of the run is one that "
+            "--designed-with ran itself. skip (default): leave the check out, warn loudly and "
+            "run everything else. warn: run it, warn, and mark the result as not independent "
+            "of the design. error: refuse. --on-incompatible does not change this rule."
         ),
     )
     group.add_argument(
@@ -156,6 +204,10 @@ class PreflightOutcome:
         skipped_geometry: Metric -> reason, for the metrics of the ``geometry`` step left out
             under ``skip`` (the step itself only when all three are).
         model_usable: False when the model step is left out under ``skip``.
+        skipped_checks: Check -> reason, for the checks inside the model step that the design
+            origin leaves out (``evobind_adversarial``); the model step itself still runs.
+        independent_of_design: Whether the model of the run is independent of the design: None
+            when no design source is known or the run has no model step.
     """
 
     block: dict
@@ -164,6 +216,8 @@ class PreflightOutcome:
     skipped_steps: dict[str, str] = field(default_factory=dict)
     skipped_geometry: dict[str, str] = field(default_factory=dict)
     model_usable: bool = True
+    skipped_checks: dict[str, str] = field(default_factory=dict)
+    independent_of_design: Optional[bool] = None
 
     @property
     def refused(self) -> bool:
@@ -220,6 +274,17 @@ def _not_checked(reason: str, policy: str) -> PreflightOutcome:
     )
 
 
+def _plan_with_receptor_msa(plan: str, receptor_msa: Any) -> str:
+    """The plan text with a line for the receptor MSA, after the policy, mode or input line."""
+    lines = plan.split("\n")
+    for marker in ("MSA policy:", "Mode:", "Input:"):
+        for position, line in enumerate(lines):
+            if line.startswith(marker):
+                lines.insert(position + 1, f"Receptor MSA: {receptor_msa}")
+                return "\n".join(lines)
+    return plan
+
+
 def refusal_block(error: IncompatibleInputError) -> dict:
     """The ``results["preflight"]`` block of a refused input (a batch error row carries it)."""
     report = error.report
@@ -247,6 +312,11 @@ def check_input(
     include_plan: bool = False,
     on_unmappable_residue: str = "error",
     prediction_weights: Optional[Path] = None,
+    designed_with: Any = None,
+    design_policy: str = DEFAULT_DESIGN_POLICY,
+    msa_policy: str = DEFAULT_MSA_POLICY,
+    msa_server: Optional[bool] = None,
+    receptor_msa: Any = None,
 ) -> PreflightOutcome:
     """Check one input against the steps and the model a run will execute.
 
@@ -269,11 +339,32 @@ def check_input(
             are checked with the rest: the path, the kind the runner takes, and that the runner
             takes custom weights at all (see ``binding_metrics.capabilities.preflight``). A bad
             path raises ``ValueError`` here, before the input is profiled.
+        designed_with: The pipeline that made the designed binder (``--designed-with``), a key of
+            ``DESIGN_SOURCE_PREDICTORS``, or the models it ran itself as a list of registry
+            names. With a model step, the adversarial check is checked against it.
+        design_policy: ``skip`` (default), ``warn`` or ``error``, see
+            ``binding_metrics.capabilities.preflight``; independent of ``on_incompatible``.
+        msa_policy: ``default`` or ``forbid-server`` (``--prediction-msa-policy``). Under
+            ``forbid-server``, a model step that would use an MSA server (``msa_server`` True) is
+            refused under every ``on_incompatible`` value, see
+            ``binding_metrics.capabilities.preflight``. Not used without a model step, nor for an
+            output made elsewhere (the model is not run, so no server is called).
+        msa_server: Whether the model step would use an MSA server: True for a run from here with
+            the server on (the default of every runner), False with it off, None when not known.
+        receptor_msa: The receptor MSA of the request (``--prediction-receptor-msa``), a path or
+            ``"single"``. It is named in the plan, and with the mode and ``msa_server`` it decides
+            the caveat for a target with neither a template nor an MSA (see
+            ``binding_metrics.capabilities.preflight``); the file itself is checked when the
+            request is built.
 
     Raises:
         ValueError: ``prediction_weights`` does not exist, cannot be read or is not the kind the
-            model's runner takes.
+            model's runner takes, or ``design_policy`` is not one of ``POLICIES``.
+        TypeError: ``designed_with`` is of a type ``design_origin`` does not take.
     """
+    design_origin(designed_with)  # a wrong type fails here, before the input is read
+    if design_policy not in POLICIES:
+        raise ValueError(f"design_policy must be one of {POLICIES}, got {design_policy!r}")
     if prediction_weights is not None and model is None:
         logger.warning(
             "--prediction-weights %s is not used: the run has no model step", prediction_weights
@@ -304,14 +395,20 @@ def check_input(
     adopted = False
     mode = None
     provided: set[str] = set()
+    checks_msa = False
     if reference_path is not None:
         provided.add("reference_structure")
     if model is not None:
         predictor, model_metric, adopted, mode = model
+        checks_msa = not adopted  # an output made elsewhere is read, no server is called
         if on_unmappable_residue == "x":
             predictor = _without_residue_check(predictor)
         metric_names.append(model_metric)
         step_of_metric[model_metric] = MODEL_STEP
+        if designed_with is not None:
+            # the adversarial check runs inside the model step and has no limits of its own;
+            # without a design source it is not listed, so the report is what it always was
+            metric_names.append(SimpleNamespace(name=ADVERSARIAL_CHECK, capabilities=None))
         provided.add("predicted_structure")
 
     error: Optional[IncompatibleInputError] = None
@@ -327,14 +424,30 @@ def check_input(
             runnable=_runnable_models(),
             weights=prediction_weights,
             weights_kinds=_weights_kinds() if prediction_weights is not None else None,
+            design_source=designed_with,
+            design_policy=design_policy,
+            prediction_models=[] if model is None else [model[0]],
+            msa_policy=msa_policy if checks_msa else DEFAULT_MSA_POLICY,
+            msa_server=msa_server if checks_msa else None,
+            receptor_msa=receptor_msa if checks_msa else None,
         )
     except IncompatibleInputError as refused:
         error, report = refused, refused.report
 
     skipped_steps: dict[str, str] = {}
     skipped_geometry: dict[str, str] = {}
+    skipped_checks: dict[str, str] = {}
+    for name in report.skipped_metrics:
+        if (
+            name in INDEPENDENCE_DEPENDENT_CHECKS
+        ):  # left out by the design origin, whatever the policy
+            skipped_checks[name] = "; ".join(
+                v.fact for v in report.violations if v.kind == "design" and v.name == name
+            )
     if on_incompatible == "skip":
         for name in report.skipped_metrics:
+            if name in skipped_checks:
+                continue
             reason = "; ".join(
                 _short(v) for v in report.violations if v.kind == "metric" and v.name == name
             )
@@ -353,13 +466,16 @@ def check_input(
         # the model's registry metric goes with its predictor; the plan must not list it as run
         report = dataclasses.replace(
             report,
-            metrics_to_run=tuple(m for m in report.metrics_to_run if m != model[1]),
+            metrics_to_run=tuple(
+                m for m in report.metrics_to_run if m not in (model[1], ADVERSARIAL_CHECK)
+            ),
         )
+        skipped_checks.pop(ADVERSARIAL_CHECK, None)  # no model step, no check to leave out
 
     violations = [_short(v) for v in report.violations]
     if error is not None:
         status, reason = "refused", "; ".join(violations)
-    elif skipped_steps or skipped_geometry:
+    elif skipped_steps or skipped_geometry or skipped_checks:
         status, reason = "skipped", "; ".join(violations)
     elif violations:
         status, reason = "warn", "; ".join(violations)
@@ -378,6 +494,8 @@ def check_input(
     }
     if include_plan:
         block["plan"] = report.format()
+        if receptor_msa is not None and checks_msa:
+            block["plan"] = _plan_with_receptor_msa(block["plan"], receptor_msa)
     return PreflightOutcome(
         block=block,
         report=report,
@@ -385,4 +503,8 @@ def check_input(
         skipped_steps=skipped_steps,
         skipped_geometry=skipped_geometry,
         model_usable=model_usable,
+        skipped_checks=skipped_checks,
+        independent_of_design=(
+            None if model is None or report.design is None else report.design.independent(model[0])
+        ),
     )

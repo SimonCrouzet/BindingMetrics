@@ -26,17 +26,12 @@ from binding_metrics.metrics._common import (
 )
 from binding_metrics.utils import configure_logging
 
+# Names the feature in the install hint when biotite is missing.
+_BIOTITE_PURPOSE = "geometry metrics"
+
 # ---------------------------------------------------------------------------
 # Lazy imports
 # ---------------------------------------------------------------------------
-
-
-def _import_biotite():
-    """Lazy import of required biotite modules."""
-    struc, pdbx, pdb_io = import_biotite("geometry metrics")
-    from biotite.structure.info import vdw_radius_single
-
-    return struc, pdbx, pdb_io, vdw_radius_single
 
 
 def _import_scipy():
@@ -60,7 +55,7 @@ def _import_scipy():
 
 def _load_structure(path: Path):
     """Load a PDB or CIF file as a biotite AtomArray."""
-    return load_structure(path, purpose="geometry metrics")
+    return load_structure(path, purpose=_BIOTITE_PURPOSE)
 
 
 _HETERO_MODES = ("ignore", "keep")
@@ -71,12 +66,10 @@ def _filter_hetero(atoms, hetero: Literal["ignore", "keep"]):
 
     Waters, ions and ligands frequently carry the chain ID of the protein
     chain they sit next to, so a chain-ID mask alone counts them as protein
-    atoms (on 1CWA this moves Sc from 0.722 to 0.750 and the void interface
-    atom count from 153 to 123). The policy is the one shared by the
-    structure-based metrics, `interface.filter_hetero_atoms`: "ignore" keeps
-    the polymer (amino acids including D- and non-canonical residues, AMBER
-    protonation variants such as HID/HIE, and ACE/NME/NH2 caps), "keep"
-    returns the atoms as read.
+    atoms. The policy is the one shared by the structure-based metrics,
+    `interface.filter_hetero_atoms`: "ignore" keeps the polymer (amino acids
+    including D- and non-canonical residues, AMBER protonation variants such
+    as HID/HIE, and ACE/NME/NH2 caps), "keep" returns the atoms as read.
 
     Raises:
         ValueError: If ``hetero`` is not one of the two modes.
@@ -118,13 +111,59 @@ def _auto_detect_chains(atoms, peptide_chain=None, receptor_chain=None):
     return peptide_chain, receptor_chain
 
 
+# Van der Waals radii in Å (Bondi, J. Phys. Chem. 68, 441, 1964) by upper-case element symbol,
+# for the surface dots of the shape complementarity and the occupancy grid of the void volume.
+#
+# Three radius tables are in use, each for one family of metrics, and they stay separate
+# because merging them changes the numbers:
+#   - this one, with hydrogen at 1.20 Å, for Sc and the void volume;
+#   - `receptor_quality._VDW_RADII`, the same Bondi values for heavy atoms only, for the clash
+#     score;
+#   - biotite's `vdw_radius_single` (Mantina et al., J. Phys. Chem. A 113, 5806, 2009; hydrogen
+#     1.10 Å, bromine 1.83 Å), for the SASA, interface and pose-descriptor metrics.
+_BONDI_VDW_RADII: dict[str, float] = {
+    "H": 1.20,
+    "C": 1.70,
+    "N": 1.55,
+    "O": 1.52,
+    "S": 1.80,
+    "P": 1.80,
+    "SE": 1.90,
+    "F": 1.47,
+    "CL": 1.75,
+    "BR": 1.85,
+    "I": 1.98,
+}
+
+# Deuterium is hydrogen for a radius, as in the rest of the package, where the elements H and D
+# are the hydrogens.
+_BONDI_VDW_RADII["D"] = _BONDI_VDW_RADII["H"]
+
+# Radius of an element the table does not list (metal ions, for instance), in Å.
 _DEFAULT_VDW_RADIUS = 1.80
 
 
 def _get_vdw(element: str) -> float:
-    """Return the van der Waals radius in Å of an element (Bondi, 1964), default 1.8 Å."""
-    _VDW = {"C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80, "H": 1.20, "P": 1.80}
-    return _VDW.get(element.strip().upper(), _DEFAULT_VDW_RADIUS)
+    """Bondi radius in Å of an element symbol, `_DEFAULT_VDW_RADIUS` when the table lacks it."""
+    return _BONDI_VDW_RADII.get(element.strip().upper(), _DEFAULT_VDW_RADIUS)
+
+
+def _atom_radii(atoms) -> np.ndarray:
+    """Bondi radius in Å of each atom of an array.
+
+    The element column decides. Only where it is empty does the atom name: a name that
+    starts with H is a hydrogen, the rule of ``poses.agreement._hydrogen_mask`` and
+    ``io.structures``. A name that starts with D is not read as deuterium, as in those two
+    (a D prefix is ambiguous without the element), and an atom with neither element nor
+    hydrogen name gets `_DEFAULT_VDW_RADIUS`.
+    """
+    elements = np.char.upper(np.char.strip(atoms.element.astype(str)))
+    names = np.char.upper(np.char.strip(atoms.atom_name.astype(str)))
+    symbols = np.where((elements == "") & np.char.startswith(names, "H"), "H", elements)
+    radii = np.empty(len(symbols), dtype=float)
+    for symbol in np.unique(symbols):
+        radii[symbols == symbol] = _get_vdw(str(symbol))
+    return radii
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +182,7 @@ def _terminal_backbone_coords(chain_atoms) -> dict[str, np.ndarray]:
     ``"CA_last"`` and ``"C_last"``; an atom the residue lacks is left out. The
     dict is empty when the chain has fewer than two amino-acid residues.
     """
-    struc, _, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     # waters and ions can carry the chain ID and would be taken as the last residue
     chain_atoms = chain_atoms[struc.filter_amino_acids(chain_atoms)]
     starts = struc.get_residue_starts(chain_atoms)
@@ -183,7 +222,7 @@ def _closing_dihedrals_deg(chain_atoms) -> Optional[tuple[float, float, float]]:
         ``(phi_first, psi_last, omega_last)``, or None when the chain does not
         close head to tail or a backbone atom of either end residue is missing.
     """
-    struc, _, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     if not _has_head_to_tail_closure(chain_atoms):
         return None
     c = _terminal_backbone_coords(chain_atoms)
@@ -196,23 +235,56 @@ def _closing_dihedrals_deg(chain_atoms) -> Optional[tuple[float, float, float]]:
     return tuple(float(np.degrees(angle)) for angle in (phi_first, psi_last, omega_last))
 
 
+def _amino_acid_residue_rows(chain_atoms, n_rows: int) -> tuple[np.ndarray, np.ndarray]:
+    """The rows of ``dihedral_backbone`` that belong to an amino acid, and where each starts.
+
+    ``dihedral_backbone`` returns one row per residue of the array it is given,
+    so a row number is a residue number. Caps (ACE, NME, NH2), waters, ions and
+    any other residue that is not an amino acid have a row too, with NaN angles,
+    and an amino acid without a Cα atom has a row of NaN. The rows are therefore
+    paired with the residues, not with the Cα atoms by position.
+
+    Args:
+        chain_atoms: The array that was passed to ``dihedral_backbone``.
+        n_rows: Length of the arrays it returned. It is checked against the
+            residue count of ``chain_atoms`` so that a change in biotite's row
+            convention stops the run instead of mislabelling residues.
+
+    Returns:
+        ``(rows, first_atoms)``: for each amino-acid residue, in chain order, its
+        row in the ``dihedral_backbone`` arrays and the index in ``chain_atoms``
+        of its first atom, which carries the residue's number, insertion code,
+        name and chain.
+
+    Raises:
+        RuntimeError: If ``n_rows`` differs from the number of residues.
+    """
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
+    starts = struc.get_residue_starts(chain_atoms)
+    if len(starts) != n_rows:
+        raise RuntimeError(
+            f"dihedral_backbone returned {n_rows} rows for {len(starts)} residues; "
+            "the rows can no longer be matched to the residues"
+        )
+    rows = np.flatnonzero(struc.filter_amino_acids(chain_atoms)[starts])
+    return rows, starts[rows]
+
+
 def _apply_closing_dihedrals(chain_atoms, phi_deg, psi_deg, omega_deg) -> bool:
     """Fill the ring-closing φ, ψ and ω into the arrays from ``dihedral_backbone``.
 
-    The arrays are indexed like the chain's Cα atoms (see the callers), so the
-    first and last amino-acid residues are located through the Cα atoms that
-    belong to amino acids. The arrays are modified in place.
+    The arrays have one row per residue of the chain; the closing angles go to
+    the rows of the first and the last amino-acid residue (see
+    `_amino_acid_residue_rows`). The arrays are modified in place.
 
     Returns:
         True if the chain closes head to tail and the closing angles were set.
     """
-    struc, _, _, _ = _import_biotite()
     closing = _closing_dihedrals_deg(chain_atoms)
     if closing is None:
         return False
-    is_amino_acid = struc.filter_amino_acids(chain_atoms)[chain_atoms.atom_name == "CA"]
-    rows = np.flatnonzero(is_amino_acid)
-    if len(rows) < 2 or rows[-1] >= len(phi_deg):
+    rows, _ = _amino_acid_residue_rows(chain_atoms, len(phi_deg))
+    if len(rows) < 2:
         return False
     phi_first, psi_last, omega_last = closing
     phi_deg[rows[0]] = phi_first
@@ -242,11 +314,11 @@ def _backbone_dihedrals_deg(chain_atoms):
 
     Returns:
         ``(phi_deg, psi_deg, omega_deg, closure_detected, closure_evaluated)``;
-        the three arrays follow ``dihedral_backbone`` (indexed like the chain's
-        Cα atoms), ``closure_evaluated`` is True when the ring-closing angles
-        were computed and put into them.
+        the three arrays follow ``dihedral_backbone`` (one row per residue of the
+        chain, see `_amino_acid_residue_rows`), ``closure_evaluated`` is True
+        when the ring-closing angles were computed and put into them.
     """
-    struc, _, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
     closure_detected = _has_head_to_tail_closure(chain_atoms)
     phi_deg, psi_deg, omega_deg = (np.degrees(a) for a in struc.dihedral_backbone(chain_atoms))
     closure_evaluated = closure_detected and _apply_closing_dihedrals(
@@ -308,20 +380,21 @@ def compute_ramachandran(
     """Compute Ramachandran backbone dihedral quality metrics for a chain.
 
     Evaluates phi/psi dihedral angles and classifies each residue as
-    favoured, allowed or outlier. MolProbity defines these classes as the
-    contours that hold 98 % (favoured) and 99.95 % (allowed) of a
-    high-resolution reference set, separately for general, Gly, Pro and
-    pre-Pro residues (Lovell et al., 2003; Williams et al., 2018). This
-    function uses hand-drawn rectangular regions that approximate the general
-    case only (see `_classify_ramachandran`), so its percentages are a screen
-    and will not match MolProbity's. D-residues are mirrored before the
-    lookup.
+    favoured, allowed or outlier. The regions are hand-drawn rectangles that
+    approximate the general case of MolProbity's 98 % (favoured) and 99.95 %
+    (allowed) contours (Lovell et al., 2003; Williams et al., 2018; see
+    `_classify_ramachandran`), so the percentages will not match MolProbity's.
+    D-residues are mirrored before the lookup.
 
     Terminal residues of a linear chain have no complete φ/ψ pair and are
-    skipped. For a head-to-tail cyclic peptide (last C bonded to first N,
-    detected by a C-N distance below 2 Å) φ of the first residue and ψ of the
-    last residue are computed across the closing amide bond, so every residue
-    is evaluated; see ``cyclic_closure_detected`` and
+    skipped. A residue next to a cap or another residue that is not an amino
+    acid (ACE, NME, NH2) is treated like a terminal one: the cap is not
+    listed, and the residue on its side has no φ or no ψ.
+
+    For a head-to-tail cyclic peptide (last C bonded to first N, detected by a
+    C-N distance below 2 Å) φ of the first residue and ψ of the last residue
+    are computed across the closing amide bond, so every residue is
+    evaluated; see ``cyclic_closure_detected`` and
     ``cyclic_closure_evaluated``.
 
     Type: score
@@ -350,7 +423,8 @@ def compute_ramachandran(
 
         Features:
             per_residue (list[dict]): Per-residue data with keys:
-                res_id, res_name, chain, phi, psi, is_d_aa, region
+                res_id, ins_code (insertion code, empty string when there is
+                none), res_name, chain, phi, psi, is_d_aa, region
 
         Diagnostics:
             reason (str): Only present when no residue could be evaluated
@@ -385,21 +459,16 @@ def compute_ramachandran(
     chain_atoms = _select_chain(atoms, chain)
     phi_deg, psi_deg, _, closure_detected, closure_evaluated = _backbone_dihedrals_deg(chain_atoms)
 
-    # dihedral_backbone yields one (phi, psi, omega) per residue, so the CA
-    # atoms are used to label them; this breaks if a residue lacks a CA atom.
-    ca_mask = chain_atoms.atom_name == "CA"
-    ca_atoms = chain_atoms[ca_mask]
-
     per_residue = []
     counts = {"favoured": 0, "allowed": 0, "outlier": 0}
     n_d = 0
 
-    for i, ca in enumerate(ca_atoms):
-        if i >= len(phi_deg):
-            break
-        phi = float(phi_deg[i])
-        psi = float(psi_deg[i])
-        res_name = str(ca.res_name).strip()
+    rows, first_atoms = _amino_acid_residue_rows(chain_atoms, len(phi_deg))
+    for row, first_atom in zip(rows, first_atoms):
+        residue = chain_atoms[first_atom]
+        phi = float(phi_deg[row])
+        psi = float(psi_deg[row])
+        res_name = str(residue.res_name).strip()
         d_aa = is_d_residue(res_name)
         region = _classify_ramachandran(phi, psi, is_d=d_aa)
         if region is None:
@@ -409,9 +478,10 @@ def compute_ramachandran(
             n_d += 1
         per_residue.append(
             {
-                "res_id": int(ca.res_id),
+                "res_id": int(residue.res_id),
+                "ins_code": str(residue.ins_code).strip(),
                 "res_name": res_name,
-                "chain": str(ca.chain_id),
+                "chain": str(residue.chain_id),
                 "phi": phi,
                 "psi": psi,
                 "is_d_aa": d_aa,
@@ -470,6 +540,9 @@ def compute_omega_planarity(
     ``omega_cis_count`` reports how many of the evaluated bonds are cis so
     that these can be told apart from twisted trans bonds.
 
+    A bond to a cap or to another residue that is not an amino acid (ACE, NME,
+    NH2) has no ω and is not evaluated.
+
     For a head-to-tail cyclic peptide (last C bonded to first N, detected by a
     C-N distance below 2 Å) the closing peptide bond is evaluated as well and
     is listed under the last residue; see ``cyclic_closure_detected`` and
@@ -500,7 +573,8 @@ def compute_omega_planarity(
 
         Features:
             per_residue (list[dict]): Per-residue data with keys:
-                res_id, res_name, chain, omega, deviation, is_outlier
+                res_id, ins_code (insertion code, empty string when there is
+                none), res_name, chain, omega, deviation, is_outlier
 
         Diagnostics:
             reason (str): Only present when no peptide bond could be
@@ -533,16 +607,13 @@ def compute_omega_planarity(
     chain_atoms = _select_chain(atoms, chain)
     _, _, omega_deg, closure_detected, closure_evaluated = _backbone_dihedrals_deg(chain_atoms)
 
-    ca_mask = chain_atoms.atom_name == "CA"
-    ca_atoms = chain_atoms[ca_mask]
-
     per_residue = []
     deviations = []
 
-    for i, ca in enumerate(ca_atoms):
-        if i >= len(omega_deg):
-            break
-        omega = float(omega_deg[i])
+    rows, first_atoms = _amino_acid_residue_rows(chain_atoms, len(omega_deg))
+    for row, first_atom in zip(rows, first_atoms):
+        residue = chain_atoms[first_atom]
+        omega = float(omega_deg[row])
         if np.isnan(omega):
             continue
         # Distance from trans (180°), handling ±180° wrap
@@ -551,9 +622,10 @@ def compute_omega_planarity(
         deviations.append(dev)
         per_residue.append(
             {
-                "res_id": int(ca.res_id),
-                "res_name": str(ca.res_name).strip(),
-                "chain": str(ca.chain_id),
+                "res_id": int(residue.res_id),
+                "ins_code": str(residue.ins_code).strip(),
+                "res_name": str(residue.res_name).strip(),
+                "chain": str(residue.chain_id),
                 "omega": omega,
                 "deviation": dev,
                 "is_outlier": is_outlier,
@@ -642,10 +714,8 @@ def _build_surface_dots(
 
     The outward surface normal at each dot is estimated as the direction
     from the local same-chain atomic centroid (atoms within
-    ``normal_radius``) to the dot. This smoothed normal approximates the
-    true molecular-surface normal far better than a single atom-centre →
-    dot vector, which is dominated by per-atom curvature and collapses the
-    normal dot-product for anything but head-on contacts.
+    ``normal_radius``) to the dot. A single atom-centre → dot vector would be
+    dominated by per-atom curvature.
 
     Args:
         interface_atoms: Atoms in this chain that are at the interface.
@@ -668,7 +738,7 @@ def _build_surface_dots(
     all_normals = []
 
     same_coords = all_same_chain_atoms.coord  # (n_same, 3)
-    same_vdw = np.array([_get_vdw(str(a.element).strip()) for a in all_same_chain_atoms])
+    same_vdw = _atom_radii(all_same_chain_atoms)
     if len(same_coords) == 0 or len(opposite_atoms) == 0:
         return np.zeros((0, 3)), np.zeros((0, 3))
 
@@ -676,8 +746,7 @@ def _build_surface_dots(
     opp_tree = cKDTree(opposite_atoms.coord)
     max_same_vdw = float(same_vdw.max())
 
-    for atom_a in interface_atoms:
-        vdw_a = _get_vdw(str(atom_a.element).strip())
+    for atom_a, vdw_a in zip(interface_atoms, _atom_radii(interface_atoms)):
         center = atom_a.coord  # (3,)
         dots = center + vdw_a * unit_sphere  # (n_dots, 3)
 
@@ -745,9 +814,8 @@ def compute_shape_complementarity(
     This is a dot-and-normal approximation of the published method, not a
     port of the CCP4 ``sc`` program: surface dots are placed on van der Waals
     spheres rather than on a molecular surface, and the outward normals are
-    estimated from the local atom neighbourhood. Values are comparable
-    between structures scored here; do not compare them numerically with
-    CCP4 ``sc`` output.
+    estimated from the local atom neighbourhood. The values do not match
+    CCP4 ``sc`` output numerically.
 
     For the buried interface patch of each chain this samples molecular
     surface dots with smoothed outward normals, then for every dot on one
@@ -757,10 +825,6 @@ def compute_shape_complementarity(
     flipped so complementary, anti-parallel surfaces score positive), ``d``
     their separation and ``w`` the weight. Sc is the mean of the two
     directional medians (A→B and B→A).
-
-    Typical values for well-formed native interfaces: ~0.65-0.75 for
-    protein-protein/protease-inhibitor packing, a touch lower for peptide
-    interfaces; ≲0.4 indicates flat, non-complementary surfaces.
 
     Type: score
 
@@ -809,7 +873,7 @@ def compute_shape_complementarity(
         "receptor_chain", receptor_chain, "target_chain", target_chain
     )
     cKDTree, _ = _import_scipy()
-    struc, _, _, _ = _import_biotite()
+    struc, _, _ = import_biotite(_BIOTITE_PURPOSE)
 
     cif_path = Path(cif_path)
     atoms = _filter_hetero(_load_structure(cif_path), hetero)
@@ -959,10 +1023,8 @@ def _occupancy_grid(
 
 # Probe-centre voxels are voxel centres inside the allowed region, so they sit
 # on average a fraction of a voxel inside its true boundary and a sweep by the
-# bare probe radius under-fills the cavity. Extending the sweep by this many
-# voxels removes most of the bias: against a fine-grid reference on synthetic
-# cavities of 5-7 A radius the void volume agrees within about 8 % for probes
-# of 1.4-3 A, where the bare radius is 7-25 % low at 0.5 A spacing.
+# bare probe radius under-fills the cavity. The sweep is extended by this many
+# voxels to offset the bias.
 _SWEEP_BIAS_VOXELS = 0.25
 
 
@@ -1062,8 +1124,7 @@ def compute_buried_void_volume(
     The result depends on the probe and the grid: compare values only at the
     same ``probe_radius`` and ``grid_spacing``. The voxel-count volume has a
     discretisation error that grows with the cavity surface and the voxel
-    size (a few percent on 5 Å-radius test cavities at 0.5 Å); use a finer
-    grid to check a value.
+    size; check a value on a finer grid.
 
     The bounding box is set by the interface atoms (any atom of one chain
     within ``interface_cutoff`` of the other, plus ``padding``); every atom of
@@ -1164,7 +1225,7 @@ def compute_buried_void_volume(
 
     def _occluders(chain_atoms):
         """Atoms of the chain whose (probe-inflated) sphere can reach into the grid."""
-        radii = np.array([_get_vdw(str(a.element).strip()) for a in chain_atoms])
+        radii = _atom_radii(chain_atoms)
         reach = radii + probe_radius
         near = np.all(
             (chain_atoms.coord >= grid_min - reach[:, None])
@@ -1256,7 +1317,14 @@ def main():
     # Sc parameters
     parser.add_argument("--n-dots", type=int, default=150, help="Surface dots per atom for Sc")
     parser.add_argument(
-        "--interface-cutoff", type=float, default=6.0, help="Interface atom pre-selection cutoff Å"
+        "--interface-cutoff",
+        type=float,
+        default=None,
+        help=(
+            "Distance in Å within which an atom counts as interface for Sc (pre-selection) and "
+            "void (box). A value applies to both; without it each metric keeps its own default "
+            "(Sc 6.0, void 5.0)"
+        ),
     )
     parser.add_argument(
         "--buried-cutoff", type=float, default=2.4, help="Buried-patch dot cutoff Å for Sc"
@@ -1288,6 +1356,11 @@ def main():
 
     from binding_metrics.cli import log_to_file
 
+    # None leaves the choice to each metric: Sc defaults to 6.0 A and the void to 5.0 A.
+    cutoff_kwargs = (
+        {} if args.interface_cutoff is None else {"interface_cutoff": args.interface_cutoff}
+    )
+
     with log_to_file(args.log_file):
         print(f"Computing '{args.metric}' metrics for: {args.input}")
 
@@ -1315,11 +1388,11 @@ def main():
                 peptide_chain=args.peptide_chain,
                 receptor_chain=args.receptor_chain,
                 n_dots=args.n_dots,
-                interface_cutoff=args.interface_cutoff,
                 buried_cutoff=args.buried_cutoff,
                 normal_radius=args.normal_radius,
                 weight=args.weight,
                 hetero=args.hetero,
+                **cutoff_kwargs,
             )
             scalar_keys = ["sc", "sc_A_to_B", "sc_B_to_A", "n_surface_dots_A", "n_surface_dots_B"]
         else:  # void
@@ -1329,8 +1402,8 @@ def main():
                 receptor_chain=args.receptor_chain,
                 grid_spacing=args.grid_spacing,
                 probe_radius=args.probe_radius,
-                interface_cutoff=args.interface_cutoff,
                 hetero=args.hetero,
+                **cutoff_kwargs,
             )
             scalar_keys = [
                 "void_volume_A3",

@@ -28,10 +28,10 @@ References:
   The OpenFold3 Team (2026) OpenFold3, v0.5.0 (OpenBind-0 weights). Software,
   doi:10.5281/zenodo.22042719, github.com/aqlaboratory/openfold-3
   Abramson et al. (2024) Accurate structure prediction of biomolecular
-  interactions with AlphaFold 3. Nature 630:493-500. Defines the outputs parsed
-  here (pLDDT, PAE, PDE, pTM, ipTM) and the tokenisation that the interface
-  PDE/PAE slicing relies on: one token per standard residue, one per heavy atom
-  for ligands and modified residues.
+  interactions with AlphaFold 3. Nature 630:493-500. Defines the parsed outputs
+  (pLDDT, PAE, PDE, pTM, ipTM) and the tokenisation used for the interface
+  PDE/PAE slices: one token per standard residue, one per heavy atom for
+  ligands and modified residues.
 
 Usage (Python API):
     from binding_metrics import compute_openfold_metrics
@@ -81,6 +81,7 @@ from binding_metrics.metrics._openfold_run import (  # noqa: F401  (re-exported)
     _extract_chain_to_cif,
     _extract_sequence_from_structure,
     _merge_runner_settings,
+    _openfold_predict_command,
     _query_seeds,
     _resolve_run_seeds,
     _run_openfold_command,
@@ -103,11 +104,11 @@ from binding_metrics.predictors._confidence import (  # noqa: F401  (re-exported
     _binder_plddt_per_residue,
     _chain_token_offsets,
     _check_token_offsets,
-    _import_biotite_struc,
     _interface_pae_stats,
     _interface_pde_stats,
     _load_atoms,
 )
+from binding_metrics.predictors._renamed import deprecated_name_getattr
 from binding_metrics.predictors.of3 import (  # noqa: F401  (re-exported)
     OpenFold3Parser,
 )
@@ -118,8 +119,11 @@ from binding_metrics.predictors.of3 import parse_full_confidences as _parse_conf
 from binding_metrics.predictors.of3 import (  # noqa: F401  (re-exported)
     parse_timing as _parse_timing,
 )
-from binding_metrics.predictors.record import PredictionRecord
+from binding_metrics.predictors.record import PredictedPose
 from binding_metrics.predictors.registry import get_parser
+
+#: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
+__getattr__ = deprecated_name_getattr(__name__)
 
 # ---------------------------------------------------------------------------
 # Output file discovery and parsers (the OpenFold3 adapter of binding_metrics.predictors)
@@ -145,6 +149,29 @@ def _dummy_msa_kwargs(dummy_msa: Optional[bool], use_msa_server: bool) -> dict:
     """
     wanted = (not use_msa_server) if dummy_msa is None else bool(dummy_msa)
     return {"dummy_msa": True} if wanted else {}
+
+
+def _receptor_msa_kwargs(receptor_msa_path: Optional[str | Path], use_msa_server: bool) -> dict:
+    """``{"receptor_msa_path": path}`` for the query builder, or ``{}`` when none is given.
+
+    With the ColabFold MSA server on, OpenFold3 replaces ``main_msa_file_paths`` of every chain
+    (with a warning), so the alignment would not be used and the sequences would leave the
+    machine all the same; the combination is refused before anything is written. Nothing is
+    passed for None, so that a query builder that predates the option, or a test double that
+    replaces it, is called exactly as before.
+
+    Raises:
+        ValueError: ``receptor_msa_path`` is given and ``use_msa_server`` is true.
+    """
+    if receptor_msa_path is None:
+        return {}
+    if use_msa_server:
+        raise ValueError(
+            "receptor_msa_path needs use_msa_server=False: with the ColabFold MSA server on, "
+            "OpenFold3 replaces the MSA files of the query by the ones it gets from the server, "
+            "so the alignment would not be used"
+        )
+    return {"receptor_msa_path": receptor_msa_path}
 
 
 def _find_prediction_files(
@@ -205,12 +232,11 @@ def compute_interface_pae(
 
     OpenFold3 makes one token of each residue of the standard set and one of each heavy
     atom of any other residue (a modified residue, a ligand), so the matrix can have more
-    rows than the structure has residues (1CWA: 240 for 176). The token layout is built from
-    the structure the way ``OpenFold3Parser.complete`` does it, which cuts the binder block at
-    the chain boundaries of the tokens; the matrix of 1CWA gives its interface PAE. A layout
-    that cannot be shown to fit the matrix (another token count, chains that are not one run
-    of tokens) is not guessed: the matrix is then read as one token per residue and a size
-    that does not fit raises.
+    rows than the structure has residues. The token layout is built from the structure as
+    ``OpenFold3Parser.complete`` builds it, and the binder block is cut at the chain
+    boundaries of the tokens. When the layout cannot be shown to fit the matrix (another
+    token count, chains that are not one run of tokens), the matrix is read as one token per
+    residue, and a size that does not fit raises.
 
     Args:
         confidences_path: Path to ``*_confidences.json`` or ``.npz``.
@@ -247,7 +273,7 @@ def compute_interface_pae(
     # The token layout of the structure, when it can be shown to fit the matrices; a record
     # without one (``tokens`` None) is read as one token per residue, which keeps the error of
     # a matrix that fits neither.
-    record = PredictionRecord(
+    record = PredictedPose(
         "of3",
         Path(structure_path).stem,
         structure_path=Path(structure_path),
@@ -290,8 +316,7 @@ def compute_openfold_metrics(
     Pass ``reference_structure_path`` together with ``binder_chain`` (and
     ``receptor_chain`` for receptor-frame alignment) to additionally compute
     the binder Cα RMSD between the OF3 prediction and a known reference
-    structure (e.g., crystal or MD-relaxed). This measures how faithfully OF3
-    recovers the bound binder conformation.
+    structure (e.g., crystal or MD-relaxed).
 
     Args:
         output_dir: Top-level OpenFold3 output directory.
@@ -538,7 +563,6 @@ def run_openfold(
             "Pass conda_env='openfold3' (or whichever env has OF3 installed)."
         )
 
-    # Resolve runner YAML: explicit path takes precedence over model_presets
     effective_yaml: Optional[Path] = None
     if runner_yaml is not None:
         # OpenFold3 finds the template CIFs only through the YAML's structure_directory, and
@@ -563,29 +587,17 @@ def run_openfold(
             seeds=seed_values,
         )
 
-    of3_cmd = [
-        "run_openfold",
-        "predict",
-        f"--query_json={query_json}",
-        f"--output_dir={output_dir}",
-        f"--num_diffusion_samples={num_diffusion_samples}",
-        f"--use_msa_server={str(use_msa_server).lower()}",
-        f"--runner_yaml={effective_yaml}",
-    ]
-    if generated_seeds is not None:
-        # A truthy --num_model_seeds replaces the seeds of the YAML (experiment_runner.py).
-        of3_cmd.append(f"--num_model_seeds={generated_seeds}")
-
-    if inference_ckpt_path is not None:
-        of3_cmd.append(f"--inference_ckpt_path={inference_ckpt_path}")
-
-    if extra_args:
-        of3_cmd.extend(extra_args)
-
-    if conda_env is not None:
-        cmd = ["conda", "run", "-n", conda_env, "--no-capture-output"] + of3_cmd
-    else:
-        cmd = of3_cmd
+    cmd = _openfold_predict_command(
+        query_json,
+        output_dir,
+        effective_yaml,
+        num_diffusion_samples=num_diffusion_samples,
+        use_msa_server=use_msa_server,
+        num_model_seeds=generated_seeds,
+        inference_ckpt_path=inference_ckpt_path,
+        extra_args=extra_args,
+        conda_env=conda_env,
+    )
 
     _run_openfold_command(cmd, output_dir)
     return output_dir
@@ -617,15 +629,14 @@ def run_openfold_scoring(
     binder_cyclic: bool | str = "auto",
     template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: Optional[bool] = None,
+    receptor_msa_path: Optional[str | Path] = None,
 ) -> Path:
     """Run OpenFold3 scoring of an existing complex structure (Mode 1).
 
-    Each chain is given its own structure from the complex as a template (the binder its
-    conformation, the receptor its conformation), and OF3 outputs confidence metrics for the
-    complex it predicts from them. Each chain has its own template and no cross-chain geometry is
-    supplied, so OF3 places the binder itself: its confidences describe its own pose, and
-    ``binder_ca_rmsd`` and ``delta_com_angstrom`` of the EvoBind adversarial check say how far
-    that pose is from the input pose (see :func:`prepare_scoring_query`; with the MSA server on
+    Each chain gets its own structure from the complex as a template. No cross-chain geometry
+    is supplied, so OF3 places the binder itself: the confidences describe that pose, and
+    ``binder_ca_rmsd`` and ``delta_com_angstrom`` of the EvoBind adversarial check give its
+    distance from the input pose (see :func:`prepare_scoring_query`; with the MSA server on
     and ``template_mode="alignment"`` the run has no template, issue #68).
     Use :func:`compute_openfold_metrics` with ``binder_chain`` and
     ``receptor_chain`` to extract per-chain scores after inference.
@@ -661,18 +672,21 @@ def run_openfold_scoring(
             it has a head-to-tail bond, is made of standard residues only and the installed
             OpenFold3 (in ``conda_env``) is 0.4.5 or later; ``True`` writes it whatever the
             structure says; ``False`` never. OpenFold3 wraps the relative positions of the chain
-            and does not enforce the closure bond, and with modified residues the flag made the
-            one complex tried worse; see :func:`prepare_refolding_query`.
+            and does not enforce the closure bond; see :func:`prepare_refolding_query`.
         template_mode: How the templates reach OpenFold3: ``"structure"`` (default; the template
             CIFs themselves, OpenFold3's CIF Direct Template Mode, which the ColabFold MSA server
             does not overwrite) or ``"alignment"`` (an A3M self-alignment per chain, which the
             server overwrites, so with the server on the run has no template). See
             :func:`prepare_refolding_query`.
         dummy_msa: Whether the query gives every chain a dummy MSA that holds only its sequence.
-            None (default) writes it when ``use_msa_server`` is False, which is the MSA-free run
-            that OpenFold3's input reference suggests (it discourages leaving the MSA input out);
-            with the server on it would be overwritten. True or False decides it. See
+            None (default) writes it when ``use_msa_server`` is False (with the server on it
+            would be overwritten). True or False decides it. See
             :func:`prepare_refolding_query`.
+        receptor_msa_path: An A3M alignment of the receptor chain, given to OpenFold3 as the MSA
+            of that chain (``colabfold_main.a3m`` in a folder of its own); the binder keeps the
+            dummy MSA. None (default) gives the receptor the dummy MSA too. It needs
+            ``use_msa_server=False`` (the server replaces it) and its first sequence must be the
+            receptor sequence; see :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory
@@ -684,7 +698,10 @@ def run_openfold_scoring(
         ValueError: ``seeds`` and ``num_model_seeds`` are both given, ``binder_cyclic`` is
             ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode`` is not
             ``"structure"`` or ``"alignment"``, or it is ``"structure"`` and the installed
-            OpenFold3 is older than 0.4.2 (checked before anything is written).
+            OpenFold3 is older than 0.4.2 (checked before anything is written), or
+            ``receptor_msa_path`` is given with ``use_msa_server=True`` or does not start with
+            the receptor sequence.
+        FileNotFoundError: ``receptor_msa_path`` is not a file.
     """
     _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
@@ -703,6 +720,7 @@ def run_openfold_scoring(
         conda_env=conda_env,
         **_template_mode_kwargs(template_mode),
         **_dummy_msa_kwargs(dummy_msa, use_msa_server),
+        **_receptor_msa_kwargs(receptor_msa_path, use_msa_server),
     )
 
     run_openfold(
@@ -743,6 +761,7 @@ def run_openfold_refolding(
     binder_cyclic: bool | str = "auto",
     template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: Optional[bool] = None,
+    receptor_msa_path: Optional[str | Path] = None,
 ) -> Path:
     """Run OpenFold3 refolding: binder predicted from sequence, receptor given as template.
 
@@ -793,18 +812,21 @@ def run_openfold_refolding(
             it has a head-to-tail bond, is made of standard residues only and the installed
             OpenFold3 (in ``conda_env``) is 0.4.5 or later; ``True`` writes it whatever the
             structure says; ``False`` never. OpenFold3 wraps the relative positions of the chain
-            and does not enforce the closure bond, and with modified residues the flag made the
-            one complex tried worse; see :func:`prepare_refolding_query`.
+            and does not enforce the closure bond; see :func:`prepare_refolding_query`.
         template_mode: How the templates reach OpenFold3: ``"structure"`` (default; the template
             CIFs themselves, OpenFold3's CIF Direct Template Mode, which the ColabFold MSA server
             does not overwrite) or ``"alignment"`` (an A3M self-alignment per chain, which the
             server overwrites, so with the server on the run has no template). See
             :func:`prepare_refolding_query`.
         dummy_msa: Whether the query gives every chain a dummy MSA that holds only its sequence.
-            None (default) writes it when ``use_msa_server`` is False, which is the MSA-free run
-            that OpenFold3's input reference suggests (it discourages leaving the MSA input out);
-            with the server on it would be overwritten. True or False decides it. See
+            None (default) writes it when ``use_msa_server`` is False (with the server on it
+            would be overwritten). True or False decides it. See
             :func:`prepare_refolding_query`.
+        receptor_msa_path: An A3M alignment of the receptor chain, given to OpenFold3 as the MSA
+            of that chain (``colabfold_main.a3m`` in a folder of its own); the binder keeps the
+            dummy MSA. None (default) gives the receptor the dummy MSA too. It needs
+            ``use_msa_server=False`` (the server replaces it) and its first sequence must be the
+            receptor sequence; see :func:`prepare_refolding_query`.
 
     Returns:
         Path to the OF3 predictions output directory
@@ -816,7 +838,10 @@ def run_openfold_refolding(
         ValueError: ``seeds`` and ``num_model_seeds`` are both given, ``binder_cyclic`` is
             ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode`` is not
             ``"structure"`` or ``"alignment"``, or it is ``"structure"`` and the installed
-            OpenFold3 is older than 0.4.2 (checked before anything is written).
+            OpenFold3 is older than 0.4.2 (checked before anything is written), or
+            ``receptor_msa_path`` is given with ``use_msa_server=True`` or does not start with
+            the receptor sequence.
+        FileNotFoundError: ``receptor_msa_path`` is not a file.
     """
     _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
@@ -835,6 +860,7 @@ def run_openfold_refolding(
         conda_env=conda_env,
         **_template_mode_kwargs(template_mode),
         **_dummy_msa_kwargs(dummy_msa, use_msa_server),
+        **_receptor_msa_kwargs(receptor_msa_path, use_msa_server),
     )
 
     run_openfold(
@@ -877,6 +903,7 @@ def run_openfold_batched(
     binder_cyclic: bool | str = "auto",
     template_mode: str = DEFAULT_TEMPLATE_MODE,
     dummy_msa: Optional[bool] = None,
+    receptor_msa_path: Optional[str | Path] = None,
 ) -> Path:
     """Run OpenFold3 inference on multiple samples in a single subprocess.
 
@@ -915,18 +942,22 @@ def run_openfold_batched(
             it has a head-to-tail bond, is made of standard residues only and the installed
             OpenFold3 (in ``conda_env``) is 0.4.5 or later; ``True`` writes it whatever the
             structure says; ``False`` never. OpenFold3 wraps the relative positions of the chain
-            and does not enforce the closure bond, and with modified residues the flag made the
-            one complex tried worse; see :func:`prepare_refolding_query`.
+            and does not enforce the closure bond; see :func:`prepare_refolding_query`.
         template_mode: How the templates reach OpenFold3: ``"structure"`` (default; the template
             CIFs themselves, OpenFold3's CIF Direct Template Mode, which the ColabFold MSA server
             does not overwrite) or ``"alignment"`` (an A3M self-alignment per chain, which the
             server overwrites, so with the server on the run has no template). See
             :func:`prepare_refolding_query`.
         dummy_msa: Whether the query gives every chain a dummy MSA that holds only its sequence.
-            None (default) writes it when ``use_msa_server`` is False, which is the MSA-free run
-            that OpenFold3's input reference suggests (it discourages leaving the MSA input out);
-            with the server on it would be overwritten. True or False decides it. See
+            None (default) writes it when ``use_msa_server`` is False (with the server on it
+            would be overwritten). True or False decides it. See
             :func:`prepare_refolding_query`.
+        receptor_msa_path: One A3M alignment for the receptor chain of every sample, given to
+            OpenFold3 as the MSA of that chain (a copy, ``colabfold_main.a3m``, in a folder per
+            sample); the binders keep the dummy MSA. None (default) gives the receptors the
+            dummy MSA too. It needs ``use_msa_server=False`` (the server replaces it) and its
+            first sequence must be the receptor sequence of every sample; see
+            :func:`prepare_batched_refolding_queries`.
 
     Returns:
         Path to the OF3 predictions output directory.
@@ -937,7 +968,10 @@ def run_openfold_batched(
         ValueError: ``seeds`` and ``num_model_seeds`` are both given, ``binder_cyclic`` is
             ``True`` and the installed OpenFold3 is older than 0.4.5, or ``template_mode`` is not
             ``"structure"`` or ``"alignment"``, or it is ``"structure"`` and the installed
-            OpenFold3 is older than 0.4.2 (checked before anything is written).
+            OpenFold3 is older than 0.4.2 (checked before anything is written), or
+            ``receptor_msa_path`` is given with ``use_msa_server=True`` or does not start with
+            the receptor sequence.
+        FileNotFoundError: ``receptor_msa_path`` is not a file.
     """
     _resolve_run_seeds(seeds, num_model_seeds, extra_args)
     output_dir = Path(output_dir)
@@ -955,6 +989,7 @@ def run_openfold_batched(
         conda_env=conda_env,
         **_template_mode_kwargs(template_mode),
         **_dummy_msa_kwargs(dummy_msa, use_msa_server),
+        **_receptor_msa_kwargs(receptor_msa_path, use_msa_server),
     )
 
     run_openfold(

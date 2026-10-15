@@ -4,7 +4,7 @@ Two families of functions:
 
 * ``calculate_interaction_energy`` / ``calculate_component_energies``: per-frame
   Coulomb + Lennard-Jones sums over ligand-receptor atom pairs of a trajectory
-  (vacuum, no cutoff).
+  (vacuum, no cutoff; on the complex made contiguous when the trajectory stores a unit cell).
 * ``compute_interaction_energy`` (CLI: ``binding-metrics-energy``): end-state
   subsystem decomposition E_complex - E_peptide - E_receptor in implicit solvent
   for a single structure, evaluated at the input geometry (``raw``), after a
@@ -22,6 +22,7 @@ References:
 
 import argparse
 import logging
+import sys
 import traceback
 import warnings
 from pathlib import Path
@@ -36,15 +37,21 @@ except ImportError:
 
 # OpenMM is imported inside the functions that use it, so this module can be
 # imported (and its CLI parser built) on installs without OpenMM.
-from binding_metrics._constants import DEFAULT_RANDOM_SEED
-from binding_metrics.core.residues import BACKBONE_HEAVY_ATOM_NAMES, CYSTEINE_NAMES
+from binding_metrics._constants import (
+    COULOMB_KJ_NM_MOL_E2,
+    DEFAULT_DEVICE,
+    DEFAULT_PH,
+    DEFAULT_RANDOM_SEED,
+)
+from binding_metrics.core.residues import BACKBONE_HEAVY_ATOM_NAMES, CYSTEINE_NAMES, residue_label
 from binding_metrics.metrics._common import ChainAliasAction, require_openmm, resolve_chain_role
+from binding_metrics.metrics._periodic import ligand_receptor_distances_nm
 from binding_metrics.utils import configure_logging
 
 logger = logging.getLogger(__name__)
 
 # 1 / (4 pi eps0) in OpenMM units (kJ nm mol^-1 e^-2).
-_COULOMB_K_KJ_NM_MOL_E2 = 138.935456
+_COULOMB_K_KJ_NM_MOL_E2 = COULOMB_KJ_NM_MOL_E2
 # Ligand-receptor pairs closer than this (0.1 A) are skipped so that coincident
 # atoms cannot cause a division by zero.
 _MIN_PAIR_DISTANCE_NM = 0.01
@@ -102,6 +109,14 @@ def calculate_interaction_energy(
     bonded through a covalent ligand-receptor link (for example an inter-chain
     disulfide) therefore contribute at full strength.
 
+    When the trajectory stores a unit cell (orthorhombic or triclinic), the complex is first
+    made contiguous (``_periodic.image_complex``: molecules whole, ligand in the image next to
+    the receptor, known limit stated there) and r_ij is the plain distance in that image, so
+    the energy does not depend on the periodic image in which either partner was written;
+    without a cell the stored coordinates are used. The sum is a vacuum pair energy of the
+    two selections, not the PME interaction energy of the simulation, which sums the pair
+    terms over all periodic images and adds the reciprocal-space term.
+
     Args:
         trajectory_path: Path to trajectory file
         topology_path: Path to topology file (PDB: read with OpenMM's PDBFile)
@@ -153,24 +168,22 @@ def calculate_interaction_energy(
 
     interaction_energies = []
 
-    for frame_idx in range(traj.n_frames):
-        positions = traj.xyz[frame_idx]  # nm
-
+    for distances_nm in ligand_receptor_distances_nm(traj, ligand_indices, receptor_indices):
         energy = 0.0
 
-        for lig_idx in ligand_indices:
+        for lig_position, lig_idx in enumerate(ligand_indices):
             q1, sig1, eps1 = nonbonded_force.getParticleParameters(lig_idx)
             q1 = q1.value_in_unit(unit.elementary_charge)
             sig1 = sig1.value_in_unit(unit.nanometer)
             eps1 = eps1.value_in_unit(unit.kilojoule_per_mole)
 
-            for rec_idx in receptor_indices:
+            for rec_position, rec_idx in enumerate(receptor_indices):
                 q2, sig2, eps2 = nonbonded_force.getParticleParameters(rec_idx)
                 q2 = q2.value_in_unit(unit.elementary_charge)
                 sig2 = sig2.value_in_unit(unit.nanometer)
                 eps2 = eps2.value_in_unit(unit.kilojoule_per_mole)
 
-                r = np.linalg.norm(positions[lig_idx] - positions[rec_idx])
+                r = distances_nm[lig_position, rec_position]
 
                 if r < _MIN_PAIR_DISTANCE_NM:
                     continue
@@ -201,9 +214,9 @@ def calculate_component_energies(
 ) -> dict[str, np.ndarray]:
     """Calculate separated electrostatic and vdW interaction energies.
 
-    Same pair sum, force-field parameters and caveats as
-    ``calculate_interaction_energy``, with the Coulomb and Lennard-Jones terms
-    returned separately.
+    Same pair sum, force-field parameters, imaging of a trajectory with a unit cell and
+    vacuum (not PME) caveat as ``calculate_interaction_energy``, with the Coulomb and
+    Lennard-Jones terms returned separately.
 
     Args:
         trajectory_path: Path to trajectory file
@@ -258,24 +271,23 @@ def calculate_component_energies(
     coulomb_energies = []
     lj_energies = []
 
-    for frame_idx in range(traj.n_frames):
-        positions = traj.xyz[frame_idx]
+    for distances_nm in ligand_receptor_distances_nm(traj, ligand_indices, receptor_indices):
         e_coulomb_total = 0.0
         e_lj_total = 0.0
 
-        for lig_idx in ligand_indices:
+        for lig_position, lig_idx in enumerate(ligand_indices):
             q1, sig1, eps1 = nonbonded_force.getParticleParameters(lig_idx)
             q1 = q1.value_in_unit(unit.elementary_charge)
             sig1 = sig1.value_in_unit(unit.nanometer)
             eps1 = eps1.value_in_unit(unit.kilojoule_per_mole)
 
-            for rec_idx in receptor_indices:
+            for rec_position, rec_idx in enumerate(receptor_indices):
                 q2, sig2, eps2 = nonbonded_force.getParticleParameters(rec_idx)
                 q2 = q2.value_in_unit(unit.elementary_charge)
                 sig2 = sig2.value_in_unit(unit.nanometer)
                 eps2 = eps2.value_in_unit(unit.kilojoule_per_mole)
 
-                r = np.linalg.norm(positions[lig_idx] - positions[rec_idx])
+                r = distances_nm[lig_position, rec_position]
                 if r < _MIN_PAIR_DISTANCE_NM:
                     continue
 
@@ -310,8 +322,9 @@ def _create_implicit_system(
     positions,
     solvent_model: str = "obc2",
     peptide_chain: Optional[str] = None,
-    ph: float = 7.4,
+    ph: float = DEFAULT_PH,
     random_seed: Optional[int] = DEFAULT_RANDOM_SEED,
+    terminal_oxygens_added: Optional[list] = None,
 ):
     """Create an OpenMM implicit-solvent system after adding hydrogens.
 
@@ -336,6 +349,11 @@ def _create_implicit_system(
             OpenMM's default of 7.0.
         random_seed: Seed for hydrogen placement (OpenMM draws the initial
             hydrogen offsets from Python's global RNG); None leaves it unseeded.
+        terminal_oxygens_added: A list asks for the terminal oxygen (OXT) of every chain that
+            ends in a standard residue without one (``core.system.add_terminal_oxygens``,
+            after the cyclic patch, so a head-to-tail closure keeps the chain closed) and
+            receives one ``"<chain>:<residue><number>"`` label per chain completed. None
+            leaves such a chain to the refusal below.
 
     Returns:
         Tuple of (system, topology_with_h, positions_with_h, bond_info, ncaa_xmls)
@@ -358,7 +376,11 @@ def _create_implicit_system(
         _patch_nonstandard,
         load_nonstandard_xmls,
     )
-    from binding_metrics.core.system import require_closed_c_termini
+    from binding_metrics.core.system import (
+        add_terminal_oxygens,
+        find_open_c_termini,
+        require_closed_c_termini,
+    )
     from binding_metrics.io.structures import author_chain_ids
 
     gb_file = "implicit/gbn2.xml" if solvent_model == "gbn2" else "implicit/obc2.xml"
@@ -368,7 +390,6 @@ def _create_implicit_system(
     from binding_metrics.core import phosaa
 
     phosaa.register(ff)
-    phosaa.ensure_hydrogen_definitions()
 
     # Accumulate every extra residue-template XML used to build the complex so
     # the peptide/receptor subsystems (which build their own force fields) can
@@ -391,6 +412,12 @@ def _create_implicit_system(
 
     topology, positions, bond_info = patch_cyclic_topology(topology, positions, peptide_chain)
     topology, positions = rename_disulfide_cys_to_cyx(topology, positions)
+    if terminal_oxygens_added is not None:
+        terminal_oxygens_added.extend(
+            f"{chain_names.get(chain_id, chain_id)}:{name}{number}"
+            for chain_id, name, number in find_open_c_termini(topology)
+        )
+        topology, positions = add_terminal_oxygens(topology, positions)
     # Before the force field: a chain that ends in a standard residue without OXT fails
     # there with a message that does not say what to do.
     require_closed_c_termini(topology, chain_names)
@@ -413,11 +440,11 @@ def _create_implicit_system(
     from binding_metrics.core.system import deterministic_hydrogen_placement
 
     try:
-        with deterministic_hydrogen_placement(random_seed):
+        with deterministic_hydrogen_placement(random_seed), phosaa.hydrogen_definitions():
             modeller.addHydrogens(ff, pH=ph, variants=addh_variants)
     except (ValueError, openmm.OpenMMException) as e:
         logger.warning(f"  Warning: addHydrogens with pH failed ({e}), retrying without pH")
-        with deterministic_hydrogen_placement(random_seed):
+        with deterministic_hydrogen_placement(random_seed), phosaa.hydrogen_definitions():
             modeller.addHydrogens(ff, variants=addh_variants)
 
     # A wrong-side Cα H (random jitter + frozen heavy atoms during H addition)
@@ -426,12 +453,16 @@ def _create_implicit_system(
 
     modeller.positions = repair_ca_hydrogen_chirality(modeller.topology, modeller.positions)
 
-    system = ff.createSystem(
+    from binding_metrics.core.system import create_system_respecting_chain_breaks
+
+    system, topology = create_system_respecting_chain_breaks(
+        ff,
         modeller.topology,
+        modeller.positions,
         nonbondedMethod=openmm.app.NoCutoff,
         constraints=openmm.app.HBonds,
     )
-    return system, modeller.topology, modeller.positions, bond_info, extra_xmls
+    return system, topology, modeller.positions, bond_info, extra_xmls
 
 
 def _repair_orphaned_cys(
@@ -486,7 +517,7 @@ def _repair_orphaned_cys(
     if not orphans:
         return topology, positions
 
-    names = [f"{r.name}{r.id}" for r in topology.residues() if r.index in orphans]
+    names = [residue_label(r) for r in topology.residues() if r.index in orphans]
     prefix = f"[{label}] " if label else ""
     logger.info(f"{prefix}  Repairing orphaned CYS (cross-chain disulfide severed): {names}")
 
@@ -539,13 +570,20 @@ def _repair_orphaned_cys(
     return new_topo, new_pos
 
 
-def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None, ncaa_xmls=None):
+def _build_subsystem(
+    topology, solvent_model: str = "obc2", bond_info=None, ncaa_xmls=None, positions=None
+):
     """Build an implicit-solvent system for a topology that already has hydrogens.
 
     Same force field as ``_create_implicit_system``, without hydrogen addition.
     ``bond_info`` (lactam / cyclic closure templates) and ``ncaa_xmls`` (GAFF2
     residue templates) are the values returned by ``_create_implicit_system``;
     a subsystem that contains none of those residues can omit them.
+
+    ``positions`` (a Quantity) lets the build see a chain break of the subsystem and
+    leave its two sides unbonded, as ``_create_implicit_system`` does for the complex
+    (see ``core.system.create_system_respecting_chain_breaks``). Without positions the
+    topology is built as it is.
     """
     import openmm
     from openmm.app import ForceField
@@ -564,35 +602,45 @@ def _build_subsystem(topology, solvent_model: str = "obc2", bond_info=None, ncaa
 
         for xml_str in ncaa_xmls:
             _load_ffxml(ff, xml_str)
-    return ff.createSystem(
+    if positions is None:
+        return ff.createSystem(
+            topology,
+            nonbondedMethod=openmm.app.NoCutoff,
+            constraints=openmm.app.HBonds,
+        )
+    from binding_metrics.core.system import create_system_respecting_chain_breaks
+
+    system, _ = create_system_respecting_chain_breaks(
+        ff,
         topology,
+        positions,
+        warn=False,  # `_create_implicit_system` reported the break
         nonbondedMethod=openmm.app.NoCutoff,
         constraints=openmm.app.HBonds,
     )
+    return system
 
 
-def _get_platform(device: str = "cuda"):
+def _get_platform(device: str = DEFAULT_DEVICE):
     """Get the best available OpenMM platform.
 
     Returns:
         (platform, properties). CUDA uses "mixed" precision, which is not
         bit-for-bit reproducible between runs. Falls back to CPU when device is
-        not "cuda" or the CUDA platform is unavailable.
+        not "cuda" or no context can be created on the CUDA platform (the plugin
+        is not loaded, or it has no device or a mismatched driver).
     """
     import openmm
 
-    if device == "cuda":
-        try:
-            platform = openmm.Platform.getPlatformByName("CUDA")
-            return platform, {"CudaPrecision": "mixed"}
-        except openmm.OpenMMException:
-            # CUDA plugin not loaded: fall through to the CPU platform.
-            pass
+    from binding_metrics.core._platform import usable_platform
+
+    if device == "cuda" and usable_platform("CUDA"):
+        return openmm.Platform.getPlatformByName("CUDA"), {"CudaPrecision": "mixed"}
     return openmm.Platform.getPlatformByName("CPU"), {}
 
 
 def _evaluate_potential_energy(
-    system, topology, positions, device: str = "cuda", min_iterations: int = 0
+    system, topology, positions, device: str = DEFAULT_DEVICE, min_iterations: int = 0
 ) -> float:
     """Evaluate the potential energy of a system at the given positions.
 
@@ -710,12 +758,14 @@ def _evaluate_subsystem_energies(
 
         pep_topo, pep_pos = _extract_chain(topo_h, positions, peptide_chain)
         pep_topo, pep_pos = _repair_orphaned_cys(pep_topo, pep_pos, solvent_model)
-        sys_p = _build_subsystem(pep_topo, solvent_model, bond_info=bond_info, ncaa_xmls=ncaa_xmls)
+        sys_p = _build_subsystem(
+            pep_topo, solvent_model, bond_info=bond_info, ncaa_xmls=ncaa_xmls, positions=pep_pos
+        )
         e_p = _evaluate_potential_energy(sys_p, pep_topo, pep_pos, device)
 
         rec_topo, rec_pos = _extract_chain(topo_h, positions, receptor_chain)
         rec_topo, rec_pos = _repair_orphaned_cys(rec_topo, rec_pos, solvent_model)
-        sys_r = _build_subsystem(rec_topo, solvent_model, ncaa_xmls=ncaa_xmls)
+        sys_r = _build_subsystem(rec_topo, solvent_model, ncaa_xmls=ncaa_xmls, positions=rec_pos)
         e_r = _evaluate_potential_energy(sys_r, rec_topo, rec_pos, device)
 
         if not (np.isfinite(e_p) and np.isfinite(e_r)):
@@ -751,10 +801,10 @@ def compute_interaction_energy(
     peptide_chain: Optional[str] = None,
     receptor_chain: Optional[str] = None,
     solvent_model: str = "obc2",
-    device: str = "cuda",
+    device: str = DEFAULT_DEVICE,
     sample_id: Optional[str] = None,
     modes: tuple = ("raw", "relaxed", "after_md"),
-    ph: float = 7.4,
+    ph: float = DEFAULT_PH,
     relaxed_min_steps_restrained: int = 500,
     relaxed_min_steps_full: int = 2000,
     after_md_duration_ps: float = 10.0,
@@ -764,6 +814,7 @@ def compute_interaction_energy(
     *,
     binder_chain: Optional[str] = None,
     target_chain: Optional[str] = None,
+    complete_terminal_oxygens: bool = False,
 ) -> dict:
     """Compute interaction energies via subsystem decomposition for multiple modes.
 
@@ -771,14 +822,12 @@ def compute_interaction_energy(
     using AMBER ff14SB + implicit solvent (OBC2 or GBn2). System preparation
     (hydrogen addition) is performed once and shared across modes.
 
-    E_int is a single-trajectory end-state estimate in the spirit of MM-GBSA
-    (Kollman et al. 2000): the isolated peptide and receptor are evaluated at
-    their geometry in the complex, so it contains the force-field interaction
-    plus the change in generalized Born polar solvation and in the nonpolar
-    surface-area term, but no conformational reorganisation energy and no
-    entropy. Compare values between structures of the same system, not with
-    experimental binding free energies. The raw and relaxed values depend on
-    the added hydrogens and on the minimizer's stopping point.
+    E_int is a single-trajectory end-state estimate (Kollman et al. 2000): the
+    isolated peptide and receptor are evaluated at their geometry in the complex.
+    It contains the force-field interaction plus the change in generalized Born
+    polar solvation and in the nonpolar surface-area term, and no reorganisation
+    energy and no entropy. The raw and relaxed values depend on the added
+    hydrogens and on the minimizer's stopping point.
 
     Modes:
         raw:      Evaluate at the H-added input geometry. May return None for
@@ -817,6 +866,12 @@ def compute_interaction_energy(
         binder_chain: Alias of ``peptide_chain``; different IDs in both raise
             ``ValueError``.
         target_chain: Alias of ``receptor_chain``, same rule.
+        complete_terminal_oxygens: False (default) refuses a chain that ends in a standard
+            residue without its terminal oxygen (OXT), the message naming the chain. True
+            adds the OXT to each such chain first (``core.system.add_terminal_oxygens``:
+            the atom and its bond, 1.25 A from the carbonyl carbon in the plane of CA, C and
+            O; hydrogens are added as for any chain). A chain that has its OXT, a cap or a
+            ring closure is left as it is.
 
     Returns:
         Flat dictionary with keys:
@@ -836,6 +891,10 @@ def compute_interaction_energy(
             one "<mode>: <reason>" entry per failed mode (joined by "; "), so a
             mode that came back as None can be explained even when ``success``
             is True.
+            terminal_oxygens_added (list of str) is present only with
+            ``complete_terminal_oxygens=True``: one ``"<chain>:<residue><number>"`` per chain
+            that got an OXT (``["A:VAL109"]``), empty when none was missing. The contact
+            counts and the other keys do not depend on it.
 
     Raises:
         ModuleNotFoundError: If OpenMM is not installed; the message names
@@ -878,17 +937,14 @@ def compute_interaction_energy(
 
     try:
         topology, positions = load_structure(input_path)
-        # No structure repair here: callers are expected to pass a clean structure
-        # (raw input goes through PDBFixer in the relaxation step; MD output is
-        # already fully prepared). Running PDBFixer here would mangle cyclic
-        # peptides by adding spurious terminus atoms (OXT, H2/H3) after losing
-        # the closure bond in the PDB round-trip.
+        # No structure repair here: callers pass a clean structure. PDBFixer would add
+        # spurious terminus atoms (OXT, H2/H3) to cyclic peptides, whose closure bond
+        # is lost in the PDB round-trip.
 
-        # A chain ID the caller gave is an author ID (the one every option and result of the
-        # package uses), or the ID of a chain of the topology: OpenMM names the chains of an
-        # mmCIF by their label IDs when the file has more label IDs than author IDs, so author
-        # ID C of 1CWA is chain B of the topology and chain C holds waters. The IDs that
-        # ``detect_chains`` finds are IDs of the topology and are not resolved again.
+        # A given chain ID is an author ID or a topology chain ID. OpenMM names the chains
+        # of an mmCIF by label IDs when the file has more label IDs than author IDs (author
+        # C of 1CWA is topology chain B). IDs from ``detect_chains`` are topology IDs and
+        # are not resolved again.
         peptide_chain = topology_chain_id(topology, peptide_chain)
         receptor_chain = topology_chain_id(topology, receptor_chain)
         if peptide_chain is None or receptor_chain is None:
@@ -930,6 +986,9 @@ def compute_interaction_energy(
             result["num_close_contacts"] = int(np.sum(distances < _CLOSE_CONTACT_CUTOFF_ANGSTROM))
 
         # Hydrogens are added once here and the result is shared by all modes.
+        added = [] if complete_terminal_oxygens else None
+        if added is not None:
+            result["terminal_oxygens_added"] = added
         sys_complex, topo_h, pos_h, bond_info, extra_xmls = _create_implicit_system(
             topology,
             positions,
@@ -937,6 +996,7 @@ def compute_interaction_energy(
             peptide_chain=peptide_chain,
             ph=ph,
             random_seed=random_seed,
+            terminal_oxygens_added=added,
         )
         platform, props = _get_platform(device)
 
@@ -1006,7 +1066,7 @@ def compute_interaction_energy(
                     if residue.index not in restrained_residues:
                         warnings.warn(
                             f"compute_interaction_energy: no backbone atoms "
-                            f"(N/CA/C/O) found for residue {residue.name}{residue.id} "
+                            f"(N/CA/C/O) found for residue {residue_label(residue)} "
                             f"(chain {residue.chain.id}); backbone restraint skipped "
                             "for this residue.",
                             stacklevel=2,
@@ -1154,7 +1214,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--receptor-chain", "--target-chain", action=ChainAliasAction, type=str, default=None
     )
     parser.add_argument("--solvent-model", choices=["obc2", "gbn2"], default="obc2")
-    parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
+    parser.add_argument("--device", choices=["cuda", "cpu"], default=DEFAULT_DEVICE)
     parser.add_argument(
         "--modes",
         nargs="+",
@@ -1170,8 +1230,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ph",
         type=float,
-        default=7.4,
-        help="pH used to choose protonation states when hydrogens are added (default: 7.4)",
+        default=DEFAULT_PH,
+        help=(
+            f"pH used to choose protonation states when hydrogens are added (default: {DEFAULT_PH})"
+        ),
     )
     parser.add_argument(
         "--random-seed",
@@ -1232,6 +1294,20 @@ def main():
         else:
             print("\nResults:")
             print(df.to_string())
+
+        # Same rule as binding-metrics-batch: the status is non-zero only when no sample
+        # produced an energy; a partial failure is named in a warning and the status stays 0.
+        failed = [str(r.get("sample_id")) for r in results if not r.get("success")]
+        if failed and len(failed) < len(results):
+            logger.warning(
+                "\n%d of %d sample(s) produced no energy: %s",
+                len(failed),
+                len(results),
+                ", ".join(failed),
+            )
+    if results and len(failed) == len(results):
+        logger.warning("\nno sample produced an energy (%d failed)", len(failed))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

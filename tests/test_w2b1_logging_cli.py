@@ -7,6 +7,7 @@ there, and that the printed CLI text is unchanged by it.
 
 import ast
 import importlib
+import importlib.util
 import inspect
 import logging
 import sys
@@ -73,6 +74,22 @@ def test_running_main_installs_the_console_handlers(script, package_logger, monk
     with pytest.raises(SystemExit):
         _resolve(SCRIPTS[script])()
     assert any(isinstance(h, _CurrentStreamHandler) for h in package_logger.handlers)
+
+
+@pytest.mark.parametrize("module", ["energy", "interface", "sasa"])
+def test_no_print_call_outside_main(module):
+    """Library code must log; only a CLI ``main()`` may print, and none prints a traceback."""
+    path = Path(importlib.util.find_spec(f"binding_metrics.metrics.{module}").origin)
+    source = path.read_text(encoding="utf-8")
+    offenders = []
+    for func in [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef)]:
+        if func.name == "main":
+            continue
+        for call in ast.walk(func):
+            if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "print":
+                offenders.append((func.name, call.lineno))
+    assert not offenders
+    assert "print_exc" not in source
 
 
 def test_compare_cli_prints_the_same_text_on_stdout(package_logger, monkeypatch, capsys):

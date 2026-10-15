@@ -47,7 +47,7 @@ RUN echo '. /opt/conda/etc/profile.d/conda.sh && conda activate binding-metrics'
 #   docker run -it --gpus all --shm-size=8g \
 #       -v ~/.openfold-weights:/root/.openfold3 \
 #       -v ~/.of3-triton-cache:/tmp/triton_cache \
-#       simoncrouzet/binding-metrics:full bash
+#       simoncrouzet/binding-metrics:latest bash
 #
 # The second mount caches the Triton kernels that OpenFold3 compiles on first use
 # (TRITON_CACHE_DIR below), so later runs skip the compile step.

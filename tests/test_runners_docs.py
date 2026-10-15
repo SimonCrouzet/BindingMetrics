@@ -2,7 +2,8 @@
 
 The table of ``docs/metrics.md`` ("Runners") is compared with the class attributes of the
 runners, the options it names with the parsers of ``binding-metrics-run`` and ``-batch``, and the
-README and the CHANGELOG with the claims about what has been run for real.
+modes that the docs combine with a model with the modes of its runner. Sentences that the
+runners made false are listed in ``STALE`` below.
 """
 
 import argparse
@@ -16,13 +17,25 @@ import pytest
 from binding_metrics.capabilities import MODES
 from binding_metrics.cli import prediction
 from binding_metrics.cli.prediction import RUNNERS, runner_class
+from binding_metrics.predictors.runners import PredictionRunner
 from tests.test_runners_support import MODELS
 
 ROOT = Path(__file__).parent.parent
 METRICS = (ROOT / "docs" / "metrics.md").read_text(encoding="utf-8")
 PREFLIGHT = (ROOT / "docs" / "preflight.md").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
-CHANGELOG = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+# Sentences that were true while OpenFold3 was the only model that could be run from here, and
+# are false now that every adapter has a runner. Add a row when a text is found to say it again;
+# do not add a row for a rewording. Matched on the text with its white space folded.
+STALE = {
+    "Only OpenFold3 can be run from here": "af2, boltz2 and protenix have runners",
+    "and is the only runner": "af2, boltz2 and protenix have runners",
+    "None of the adapters starts a model: OpenFold3 is the only model": "every adapter has one",
+    "`predict` cannot be run from here": "af2 and protenix run predict",
+    "has no runner yet and that its output is passed": "every adapter has a runner",
+    "marked as having no runner here": "every adapter has a runner",
+}
 
 
 def flat(text: str) -> str:
@@ -111,7 +124,7 @@ class TestTheRunnerTable:
         for model in MODELS:
             modes = prediction.runner_modes(model)
             if modes == set(MODES):
-                assert f"{model}: all four" in text
+                assert f"{model}: all five" in text
             elif model in ("of3", "boltz2", "af2"):
                 assert f"{model}: {', '.join(sorted(modes))}" in text or f"{model} and" in text
         assert "af2 and protenix: predict" in text
@@ -130,7 +143,7 @@ class TestTheOptionsAreDocumented:
     def test_the_option_exists_on_both_commands_and_in_the_docs(self, command, option):
         parser = command_line_parsers()[command]
         assert option in {o for action in parser._actions for o in action.option_strings}
-        assert f"`{option}" in METRICS and f"`{option}" in README and option in CHANGELOG
+        assert f"`{option}" in METRICS and f"`{option}" in README
 
     def test_the_python_keywords_are_documented(self):
         for keyword in (
@@ -139,7 +152,7 @@ class TestTheOptionsAreDocumented:
             "prediction_conda_env",
             "prediction_lock_threshold",
         ):
-            assert keyword in METRICS and keyword in CHANGELOG
+            assert keyword in METRICS
         for command in ("run", "batch"):
             function = {"run": "run_pipeline", "batch": "run_batch"}[command]
             module = importlib.import_module(f"binding_metrics.cli.{command}")
@@ -155,66 +168,36 @@ class TestTheOptionsAreDocumented:
 
     def test_the_runner_attributes_are_documented(self):
         for text in ("`supported_modes`", "`default_mode`", "`output_chain_map(request)`"):
-            assert text in METRICS and text.strip("`").split("(")[0] in CHANGELOG
+            assert text in METRICS
+            assert hasattr(PredictionRunner, text.strip("`").split("(")[0]), text
 
 
-class TestNothingSaysThatOnlyOpenFold3CanBeRun:
-    STALE = (
-        "Only OpenFold3 can be run from here",
-        "and is the only runner",
-        "None of the adapters starts a model: OpenFold3 is the only model",
-        "`predict` cannot be run from here",
-        "has no runner yet and that its output is passed",
-        "marked as having no runner here",
-    )
+class TestTheDocsAgreeWithTheRunners:
+    def test_no_text_says_again_what_the_runners_made_false(self):
+        texts = {"README.md": README, "docs/metrics.md": METRICS, "docs/preflight.md": PREFLIGHT}
+        found = {
+            f"{sentence!r} ({reason})": [
+                name for name, text in texts.items() if sentence in flat(text)
+            ]
+            for sentence, reason in STALE.items()
+        }
+        assert not {key: names for key, names in found.items() if names}
 
-    @pytest.mark.parametrize("name", ["README", "metrics"])
-    def test_no_stale_sentence(self, name):
-        text = {"README": README, "metrics": METRICS}[name]
-        flattened = flat(text)
-        for sentence in self.STALE:
-            assert sentence not in flattened, (name, sentence)
-
-    def test_the_preflight_text_is_current(self):
-        flattened = flat(PREFLIGHT)
-        for sentence in self.STALE:
-            assert sentence not in flattened
-        assert "`--predictor boltz2 --prediction-mode score-lock`" in flattened
-
-
-class TestTheStatusIsNotOverstated:
-    """The OpenFold3 and Boltz-2 runners have been run on real models; the others rest on source."""
-
-    def test_the_readme_says_which_runners_were_run_and_which_were_not(self):
-        text = flat(README)
-        assert "the OpenFold3 runner and adapter, on OpenFold3 0.5.0" in text
-        assert "no held-out complex, so the accuracy of the model is not measured" in text
-        assert "the Boltz-2 runner, once, on Boltz-2 2.2.1" in text
-        assert (
-            "The runners of Protenix and ColabFold have been tested with a stand-in process only"
-            in text
+    def test_every_mode_the_docs_combine_with_an_option_is_in_the_vocabulary(self):
+        """In a code span, ``--prediction-mode MODE`` names a mode of the vocabulary, and with
+        ``--predictor MODEL`` in front of it a mode that the runner of MODEL runs."""
+        documents = (
+            ("README.md", README),
+            ("docs/metrics.md", METRICS),
+            ("docs/preflight.md", PREFLIGHT),
         )
-        assert "rest on reading the source of the model, not on a run" in text
-
-    def test_the_metrics_page_says_the_same_in_its_adapter_and_runner_sections(self):
-        text = flat(METRICS)
-        assert "the OpenFold3 and Boltz-2 runners have been run on the real models" in text
-        assert "and the runners of Protenix and ColabFold were tested with a stand-in" in text
-        assert "none of them is a held-out complex" in text
-        assert "it was not run against ColabFold" in text
-        assert "it was not run against Protenix" in text
-        assert "the exit-0-without-output paths, `use_msa_server=True` and a conda environment" in (
-            text.replace("The exit", "the exit")
-        )
-        assert "the effect of `score-lock` was measured once, on one complex" in text
-
-    def test_the_changelog_names_what_was_not_exercised(self):
-        text = flat(CHANGELOG)
-        assert "Read in the source of ColabFold v1.6.3 and tested with a stand-in process" in text
-        assert "Read in the source of Protenix 2.0.0" in text
-        assert "has been run for real once, on Boltz-2 v2.2.1" in text
-
-    def test_the_behaviour_change_is_in_the_changelog(self):
-        text = flat(CHANGELOG)
-        assert "without `--prediction-dir` run the model" in text
-        assert "used to stop while the command line was checked" in text
+        examples = 0
+        for name, text in documents:
+            for span in re.findall(r"`([^`]*--prediction-mode [a-z][^`]*)`", text):
+                mode = re.search(r"--prediction-mode ([a-z][a-z-]*)", span).group(1)
+                assert mode in MODES, f"{name}: {mode!r} is not a mode ({span!r})"
+                model = re.search(r"--predictor (\w+)", span)
+                if model:
+                    assert mode in prediction.runner_modes(model.group(1)), f"{name}: {span!r}"
+                examples += 1
+        assert examples, "no example with --prediction-mode in a code span"

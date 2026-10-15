@@ -34,6 +34,9 @@ try:
 except ImportError:
     HAS_OMMFF = False
 
+#: Length of the shortest bond between two heavy atoms, N#N in dinitrogen.
+SHORTEST_HEAVY_ATOM_BOND_ANGSTROM = 1.10
+
 requires_ommff = pytest.mark.skipif(not HAS_OMMFF, reason="openmmforcefields not installed")
 requires_cyclosporin = pytest.mark.skipif(
     not CYCLOSPORIN_CIF.exists(), reason="1CWA.cif example not available"
@@ -297,7 +300,7 @@ class TestGaffTemplateGeneration:
         assert types["CB"] == "c3" and types["CG"] == "c3"
 
     def test_backbone_carbonyl_is_a_carbonyl_without_extra_hydrogens(self, cyclosporin_ncaa_result):
-        """No hydrogen on the backbone C or O, and a carbonyl-sized charge on C and O."""
+        """No hydrogen on the backbone C or O, and the polarity of a carbonyl on C and O."""
         _, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
         for name in ("BMT", "ABA"):
             _, resel = self._template(ncaa_xmls, name)
@@ -309,8 +312,12 @@ class TestGaffTemplateGeneration:
                     if backbone in ("C", "O"):
                         assert not other.startswith("H"), f"{name}: H on backbone {backbone}"
             charges = {a.get("name"): float(a.get("charge")) for a in resel.findall("Atom")}
-            assert charges["C"] > 0.4, f"{name} carbonyl carbon charge {charges['C']:.2f}"
-            assert charges["O"] < -0.4, f"{name} carbonyl oxygen charge {charges['O']:.2f}"
+            carbons = {atom: charge for atom, charge in charges.items() if atom.startswith("C")}
+            others = [charge for atom, charge in carbons.items() if atom != "C"]
+            # The carbonyl carbon is bound to O and N, so it is the most positive carbon; the
+            # carbonyl O is more negative than every carbon.
+            assert charges["C"] > max(others) and charges["C"] > 0, f"{name} carbonyl carbon"
+            assert charges["O"] < min(carbons.values()) and charges["O"] < 0, f"{name} carbonyl O"
 
     def test_template_atom_names_match_topology_residue(self, cyclosporin_ncaa_result):
         topology, _, _, ncaa_xmls, _, _ = cyclosporin_ncaa_result
@@ -436,9 +443,14 @@ class TestCyclosporinRelaxSanity:
         )
         if pre_heavy.shape == post_heavy.shape:
             rmsd = float(np.sqrt(np.mean(np.sum((pre_heavy - post_heavy) ** 2, axis=1))))
-            assert rmsd < 5.0, f"minimised heavy-atom RMSD {rmsd:.2f} Å too large (exploded)"
+            # A structure that came apart is displaced by about its own size.
+            radius_of_gyration = float(
+                np.sqrt(np.mean(np.sum((pre_heavy - pre_heavy.mean(axis=0)) ** 2, axis=1)))
+            )
+            assert rmsd < radius_of_gyration, f"minimised heavy-atom RMSD {rmsd:.2f} Å (exploded)"
 
-        # No unphysically short non-bonded heavy-atom contact within the peptide.
+        # No non-bonded heavy-atom pair of the peptide closer than the shortest bond between
+        # heavy atoms (the N#N triple bond): the minimisation did not push two atoms together.
         pep_chain = min(
             post.topology.chains(),
             key=lambda c: sum(1 for r in c.residues() if r.name not in ("HOH", "WAT")),
@@ -456,7 +468,9 @@ class TestCyclosporinRelaxSanity:
                     continue
                 d = float(np.linalg.norm(p[i] - p[j]))
                 min_d = min(min_d, d)
-        assert min_d > 0.8, f"egregious clash: closest non-bonded heavy pair {min_d:.2f} Å"
+        assert min_d > SHORTEST_HEAVY_ATOM_BOND_ANGSTROM, (
+            f"closest non-bonded heavy pair {min_d:.2f} Å"
+        )
 
 
 # ---------------------------------------------------------------------------

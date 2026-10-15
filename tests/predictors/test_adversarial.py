@@ -27,7 +27,7 @@ from binding_metrics.metrics.evobind import (  # noqa: E402
     compute_evobind_score,
     compute_evobind_score_from_record,
 )
-from binding_metrics.predictors.record import PredictionRecord  # noqa: E402
+from binding_metrics.predictors.record import PredictedPose  # noqa: E402
 from binding_metrics.predictors.registry import (  # noqa: E402
     PARSERS,
     ParserSpec,
@@ -266,7 +266,7 @@ def _record(tmp_path, name="adv", *, model="hand", chain_map=None, plddt="truth"
     """
     atoms, truth = _complex_atoms(**kwargs)
     path = synth.write_structure(atoms, tmp_path / f"{name}.pdb")
-    return PredictionRecord(
+    return PredictedPose(
         model,
         name,
         structure_path=path,
@@ -413,13 +413,11 @@ class TestInputChecks:
             compute_evobind_adversarial_from_records(design, design.structure_path, "B", "A")
 
     def test_the_design_must_be_a_record_or_a_path(self, tmp_path):
-        with pytest.raises(
-            TypeError, match="design must be a PredictionRecord or a structure path"
-        ):
+        with pytest.raises(TypeError, match="design must be a PredictedPose or a structure path"):
             compute_evobind_adversarial_from_records(42, _record(tmp_path), "B", "A")
 
     def test_a_record_without_a_structure_file_is_refused(self, tmp_path):
-        empty = PredictionRecord("hand", "none", reasons=["no output found"])
+        empty = PredictedPose("hand", "none", reasons=["no output found"])
         with pytest.raises(ValueError, match="no structure file.*no output found"):
             compute_evobind_adversarial_from_records(_record(tmp_path, "design"), empty, "B", "A")
 
@@ -510,7 +508,7 @@ class TestRenumberedFromOneSecondModel:
     def test_a_record_and_the_path_function_agree(self, tmp_path, example_pdb_path):
         atoms, plddt = _ycr_second_model_atoms(example_pdb_path)
         path = synth.write_structure(atoms, tmp_path / "boltz_like.pdb")
-        record = PredictionRecord("hand", "1ycr", structure_path=path, plddt_per_atom=plddt)
+        record = PredictedPose("hand", "1ycr", structure_path=path, plddt_per_atom=plddt)
         from_record = compute_evobind_adversarial_from_records(example_pdb_path, record, "B", "A")
         from_paths = compute_evobind_adversarial_check(
             example_pdb_path, path, "B", "A", afm_plddt_per_atom=plddt
@@ -526,7 +524,7 @@ class TestRenumberedFromOneSecondModel:
         )
         atoms.res_name[receptor] = np.roll(atoms.res_name[receptor][first], 7)[inverse]
         path = synth.write_structure(atoms, tmp_path / "scrambled.pdb")
-        record = PredictionRecord("hand", "1ycr", structure_path=path, plddt_per_atom=plddt)
+        record = PredictedPose("hand", "1ycr", structure_path=path, plddt_per_atom=plddt)
         with pytest.raises(ValueError, match="receptor residues cannot be paired"):
             compute_evobind_adversarial_from_records(example_pdb_path, record, "B", "A")
 
@@ -658,7 +656,7 @@ class TestScoreFromRecord:
     def test_the_record_must_be_a_record_with_a_structure(self, tmp_path):
         with pytest.raises(TypeError, match="compute_evobind_score"):
             compute_evobind_score_from_record(_record(tmp_path).structure_path, "B", "A")
-        empty = PredictionRecord("hand", "none", reasons=["no output found"])
+        empty = PredictedPose("hand", "none", reasons=["no output found"])
         with pytest.raises(ValueError, match="no structure file.*no output found"):
             compute_evobind_score_from_record(empty, "B", "A")
 

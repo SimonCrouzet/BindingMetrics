@@ -155,15 +155,13 @@ class TestPreflightOnTheExamples:
         assert {v.name for v in caught.value.violations} == set(wanted)
 
     def test_the_force_field_steps_take_every_closure_but_an_unsupported_link(self):
-        for example, binder in (
-            ("example_bicyclic_sfti1_3P8F.cif", "I"),
-            ("example_lactam_somatostatin_1XY4.cif", "A"),
-            ("example_staple_3V3B.pdb", "C"),
-            ("example_ncaa_cyclosporin_1CWA.cif", "C"),
+        for example, binder, receptor in (
+            ("example_bicyclic_sfti1_3P8F.cif", "I", "A"),
+            ("example_lactam_somatostatin_1XY4.cif", "A", None),  # one chain: no receptor
+            ("example_staple_3V3B.pdb", "C", None),
+            ("example_ncaa_cyclosporin_1CWA.cif", "C", "A"),
         ):
-            profile = profile_input(
-                DATA / example, binder, "A" if example != "example_staple_3V3B.pdb" else None
-            )
+            profile = profile_input(DATA / example, binder, receptor)
             assert preflight(profile, ["md_implicit"]).compatible, example
 
     def test_an_unsupported_cross_link_is_refused_with_the_reason(self):

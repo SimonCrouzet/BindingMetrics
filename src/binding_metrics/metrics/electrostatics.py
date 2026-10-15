@@ -6,9 +6,9 @@ on ionisable residues across the peptide/receptor interface at pH 7:
     E = (k / ε) Σ q_i q_j / r_ij   over cross-chain charged-atom pairs with r_ij < cutoff
 
 with one uniform dielectric ε = 4 (the interior dielectric of a macromolecule,
-Krissinel & Henrick, J. Mol. Biol. 372:774-797, 2007). It is a heuristic ranking
-score: formal charges from residue names, no pKa shifts, no chain termini, no
-solvent screening, and a package-chosen 12 Å cutoff. Do not read it as a
+Krissinel & Henrick, J. Mol. Biol. 372:774-797, 2007). Limits: formal charges
+from residue names, no pKa shifts, no chain termini, no solvent screening, and a
+12 Å cutoff chosen by this package. The value ranks structures; it is not a
 binding free energy.
 
 Usage:
@@ -16,11 +16,13 @@ Usage:
 """
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 
+from binding_metrics._constants import COULOMB_KJ_ANG_MOL_E2
 from binding_metrics.core.residues import IONISATION_MODELLED_RESIDUES
 from binding_metrics.metrics._common import (
     KJ_TO_KCAL,
@@ -29,15 +31,14 @@ from binding_metrics.metrics._common import (
     load_structure,
     resolve_chain_role,
 )
-from binding_metrics.metrics.polar_contacts import l_equivalent_residue_names
+from binding_metrics.metrics.polar_contacts import l_equivalent_residue_names, require_chain_pair
 from binding_metrics.utils import configure_logging
 
-# Formal partial charges assigned to ionisable atoms at pH 7, keyed by L-residue name
-# (D-amino acids are mapped to their L counterpart before the lookup).
-# Charges are split over resonance-equivalent atoms: the ARG guanidinium and the
-# HIP imidazolium (+1 each), the ASP/GLU carboxylate (-1), and the three non-bridging
-# oxygens of a phosphorylated residue, which carries net -2 in the AMBER phosaa
-# templates the relaxation step uses (core/phosaa.py). Plain HIS is neutral.
+# Formal charges of ionisable atoms at pH 7, keyed by L-residue name (D-amino acids
+# are mapped to their L counterpart first). Each charge is split over the
+# resonance-equivalent atoms: ARG guanidinium and HIP imidazolium +1, ASP/GLU
+# carboxylate -1, and -2 over the three non-bridging oxygens of a phosphorylated
+# residue (net -2 in the AMBER phosaa templates, core/phosaa.py). Plain HIS is neutral.
 _FORMAL_CHARGES: dict[tuple[str, str], float] = {
     ("LYS", "NZ"): +1.0,
     ("ARG", "NH1"): +0.5,
@@ -51,20 +52,15 @@ _FORMAL_CHARGES: dict[tuple[str, str], float] = {
     **{(res, atom): -2.0 / 3.0 for res in ("SEP", "TPO", "PTR") for atom in ("O1P", "O2P", "O3P")},
 }
 
-# Residues whose ionisation state is modelled or known to be neutral. An amino-acid
-# residue outside this set (an ncAA such as MLE or BMT) may carry a charge that
-# _FORMAL_CHARGES does not know; it is counted in ``n_residues_unrecognised``.
+# Residues whose ionisation state is modelled or neutral. An amino-acid residue outside
+# this set (an ncAA such as MLE or BMT) may carry a charge missing from _FORMAL_CHARGES;
+# it is counted in ``n_residues_unrecognised``.
 _RECOGNISED_RESIDUES = IONISATION_MODELLED_RESIDUES
 
-# Coulomb constant: e²/(4πε₀) × N_A = 1389.35 kJ·Å/mol·e²
-# Assumes distances in Ångströms; returns energy in kJ/mol.
-_COULOMB_KJ_ANG_MOL: float = 1389.35
+# Coulomb constant e²/(4πε₀) × N_A in kJ·Å/(mol·e²), shared with the energy and
+# salt-bridge modules (distances in Å, energy in kJ/mol).
+_COULOMB_KJ_ANG_MOL: float = COULOMB_KJ_ANG_MOL_E2
 _KJ_TO_KCAL: float = KJ_TO_KCAL
-
-
-def _import_biotite():
-    """Lazy import of required biotite modules."""
-    return import_biotite("electrostatics metrics")
 
 
 def _load_structure(path: Path):
@@ -80,7 +76,7 @@ def _collect_charged_atoms(chain_atoms) -> tuple[np.ndarray, np.ndarray, list[di
         residues that carry at least one charged atom, and the number of
         amino-acid residues whose name is not in ``_RECOGNISED_RESIDUES``.
     """
-    struc, _, _ = _import_biotite()
+    struc, _, _ = import_biotite("electrostatics metrics")
     from binding_metrics.metrics.interface import _amino_acid_mask
 
     res_l = l_equivalent_residue_names(chain_atoms.res_name)
@@ -91,7 +87,11 @@ def _collect_charged_atoms(chain_atoms) -> tuple[np.ndarray, np.ndarray, list[di
     charged_atoms = chain_atoms[charged]
     info = [
         {
-            "residue": f"{str(atom.res_name).strip()}:{str(atom.chain_id)}:{atom.res_id}",
+            "residue": (
+                f"{str(atom.res_name).strip()}:{str(atom.chain_id)}:{atom.res_id}"
+                f"{str(atom.ins_code).strip()}"
+            ),
+            "ins_code": str(atom.ins_code).strip(),
             "atom": str(atom.atom_name).strip(),
             "charge": float(q),
             "coords": atom.coord.tolist(),
@@ -131,13 +131,12 @@ def compute_coulomb_cross_chain(
 ) -> dict:
     """Compute simplified Coulomb cross-chain interaction energy.
 
-    Assigns formal charges to ionisable residue atoms at pH 7 and computes
-    a pairwise Coulomb sum between peptide and receptor charged atoms within
-    a distance cutoff. Uses a uniform dielectric constant. D-amino acids use
-    the charges of their L counterpart; phosphorylated SEP, TPO and PTR carry
-    -2 spread over their three non-bridging oxygens; histidine is neutral
-    unless it is named HIP (+1 over ND1 and NE2). Chain termini are not
-    charged.
+    Assigns formal charges to ionisable residue atoms at pH 7 and sums the
+    Coulomb terms between peptide and receptor charged atoms within a distance
+    cutoff, with a uniform dielectric constant. D-amino acids use the charges of
+    their L counterpart; phosphorylated SEP, TPO and PTR carry -2 spread over
+    their three non-bridging oxygens; histidine is neutral unless it is named
+    HIP (+1 over ND1 and NE2). Chain termini are not charged.
 
     Type: score
 
@@ -172,12 +171,21 @@ def compute_coulomb_cross_chain(
                 non-zero count means the energy may be incomplete.
 
         reason (str): present only when the energy could not be evaluated
-            (a chain was not found); the scores are then the zeros above.
+            (chain detection found no pair of chains); the scores are then the
+            zeros above.
 
         Features:
             charged_atoms_peptide (list[dict]): Per charged atom info for peptide;
-                each dict has residue, atom, charge, coords
+                each dict has residue ("NAME:CHAIN:NUM", the insertion code
+                appended to NUM when there is one: "ARG:B:52A"), ins_code
+                (empty string when there is none), atom, charge, coords
             charged_atoms_receptor (list[dict]): Per charged atom info for receptor
+
+    Raises:
+        ChainNotFoundError: (a ``ValueError``) a chain ID passed by the caller is
+            not in the structure; the message lists the chains present.
+        ValueError: The peptide and receptor chains are the same chain, passed
+            or detected.
     """
     from binding_metrics.metrics.interface import detect_interface_chains
 
@@ -188,10 +196,12 @@ def compute_coulomb_cross_chain(
     cif_path = Path(cif_path)
     atoms = _load_structure(cif_path)
 
+    require_chain_pair(atoms, peptide_chain, receptor_chain)
     if peptide_chain is None or receptor_chain is None:
         auto_pep, auto_rec = detect_interface_chains(atoms, peptide_chain)
         peptide_chain = peptide_chain or auto_pep
         receptor_chain = receptor_chain or auto_rec
+        require_chain_pair(atoms, peptide_chain, receptor_chain)
 
     _default = {
         "coulomb_energy_kJ": 0.0,
@@ -206,8 +216,8 @@ def compute_coulomb_cross_chain(
     }
 
     if peptide_chain is None or receptor_chain is None:
-        # The all-zero default is kept for callers that sum or rank on it; ``reason``
-        # tells a 0.0 that means "not evaluated" from a genuine 0.0.
+        # The all-zero default stays for callers that sum or rank on it; ``reason``
+        # distinguishes "not evaluated" from a computed 0.0.
         return {
             **_default,
             "reason": (
@@ -303,13 +313,17 @@ def main():
 
     with log_to_file(args.log_file):
         print(f"Computing Coulomb cross-chain energy for: {args.input}")
-        metrics = compute_coulomb_cross_chain(
-            args.input,
-            peptide_chain=args.design_chain,
-            receptor_chain=args.receptor_chain,
-            dielectric=args.dielectric,
-            cutoff_ang=args.cutoff,
-        )
+        try:
+            metrics = compute_coulomb_cross_chain(
+                args.input,
+                peptide_chain=args.design_chain,
+                receptor_chain=args.receptor_chain,
+                dielectric=args.dielectric,
+                cutoff_ang=args.cutoff,
+            )
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
 
         print("\nElectrostatics summary:")
         scalar_keys = [

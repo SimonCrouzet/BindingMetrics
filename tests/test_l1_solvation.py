@@ -8,6 +8,9 @@ import pytest
 pytest.importorskip("biotite")
 
 import biotite.structure as struc  # noqa: E402
+import biotite.structure.io.pdb as pdb_io  # noqa: E402
+import biotite.structure.io.pdbx as pdbx  # noqa: E402
+from biotite.structure.info import vdw_radius_single  # noqa: E402
 
 from binding_metrics.metrics import interface  # noqa: E402
 from binding_metrics.metrics.interface import (  # noqa: E402
@@ -26,6 +29,85 @@ SFTI1_TRYPSIN = DATA / "example_bicyclic_sfti1_3P8F.cif"
 # Eisenberg & McLachlan, Nature 319:199 (1986), cal/mol/Å² of accessible area,
 # as tabulated in Table 1 (column A) of Krissinel & Henrick, JMB 372:774 (2007).
 EISENBERG_MCLACHLAN_CAL = {"C": 16, "S": 21, "N/O": -6, "O-": -24, "N+": -50}
+
+# Side-chain atoms that carry a formal charge at pH 7 (by residue name and atom name).
+CHARGED_ATOMS = {
+    "N+": {("LYS", "NZ"), ("ARG", "NE"), ("ARG", "NH1"), ("ARG", "NH2")},
+    "O-": {("ASP", "OD1"), ("ASP", "OD2"), ("GLU", "OE1"), ("GLU", "OE2")},
+}
+
+# Shrake-Rupley sampling of the reference area calculation: water probe, 960 points per atom.
+PROBE_ANGSTROM = 1.4
+POINTS_PER_ATOM = 960
+# Areas are float32 sums added in a different order than in the package: they agree to better
+# than 1e-7 relative, and the tests compare them to this.
+RELATIVE = 1e-5
+
+
+def read_atoms(path):
+    """AtomArray of the first model of a PDB or mmCIF file, read with biotite alone."""
+    if Path(path).suffix == ".cif":
+        return pdbx.get_structure(pdbx.CIFFile.read(str(path)), model=1)
+    return pdb_io.get_structure(pdb_io.PDBFile.read(str(path)), model=1)
+
+
+def polymer_atoms(atoms):
+    """Heavy atoms of the amino-acid residues: waters, ions and ligands are left out."""
+    return atoms[struc.filter_amino_acids(atoms) & ~np.isin(atoms.element, ["H", "D"])]
+
+
+def sasa_per_atom(atoms):
+    """Shrake-Rupley area per atom with biotite's element radii (1.8 A for an unlisted element)."""
+    radii = np.array([vdw_radius_single(str(e).strip()) or 1.8 for e in atoms.element])
+    values = struc.sasa(
+        atoms, probe_radius=PROBE_ANGSTROM, vdw_radii=radii, point_number=POINTS_PER_ATOM
+    )
+    return np.where(np.isfinite(values), values, 0.0).astype(float)
+
+
+def solvation_parameter_per_atom(atoms):
+    """Solvation parameter of each atom in kcal/mol per A^2 of buried area.
+
+    The published value (cal/mol/A^2 of accessible area) enters with the opposite sign: burying
+    an atom removes its exposure.
+    """
+    gamma = np.zeros(len(atoms))
+    for i, (res_name, atom_name, element) in enumerate(
+        zip(atoms.res_name, atoms.atom_name, atoms.element)
+    ):
+        if (res_name, atom_name) in CHARGED_ATOMS["N+"]:
+            kind = "N+"
+        elif (res_name, atom_name) in CHARGED_ATOMS["O-"]:
+            kind = "O-"
+        elif element in ("N", "O"):
+            kind = "N/O"
+        elif element in ("C", "S"):
+            kind = element
+        else:
+            continue
+        gamma[i] = -EISENBERG_MCLACHLAN_CAL[kind] / 1000.0
+    return gamma
+
+
+def expected_interface(atoms, design_chain, receptor_chain):
+    """delta_sasa (A^2) and delta_g_int (kcal/mol) of two chains from biotite alone.
+
+    The buried area of an atom is its area in its chain alone minus its area in the complex;
+    summed over the atoms it is sasa(design) + sasa(receptor) - sasa(complex).
+    """
+    design = atoms[atoms.chain_id == design_chain]
+    receptor = atoms[atoms.chain_id == receptor_chain]
+    together = atoms[(atoms.chain_id == design_chain) | (atoms.chain_id == receptor_chain)]
+    in_complex = sasa_per_atom(together)
+    buried_design = sasa_per_atom(design) - in_complex[together.chain_id == design_chain]
+    buried_receptor = sasa_per_atom(receptor) - in_complex[together.chain_id == receptor_chain]
+    return {
+        "delta_sasa": float(buried_design.sum() + buried_receptor.sum()),
+        "delta_g_int": float(
+            solvation_parameter_per_atom(design) @ buried_design
+            + solvation_parameter_per_atom(receptor) @ buried_receptor
+        ),
+    }
 
 
 def _atoms(records):
@@ -105,18 +187,30 @@ class TestAtomTyping:
 
 
 class TestDeltaGInt:
+    # The expected values are recomputed from the file with biotite and the published parameters
+    # (the helpers above).
     def test_p53_mdm2_is_favorable(self):
         result = compute_interface_metrics(P53_MDM2)
-        assert result["delta_g_int"] == pytest.approx(-11.05, abs=0.05)
+        expected = expected_interface(polymer_atoms(read_atoms(P53_MDM2)), "B", "A")
+        assert (result["peptide_chain"], result["receptor_chain"]) == ("B", "A")
+        assert result["delta_g_int"] == pytest.approx(expected["delta_g_int"], rel=RELATIVE)
+        # Sign convention of delta_g_int: negative = burial is favorable.
+        assert result["delta_g_int"] < 0.0
 
     def test_cyclosporin_cyclophilin_with_waters_is_favorable(self):
         result = compute_interface_metrics(CYCLOSPORIN)
-        assert result["delta_g_int"] == pytest.approx(-6.11, abs=0.05)
-        assert result["delta_sasa"] == pytest.approx(985.4, abs=0.5)
+        expected = expected_interface(polymer_atoms(read_atoms(CYCLOSPORIN)), "C", "A")
+        assert (result["peptide_chain"], result["receptor_chain"]) == ("C", "A")
+        assert result["delta_g_int"] == pytest.approx(expected["delta_g_int"], rel=RELATIVE)
+        assert result["delta_sasa"] == pytest.approx(expected["delta_sasa"], rel=RELATIVE)
+        assert result["delta_g_int"] < 0.0
 
     def test_sfti1_trypsin_is_favorable(self):
         result = compute_interface_metrics(SFTI1_TRYPSIN)
-        assert result["delta_g_int"] == pytest.approx(-4.97, abs=0.05)
+        expected = expected_interface(polymer_atoms(read_atoms(SFTI1_TRYPSIN)), "I", "A")
+        assert (result["peptide_chain"], result["receptor_chain"]) == ("I", "A")
+        assert result["delta_g_int"] == pytest.approx(expected["delta_g_int"], rel=RELATIVE)
+        assert result["delta_g_int"] < 0.0
 
     def test_kj_value_is_the_kcal_value_converted(self):
         result = compute_interface_metrics(P53_MDM2)

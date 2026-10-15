@@ -28,6 +28,7 @@ from binding_metrics.predictors.protenix_runner import (
 )
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.store import (
+    MODES,
     PredictionFailedError,
     PredictionRequest,
     PredictionStore,
@@ -394,11 +395,28 @@ class TestModes:
             with pytest.raises(ValueError, match=text):
                 make(mode=mode)
 
+    def test_every_mode_of_the_vocabulary_but_predict_has_its_sentence(self):
+        """A mode added to ``store.MODES`` must be described, or the refusal is a ``KeyError``."""
+        others = [mode for mode in MODES if mode != "predict"]
+        assert set(protenix_runner._MODE_NEEDS) == set(others)
+        for mode in others:
+            message = protenix_runner._unsupported_mode_message(mode)
+            assert f"supports mode 'predict' only, not '{mode}'" in message
+            assert f"Mode '{mode}' {protenix_runner._MODE_NEEDS[mode]}." in message
+            with pytest.raises(ValueError, match=f"not '{mode}'"):
+                make(mode=mode)
+
+    def test_refold_lock_is_described_as_a_forced_template_on_the_receptor(self):
+        with pytest.raises(ValueError, match="gives the receptor a forced template") as info:
+            make(mode="refold-lock")
+        assert "leaves the binder free" in str(info.value)
+        assert "supports mode 'predict' only" in str(info.value)
+
     def test_an_unknown_mode_is_not_described_as_a_template_problem(self):
         with pytest.raises(ValueError, match="mode must be one of"):
             make(mode="dock")
 
-    @pytest.mark.parametrize("mode", ["refold", "score", "score-lock"])
+    @pytest.mark.parametrize("mode", [mode for mode in MODES if mode != "predict"])
     def test_a_request_made_elsewhere_in_another_mode_is_refused_by_prepare_and_run(
         self, tmp_path, stub_protenix, mode
     ):

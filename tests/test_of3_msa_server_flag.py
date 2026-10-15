@@ -56,7 +56,7 @@ class TestTheOption:
         )
         assert action.default is False and action.nargs == 0
 
-    def test_the_help_says_what_the_run_does_and_what_one_complex_showed(self):
+    def test_the_help_says_what_the_run_does(self):
         parser = argparse.ArgumentParser()
         from binding_metrics.cli import add_openfold_no_msa_server_arg
 
@@ -65,20 +65,11 @@ class TestTheOption:
         for stated in (
             "dummy MSA that holds only the query sequence of each chain",
             "input reference suggests this for MSA-free runs",
-            "lowers accuracy for a natural receptor",
             "no longer replaced by the server (issue #68)",
             "the default, structure, keeps the template with the server on too",
         ):
             assert stated in help_text
-        # the measurement is stated as one complex, one seed, with its numbers
-        for stated in (
-            "One complex (1YCR, OpenFold3 0.5.0, one seed)",
-            "1.57 A with the server and the template as a structure (the default)",
-            "1.62 A with the server and the template as an alignment",
-            "21.6 A with no MSA and no template",
-            "1.12 A with a working template and no MSA",
-        ):
-            assert stated in help_text
+        assert "1YCR" not in help_text and "RMSD" not in help_text
 
     @staticmethod
     def _parsed(monkeypatch, tmp_path, module, extra):
@@ -263,11 +254,21 @@ class TestBatch:
 
 
 class TestDocs:
-    def test_the_limitation_paragraph_names_the_flag_of_the_pipeline(self):
+    def test_the_limitation_paragraph_names_the_flags_the_commands_have(self, monkeypatch):
         from pathlib import Path
+
+        from tests.test_feat_c_docs import _capture_parser
 
         text = (Path(__file__).parent.parent / "docs" / "metrics.md").read_text(encoding="utf-8")
         start = text.index("**the MSA server and the templates (issue #68")
         section = text[start : text.index("\n\n", start)]
-        assert "`--openfold-no-msa-server`" in section and "`--no-msa-server`" in section
-        assert "lowers accuracy for a natural receptor" in section
+        for module in ("binding_metrics.cli.run", "binding_metrics.cli.batch"):
+            options = _capture_parser(module, monkeypatch)._option_string_actions
+            assert "--openfold-no-msa-server" in options, module
+        assert "`--openfold-no-msa-server`" in section
+        # binding-metrics-openfold has the flag on the subcommands that run OpenFold3
+        parser = _capture_parser("binding_metrics.metrics.openfold", monkeypatch)
+        (subparsers,) = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+        for name in ("run", "refold", "score"):
+            assert "--no-msa-server" in subparsers.choices[name]._option_string_actions, name
+        assert "`--no-msa-server`" in section

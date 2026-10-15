@@ -26,6 +26,19 @@ def ycr() -> AtomSnapshot:
     return AtomSnapshot.from_file(EXAMPLE_PDB)
 
 
+def _chirality_centres(path: Path) -> int:
+    """Residues of the file with N, CA, C and CB atoms: the C-alpha centres that have a volume.
+
+    Glycine has no CB and a residue with a missing backbone or CB atom has no complete centre.
+    """
+    structure = gemmi.read_structure(str(path))
+    return sum(
+        {"N", "CA", "C", "CB"} <= {atom.name for atom in residue}
+        for chain in structure[0]
+        for residue in chain
+    )
+
+
 def _moved(snapshot: AtomSnapshot, coords: np.ndarray) -> AtomSnapshot:
     return dataclasses.replace(snapshot, coords=coords)
 
@@ -105,7 +118,8 @@ class TestDamagedStructures:
         mirrored = _moved(ycr, ycr.coords * np.array([-1.0, 1.0, 1.0]))
         result = qc.check_relaxed_structure(ycr, mirrored, energy_kj_mol=-1000.0)
         assert "chirality" in result["failed"]
-        assert result["checks"]["chirality"]["value"] == 94  # every Ca centre of 1YCR
+        # every C-alpha centre of the file is inverted, none is left out
+        assert result["checks"]["chirality"]["value"] == _chirality_centres(EXAMPLE_PDB)
         # Bond lengths and contacts are unchanged by a reflection.
         for name in ("bond_lengths", "min_heavy_distance", "coordinates_finite", "composition"):
             assert result["checks"][name]["passed"], name

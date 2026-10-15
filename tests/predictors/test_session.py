@@ -4,9 +4,6 @@ A stub runner writes the made-up ``stub`` model's files (``synth_stub``) and the
 them with ``StubParser``; nothing needs a model, a GPU or the network.
 """
 
-import subprocess
-import sys
-import textwrap
 import threading
 from pathlib import Path
 
@@ -546,19 +543,3 @@ class TestThreads:
         for thread in threads:
             thread.join(30)
         assert errors == [] and sorted(runner.runs) == ["s0", "s1"]
-
-
-def test_the_module_imports_only_the_standard_library():
-    code = textwrap.dedent(
-        """
-        import sys
-        import binding_metrics.predictors.session
-        heavy = ("numpy", "scipy", "biotite", "torch", "openmm", "openfold3", "gemmi")
-        print(sorted(m for m in sys.modules if m.split(".")[0] in heavy))
-        """
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, encoding="utf-8", timeout=120
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "[]"

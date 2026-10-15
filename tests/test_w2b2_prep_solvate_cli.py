@@ -42,6 +42,7 @@ def _log_progress():
 
 @requires_pdbfixer
 class TestPrepStdout:
+    @pytest.mark.slow
     def test_info_records_do_not_reach_the_json_on_stdout(self, monkeypatch, capsys, tmp_path):
         import binding_metrics.core.system as system
 
@@ -78,6 +79,7 @@ class TestPrepStdout:
 
 @requires_pdbfixer
 class TestSolvateStdout:
+    @pytest.mark.slow
     def test_info_records_do_not_reach_the_json_on_stdout(
         self, monkeypatch, capsys, tmp_path, prepped_example_pdb
     ):

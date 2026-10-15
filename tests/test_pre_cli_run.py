@@ -209,6 +209,7 @@ class TestPolicies:
         assert "running anyway" in caplog.text
         assert "skipped" not in results["electrostatics"]  # it ran, as it did before
 
+    @pytest.mark.slow
     def test_a_compatible_input_is_ok_and_carries_the_decision(self, tmp_path):
         results = pipeline(LINEAR, tmp_path / "out", metrics=frozenset({"interface", "geometry"}))
         block = results["preflight"]
@@ -217,6 +218,7 @@ class TestPolicies:
         assert block["report"]["profile"]["binder_type"] == "peptide"
         json.dumps(block)  # JSON-ready
 
+    @pytest.mark.slow
     def test_the_skip_of_a_model_step_is_recorded_and_the_model_never_starts(
         self, tmp_path, monkeypatch
     ):

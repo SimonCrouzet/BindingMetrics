@@ -26,9 +26,16 @@ is recorded the same way. When the runners of ColabFold, Boltz-2 and Protenix we
 ``--prediction-mode`` help says what each runner can do and what its default is, and four options
 were added to both commands and are recorded here: ``--prediction-cyclic``,
 ``--prediction-no-msa-server``, ``--prediction-conda-env`` and ``--prediction-lock-threshold``.
+The fifth mode ``refold-lock`` (refold with the receptor pinned by a forced template) then joined
+the choices of ``--prediction-mode``, whose help says that the Boltz-2 runner runs all five, and
+the help of ``--prediction-lock-threshold`` names both lock modes.
 The help of ``--openfold-cyclic`` and ``--prediction-cyclic`` then gained the rule that ``auto``
 leaves a head-to-tail binder with modified residues linear, and the one-complex measurement
-behind it.
+behind it. Two options of the pre-flight group were added to both commands and are recorded the
+same way: ``--designed-with`` (the pipeline that made the designed binder) and ``--design-policy``
+(what to do with the adversarial check when the model of the run is one that pipeline ran).
+``--nonfinite`` (NaN and infinity in the JSON results as tokens or as ``null``) was added to
+``-run``, ``-batch`` and ``-relax`` and is recorded the same way.
 """
 
 import argparse
@@ -97,6 +104,13 @@ def describe_options(parser):
         )
     return described
 
+
+#: The help of ``--nonfinite`` (run, batch and relax), with its default expanded.
+NONFINITE_HELP = (
+    "NaN and infinity in the JSON results: 'keep' writes the tokens NaN, Infinity and "
+    "-Infinity; 'null' writes null and lists the paths in nonfinite_fields, for parsers that "
+    "accept only standard JSON (default: keep)"
+)
 
 GOLDEN = {
     "run": {
@@ -306,17 +320,13 @@ GOLDEN = {
                 "and the installed OpenFold3 is new enough; on: always; off: "
                 "never. OpenFold3 uses the flag only to wrap the relative "
                 "positions of the chain: it does not enforce the closure bond, "
-                "documents the flag only in an example query, and has published"
-                " no accuracy benchmark for cyclic peptides. It builds the wrap"
-                " from the token count of the chain and gives every atom of a "
-                "modified residue its own token: for 1CWA (D-amino acid, "
-                "N-methylated residues; one complex, three seeds) the flag "
-                "lowered ipTM from 0.91-0.92 to 0.78-0.81 and raised the binder"
-                " C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A, so auto leaves such"
-                " a binder linear (on forces the flag); for SFTI-1 (standard "
-                "residues; one seed) the flag closed the ring (C-N 7.40 A "
-                "without it, 1.38 A with it). Disulfide, lactam and staple "
-                "closures cannot be given to OpenFold3 and are not written.",
+                "documents the flag only in an example query, and has published "
+                "no accuracy benchmark for cyclic peptides. It builds the wrap "
+                "from the token count of the chain and gives every atom of a "
+                "modified residue its own token, so auto leaves a binder with "
+                "modified residues linear (on forces the flag). Disulfide, "
+                "lactam and staple closures cannot be given to OpenFold3 and "
+                "are not written.",
             ),
             "--openfold-no-msa-server": (
                 "OpenFold",
@@ -328,32 +338,28 @@ GOLDEN = {
                 "Do not use the ColabFold MSA server for OpenFold3: it then "
                 "runs with a dummy MSA that holds only the query sequence of "
                 "each chain (OpenFold3's input reference suggests this for "
-                "MSA-free runs), which lowers accuracy for a natural receptor. "
-                "With --openfold-templates alignment the template alignments "
-                "written by the toolkit are no longer replaced by the server "
-                "(issue #68); the default, structure, keeps the template with "
-                "the server on too. One complex (1YCR, OpenFold3 0.5.0, one "
-                "seed), binder C-alpha RMSD against the crystal pose: 1.57 A "
-                "with the server and the template as a structure (the default), "
-                "1.62 A with the server and the template as an alignment (the "
-                "server replaces it: no template), 21.6 A with no MSA and no "
-                "template, 1.12 A with a working template and no MSA.",
+                "MSA-free runs). With --openfold-templates alignment the "
+                "template alignments written by the toolkit are no longer "
+                "replaced by the server (issue #68); the default, structure, "
+                "keeps the template with the server on too.",
             ),
             "--prediction-mode": (
                 "Prediction",
                 None,
-                ["predict", "refold", "score", "score-lock"],
+                ["predict", "refold", "score", "score-lock", "refold-lock"],
                 None,
                 False,
                 "None",
-                "How the model is used for the complex: predict (sequences "
-                "only), refold (receptor templated, binder predicted "
-                "freely), score (every chain templated on its own, the pose"
-                " not given: re-docking) or score-lock (score, with the "
-                "pose pinned to the input). It is checked against what the "
-                "model supports and, for a run from here, against what its "
-                "runner can do (of3: refold, score; boltz2: all four; af2 "
-                "and protenix: predict), before anything runs, and "
+                "How the model is used for the complex: predict (sequences only), "
+                "refold (receptor templated, binder predicted freely), score "
+                "(every chain templated on its own, the pose not given: "
+                "re-docking), score-lock (score, with the pose pinned to the "
+                "input) or refold-lock (refold, with the receptor pinned to the "
+                "input by a forced template, the binder free). It is checked "
+                "against what the model supports and, for a run from here, "
+                "against what its runner can do (of3: refold, score; boltz2: "
+                "all five; af2 and protenix: predict), before anything "
+                "runs, and "
                 "recorded. Default: the runner's own mode, that is for "
                 "--predictor of3 the value of --openfold-mode (score), "
                 "score for boltz2 and predict for af2 and protenix; for an "
@@ -370,17 +376,15 @@ GOLDEN = {
                 "Whether the binder is given to the model as cyclic, for "
                 "--predictor MODEL run from here. auto (default): when the "
                 "binder has a head-to-tail bond (for OpenFold3 also only when "
-                "it consists of standard residues: with a D-amino acid and "
-                "N-methylated residues, 1CWA, the flag lowered ipTM from "
-                "0.91-0.92 to 0.78-0.81 in one complex, three seeds, so auto "
-                "leaves such a binder linear); on: always; off: never. "
-                "OpenFold3 (>= 0.4.5) and Boltz-2 get 'cyclic: true' on the "
-                "binder chain, which only wraps its relative positions and does"
-                " not enforce the closure bond; Protenix gets the head-to-tail "
-                "and disulfide bonds as covalent_bonds; ColabFold has no such "
-                "setting and refuses a value. For --predictor of3 it is the "
-                "setting of --openfold-cyclic (both given with different values"
-                " is an error). Needs --predictor.",
+                "it consists of standard residues, so auto leaves a binder with "
+                "modified residues linear); on: always; off: never. OpenFold3 "
+                "(>= 0.4.5) and Boltz-2 get 'cyclic: true' on the binder chain, "
+                "which only wraps its relative positions and does not enforce "
+                "the closure bond; Protenix gets the head-to-tail and disulfide "
+                "bonds as covalent_bonds; ColabFold has no such setting and "
+                "refuses a value. For --predictor of3 it is the setting of "
+                "--openfold-cyclic (both given with different values is an "
+                "error). Needs --predictor.",
             ),
             "--prediction-no-msa-server": (
                 "Prediction",
@@ -389,12 +393,11 @@ GOLDEN = {
                 0,
                 False,
                 "False",
-                "Do not use an MSA server, for --predictor MODEL run from "
-                "here: ColabFold runs single_sequence, Boltz-2 writes 'msa:"
-                " empty', Protenix runs with --use_msa false, OpenFold3 as "
-                "--openfold-no-msa-server. The accuracy for a natural "
-                "receptor drops; no sequence leaves the machine. Needs "
-                "--predictor.",
+                "Do not use an MSA server, for --predictor MODEL run from here: "
+                "ColabFold runs single_sequence, Boltz-2 writes 'msa: empty', "
+                "Protenix runs with --use_msa false, OpenFold3 as "
+                "--openfold-no-msa-server. No sequence leaves the machine. "
+                "Needs --predictor.",
             ),
             "--prediction-conda-env": (
                 "Prediction",
@@ -418,12 +421,12 @@ GOLDEN = {
                 None,
                 False,
                 "None",
-                "Only for --prediction-mode score-lock: how far, in "
-                "angstrom, a residue may move from the pinned template "
-                "before the model pulls it back (the threshold of the "
-                "forced template of Boltz-2). Default: 2.0, the choice of "
-                "the Boltz-2 runner (Boltz-2 documents none). A runner or a"
-                " mode that does not use it refuses it. Needs --predictor.",
+                "Only for --prediction-mode score-lock or refold-lock: how "
+                "far, in angstrom, a residue may move from the pinned "
+                "template before the model pulls it back (the threshold of "
+                "the forced template of Boltz-2). Default: 2.0, the choice "
+                "of the Boltz-2 runner (Boltz-2 documents none). A runner or "
+                "a mode that does not use it refuses it. Needs --predictor.",
             ),
             "--prediction-weights": (
                 "Prediction",
@@ -472,6 +475,37 @@ GOLDEN = {
                 "log the problems and run everything. An output read with "
                 "--prediction-dir only warns.",
             ),
+            "--designed-with": (
+                "Pre-flight check",
+                None,
+                ["boltzgen", "bindcraft", "colabdesign"],
+                None,
+                False,
+                "None",
+                "The pipeline that made the designed binder. The EvoBind "
+                "adversarial check asks whether a model other than the designer "
+                "places the binder where the design has it, and a model that "
+                "the pipeline ran itself agrees with it in part because the "
+                "design was selected for that model: BoltzGen ran Boltz-2, "
+                "BindCraft and ColabDesign ran AlphaFold2 (--predictor af2). "
+                "The check is then handled by --design-policy. Without this "
+                "option nothing is decided and a run with a model step logs "
+                "that independence was not checked.",
+            ),
+            "--design-policy": (
+                "Pre-flight check",
+                None,
+                ["error", "skip", "warn"],
+                None,
+                False,
+                "'skip'",
+                "What to do with the adversarial check when the model of the "
+                "run is one that --designed-with ran itself. skip (default): "
+                "leave the check out, warn loudly and run everything else. "
+                "warn: run it, warn, and mark the result as not independent of "
+                "the design. error: refuse. --on-incompatible does not change "
+                "this rule.",
+            ),
             "--preflight-only": (
                 "Pre-flight check",
                 None,
@@ -510,6 +544,15 @@ GOLDEN = {
                 False,
                 "'md'",
                 "Summary format (default: md)",
+            ),
+            "--nonfinite": (
+                "Report",
+                None,
+                ["keep", "null"],
+                None,
+                False,
+                "'keep'",
+                NONFINITE_HELP,
             ),
             "--log-file": (
                 "Report",
@@ -559,8 +602,9 @@ GOLDEN = {
                 None,
                 False,
                 "1",
-                "Number of parallel worker processes (default: 1). Use "
-                "--device cpu when workers > 1 on a single GPU.",
+                "Number of parallel worker processes (default: 1). Each "
+                "worker opens its own CUDA context: use one worker per GPU, "
+                "or --device cpu when workers share a GPU.",
             ),
             "--glob": (
                 "options",
@@ -738,17 +782,13 @@ GOLDEN = {
                 "and the installed OpenFold3 is new enough; on: always; off: "
                 "never. OpenFold3 uses the flag only to wrap the relative "
                 "positions of the chain: it does not enforce the closure bond, "
-                "documents the flag only in an example query, and has published"
-                " no accuracy benchmark for cyclic peptides. It builds the wrap"
-                " from the token count of the chain and gives every atom of a "
-                "modified residue its own token: for 1CWA (D-amino acid, "
-                "N-methylated residues; one complex, three seeds) the flag "
-                "lowered ipTM from 0.91-0.92 to 0.78-0.81 and raised the binder"
-                " C-alpha RMSD from 0.5-0.7 A to 3.0-4.8 A, so auto leaves such"
-                " a binder linear (on forces the flag); for SFTI-1 (standard "
-                "residues; one seed) the flag closed the ring (C-N 7.40 A "
-                "without it, 1.38 A with it). Disulfide, lactam and staple "
-                "closures cannot be given to OpenFold3 and are not written.",
+                "documents the flag only in an example query, and has published "
+                "no accuracy benchmark for cyclic peptides. It builds the wrap "
+                "from the token count of the chain and gives every atom of a "
+                "modified residue its own token, so auto leaves a binder with "
+                "modified residues linear (on forces the flag). Disulfide, "
+                "lactam and staple closures cannot be given to OpenFold3 and "
+                "are not written.",
             ),
             "--openfold-no-msa-server": (
                 "OpenFold",
@@ -760,32 +800,28 @@ GOLDEN = {
                 "Do not use the ColabFold MSA server for OpenFold3: it then "
                 "runs with a dummy MSA that holds only the query sequence of "
                 "each chain (OpenFold3's input reference suggests this for "
-                "MSA-free runs), which lowers accuracy for a natural receptor. "
-                "With --openfold-templates alignment the template alignments "
-                "written by the toolkit are no longer replaced by the server "
-                "(issue #68); the default, structure, keeps the template with "
-                "the server on too. One complex (1YCR, OpenFold3 0.5.0, one "
-                "seed), binder C-alpha RMSD against the crystal pose: 1.57 A "
-                "with the server and the template as a structure (the default), "
-                "1.62 A with the server and the template as an alignment (the "
-                "server replaces it: no template), 21.6 A with no MSA and no "
-                "template, 1.12 A with a working template and no MSA.",
+                "MSA-free runs). With --openfold-templates alignment the "
+                "template alignments written by the toolkit are no longer "
+                "replaced by the server (issue #68); the default, structure, "
+                "keeps the template with the server on too.",
             ),
             "--prediction-mode": (
                 "Prediction",
                 None,
-                ["predict", "refold", "score", "score-lock"],
+                ["predict", "refold", "score", "score-lock", "refold-lock"],
                 None,
                 False,
                 "None",
-                "How the model is used for the complex: predict (sequences "
-                "only), refold (receptor templated, binder predicted "
-                "freely), score (every chain templated on its own, the pose"
-                " not given: re-docking) or score-lock (score, with the "
-                "pose pinned to the input). It is checked against what the "
-                "model supports and, for a run from here, against what its "
-                "runner can do (of3: refold, score; boltz2: all four; af2 "
-                "and protenix: predict), before anything runs, and "
+                "How the model is used for the complex: predict (sequences only), "
+                "refold (receptor templated, binder predicted freely), score "
+                "(every chain templated on its own, the pose not given: "
+                "re-docking), score-lock (score, with the pose pinned to the "
+                "input) or refold-lock (refold, with the receptor pinned to the "
+                "input by a forced template, the binder free). It is checked "
+                "against what the model supports and, for a run from here, "
+                "against what its runner can do (of3: refold, score; boltz2: "
+                "all five; af2 and protenix: predict), before anything "
+                "runs, and "
                 "recorded. Default: the runner's own mode, that is for "
                 "--predictor of3 the value of --openfold-mode (score), "
                 "score for boltz2 and predict for af2 and protenix; for an "
@@ -802,17 +838,15 @@ GOLDEN = {
                 "Whether the binder is given to the model as cyclic, for "
                 "--predictor MODEL run from here. auto (default): when the "
                 "binder has a head-to-tail bond (for OpenFold3 also only when "
-                "it consists of standard residues: with a D-amino acid and "
-                "N-methylated residues, 1CWA, the flag lowered ipTM from "
-                "0.91-0.92 to 0.78-0.81 in one complex, three seeds, so auto "
-                "leaves such a binder linear); on: always; off: never. "
-                "OpenFold3 (>= 0.4.5) and Boltz-2 get 'cyclic: true' on the "
-                "binder chain, which only wraps its relative positions and does"
-                " not enforce the closure bond; Protenix gets the head-to-tail "
-                "and disulfide bonds as covalent_bonds; ColabFold has no such "
-                "setting and refuses a value. For --predictor of3 it is the "
-                "setting of --openfold-cyclic (both given with different values"
-                " is an error). Needs --predictor.",
+                "it consists of standard residues, so auto leaves a binder with "
+                "modified residues linear); on: always; off: never. OpenFold3 "
+                "(>= 0.4.5) and Boltz-2 get 'cyclic: true' on the binder chain, "
+                "which only wraps its relative positions and does not enforce "
+                "the closure bond; Protenix gets the head-to-tail and disulfide "
+                "bonds as covalent_bonds; ColabFold has no such setting and "
+                "refuses a value. For --predictor of3 it is the setting of "
+                "--openfold-cyclic (both given with different values is an "
+                "error). Needs --predictor.",
             ),
             "--prediction-no-msa-server": (
                 "Prediction",
@@ -821,12 +855,11 @@ GOLDEN = {
                 0,
                 False,
                 "False",
-                "Do not use an MSA server, for --predictor MODEL run from "
-                "here: ColabFold runs single_sequence, Boltz-2 writes 'msa:"
-                " empty', Protenix runs with --use_msa false, OpenFold3 as "
-                "--openfold-no-msa-server. The accuracy for a natural "
-                "receptor drops; no sequence leaves the machine. Needs "
-                "--predictor.",
+                "Do not use an MSA server, for --predictor MODEL run from here: "
+                "ColabFold runs single_sequence, Boltz-2 writes 'msa: empty', "
+                "Protenix runs with --use_msa false, OpenFold3 as "
+                "--openfold-no-msa-server. No sequence leaves the machine. "
+                "Needs --predictor.",
             ),
             "--prediction-conda-env": (
                 "Prediction",
@@ -850,12 +883,12 @@ GOLDEN = {
                 None,
                 False,
                 "None",
-                "Only for --prediction-mode score-lock: how far, in "
-                "angstrom, a residue may move from the pinned template "
-                "before the model pulls it back (the threshold of the "
-                "forced template of Boltz-2). Default: 2.0, the choice of "
-                "the Boltz-2 runner (Boltz-2 documents none). A runner or a"
-                " mode that does not use it refuses it. Needs --predictor.",
+                "Only for --prediction-mode score-lock or refold-lock: how "
+                "far, in angstrom, a residue may move from the pinned "
+                "template before the model pulls it back (the threshold of "
+                "the forced template of Boltz-2). Default: 2.0, the choice "
+                "of the Boltz-2 runner (Boltz-2 documents none). A runner or "
+                "a mode that does not use it refuses it. Needs --predictor.",
             ),
             "--prediction-weights": (
                 "Prediction",
@@ -904,6 +937,37 @@ GOLDEN = {
                 "log the problems and run everything. An output read with "
                 "--prediction-dir only warns.",
             ),
+            "--designed-with": (
+                "Pre-flight check",
+                None,
+                ["boltzgen", "bindcraft", "colabdesign"],
+                None,
+                False,
+                "None",
+                "The pipeline that made the designed binder. The EvoBind "
+                "adversarial check asks whether a model other than the designer "
+                "places the binder where the design has it, and a model that "
+                "the pipeline ran itself agrees with it in part because the "
+                "design was selected for that model: BoltzGen ran Boltz-2, "
+                "BindCraft and ColabDesign ran AlphaFold2 (--predictor af2). "
+                "The check is then handled by --design-policy. Without this "
+                "option nothing is decided and a run with a model step logs "
+                "that independence was not checked.",
+            ),
+            "--design-policy": (
+                "Pre-flight check",
+                None,
+                ["error", "skip", "warn"],
+                None,
+                False,
+                "'skip'",
+                "What to do with the adversarial check when the model of the "
+                "run is one that --designed-with ran itself. skip (default): "
+                "leave the check out, warn loudly and run everything else. "
+                "warn: run it, warn, and mark the result as not independent of "
+                "the design. error: refuse. --on-incompatible does not change "
+                "this rule.",
+            ),
             "--preflight-only": (
                 "Pre-flight check",
                 None,
@@ -915,6 +979,15 @@ GOLDEN = {
                 "incompatible and why) and stop, without preparing, relaxing "
                 "or predicting anything. Exit status 1 when --on-incompatible"
                 " is error and something is refused.",
+            ),
+            "--nonfinite": (
+                "options",
+                None,
+                ["keep", "null"],
+                None,
+                False,
+                "'keep'",
+                NONFINITE_HELP,
             ),
             "--log-file": (
                 "Logging",
@@ -1068,6 +1141,15 @@ GOLDEN = {
                 "None",
                 "Path to write relax results as JSON. Omit to skip "
                 "JSON output (ignored with --all-models).",
+            ),
+            "--nonfinite": (
+                "options",
+                None,
+                ["keep", "null"],
+                None,
+                False,
+                "'keep'",
+                NONFINITE_HELP,
             ),
             "--log-file": (
                 "options",

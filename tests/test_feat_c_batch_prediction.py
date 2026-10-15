@@ -49,7 +49,7 @@ def finite(value) -> bool:
 
 
 class TestOneModelStart:
-    @pytest.mark.parametrize("n_workers", [1, 2])
+    @pytest.mark.parametrize("n_workers", [1, pytest.param(2, marks=pytest.mark.slow)])
     def test_the_model_starts_once_for_all_samples(self, tmp_path, samples, monkeypatch, n_workers):
         stub = StubOpenFold(monkeypatch)
         rows = batch_of(samples, tmp_path / "out", predictor="of3", n_workers=n_workers)
@@ -111,6 +111,7 @@ class TestOneModelStart:
         assert len(asked) == 1 and asked[0][:4] == ["conda", "run", "-n", "of3env"]
         assert {row["provenance_openfold3_version"] for row in rows} == {"0.5.0"}
 
+    @pytest.mark.slow
     def test_the_run_options_reach_the_batched_call(self, tmp_path, samples, monkeypatch):
         stub = StubOpenFold(monkeypatch)
         batch_of(
@@ -139,6 +140,7 @@ class TestStoreReuse:
             r["prediction_avg_plddt"] for r in first
         ]
 
+    @pytest.mark.slow
     def test_an_explicit_cache_is_shared_between_output_directories(
         self, tmp_path, samples, monkeypatch
     ):
@@ -219,6 +221,7 @@ class TestFailures:
         for name in ("a", "c"):
             assert rows[name]["batch_status"] == "ok" and finite(rows[name]["prediction_iptm"])
 
+    @pytest.mark.slow
     def test_the_other_steps_of_a_sample_are_not_affected(self, tmp_path, samples, monkeypatch):
         StubOpenFold(monkeypatch, error=RuntimeError("GPU out of memory"))
         rows = batch_of(

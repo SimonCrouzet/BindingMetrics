@@ -2,9 +2,8 @@
 
 OpenFold3's input reference suggests MSA-free inference through a dummy MSA that holds only the
 query sequence and discourages leaving the MSA input out. OpenFold3 0.5.0 builds the same dummy
-for a chain without MSA files (with a warning), so the query written with it predicts the same
-(one complex, three seeds, no template: within 0.03 ipTM and 0.1 A of binder RMSD of the run that
-leaves the input out). It reads an MSA file only when its name is a key of
+for a chain without MSA files (with a warning), so the query written with it is equivalent to
+leaving the input out. It reads an MSA file only when its name is a key of
 ``MSASettings.max_seq_counts``: a file named otherwise is skipped and the chain fails with
 ``IndexError`` while its features are built, which a real run showed. Nothing here runs
 OpenFold3 except the optional test marked ``openfold``, which runs its MSA parser on CPU.

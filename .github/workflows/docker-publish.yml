@@ -1,5 +1,25 @@
 name: Build and Push Docker Image
 
+# A version tag is published only after verify-ci.yml: the tag must be v plus
+# the project version, and ci.yml must have passed on the tagged commit. The
+# full image (target `full`, with the OpenFold3 environment) takes the
+# unsuffixed tags and the base image (target `base`) the suffix -base:
+#
+#   trigger                       full image     base image
+#   stable tag vX.Y.Z             X.Y, latest    X.Y-base, latest-base
+#   pre-release tag vX.Y.Z-rcN    X.Y.Z-rcN      X.Y.Z-rcN-base
+#   push to main                  main           main-base
+#
+# A push to main is not a release: it carries no `latest`, because ci.yml runs
+# on that commit at the same time and its result is not known when this
+# workflow starts. `latest` and `latest-base` come from the metadata action's
+# default flavor (latest=auto), which adds `latest` only for a stable semver
+# tag, that is, only after the verification; a pre-release takes neither. The
+# action leaves `latest` without the flavor suffix unless `onlatest=true` is
+# given, which the base image sets: otherwise both images would push `latest`.
+# With the suffix the two images never push the same tag. A version tag that is
+# not valid semver (v0.3.0rc1, without the hyphen) yields no tag from the
+# action.
 on:
   push:
     branches:
@@ -7,9 +27,22 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
 jobs:
+  verify:
+    name: Verify tag and CI
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/verify-ci.yml
+
   docker:
+    needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -25,10 +58,10 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: simoncrouzet/binding-metrics
+          flavor: |
+            suffix=-base,onlatest=true
           tags: |
             type=raw,value=main,enable={{is_default_branch}}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Extract metadata for full image
@@ -37,9 +70,8 @@ jobs:
         with:
           images: simoncrouzet/binding-metrics
           tags: |
-            type=raw,value=full,enable={{is_default_branch}}
-            type=semver,pattern={{version}},suffix=-full
-            type=semver,pattern={{major}}.{{minor}},suffix=-full
+            type=raw,value=main,enable={{is_default_branch}}
+            type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push base image
         uses: docker/build-push-action@v7

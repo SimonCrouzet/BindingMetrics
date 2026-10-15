@@ -2,10 +2,9 @@
 
 ``ColabFoldRunner`` starts ``colabfold_batch`` (ColabFold, LocalColabFold) on one complex of two
 chains, a receptor and a binder, folded from their sequences (mode ``predict``), and returns the
-directory that ``binding_metrics.predictors.af2.AlphaFold2Parser`` loads. There is no technical
-reason that only OpenFold3 can be started from here; this runner follows the scheme of
-``OpenFold3Runner`` (a request with every setting that changes the output, a run in the work
-directory the store gives, a check that the model wrote its output).
+directory that ``binding_metrics.predictors.af2.AlphaFold2Parser`` loads. It follows the scheme
+of ``OpenFold3Runner``: a request with every setting that changes the output, a run in the work
+directory the store gives, and a check that the model wrote its output.
 
 Public names and signatures (the module imports the standard library and the runner ABC; gemmi
 is imported when a request is made, never before)::
@@ -21,9 +20,11 @@ is imported when a request is made, never before)::
             model_type: str = "alphafold2_multimer_v3", num_relax: int = 0,
             data_dir: Optional[str | Path] = None, on_unmappable_residue: str = "error",
             extra_args: Sequence[str] = (),
-            weights: Optional[str | Path | WeightsRef] = None) -> PredictionRequest
+            weights: Optional[str | Path | WeightsRef] = None, msa_policy: str = "default",
+            receptor_msa: Optional[str] = None) -> PredictionRequest
         .fasta_text(request) -> str
         .output_chain_map(request) -> dict[str, str]          # {"A": receptor, "B": binder}
+        ._group_seeds(seeds) -> list[tuple[int, ...]]         # consecutive seeds: one request
         .prepare(request, work_dir) -> Path                   # <work_dir>/query/<name>.fasta
         .run(request, work_dir) -> Path                       # <work_dir>/predictions
         .supports_batch(request) -> bool                      # False
@@ -31,17 +32,15 @@ is imported when a request is made, never before)::
         .version() -> Optional[str]
     class ColabFoldRunError(subprocess.CalledProcessError)
 
-What rests on reading the source, and what was run
---------------------------------------------------
-Nothing in this module was run against ColabFold: no ``colabfold_batch`` is installed where it
-was written, and the tests use a stub executable that writes synthetic output. Every statement
-about ColabFold below was read on 2026-10-01 in the source of ColabFold v1.6.3 (tag ``v1.6.3``,
-commit 84c27d9, 2026-09-14; the head of ``main`` at that date, efbf31c, holds one more notebook
-and the same ``colabfold`` package). Flags and defaults are those of ``colabfold/batch.py``
-(``main``, line numbers below are of that file unless another is named); the tests re-read them
-when ``BINDING_METRICS_MODEL_SOURCES`` points at a clone. Whether another release has the same
-flags was not checked. What the runner writes was read against the adapter (``af2.py``), not
-against a real output.
+Status
+------
+Not run against ColabFold: no ``colabfold_batch`` was installed where this was written, and the
+tests use a stub executable that writes synthetic output. The statements about ColabFold below
+come from the source of ColabFold v1.6.3 (tag ``v1.6.3``, commit 84c27d9, 2026-09-14), read on
+2026-10-01. Flags and defaults are those of ``colabfold/batch.py`` (``main``; line numbers below
+are of that file unless another is named); the tests re-read them when
+``BINDING_METRICS_MODEL_SOURCES`` points at a clone. Other releases were not checked. What the
+runner writes was read against the adapter (``af2.py``), not against a real output.
 
 Input and chains
 ----------------
@@ -63,8 +62,8 @@ other; that changes nothing for a receptor and a binder that differ, and for two
 chains the labels are interchangeable. The prediction therefore has chains ``A`` and ``B`` and a
 reader that wants the input's IDs on the atoms passes
 ``chain_map=ColabFoldRunner.output_chain_map(request)`` (``--prediction-target-chain A
---prediction-binder-chain B`` on the command line); for 1YCR, receptor ``A`` and binder ``B``, the
-map is the identity.
+--prediction-binder-chain B`` on the command line). The map is the identity for an input whose
+receptor is ``A`` and binder ``B``.
 
 AlphaFold2 takes the 20 amino acids and ``X`` (``AlphaFold2Parser.capabilities`` gives the
 reason). ``make_request`` raises ``ValueError`` before anything is written when a chain holds
@@ -82,29 +81,35 @@ refused, so a request never points at files that are not there.
 
 Modes
 -----
-Only ``predict`` runs. ``refold``, ``score`` and ``score-lock`` raise ``ValueError`` (from
-``make_request`` and from ``prepare`` and ``run`` of a request built by hand), because the source
-shows no way to give ColabFold a template per chain: ``--custom-template-path DIR`` (line 1869,
-used only with ``--templates``, line 1861) names one directory of PDB or mmCIF files for the whole
-job. ``mk_hhsearch_db`` (line 297) indexes every chain of every file in it as an HHsearch
-database entry ``<file stem>_<chain id>``, ``get_msa_and_templates`` gives that same directory to
-every distinct query sequence (line 742), and ``mk_template`` (line 162) lets HHsearch choose the
-hits for that sequence's alignment. Nothing in the input says which structure is the template of
-which chain, and nothing fixes the relative pose of the chains. ``--initial-guess`` (line 1972;
-``predict_structure`` stores the file's coordinates as ``all_atom_positions``, line 491) is the
-nearest option; whether the model uses those coordinates to start from a pose was not verified,
-and ``--templates`` without a custom directory searches the whole PDB, which can return the
-structure that is being scored. The documented route for these modes is to run ``colabfold_batch``
-yourself and read its output with ``--prediction-dir``. A model with templates in complexes also
-needs a multimer model type: ``generate_input_feature`` ignores templates for the other types
-(line 951).
+Only ``predict`` runs. ``refold``, ``score``, ``score-lock`` and ``refold-lock`` raise
+``ValueError`` (from ``make_request`` and from ``prepare`` and ``run`` of a request built by
+hand), because the source shows no way to give ColabFold a template per chain.
+``--custom-template-path DIR`` (line 1869, used only with ``--templates``, line 1861) names one
+directory of PDB or mmCIF files for the whole job: ``mk_hhsearch_db`` (line 297) indexes every
+chain of every file in it as an HHsearch database entry ``<file stem>_<chain id>``,
+``get_msa_and_templates`` gives that directory to every distinct query sequence (line 742), and
+``mk_template`` (line 162) lets HHsearch choose the hits. Nothing in the input says which
+structure is the template of which chain or fixes the relative pose of the chains.
+``--initial-guess`` (line 1972; ``predict_structure`` stores the file's coordinates as
+``all_atom_positions``, line 491) is the nearest option; whether the model starts from those
+coordinates was not verified. ``--templates`` without a custom directory searches the whole PDB,
+which can return the structure that is being scored. To use these modes, run ``colabfold_batch``
+separately and read its output with ``--prediction-dir``. Templates in complexes need a multimer
+model type: ``generate_input_feature`` ignores them for the other types (line 951).
 
 Settings that change the output
 -------------------------------
 * ``seeds``: ColabFold runs ``range(random_seed, random_seed + num_seeds)`` (line 451), so the
   seeds are consecutive integers from 0 up and the command line is ``--random-seed first
   --num-seeds count``. ``None`` gives ``(0,)``, the defaults of both flags (lines 1932, 1939).
-  Another list raises ``ValueError``.
+  Another list raises ``ValueError``, and so does a value that is not an integer (a float, a
+  boolean or a string is refused, not truncated). ``make_requests(input_path, seeds=[...], ...)``
+  therefore gives one request when the seeds are ascending and consecutive (``[0, 1, 2]``,
+  ``[5, 6]``) and one request per seed otherwise (``[0, 2]``, ``[2, 1]``); a request that carries
+  one seed is named ``<name>_s<seed>``. ``seed_dimension`` stays False because a list is one
+  request in the first case only, and ``_group_seeds`` is the rule. The seed of each sample is
+  the ``seed_<S>`` of its file name (``colabfold/batch.py`` line 383, ``seed:03d``), which the
+  adapter reports as ``extras["seed_value"]``.
 * ``num_samples`` is the number of structures per seed: ``--num-models`` (1 to 5, default 5,
   line 1945). The early-stop threshold ``--stop-at-score`` keeps its default of 100, which no
   ranking confidence exceeds, so every model runs.
@@ -113,6 +118,24 @@ Settings that change the output
   writes ``--msa-mode single_sequence``, ColabFold's MSA-free mode, where
   ``get_msa_and_templates`` builds the alignment from the query itself and makes no server
   request. The alignments a server returns are not in the key.
+* ``msa_policy`` and ``receptor_msa`` (``predictors/_msa.py`` holds the rules the runners
+  share). ColabFold can only run without its server in the single-sequence mode, so this runner
+  declares ``supports_given_msa=False, supports_single=True`` (class attributes, which the
+  command line reads to refuse a file before anything runs): ``receptor_msa="single"`` is
+  accepted and writes ``--msa-mode single_sequence``, which holds for both chains (the mode is
+  global to the job, so the binder is single-sequence too, as the policy wants); the path of an
+  alignment file is refused with the reason (the runner writes FASTA input, and ColabFold builds
+  the alignments of a FASTA job itself, with its server or from the sequence). Because "single"
+  means that no server is called, a request with ``receptor_msa="single"`` records
+  ``use_msa_server=False`` whatever was passed. Under ``msa_policy="forbid-server"`` the request
+  needs ``use_msa_server=False`` and ``receptor_msa="single"``, and ``prepare`` and ``run`` check
+  the command line they built with ``assert_no_server_flag`` before a process starts: any
+  ``--msa-mode mmseqs2...``, and a command without ``--msa-mode`` (the default of ColabFold calls
+  the server), is refused. The key: ``options["msa_policy"]`` only when it is not ``"default"``
+  and ``options["receptor_msa"] = "single"`` only when asked; a request without them keeps its
+  key. ColabFold 1.5.4 documents that "using an A3M file as input overwrites" ``--msa-mode``; the
+  runner does not write a3m input, and a precomputed receptor alignment with a single-sequence
+  peptide in an a3m job was not checked.
 * ``model_type``: ``--model-type``, ``alphafold2_multimer_v3`` by default, the model the adapter
   was written against. ``auto`` is not offered: for a complex it means the same
   (``set_model_type``, line 1731).
@@ -130,12 +153,11 @@ Settings that change the output
   put in it what the run reads and keep it unchanged. A run is refused (``ValueError``, before
   the process starts) unless ``<weights>/params/`` holds the marker file of the model type
   (``download_complexes_multimer_v3_finished.txt`` for ``alphafold2_multimer_v3``, and so on, see
-  ``_PARAMS_MARKERS``). The reason: ``main`` calls ``download_alphafold_params`` before the run
-  (line 2270), which, when that marker is missing, downloads the default parameters and extracts
-  them into ``<data>/params`` (``download.py:70-85``), over the files of the same name. Without
-  the check a directory of fine-tuned parameters could be overwritten by the default ones and the
-  prediction stored under the key of the custom weights. Create the marker (an empty file) once
-  the parameter files are in place.
+  ``_PARAMS_MARKERS``). When the marker is missing, ``main`` calls ``download_alphafold_params``
+  before the run (line 2270), which downloads the default parameters and extracts them into
+  ``<data>/params`` (``download.py:70-85``) over the files of the same name, so fine-tuned
+  parameters would be overwritten and the prediction stored under the key of the custom weights.
+  Create the marker (an empty file) once the parameter files are in place.
 * ``data_dir``: the older way to name the directory: ``--data`` with a path that is in the key
   (as ``inference_ckpt_path`` is for OpenFold3). ``None`` leaves the flag out and ColabFold uses
   its cache directory and downloads into it what is missing, which needs the network. A path that
@@ -187,6 +209,7 @@ import codecs
 import importlib
 import importlib.metadata
 import logging
+import operator
 import os
 import re
 import shlex
@@ -196,6 +219,15 @@ import sys
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from binding_metrics.predictors._msa import (
+    DEFAULT_MSA_POLICY,
+    FORBID_SERVER,
+    RECEPTOR_MSA_ROLE,
+    SINGLE_SEQUENCE,
+    assert_no_server_flag,
+    check_msa_of_request,
+    check_msa_request,
+)
 from binding_metrics.predictors.runners import PredictionRunner
 from binding_metrics.predictors.store import PredictionRequest
 from binding_metrics.predictors.weights import WeightsRef
@@ -260,6 +292,12 @@ _TEMPLATE_FLAGS = (
     "--initial-guess",
 )
 
+#: Why the runner takes no alignment file, for the message of ``check_msa_request``.
+_MSA_FILE_REASON = (
+    "the runner gives colabfold_batch a FASTA file, whose alignments ColabFold builds itself, "
+    "with its MSA server or, with --msa-mode single_sequence, from the sequence"
+)
+
 _QUERY_DIRNAME = "query"
 _RESULT_DIRNAME = "predictions"
 
@@ -297,6 +335,29 @@ def _mode_message(mode: str) -> str:
 def _run_module() -> Any:
     """The module with the query builder; imported here so that the package stays light."""
     return importlib.import_module("binding_metrics.metrics._openfold_run")
+
+
+def _integer_seeds(seeds: Sequence[int]) -> list[int]:
+    """``seeds`` as integers, refusing what is not one (a float would be truncated by ``int``).
+
+    The same texts as ``ProtenixRunner`` and ``make_requests``: a string, a boolean, a float or
+    anything without ``__index__`` raises ``ValueError``; numpy integers are accepted.
+    """
+    if isinstance(seeds, (str, bytes)):
+        raise ValueError("seeds must be a sequence of integers, not a string")
+    values: list[int] = []
+    for seed in seeds:
+        if isinstance(seed, bool):
+            raise ValueError(f"seeds must be integers, got {seed!r}")
+        try:
+            values.append(operator.index(seed))
+        except TypeError:
+            raise ValueError(f"seeds must be integers, got {seed!r}") from None
+    return values
+
+
+def _forbids_server(request: PredictionRequest) -> bool:
+    return request.options.get("msa_policy", DEFAULT_MSA_POLICY) == FORBID_SERVER
 
 
 def _safe_job_name(name: str) -> str:
@@ -402,8 +463,7 @@ _KNOWN_FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
         ("Could not get MSA/templates", "MMseqs2 API"),
         "ColabFold could not build the alignment. With use_msa_server=True it asks the MSA "
         "server for it, which needs the network and a server that answers; "
-        "use_msa_server=False folds from the single sequence, with no server, and is much "
-        "less accurate.",
+        "use_msa_server=False folds from the single sequence, with no server.",
     ),
     (
         ("Error downloading files", "Downloading alphafold2", "storage.googleapis.com"),
@@ -539,6 +599,11 @@ class ColabFoldRunner(PredictionRunner):
     #: ColabFold takes a directory of parameter files with ``--data`` (see the module docstring).
     supports_custom_weights = True
     weights_kind = "directory"
+    #: The receptor MSA the runner accepts (``predictors/_msa.py``): the single-sequence mode only.
+    supports_given_msa = False
+    supports_single = True
+    #: Why an alignment file is refused; the command line reads it for its own message.
+    msa_unsupported_reason = _MSA_FILE_REASON
 
     def __init__(self, conda_env: Optional[str] = None):
         self.conda_env = conda_env
@@ -597,6 +662,8 @@ class ColabFoldRunner(PredictionRunner):
         on_unmappable_residue: str = "error",
         extra_args: Sequence[str] = (),
         weights: Optional[str | Path | WeightsRef] = None,
+        msa_policy: str = DEFAULT_MSA_POLICY,
+        receptor_msa: Optional[str] = None,
     ) -> PredictionRequest:
         """The store request of one ColabFold run (see the module docstring for what it holds).
 
@@ -613,7 +680,8 @@ class ColabFoldRunner(PredictionRunner):
             num_samples: Structures per seed (``--num-models``, 1 to 5).
             num_recycles: ``--num-recycle``; None leaves it to ColabFold.
             use_msa_server: Send the sequences to the ColabFold MSA server (the default); False
-                folds from the single sequence (``--msa-mode single_sequence``).
+                folds from the single sequence (``--msa-mode single_sequence``). The request
+                records False whenever ``receptor_msa="single"`` is given.
             model_type: ``--model-type``.
             num_relax: ``--num-relax``, the number of top-ranked structures to relax.
             data_dir: ``--data``, the directory that holds ``params/``; its path is in the key.
@@ -624,6 +692,13 @@ class ColabFoldRunner(PredictionRunner):
                 ``PredictionStore.weights_reference`` made for it (it uses the store's hash
                 cache; a path is hashed here without one). Passed as ``--data``; its content is
                 in the key.
+            msa_policy: ``"default"`` or ``"forbid-server"``. The second needs
+                ``use_msa_server=False`` and ``receptor_msa="single"``, and the runner checks
+                the command line for a server mode before it starts a process. It is in the key
+                only when it is not ``"default"``.
+            receptor_msa: None (the default; the key is unchanged) or the word ``"single"``, the
+                receptor and the binder folded from their own sequences. The path of an
+                alignment is refused: ColabFold takes none from this runner.
 
         Raises:
             ValueError: A mode other than ``predict``, a missing or equal chain role, a chain the
@@ -631,7 +706,9 @@ class ColabFoldRunner(PredictionRunner):
                 change, seeds that are not consecutive from 0 up, an unknown model type or a
                 setting out of range, a ``data_dir`` that is not a directory, both ``weights`` and
                 ``data_dir``, ``weights`` that are not a directory with the marker file of the
-                model type in ``params/``, or an argument in ``extra_args`` that the runner owns.
+                model type in ``params/``, an argument in ``extra_args`` that the runner owns, a
+                ``receptor_msa`` that is a path, or a policy that the MSA arguments break
+                (``forbid-server`` with the server on or without ``receptor_msa="single"``).
             FileNotFoundError: ``weights`` does not exist.
             OSError: The structure file cannot be read.
         """
@@ -649,6 +726,15 @@ class ColabFoldRunner(PredictionRunner):
             )
         if weights is not None and data_dir is not None:
             raise ValueError("give weights or data_dir, not both")
+        fragments = check_msa_request(
+            self.name,
+            use_msa_server=use_msa_server,
+            msa_policy=msa_policy,
+            receptor_msa=receptor_msa,
+            supports_given_msa=self.supports_given_msa,
+            supports_single=self.supports_single,
+            unsupported_reason=self.msa_unsupported_reason,
+        )
         if weights is not None:  # before the directory is hashed, which can take a while
             _check_weights_directory(
                 weights.path if isinstance(weights, WeightsRef) else Path(weights), model_type
@@ -662,16 +748,17 @@ class ColabFoldRunner(PredictionRunner):
             receptor_chain=receptor_chain,
             sequences=sequences,
             weights=weights,
-            seeds=(_DEFAULT_SEED,) if seeds is None else tuple(sorted(int(s) for s in seeds)),
+            seeds=(_DEFAULT_SEED,) if seeds is None else tuple(sorted(_integer_seeds(seeds))),
             num_samples=num_samples,
             model_version=self.version() or "",
             options={
-                "use_msa_server": bool(use_msa_server),
+                "use_msa_server": bool(use_msa_server) and receptor_msa is None,
                 "model_type": model_type,
                 "num_recycles": num_recycles,
                 "num_relax": num_relax,
                 "data_dir": None if data_dir is None else str(data_dir),
                 "extra_args": [str(argument) for argument in extra_args],
+                **fragments.options,
             },
         )
         self._check_request(request)
@@ -698,15 +785,34 @@ class ColabFoldRunner(PredictionRunner):
             raise ValueError("the request has no receptor_chain and binder_chain")
         return {"A": request.receptor_chain, "B": request.binder_chain}
 
+    def _group_seeds(self, seeds: Sequence[int]) -> list[tuple[int, ...]]:
+        """One group for seeds that ColabFold runs in one process, else one group per seed.
+
+        ColabFold iterates ``range(random_seed, random_seed + num_seeds)``, so a list that is
+        ascending and consecutive from its first value is one request (the command line holds
+        its first value and its length). Any other list, such as ``[0, 2]`` or ``[1, 0]``,
+        cannot be expressed that way and becomes one request per seed, in the order given.
+        """
+        values = list(seeds)
+        if values and values == list(range(values[0], values[0] + len(values))):
+            return [tuple(values)]
+        return [(seed,) for seed in values]
+
     # ------------------------------------------------------------------ running
 
     def prepare(self, request: PredictionRequest, work_dir: Path) -> Path:
         """Write the FASTA record to ``<work_dir>/query/<name>.fasta`` and return it.
 
-        Raises what ``run`` would raise about the request, without starting ColabFold.
+        Raises what ``run`` would raise about the request, without starting ColabFold, including
+        a command line that breaks ``msa_policy="forbid-server"`` (checked before the file is
+        written).
         """
         self._check_request(request)
         path = Path(work_dir) / _QUERY_DIRNAME / f"{request.name}.fasta"
+        if _forbids_server(request):
+            self._assert_policy(
+                request, self._command(request, path, Path(work_dir) / _RESULT_DIRNAME)
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.fasta_text(request), encoding="utf-8")
         return path
@@ -715,7 +821,9 @@ class ColabFoldRunner(PredictionRunner):
         """Run ``colabfold_batch`` for ``request`` and return ``<work_dir>/predictions``.
 
         Raises:
-            ValueError: The request is not one this runner can run (before anything is written).
+            ValueError: The request is not one this runner can run (before anything is written),
+                or its command line would make ColabFold use an MSA server under
+                ``msa_policy="forbid-server"``.
             FileNotFoundError: ``colabfold_batch`` is not on PATH and no conda environment is set.
             ColabFoldRunError: ColabFold exited non-zero.
             RuntimeError: ColabFold exited normally but wrote fewer structures than asked; the
@@ -731,7 +839,9 @@ class ColabFoldRunner(PredictionRunner):
         fasta = self.prepare(request, work_dir)
         results = Path(work_dir) / _RESULT_DIRNAME
         results.mkdir(parents=True, exist_ok=True)
-        _run_command(self._command(request, fasta, results))
+        command = self._command(request, fasta, results)
+        self._assert_policy(request, command)
+        _run_command(command)
         self._require_output(request, results)
         return results
 
@@ -797,12 +907,32 @@ class ColabFoldRunner(PredictionRunner):
                 "it. Create the directory first if that is what you want."
             )
         _check_extra_args(options.get("extra_args") or [])
+        check_msa_of_request(
+            self.name,
+            request,
+            supports_given_msa=self.supports_given_msa,
+            supports_single=self.supports_single,
+            unsupported_reason=self.msa_unsupported_reason,
+        )
+
+    def _assert_policy(self, request: PredictionRequest, command: Sequence[str]) -> None:
+        """Under ``forbid-server``, refuse a command line that would make ColabFold use a server.
+
+        ``--msa-mode`` must be on the line and be ``single_sequence``: the other modes call the
+        ColabFold server, and without the flag ColabFold's own default does. Nothing is checked
+        under the default policy.
+        """
+        if _forbids_server(request):
+            assert_no_server_flag([str(word) for word in command], self.name)
 
     def _command(self, request: PredictionRequest, fasta: Path, results: Path) -> list[str]:
         """The command line of the run; every setting is written, the defaults included."""
         options = request.options
         seeds = tuple(request.seeds)
-        msa_mode = _MSA_SERVER_MODE if options.get("use_msa_server", True) else _NO_MSA_MODE
+        single = options.get(RECEPTOR_MSA_ROLE) == SINGLE_SEQUENCE
+        msa_mode = (
+            _MSA_SERVER_MODE if options.get("use_msa_server", True) and not single else _NO_MSA_MODE
+        )
         arguments = [
             str(fasta),
             str(results),
@@ -891,6 +1021,8 @@ def _check_extra_args(extra_args: Sequence[str]) -> None:
     """Raise ``ValueError`` for an argument that the runner owns or that changes the mode.
 
     ``argparse`` accepts an unambiguous prefix of a flag, so a prefix of a refused flag counts.
+    The underscore spelling of a hyphenated flag counts as well (``--msa_mode`` for
+    ``--msa-mode``): the check must not depend on which of the two a tool takes.
     """
     refused = (
         (_OWNED_FLAGS, "the runner writes it from the request, whose key records the setting"),
@@ -898,7 +1030,7 @@ def _check_extra_args(extra_args: Sequence[str]) -> None:
         (_TEMPLATE_FLAGS, "mode 'predict' folds from sequences only, and it adds templates"),
     )
     for argument in extra_args:
-        flag = str(argument).split("=", 1)[0]
+        flag = str(argument).split("=", 1)[0].replace("_", "-")
         if not flag.startswith("--") or len(flag) < 4:
             continue
         for flags, reason in refused:

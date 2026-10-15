@@ -19,7 +19,6 @@ MOVED = [
     "_binder_plddt_per_residue",
     "_chain_token_offsets",
     "_check_token_offsets",
-    "_import_biotite_struc",
     "_interface_pae_stats",
     "_interface_pde_stats",
     "_load_atoms",

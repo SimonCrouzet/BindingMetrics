@@ -1,13 +1,14 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "binding-metrics"
-version = "0.1.0"
+version = "0.2.0"
 description = "GPU-compatible Python package for evaluating biologics binding metrics through MD simulations"
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [
     {name = "BindingMetrics Contributors"}
@@ -15,7 +16,6 @@ authors = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -66,7 +66,9 @@ all = [
 ]
 # pandas is read by binding-metrics-energy (CSV), markdown by the HTML summary.
 report = ["pandas>=1.5", "markdown>=3.4"]
-dev    = ["pytest>=7.0", "ruff==0.15.21"]  # keep equal to ci.yml and .pre-commit-config.yaml
+# pytest-xdist runs the tests on several processes (`pytest -n 4`, docs/testing.md); a plain
+# `pytest` works without it.
+dev    = ["pytest>=7.0", "pytest-xdist>=3.0", "ruff==0.15.21"]  # keep equal to ci.yml and .pre-commit-config.yaml
 
 [project.scripts]
 binding-metrics-check-env = "binding_metrics.cli.check_env:main"
@@ -91,6 +93,11 @@ Repository = "https://github.com/SimonCrouzet/BindingMetrics"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The 1YCR complex that binding_metrics.testing.make_synthetic_poses reads. `data/` is not a
+# package (no __init__.py), so the pattern is relative to the testing package directory.
+[tool.setuptools.package-data]
+"binding_metrics.testing" = ["data/*.pdb"]
 
 [tool.ruff]
 line-length = 100
@@ -125,9 +132,74 @@ python_files = ["test_*.py"]
 # --strict-markers turns a typo'd marker into a collection error instead of a
 # silently-never-selected test; --strict-config does the same for this table.
 addopts = "--strict-markers --strict-config"
+# A DeprecationWarning attributed to a binding_metrics module (the package's own code using a
+# deprecated name, or calling a deprecated function) fails the test; a test that provokes one
+# on purpose says so with pytest.warns. Later entries take precedence over earlier ones.
+# OpenMM 8.2 warns on every import ("builtin type SwigPyPacked has no __module__ attribute");
+# the first entry ignores it by message, because that warning as an error makes the import of
+# OpenMM segfault (tests/conftest.py guards its own import as well).
+filterwarnings = [
+    "ignore:builtin type .* has no __module__ attribute:DeprecationWarning",
+    "error::DeprecationWarning:binding_metrics.*",
+]
 markers = [
     "integration: exercises real structures and the full OpenMM/biotite stack, not mocks",
     "gpu: requires a CUDA device — skipped on CPU-only machines and in CI",
-    "slow: takes minutes; excluded from the default developer loop",
+    "slow: takes about a second or more when run alone; excluded from the everyday run",
     "openfold: runs the parsers of an installed OpenFold3 (conda env openfold3, CPU only); skipped when absent",
+    # Areas of the code a test file is about, added by tests/conftest.py from its imports and the
+    # names it uses (tests/_areas.py): `pytest -m poses_frame` runs one, `pytest -m poses` the
+    # whole coarse area. Keep this list equal to AREA_DESCRIPTIONS there: tests/test_area_tags.py
+    # compares them.
+    "cli: all command-line entry points: run, batch, check-env and the shared flags",
+    "cli_batch: binding-metrics-batch (cli/batch.py)",
+    "cli_env: the shared command-line flags and binding-metrics-check-env (cli/__init__.py)",
+    "cli_prediction: the --predictor step of run and batch (cli/prediction.py)",
+    "cli_run: binding-metrics-run and the pipeline behind it (cli/run.py)",
+    "core: system preparation, force fields, simulation, GAFF, cyclic and non-standard residues",
+    "core_cyclic: head-to-tail, disulfide, lactam and staple closures (core/cyclic.py)",
+    "core_gaff: GAFF2 parameters of non-standard residues and phospho-residues",
+    "core_residues: residue name tables, D-amino acids, N-methylated residues",
+    "core_system: system preparation, force-field set-up and simulation (core/system.py)",
+    "io: reading and writing structures (load_structure, save_cif, chain detection)",
+    "metrics: the static and MD metrics and their registry",
+    "metrics_common: helpers shared by the metrics: structure loader, chain aliases, OpenMM",
+    "metrics_comparison: RMSD against a reference and DockQ",
+    "metrics_energy: interaction energy, the Coulomb term and the MLFF energy",
+    "metrics_evobind: the EvoBind score and its adversarial check",
+    "metrics_geometry: Ramachandran, omega planarity, shape complementarity, void volume",
+    "metrics_interface: interface residues, contacts, hydrogen bonds and salt bridges",
+    "metrics_receptor: receptor quality and receptor drift",
+    "metrics_registry: the metric registry, its metadata and its documentation",
+    "metrics_sasa: buried and static solvent-accessible surface area",
+    "of3: the OpenFold3 route: its run, templates, flags, adapter and runner",
+    "of3_adapter: the OpenFold3 output adapter (predictors/of3.py)",
+    "of3_metrics: OpenFold3 confidence metrics, interface PAE and entry points (openfold.py)",
+    "of3_run: building the OpenFold3 query and running it (metrics/_openfold_run.py, the runner)",
+    "of3_templates: OpenFold3 template modes and their command-line flags",
+    "package: the package root, constants, logging setup and provenance",
+    "package_exports: lazy exports and the version of the package root",
+    "package_support: constants, logging setup and provenance of result files",
+    "poses: the pose layer (kinds, reference, scoring, pose-set reports) and the testing package",
+    "poses_agreement: agreement between poses, aggregation and symmetry",
+    "poses_descriptors: reference-site descriptors and the reference (poses/descriptors.py)",
+    "poses_frame: the common frame of a pose set (poses/frame.py)",
+    "poses_pose: the pose kinds and the synthetic pose sets",
+    "poses_score: scoring a pose set, its report and the reconciliation of two back-ends",
+    "predictors: model adapters, runners, the prediction store and session (OpenFold3 aside)",
+    "predictors_af2: the AlphaFold2 and ColabFold adapter and runner",
+    "predictors_base: the adapter contract: base class, registry, record, confidence helpers",
+    "predictors_boltz2: the Boltz-2 adapter and runner",
+    "predictors_protenix: the Protenix adapter and runner",
+    "predictors_store: the run-once store, session, manifest, runners and weights",
+    "preflight: what a model or metric accepts and the check of an input before a run",
+    "preflight_capabilities: the declared limits of steps and models and the pre-flight check",
+    "preflight_cli: the pre-flight check of the command-line pipeline (preflight_cli.py)",
+    "protocols: relaxation, preparation, solvation, structural QC and the report",
+    "protocols_qc: structural QC of relaxed structures",
+    "protocols_relaxation: relaxation, preparation and solvation protocols",
+    "protocols_report: the report and its plots",
+    "docs: the text of docs/, README.md and CHANGELOG.md, checked against the code",
+    "golden: comparisons with stored reference output (tests/golden, OpenFold3 golden files)",
+    "misc: tests that import nothing from the package",
 ]

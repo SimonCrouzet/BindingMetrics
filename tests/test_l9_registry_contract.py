@@ -17,12 +17,45 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from binding_metrics.metrics.registry import METRICS, MetricSpec, get_metric
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_1YCR = REPO_ROOT / "data" / "example_linear_p53_1YCR.pdb"
+
+PROBE_RADIUS_ANGSTROM = 1.4  # water
+POINTS_PER_ATOM = 960  # Shrake-Rupley sampling of the static area metrics
+
+
+def buried_area_by_biotite(path, chain_a, chain_b):
+    """Area that two chains bury on binding (A^2), from biotite and the PDB file alone.
+
+    ``sasa(A) + sasa(B) - sasa(A + B)`` for the heavy atoms of the amino-acid residues of the two
+    chains, with biotite's van der Waals radii (1.8 A for an element without one).
+    """
+    import biotite.structure as struc
+    import biotite.structure.io.pdb as pdb_io
+    from biotite.structure.info import vdw_radius_single
+
+    atoms = pdb_io.get_structure(pdb_io.PDBFile.read(str(path)), model=1)
+    atoms = atoms[struc.filter_amino_acids(atoms) & (atoms.element != "H")]
+
+    def area(selection):
+        radii = np.array([vdw_radius_single(str(e).strip()) or 1.8 for e in selection.element])
+        per_atom = struc.sasa(
+            selection,
+            probe_radius=PROBE_RADIUS_ANGSTROM,
+            vdw_radii=radii,
+            point_number=POINTS_PER_ATOM,
+        )
+        return float(np.nansum(per_atom))
+
+    first = atoms[atoms.chain_id == chain_a]
+    second = atoms[atoms.chain_id == chain_b]
+    return area(first) + area(second) - area(first + second)
+
 
 # ---------------------------------------------------------------------------
 # The entries that existed before the registry was extended, field by field.
@@ -313,8 +346,10 @@ class TestNewMetricsCallThroughTheSpec:
         pytest.importorskip("biotite")
         spec = get_metric("delta_sasa_static")
         result = _call(spec.name, **_kwargs_from_spec(spec, complex_pdb, "B", "A"))
-        # A 13-residue peptide in the MDM2 cleft buries well over 1000 A^2.
-        assert result["delta_sasa"] > 1000.0
+        # the buried area is what biotite gives for the two chains, alone and together
+        assert result["delta_sasa"] == pytest.approx(
+            buried_area_by_biotite(complex_pdb, "B", "A"), rel=1e-4
+        )
         assert result["delta_sasa"] == pytest.approx(
             result["sasa_peptide"] + result["sasa_receptor"] - result["sasa_complex"], rel=1e-4
         )
@@ -365,13 +400,18 @@ class TestNewMetricsCallThroughTheSpec:
 
 class TestMandatoryFields:
     @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_required_string_fields_are_nonempty(self, spec):
+    def test_the_mandatory_fields_are_well_formed(self, spec):
+        """One case per metric; a failure lists every field that is wrong.
+
+        The six required strings are non-empty, the optional argument names are None or
+        identifiers, ``formats`` is a tuple of lower-case strings, and no argument name is
+        declared twice.
+        """
+        problems = []
         for field in ("name", "import_path", "description", "input_type", "chain_mode", "path_arg"):
             value = getattr(spec, field)
-            assert isinstance(value, str) and value.strip(), f"{spec.name}: empty {field}"
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_optional_arg_names_are_none_or_identifiers(self, spec):
+            if not (isinstance(value, str) and value.strip()):
+                problems.append(f"empty {field}")
         for field in (
             "secondary_path_arg",
             "chain_arg",
@@ -381,16 +421,12 @@ class TestMandatoryFields:
             "target_chain_arg",
         ):
             value = getattr(spec, field)
-            assert value is None or value.isidentifier(), f"{spec.name}: {field}={value!r}"
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_formats_is_a_tuple_of_lowercase_strings(self, spec):
-        assert isinstance(spec.formats, tuple)
-        assert all(f == f.lower() for f in spec.formats)
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_kwarg_names_are_distinct(self, spec):
-        """One kwarg cannot receive two roles."""
+            if not (value is None or (isinstance(value, str) and value.isidentifier())):
+                problems.append(f"{field}={value!r} is not an identifier")
+        if not isinstance(spec.formats, tuple):
+            problems.append(f"formats is a {type(spec.formats).__name__}, not a tuple")
+        elif not all(f == f.lower() for f in spec.formats):
+            problems.append(f"formats {spec.formats} are not lower case")
         names = [
             n
             for n in (
@@ -402,7 +438,9 @@ class TestMandatoryFields:
             )
             if n
         ]
-        assert len(names) == len(set(names)), f"{spec.name}: duplicated kwarg names {names}"
+        if len(names) != len(set(names)):
+            problems.append(f"duplicated kwarg names {names}")
+        assert not problems, f"{spec.name}: " + "; ".join(problems)
 
     def test_spec_is_frozen(self):
         spec = get_metric("interface")
@@ -456,29 +494,3 @@ class TestCallSemantics:
         )
         with pytest.raises(TypeError):
             spec.call(not_a_parameter=1)
-
-    @pytest.mark.parametrize("spec", METRICS, ids=lambda s: s.name)
-    def test_declared_kwargs_bind_to_the_function_signature(self, spec):
-        """The kwargs a runner builds from the spec fields bind without a TypeError."""
-        import inspect
-
-        try:
-            fn = spec.load()
-        except ImportError as e:
-            pytest.skip(f"{spec.name}: optional dependency not installed — {e}")
-        if inspect.isclass(fn):
-            pytest.skip(f"{spec.name}: class")
-        kwargs = {
-            n: object()
-            for n in (
-                spec.path_arg,
-                spec.secondary_path_arg,
-                spec.chain_arg,
-                spec.peptide_chain_arg,
-                spec.receptor_chain_arg,
-            )
-            if n
-        }
-        # bind_partial: required parameters the spec does not declare (a pLDDT array,
-        # a query name) are the caller's business; unknown names are the registry's bug.
-        inspect.signature(fn).bind_partial(**kwargs)

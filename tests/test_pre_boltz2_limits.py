@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from binding_metrics.capabilities import Capabilities, preflight, profile_input
+from binding_metrics.capabilities import MODES, Capabilities, preflight, profile_input
 from binding_metrics.predictors.registry import PARSERS
 from tests.test_pre_structures import model_source_text
 
@@ -40,10 +40,16 @@ class TestTheDeclaration:
 
     def test_it_limits_nothing(self):
         assert self.caps.is_unconstrained
+        assert self.caps.constrained_fields() == ()
+        assert self.caps.modes == frozenset(MODES)  # all five, with no reason to give
         assert self.caps.closures == frozenset()  # head-to-tail is not the only closure it takes
 
-    def test_the_one_caveat_is_about_a_staple_and_cites_the_documentation(self):
-        assert sorted(self.caps.caveats) == ["closures:staple", "modes:score-lock"]
+    def test_the_caveats_are_the_staple_and_the_two_lock_modes(self):
+        assert sorted(self.caps.caveats) == [
+            "closures:staple",
+            "modes:refold-lock",
+            "modes:score-lock",
+        ]
         assert "docs/prediction.md" in self.caps.caveats["closures:staple"]
 
 

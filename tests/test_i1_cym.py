@@ -62,6 +62,7 @@ class TestSetsAreTheOldOnesPlusCym:
 
 
 class TestPrepTreatsCymAsStandard:
+    @pytest.mark.slow
     def test_a_cym_residue_is_not_listed_as_kept_nonstandard(self):
         pytest.importorskip("pdbfixer")
         from pathlib import Path

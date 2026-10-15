@@ -10,18 +10,13 @@ The original name is preserved in ``NonstandardInfo`` for metric reporting, and
 :func:`restore_nonstandard_names` writes it back onto the topology before a
 structure is saved, so output files keep the D-residue names of the input.
 
-Ramachandran validation is corrected automatically: φ/ψ angles for D-residues are
-negated before region classification so that a D-α-helix (φ ≈ +57°, ψ ≈ +47°)
-maps to the same "favoured" basin as an L-α-helix (φ ≈ −57°, ψ ≈ −47°).
+The Ramachandran step negates φ/ψ of D-residues before region classification, so a
+D-α-helix (φ ≈ +57°, ψ ≈ +47°) falls in the region of an L-α-helix (φ ≈ −57°, ψ ≈ −47°).
 
 N-methylated amino acids
 ------------------------
-N-methylation replaces the backbone amide NH with an N-methyl group (−N(CH₃)−).
-This eliminates the hydrogen-bond donor, increases cis-amide probability (similar
-to proline), and requires a custom AMBER XML residue template.
-
-Custom templates are provided for the four most common residues in cyclic peptide
-drugs (cyclosporin A, macrocycles):
+N-methylation replaces the backbone amide NH with an N-methyl group (−N(CH₃)−)
+and needs a custom AMBER XML residue template. Templates exist for four residues:
 
     NMG  N-methyl-glycine (sarcosine / SAR)
     NMA  N-methyl-alanine
@@ -31,13 +26,10 @@ drugs (cyclosporin A, macrocycles):
 Backbone N atom type: ``N`` (same as standard amide N and proline N in ff14SB).
 Methyl group atom types: CN ``CT`` (sp3 carbon), HN1/HN2/HN3 ``HC``.
 
-Charges: RESP-fitted values from ForceField_NCAA (Khoury et al., ACS Synth. Biol.
-2014, PMC4277759, ffncaa.zip supporting data). Charges were derived using the ff03
-RESP protocol (HF/6-31G*, condensed-phase dielectric). This introduces a minor
-charge-model inconsistency with ff14SB (gas-phase RESP), but is the best available
-published set and is widely used in cyclic peptide MD studies (e.g. cyclosporin A).
-Atom types for CA use ``CX`` (ff14SB alpha-carbon type) to preserve correct ff14SB
-backbone torsion parameters. HN1/HN2/HN3 use ``H1`` (H adjacent to N, one EWG).
+Charges: RESP values from ForceField_NCAA (Khoury et al., ACS Synth. Biol. 2014,
+PMC4277759, ffncaa.zip supporting data), derived with the ff03 RESP protocol
+(HF/6-31G*, condensed-phase dielectric). CA uses the ff14SB alpha-carbon type
+``CX``; HN1/HN2/HN3 use ``H1``.
 
 Supported NMe PDB codes (input → canonical template name):
     SAR, NMG  →  NMG
@@ -99,27 +91,18 @@ NME_AA_MAP: dict[str, str] = {
     "MLE": "MLE",  # N-methyl-leucine
 }
 
-#: Atom names of the N-methyl group atoms to *remove* if PDBFixer added them
-#: incorrectly (it may add a backbone H to a tertiary N).
+#: Names of a backbone H to remove from the tertiary N (PDBFixer may add one).
 _NME_N_BAD_H = {"H", "HN"}
 
 
 # ---------------------------------------------------------------------------
 # XML residue templates — N-methylated amino acids
 #
-# Charge convention (ensuring residue neutrality):
-#   N-methyl group:  N = −0.2548 (proline-N model)
-#                    CN = −0.0690 (methyl C)
-#                    HN1/HN2/HN3 = +0.0600 each
-#   Group sum: −0.2548 − 0.0690 + 3(0.0600) = −0.1438  [= standard N + H sum]
-#   All other atoms: standard ff14SB partial charges.
-#   Each template verified: Σq = 0.
+# Charges are the ForceField_NCAA RESP values; each template sums to zero within 2e-6.
 # ---------------------------------------------------------------------------
 
 # NMG – N-methyl-glycine (sarcosine)
-# Charges: ForceField_NCAA RESP (Khoury et al. ACS Synth. Biol. 2014, PMC4277759).
-# Atom type for HN1/HN2/HN3: H1 (H on C bonded to N, one EWG neighbour).
-# CA type: CX (ff14SB alpha-carbon type, for correct backbone phi/psi torsions).
+# HN1/HN2/HN3 type H1; CA type CX (ff14SB alpha-carbon type).
 _XML_NMG = """\
 <ForceField>
  <Residues>
@@ -151,7 +134,6 @@ _XML_NMG = """\
 """
 
 # NMA – N-methyl-alanine
-# Charges: ForceField_NCAA RESP (Khoury et al. ACS Synth. Biol. 2014, PMC4277759).
 _XML_NMA = """\
 <ForceField>
  <Residues>
@@ -189,7 +171,6 @@ _XML_NMA = """\
 """
 
 # MVA – N-methyl-valine
-# Charges: ForceField_NCAA RESP (Khoury et al. ACS Synth. Biol. 2014, PMC4277759).
 _XML_MVA = """\
 <ForceField>
  <Residues>
@@ -239,7 +220,6 @@ _XML_MVA = """\
 """
 
 # MLE – N-methyl-leucine
-# Charges: ForceField_NCAA RESP (Khoury et al. ACS Synth. Biol. 2014, PMC4277759).
 _XML_MLE = """\
 <ForceField>
  <Residues>
@@ -367,28 +347,22 @@ def _find_atom(residue, name: str):
 def _add_standard_intraresidue_bonds(topology, residue) -> None:
     """Add the intra-residue covalent bonds of a residue's standard template.
 
-    OpenMM's ``PDBxFile``/``Topology.createStandardBonds`` only builds bonds for
-    residues whose *load-time* name is a recognised standard type.  A D-amino
-    acid is loaded under its D name (e.g. ``DAL``), so ``createStandardBonds``
-    skips it and the residue is left with **no** intra-residue bonds.  After we
-    rename it to its L counterpart (e.g. ``ALA``), ``ForceField`` template
-    matching then fails with *"The set of atoms matches ALA, but the bonds are
-    different"*.
+    ``Topology.createStandardBonds`` builds bonds only for residues whose name at load
+    time is a standard type. A D-amino acid is loaded under its D name (``DAL``), so it
+    has no intra-residue bonds, and after the rename to the L name (``ALA``) the
+    ``ForceField`` template match fails with "The set of atoms matches ALA, but the
+    bonds are different".
 
-    This restores the missing bonds from OpenMM's built-in standard bond
-    definitions (keyed on the now-standard residue name), skipping:
-      * inter-residue references (atom names prefixed with ``+``/``-``) — the
-        backbone C–N and any cyclic-closure bonds already exist, and
-      * bonds already present in the topology.
-
-    Safe to call on a residue that already has its bonds (no-op) and on a
-    residue with no standard definition (no-op).
+    The bonds come from OpenMM's standard bond definitions for the residue name. Skipped:
+    inter-residue references (atom names prefixed with ``+``/``-``; the backbone C-N and
+    any cyclic closure already exist) and bonds already in the topology. A residue that
+    already has its bonds, or has no standard definition, is left unchanged.
     """
     import openmm.app.topology as _topmod
 
     Topology = _topmod.Topology
     if not getattr(Topology, "_hasLoadedStandardBonds", False):
-        # Trigger the same lazy load createStandardBonds uses.
+        # The lazy load that createStandardBonds does.
         Topology.loadBondDefinitions(
             os.path.join(os.path.dirname(_topmod.__file__), "data", "residues.xml")
         )
@@ -402,7 +376,6 @@ def _add_standard_intraresidue_bonds(topology, residue) -> None:
     existing = {frozenset((b.atom1.index, b.atom2.index)) for b in topology.bonds()}
     for bond in std_bonds:
         a_name, b_name = bond[0], bond[1]
-        # Skip inter-residue references (handled elsewhere / already present).
         if a_name[0] in "+-" or b_name[0] in "+-":
             continue
         a1 = atom_by_name.get(a_name)
@@ -429,11 +402,11 @@ def detect_nonstandard(topology, chain_id: str) -> NonstandardInfo:
 
     Args:
         topology: OpenMM Topology.
-        chain_id: Chain ID to scan: the author ID for a topology read by
-            ``io.structures.load_structure`` from an mmCIF (the peptide of 1CWA is author
-            chain C and chain B of the topology, whose chain C holds waters), or the ID of
-            the chain in the topology (see ``io.structures.topology_chain_id``).
-            ``NonstandardInfo.chain_id`` is the ID in the topology.
+        chain_id: Chain ID to scan: the author ID for a topology that
+            ``io.structures.load_structure`` read from an mmCIF (in 1CWA the peptide is
+            author chain C and topology chain B), or the ID of the chain in the topology
+            (see ``io.structures.topology_chain_id``). ``NonstandardInfo.chain_id`` is the
+            ID in the topology.
 
     Returns:
         NonstandardInfo describing all detected non-standard residues.
@@ -540,27 +513,21 @@ def _patch_nonstandard(topology, positions, chain_id: str, info: NonstandardInfo
 
     residues = _peptide_residues(topology, chain_id)
 
-    # --- Rename D-amino acids → L counterpart ---
-    # NB: assign to .name (a plain attribute on OpenMM's Residue), NOT ._name —
-    # setting ._name creates a dead attribute and leaves the rename a silent no-op.
+    # Assign to .name (a plain attribute on OpenMM's Residue), not ._name:
+    # setting ._name creates a dead attribute and the rename does nothing.
     for entry in info.d_residues:
         res = residues[entry["res_idx"]]
         res.name = entry["l_name"]
-        # A D-residue was loaded under its D name, so createStandardBonds never
-        # built its intra-residue bonds. Restore them now that it carries a
-        # standard L name, else ForceField template matching fails with
-        # "atoms match <L>, but the bonds are different".
+        # createStandardBonds skipped the D name: restore the bonds under the L name.
         _add_standard_intraresidue_bonds(topology, res)
 
-    # --- Rename NMe-AAs and remove spurious backbone H on N ---
     atoms_to_remove = []
     for entry in info.nmethyl_residues:
         res = residues[entry["res_idx"]]
-        res.name = entry["template_name"]  # .name, not ._name (see D-AA note above)
-        # Remove any H that PDBFixer added to backbone N (should be absent in NMe)
+        res.name = entry["template_name"]
+        # Remove an H that PDBFixer added to the backbone N (absent in N-methyl residues).
         for atom in res.atoms():
             if atom.name in _NME_N_BAD_H:
-                # Confirm it's actually on the backbone N by checking it's bonded to N
                 n_atom = _find_atom(res, "N")
                 if n_atom is not None:
                     bonded_to_n = any(

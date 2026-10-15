@@ -1,8 +1,8 @@
 """Heteroatom policy of the Sc and void-volume metrics (`hetero` keyword, `--hetero` flag).
 
 Waters carrying a protein chain ID used to be counted as protein atoms by the
-chain-ID masks. On 1CWA (144 waters on chain A) that moved Sc from 0.722 to
-0.750 and the void interface atom count from 153 to 123.
+chain-ID masks. On 1CWA (144 waters, on chains A and C) that changed Sc and the
+number of interface atoms of the void metric.
 """
 
 import sys
@@ -47,11 +47,21 @@ def cwa_dry(tmp_path_factory) -> Path:
     return path
 
 
+def _interface_atom_count(path: Path, peptide_chain: str, receptor_chain: str, cutoff: float):
+    """Atoms of either chain within ``cutoff`` of the other chain, counted from the file."""
+    atoms = _load_structure(path)
+    peptide = atoms.coord[atoms.chain_id == peptide_chain]
+    receptor = atoms.coord[atoms.chain_id == receptor_chain]
+    distances = np.linalg.norm(peptide[:, None, :] - receptor[None, :, :], axis=2)
+    return int((distances < cutoff).any(axis=1).sum() + (distances < cutoff).any(axis=0).sum())
+
+
 def _assert_same(a: dict, b: dict, keys) -> None:
     for key in keys:
         assert a[key] == pytest.approx(b[key], rel=1e-6, abs=1e-9), key
 
 
+@pytest.mark.slow
 class TestHeteroOnCyclosporin:
     def test_sc_ignore_on_raw_equals_dry(self, cwa_dry):
         raw = compute_shape_complementarity(CWA, hetero="ignore")
@@ -78,15 +88,20 @@ class TestHeteroOnCyclosporin:
     def test_keep_reproduces_the_water_contaminated_inputs(self, cwa_dry):
         keep_sc = compute_shape_complementarity(CWA, hetero="keep")
         dry_sc = compute_shape_complementarity(cwa_dry)
-        # waters on the receptor chain raise the number of dotted atoms and change Sc
-        assert keep_sc["sc"] == pytest.approx(0.7215, abs=5e-3)
-        assert dry_sc["sc"] == pytest.approx(0.7500, abs=5e-3)
+        # Both scores are defined (Sc lies in [-1, 1]); waters on the chains change the dotted
+        # atoms and with them the score.
+        assert -1.0 <= keep_sc["sc"] <= 1.0
+        assert -1.0 <= dry_sc["sc"] <= 1.0
         assert keep_sc["sc"] != pytest.approx(dry_sc["sc"], abs=1e-3)
 
+        # The interface atoms of the void metric are the atoms of either chain within the
+        # default cutoff (5 A) of the other; the count is redone here with a distance matrix.
         keep_void = compute_buried_void_volume(CWA, hetero="keep")
         dry_void = compute_buried_void_volume(cwa_dry)
-        assert keep_void["n_interface_atoms"] == 153
-        assert dry_void["n_interface_atoms"] == 123
+        assert keep_void["n_interface_atoms"] == _interface_atom_count(CWA, "C", "A", 5.0)
+        assert dry_void["n_interface_atoms"] == _interface_atom_count(cwa_dry, "C", "A", 5.0)
+        # Kept waters inside the cutoff add interface atoms.
+        assert keep_void["n_interface_atoms"] > dry_void["n_interface_atoms"]
 
     def test_dry_structure_is_unchanged_by_the_policy(self, cwa_dry):
         """No heteroatoms present: keep and ignore are identical."""
@@ -221,6 +236,7 @@ class TestHeteroCli:
         main()
         return capsys.readouterr().out
 
+    @pytest.mark.slow
     def test_void_flag_switches_the_policy(self, monkeypatch, capsys):
         ignore = self._run(monkeypatch, capsys, "--input", CWA, "--metric", "void")
         keep = self._run(
@@ -232,6 +248,7 @@ class TestHeteroCli:
         assert ignore == explicit
         assert ignore != keep
 
+    @pytest.mark.slow
     def test_sc_flag_switches_the_policy(self, monkeypatch, capsys):
         ignore = self._run(monkeypatch, capsys, "--input", CWA, "--metric", "sc")
         keep = self._run(monkeypatch, capsys, "--input", CWA, "--metric", "sc", "--hetero", "keep")

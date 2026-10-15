@@ -1,14 +1,14 @@
 """Adapter for the output of AlphaFold2, AlphaFold-Multimer and ColabFold.
 
-Layouts checked on 2026-09-29 against ColabFold v1.6.3 (2026-09-14) and AlphaFold2 v2.3.2
-(2023-04-05) and main (c77e5d2), by reading their source (``colabfold/batch.py``,
-``colabfold/alphafold/extra_ptm.py``, ``run_alphafold.py``, ``alphafold/model/model.py``,
-``alphafold/model/confidence.py``, ``alphafold/common/protein.py``) and one real ColabFold
-multimer-v3 scores file, and on 2026-09-30 against the source of ColabFold 1.5.4 and
-alphafold-colabfold 2.3.6 (a fork of AlphaFold2 2.3) and of OpenMM 8.4. What the text marks
-"(1.5.4)" comes from that second reading. No model was run and no real AlphaFold2 result pickle
-was seen. What the source does not settle is listed under TO VERIFY at the end; the parser then
-refuses a file it does not know, with a message, and does not guess.
+Layouts read in the source of ColabFold v1.6.3 (2026-09-14), AlphaFold2 v2.3.2 (2023-04-05) and
+main (c77e5d2) (``colabfold/batch.py``, ``colabfold/alphafold/extra_ptm.py``,
+``run_alphafold.py``, ``alphafold/model/model.py``, ``alphafold/model/confidence.py``,
+``alphafold/common/protein.py``) and in one real ColabFold multimer-v3 scores file, and on
+2026-09-30 in the source of ColabFold 1.5.4, alphafold-colabfold 2.3.6 (a fork of AlphaFold2 2.3)
+and OpenMM 8.4; the text marked "(1.5.4)" comes from that second reading. No model was run and no
+real AlphaFold2 result pickle was seen. Points the source does not settle are listed under TO
+VERIFY at the end; the parser refuses a file it does not know, with a message, and does not
+guess.
 
 Files
 -----
@@ -41,7 +41,9 @@ Values
   ``pairwise_iptm`` (``{"A-B": x}``, upper triangle only, read as ``chain_pair_iptm``),
   ``pairwise_actifptm`` and ``actifptm``; ColabFold 1.6.3 adds ``ipsae``, ``pdockq`` and
   ``pdockq2`` dictionaries keyed ``"A-B"`` for a complex. The last five go to ``record.extras``
-  under their own names.
+  under their own names. ``extras["seed_value"]`` is the ``seed_SSS`` of the file name without its
+  padding, as a string (the form OpenFold3 and Protenix use); AlphaFold2 and bare-structure
+  samples name no seed.
 * AlphaFold2 result pickle: ``plddt`` (per residue, 0-100), ``predicted_aligned_error`` (residues by
   residues, angstrom), ``max_predicted_aligned_error``, ``ptm``, ``iptm`` (multimer only) and
   ``ranking_confidence``. A pickle runs code when it is loaded, so the file is read by an
@@ -126,17 +128,21 @@ from typing import Any, Mapping, NamedTuple, Optional
 import numpy as np
 
 from binding_metrics.capabilities import Capabilities
+from binding_metrics.predictors._renamed import deprecated_name_getattr
 from binding_metrics.predictors.base import PredictionParser
 from binding_metrics.predictors.record import (
+    PredictedPose,
     PredictionFiles,
-    PredictionRecord,
     SampleRef,
     check_chain_map,
 )
 
+#: ``PredictionRecord``, the former name of ``PredictedPose``, still imports and warns.
+__getattr__ = deprecated_name_getattr(__name__)
+
 _NAN = float("nan")
 
-#: Registry key of the adapter and ``PredictionRecord.model`` of its records.
+#: Registry key of the adapter and ``PredictedPose.model`` of its records.
 _MODEL = "af2"
 
 #: Values of the ``scale`` argument of the B-factor reader.
@@ -768,7 +774,7 @@ def _prediction_id(files: PredictionFiles) -> Optional[str]:
     return None
 
 
-def _read_confidences(files: PredictionFiles, record: PredictionRecord) -> Optional[dict]:
+def _read_confidences(files: PredictionFiles, record: PredictedPose) -> Optional[dict]:
     """Read the file that holds the per-residue pLDDT; None (and a reason) when there is none."""
     arrays = files.arrays
     if arrays is not None and arrays.suffix.lower() == ".json":
@@ -806,7 +812,7 @@ def _read_confidences(files: PredictionFiles, record: PredictionRecord) -> Optio
     return None
 
 
-def _note_missing(record: PredictionRecord, confidences: dict, source_name: str) -> None:
+def _note_missing(record: PredictedPose, confidences: dict, source_name: str) -> None:
     """One sentence for each value the confidence file does not hold."""
     if confidences["source"] == "confidence_json":
         record.reasons.append(
@@ -833,7 +839,7 @@ def _note_missing(record: PredictionRecord, confidences: dict, source_name: str)
         record.reasons.append(f"ipTM not in {source_name}: only the multimer models compute it")
 
 
-def _apply_confidences(record: PredictionRecord, confidences: dict, source_name: str) -> None:
+def _apply_confidences(record: PredictedPose, confidences: dict, source_name: str) -> None:
     plddt = confidences["plddt_per_residue"]
     record.avg_plddt = float(plddt.mean())
     record.ptm = confidences["ptm"]
@@ -859,7 +865,7 @@ def _expand_per_residue(plddt: np.ndarray, scan: _StructureScan, structure: Path
 
 
 def _apply_bfactor(
-    record: PredictionRecord, scan: _StructureScan, structure: Path, scale: str
+    record: PredictedPose, scan: _StructureScan, structure: Path, scale: str
 ) -> None:
     """Fill the pLDDT of ``record`` from the B-factor column; every other value stays unset."""
     plddt, rescaled, problem = _plddt_from_bfactor(scan.b_factor, scale)
@@ -879,8 +885,8 @@ def _apply_bfactor(
 
 def _parse_files(
     files: PredictionFiles, name: str, seed_index: int, sample: int, scale: str = "auto"
-) -> PredictionRecord:
-    record = PredictionRecord(
+) -> PredictedPose:
+    record = PredictedPose(
         _MODEL,
         name,
         seed_index=seed_index,
@@ -925,7 +931,7 @@ def _parse_files(
 
 
 def _apply_layout_details(
-    record: PredictionRecord, files: PredictionFiles, confidences: Optional[dict]
+    record: PredictedPose, files: PredictionFiles, confidences: Optional[dict]
 ) -> None:
     """Ranking score, timing and file names that belong to one layout."""
     layout = record.extras["layout"]
@@ -933,6 +939,11 @@ def _apply_layout_details(
         rank = re.search(r"_rank_(\d+)", files.scores.name)
         if rank:
             record.extras["colabfold_rank"] = int(rank[1])
+    if layout == "colabfold" and (files.scores or files.structure) is not None:
+        # the seed is only in the file name; the session reads it from here, never guesses it
+        seed = re.search(r"_seed_(\d+)\.", (files.scores or files.structure).name)
+        if seed:
+            record.extras["seed_value"] = str(int(seed[1]))  # the file name pads to 3 digits
     if layout == "alphafold":
         prediction_id = _prediction_id(files)
         record.extras["prediction_id"] = prediction_id
@@ -958,12 +969,11 @@ class AlphaFold2Parser(PredictionParser):
     display_name = "AlphaFold2 / ColabFold"
     family = "af2"
 
-    # The inputs AlphaFold2 and ColabFold can be given, from the model code (AlphaFold commit
-    # c77e5d2, ColabFold 1.6.3, checked against the clones on 2026-09-30;
-    # tests/test_pre_af2_limits.py re-reads them when the clones are at hand). The input is a
-    # sequence of the 20 amino acids and X plus an MSA and templates, so neither a residue that is
-    # not one of the 20 nor a ring closure can be given. Not declared because nothing shows it: a
-    # limit on the binder size or on a binder of several chains (the multimer models take them).
+    # Limits of AlphaFold2 and ColabFold, from the model code (AlphaFold commit c77e5d2, ColabFold
+    # 1.6.3; tests/test_pre_af2_limits.py re-reads the clones when they are at hand). The input is
+    # a sequence of the 20 amino acids and X plus an MSA and templates, so neither another residue
+    # nor a ring closure can be given. No limit is declared on the binder size or on a binder of
+    # several chains (the multimer models take them).
     capabilities = Capabilities(
         closures={"none"},
         residue_classes={"canonical", "cap", "ligand"},
@@ -1026,7 +1036,7 @@ class AlphaFold2Parser(PredictionParser):
         name: str,
         seed_index: int = 1,
         sample: int = 1,
-    ) -> PredictionRecord:
+    ) -> PredictedPose:
         """Read the located files into a record.
 
         A missing confidence file leaves its values at NaN (None for an array), adds a reason
@@ -1067,7 +1077,7 @@ def load_bfactor_record(
     name: Optional[str] = None,
     chain_map: Optional[Mapping[str, str]] = None,
     scale: str = "auto",
-) -> PredictionRecord:
+) -> PredictedPose:
     """A record with the pLDDT of one predicted structure, read from its B-factor column.
 
     For a bare AlphaFold2 or BindCraft complex (PDB or mmCIF) that has no confidence file.
@@ -1099,14 +1109,14 @@ def load_bfactor_record(
         files = PredictionFiles(directory=path.parent, structure=path)
         record = _parse_bare(files, name, scale)
     else:
-        record = PredictionRecord(_MODEL, name, files=PredictionFiles(directory=path.parent))
+        record = PredictedPose(_MODEL, name, files=PredictionFiles(directory=path.parent))
         record.reasons.append(f"structure file {path} not found")
     record.chain_map = checked_map
     return record
 
 
-def _parse_bare(files: PredictionFiles, name: str, scale: str) -> PredictionRecord:
-    record = PredictionRecord(_MODEL, name, structure_path=files.structure, files=files)
+def _parse_bare(files: PredictionFiles, name: str, scale: str) -> PredictedPose:
+    record = PredictedPose(_MODEL, name, structure_path=files.structure, files=files)
     record.extras["layout"] = "bare"
     _apply_bfactor(record, _scan_structure(files.structure), files.structure, scale)
     return record
