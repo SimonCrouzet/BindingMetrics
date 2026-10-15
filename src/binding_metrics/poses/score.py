@@ -67,7 +67,8 @@ failure or skip in its result (see ``_result_status``) keeps its block and the s
 metric's own text; a block that holds no result gets that text as its ``reason`` too, so the
 aggregates drop its fields. A failed pose counts in ``n_total`` of the aggregates and never in
 ``n_ok``. No value is NaN unless a registry metric returned it; ``nonfinite_fields`` lists the
-paths of those. ``independent_of_design`` is None unless ``design_source`` is given (see the
+paths of those, and ``to_json(nonfinite="null")`` writes them as ``null``.
+``independent_of_design`` is None unless ``design_source`` is given (see the
 argument).
 
 The design origin. Checks that need a model independent of the designer
@@ -123,6 +124,7 @@ from typing import Any, Callable, Literal, Mapping, Optional, Sequence
 
 import numpy as np
 
+from binding_metrics._jsonutil import check_nonfinite, nonfinite_paths, strict_json_text
 from binding_metrics.metrics.registry import MetricSpec, get_metric
 from binding_metrics.poses.aggregate import (
     DEFAULT_STATISTICS,
@@ -669,23 +671,6 @@ def _describe(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def _nonfinite_paths(value: Any, prefix: str = "") -> list[str]:
-    """Dotted paths of every NaN or infinite number; list items are ``name[3]``."""
-    if isinstance(value, Mapping):
-        found: list[str] = []
-        for key, child in value.items():
-            found += _nonfinite_paths(child, f"{prefix}.{key}" if prefix else str(key))
-        return found
-    if isinstance(value, (list, tuple)):
-        found = []
-        for index, child in enumerate(value):
-            found += _nonfinite_paths(child, f"{prefix}[{index}]")
-        return found
-    if isinstance(value, float) and not math.isfinite(value):
-        return [prefix]
-    return []
-
-
 def _canonical_json(payload: Any) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
@@ -736,20 +721,36 @@ class PoseSetResult(dict):
         """A deep copy made of plain ``dict``, ``list`` and scalar values."""
         return _plain(dict(self))
 
-    def to_json(self, *, indent: Optional[int] = 2, include_timing: bool = True) -> str:
+    def to_json(
+        self,
+        *,
+        indent: Optional[int] = 2,
+        include_timing: bool = True,
+        nonfinite: str = "keep",
+    ) -> str:
         """The result as JSON text, keys in the order of the result.
 
-        ``NaN`` and ``Infinity`` tokens are kept for the values that a registry metric returned
-        as such (``nonfinite_fields`` lists them); Python's ``json`` reads them back.
+        With ``nonfinite="keep"`` the values that a registry metric returned as NaN or infinity
+        are written as the tokens ``NaN`` and ``Infinity`` (``nonfinite_fields`` lists them);
+        Python's ``json`` reads them back, a strict JSON parser does not. ``nonfinite="null"``
+        writes ``null`` in their place: ``nonfinite_fields`` lists the same paths and
+        ``from_dict`` reads the text.
 
         Args:
             indent: Spaces per level; None writes one line.
             include_timing: False leaves the ``timing`` block out, so the text is identical for
                 the same inputs.
+            nonfinite: ``"keep"`` (default) or ``"null"``.
+
+        Raises:
+            ValueError: If ``nonfinite`` is neither ``"keep"`` nor ``"null"``.
         """
+        check_nonfinite(nonfinite)
         data = self.to_dict()
         if not include_timing:
             data.pop("timing", None)
+        if nonfinite == "null":
+            return strict_json_text(data, indent=indent, ensure_ascii=False)
         return json.dumps(data, indent=indent, ensure_ascii=False)
 
     @classmethod
@@ -2865,7 +2866,7 @@ def score_pose_set(
         },
     }
     ordered = {key: result[key] for key in RESULT_KEYS if key in result}
-    ordered["nonfinite_fields"] = _nonfinite_paths(
+    ordered["nonfinite_fields"] = nonfinite_paths(
         {key: value for key, value in ordered.items() if key != "timing"}
     )
     ordered = {key: ordered[key] for key in RESULT_KEYS if key in ordered}

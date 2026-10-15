@@ -6,8 +6,9 @@ dictionary that ``json.loads`` gives back from its JSON). No writer changes the 
 ``json``
     The canonical dictionary (``PoseSetResult.to_json``), UTF-8, keys in the order of the
     result. A NaN or infinity that a registry metric returned is written as the token ``NaN`` or
-    ``Infinity``, and ``nonfinite_fields`` lists where they are. ``include_timing=False``
-    leaves the ``timing`` block out.
+    ``Infinity``, and ``nonfinite_fields`` lists where they are; ``nonfinite="null"`` writes
+    ``null`` for them instead, so that a strict JSON parser reads the file.
+    ``include_timing=False`` leaves the ``timing`` block out.
 
 ``csv``
     One row per pose, scalar columns only (``PoseSetResult.to_flat_rows``): a nested key is
@@ -49,6 +50,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from binding_metrics._jsonutil import check_nonfinite
 from binding_metrics.metrics.registry import METRICS_BY_NAME
 from binding_metrics.poses.aggregate import group_key
 from binding_metrics.poses.score import REPRESENTATIVE_META_KEYS, PoseSetResult
@@ -74,6 +76,7 @@ def write_pose_report(
     *,
     include_timing: bool = True,
     max_list_items: int = 16,
+    nonfinite: str = "keep",
 ) -> Path:
     """Write a pose-set result to one file.
 
@@ -86,23 +89,27 @@ def write_pose_report(
             replaced. Nothing is written anywhere else.
         include_timing: ``json`` only: False leaves out the ``timing`` block.
         max_list_items: ``csv`` only: the longest list of scalars that becomes columns.
+        nonfinite: ``json`` only: ``"keep"`` (default) writes NaN and infinity as the tokens
+            ``NaN`` and ``Infinity``; ``"null"`` writes ``null`` (``PoseSetResult.to_json``).
 
     Returns:
         The path that was written, as a ``Path``.
 
     Raises:
-        ValueError: If ``fmt`` is not one of ``FORMATS``, ``path`` is missing, or ``result`` is
-            a dictionary that is not a pose-set result of the schema version this code reads.
+        ValueError: If ``fmt`` is not one of ``FORMATS``, ``nonfinite`` is not ``"keep"`` or
+            ``"null"``, ``path`` is missing, or ``result`` is a dictionary that is not a
+            pose-set result of the schema version this code reads.
         TypeError: If ``result`` is neither a ``PoseSetResult`` nor a dictionary.
     """
     if fmt not in FORMATS:
         raise ValueError(f"fmt must be one of {list(FORMATS)}, got {fmt!r}")
+    check_nonfinite(nonfinite)
     if path is None:
         raise ValueError("path is required: the file to write")
     result = _as_result(result)
     target = Path(path)
     if fmt == "json":
-        text = result.to_json(include_timing=include_timing) + "\n"
+        text = result.to_json(include_timing=include_timing, nonfinite=nonfinite) + "\n"
     elif fmt == "csv":
         text = _csv_text(result, max_list_items)
     elif fmt == "md":
