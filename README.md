@@ -158,7 +158,7 @@ Pre-built images are available on Docker Hub (requires [NVIDIA Container Toolkit
 | `latest` | the `environment.yml` environment (OpenMM with CUDA 12.4, the dependencies of the `all` extra and the GAFF2 stack) as of the newest stable release tag |
 | `main` | the same environment as of the last push to `main` |
 | `full` | Everything in the `main` image + OpenFold3 conda env |
-| `<version>`, `<version>-full` | the same two images, built when a `v*` tag is pushed |
+| `<version>`, `<version>-full`, `<major>.<minor>`, `<major>.<minor>-full` | the same two images, built when a `v*` tag is pushed |
 
 ```bash
 # Base image (no OpenFold3)
@@ -198,7 +198,7 @@ docker run --gpus all --rm \
     binding-metrics-relax --input /data/complex.cif --output /data/relaxed.cif
 ```
 
-Build locally with `docker build --target base -t simoncrouzet/binding-metrics:latest .` (or `--target full`). GitHub Actions rebuilds and pushes the images on every push to `main` (tags `main` and `full`) and on version tags (`v*`), which push `<version>`, `<version>-full` and, for a stable version, `latest`.
+Build locally with `docker build --target base -t simoncrouzet/binding-metrics:latest .` (or `--target full`). GitHub Actions rebuilds and pushes the images on every push to `main` (tags `main` and `full`) and on version tags (`v*`), which push `<version>`, `<major>.<minor>` and their `-full` images and, for a stable version, `latest`. A version tag is published only when it is `v` plus the `pyproject.toml` version and `ci.yml` has passed on the tagged commit; `latest` is the last release and `main` follows the main branch.
 
 ### OpenFold3 (optional)
 
@@ -429,7 +429,7 @@ rows = run_batch(
 )
 ```
 
-`run_pipeline` takes the options of the `binding-metrics-run` flags as keyword arguments (`binder_chain`, `target_chain`, `openfold_seeds`, `openfold_cyclic`, `openfold_use_msa_server`, `on_unmappable_residue`, `binder_type`, `on_incompatible`, `preflight_only`, `predictor`, `prediction_dir`, `prediction_binder_chain`, `prediction_target_chain`, `prediction_cache`, `rerun_predictions`, ...; `run_batch` takes them too) and returns the results dict described under [Results and provenance](#results-and-provenance). `run_batch` returns one flat row per path in the order of the paths and writes the per-sample JSON and log; `on_result` is called with each row as it finishes (in completion order when `n_workers > 1`), and `on_error="raise"` re-raises an exception instead of recording an error row. The CSV of `binding-metrics-batch` is these rows.
+`run_pipeline` takes the options of the `binding-metrics-run` flags as keyword arguments (`binder_chain`, `target_chain`, `openfold_seeds`, `openfold_cyclic`, `openfold_use_msa_server`, `on_unmappable_residue`, `binder_type`, `on_incompatible`, `preflight_only`, `predictor`, `prediction_dir`, `prediction_binder_chain`, `prediction_target_chain`, `prediction_cache`, `rerun_predictions`, ...; `run_batch` takes them too) and returns the results dict described under [Results and provenance](#results-and-provenance). `run_batch` returns one flat row per path in the order of the paths and writes the per-sample JSON and log; `on_result` is called with each row as it finishes (in completion order when `n_workers > 1`), and `on_error="raise"` re-raises an exception instead of recording an error row. The keyword-only `nonfinite` (default `"keep"`) is the mode of the per-sample JSON reports, including the blocks that the OpenFold3 and prediction steps add afterwards; the CSV rows do not depend on it. The CSV of `binding-metrics-batch` is these rows.
 
 The relaxation step is a `Relaxer`; `ImplicitRelaxation` is the one the package ships. Pass another implementation, for a different force field or a stub in a test, with `run_pipeline(..., relaxer=...)`: subclass `binding_metrics.Relaxer`, implement `run(input_path, output_dir, sample_id=None)` and return a `binding_metrics.protocols.relaxation.RelaxationResult`. The pipeline reads `success`, `error_message` and the structure path from it and records its `to_dict()` under `results["relax"]`.
 
@@ -501,6 +501,7 @@ Unless `--skip-prep` is given, the pipeline starts with a prep step (equivalent 
 | `--prediction-cache DIR`, `--rerun-predictions` | `<output-dir>/predictions` (`-batch`: `_predictions`), off | the store of finished predictions; run again although it has one |
 | `--config PATH` | none | TOML file with option defaults (below) |
 | `--summary`, `--summary-format`, `--format` | off, `md`, `json` | write a summary with the scorecard; results as JSON or CSV (`binding-metrics-run` only) |
+| `--nonfinite {keep,null}` | `keep` | JSON results: `keep` writes NaN and infinity as the tokens `NaN`, `Infinity` and `-Infinity`; `null` writes `null` and lists the paths in `nonfinite_fields` (`-run`, `-batch`, `-report`, `-relax`, `-receptor-quality`; not the CSV) |
 | `--log-file PATH` | none | send all output to a file |
 
 ```bash
@@ -577,7 +578,7 @@ binding-metrics-run --config run.toml --input complex.cif --output-dir results/
 binding-metrics-batch --input-dir designs/ --output-csv metrics.csv --workers 4
 ```
 
-Each structure gets its own directory, JSON report and log under `--output-dir` (by default the directory of the CSV). The file stem is the sample ID, so two inputs with the same stem (`a/sample.pdb` and `b/sample.pdb` found by `--glob`, or `sample.pdb` and `sample.cif`) end the run with a usage error (exit code 2) before anything is created; `run_batch` raises `ValueError`. The CSV has one row per structure, in input order, with a `batch_status` column: `ok` (every step completed), `partial` (the pipeline finished but a step failed; see `batch_failed_steps` and `batch_failed_reasons`) or `error` (the worker raised; see `batch_error`). The last columns, `provenance_*`, record the package version, git sha, Python, OS, OpenMM version, platform and seed. The exit code is non-zero only when no sample is `ok`. Each worker process opens its own CUDA context and takes its share of GPU memory, so several workers on one GPU can run out of memory. Structures are matched to natives for DockQ by file stem (`--reference-dir`, `target1.cif` with `target1.pdb`).
+Each structure gets its own directory, JSON report and log under `--output-dir` (by default the directory of the CSV). The file stem is the sample ID, so two inputs with the same stem, case ignored (`a/sample.pdb` and `b/sample.pdb` found by `--glob`, `sample.pdb` and `sample.cif`, or `Sample.pdb` and `sample.pdb`, which a case-insensitive file system writes to one directory) end the run with a usage error (exit code 2) before anything is created; `run_batch` raises `ValueError`. The CSV has one row per structure, in input order, with a `batch_status` column: `ok` (every step completed), `partial` (the pipeline finished but a step failed, or failed in part, as an energy mode that failed beside one that succeeded, whose other values stay in the row; see `batch_failed_steps` and `batch_failed_reasons`) or `error` (the worker raised; see `batch_error`). The last columns, `provenance_*`, record the package version, git sha, Python, OS, OpenMM version, platform and seed. The exit code is non-zero only when no sample is `ok`. Each worker process opens its own CUDA context and takes its share of GPU memory, so several workers on one GPU can run out of memory. Structures are matched to natives for DockQ by file stem (`--reference-dir`, `target1.cif` with `target1.pdb`).
 
 **Scoring (individual steps)**
 
@@ -637,7 +638,7 @@ binding-metrics-report --results results/my_run/sample_results.json \
     --summary --summary-format html
 ```
 
-The `--summary` flag (available on both `binding-metrics-run` and `binding-metrics-report`) writes a human-readable summary alongside the JSON/CSV output. Use `--summary-format md` (default) for Markdown or `--summary-format html` for a self-contained HTML page (needs the `report` extra); result text (errors, reasons, names) is escaped, so it appears as written. It has a section for each step (marked skipped when the step did not run), per-residue buried SASA of the peptide in the interface section, and a RAG scorecard (🟢/🟡/🔴, ⬜ for a value that was not computed). When one mode of the interaction energy failed, a line `A mode failed: <error_message>` follows the energy table. The scorecard thresholds are heuristic; see [`docs/report_thresholds.md`](docs/report_thresholds.md).
+The `--summary` flag (available on both `binding-metrics-run` and `binding-metrics-report`) writes a human-readable summary alongside the JSON/CSV output. Use `--summary-format md` (default) for Markdown or `--summary-format html` for a self-contained HTML page (needs the `report` extra); result text (errors, reasons, names) is escaped, so it appears as written. It has a section for each step (marked skipped when the step did not run), per-residue buried SASA of the peptide in the interface section, and a RAG scorecard (🟢/🟡/🔴, ⬜ for a value that was not computed). When one mode of the interaction energy failed, a line `A mode failed: <error_message>` follows the energy table. `--nonfinite null` writes `null` for every NaN and infinity of the JSON; a report that was written that way is read back and written again unchanged. The scorecard thresholds are heuristic; see [`docs/report_thresholds.md`](docs/report_thresholds.md).
 
 The individual scoring tools take the binder chain as `--binder-chain` and the target chain as `--target-chain`, each also under its older name (`--peptide-chain` or `--design-chain`, depending on the tool, and `--receptor-chain`). A tool accepts only the chains it uses: `binding-metrics-receptor-quality` takes the target and `binding-metrics-compare` the binder. Without them the smallest protein chain is the binder and the largest the target. See `--help` on each command for the options.
 
@@ -657,9 +658,9 @@ The individual scoring tools take the binder chain as `--binder-chain` and the t
 | `energy`, `interface`, `geometry`, `electrostatics`, `dockq`, `openfold` | one dict per metric: `{"skipped": True}` when it did not run, `{"error": message}` when it failed |
 | `prediction` | with `--predictor`: the confidence scores of the prediction, its EvoBind keys and `cache` (how the store served it) |
 | `preflight` | the decision of the [pre-flight check](#pre-flight-check): `status`, `reason`, `policy`, the steps left out and the full report |
-| `nonfinite_fields` | the JSON paths of every NaN or infinite value |
+| `nonfinite_fields` | the JSON paths of every NaN or infinite value. With `--nonfinite null` the listed values are `null` in the file. A step that adds a block after the report was written (`binding-metrics-batch`: `openfold`, `prediction`) updates the list: a block that it replaces loses its entries and gets the ones of its new values |
 
-A value that could not be computed keeps its NaN, 0 or None, and its dict gains a string under `reason` that says why; a dict without `reason` was computed in full. The seven QC checks of the relaxed structure (finite energy that did not rise, heavy-atom RMSD to the input, finite coordinates, no fused atoms, no stretched or broken bonds, no inverted Cα stereocentre, unchanged heavy-atom composition) are advisory: a failed check logs a warning and changes neither the results nor the exit code. `binding-metrics-run` exits with 1 when a step failed, after writing the partial results. A requested EvoBind score or adversarial check that could not be computed counts as a failed step. The schemas are in [`docs/metrics.md`](docs/metrics.md#15-pipeline-results-and-provenance).
+A value that could not be computed keeps its NaN, 0 or None, and its dict gains a string under `reason` that says why; a dict without `reason` was computed in full. The seven QC checks of the relaxed structure (finite energy that did not rise, heavy-atom RMSD to the input, finite coordinates, no fused atoms, no stretched or broken bonds, no inverted Cα stereocentre, unchanged heavy-atom composition) are advisory: a failed check logs a warning and changes neither the results nor the exit code. `binding-metrics-run` exits with 1 when a step failed, after writing the partial results. A requested EvoBind score or adversarial check that could not be computed counts as a failed step. A step that failed in part counts as failed: an energy with a mode that failed beside one that succeeded (`success` true, `error_message` naming the mode, for example `relaxed: minimization failed: ...`), or the energy term of `receptor_quality`; the values that were computed stay in the results. The schemas are in [`docs/metrics.md`](docs/metrics.md#15-pipeline-results-and-provenance).
 
 ---
 
