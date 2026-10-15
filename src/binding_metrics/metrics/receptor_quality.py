@@ -19,6 +19,10 @@ Usage:
     binding-metrics-receptor-quality --input complex.cif --receptor-chain A
     binding-metrics-receptor-quality --input ensemble.pdb --output results.csv
     binding-metrics-receptor-quality --input ensemble.pdb --output results.json
+    binding-metrics-receptor-quality --input ensemble.pdb --output results.json --nonfinite null
+
+``--nonfinite null`` writes a NaN or infinity of the JSON as ``null`` and lists the paths in
+``nonfinite_fields``; the default ``keep`` writes the tokens ``NaN`` and ``Infinity``.
 """
 
 import argparse
@@ -1403,8 +1407,10 @@ def main():
         default=None,
         help="Write results to file. Extension determines format: .csv or .json",
     )
+    from binding_metrics._jsonutil import add_nonfinite_arg, strict_json_text
     from binding_metrics.cli import add_log_file_arg, add_random_seed_arg
 
+    add_nonfinite_arg(parser)
     add_random_seed_arg(parser, "hydrogen placement and atom rebuilding in the energy term")
     add_log_file_arg(parser)
     args = parser.parse_args()
@@ -1514,8 +1520,14 @@ def main():
             if suffix == ".csv":
                 _write_csv(result, args.output)
             else:
+                text = None
+                if args.nonfinite == "null":
+                    text = strict_json_text(result, indent=2, default=_json_default)
                 with open(args.output, "w", encoding="utf-8") as f:
-                    json.dump(result, f, indent=2, default=_json_default)
+                    if text is None:
+                        json.dump(result, f, indent=2, default=_json_default)
+                    else:
+                        f.write(text)
             print(f"\n  Results written to: {args.output}")
 
 
