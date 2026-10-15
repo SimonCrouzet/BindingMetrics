@@ -3,7 +3,7 @@
   "name": "synthetic_1ycr",
   "description": "score_pose_set on make_synthetic_poses() (backend_a and backend_b, seeds 1 to 3, random frames) against the unmoved 1YCR complex, with the 4.5 angstrom epitope and the buried-area interface as residue sets, the crystal peptide as partner and the metrics delta_sasa_static, omega and coulomb.",
   "regenerate": "python scripts/regen_pose_golden.py --write",
-  "tolerance": {"rtol": 1e-06, "atol": 1e-06, "overrides": {"poses*.omega.*": [1e-06, 0.0001]}},
+  "tolerance": {"rtol": 1e-06, "atol": 1e-06, "overrides": {"poses*.omega.*": [1e-06, 0.0001], "aggregates*.omega.*": [1e-06, 0.0001]}},
   "ignored": ["package_version", "timing*", "provenance*", "references.*.path"],
   "result": {
     "schema": "binding_metrics.pose_set_result",

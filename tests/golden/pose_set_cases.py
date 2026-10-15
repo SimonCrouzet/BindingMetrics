@@ -60,6 +60,7 @@ TOLERANCE_OVERRIDES: dict[str, tuple[float, float]] = {
     # Torsion angles in degrees from float32 coordinates: the last digits depend on the CPU
     # (differences up to 2e-5 degree between two machines).
     "poses*.omega.*": (1e-6, 1e-4),
+    "aggregates*.omega.*": (1e-6, 1e-4),
 }
 
 #: Leaf paths (``fnmatch`` patterns) that describe the run or the machine, not the result.
