@@ -5,6 +5,7 @@ Used internally by ``binding-metrics-run`` and as a standalone tool.
 Usage:
     binding-metrics-report --results path/to/*_results.json [--format json|csv]
                            [--summary] [--summary-format md|html]
+                           [--nonfinite keep|null]
 """
 
 from __future__ import annotations
@@ -15,14 +16,20 @@ import datetime
 import html
 import json
 import logging
-import math
-import numbers
 import re
 import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from binding_metrics._jsonutil import (
+    add_nonfinite_arg,
+    check_nonfinite,
+    nonfinite_paths,
+    strict_json_text,
+)
+from binding_metrics._jsonutil import is_nonfinite as _is_nonfinite
 
 logger = logging.getLogger(__name__)
 
@@ -185,11 +192,6 @@ def _best_e_int(energy: dict | None) -> Any:
         if v is not None:
             return v
     return None
-
-
-def _is_nonfinite(v: Any) -> bool:
-    """True for NaN and +-inf, whether a Python float or a numpy scalar."""
-    return isinstance(v, numbers.Real) and not math.isfinite(v)
 
 
 def _fmt(v: Any, decimals: int = 3) -> str:
@@ -1015,27 +1017,6 @@ def _json_default(obj: Any) -> Any:
     return str(obj)
 
 
-def _nonfinite_paths(obj: Any, prefix: str = "") -> list[str]:
-    """Dotted paths of every NaN or infinite leaf in a nested results dict.
-
-    List items are addressed as ``name[3]``. Both Python floats and numpy
-    scalars count.
-    """
-    if isinstance(obj, dict):
-        out: list[str] = []
-        for key, value in obj.items():
-            out += _nonfinite_paths(value, f"{prefix}.{key}" if prefix else str(key))
-        return out
-    if isinstance(obj, (list, tuple)):
-        out = []
-        for i, value in enumerate(obj):
-            out += _nonfinite_paths(value, f"{prefix}[{i}]")
-        return out
-    if isinstance(obj, np.ndarray):
-        return _nonfinite_paths(obj.tolist(), prefix)
-    return [prefix] if _is_nonfinite(obj) else []
-
-
 def write_report(
     results: dict,
     output_dir: Path,
@@ -1043,6 +1024,8 @@ def write_report(
     fmt: str = "json",
     summary: bool = False,
     summary_format: str = "md",
+    *,
+    nonfinite: str = "keep",
 ) -> Path:
     """Write pipeline results to *output_dir*.
 
@@ -1053,21 +1036,35 @@ def write_report(
         fmt:            Primary output format — ``"json"`` (default) or ``"csv"``.
         summary:        If True, also write a human-readable summary file.
         summary_format: Format of the summary — ``"md"`` (default) or ``"html"``.
+        nonfinite:      Keyword-only. ``"keep"`` (default) writes a NaN or infinity of the JSON
+                        as the token ``NaN`` / ``Infinity`` / ``-Infinity``; ``"null"`` writes
+                        ``null``, so a strict JSON parser reads the file. The CSV and the
+                        summary do not depend on it.
 
     Returns:
         Path to the primary output file (JSON or CSV).
 
+    Raises:
+        ValueError: If ``nonfinite`` is neither ``"keep"`` nor ``"null"``; nothing is written.
+
     ``results["nonfinite_fields"]`` is set to the dotted paths of every NaN or
-    infinite value (``["relax.rmsd_md_final", ...]``) before writing. The JSON
-    keeps the ``NaN`` / ``Infinity`` tokens for those values, which Python's
-    ``json`` reads back but strict JSON parsers reject; the list tells a reader
-    which fields to treat as "not computed".
+    infinite value (``["relax.rmsd_md_final", ...]``) before writing. With
+    ``nonfinite="keep"`` the JSON has the ``NaN`` / ``Infinity`` tokens for those
+    values, which Python's ``json`` reads back but strict JSON parsers reject; with
+    ``"null"`` it has ``null`` at those paths, and the paths that an earlier ``"null"``
+    report listed stay listed. The list tells a reader which fields to treat as
+    "not computed". ``results`` itself keeps its values.
     """
+    check_nonfinite(nonfinite)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    results.pop("nonfinite_fields", None)  # recomputed, so a re-written report stays exact
-    results["nonfinite_fields"] = _nonfinite_paths(results)
+    # recomputed, so a re-written report stays exact
+    listed = results.pop("nonfinite_fields", None)
+    results["nonfinite_fields"] = nonfinite_paths(results)
+    if nonfinite == "null" and isinstance(listed, list):
+        # a null report read back has None where the listed values were
+        results["nonfinite_fields"] += [p for p in listed if p not in results["nonfinite_fields"]]
 
     if fmt == "csv":
         out_path = output_dir / f"{sample_id}_results.csv"
@@ -1078,8 +1075,14 @@ def write_report(
             writer.writerow(flat)
     else:  # json (default)
         out_path = output_dir / f"{sample_id}_results.json"
+        text = None
+        if nonfinite == "null":
+            text = strict_json_text(results, indent=2, default=_json_default)
         with open(out_path, "w", encoding="utf-8") as fh:
-            json.dump(results, fh, indent=2, default=_json_default)
+            if text is None:
+                json.dump(results, fh, indent=2, default=_json_default)
+            else:
+                fh.write(text)
 
     if summary:
         if summary_format == "html":
@@ -1135,6 +1138,7 @@ def main() -> None:
         default=None,
         help="Output directory (default: same directory as --results)",
     )
+    add_nonfinite_arg(parser)
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(parser)
@@ -1160,5 +1164,6 @@ def main() -> None:
             fmt=args.fmt,
             summary=args.summary,
             summary_format=args.summary_format,
+            nonfinite=args.nonfinite,
         )
         print(f"  results   → {out}")

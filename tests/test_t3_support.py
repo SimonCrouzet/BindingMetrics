@@ -1,9 +1,25 @@
 """Helpers of the strict JSON tests (#220): a strict parser and the paths of a document."""
 
 import json
+import logging
 import math
 import re
 from pathlib import Path
+
+import pytest
+
+from binding_metrics.utils import _CurrentStreamHandler
+
+
+@pytest.fixture
+def restore_package_logger():
+    """The ``main`` functions install console handlers; do not leave them for later tests."""
+    package_logger = logging.getLogger("binding_metrics")
+    saved_level = package_logger.level
+    yield
+    for handler in [h for h in package_logger.handlers if isinstance(h, _CurrentStreamHandler)]:
+        package_logger.removeHandler(handler)
+    package_logger.setLevel(saved_level)
 
 
 def _refuse(token):

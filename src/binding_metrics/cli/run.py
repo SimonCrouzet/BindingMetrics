@@ -14,6 +14,9 @@ Usage:
         [--device cuda]
 
 The results JSON carries a ``provenance`` block (package version, git sha, seed, platform).
+It writes a NaN or infinity as the token ``NaN`` or ``Infinity``, and ``nonfinite_fields`` lists
+the paths; ``--nonfinite null`` writes ``null`` instead, for parsers that accept only standard
+JSON.
 
 Structure prediction:
     The ``openfold`` step runs OpenFold3 and writes ``results["openfold"]``. With
@@ -66,6 +69,7 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
+from binding_metrics._jsonutil import add_nonfinite_arg
 from binding_metrics.capabilities import (
     DEFAULT_DESIGN_POLICY,
     DEFAULT_MSA_POLICY,
@@ -1385,6 +1389,7 @@ def main():
         dest="summary_format",
         help="Summary format (default: md)",
     )
+    add_nonfinite_arg(report_group)
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(report_group)
@@ -1489,6 +1494,7 @@ def main():
             fmt=args.fmt,
             summary=args.summary,
             summary_format=args.summary_format,
+            nonfinite=args.nonfinite,
         )
 
         failures = _collect_failures(results)
