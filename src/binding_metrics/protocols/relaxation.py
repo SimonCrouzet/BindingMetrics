@@ -1681,10 +1681,19 @@ def _run_one(
     sample_id: Optional[str],
     results_json: Optional[Path],
     model_num: Optional[int],
+    nonfinite: str = "keep",
 ) -> "RelaxationResult":
-    """Extract one model (if needed), run relaxation, write JSON, return result."""
+    """Extract one model (if needed), run relaxation, write JSON, return result.
+
+    ``nonfinite`` is the mode of the results JSON: ``"keep"`` writes a NaN or infinity as the
+    token ``NaN`` or ``Infinity``; ``"null"`` writes ``null`` and lists the paths in
+    ``nonfinite_fields``. Another value raises ``ValueError`` before anything runs.
+    """
+    from binding_metrics._jsonutil import check_nonfinite, strict_json_text
     from binding_metrics.io.structures import extract_model_to_tempfile
     from binding_metrics.protocols.report import _json_default
+
+    check_nonfinite(nonfinite)
 
     tmp_path: Optional[Path] = None
     if model_num is not None:
@@ -1704,8 +1713,14 @@ def _run_one(
     if results_json is not None:
         rp = Path(results_json)
         rp.parent.mkdir(parents=True, exist_ok=True)
+        text = None
+        if nonfinite == "null":
+            text = strict_json_text(result.to_dict(), indent=2, default=_json_default)
         with open(rp, "w", encoding="utf-8") as _fh:
-            json.dump(result.to_dict(), _fh, indent=2, default=_json_default)
+            if text is None:
+                json.dump(result.to_dict(), _fh, indent=2, default=_json_default)
+            else:
+                _fh.write(text)
         print(f"  Results:   {rp}")
 
     if result.success:
@@ -1725,6 +1740,7 @@ def main():
 
     configure_logging()
 
+    from binding_metrics._jsonutil import add_nonfinite_arg
     from binding_metrics.cli import add_config_arg, parse_args_with_config, small_molecules_arg
     from binding_metrics.metrics._common import ChainAliasAction
 
@@ -1824,6 +1840,7 @@ def main():
         help="Path to write relax results as JSON. "
         "Omit to skip JSON output (ignored with --all-models).",
     )
+    add_nonfinite_arg(parser)
     from binding_metrics.cli import add_log_file_arg
 
     add_log_file_arg(parser)
@@ -1902,6 +1919,7 @@ def main():
                 sample_id=args.sample_id,
                 results_json=args.results_json,
                 model_num=args.model,
+                nonfinite=args.nonfinite,
             )
             if not result.success:
                 sys.exit(1)

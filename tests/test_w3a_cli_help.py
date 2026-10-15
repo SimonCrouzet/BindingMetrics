@@ -34,6 +34,8 @@ leaves a head-to-tail binder with modified residues linear, and the one-complex 
 behind it. Two options of the pre-flight group were added to both commands and are recorded the
 same way: ``--designed-with`` (the pipeline that made the designed binder) and ``--design-policy``
 (what to do with the adversarial check when the model of the run is one that pipeline ran).
+``--nonfinite`` (NaN and infinity in the JSON results as tokens or as ``null``) was added to
+``-run``, ``-batch`` and ``-relax`` and is recorded the same way.
 """
 
 import argparse
@@ -102,6 +104,13 @@ def describe_options(parser):
         )
     return described
 
+
+#: The help of ``--nonfinite`` (run, batch and relax), with its default expanded.
+NONFINITE_HELP = (
+    "NaN and infinity in the JSON results: 'keep' writes the tokens NaN, Infinity and "
+    "-Infinity; 'null' writes null and lists the paths in nonfinite_fields, for parsers that "
+    "accept only standard JSON (default: keep)"
+)
 
 GOLDEN = {
     "run": {
@@ -536,6 +545,15 @@ GOLDEN = {
                 "'md'",
                 "Summary format (default: md)",
             ),
+            "--nonfinite": (
+                "Report",
+                None,
+                ["keep", "null"],
+                None,
+                False,
+                "'keep'",
+                NONFINITE_HELP,
+            ),
             "--log-file": (
                 "Report",
                 "PATH",
@@ -962,6 +980,15 @@ GOLDEN = {
                 "or predicting anything. Exit status 1 when --on-incompatible"
                 " is error and something is refused.",
             ),
+            "--nonfinite": (
+                "options",
+                None,
+                ["keep", "null"],
+                None,
+                False,
+                "'keep'",
+                NONFINITE_HELP,
+            ),
             "--log-file": (
                 "Logging",
                 "PATH",
@@ -1114,6 +1141,15 @@ GOLDEN = {
                 "None",
                 "Path to write relax results as JSON. Omit to skip "
                 "JSON output (ignored with --all-models).",
+            ),
+            "--nonfinite": (
+                "options",
+                None,
+                ["keep", "null"],
+                None,
+                False,
+                "'keep'",
+                NONFINITE_HELP,
             ),
             "--log-file": (
                 "options",

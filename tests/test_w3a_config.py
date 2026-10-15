@@ -289,7 +289,9 @@ class TestRelaxCli:
         seen = {}
         monkeypatch.setattr(relaxation, "ImplicitRelaxation", lambda config: None)
 
-        def fake_run_one(relaxer, input_path, output_dir, sample_id, results_json, model_num):
+        def fake_run_one(
+            relaxer, input_path, output_dir, sample_id, results_json, model_num, nonfinite
+        ):
             seen["model"] = model_num
             return type("Result", (), {"success": True})()
 
