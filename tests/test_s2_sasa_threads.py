@@ -35,6 +35,7 @@ def test_buried_sasa_of_a_frame_is_the_same_with_one_thread_and_with_two(tmp_pat
             [sys.executable, "-c", SCRIPT, str(dcd), str(pdb)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             env={**os.environ, "OMP_NUM_THREADS": threads},
             check=True,
         )
@@ -100,6 +101,7 @@ def test_a_protein_trajectory_with_more_frames_than_threads_gives_the_frame_by_f
         [sys.executable, "-c", REFERENCE_SCRIPT, str(dcd), str(pdb)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env={**os.environ, "OMP_NUM_THREADS": "2"},
         check=True,
     )
