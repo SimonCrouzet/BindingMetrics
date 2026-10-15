@@ -23,6 +23,7 @@ import biotite.structure.io.pdb as pdb_io  # noqa: E402
 from conftest import DATA_DIR  # noqa: E402
 
 from binding_metrics.metrics.geometry import (  # noqa: E402
+    _classify_ramachandran,
     compute_omega_planarity,
     compute_ramachandran,
 )
@@ -150,6 +151,32 @@ def _rows(result, *keys):
     return [tuple(row[k] for k in keys) for row in result["per_residue"]]
 
 
+def _reference_angles_deg(atoms):
+    """phi and psi in degrees of each residue of chain B, keyed by residue number, from biotite.
+
+    ``dihedral_backbone`` has one row per residue of the array, caps included, and NaN where the
+    angle is undefined; the row of a residue is found from the residue starts, not by position
+    among the C-alpha atoms.
+    """
+    chain = atoms[atoms.chain_id == "B"]
+    phi, psi, _ = (np.degrees(angles) for angles in struc.dihedral_backbone(chain))
+    numbers = chain.res_id[struc.get_residue_starts(chain)]
+    return {int(n): (float(f), float(s)) for n, f, s in zip(numbers, phi, psi)}
+
+
+def _reference_regions(atoms, d_residue=None):
+    """Ramachandran region of each residue of chain B that has a phi and a psi.
+
+    The angles come from ``_reference_angles_deg``; the residue ``d_residue`` is classified on the
+    mirrored plot. The region boxes are tested on their own in ``tests/test_geometry.py``.
+    """
+    regions = {
+        number: _classify_ramachandran(phi, psi, is_d=number == d_residue)
+        for number, (phi, psi) in _reference_angles_deg(atoms).items()
+    }
+    return {number: region for number, region in regions.items() if region is not None}
+
+
 # ---------------------------------------------------------------------------
 # compute_ramachandran
 # ---------------------------------------------------------------------------
@@ -176,34 +203,37 @@ class TestRamachandranWithCaps:
             )
 
     def test_the_first_row_is_the_residue_that_owns_its_angles(self, capped, write):
-        result = compute_ramachandran(write(capped), chain="B")
+        path = write(capped)
+        result = compute_ramachandran(path, chain="B")
         first = result["per_residue"][0]
         assert (first["res_id"], first["res_name"]) == (18, "THR")
-        assert first["phi"] == pytest.approx(-93.0, abs=1.0)
+        # a residue labelled with the angle of its predecessor (the ACE cap shifts every row by
+        # one) would carry the phi of residue 17, which is undefined
+        phi, _ = _reference_angles_deg(_load(path))[18]
+        assert first["phi"] == pytest.approx(phi, abs=1e-3)
         assert result["n_residues_evaluated"] == 11
         assert "ACE" not in {p["res_name"] for p in result["per_residue"]}
         assert "NH2" not in {p["res_name"] for p in result["per_residue"]}
 
-    @pytest.mark.parametrize(
-        ("d_residue", "favoured_pct", "allowed_pct", "outliers"),
-        [
-            (18, 81.82, 9.09, 1),
-            (19, 90.91, 9.09, 0),
-            (26, 81.82, 9.09, 1),
-            (28, 81.82, 18.18, 0),
-        ],
-    )
+    @pytest.mark.parametrize("d_residue", [18, 19, 26, 28])
     def test_a_d_label_lands_on_the_residue_that_carries_it(
-        self, peptide, capped, write, d_residue, favoured_pct, allowed_pct, outliers
+        self, peptide, capped, write, d_residue
     ):
         plain = compute_ramachandran(write(_relabel(peptide, {d_residue: "DAL"})), chain="B")
-        result = compute_ramachandran(write(_relabel(capped, {d_residue: "DAL"})), chain="B")
+        path = write(_relabel(capped, {d_residue: "DAL"}))
+        result = compute_ramachandran(path, chain="B")
 
         assert result["n_d_residues"] == 1
         assert [p["res_id"] for p in result["per_residue"] if p["is_d_aa"]] == [d_residue]
-        assert result["ramachandran_favoured_pct"] == pytest.approx(favoured_pct, abs=0.01)
-        assert result["ramachandran_allowed_pct"] == pytest.approx(allowed_pct, abs=0.01)
-        assert result["ramachandran_outlier_count"] == outliers
+        # the regions of the residues, with only the labelled one mirrored: a label that landed on
+        # the neighbouring row would mirror another residue
+        regions = list(_reference_regions(_load(path), d_residue).values())
+        assert result["n_residues_evaluated"] == len(regions)
+        for region in ("favoured", "allowed"):
+            assert result[f"ramachandran_{region}_pct"] == pytest.approx(
+                100.0 * regions.count(region) / len(regions)
+            )
+        assert result["ramachandran_outlier_count"] == regions.count("outlier")
         # the capped peptide scores exactly like the same peptide without caps
         for key in (
             "ramachandran_favoured_pct",
@@ -322,23 +352,21 @@ class TestOmegaWithCaps:
 class TestReceptorQualityRamachandranWithCaps:
     """The Ramachandran term of the receptor quality, called on an array with caps."""
 
-    @pytest.mark.parametrize(
-        ("d_residue", "counts"),
-        [(18, (9, 1, 1)), (19, (10, 1, 0)), (26, (9, 1, 1)), (28, (9, 2, 0))],
-    )
-    def test_a_d_label_lands_on_the_residue_that_carries_it(
-        self, peptide, capped, d_residue, counts
-    ):
+    @pytest.mark.parametrize("d_residue", [18, 19, 26, 28])
+    def test_a_d_label_lands_on_the_residue_that_carries_it(self, peptide, capped, d_residue):
         plain = _ramachandran(_relabel(peptide, {d_residue: "DAL"}))
         result = _ramachandran(_relabel(capped, {d_residue: "DAL"}))
 
-        assert (plain["favoured_count"], plain["allowed_count"], plain["outlier_count"]) == counts
-        assert (
-            result["favoured_count"],
-            result["allowed_count"],
-            result["outlier_count"],
-        ) == counts
-        assert result["n_evaluated"] == 11
+        # the regions of the residues, with only the labelled one mirrored
+        regions = list(_reference_regions(peptide, d_residue).values())
+        counts = tuple(regions.count(r) for r in ("favoured", "allowed", "outlier"))
+        for scored in (plain, result):
+            assert (
+                scored["favoured_count"],
+                scored["allowed_count"],
+                scored["outlier_count"],
+            ) == counts
+            assert scored["n_evaluated"] == len(regions)
 
     def test_an_all_l_capped_peptide_matches_the_uncapped_one(self, peptide, capped):
         plain = _ramachandran(peptide)
