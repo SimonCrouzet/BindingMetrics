@@ -761,13 +761,14 @@ def _update_sample_json(
     """Merge one step's results into an existing per-sample JSON report.
 
     ``section`` is the key the block is written to (``"openfold"`` or ``"prediction"``);
-    ``provenance`` adds keys to the report's provenance block. With ``nonfinite="null"`` the
-    report is written as strict JSON: a NaN or infinity of the block is ``null`` and its path
-    joins ``nonfinite_fields``.
+    ``provenance`` adds keys to the report's provenance block. ``nonfinite_fields`` is brought
+    up to date: the entries of the replaced block go, and the NaN and infinite values of the new
+    block are listed. With ``nonfinite="null"`` the report is written as strict JSON: those values
+    are ``null``, and the paths listed by an earlier null report stay.
     """
     import json
 
-    from binding_metrics._jsonutil import strict_json_text
+    from binding_metrics._jsonutil import nonfinite_paths, strict_json_text
     from binding_metrics.protocols.report import _json_default
 
     json_path = sample_dir / f"{sid}_results.json"
@@ -779,8 +780,15 @@ def _update_sample_json(
         if provenance:
             data.setdefault("provenance", {}).update(provenance)
         if nonfinite == "null":
+            listed = data.get("nonfinite_fields")
+            data["nonfinite_fields"] = [
+                path
+                for path in (listed if isinstance(listed, list) else [])
+                if path != section and not path.startswith((f"{section}.", f"{section}["))
+            ]
             text = strict_json_text(data, indent=2, default=_json_default)
         else:
+            data["nonfinite_fields"] = nonfinite_paths(data)
             text = json.dumps(data, indent=2, default=_json_default)
         json_path.write_text(text, encoding="utf-8")
     except Exception as e:  # noqa: BLE001 - non-critical, the CSV row has the data anyway

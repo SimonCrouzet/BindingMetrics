@@ -5,6 +5,7 @@ worker that writes it, and the OpenFold3 and prediction steps that add their blo
 """
 
 import json
+import math
 import sys
 
 import numpy as np
@@ -106,13 +107,14 @@ class TestSampleJsonUpdate:
 
     METRICS = {"iptm": float("nan"), "plddt": np.array([90.0, np.nan]), "n": np.int64(4)}
 
-    def test_the_default_text_is_the_text_json_dumps_gives(self, tmp_path):
+    def test_a_finite_block_gives_the_text_json_dumps_gives(self, tmp_path):
         write_report(pipeline_results(), tmp_path, "sample")
         path = tmp_path / "sample_results.json"
+        block = {"iptm": 0.5, "plddt": np.array([90.0, 80.0]), "n": np.int64(4)}
         data = json.loads(read(path))
-        data["openfold"] = self.METRICS
+        data["openfold"] = block
         expected = json.dumps(data, indent=2, default=_json_default)
-        batch._update_sample_json(tmp_path, "sample", self.METRICS)
+        batch._update_sample_json(tmp_path, "sample", block)
         assert read(path) == expected
 
     def test_null_keeps_the_report_strict_and_extends_the_list(self, tmp_path):
@@ -131,7 +133,49 @@ class TestSampleJsonUpdate:
             "nonfinite_fields": ["openfold.x"],
         }
 
-    def test_the_batched_openfold_step_writes_in_the_mode_of_the_run(self, tmp_path, monkeypatch):
+    def test_the_list_names_the_values_of_the_new_block_by_default(self, tmp_path):
+        write_report(pipeline_results(), tmp_path, "sample")
+        batch._update_sample_json(tmp_path, "sample", self.METRICS)
+        data = json.loads(read(tmp_path / "sample_results.json"))
+        assert data["nonfinite_fields"] == [*LISTED, "openfold.iptm", "openfold.plddt[1]"]
+
+    def test_only_the_list_differs_from_the_text_json_dumps_gives(self, tmp_path):
+        write_report(pipeline_results(), tmp_path, "sample")
+        path = tmp_path / "sample_results.json"
+        data = json.loads(read(path))
+        data["openfold"] = self.METRICS
+        data["nonfinite_fields"] = [*LISTED, "openfold.iptm", "openfold.plddt[1]"]
+        batch._update_sample_json(tmp_path, "sample", self.METRICS)
+        assert read(path) == json.dumps(data, indent=2, default=_json_default)
+
+    @pytest.mark.parametrize("mode", ["keep", "null"])
+    def test_a_block_that_is_finite_now_leaves_the_list(self, tmp_path, mode):
+        write_report(pipeline_results(), tmp_path, "sample", nonfinite=mode)
+        batch._update_sample_json(tmp_path, "sample", self.METRICS, nonfinite=mode)
+        batch._update_sample_json(tmp_path, "sample", {"iptm": 0.8}, nonfinite=mode)
+        data = json.loads(read(tmp_path / "sample_results.json"))
+        assert data["nonfinite_fields"] == LISTED
+        assert data["openfold"] == {"iptm": 0.8}
+
+    @pytest.mark.parametrize("mode", ["keep", "null"])
+    def test_two_blocks_are_listed_under_their_own_section(self, tmp_path, mode):
+        write_report({"sample_id": "s"}, tmp_path, "s", nonfinite=mode)
+        batch._update_sample_json(tmp_path, "s", {"x": float("nan")}, nonfinite=mode)
+        batch._update_sample_json(
+            tmp_path, "s", {"y": [1.0, float("inf")]}, section="prediction", nonfinite=mode
+        )
+        batch._update_sample_json(tmp_path, "s", {"x": float("-inf")}, nonfinite=mode)
+        data = json.loads(read(tmp_path / "s_results.json"))
+        assert sorted(data["nonfinite_fields"]) == ["openfold.x", "prediction.y[1]"]
+
+    def test_the_list_is_added_to_a_report_that_has_none_by_default(self, tmp_path):
+        (tmp_path / "s1_results.json").write_text("{}", encoding="utf-8")
+        batch._update_sample_json(tmp_path, "s1", {"x": float("inf")})
+        data = json.loads(read(tmp_path / "s1_results.json"))
+        assert data["nonfinite_fields"] == ["openfold.x"]
+
+    @staticmethod
+    def _openfold_step(tmp_path, monkeypatch, **kwargs):
         from binding_metrics.metrics import evobind as evobind_module
         from binding_metrics.metrics import openfold
 
@@ -153,10 +197,21 @@ class TestSampleJsonUpdate:
             openfold_conda_env=None,
             peptide_chain="B",
             receptor_chain="A",
-            nonfinite="null",
+            **kwargs,
         )
+        return json.loads(read(tmp_path / "s1" / "s1_results.json"))
+
+    def test_the_batched_openfold_step_writes_in_the_mode_of_the_run(self, tmp_path, monkeypatch):
+        self._openfold_step(tmp_path, monkeypatch, nonfinite="null")
         data = strict_loads(read(tmp_path / "s1" / "s1_results.json"))
         assert data["openfold"]["iptm"] is None
+        assert data["nonfinite_fields"] == ["openfold.iptm"]
+
+    def test_the_batched_openfold_step_lists_its_nonfinite_values_by_default(
+        self, tmp_path, monkeypatch
+    ):
+        data = self._openfold_step(tmp_path, monkeypatch)
+        assert math.isnan(data["openfold"]["iptm"])
         assert data["nonfinite_fields"] == ["openfold.iptm"]
 
     def test_the_batched_prediction_step_writes_in_the_mode_of_the_run(self, tmp_path, monkeypatch):
@@ -185,3 +240,33 @@ class TestSampleJsonUpdate:
         assert modes == ["null"]
         report = strict_loads(read(tmp_path / "out" / "a" / "a_results.json"))
         assert report["prediction"]["model"] == "of3" and "nonfinite_fields" in report
+
+    @pytest.mark.parametrize("mode", ["keep", "null"])
+    def test_the_batched_prediction_step_lists_its_nonfinite_values(
+        self, tmp_path, monkeypatch, mode
+    ):
+        StubOpenFold(monkeypatch)
+        original = batch.run_prediction_step
+
+        def with_nan(*args, **kwargs):
+            block, provenance = original(*args, **kwargs)
+            block["iptm"] = float("nan")
+            return block, provenance
+
+        monkeypatch.setattr(batch, "run_prediction_step", with_nan)
+        sample = tmp_path / "in" / "a.pdb"
+        sample.parent.mkdir()
+        sample.write_text(read(EXAMPLE_1YCR), encoding="utf-8")
+        batch.run_batch(
+            [sample],
+            tmp_path / "out",
+            skip_prep=True,
+            skip_relax=True,
+            metrics={"openfold"},
+            openfold_conda_env=None,
+            predictor="of3",
+            nonfinite=mode,
+        )
+        data = json.loads(read(tmp_path / "out" / "a" / "a_results.json"))
+        assert data["nonfinite_fields"] == ["prediction.iptm"]
+        assert (data["prediction"]["iptm"] is None) == (mode == "null")
