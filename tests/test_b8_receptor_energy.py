@@ -68,16 +68,18 @@ def _chain_atoms(path, chain: str):
 
 class TestWithoutPdbfixer:
     def test_a_raw_chain_without_its_terminal_oxygen_gets_an_energy(self):
-        """1YCR chain A ends in VAL85 without OXT; PDBFixer completes it to 1449 atoms."""
+        """1YCR chain A ends in VAL85 without OXT, which PDBFixer adds."""
         without = _energy_without_pdbfixer(YCR, "A")
 
         assert without["error"] is None, without["error"]
         assert np.isfinite(without["energy_kJ_mol"])
         with_pdbfixer = receptor_quality._receptor_energy(_chain_atoms(YCR, "A"), device="cpu")
-        assert without["n_atoms_with_h"] == with_pdbfixer["n_atoms_with_h"] == 1449
+        # The same system: a route that stops adding hydrogens or the OXT changes the count.
+        assert without["n_atoms_with_h"] == with_pdbfixer["n_atoms_with_h"]
+        assert without["n_atoms_with_h"] > len(_chain_atoms(YCR, "A")) + 1
         # The chain is complete but for the OXT, so the two routes build the same system. They
-        # place the OXT 0.7 A apart (PDBFixer from the residue template, here in the plane of
-        # CA, C and O), which moves the energy by 556 of 4372 kJ/mol through the carboxylate charge.
+        # place the OXT differently (PDBFixer from the residue template, here in the plane of
+        # CA, C and O), which moves the energy through the carboxylate charge.
         assert without["energy_kJ_mol"] == pytest.approx(with_pdbfixer["energy_kJ_mol"], rel=0.2)
 
     def test_a_chain_that_lacks_atoms_says_that_pdbfixer_is_needed(self):

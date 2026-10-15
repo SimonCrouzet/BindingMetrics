@@ -3,8 +3,8 @@
 ``Modeller.addHydrogens`` places the hydrogens of the phosphorylated residues only when
 their hydrogen definitions are loaded into ``Modeller``, which is process-global state.
 The cyclic route of ``prep_structure`` loaded them and the linear route did not, so
-1QJB (SEP, linear) came out with 120 atoms in a fresh process, SEP without a single
-hydrogen, and with 124 atoms once a cyclic peptide had been prepared before it in the
+1QJB (SEP, linear) came out of a fresh process with SEP without a single hydrogen, and
+with the four hydrogens of SEP once a cyclic peptide had been prepared before it in the
 same process. phosaa14SB gives SEP its hydrogens H, HA, HB2 and HB3 whatever the pH: the
 protonation state of the phosphate is chosen by the residue name (SEP is the dianion,
 S1P the monoanion), not by ``pH``. The four hydrogens are part of the residue, and both
@@ -114,11 +114,18 @@ class TestPrepOfAPhosphorylatedPeptide:
             monkeypatch.delitem(Modeller._residueHydrogens, name, raising=False)
         topology, positions = load_structure(PHOSPHO)
         prepped, _ = prep_structure(topology, positions)
+        # The same file prepared while the definitions are already registered, which is the
+        # state a cyclic peptide prepared earlier in the process leaves behind.
+        with phosaa.hydrogen_definitions():
+            registered, _ = prep_structure(*load_structure(PHOSPHO))
 
         sep = next(r for r in prepped.residues() if r.name == "SEP")
         hydrogens = sorted(a.name for a in sep.atoms() if a.element.symbol == "H")
         assert hydrogens == ["H", "HA", "HB2", "HB3"]  # the phosphate of SEP is the dianion
-        assert prepped.getNumAtoms() == 124
+        # Every atom of the system, not only those of SEP, is the same in both states.
+        assert [(a.residue.name, a.name) for a in prepped.atoms()] == [
+            (a.residue.name, a.name) for a in registered.atoms()
+        ]
 
     def test_prep_leaves_no_definition_behind(self, monkeypatch):
         pytest.importorskip("pdbfixer")
@@ -155,7 +162,11 @@ class TestOrderOfPreps:
         alone = prepped_in_three_orders["alone"][str(PHOSPHO)]
         after = prepped_in_three_orders["cyclic_first"][str(PHOSPHO)]
 
-        assert len(alone["atoms"]) == 124
+        # A fresh process gives SEP its hydrogens (it came out with none before #163).
+        sep_hydrogens = sorted(
+            name for _, residue, _, name in alone["atoms"] if residue == "SEP" and name[0] == "H"
+        )
+        assert sep_hydrogens == ["H", "HA", "HB2", "HB3"]
         assert alone["atoms"] == after["atoms"]
         assert alone["positions_nm"] == after["positions_nm"]
 

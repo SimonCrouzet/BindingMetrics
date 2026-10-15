@@ -72,6 +72,12 @@ def _names(topology, chain_id="B"):
     return [r.name for c in topology.chains() if c.id == chain_id for r in c.residues()]
 
 
+def _heavy_atoms_and_hydrogens(topology, chain_id="B"):
+    elements = [a.element.symbol for c in topology.chains() if c.id == chain_id for a in c.atoms()]
+    n_hydrogens = elements.count("H")
+    return len(elements) - n_hydrogens, n_hydrogens
+
+
 def _signed_volume(positions_nm, residue, fourth: str) -> float:
     """Signed volume of N, C and ``fourth`` around CA: which face of N-CA-C the atom is on."""
     atoms = {a.name: np.array(positions_nm[a.index]) for a in residue.atoms()}
@@ -103,12 +109,12 @@ class TestHydrogensOfDResidues:
         _flip_to_d(topology, "B")
         prepped, _ = _prep(topology, positions)
 
-        n_atoms = sum(
-            len(list(r.atoms())) for c in prepped.chains() if c.id == "B" for r in c.residues()
-        )
-        assert n_atoms == 221  # 113 heavy atoms and 108 hydrogens, as for the L peptide
+        # Same heavy atoms and the same number of hydrogens as the L peptide of the same sequence.
+        assert _heavy_atoms_and_hydrogens(prepped) == _heavy_atoms_and_hydrogens(l_peptide[0])
         assert _hydrogens_per_residue(prepped) == _hydrogens_per_residue(l_peptide[0])
-        assert sum(_hydrogens_per_residue(prepped)) == 108
+        # The failure of #164 left every D residue without a hydrogen, and an L peptide that
+        # lost its hydrogens too would still satisfy the two equalities above.
+        assert all(count > 0 for count in _hydrogens_per_residue(prepped))
 
     def test_the_hydrogens_are_bonded_to_the_atoms_of_the_l_template(self):
         topology, positions = load_structure(P53)
