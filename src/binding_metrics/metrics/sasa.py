@@ -116,7 +116,14 @@ def _interface_sasa_nm2(
 
     def total_sasa(atom_indices) -> np.ndarray:
         sliced = traj.atom_slice(atom_indices)
-        return md.shrake_rupley(sliced, probe_radius=probe_radius).sum(axis=1)
+        # One frame per call: with a single OpenMP thread, mdtraj 1.11.1 computes the areas of a
+        # frame from state left by the previous one.
+        return np.array(
+            [
+                md.shrake_rupley(sliced[i], probe_radius=probe_radius).sum()
+                for i in range(sliced.n_frames)
+            ]
+        )
 
     sasa_ligand = total_sasa(ligand_indices)
     sasa_receptor = total_sasa(receptor_indices)
