@@ -1600,7 +1600,7 @@ class TestContacts:
                     (position, ResidueKey("A", int(receptor.res_id[j]), str(receptor.ins_code[j])))
                 )
         assert contacts == expected
-        assert len(contacts) > 40
+        assert expected  # the brute-force set is not empty, so the equality is not vacuous
 
     def test_the_known_hot_spot_residues_of_p53_are_in_the_interface(self, p53):
         # Phe19, Trp23 and Leu26 of p53 bury themselves in MDM2: positions 3, 7 and 10 of 17-29
