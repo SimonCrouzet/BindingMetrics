@@ -462,19 +462,67 @@ class TestCleanInstallSmoke:
         assert result.returncode != 0
 
 
-class TestLatestTagIsTheBaseImage:
-    def test_only_the_base_image_can_take_latest(self):
+class TestImageTags:
+    """The tag lists of docker-publish.yml.
+
+    The metadata action (docker/metadata-action v6) turns these inputs into, for the full image,
+    `X.Y` and `latest` for a stable tag `vX.Y.Z`, `X.Y.Z-rcN` for `vX.Y.Z-rcN` and `main` for a
+    push to main; the flavor suffix makes the base image's `X.Y-base`, `latest-base`,
+    `X.Y.Z-rcN-base` and `main-base`. The inputs are asserted literally, since the conditions are
+    evaluated by the action.
+    """
+
+    TAG_SPECS = {
+        "type=raw,value=main,enable={{is_default_branch}}",
+        "type=semver,pattern={{major}}.{{minor}}",
+    }
+
+    @staticmethod
+    def _metadata_inputs() -> dict[str, dict]:
         steps = _workflow("docker-publish.yml")["jobs"]["docker"]["steps"]
-        metadata = {
-            step["id"]: step["with"].get("flavor", "")
+        return {
+            step["id"]: step["with"]
             for step in steps
-            if step.get("uses", "").startswith("docker/metadata-action")
+            if step.get("uses", "").startswith("docker/metadata-action@v6")
         }
-        can_take_latest = []
+
+    @staticmethod
+    def _tag_specs(inputs: dict) -> set[str]:
+        return {line.strip() for line in inputs["tags"].splitlines() if line.strip()}
+
+    @staticmethod
+    def _flavor(inputs: dict) -> dict[str, str]:
+        """The `flavor` input as the action reads it: comma- and line-separated key=value pairs."""
+        entries = re.split(r"[,\n]", inputs.get("flavor", ""))
+        return dict(entry.strip().split("=", 1) for entry in entries if entry.strip())
+
+    def test_each_target_is_built_with_the_tags_of_its_own_metadata_step(self):
+        steps = _workflow("docker-publish.yml")["jobs"]["docker"]["steps"]
+        meta_of_target = {}
         for step in steps:
-            if not step.get("uses", "").startswith("docker/build-push-action"):
-                continue
-            meta_id = re.search(r"steps\.([\w-]+)\.outputs\.tags", step["with"]["tags"]).group(1)
-            if "latest=false" not in metadata[meta_id]:
-                can_take_latest.append(step["with"]["target"])
-        assert can_take_latest == ["base"]
+            if step.get("uses", "").startswith("docker/build-push-action"):
+                tags = step["with"]["tags"]
+                meta_of_target[step["with"]["target"]] = re.fullmatch(
+                    r"\$\{\{ steps\.([\w-]+)\.outputs\.tags \}\}", tags
+                ).group(1)
+        assert meta_of_target == {"base": "meta-base", "full": "meta-full"}
+        assert set(self._metadata_inputs()) == {"meta-base", "meta-full"}
+
+    @pytest.mark.parametrize("meta_id", ["meta-base", "meta-full"])
+    def test_both_images_take_main_and_the_major_minor_tag_only(self, meta_id):
+        # No X.Y.Z tag, no `full` tag and no `-full` suffix: `{{version}}` would add X.Y.Z.
+        assert self._tag_specs(self._metadata_inputs()[meta_id]) == self.TAG_SPECS
+
+    def test_the_full_image_carries_the_unsuffixed_tags(self):
+        assert self._flavor(self._metadata_inputs()["meta-full"]).get("suffix", "") == ""
+
+    def test_the_base_image_carries_the_base_suffix_on_latest_too(self):
+        # The action adds a flavor suffix to `latest` only with onlatest=true.
+        flavor = self._flavor(self._metadata_inputs()["meta-base"])
+        assert flavor["suffix"] == "-base"
+        assert flavor["onlatest"] == "true"
+
+    @pytest.mark.parametrize("meta_id", ["meta-base", "meta-full"])
+    def test_latest_stays_automatic_so_that_only_a_stable_tag_takes_it(self, meta_id):
+        # latest=auto adds `latest` for a stable semver tag and for no pre-release or branch.
+        assert self._flavor(self._metadata_inputs()[meta_id]).get("latest", "auto") == "auto"
