@@ -4,6 +4,7 @@ biotite reports NaN SASA for water and monoatomic ions. Summing that array used
 to make delta_sasa and delta_g_int NaN on any structure that kept them.
 """
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -22,19 +23,42 @@ from binding_metrics.metrics.interface import (  # noqa: E402
     load_biotite_structure,
 )
 from binding_metrics.metrics.sasa import compute_delta_sasa_static  # noqa: E402
+from tests.test_l1_solvation import (  # noqa: E402
+    RELATIVE,
+    expected_interface,
+    polymer_atoms,
+    read_atoms,
+)
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 P53_MDM2 = DATA / "example_linear_p53_1YCR.pdb"
 CYCLOSPORIN = DATA / "example_ncaa_cyclosporin_1CWA.cif"
 SFTI1_TRYPSIN = DATA / "example_bicyclic_sfti1_3P8F.cif"
 
-# Interface values of the water-free 1CWA complex (chain C on chain A).
-CYCLOSPORIN_DELTA_SASA = 985.4
-CYCLOSPORIN_DELTA_G_INT = -6.1125
 
-# 1YCR has no heteroatoms; its delta_sasa was recorded before the hetero filter existed.
-P53_DELTA_SASA = 1465.7209
-P53_DELTA_G_INT = -11.0502
+# The expected interface values come from biotite and the published solvation parameters
+# (helpers of tests/test_l1_solvation.py), on the water-free polymer of the file.
+@pytest.fixture(scope="module")
+def p53_expected():
+    """delta_sasa and delta_g_int of 1YCR (chain B on chain A), which has no heteroatoms."""
+    return expected_interface(polymer_atoms(read_atoms(P53_MDM2)), "B", "A")
+
+
+@pytest.fixture(scope="module")
+def cyclosporin_expected():
+    """delta_sasa and delta_g_int of the 1CWA polymer (chain C on chain A), waters left out."""
+    return expected_interface(polymer_atoms(read_atoms(CYCLOSPORIN)), "C", "A")
+
+
+@pytest.fixture(scope="module")
+def sfti1_expected():
+    """delta_sasa and delta_g_int of the 3P8F polymer (chain I on chain A), without ligands."""
+    return expected_interface(polymer_atoms(read_atoms(SFTI1_TRYPSIN)), "I", "A")
+
+
+def assert_matches(result, expected):
+    assert result["delta_sasa"] == pytest.approx(expected["delta_sasa"], rel=RELATIVE)
+    assert result["delta_g_int"] == pytest.approx(expected["delta_g_int"], rel=RELATIVE)
 
 
 @pytest.fixture(scope="module")
@@ -68,47 +92,49 @@ def test_synthetic_structure_reproduces_the_nan_premise(p53_with_iodide_and_wate
 class TestWaterAndIonRegression:
     @pytest.mark.parametrize("hetero", ["ignore", "keep"])
     def test_synthetic_iodide_and_water_do_not_poison_interface(
-        self, p53_with_iodide_and_water, hetero
+        self, p53_with_iodide_and_water, p53_expected, hetero
     ):
         result = compute_interface_metrics(p53_with_iodide_and_water, "B", "A", hetero=hetero)
         assert "reason" not in result
-        assert result["delta_sasa"] == pytest.approx(P53_DELTA_SASA, rel=1e-6)
-        assert result["delta_g_int"] == pytest.approx(P53_DELTA_G_INT, rel=1e-5)
+        # The added atoms sit far from the complex: the result is that of the file without them.
+        assert_matches(result, p53_expected)
         assert np.isfinite(result["fraction_polar"])
 
     @pytest.mark.parametrize("hetero", ["ignore", "keep"])
     def test_synthetic_iodide_and_water_do_not_poison_static_sasa(
-        self, p53_with_iodide_and_water, hetero
+        self, p53_with_iodide_and_water, p53_expected, hetero
     ):
         result = compute_delta_sasa_static(p53_with_iodide_and_water, "B", "A", hetero=hetero)
         assert "reason" not in result
-        assert result["delta_sasa"] == pytest.approx(P53_DELTA_SASA, rel=1e-4)
+        assert result["delta_sasa"] == pytest.approx(p53_expected["delta_sasa"], rel=RELATIVE)
         assert all(np.isfinite(v) for v in result.values())
 
     @pytest.mark.parametrize("hetero", ["ignore", "keep"])
-    def test_cyclosporin_with_144_waters_matches_the_dry_complex(self, hetero):
+    def test_cyclosporin_with_144_waters_matches_the_dry_complex(
+        self, hetero, cyclosporin_expected
+    ):
         result = compute_interface_metrics(CYCLOSPORIN, hetero=hetero)
-        assert result["delta_sasa"] == pytest.approx(CYCLOSPORIN_DELTA_SASA, abs=0.5)
-        assert result["delta_g_int"] == pytest.approx(CYCLOSPORIN_DELTA_G_INT, abs=0.01)
+        assert_matches(result, cyclosporin_expected)
         assert np.isfinite(result["polar_area"] + result["apolar_area"])
         assert "reason" not in result
 
-    def test_cyclosporin_static_sasa_is_finite(self):
+    def test_cyclosporin_static_sasa_is_finite(self, cyclosporin_expected):
         result = compute_delta_sasa_static(CYCLOSPORIN, "C", "A")
-        assert result["delta_sasa"] == pytest.approx(CYCLOSPORIN_DELTA_SASA, abs=0.5)
+        assert result["delta_sasa"] == pytest.approx(
+            cyclosporin_expected["delta_sasa"], rel=RELATIVE
+        )
         assert "reason" not in result
 
-    def test_sfti1_trypsin_with_waters_and_glutathione_is_finite(self):
+    def test_sfti1_trypsin_with_waters_and_glutathione_is_finite(self, sfti1_expected):
         interface = compute_interface_metrics(SFTI1_TRYPSIN)
         static = compute_delta_sasa_static(SFTI1_TRYPSIN, "I", "A")
-        assert np.isfinite(interface["delta_sasa"]) and interface["delta_sasa"] > 500.0
-        assert np.isfinite(interface["delta_g_int"])
-        assert static["delta_sasa"] == pytest.approx(interface["delta_sasa"], abs=1.0)
+        # The polymer value excludes the waters and the glutathione of the file.
+        assert_matches(interface, sfti1_expected)
+        assert static["delta_sasa"] == pytest.approx(sfti1_expected["delta_sasa"], rel=RELATIVE)
 
-    def test_dry_structure_is_unchanged(self):
+    def test_dry_structure_is_unchanged(self, p53_expected):
         result = compute_interface_metrics(P53_MDM2)
-        assert result["delta_sasa"] == pytest.approx(P53_DELTA_SASA, rel=1e-6)
-        assert result["delta_g_int"] == pytest.approx(P53_DELTA_G_INT, rel=1e-5)
+        assert_matches(result, p53_expected)
         assert "reason" not in result
 
 
@@ -144,7 +170,7 @@ class TestPolymerVariantsSurviveIgnore:
         kept = filter_hetero_atoms(atoms, "ignore")
         assert list(kept.res_name) == ["HIE", "HID", "CYX", "ASH", "ACE", "NME", "NH2"]
 
-    def test_histidine_variant_names_do_not_change_the_interface(self, tmp_path):
+    def test_histidine_variant_names_do_not_change_the_interface(self, tmp_path, p53_expected):
         atoms = load_biotite_structure(P53_MDM2)
         histidines = atoms.res_name == "HIS"
         assert histidines.sum() > 0
@@ -155,8 +181,7 @@ class TestPolymerVariantsSurviveIgnore:
         pdb_file.write(str(path))
 
         result = compute_interface_metrics(path, "B", "A")
-        assert result["delta_sasa"] == pytest.approx(P53_DELTA_SASA, rel=1e-6)
-        assert result["delta_g_int"] == pytest.approx(P53_DELTA_G_INT, rel=1e-5)
+        assert_matches(result, p53_expected)
 
 
 class TestReason:
@@ -191,7 +216,9 @@ class TestReason:
 
 
 class TestHeteroCli:
-    def test_flag_defaults_to_ignore_and_reaches_the_metric(self, monkeypatch, capsys):
+    def test_flag_defaults_to_ignore_and_reaches_the_metric(
+        self, monkeypatch, capsys, cyclosporin_expected
+    ):
         from binding_metrics.metrics import interface
 
         seen = {}
@@ -205,7 +232,10 @@ class TestHeteroCli:
         monkeypatch.setattr("sys.argv", ["binding-metrics-interface", "--input", str(CYCLOSPORIN)])
         interface.main()
         assert seen["hetero"] == "ignore"
-        assert "delta_sasa: 985." in capsys.readouterr().out
+        printed = re.search(r"^\s+delta_sasa: (\S+)$", capsys.readouterr().out, re.MULTILINE)
+        assert float(printed.group(1)) == pytest.approx(
+            cyclosporin_expected["delta_sasa"], rel=RELATIVE
+        )
 
         monkeypatch.setattr(
             "sys.argv",
