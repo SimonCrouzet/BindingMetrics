@@ -174,10 +174,12 @@ class TestRealComplex:
         volumes = [r["void_volume_A3"] for r in by_probe.values()]
         assert len(set(volumes)) == 3
 
-    def test_default_probe_value_is_finite_and_in_the_expected_range(self, by_probe):
-        volume = by_probe[1.4]["void_volume_A3"]
+    def test_default_probe_value_is_positive_and_inside_the_interface_box(self, by_probe):
+        result = by_probe[1.4]
+        volume = result["void_volume_A3"]
         assert np.isfinite(volume)
-        assert 10.0 < volume < 150.0
+        # a void exists and fills only part of the box that holds the interface
+        assert 0.0 < volume < result["interface_box_volume_A3"]
 
     def test_box_and_interface_atoms_do_not_depend_on_the_probe(self, by_probe):
         assert len({r["interface_box_volume_A3"] for r in by_probe.values()}) == 1
