@@ -97,6 +97,36 @@ def _extract_custom_bonds(topology) -> list:
     return bonds
 
 
+def _head_to_tail_bonds(topology, positions) -> list:
+    """Head-to-tail closures that ``topology`` does not bond, found by distance.
+
+    A chain of two or more residues whose last carbon lies closer than
+    ``core.cyclic._AMIDE_BOND_THRESH`` (0.20 nm, the cut of ``detect_cyclization``) to its
+    first nitrogen is a ring, and a model output lists no bond for it. A chain that already
+    has the bond is left to :func:`_extract_custom_bonds`.
+
+    Returns:
+        The tuples of :func:`_extract_custom_bonds`, one per such chain.
+    """
+    from binding_metrics.core.cyclic import _AMIDE_BOND_THRESH, _dist, _find_atom, _pos_nm
+
+    pos = _pos_nm(positions)
+    bonded = {frozenset((bond.atom1.index, bond.atom2.index)) for bond in topology.bonds()}
+    closures = []
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        if len(residues) < 2:
+            continue
+        nitrogen, carbon = _find_atom(residues[0], "N"), _find_atom(residues[-1], "C")
+        if nitrogen is None or carbon is None:
+            continue
+        if frozenset((nitrogen.index, carbon.index)) in bonded:
+            continue
+        if _dist(pos, carbon.index, nitrogen.index) < _AMIDE_BOND_THRESH:
+            closures.append((chain.id, len(residues) - 1, "C", chain.id, 0, "N"))
+    return closures
+
+
 def _readd_custom_bonds(topology, custom_bonds: list):
     """Re-add custom bonds to a post-PDBFixer topology by position."""
     if not custom_bonds:
@@ -1138,8 +1168,10 @@ def prep_structure(
     # Capture non-sequential intra-chain bonds (e.g. head-to-tail N→C) before
     # the PDBFixer round-trip drops them (PDBxFile.writeFile only writes SS bonds).
     # SS bonds are NOT captured here — they are re-detected from rebuilt geometry
-    # after addMissingAtoms via _rebuild_connect_records.
-    custom_bonds = _extract_custom_bonds(topology)
+    # after addMissingAtoms via _rebuild_connect_records. A ring that the topology
+    # does not bond (a model output has no _struct_conn) is found by distance, so that
+    # prep takes the cyclic route and does not give the ring an OXT and an NH3+ end.
+    custom_bonds = _extract_custom_bonds(topology) + _head_to_tail_bonds(topology, positions)
 
     # Residue numbers and chain IDs do not survive the PDBFixer round trip, so
     # read the numbering gaps and the caller's chain IDs off the input topology.
