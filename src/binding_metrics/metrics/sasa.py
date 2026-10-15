@@ -116,8 +116,9 @@ def _interface_sasa_nm2(
 
     def total_sasa(atom_indices) -> np.ndarray:
         sliced = traj.atom_slice(atom_indices)
-        # One frame per call: with a single OpenMP thread, mdtraj 1.11.1 computes the areas of a
-        # frame from state left by the previous one.
+        # One frame per call: mdtraj 1.11.1 computes the areas of a frame from state left by the
+        # previous frame of the same OpenMP thread, so a multi-frame call depends on the frame
+        # order and on the thread count.
         return np.array(
             [
                 md.shrake_rupley(sliced[i], probe_radius=probe_radius).sum()
