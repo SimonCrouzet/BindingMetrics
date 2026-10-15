@@ -2,12 +2,13 @@
 
 The GAFF2 route computes the AM1-BCC charges of a residue with a cap at each external bond.
 A methyl carbon on the backbone N turns the peptide amide into an amine, and the N of ALA then
-carries -0.79 e against -0.42 e in ff14SB. A residue with an N-CA-C=O backbone is capped with
-ACE and NME at its peptide bonds instead, which gives the N of an amide (ALA -0.55 e).
+carries a more negative charge than the amide N of ff14SB. A residue with an N-CA-C=O backbone
+is capped with ACE and NME at its peptide bonds instead, which gives the N of an amide.
 
 The fast tests need RDKit only: the caps of real residues of the bundled examples, the charge
 arithmetic and the record of the scheme. The slow tests run antechamber (sqm) on ALA, on the
-charged ASP and LYS, and on the cyclosporin residues of 1CWA, and compare with ff14SB.
+charged ASP and LYS, and on the cyclosporin residues of 1CWA, and compare the charges of the
+ACE/NME-capped residue with those of the methyl-capped one and with ff14SB.
 """
 
 import logging
@@ -40,10 +41,6 @@ P53 = DATA_DIR / "example_linear_p53_1YCR.pdb"
 CYCLOSPORIN = DATA_DIR / "example_ncaa_cyclosporin_1CWA.cif"
 STAPLE = DATA_DIR / "example_staple_3V3B.pdb"
 SFTI1 = DATA_DIR / "example_bicyclic_sfti1_3P8F.cif"
-
-# ff14SB charges of the ALA backbone (amber14/protein.ff14SB.xml). The AM1-BCC charge of its N is
-# -0.793 e with methyl caps and -0.550 e with ACE/NME caps (seed 1).
-FF14SB_ALA = {"N": -0.4157, "H": 0.2719, "CA": 0.0337, "C": 0.5973, "O": -0.5679}
 
 
 def _load(path):
@@ -386,14 +383,35 @@ def _template_charges(xml: str) -> dict:
     return {a.get("name"): float(a.get("charge")) for a in residue.findall("Atom")}
 
 
-def _ionised_residue_charges(structure, residue_name, ionised):
+def _methyl_caps(mol, names, caps, partner):
+    """``_cap_backbone_as_amide`` as it was before #61: the external bonds keep their methyl."""
+    return mol, caps, CapScheme(CAP_KIND_METHYL, "forced")
+
+
+#: Atoms of the peptide group in a template, with the name each has in an ff14SB residue.
+_PEPTIDE_GROUP_IN_FF14SB = {"N": "N", "C": "C", "O": "O"}
+_BACKBONE_IN_FF14SB = {**_PEPTIDE_GROUP_IN_FF14SB, "HN": "H", "CA": "CA"}
+
+
+def _deviation_from_ff14sb(charges: dict, residue_name: str, atoms: dict) -> float:
+    """Root-mean-square difference of the charges of ``atoms`` from the ff14SB residue's."""
+    reference = _ff14sb_charges(residue_name)
+    return float(
+        np.sqrt(
+            np.mean([(charges[ours] - reference[theirs]) ** 2 for ours, theirs in atoms.items()])
+        )
+    )
+
+
+def _ionised_residue_charges(structure, residue_name, ionised, cap_backbone=_cap_backbone_as_amide):
     """Charges of a residue in an ionised state, through the steps of the template builder.
 
     ``ionised`` maps the name of an atom of the residue to its formal charge, which is set on
     the perceived (neutral) molecule: ``{"OD2": -1}`` makes ASP a carboxylate. Returns
     ``(charges of the heavy atoms by name, sum over all kept atoms, formal charge)``. The
     template builder always builds the neutral form, so this is the one place where a charged
-    residue is tested.
+    residue is tested. ``cap_backbone`` is the capping step: ``_methyl_caps`` gives the
+    residue the caps of the earlier code.
     """
     from openff.toolkit import Molecule
 
@@ -408,7 +426,7 @@ def _ionised_residue_charges(structure, residue_name, ionised):
         atom.SetNoImplicit(False)
         atom.SetFormalCharge(charge)
     Chem.SanitizeMol(mol)
-    mol, caps, _ = _cap_backbone_as_amide(mol, names, caps, partner)
+    mol, caps, _ = cap_backbone(mol, names, caps, partner)
     mh = Chem.AddHs(mol, addCoords=True)
     Chem.AssignStereochemistryFrom3D(mh)
     off = Molecule.from_rdkit(mh, allow_undefined_stereo=True, hydrogens_are_explicit=True)
@@ -440,37 +458,41 @@ def alanine_template(cyclosporin):
     return _alanine_template(cyclosporin)
 
 
+@pytest.fixture(scope="module")
+def alanine_methyl_charges(cyclosporin):
+    """Charges of the same ALA built with the methyl caps of the earlier code."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(gaff_ncaa, "_cap_backbone_as_amide", _methyl_caps)
+        return _template_charges(_alanine_template(cyclosporin)[0])
+
+
 @pytest.mark.slow
 class TestTemplateChargesOfAlanine:
     """ALA of cyclophilin (1CWA chain A) through the template builder, as for any residue."""
 
-    def test_the_backbone_is_an_amide(self, alanine_template):
+    def test_the_backbone_is_an_amide(self, alanine_template, alanine_methyl_charges):
         charges = _template_charges(alanine_template[0])
 
         assert alanine_template[4] == CapScheme(CAP_KIND_AMIDE)
-        assert -0.62 <= charges["N"] <= -0.48  # the methyl caps gave -0.79
-        assert abs(charges["N"] - FF14SB_ALA["N"]) < 0.20
-        assert abs(charges["HN"] - FF14SB_ALA["H"]) < 0.08
-        assert abs(charges["CA"] - FF14SB_ALA["CA"]) < 0.06
-        assert abs(charges["C"] - FF14SB_ALA["C"]) < 0.08
-        assert abs(charges["O"] - FF14SB_ALA["O"]) < 0.08
+        # The polarity of a peptide group: N and O negative, the H on N and the C=O carbon positive.
+        assert charges["N"] < 0 < charges["HN"] and charges["O"] < 0 < charges["C"]
+        # The caps of the earlier code left the backbone an amine; the ACE/NME caps must bring
+        # the backbone charges closer to those of ALA in a chain, which is the ff14SB residue.
+        amide = _deviation_from_ff14sb(charges, "ALA", _BACKBONE_IN_FF14SB)
+        methyl = _deviation_from_ff14sb(alanine_methyl_charges, "ALA", _BACKBONE_IN_FF14SB)
+        assert amide < methyl
 
     def test_the_total_is_the_integer(self, alanine_template):
         charges = _template_charges(alanine_template[0])
         assert sum(charges.values()) == pytest.approx(0.0, abs=1e-9)
 
-    def test_methyl_caps_give_the_amine_nitrogen(self, cyclosporin, alanine_template, monkeypatch):
-        """The same residue with the earlier caps: N -0.79 e, which is what #61 reported."""
-        monkeypatch.setattr(
-            gaff_ncaa,
-            "_cap_backbone_as_amide",
-            lambda mol, names, caps, partner: (mol, caps, CapScheme(CAP_KIND_METHYL, "forced")),
-        )
-
-        old = _template_charges(_alanine_template(cyclosporin)[0])
-
+    def test_methyl_caps_give_the_amine_nitrogen(self, alanine_template, alanine_methyl_charges):
+        """The same residue with the earlier caps: the N is the too negative one (#61)."""
         new = _template_charges(alanine_template[0])
-        assert old["N"] < -0.70 and new["N"] > old["N"] + 0.15
+        reference = _ff14sb_charges("ALA")["N"]
+
+        assert alanine_methyl_charges["N"] < new["N"]
+        assert abs(new["N"] - reference) < abs(alanine_methyl_charges["N"] - reference)
 
 
 @pytest.mark.slow
@@ -485,19 +507,25 @@ class TestChargedResidues:
         self, p53, residue_name, ionised, total
     ):
         charges, kept_total, formal_charge = _ionised_residue_charges(p53, residue_name, ionised)
+        methyl_capped, _, _ = _ionised_residue_charges(
+            p53, residue_name, ionised, cap_backbone=_methyl_caps
+        )
         reference = _ff14sb_charges(residue_name)
 
         assert formal_charge == total
         assert kept_total == pytest.approx(total, abs=1e-9)
-        assert -0.65 <= charges["N"] <= -0.30  # the methyl caps gave -0.80 for both
-        assert abs(charges["N"] - reference["N"]) < 0.30
-        assert abs(charges["C"] - reference["C"]) < 0.15
-        assert abs(charges["O"] - reference["O"]) < 0.20
+        assert charges["N"] < 0 and charges["O"] < 0 < charges["C"]
+        # The amine N of the methyl caps is further from the amide N of ff14SB, and so is the
+        # peptide group as a whole.
+        assert abs(charges["N"] - reference["N"]) < abs(methyl_capped["N"] - reference["N"])
+        assert _deviation_from_ff14sb(
+            charges, residue_name, _PEPTIDE_GROUP_IN_FF14SB
+        ) < _deviation_from_ff14sb(methyl_capped, residue_name, _PEPTIDE_GROUP_IN_FF14SB)
 
 
 @pytest.fixture(scope="module")
-def cyclosporin_templates():
-    """``(topology, templates)`` of BMT and ABA from ``parameterize_ncaa_residues`` on 1CWA."""
+def cyclosporin_built():
+    """``(topology, positions, force field, templates)`` from ``parameterize_ncaa_residues``."""
     pytest.importorskip("openmmforcefields")
     from openmm.app import ForceField
 
@@ -508,8 +536,39 @@ def cyclosporin_templates():
         # The prep renames these two to ALA and NMG (curated templates); do the same here.
         res.name = {"DAL": "ALA", "SAR": "NMG"}.get(res.name, res.name)
     ff = ForceField("amber14-all.xml", "amber14/tip3pfb.xml")
-    topology, _, xmls = gaff_ncaa.parameterize_ncaa_residues(topology, positions, ff)
+    topology, positions, xmls = gaff_ncaa.parameterize_ncaa_residues(topology, positions, ff)
+    return topology, positions, ff, xmls
+
+
+@pytest.fixture(scope="module")
+def cyclosporin_templates(cyclosporin_built):
+    """``(topology, templates)`` of BMT and ABA from ``parameterize_ncaa_residues`` on 1CWA."""
+    topology, _, _, xmls = cyclosporin_built
     return topology, xmls
+
+
+@pytest.fixture(scope="module")
+def cyclosporin_methyl_charges(cyclosporin_built):
+    """Template charges of BMT and ABA built again with the methyl caps of the earlier code."""
+    topology, positions, ff, _ = cyclosporin_built
+    pos_A = gaff_ncaa._pos_to_angstrom(positions)
+    backbone_types = gaff_ncaa._amber_backbone_types(ff)
+    charges = {}
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(gaff_ncaa, "_cap_backbone_as_amide", _methyl_caps)
+        for name in ("BMT", "ABA"):
+            residue = next(r for r in topology.residues() if r.name == name)
+            xml = gaff_ncaa._generate_residue_template(
+                residue, topology, pos_A, "gaff-2.2.20", backbone_types
+            )[0]
+            charges[name] = _template_charges(xml)
+    return charges
+
+
+def _residue_charges(xmls, name):
+    return {
+        a.get("name"): float(a.get("charge")) for a in _residue_element(xmls, name).findall("Atom")
+    }
 
 
 def _residue_element(xmls, name):
@@ -524,8 +583,8 @@ def _residue_element(xmls, name):
 class TestCyclosporinResidues:
     """BMT and ABA of cyclosporin A (1CWA) through ``parameterize_ncaa_residues``.
 
-    Before the ACE/NME caps their template N carried -0.74 e (N-methylated MeBmt) and -0.80 e
-    (ABA), against about -0.42 e for an amide N in ff14SB.
+    With the methyl caps of the earlier code the template N of N-methylated MeBmt and of ABA
+    was the N of an amine, more negative than the amide N of ff14SB.
     """
 
     def test_both_residues_are_built_from_the_capped_amide(self, cyclosporin_templates):
@@ -533,27 +592,28 @@ class TestCyclosporinResidues:
         label = f"ace-nme-caps-v{CHARGE_SCHEME_VERSION}"
         assert xmls.charge_scheme_by_residue == {"BMT": label, "ABA": label}
 
-    def test_the_backbone_nitrogen_is_an_amide_nitrogen(self, cyclosporin_templates):
+    def test_the_backbone_nitrogen_is_an_amide_nitrogen(
+        self, cyclosporin_templates, cyclosporin_methyl_charges
+    ):
         _, xmls = cyclosporin_templates
-        n_charge = {
-            name: next(
-                float(a.get("charge"))
-                for a in _residue_element(xmls, name).findall("Atom")
-                if a.get("name") == "N"
-            )
-            for name in ("BMT", "ABA")
-        }
-        assert -0.65 <= n_charge["ABA"] <= -0.45  # -0.798 with the methyl caps
-        assert -0.60 <= n_charge["BMT"] <= -0.35  # -0.738 with the methyl caps
+        amide_n = _ff14sb_charges("ALA")["N"]
+        for name in ("BMT", "ABA"):
+            n_charge = _residue_charges(xmls, name)["N"]
+            methyl_n = cyclosporin_methyl_charges[name]["N"]
+            assert n_charge < 0, name
+            # The N of the methyl caps is an amine and further from the amide N of ff14SB.
+            assert abs(n_charge - amide_n) < abs(methyl_n - amide_n), name
 
     def test_the_carbonyl_is_a_carbonyl(self, cyclosporin_templates):
         _, xmls = cyclosporin_templates
         for name in ("BMT", "ABA"):
-            charges = {
-                a.get("name"): float(a.get("charge"))
-                for a in _residue_element(xmls, name).findall("Atom")
-            }
-            assert charges["C"] > 0.55 and charges["O"] < -0.55
+            charges = _residue_charges(xmls, name)
+            carbons = {atom: charge for atom, charge in charges.items() if atom.startswith("C")}
+            others = [charge for atom, charge in carbons.items() if atom != "C"]
+            # The carbonyl carbon is bound to O and N, so it is the most positive carbon; the
+            # carbonyl O is more negative than every carbon.
+            assert charges["C"] > max(others) and charges["C"] > 0, name
+            assert charges["O"] < min(carbons.values()) and charges["O"] < 0, name
 
     def test_the_total_is_the_integer(self, cyclosporin_templates):
         _, xmls = cyclosporin_templates

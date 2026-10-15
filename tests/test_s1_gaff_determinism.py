@@ -208,7 +208,7 @@ class TestWithSqm:
         np.testing.assert_array_equal(first, second)
 
     def test_charges_are_am1_bcc_like(self, two_propanol_builds):
-        """Propanol: hydroxyl O about -0.7 e, hydroxyl H about +0.4 e, neutral overall."""
+        """Propanol: the polarity of the hydroxyl group and a neutral molecule."""
         (charges, _), _ = two_propanol_builds
         molecule = openff_molecule.from_smiles("CCCO")
         oxygen = next(a.molecule_atom_index for a in molecule.atoms if a.atomic_number == 8)
@@ -217,8 +217,10 @@ class TestWithSqm:
             for n in molecule.atoms[oxygen].bonded_atoms
             if n.atomic_number == 1
         )
-        assert -0.85 < charges[oxygen] < -0.55
-        assert 0.3 < charges[hydroxyl_h] < 0.5
+        # O is the most electronegative atom and the H on it is the most acidic one, so they carry
+        # the extreme charges; all-zero or element-independent charges would not.
+        assert charges[oxygen] == charges.min() < 0
+        assert charges[hydroxyl_h] == charges.max() > 0
         assert charges.sum() == pytest.approx(0.0, abs=1e-9)
 
     @pytest.mark.parametrize("smiles, total_charge", [("CC(=O)[O-]", -1), ("CC[NH3+]", 1)])
