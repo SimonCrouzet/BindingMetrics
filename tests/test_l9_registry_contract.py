@@ -17,12 +17,45 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from binding_metrics.metrics.registry import METRICS, MetricSpec, get_metric
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_1YCR = REPO_ROOT / "data" / "example_linear_p53_1YCR.pdb"
+
+PROBE_RADIUS_ANGSTROM = 1.4  # water
+POINTS_PER_ATOM = 960  # Shrake-Rupley sampling of the static area metrics
+
+
+def buried_area_by_biotite(path, chain_a, chain_b):
+    """Area that two chains bury on binding (A^2), from biotite and the PDB file alone.
+
+    ``sasa(A) + sasa(B) - sasa(A + B)`` for the heavy atoms of the amino-acid residues of the two
+    chains, with biotite's van der Waals radii (1.8 A for an element without one).
+    """
+    import biotite.structure as struc
+    import biotite.structure.io.pdb as pdb_io
+    from biotite.structure.info import vdw_radius_single
+
+    atoms = pdb_io.get_structure(pdb_io.PDBFile.read(str(path)), model=1)
+    atoms = atoms[struc.filter_amino_acids(atoms) & (atoms.element != "H")]
+
+    def area(selection):
+        radii = np.array([vdw_radius_single(str(e).strip()) or 1.8 for e in selection.element])
+        per_atom = struc.sasa(
+            selection,
+            probe_radius=PROBE_RADIUS_ANGSTROM,
+            vdw_radii=radii,
+            point_number=POINTS_PER_ATOM,
+        )
+        return float(np.nansum(per_atom))
+
+    first = atoms[atoms.chain_id == chain_a]
+    second = atoms[atoms.chain_id == chain_b]
+    return area(first) + area(second) - area(first + second)
+
 
 # ---------------------------------------------------------------------------
 # The entries that existed before the registry was extended, field by field.
@@ -313,8 +346,10 @@ class TestNewMetricsCallThroughTheSpec:
         pytest.importorskip("biotite")
         spec = get_metric("delta_sasa_static")
         result = _call(spec.name, **_kwargs_from_spec(spec, complex_pdb, "B", "A"))
-        # A 13-residue peptide in the MDM2 cleft buries well over 1000 A^2.
-        assert result["delta_sasa"] > 1000.0
+        # the buried area is what biotite gives for the two chains, alone and together
+        assert result["delta_sasa"] == pytest.approx(
+            buried_area_by_biotite(complex_pdb, "B", "A"), rel=1e-4
+        )
         assert result["delta_sasa"] == pytest.approx(
             result["sasa_peptide"] + result["sasa_receptor"] - result["sasa_complex"], rel=1e-4
         )
