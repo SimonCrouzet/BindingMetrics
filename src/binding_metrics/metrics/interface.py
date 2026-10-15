@@ -10,7 +10,8 @@ Areas come from the Shrake-Rupley algorithm (J. Mol. Biol. 79:351-371, 1973)
 as implemented in biotite, with a 1.4 Å water probe and biotite's
 single-radius van der Waals table by element (documented there as Mantina et
 al., J. Phys. Chem. A 113:5806-5812, 2009; 1.8 Å for an element without an
-entry). Water and monoatomic ions are not part of the surface.
+entry, deuterium taking the radius of hydrogen). Water and monoatomic ions are not part of the
+surface.
 
 The areas are heavy-atom areas: hydrogen and deuterium atoms are dropped before
 the surface is built (``hydrogens="ignore"``, the default), as the atomic
@@ -206,6 +207,8 @@ def _get_vdw_radii(atoms, vdw_fn) -> np.ndarray:
     radii = []
     for atom in atoms:
         element = str(atom.element).strip()
+        if element == "D":  # the table has no entry for deuterium
+            element = "H"
         r = vdw_fn(element)
         radii.append(r if r is not None else 1.8)
     return np.array(radii, dtype=float)

@@ -330,6 +330,8 @@ def compute_delta_sasa_static(
         radii = []
         for atom in atom_array:
             element = str(atom.element).strip()
+            if element == "D":  # the table has no entry for deuterium
+                element = "H"
             r = vdw_radius_single(element)
             radii.append(r if r is not None else 1.8)
         return np.array(radii, dtype=float)

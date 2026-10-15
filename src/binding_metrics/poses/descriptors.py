@@ -649,7 +649,8 @@ def partner_descriptors(
     Let ``B`` be the heavy atoms of the pose's binder and ``Q`` those of a partner (both in the
     reference frame, polymer atoms only), ``d_ij`` the distance of binder atom ``i`` to partner
     atom ``j`` and ``r_i`` the van der Waals radius that the surface-area code uses for the
-    atom (biotite's single-radius table by element, 1.8 for an element without an entry). The
+    atom (biotite's single-radius table by element, 1.8 for an element without an entry,
+    deuterium as hydrogen). The
     block of one partner has these columns:
 
     ====================================  =====================================================
