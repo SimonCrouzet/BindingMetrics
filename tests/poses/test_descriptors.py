@@ -38,6 +38,7 @@ from binding_metrics.poses.frame import (
     superpose_receptor,
 )
 from binding_metrics.poses.reference import Partner, Reference, ResidueKey
+from tests.test_l1_solvation import RELATIVE, polymer_atoms, read_atoms, sasa_per_atom
 
 struc = pytest.importorskip("biotite.structure")
 
@@ -63,6 +64,32 @@ def _load(path):
     from binding_metrics.metrics._common import load_structure
 
     return load_structure(path)
+
+
+def burial_by_biotite(atoms, chain, other_chain):
+    """Per atom of ``chain``, the area that ``other_chain`` covers, from biotite alone.
+
+    Its Shrake-Rupley area in the chain alone minus its area in the complex of the two chains,
+    floored at 0 (the definition of the module docstring of ``poses.descriptors``).
+    """
+    alone = atoms[atoms.chain_id == chain]
+    together = atoms[(atoms.chain_id == chain) | (atoms.chain_id == other_chain)]
+    in_complex = sasa_per_atom(together)[together.chain_id == chain]
+    return np.maximum(sasa_per_atom(alone) - in_complex, 0.0)
+
+
+def residue_burial_by_biotite(path, chain, other_chain):
+    """``{(number, insertion code): area}`` of the residues of ``chain``, in file order."""
+    atoms = polymer_atoms(read_atoms(path))
+    own = atoms[atoms.chain_id == chain]
+    areas = {}
+    for number, icode, area in zip(
+        own.res_id.tolist(),
+        own.ins_code.tolist(),
+        burial_by_biotite(atoms, chain, other_chain).tolist(),
+    ):
+        areas[(number, icode)] = areas.get((number, icode), 0.0) + area
+    return areas
 
 
 def tiny_complex(contacts=(1, 2, 6), height=HEIGHT, numbering=None, binder_xyz=None):
@@ -448,35 +475,57 @@ class TestInsertionCodes:
         assert blocks["plain"]["receptor_buried_area_in_set_angstrom2"] == 0.0
 
     def test_real_structure_with_insertion_codes(self):
-        # 3P8F numbers trypsin ... 60, 60A, ..., 60I. Its interface (the per-residue labels of
-        # compute_interface_metrics) holds 60, 60B and 60G, and 60A and 60H are outside it.
+        # 3P8F numbers trypsin ... 60, 60A, ..., 60I. The interface is redone from the file with
+        # biotite alone: the receptor residues that the peptide buries by the default threshold.
         from binding_metrics.metrics.interface import compute_interface_metrics
 
         atoms = _load(SFTI)
         result = compute_interface_metrics(SFTI, binder_chain="I", target_chain="A")
+        burial = residue_burial_by_biotite(SFTI, "A", "I")
+        interface = {
+            ResidueKey("A", number, icode)
+            for (number, icode), area in burial.items()
+            if area >= DEFAULT_INTERFACE_THRESHOLD_ANGSTROM2
+        }
+        coded_keys = [ResidueKey("A", 60, code) for code in ("A", "B", "G", "H")]
+        overlap = len(interface & set(coded_keys))
+        # Without this, the codes would not matter: the set holds residues numbered 60 that are
+        # inside the interface and others that are outside it.
+        assert 0 < overlap < len(coded_keys)
         sets = {
-            "coded": [ResidueKey("A", 60, c) for c in ("A", "B", "G", "H")],
-            "all_interface": [
-                ResidueKey.parse(label.split(":", 1)[1])
-                for label in result["interface_residues_receptor"]
-            ],
+            "coded": coded_keys,
+            "all_interface": sorted(interface),
         }
         ref = Reference(SFTI, "A", "I", residue_sets=sets)
         frame = superpose_receptor(atoms, ref)
         assert frame.ok and frame.pairing == "number"
         blocks = residue_set_descriptors(atoms, frame, ref, binder_chain="I", target_chain="A")
         coded = blocks["coded"]
-        assert result["n_interface_residues_receptor"] == 32
-        assert coded["n_interface"] == 32
-        assert (coded["n_set"], coded["n_set_mapped"], coded["n_overlap"]) == (4, 4, 2)
-        assert coded["covered_fraction"] == pytest.approx(2 / 4)
-        assert coded["interface_in_set_fraction"] == pytest.approx(2 / 32)
-        assert coded["jaccard"] == pytest.approx(2 / 34)
+        n_coded, n_interface = len(coded_keys), len(interface)
+        assert result["n_interface_residues_receptor"] == n_interface
+        assert coded["n_interface"] == n_interface
+        assert (coded["n_set"], coded["n_set_mapped"], coded["n_overlap"]) == (
+            n_coded,
+            n_coded,
+            overlap,
+        )
+        assert coded["covered_fraction"] == pytest.approx(overlap / n_coded)
+        assert coded["interface_in_set_fraction"] == pytest.approx(overlap / n_interface)
+        assert coded["jaccard"] == pytest.approx(overlap / (n_interface + n_coded - overlap))
         everything = blocks["all_interface"]
-        assert (everything["n_overlap"], everything["jaccard"]) == (32, 1.0)
-        # Residues with less than 0.5 square angstrom are outside the interface and the set but
-        # inside the total, so the fraction is just below one.
-        assert 0.999 < everything["receptor_buried_area_in_set_fraction"] < 1.0
+        assert (everything["n_overlap"], everything["jaccard"]) == (n_interface, 1.0)
+        # The total holds the residues below the threshold, which are outside the interface and
+        # the set: the fraction is the interface area over all receptor area, and below one.
+        interface_area = sum(
+            area
+            for (number, icode), area in burial.items()
+            if ResidueKey("A", number, icode) in interface
+        )
+        expected_fraction = interface_area / sum(burial.values())
+        assert expected_fraction < 1.0
+        assert everything["receptor_buried_area_in_set_fraction"] == pytest.approx(
+            expected_fraction, rel=RELATIVE
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -819,9 +868,10 @@ SCALE_SHIFTS = (0.0, 3.0, 6.0, 10.0)
 
 
 @pytest.fixture(scope="module")
-def results():
-    """The crystal peptide of 1YCR as the partner, and the peptide translated away from the
-    receptor by each shift (along the line from the centre of the binding site to the peptide)."""
+def translated_poses():
+    """The crystal peptide of 1YCR as the partner, and the complex with the peptide translated
+    away from the receptor by each shift (along the line from the centre of the binding site to
+    the peptide): the reference, the frame and ``{shift: atoms}``."""
     atoms = _load(YCR)
     reference = Reference(YCR, "A", "B", partners={"crystal": Partner(YCR, chains="B")})
     frame = frame_of(atoms, reference)
@@ -831,12 +881,38 @@ def results():
     near = np.sqrt((offsets**2).sum(axis=2)).min(axis=1) < 4.5
     away = atoms.coord[peptide].mean(axis=0) - atoms.coord[receptor][near].mean(axis=0)
     away /= np.linalg.norm(away)
-    measured = {}
+    poses = {}
     for shift in SCALE_SHIFTS:
         pose_atoms = atoms.copy()
         pose_atoms.coord[peptide] += (shift * away).astype(np.float32)
-        measured[shift] = measure_partners(pose_atoms, frame, reference)["crystal"]
-    return measured
+        poses[shift] = pose_atoms
+    return reference, frame, poses
+
+
+@pytest.fixture(scope="module")
+def results(translated_poses):
+    reference, frame, poses = translated_poses
+    return {
+        shift: measure_partners(pose_atoms, frame, reference)["crystal"]
+        for shift, pose_atoms in poses.items()
+    }
+
+
+@pytest.fixture(scope="module")
+def expected(translated_poses):
+    """The partner area and the shared fraction of each shift, from biotite alone.
+
+    The partner area is the receptor area that the crystal peptide covers; the shared fraction
+    is ``sum_a min(b_pose(a), b_partner(a))`` over the receptor atoms, over the partner area.
+    """
+    _, _, poses = translated_poses
+    partner = burial_by_biotite(polymer_atoms(poses[0.0]), "A", "B")
+    rows = {}
+    for shift, pose_atoms in poses.items():
+        pose = burial_by_biotite(polymer_atoms(pose_atoms), "A", "B")
+        shared = np.minimum(pose, partner).sum()
+        rows[shift] = {"partner": float(partner.sum()), "fraction": float(shared / partner.sum())}
+    return rows
 
 
 class TestScaleCheck1YCR:
@@ -845,22 +921,25 @@ class TestScaleCheck1YCR:
 
     SHIFTS = SCALE_SHIFTS
 
-    def test_pose_equal_to_the_partner_shares_all_of_its_area(self, results):
+    def test_pose_equal_to_the_partner_shares_all_of_its_area(self, results, expected):
         at_zero = results[0.0]
         assert at_zero["shared_buried_area_angstrom2"] == at_zero["partner_buried_area_angstrom2"]
         assert at_zero["pose_buried_area_angstrom2"] == at_zero["partner_buried_area_angstrom2"]
         assert at_zero["shared_fraction_of_partner"] == 1.0
-        # buried area of the crystal peptide on MDM2 (1YCR), recomputed from the file
-        assert at_zero["partner_buried_area_angstrom2"] == pytest.approx(662.3, abs=1.0)
+        # the buried area of the crystal peptide on MDM2 (1YCR), recomputed from the file
+        assert at_zero["partner_buried_area_angstrom2"] == pytest.approx(
+            expected[0.0]["partner"], rel=RELATIVE
+        )
 
-    def test_shared_area_falls_monotonically_to_zero(self, results):
+    def test_shared_area_falls_monotonically_to_zero(self, results, expected):
         shared = [results[s]["shared_buried_area_angstrom2"] for s in self.SHIFTS]
         assert shared[0] > shared[1] > shared[2] > shared[3]
         assert shared[3] == pytest.approx(0.0, abs=1e-9)
         fractions = [results[s]["shared_fraction_of_partner"] for s in self.SHIFTS]
         assert fractions[0] == 1.0
-        assert 0.3 < fractions[1] < 0.8
-        assert 0.05 < fractions[2] < 0.4
+        # the fraction at each shift is the overlap of the two burial maps, recomputed from the file
+        for shift, fraction in zip(self.SHIFTS, fractions):
+            assert fraction == pytest.approx(expected[shift]["fraction"], rel=RELATIVE, abs=1e-9)
         assert fractions[3] == pytest.approx(0.0, abs=1e-12)
 
     def test_partner_area_does_not_depend_on_the_pose(self, results):
@@ -1137,26 +1216,34 @@ class TestResidueTableAgainstTheInterfaceMetric:
 
     def test_residues_with_insertion_codes(self):
         rows, result = self.check_equal_to_per_residue(SFTI, "I", "A")
+        # The receptor rows are the residues with buried area, redone with biotite: the coded
+        # ones (60A-60I of trypsin) are kept apart from residue 60 and from each other.
+        burial = residue_burial_by_biotite(SFTI, "A", "I")
+        with_area = {key: area for key, area in burial.items() if area > 0.0}
+        expected_coded = sorted(key for key in with_area if key[1])
+        assert expected_coded  # the file has coded residues with buried area
         coded = [r for r in rows if r["role"] == "receptor" and r["icode"]]
-        # of the ten residues numbered 60 and 60A-60I, only 60B and 60G have buried area
-        assert [(r["number"], r["icode"], r["in_interface"]) for r in coded] == [
-            (60, "B", True),
-            (60, "G", True),
+        assert [(r["number"], r["icode"]) for r in coded] == expected_coded
+        assert [r["in_interface"] for r in coded] == [
+            with_area[key] >= DEFAULT_INTERFACE_THRESHOLD_ANGSTROM2 for key in expected_coded
         ]
         order = [(r["number"], r["icode"]) for r in rows if r["role"] == "receptor"]
-        assert order == sorted(order)
-        first = order.index((60, ""))
-        assert order[first : first + 3] == [(60, ""), (60, "B"), (60, "G")]
+        assert order == sorted(order) == sorted(with_area)
 
     def test_binder_with_residues_that_have_no_buried_area(self):
-        # cyclosporin in 1CWA: residue 11 (ALA) is outside the interface and still a row
-        rows, result = self.check_equal_to_per_residue(
-            DATA / "example_ncaa_cyclosporin_1CWA.cif", "C", "A"
-        )
+        # cyclosporin in 1CWA: a residue of the peptide without interface area is still a row
+        path = DATA / "example_ncaa_cyclosporin_1CWA.cif"
+        rows, result = self.check_equal_to_per_residue(path, "C", "A")
         binder = [r for r in rows if r["role"] == "binder"]
-        assert [r["binder_index"] for r in binder] == list(range(1, 12))
-        assert [r["name"] for r in binder][:3] == ["DAL", "MLE", "MLE"]
-        assert binder[10]["name"] == "ALA" and binder[10]["in_interface"] is False
-        assert result["n_interface_residues_peptide"] == sum(r["in_interface"] for r in binder) == 9
+        peptide = polymer_atoms(read_atoms(path))
+        peptide = peptide[peptide.chain_id == "C"]
+        names = struc.get_residues(peptide)[1].tolist()
+        areas = list(residue_burial_by_biotite(path, "C", "A").values())
+        inside = [area >= DEFAULT_INTERFACE_THRESHOLD_ANGSTROM2 for area in areas]
+        assert [r["binder_index"] for r in binder] == list(range(1, len(names) + 1))
+        assert [r["name"] for r in binder] == names
+        assert [r["in_interface"] for r in binder] == inside
+        assert not all(inside)  # the peptide has residues outside the interface, and they are rows
+        assert result["n_interface_residues_peptide"] == sum(r["in_interface"] for r in binder)
         receptor = [r for r in rows if r["role"] == "receptor"]
         assert all(r["buried_area_angstrom2"] > 0 for r in receptor)
