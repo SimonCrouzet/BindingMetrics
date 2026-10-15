@@ -72,6 +72,8 @@ def test_a_raw_ring_is_prepared_as_the_listed_one(tmp_path):
     assert "OXT" not in _names(residues[-1])
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 def test_a_disulfide_ring_keeps_its_two_termini(tmp_path):
     """Somatostatin is closed by a disulfide, not head to tail: both ends stay charged."""
     topology = _prepared(_bare(SOMATOSTATIN, tmp_path / "bare.cif"))
