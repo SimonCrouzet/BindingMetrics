@@ -1377,6 +1377,50 @@ def _write_structure(atoms: Any, path: Path) -> None:
     Path(path).write_text(buffer.getvalue(), encoding="utf-8")
 
 
+def _closure_end_atom(view: Any, chain_rows: Any, binder_chain: str, kind: str, end: Any) -> int:
+    """The index in the full array of the atom at one end of a closure.
+
+    ``end.residue_index`` is the position among the amino-acid residues of the chain, counted in
+    ``view`` (``capabilities._chain_view``), the residue view that ``detect_closures`` reads. The
+    residue is taken from that position, so residues that share a name and a number and differ in
+    the insertion code (3A and 3B) stay apart.
+
+    Args:
+        view: The ``_ChainView`` of the binder chain.
+        chain_rows: The indices in the full array of the atoms of the binder chain, in the order
+            of ``view.atoms``.
+        binder_chain: The binder chain ID, for the message.
+        kind: The type of the closure, for the message.
+        end: The ``ClosureEnd``.
+
+    Raises:
+        ValueError: The position is not among the residues of the chain, the residue there has
+            another name or number than the end, or the atom is absent from it or occurs more
+            than once.
+    """
+    where = f"{end} (position {end.residue_index} of chain {binder_chain})"
+    residues = view.amino_acids
+    if not 0 <= end.residue_index < len(residues):
+        raise ValueError(
+            f"the {kind} closure has an end that is not in the chain: {where} is out of range, "
+            f"the chain has {len(residues)} amino-acid residues"
+        )
+    residue = residues[end.residue_index]
+    if (residue.name, residue.number) != (end.residue_name, end.residue_number):
+        raise ValueError(
+            f"the {kind} closure has an end that is not in the chain: {where} names another "
+            f"residue than {residue.label}, which is at that position"
+        )
+    hits = np.flatnonzero(view.atoms.atom_name[residue.start : residue.stop] == end.atom_name)
+    if hits.size != 1:
+        count = "no atom" if hits.size == 0 else f"{hits.size} atoms named"
+        raise ValueError(
+            f"the {kind} closure has an end that cannot be placed: {where}; "
+            f"{residue.label} has {count} {end.atom_name}"
+        )
+    return int(chain_rows[residue.start + int(hits[0])])
+
+
 def _with_covalent_links(atoms: Any, binder_chain: str) -> Any:
     """A copy of ``atoms`` whose bond table lists the links between residues, found by geometry.
 
@@ -1387,10 +1431,22 @@ def _with_covalent_links(atoms: Any, binder_chain: str) -> Any:
     chain whose atoms are closer than the amide cut of ``detect_closures`` (2.0 A), and the
     closure bonds that ``detect_closures`` finds in the binder chain (head-to-tail, disulfide,
     lactam). ``_write_structure`` leaves the links between canonical residues out of the file.
+
+    Each end of a closure is looked up by its ``residue_index`` in the residue view of the
+    detector (see :func:`_closure_end_atom`), so residues that share a number and differ in the
+    insertion code keep their own atoms.
+
+    Raises:
+        ValueError: An end of a closure is not in the chain, or its atom is absent or occurs more
+            than once in the residue.
     """
     import biotite.structure as struc
 
-    from binding_metrics.capabilities import _AMIDE_BOND_THRESHOLD_ANGSTROM, detect_closures
+    from binding_metrics.capabilities import (
+        _AMIDE_BOND_THRESHOLD_ANGSTROM,
+        _chain_view,
+        detect_closures,
+    )
 
     def first_atom(start: int, stop: int, name: str) -> Optional[int]:
         hit = np.flatnonzero(atoms.atom_name[start:stop] == name)
@@ -1416,18 +1472,14 @@ def _with_covalent_links(atoms: Any, binder_chain: str) -> Any:
     except Exception as exc:  # noqa: BLE001 - the links of the peptides are still written
         logger.warning("the closures of chain %s were not searched: %s", binder_chain, exc)
         closures = []
-    chain_atoms = atoms.chain_id == binder_chain
-    for closure in closures:
-        ends = []
-        for end in (closure.end1, closure.end2):
-            hit = np.flatnonzero(
-                chain_atoms
-                & (atoms.res_id == end.residue_number)
-                & (atoms.res_name == end.residue_name)
-                & (atoms.atom_name == end.atom_name)
-            )
-            ends.append(int(hit[0]) if hit.size else None)
-        if None not in ends:
+    if closures:
+        view = _chain_view(atoms, binder_chain)
+        chain_rows = np.flatnonzero(atoms.chain_id == binder_chain)
+        for closure in closures:
+            ends = [
+                _closure_end_atom(view, chain_rows, binder_chain, closure.kind, end)
+                for end in (closure.end1, closure.end2)
+            ]
             pairs.append((ends[0], ends[1]))
 
     linked = atoms.copy()
