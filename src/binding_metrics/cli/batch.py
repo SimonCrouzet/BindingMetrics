@@ -94,6 +94,7 @@ from binding_metrics._constants import (
     DEFAULT_PH,
     DEFAULT_RANDOM_SEED,
 )
+from binding_metrics._jsonutil import add_nonfinite_arg, check_nonfinite
 from binding_metrics.capabilities import (
     DEFAULT_DESIGN_POLICY,
     DEFAULT_MSA_POLICY,
@@ -283,6 +284,7 @@ def _run_one(
     designed_with=None,
     design_policy: str = DEFAULT_DESIGN_POLICY,
     preflight_msa: Optional[tuple] = None,
+    nonfinite: str = "keep",
 ) -> dict:
     """Run the pipeline for a single structure and return a flat results dict.
 
@@ -294,6 +296,8 @@ def _run_one(
     prepared or run. ``preflight_model`` is the whole-batch model step of this sample, as
     ``(model, metric, adopted)``, checked here before the worker does anything;
     ``preflight_msa`` is ``(msa_policy, uses_msa_server, receptor_msa)`` of that step.
+    ``nonfinite`` is the mode of the report of the sample (``write_report``): ``"keep"`` or
+    ``"null"``.
 
     The row carries ``batch_status``:
 
@@ -360,7 +364,7 @@ def _run_one(
             )
             results["total_elapsed_s"] = round(time.time() - t0, 1)
 
-            write_report(results, sample_output_dir, sid, fmt="json")
+            write_report(results, sample_output_dir, sid, fmt="json", nonfinite=nonfinite)
 
     except Exception as e:
         if raise_errors:
@@ -542,12 +546,14 @@ def _run_batched_openfold(
     openfold_templates: str = DEFAULT_OPENFOLD_TEMPLATES,
     designed_with=None,
     design_policy: str = DEFAULT_DESIGN_POLICY,
+    nonfinite: str = "keep",
 ) -> None:
     """Run OpenFold3 on all successful samples in a single subprocess.
 
     Modifies *rows* in place, merging OpenFold3 and EvoBind metrics into each sample's flat dict,
-    and updates each sample's JSON report on disk. ``openfold_seeds`` are the seeds OpenFold3
-    samples with (written to its runner YAML); ``None`` keeps the default, 42.
+    and updates each sample's JSON report on disk (``nonfinite`` is the mode of that write, see
+    ``_update_sample_json``). ``openfold_seeds`` are the seeds OpenFold3 samples with (written to
+    its runner YAML); ``None`` keeps the default, 42.
     ``openfold_cyclic`` decides, sample by sample, whether the binder gets ``"cyclic": true``;
     each sample's block records ``binder_cyclic``. ``openfold_use_msa_server`` False runs
     OpenFold3 without the ColabFold MSA server; each row records it as
@@ -726,7 +732,7 @@ def _run_batched_openfold(
                 if k.startswith("openfold_"):
                     rows[idx][k] = v
 
-            _update_sample_json(output_dir / sid, sid, of_metrics)
+            _update_sample_json(output_dir / sid, sid, of_metrics, nonfinite=nonfinite)
             failure = _step_failure(of_metrics)
             if failure is not None:
                 _mark_step_failed(rows[idx], "openfold", failure)
@@ -750,14 +756,18 @@ def _update_sample_json(
     of_metrics: dict,
     section: str = "openfold",
     provenance: Optional[dict] = None,
+    nonfinite: str = "keep",
 ) -> None:
     """Merge one step's results into an existing per-sample JSON report.
 
     ``section`` is the key the block is written to (``"openfold"`` or ``"prediction"``);
-    ``provenance`` adds keys to the report's provenance block.
+    ``provenance`` adds keys to the report's provenance block. With ``nonfinite="null"`` the
+    report is written as strict JSON: a NaN or infinity of the block is ``null`` and its path
+    joins ``nonfinite_fields``.
     """
     import json
 
+    from binding_metrics._jsonutil import strict_json_text
     from binding_metrics.protocols.report import _json_default
 
     json_path = sample_dir / f"{sid}_results.json"
@@ -768,7 +778,11 @@ def _update_sample_json(
         data[section] = of_metrics
         if provenance:
             data.setdefault("provenance", {}).update(provenance)
-        json_path.write_text(json.dumps(data, indent=2, default=_json_default), encoding="utf-8")
+        if nonfinite == "null":
+            text = strict_json_text(data, indent=2, default=_json_default)
+        else:
+            text = json.dumps(data, indent=2, default=_json_default)
+        json_path.write_text(text, encoding="utf-8")
     except Exception as e:  # noqa: BLE001 - non-critical, the CSV row has the data anyway
         logger.warning("  %s: could not update %s: %s", sid, json_path.name, e)
 
@@ -822,6 +836,7 @@ def _run_batched_prediction(
     design_policy: str = DEFAULT_DESIGN_POLICY,
     prediction_msa_policy: str = DEFAULT_MSA_POLICY,
     prediction_receptor_msa: Optional[str | Path] = None,
+    nonfinite: str = "keep",
 ) -> None:
     """The ``--predictor`` step of a batch: every sample through one shared prediction store.
 
@@ -836,9 +851,10 @@ def _run_batched_prediction(
     Modifies *rows* in place: the ``prediction_*`` columns, ``provenance_openfold3_*`` when
     OpenFold3 was run, and, for a sample whose prediction failed, ``batch_status`` "partial"
     with the step named in ``batch_failed_steps``. Also writes ``prediction`` into each
-    sample's JSON report. A failed prediction of one sample, or of the whole batch call,
-    never stops the others. A sample that the pre-flight check leaves out
-    (``on_incompatible="skip"``, the limits of the model) is dropped before its request is built,
+    sample's JSON report (``nonfinite`` is the mode of that write, see ``_update_sample_json``).
+    A failed prediction of one sample, or of the whole batch call, never stops the others. A
+    sample that the pre-flight check leaves out (``on_incompatible="skip"``, the limits of the
+    model) is dropped before its request is built,
     with ``prediction_skipped`` and the reason in the row, and does not fail the batch.
     ``designed_with`` and ``design_policy`` decide whether the adversarial check runs (it is left
     out, with ``prediction_adversarial_skipped`` in the row, when the design pipeline ran
@@ -879,7 +895,7 @@ def _run_batched_prediction(
         for key, value in _flatten({"prediction": block}).items():
             if key.startswith("prediction_"):
                 rows[idx][key] = value
-        _update_sample_json(output_dir / sid, sid, block, section="prediction")
+        _update_sample_json(output_dir / sid, sid, block, section="prediction", nonfinite=nonfinite)
     if not eligible:
         logger.info("  [skip] No eligible samples for the batched prediction.")
         return
@@ -984,7 +1000,12 @@ def _run_batched_prediction(
         for key, value in provenance.items():
             _add_provenance(rows[idx], key, value)
         _update_sample_json(
-            output_dir / sid, sid, block, section="prediction", provenance=provenance or None
+            output_dir / sid,
+            sid,
+            block,
+            section="prediction",
+            provenance=provenance or None,
+            nonfinite=nonfinite,
         )
         failure = _step_failure(block)
         if failure is not None:
@@ -1069,6 +1090,7 @@ def run_batch(
     design_policy: str = DEFAULT_DESIGN_POLICY,
     prediction_msa_policy: str = DEFAULT_MSA_POLICY,
     prediction_receptor_msa: Optional[str | Path] = None,
+    nonfinite: str = "keep",
 ) -> list[dict]:
     """Run the pipeline on every structure in ``paths``; the in-process ``binding-metrics-batch``.
 
@@ -1188,6 +1210,10 @@ def run_batch(
             ``<step>_independent_of_design`` (``<step>`` is ``prediction`` or ``openfold``).
             With ``"error"`` every sample is an error row; ``on_incompatible`` does not change
             the rule. The loud warning is logged once for the batch and once in each sample's log.
+        nonfinite: How the per-sample JSON reports write a NaN or infinity (keyword-only, as
+            ``--nonfinite``): ``"keep"`` (default) writes the tokens ``NaN`` and ``Infinity``;
+            ``"null"`` writes ``null`` and lists the paths in ``nonfinite_fields``, so that a
+            strict JSON parser reads them. The CSV rows do not depend on it.
 
     Returns:
         One flat row per path, in the order of ``paths`` whatever the number of
@@ -1212,11 +1238,12 @@ def run_batch(
             ``predictor`` that is not registered or has no runner and no ``prediction_dir``, or
             a chain given through both spellings with different IDs, both chain roles naming one
             chain, or an ``openfold_cyclic`` that is not ``"auto"``, ``"on"``, ``"off"``,
-            ``True`` or ``False``.
+            ``True`` or ``False``, or a ``nonfinite`` other than ``"keep"`` and ``"null"``.
         Exception: whatever an item raised, when ``on_error="raise"``.
     """
     if n_workers < 1:
         raise ValueError(f"n_workers must be at least 1, got {n_workers}")
+    check_nonfinite(nonfinite)
     if on_error not in ("record", "raise"):
         raise ValueError(f"on_error must be 'record' or 'raise', got {on_error!r}")
     selected = frozenset(metrics)
@@ -1354,6 +1381,7 @@ def run_batch(
         designed_with=designed_with,
         design_policy=design_policy,
         preflight_msa=preflight_msa,
+        nonfinite=nonfinite,
     )
     if on_error == "raise":
         common_kwargs["raise_errors"] = True
@@ -1448,6 +1476,7 @@ def run_batch(
             design_policy=design_policy,
             prediction_msa_policy=prediction_msa_policy,
             prediction_receptor_msa=prediction_receptor_msa,
+            nonfinite=nonfinite,
         )
     elif want_openfold:
         _run_batched_openfold(
@@ -1469,6 +1498,7 @@ def run_batch(
             openfold_templates=openfold_templates,
             designed_with=designed_with,
             design_policy=design_policy,
+            nonfinite=nonfinite,
         )
     return finished
 
@@ -1609,6 +1639,7 @@ def main():
         "Supplying this auto-enables the 'dockq' metric. "
         "Requires: pip install DockQ",
     )
+    add_nonfinite_arg(parser)
 
     # Forwarded single-run options
     parser.add_argument(
@@ -1914,6 +1945,7 @@ def main():
         n_workers=args.workers,
         on_start=announce_start if args.workers == 1 else None,
         on_result=report_finished,
+        nonfinite=args.nonfinite,
     )
     statuses = [row.get("batch_status", "ok") for row in rows]
     n_ok = statuses.count("ok")
