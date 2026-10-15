@@ -153,9 +153,10 @@ AREA_OF_MODULE = {
     "capabilities": "preflight_capabilities",
     "preflight_cli": "preflight_cli",
     # package: the root __init__ (lazy exports, version), then the constants importable without
-    # OpenMM, the logging setup and the provenance of result files.
+    # OpenMM, the strict JSON export, the logging setup and the provenance of result files.
     "__init__": "package_exports",
     "_constants": "package_support",
+    "_jsonutil": "package_support",
     "utils": "package_support",
     "provenance": "package_support",
 }
