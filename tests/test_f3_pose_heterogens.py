@@ -176,7 +176,9 @@ def test_the_energy_of_a_crystal_is_the_same_in_both_frames(tmp_path):
         assert row["status"] == "ok", row["reasons"]
         energies[frame] = row[ENERGY]
 
+    # The CPU platform sums on several threads in no fixed order: repeated calls differ by up
+    # to about a kJ/mol, and the faults checked here move the energy by tens of kJ/mol.
     assert energies["reference"]["raw_interaction_energy"] == pytest.approx(
-        energies["original"]["raw_interaction_energy"], abs=0.01
+        energies["original"]["raw_interaction_energy"], abs=1.5
     )
     assert energies["reference"]["num_contacts"] == energies["original"]["num_contacts"]

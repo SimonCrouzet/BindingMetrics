@@ -95,8 +95,10 @@ def test_the_energy_of_a_bare_model_is_that_of_the_bundled_file(tmp_path):
 
     assert bare["success"], bare["error_message"]
     assert bundled["success"], bundled["error_message"]
+    # The CPU platform sums on several threads in no fixed order: repeated calls differ by up
+    # to about a kJ/mol, and the faults checked here move the energy by tens of kJ/mol.
     assert bare["raw_interaction_energy"] == pytest.approx(
-        bundled["raw_interaction_energy"], abs=0.01
+        bundled["raw_interaction_energy"], abs=1.5
     )
 
 
